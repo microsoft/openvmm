@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::ConnectionTarget;
 use super::OfferError;
 use super::OfferParamsInternal;
 use super::OfferedInfo;
@@ -129,11 +128,16 @@ impl super::Server {
         Ok(())
     }
 
-    /// Saves
+    /// Saves state.
     pub fn save(&self) -> SavedState {
         let connection = match Connection::save(&self.state) {
             Some(c) => c,
-            None => return SavedState { state: None },
+            None => {
+                return SavedState {
+                    state: None,
+                    pending_messages: Some(self.save_pending_messages()),
+                }
+            }
         };
 
         let channels = self
@@ -156,7 +160,35 @@ impl super::Server {
                 channels,
                 gpadls,
             }),
+            pending_messages: Some(self.save_pending_messages()),
         }
+    }
+
+    fn save_pending_messages(&self) -> Vec<QueuedMessage> {
+        self.pending_messages
+            .iter()
+            .map(|message| QueuedMessage {
+                message: message.message.data().to_owned(),
+                target: match message.target {
+                    super::MessageTarget::Default => MessageTarget::Default,
+                    super::MessageTarget::ReservedChannel(offer_id) => {
+                        MessageTarget::ReservedChannel(
+                            self.channels[offer_id]
+                                .info
+                                .expect("channel must be offered to be reserved")
+                                .channel_id
+                                .0,
+                        )
+                    }
+                    super::MessageTarget::Custom(target) => {
+                        MessageTarget::Custom(ConnectionTarget {
+                            vp: target.vp,
+                            sint: target.sint,
+                        })
+                    }
+                },
+            })
+            .collect()
     }
 }
 
@@ -213,6 +245,8 @@ pub enum RestoreError {
 pub struct SavedState {
     #[mesh(1)]
     state: Option<ConnectedState>,
+    #[mesh(2)]
+    pending_messages: Option<Vec<QueuedMessage>>,
 }
 
 #[derive(Debug, Clone, Protobuf)]
@@ -749,7 +783,7 @@ impl ReservedState {
 
         Ok(super::ReservedState {
             version,
-            target: ConnectionTarget {
+            target: super::ConnectionTarget {
                 vp: self.vp,
                 sint: self.sint,
             },
@@ -971,4 +1005,33 @@ enum GpadlState {
     Accepted,
     #[mesh(4)]
     TearingDown,
+}
+
+#[derive(Debug, Clone, Protobuf, PartialEq, Eq)]
+#[mesh(package = "vmbus.server.channels")]
+struct ConnectionTarget {
+    #[mesh(1)]
+    pub vp: u32,
+    #[mesh(2)]
+    pub sint: u8,
+}
+
+#[derive(Debug, Clone, Protobuf, PartialEq, Eq)]
+#[mesh(package = "vmbus.server.channels")]
+enum MessageTarget {
+    #[mesh(1)]
+    Default,
+    #[mesh(2)]
+    ReservedChannel(u32),
+    #[mesh(3)]
+    Custom(ConnectionTarget),
+}
+
+#[derive(Debug, Clone, Protobuf, PartialEq, Eq)]
+#[mesh(package = "vmbus.server.channels")]
+struct QueuedMessage {
+    #[mesh(1)]
+    message: Vec<u8>,
+    #[mesh(2)]
+    target: MessageTarget,
 }

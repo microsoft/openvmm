@@ -51,7 +51,6 @@ use pal_event::Event;
 pub use proxyintegration::ProxyIntegration;
 use ring::PAGE_SIZE;
 use std::collections::HashMap;
-use std::collections::VecDeque;
 use std::future;
 use std::future::Future;
 use std::pin::Pin;
@@ -489,7 +488,6 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
             shared_event_port: None,
             reset_done: None,
             enable_mnf: self.enable_mnf,
-            pending_messages: VecDeque::new(),
         };
 
         let (task_send, task_recv) = mesh::channel();
@@ -608,12 +606,6 @@ pub struct SynicMessage {
     multiclient: bool,
     trusted: bool,
 }
-
-struct QueuedMessage {
-    message: OutgoingMessage,
-    target: MessageTarget,
-}
-
 struct ServerTask {
     running: bool,
     server: channels::Server,
@@ -648,7 +640,6 @@ struct ServerTaskInner {
     shared_event_port: Option<Box<dyn Send>>,
     reset_done: Option<Rpc<(), ()>>,
     enable_mnf: bool,
-    pending_messages: VecDeque<QueuedMessage>,
 }
 
 #[derive(Debug)]
@@ -1049,7 +1040,7 @@ impl ServerTask {
             // hvsock requests outstanding. This puts a bound on the resources used by the guest.
             let mut message_recv = OptionFuture::from(
                 (self.running
-                    && self.inner.pending_messages.is_empty()
+                    && self.server.pending_message().is_none()
                     && self.inner.hvsock_requests < MAX_CONCURRENT_HVSOCK_REQUESTS)
                     .then(|| self.message_recv.select_next_some()),
             );
@@ -1071,10 +1062,10 @@ impl ServerTask {
             let synic = self.inner.synic.as_ref();
             let redirect_vtl = self.inner.redirect_vtl;
             let message_port = self.inner.message_port.as_mut();
-            let mut send_queued_message = OptionFuture::from(
+            let mut send_pending_message = OptionFuture::from(
                 self.running
                     .then(|| {
-                        self.inner.pending_messages.front().map(|msg| {
+                        self.server.pending_message().map(|msg| {
                             tracing::trace!(msg = ?msg.message, "sending queued message");
                             poll_fn(move |cx| {
                                 ServerTaskInner::poll_send_message(
@@ -1139,9 +1130,9 @@ impl ServerTask {
                     let r = r.unwrap();
                     self.handle_external_request(r);
                 }
-                r = send_queued_message => {
+                r = send_pending_message => {
                     r.unwrap();
-                    self.inner.pending_messages.pop_front().expect("queue can't be empty");
+                    self.server.remove_pending_message();
                 }
                 complete => break,
             }
@@ -1464,24 +1455,17 @@ impl Notifier for ServerTaskInner {
         }
     }
 
-    fn send_message(&mut self, message: OutgoingMessage, target: MessageTarget) {
-        // Only attempt to send if there are not already messages pending.
-        if !self.pending_messages.is_empty()
-            || Self::poll_send_message(
-                &mut std::task::Context::from_waker(noop_waker_ref()),
-                self.message_port.as_mut(),
-                &mut self.channels,
-                self.synic.as_ref(),
-                self.redirect_vtl,
-                &message,
-                target,
-            )
-            .is_pending()
-        {
-            tracing::trace!(?message, "queueing message");
-            self.pending_messages
-                .push_back(QueuedMessage { message, target });
-        }
+    fn send_message(&mut self, message: &OutgoingMessage, target: MessageTarget) -> bool {
+        Self::poll_send_message(
+            &mut std::task::Context::from_waker(noop_waker_ref()),
+            self.message_port.as_mut(),
+            &mut self.channels,
+            self.synic.as_ref(),
+            self.redirect_vtl,
+            message,
+            target,
+        )
+        .is_ready()
     }
 
     fn notify_hvsock(&mut self, request: &HvsockConnectRequest) {
