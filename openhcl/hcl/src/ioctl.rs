@@ -1595,7 +1595,7 @@ impl HclVp {
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,
                 vtl1_apic_page: private_pool
                     .ok_or(Error::MissingPrivateMemory)?
-                    .alloc_with_mapping(1.try_into().unwrap(), "tdx-vtl1-apic-page".to_owned())
+                    .alloc(1.try_into().unwrap(), "tdx-vtl1-apic-page".to_owned())
                     .map_err(Error::AllocVp)?,
             },
         };

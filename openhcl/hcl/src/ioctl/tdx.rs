@@ -141,9 +141,7 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
             GuestVtl::Vtl0 => self.tdx_apic_page_vtl0(),
             // SAFETY: the APIC page will not be concurrently accessed by the processor
             // while this VP is in VTL2.
-            GuestVtl::Vtl1 => unsafe {
-                &*self.state.vtl1_apic_page.mapping().unwrap().as_ptr().cast()
-            },
+            GuestVtl::Vtl1 => unsafe { &*self.state.vtl1_apic_page.mapping().as_ptr().cast() },
         }
     }
 
@@ -154,7 +152,13 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
             // SAFETY: the APIC page will not be concurrently accessed by the processor
             // while this VP is in VTL2.
             GuestVtl::Vtl1 => unsafe {
-                &mut *self.state.vtl1_apic_page.mapping().unwrap().as_ptr().cast()
+                &mut *self
+                    .state
+                    .vtl1_apic_page
+                    .mapping()
+                    .as_ptr()
+                    .cast_mut()
+                    .cast()
             },
         }
     }
