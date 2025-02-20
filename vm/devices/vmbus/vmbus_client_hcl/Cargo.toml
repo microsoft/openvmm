@@ -16,6 +16,7 @@ vmbus_client.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true
+parking_lot.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 [lints]

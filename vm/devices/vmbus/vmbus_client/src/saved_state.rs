@@ -21,17 +21,17 @@ impl<T: VmbusMessageSource> super::ClientTask<T> {
         SavedState {
             client_state: match &self.state {
                 super::ClientState::Disconnected => ClientState::Disconnected,
-                super::ClientState::Connecting(..) => {
+                super::ClientState::Connecting { .. } => {
                     unreachable!("Cannot save in Connecting state.")
                 }
-                super::ClientState::Connected(info) => ClientState::Connected {
+                super::ClientState::Connected { version: info } => ClientState::Connected {
                     version: info.version as u32,
                     feature_flags: info.feature_flags.into(),
                 },
-                super::ClientState::RequestingOffers(..) => {
+                super::ClientState::RequestingOffers { .. } => {
                     unreachable!("Cannot save in RequestingOffers state.")
                 }
-                super::ClientState::Disconnecting(..) => {
+                super::ClientState::Disconnecting { .. } => {
                     unreachable!("Cannot save in Disconnecting state.")
                 }
             },
@@ -167,10 +167,12 @@ impl TryFrom<ClientState> for super::ClientState {
                     return Err(RestoreError::UnsupportedFeatureFlags(feature_flags.into()));
                 }
 
-                Self::Connected(VersionInfo {
-                    version,
-                    feature_flags,
-                })
+                Self::Connected {
+                    version: VersionInfo {
+                        version,
+                        feature_flags,
+                    },
+                }
             }
         };
 

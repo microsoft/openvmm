@@ -8,6 +8,7 @@ pub mod protocol;
 use futures::FutureExt;
 use futures::StreamExt;
 use guid::Guid;
+use inspect::Inspect;
 use protocol::MessageHeader;
 use protocol::VmbusMessage;
 use protocol::HEADER_SIZE;
@@ -75,7 +76,7 @@ where
 }
 
 /// Represents information about a negotiated version.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Inspect)]
 pub struct VersionInfo {
     pub version: protocol::Version,
     pub feature_flags: protocol::FeatureFlags,
@@ -180,14 +181,16 @@ impl PartialEq for OutgoingMessage {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Inspect)]
 pub struct MonitorPageGpas {
+    #[inspect(hex)]
     pub parent_to_child: u64,
+    #[inspect(hex)]
     pub child_to_parent: u64,
 }
 
 /// A request from the guest to connect to the specified hvsocket endpoint.
-#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Inspect)]
 pub struct HvsockConnectRequest {
     pub service_id: Guid,
     pub endpoint_id: Guid,

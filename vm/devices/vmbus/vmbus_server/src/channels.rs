@@ -157,24 +157,7 @@ impl<T: Notifier> Inspect for ServerWithNotifier<'_, T> {
             }
         };
 
-        let mut trusted = false;
-        if let Some(info) = info {
-            resp.field(
-                "protocol",
-                format!(
-                    "{}.{}",
-                    info.version.version as u32 >> 16,
-                    info.version.version as u32 & 0xffff
-                ),
-            );
-
-            resp.binary("feature_flags", u32::from(info.version.feature_flags));
-            resp.field("interrupt_page", info.interrupt_page);
-            resp.field("modifying", info.modifying);
-            resp.field("client_id", info.client_id);
-            trusted = info.trusted;
-        }
-
+        resp.field("connection_info", info);
         let next_action = next_action.map(|a| match a {
             ConnectionAction::None => "disconnect",
             ConnectionAction::Reset => "reset",
@@ -183,7 +166,6 @@ impl<T: Notifier> Inspect for ServerWithNotifier<'_, T> {
             ConnectionAction::SendFailedVersionResponse => "send_version_response",
         });
         resp.field("state", state)
-            .field("trusted", trusted)
             .field("next_action", next_action)
             .field(
                 "assigned_monitors_bitmap",
@@ -208,7 +190,7 @@ impl<T: Notifier> Inspect for ServerWithNotifier<'_, T> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Inspect)]
 struct ConnectionInfo {
     version: VersionInfo,
     // Indicates if the connection is trusted for the paravisor of a hardware-isolated VM. In other
