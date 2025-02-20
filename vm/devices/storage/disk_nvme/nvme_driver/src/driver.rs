@@ -143,7 +143,7 @@ impl IoQueue {
     pub(crate) async fn verify_restore(&self, saved_state: &IoQueueSavedState, mem: MemoryBlock) {
         self.queue.verify_restore(&saved_state.queue_data, mem);
 
-        assert_eq!(saved_state.msix, self.iv as u32);
+        assert_eq!(saved_state.iv, self.iv as u32);
         assert_eq!(saved_state.cpu, self.cpu);
     }
 }

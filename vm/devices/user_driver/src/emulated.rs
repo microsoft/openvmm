@@ -289,6 +289,14 @@ pub struct EmulatedDmaAllocator {
     shared_mem: DeviceSharedMemory,
 }
 
+impl EmulatedDmaAllocator {
+    pub fn new(shared_mem: DeviceSharedMemory) -> Self {
+        EmulatedDmaAllocator {
+            shared_mem,
+        }
+    }
+}
+
 impl DmaClient for EmulatedDmaAllocator {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
         let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);

@@ -20,6 +20,7 @@ use std::sync::Arc;
 use test_with_tracing::test;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
+use user_driver::emulated::EmulatedDmaAllocator;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::DeviceBacking;
