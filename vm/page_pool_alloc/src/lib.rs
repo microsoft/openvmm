@@ -337,6 +337,17 @@ struct PagePoolInner {
     mapping: SparseMapping,
 }
 
+impl Debug for PagePoolInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PagePoolInner")
+            .field("state", &self.state)
+            .field("pfn_bias", &self.pfn_bias)
+            .field("mapping", &self.mapping)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
 struct PagePoolState {
     /// The internal slots for the pool, representing page state.
     slots: Vec<Slot>,
@@ -357,6 +368,7 @@ impl Inspect for PagePoolState {
 
 /// A handle for a page pool allocation. When dropped, the allocation is
 /// freed.
+#[derive(Debug)]
 pub struct PagePoolHandle {
     inner: Arc<PagePoolInner>,
     base_pfn: u64,

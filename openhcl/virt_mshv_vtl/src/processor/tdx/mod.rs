@@ -849,7 +849,7 @@ impl BackingPrivate for TdxBacked {
             // We only offload VTL 0 today.
             assert_eq!(vtl, GuestVtl::Vtl0);
             tracing::info!("disabling APIC offload due to auto EOI");
-            let page = this.runner.tdx_apic_page_mut_vtl0();
+            let page = this.runner.tdx_apic_page_mut(GuestVtl::Vtl0);
             let (irr, isr) = pull_apic_offload(page);
 
             this.backing.cvm.lapics[vtl]
@@ -963,7 +963,7 @@ impl UhProcessor<'_, TdxBacked> {
             let r: Result<(), OffloadNotSupported> = self.backing.cvm.lapics[vtl]
                 .lapic
                 .push_to_offload(|irr, isr, tmr| {
-                    let apic_page = self.runner.tdx_apic_page_mut_vtl0();
+                    let apic_page = self.runner.tdx_apic_page_mut(GuestVtl::Vtl0);
 
                     for (((irr, page_irr), isr), page_isr) in irr
                         .iter()
@@ -1014,7 +1014,7 @@ impl UhProcessor<'_, TdxBacked> {
             }
 
             if update_rvi {
-                let page = self.runner.tdx_apic_page_mut_vtl0();
+                let page = self.runner.tdx_apic_page_mut(GuestVtl::Vtl0);
                 let rvi = top_vector(&page.irr);
                 self.backing.vtls[vtl].private_regs.rvi = rvi;
             }
@@ -1051,7 +1051,7 @@ impl UhProcessor<'_, TdxBacked> {
         let offloaded = self.backing.cvm.lapics[vtl].lapic.is_offloaded();
         if offloaded {
             assert_eq!(vtl, GuestVtl::Vtl0);
-            let (irr, isr) = pull_apic_offload(self.runner.tdx_apic_page_mut_vtl0());
+            let (irr, isr) = pull_apic_offload(self.runner.tdx_apic_page_mut(GuestVtl::Vtl0));
             self.backing.cvm.lapics[vtl]
                 .lapic
                 .disable_offload(&irr, &isr);

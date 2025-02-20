@@ -1483,6 +1483,7 @@ impl MshvHvcall {
 }
 
 /// The HCL device and collection of fds.
+#[derive(Debug)]
 pub struct Hcl {
     mshv_hvcall: MshvHvcall,
     mshv_vtl: MshvVtl,
@@ -1528,12 +1529,14 @@ impl Hcl {
     }
 }
 
+#[derive(Debug)]
 struct HclVp {
     state: Mutex<VpState>,
     run: MappedPage<hcl_run>,
     backing: BackingState,
 }
 
+#[derive(Debug)]
 enum BackingState {
     Mshv {
         reg_page: Option<MappedPage<HvX64RegisterPage>>,
