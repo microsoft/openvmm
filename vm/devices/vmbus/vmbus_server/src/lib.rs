@@ -489,7 +489,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
             shared_event_port: None,
             reset_done: None,
             enable_mnf: self.enable_mnf,
-            message_queue: VecDeque::new(),
+            pending_messages: VecDeque::new(),
         };
 
         let (task_send, task_recv) = mesh::channel();
@@ -648,7 +648,7 @@ struct ServerTaskInner {
     shared_event_port: Option<Box<dyn Send>>,
     reset_done: Option<Rpc<(), ()>>,
     enable_mnf: bool,
-    message_queue: VecDeque<QueuedMessage>,
+    pending_messages: VecDeque<QueuedMessage>,
 }
 
 #[derive(Debug)]
@@ -1049,7 +1049,7 @@ impl ServerTask {
             // hvsock requests outstanding. This puts a bound on the resources used by the guest.
             let mut message_recv = OptionFuture::from(
                 (self.running
-                    && self.inner.message_queue.is_empty()
+                    && self.inner.pending_messages.is_empty()
                     && self.inner.hvsock_requests < MAX_CONCURRENT_HVSOCK_REQUESTS)
                     .then(|| self.message_recv.select_next_some()),
             );
@@ -1065,6 +1065,8 @@ impl ServerTask {
                 OptionFuture::from(self.running.then(|| hvsock_recv.select_next_some()));
 
             // Try to send any queued messages.
+            // Borrowing all this state separately is needed because we can't borrow &self.inner
+            // entirely inside the future.
             let channels = &mut self.inner.channels;
             let synic = self.inner.synic.as_ref();
             let redirect_vtl = self.inner.redirect_vtl;
@@ -1072,15 +1074,15 @@ impl ServerTask {
             let mut send_queued_message = OptionFuture::from(
                 self.running
                     .then(|| {
-                        self.inner.message_queue.front().map(|msg| {
-                            tracing::debug!(msg = ?msg.message, "sending queued message");
+                        self.inner.pending_messages.front().map(|msg| {
+                            tracing::trace!(msg = ?msg.message, "sending queued message");
                             poll_fn(move |cx| {
                                 ServerTaskInner::poll_send_message(
                                     cx,
                                     message_port,
                                     channels,
-                                    redirect_vtl,
                                     synic,
+                                    redirect_vtl,
                                     &msg.message,
                                     msg.target,
                                 )
@@ -1139,7 +1141,7 @@ impl ServerTask {
                 }
                 r = send_queued_message => {
                     r.unwrap();
-                    self.inner.message_queue.pop_front().expect("queue can't be empty");
+                    self.inner.pending_messages.pop_front().expect("queue can't be empty");
                 }
                 complete => break,
             }
@@ -1463,20 +1465,21 @@ impl Notifier for ServerTaskInner {
     }
 
     fn send_message(&mut self, message: OutgoingMessage, target: MessageTarget) {
-        if !self.message_queue.is_empty()
+        // Only attempt to send if there are not already messages pending.
+        if !self.pending_messages.is_empty()
             || Self::poll_send_message(
                 &mut std::task::Context::from_waker(noop_waker_ref()),
                 self.message_port.as_mut(),
                 &mut self.channels,
-                self.redirect_vtl,
                 self.synic.as_ref(),
+                self.redirect_vtl,
                 &message,
                 target,
             )
             .is_pending()
         {
-            tracing::debug!("queueing message");
-            self.message_queue
+            tracing::trace!(?message, "queueing message");
+            self.pending_messages
                 .push_back(QueuedMessage { message, target });
         }
     }
@@ -1738,8 +1741,8 @@ impl ServerTaskInner {
         cx: &mut std::task::Context<'_>,
         message_port: &mut dyn GuestMessagePort,
         channels: &mut HashMap<OfferId, Channel>,
-        redirect_vtl: Vtl,
         synic: &dyn SynicPortAccess,
+        redirect_vtl: Vtl,
         message: &OutgoingMessage,
         target: MessageTarget,
     ) -> Poll<()> {
@@ -2011,9 +2014,7 @@ mod tests {
             payload: &[u8],
         ) -> Poll<()> {
             if let Some((timer, deadline)) = self.timer.as_mut() {
-                tracing::debug!("waiting for timer");
                 ready!(timer.sleep_until(*deadline).poll_unpin(cx));
-                tracing::debug!("timer expired");
                 self.timer = None;
             }
 
@@ -2027,7 +2028,6 @@ mod tests {
                     Poll::Ready(_) => {}
                     Poll::Pending => {
                         self.timer = Some((timer, deadline));
-                        tracing::debug!("returning pending");
                         return Poll::Pending;
                     }
                 }
