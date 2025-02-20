@@ -23,7 +23,6 @@ thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 [dev-dependencies]
-parking_lot.workspace = true
 pal_async.workspace = true
 
 [lints]
