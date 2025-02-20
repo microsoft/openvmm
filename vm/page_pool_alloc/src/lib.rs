@@ -507,10 +507,6 @@ impl PagePool {
     }
 
     fn new_internal(memory: &[MemoryRange], source: Box<dyn PoolSource>) -> anyhow::Result<Self> {
-        // TODO: Allow callers to specify the vnode, but today we discard this
-        // information. In the future we may keep ranges with vnode in order to
-        // allow per-node allocations.
-
         let mut mapping_offset = 0;
         let pages = memory
             .iter()
