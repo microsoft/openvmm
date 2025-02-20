@@ -114,6 +114,7 @@ type IncompleteGpadlMap = HashMap<GpadlId, OfferId>;
 
 type GpadlMap = HashMap<(GpadlId, OfferId), Gpadl>;
 
+/// A message that could not be sent immediately.
 pub struct PendingMessage {
     pub message: OutgoingMessage,
     pub target: MessageTarget,
@@ -5088,6 +5089,8 @@ mod tests {
         env.notifier.messages.clear();
         env.notifier.pend_messages = true;
         env.gpadl(1, 10);
+        // The remaining messages should still be pended because there is already a pended message.
+        env.notifier.pend_messages = true;
         env.c()
             .gpadl_create_complete(offer_id1, GpadlId(10), protocol::STATUS_SUCCESS);
         env.open_reserved(2, 4, SINT.into());

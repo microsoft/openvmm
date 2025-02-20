@@ -99,7 +99,6 @@ pub const REDIRECT_VTL: Vtl = Vtl::Vtl2;
 const SHARED_EVENT_CONNECTION_ID: u32 = 2;
 
 const MAX_CONCURRENT_HVSOCK_REQUESTS: usize = 16;
-const VMBUS_MESSAGE_TYPE: u32 = 1;
 
 pub struct VmbusServer {
     task_send: mesh::Sender<VmbusRequest>,
@@ -605,6 +604,7 @@ pub struct SynicMessage {
     multiclient: bool,
     trusted: bool,
 }
+
 struct ServerTask {
     running: bool,
     server: channels::Server,
@@ -1014,8 +1014,9 @@ impl ServerTask {
                     .flatten(),
             );
 
-            // Only handle new messages if there are no outgoing messags queued, and not too many
-            // hvsock requests outstanding. This puts a bound on the resources used by the guest.
+            // Only handle new incoming messages if there are no outgoing messages pending, and not
+            // too many hvsock requests outstanding. This puts a bound on the resources used by the
+            // guest.
             let mut message_recv = OptionFuture::from(
                 (self.running
                     && self.server.pending_message().is_none()
@@ -1033,7 +1034,7 @@ impl ServerTask {
             let mut hvsock_response =
                 OptionFuture::from(self.running.then(|| hvsock_recv.select_next_some()));
 
-            // Try to send any queued messages.
+            // Try to send any queued messages while the VM is running.
             // Borrowing all this state separately is needed because we can't borrow &self.inner
             // entirely inside the future.
             let channels = &mut self.inner.channels;
@@ -1434,6 +1435,8 @@ impl Notifier for ServerTaskInner {
     }
 
     fn send_message(&mut self, message: &OutgoingMessage, target: MessageTarget) -> bool {
+        // If this returns Pending, the channels module will queue the message and the ServerTask
+        // main loop will try to send it again later.
         Self::poll_send_message(
             &mut std::task::Context::from_waker(noop_waker_ref()),
             self.message_port.as_mut(),
@@ -1710,6 +1713,7 @@ impl ServerTaskInner {
             }
         };
 
+        const VMBUS_MESSAGE_TYPE: u32 = 1;
         port.poll_post_message(cx, VMBUS_MESSAGE_TYPE, message.data())
     }
 }
