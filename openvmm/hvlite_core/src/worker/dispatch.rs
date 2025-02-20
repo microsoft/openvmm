@@ -149,13 +149,7 @@ const WDAT_PORT: u16 = 0x30;
 
 /// Creates a thread to run low-performance devices on.
 pub fn new_device_thread() -> (JoinHandle<()>, DefaultDriver) {
-    let pool = DefaultPool::new();
-    let driver = pool.driver();
-    let thread = thread::Builder::new()
-        .name("basic_device_thread".into())
-        .spawn(move || pool.run())
-        .unwrap();
-    (thread, driver)
+    DefaultPool::spawn_on_thread("basic_device_thread")
 }
 
 impl Manifest {

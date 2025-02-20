@@ -18,9 +18,7 @@ fn do_fuzz(u: &mut Unstructured<'_>) -> arbitrary::Result<()> {
     let initial_cmos = u.arbitrary()?;
 
     // TODO: write a streamlined "fuzz driver" impl instead of using pal_async
-    let mut pool = pal_async::DefaultPool::new();
-    let driver = pool.driver();
-    pool.run_until(async {
+    pal_async::DefaultPool::run_with(async |driver| {
         let mut vm_time_keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
         let vm_time_source = vm_time_keeper.builder().build(&driver).await.unwrap();
 

@@ -192,14 +192,7 @@ fn vm_config_from_command_line(
     spawner: impl Spawn,
     opt: &Options,
 ) -> anyhow::Result<(Config, VmResources)> {
-    let serial_pool = DefaultPool::new();
-    let serial_driver = serial_pool.driver();
-    // Ensure the serial driver stays alive with no tasks.
-    serial_driver.spawn("leak", pending::<()>()).detach();
-    thread::Builder::new()
-        .name("serial".to_string())
-        .spawn(|| serial_pool.run())
-        .unwrap();
+    let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
 
     let openhcl_vtl = if opt.vtl2 {
         DeviceVtl::Vtl2

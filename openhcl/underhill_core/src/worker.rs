@@ -187,13 +187,7 @@ const MAX_SUBCHANNELS_PER_VNIC: u16 = 32;
 /// This must be a separate thread from the thread pool because sometimes thread
 /// pool threads will block synchronously waiting on the GET or VMGS.
 fn new_get_thread() -> (JoinHandle<()>, DefaultDriver) {
-    let pool = DefaultPool::new();
-    let driver = pool.driver();
-    let thread = std::thread::Builder::new()
-        .name("get".into())
-        .spawn(move || pool.run())
-        .unwrap();
-    (thread, driver)
+    DefaultPool::spawn_on_thread("get")
 }
 
 struct GuestEmulationTransportInfra {

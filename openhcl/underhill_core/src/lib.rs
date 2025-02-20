@@ -145,12 +145,7 @@ pub fn main() -> anyhow::Result<()> {
     }
 
     // FUTURE: create and use the affinitized threadpool here.
-    let tracing_pool = DefaultPool::new();
-    let tracing_driver = tracing_pool.driver();
-    std::thread::Builder::new()
-        .name("tracing".to_owned())
-        .spawn(|| tracing_pool.run())
-        .unwrap();
+    let (_, tracing_driver) = DefaultPool::spawn_on_thread("tracing");
 
     // Try to run as a worker host, sending a remote tracer that will forward
     // tracing events back to the initial process for logging to the host. See

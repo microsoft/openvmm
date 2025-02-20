@@ -345,15 +345,8 @@ impl VirtioQueueWorker {
         queue_resources: QueueResources,
         exit_event: event_listener::EventListener,
     ) -> TaskControl<VirtioQueueWorker, VirtioQueueState> {
-        let pool = DefaultPool::new();
-        let driver = pool.driver();
-        let name: String = name.into();
-        std::thread::Builder::new()
-            .name(name.clone())
-            .spawn(|| {
-                pool.run();
-            })
-            .unwrap();
+        let name = name.into();
+        let (_, driver) = DefaultPool::spawn_on_thread(&name);
 
         let mut task = TaskControl::new(self);
         task.insert(
