@@ -1402,8 +1402,7 @@ mod tests {
     use super::*;
     use guid::Guid;
     use pal_async::async_test;
-    use pal_async::DefaultPool;
-    use parking_lot::Mutex;
+    use pal_async::DefaultDriver;
     use protocol::TargetInfo;
     use std::sync::Arc;
     use std::task::ready;
@@ -1426,36 +1425,26 @@ mod tests {
     }
 
     struct TestServer {
-        messages: Mutex<Vec<OutgoingMessage>>,
+        messages: mesh::Receiver<OutgoingMessage>,
         send: mesh::Sender<Vec<u8>>,
     }
 
     impl TestServer {
-        fn next(&self) -> Option<OutgoingMessage> {
-            let mut tries = 0;
-            loop {
-                if let Some(msg) = self.messages.lock().pop() {
-                    return Some(msg);
-                }
-                if tries > 50 {
-                    return None;
-                }
-                tries += 1;
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+        async fn next(&mut self) -> Option<OutgoingMessage> {
+            self.messages.next().await
         }
 
         fn send(&self, msg: Vec<u8>) {
             self.send.send(msg);
         }
 
-        async fn connect(&self, client: &mut VmbusClient) {
+        async fn connect(&mut self, client: &mut VmbusClient) {
             let recv = client.access.client_request_send.call(
                 ClientRequest::InitiateContact,
                 InitiateContactRequest::default(),
             );
 
-            let _ = self.next().unwrap();
+            let _ = self.next().await.unwrap();
 
             self.send(in_msg(
                 MessageType::VERSION_RESPONSE,
@@ -1475,7 +1464,7 @@ mod tests {
             assert_eq!(version.feature_flags, FeatureFlags::all());
         }
 
-        async fn get_channel(&self, client: &mut VmbusClient) -> OfferInfo {
+        async fn get_channel(&mut self, client: &mut VmbusClient) -> OfferInfo {
             self.connect(client).await;
 
             let (send, mut recv) = mesh::channel();
@@ -1484,7 +1473,7 @@ mod tests {
                 .client_request_send
                 .send(ClientRequest::RequestOffers(send));
 
-            let _ = self.next().unwrap();
+            let _ = self.next().await.unwrap();
 
             let offer = protocol::OfferChannel {
                 interface_id: Guid::new_random(),
@@ -1514,11 +1503,11 @@ mod tests {
         }
     }
 
-    impl SynicClient for Arc<TestServer> {
+    struct TestServerClient(mesh::Sender<OutgoingMessage>);
+
+    impl SynicClient for TestServerClient {
         fn post_message(&self, _channel: u32, _typ: u32, msg: &[u8]) {
-            self.messages
-                .lock()
-                .push(OutgoingMessage::from_message(msg));
+            self.0.send(OutgoingMessage::from_message(msg));
         }
 
         fn map_event(&self, _event_flag: u16, _event: &pal_event::Event) -> std::io::Result<()> {
@@ -1561,40 +1550,35 @@ mod tests {
 
     impl VmbusMessageSource for TestMessageSource {}
 
-    fn test_init() -> (Arc<TestServer>, VmbusClient, mesh::Receiver<OfferInfo>) {
-        let pool = DefaultPool::new();
-        let driver = pool.driver();
+    fn test_init(driver: &DefaultDriver) -> (TestServer, VmbusClient, mesh::Receiver<OfferInfo>) {
         let (msg_send, msg_recv) = mesh::channel();
-        let server = Arc::new(TestServer {
-            messages: Mutex::new(Vec::new()),
+        let (synic_send, synic_recv) = mesh::channel();
+        let server = TestServer {
+            messages: synic_recv,
             send: msg_send,
-        });
+        };
         let (offer_send, offer_recv) = mesh::channel();
 
         let mut client = VmbusClient::new(
-            Arc::new(server.clone()),
+            Arc::new(TestServerClient(synic_send)),
             offer_send,
             TestMessageSource { msg_recv },
             &driver,
         );
         client.start();
-        let _ = std::thread::Builder::new()
-            .spawn(move || pool.run())
-            .unwrap();
-
         (server, client, offer_recv)
     }
 
     #[async_test]
-    async fn test_initiate_contact_success() {
-        let (server, client, _) = test_init();
+    async fn test_initiate_contact_success(driver: DefaultDriver) {
+        let (mut server, client, _) = test_init(&driver);
         let _recv = client.access.client_request_send.call(
             ClientRequest::InitiateContact,
             InitiateContactRequest::default(),
         );
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
@@ -1613,15 +1597,15 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_connect_success() {
-        let (server, client, _) = test_init();
+    async fn test_connect_success(driver: DefaultDriver) {
+        let (mut server, client, _) = test_init(&driver);
         let recv = client.access.client_request_send.call(
             ClientRequest::InitiateContact,
             InitiateContactRequest::default(),
         );
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
@@ -1658,15 +1642,15 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_feature_flags() {
-        let (server, client, _) = test_init();
+    async fn test_feature_flags(driver: DefaultDriver) {
+        let (mut server, client, _) = test_init(&driver);
         let recv = client.access.client_request_send.call(
             ClientRequest::InitiateContact,
             InitiateContactRequest::default(),
         );
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
@@ -1707,9 +1691,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_client_id() {
-        let (server, client, _) = test_init();
+    #[async_test]
+    async fn test_client_id(driver: DefaultDriver) {
+        let (mut server, client, _) = test_init(&driver);
         let initiate_contact = InitiateContactRequest {
             client_id: VMBUS_TEST_CLIENT_ID,
             ..Default::default()
@@ -1720,7 +1704,7 @@ mod tests {
             .call(ClientRequest::InitiateContact, initiate_contact);
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
@@ -1739,15 +1723,15 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_version_negotiation() {
-        let (server, client, _) = test_init();
+    async fn test_version_negotiation(driver: DefaultDriver) {
+        let (mut server, client, _) = test_init(&driver);
         let recv = client.access.client_request_send.call(
             ClientRequest::InitiateContact,
             InitiateContactRequest::default(),
         );
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
@@ -1775,7 +1759,7 @@ mod tests {
         ));
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::InitiateContact {
                 version_requested: Version::Iron as u32,
                 target_message_vp: 0,
@@ -1806,8 +1790,8 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_request_offers_success() {
-        let (server, mut client, _) = test_init();
+    async fn test_request_offers_success(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
 
         server.connect(&mut client).await;
 
@@ -1818,7 +1802,7 @@ mod tests {
             .send(ClientRequest::RequestOffers(send));
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::RequestOffers {})
         );
 
@@ -1850,8 +1834,8 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_open_channel_success() {
-        let (server, mut client, _) = test_init();
+    async fn test_open_channel_success(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
 
         let recv = channel.request_send.call(
@@ -1870,7 +1854,7 @@ mod tests {
         );
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::OpenChannel2 {
                 open_channel: protocol::OpenChannel {
                     channel_id: ChannelId(0),
@@ -1900,8 +1884,8 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_open_channel_fail() {
-        let (server, mut client, _) = test_init();
+    async fn test_open_channel_fail(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
 
         let recv = channel.request_send.call(
@@ -1920,7 +1904,7 @@ mod tests {
         );
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::OpenChannel2 {
                 open_channel: protocol::OpenChannel {
                     channel_id: ChannelId(0),
@@ -1950,8 +1934,8 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_modify_channel() {
-        let (server, mut client, _) = test_init();
+    async fn test_modify_channel(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
 
         // N.B. A real server requires the channel to be open before sending this, but the test
@@ -1962,7 +1946,7 @@ mod tests {
         );
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::ModifyChannel {
                 channel_id: ChannelId(0),
                 target_vp: 1,
@@ -1982,14 +1966,14 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_save_restore_connected() {
+    async fn test_save_restore_connected(driver: DefaultDriver) {
         let s0;
         {
-            let (server, mut client, _) = test_init();
+            let (mut server, mut client, _) = test_init(&driver);
             server.connect(&mut client).await;
             s0 = client.save().await;
         }
-        let (_, mut client, _) = test_init();
+        let (_server, mut client, _) = test_init(&driver);
         client.restore(s0.clone()).await.unwrap();
 
         let s1 = client.save().await;
@@ -1998,15 +1982,15 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_save_restore_connected_with_channel() {
+    async fn test_save_restore_connected_with_channel(driver: DefaultDriver) {
         let s0;
         let c0;
         {
-            let (server, mut client, _) = test_init();
+            let (mut server, mut client, _) = test_init(&driver);
             c0 = server.get_channel(&mut client).await;
             s0 = client.save().await;
         }
-        let (_, mut client, _) = test_init();
+        let (_server, mut client, _) = test_init(&driver);
         let (_, channels) = client.restore(s0.clone()).await.unwrap();
 
         let s1 = client.save().await;
@@ -2015,16 +1999,16 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_connect_fails_on_incorrect_state() {
-        let (server, mut client, _) = test_init();
+    async fn test_connect_fails_on_incorrect_state(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
         server.connect(&mut client).await;
         let err = client.connect(0, None, Guid::ZERO).await.unwrap_err();
         assert!(matches!(err, ConnectError::InvalidState), "{:?}", err);
     }
 
     #[async_test]
-    async fn test_hot_add_remove() {
-        let (server, mut client, mut offer_recv) = test_init();
+    async fn test_hot_add_remove(driver: DefaultDriver) {
+        let (mut server, mut client, mut offer_recv) = test_init(&driver);
 
         server.connect(&mut client).await;
         let offer = protocol::OfferChannel {
@@ -2056,7 +2040,7 @@ mod tests {
         ));
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::RelIdReleased {
                 channel_id: ChannelId(5)
             })
@@ -2066,8 +2050,8 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_gpadl_success() {
-        let (server, mut client, _) = test_init();
+    async fn test_gpadl_success(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
         let mut channel = server.get_channel(&mut client).await;
         let recv = channel.request_send.call(
             ChannelRequest::Gpadl,
@@ -2079,7 +2063,7 @@ mod tests {
         );
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::with_data(
                 &protocol::GpadlHeader {
                     channel_id: ChannelId(0),
@@ -2108,7 +2092,7 @@ mod tests {
             .send(ChannelRequest::TeardownGpadl(GpadlId(1)));
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::GpadlTeardown {
                 channel_id: ChannelId(0),
                 gpadl_id: GpadlId(1),
@@ -2128,8 +2112,8 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_gpadl_fail() {
-        let (server, mut client, _) = test_init();
+    async fn test_gpadl_fail(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
         let recv = channel.request_send.call(
             ChannelRequest::Gpadl,
@@ -2141,7 +2125,7 @@ mod tests {
         );
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::with_data(
                 &protocol::GpadlHeader {
                     channel_id: ChannelId(0),
@@ -2167,8 +2151,8 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_gpadl_with_revoke() {
-        let (server, mut client, _offer_recv) = test_init();
+    async fn test_gpadl_with_revoke(driver: DefaultDriver) {
+        let (mut server, mut client, _offer_recv) = test_init(&driver);
         let mut channel = server.get_channel(&mut client).await;
         let channel_id = ChannelId(0);
         let gpadl_id = GpadlId(1);
@@ -2182,7 +2166,7 @@ mod tests {
         );
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::with_data(
                 &protocol::GpadlHeader {
                     channel_id,
@@ -2211,7 +2195,7 @@ mod tests {
             .send(ChannelRequest::TeardownGpadl(gpadl_id));
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::GpadlTeardown {
                 channel_id,
                 gpadl_id,
@@ -2228,7 +2212,7 @@ mod tests {
         assert_eq!(id, gpadl_id);
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::RelIdReleased { channel_id })
         );
 
@@ -2236,8 +2220,8 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_modify_connection() {
-        let (server, mut client, _) = test_init();
+    async fn test_modify_connection(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
         server.connect(&mut client).await;
         let call = client.access.client_request_send.call(
             ClientRequest::Modify,
@@ -2250,7 +2234,7 @@ mod tests {
         );
 
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::ModifyConnection {
                 child_to_parent_monitor_page_gpa: 5,
                 parent_to_child_monitor_page_gpa: 6,
@@ -2269,8 +2253,8 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_hvsock() {
-        let (server, mut client, _offer_recv) = test_init();
+    async fn test_hvsock(driver: DefaultDriver) {
+        let (mut server, mut client, _offer_recv) = test_init(&driver);
         server.connect(&mut client).await;
         let request = HvsockConnectRequest {
             service_id: Guid::new_random(),
@@ -2280,7 +2264,7 @@ mod tests {
 
         let resp = client.access().connect_hvsock(request);
         assert_eq!(
-            server.next().unwrap(),
+            server.next().await.unwrap(),
             OutgoingMessage::new(&protocol::TlConnectRequest2 {
                 base: protocol::TlConnectRequest {
                     service_id: request.service_id,
