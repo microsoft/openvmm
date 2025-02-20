@@ -7,7 +7,6 @@ use super::Hcl;
 use crate::protocol;
 use crate::protocol::hcl_run;
 use std::cell::UnsafeCell;
-use std::ptr::addr_of_mut;
 use zerocopy::IntoBytes;
 
 #[derive(Debug, Default)]
@@ -99,8 +98,8 @@ impl<'a> DeferredActionSlots<'a> {
         // SAFETY: this thread is the only one concurrently accessing the
         // action-related portions of the run structure.
         unsafe {
-            used = &mut *addr_of_mut!((*self.0.get()).vtl_ret_action_size);
-            buffer = &mut *addr_of_mut!((*self.0.get()).vtl_ret_actions);
+            used = &mut (*self.0.get()).vtl_ret_action_size;
+            buffer = &mut (*self.0.get()).vtl_ret_actions;
         }
         let offset = *used as usize;
         if let Some(buffer) = buffer.get_mut(offset..offset + action.len()) {

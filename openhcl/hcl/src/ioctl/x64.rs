@@ -188,7 +188,7 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
             } else {
                 Self {
                     reg_page: reg_page.as_ref().map(|x| x.as_ref()),
-                    cpu_context: &*(&raw const (*vp.run.as_ptr()).context).cast(),
+                    cpu_context: &*(&raw mut (*vp.run.as_ptr()).context).cast(),
                 }
             };
 

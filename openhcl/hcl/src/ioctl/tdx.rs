@@ -20,8 +20,6 @@ use memory_range::MemoryRange;
 use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
-use std::ptr::addr_of;
-use std::ptr::addr_of_mut;
 use tdcall::tdcall_vp_invgla;
 use tdcall::tdcall_vp_rd;
 use tdcall::tdcall_vp_wr;
@@ -84,7 +82,7 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
         // SAFETY: the VP context will not be concurrently accessed by the
         // processor while this VP is in VTL2. This is a TDX partition so the
         // context union should be interpreted as a `tdx_vp_context`.
-        unsafe { &*addr_of!((*self.run.get()).context).cast() }
+        unsafe { &*(&raw mut (*self.run.get()).context).cast() }
     }
 
     /// Gets a mutable reference to the TDX VP context that is unioned inside
@@ -93,7 +91,7 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
         // SAFETY: the VP context will not be concurrently accessed by the
         // processor while this VP is in VTL2. This is a TDX partition so the
         // context union should be interpreted as a `tdx_vp_context`.
-        unsafe { &mut *addr_of_mut!((*self.run.get()).context).cast() }
+        unsafe { &mut *(&raw mut (*self.run.get()).context).cast() }
     }
 
     /// Gets a reference to the TDX enter guest state.
