@@ -27,6 +27,7 @@ use guestmem::GuestMemory;
 use hv1_emulator::hv::GlobalHv;
 use hv1_emulator::hv::GlobalHvParams;
 use hv1_emulator::hv::ProcessorVtlHv;
+use hv1_emulator::hv::TlbFlushAccess;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_structs::VtlSet;
 use hvdef::HvDeliverabilityNotificationsRegister;
@@ -1435,10 +1436,17 @@ impl VtlPartition {
     }
 }
 
+/// WHP is responsible for managing the TLB.
+struct WhpNoOpTlbFlushAccess;
+
+impl TlbFlushAccess for WhpNoOpTlbFlushAccess {
+    fn flush(&mut self, _vtl: Vtl) {}
+}
+
 impl Hv1State {
     fn reset(&self) {
         match self {
-            Hv1State::Emulated(hv) => hv.reset(),
+            Hv1State::Emulated(hv) => hv.reset(&mut WhpNoOpTlbFlushAccess),
             Hv1State::Offloaded => {}
             Hv1State::Disabled => {}
         }

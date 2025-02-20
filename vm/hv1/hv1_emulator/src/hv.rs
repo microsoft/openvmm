@@ -73,9 +73,9 @@ impl MutableHvState {
         }
     }
 
-    fn reset(&mut self) {
+    fn reset(&mut self, tlb_access: &mut dyn TlbFlushAccess) {
         if let Some(p) = self.hypercall_protector.as_mut() {
-            p.disable_overlay(todo!());
+            p.disable_overlay(tlb_access);
         }
         self.hypercall = hvdef::hypercall::MsrHypercallContents::new();
         self.guest_os_id = hvdef::hypercall::HvGuestOsId::new();
@@ -128,9 +128,9 @@ impl GlobalHv {
     }
 
     /// Resets the global (but not per-processor) state.
-    pub fn reset(&self) {
+    pub fn reset(&self, tlb_access: &mut dyn TlbFlushAccess) {
         for state in self.vtl_mutable_state.iter() {
-            state.lock().reset();
+            state.lock().reset(tlb_access);
         }
         // There is no global synic state to reset, since the synic is per-VP.
     }
