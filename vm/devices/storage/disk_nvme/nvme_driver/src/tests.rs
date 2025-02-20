@@ -305,14 +305,15 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     backoff.back_off().await;
 
     // ====== SECOND DRIVER INIT =====
-    let _new_device = EmulatedDevice::new(new_nvme_ctrl, new_msi_x, mem.clone());
-    let mut new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, _new_device, &saved_state)
+    let mem_new = DeviceSharedMemory::new(base_len, payload_len);
+    let new_device = EmulatedDevice::new(new_nvme_ctrl, new_msi_x, mem_new.clone());
+    let mut new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, new_device, &saved_state)
         .await
         .unwrap();
 
 
     // ===== VERIFY RESTORE =====
-    let host_allocator = EmulatedDmaAllocator::new(mem.clone());
+    let host_allocator = EmulatedDmaAllocator::new(mem_new.clone());
     let verify_mem = DmaClient::attach_dma_buffer(&host_allocator, base_len, 0).unwrap();
     
     // Verify restore functions will panic if verification failed.
