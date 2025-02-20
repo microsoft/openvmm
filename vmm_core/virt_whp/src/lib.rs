@@ -1437,7 +1437,7 @@ impl VtlPartition {
 impl Hv1State {
     fn reset(&self) {
         match self {
-            Hv1State::Emulated(hv) => hv.reset(None),
+            Hv1State::Emulated(hv) => hv.reset([None, None].into()),
             Hv1State::Offloaded => {}
             Hv1State::Disabled => {}
         }

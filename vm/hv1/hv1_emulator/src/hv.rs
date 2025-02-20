@@ -121,9 +121,13 @@ impl GlobalHv {
     }
 
     /// Resets the global (but not per-processor) state.
-    pub fn reset(&self, mut overlay_access: Option<&mut dyn VtlProtectHypercallOverlay>) {
-        for state in self.vtl_mutable_state.iter() {
-            state.lock().reset(&mut overlay_access);
+    pub fn reset(
+        &self,
+        mut overlay_access: VtlArray<Option<&mut dyn VtlProtectHypercallOverlay>, 2>,
+    ) {
+        for (state, overlay_access) in self.vtl_mutable_state.iter().zip(overlay_access.iter_mut())
+        {
+            state.lock().reset(overlay_access);
         }
         // There is no global synic state to reset, since the synic is per-VP.
     }
