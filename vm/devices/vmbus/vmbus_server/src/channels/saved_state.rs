@@ -14,6 +14,7 @@ use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::FeatureFlags;
 use vmbus_core::protocol::GpadlId;
 use vmbus_core::protocol::Version;
+use vmbus_core::OutgoingMessage;
 use vmbus_ring::gparange;
 use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::monitor::MonitorId;
@@ -33,20 +34,24 @@ impl super::Server {
     pub fn restore(&mut self, saved: SavedState) -> Result<(), RestoreError> {
         tracing::trace!(?saved, "restoring channel state");
 
-        let saved = if let Some(saved) = saved.state {
-            saved
-        } else {
-            return Ok(());
-        };
+        if let Some(saved) = saved.state {
+            self.state = saved.connection.restore()?;
 
-        self.state = saved.connection.restore()?;
+            for saved_channel in saved.channels {
+                self.restore_one_channel(saved_channel)?;
+            }
 
-        for saved_channel in saved.channels {
-            self.restore_one_channel(saved_channel)?;
+            for saved_gpadl in saved.gpadls {
+                self.restore_one_gpadl(saved_gpadl)?;
+            }
         }
 
-        for saved_gpadl in saved.gpadls {
-            self.restore_one_gpadl(saved_gpadl)?;
+        if let Some(pending_messages) = saved.pending_messages {
+            self.pending_messages.reserve(pending_messages.len());
+            for msg in pending_messages {
+                self.pending_messages
+                    .push_back(msg.restore(&self.assigned_channels)?);
+            }
         }
 
         Ok(())
@@ -164,30 +169,10 @@ impl super::Server {
         }
     }
 
-    fn save_pending_messages(&self) -> Vec<QueuedMessage> {
+    fn save_pending_messages(&self) -> Vec<PendingMessage> {
         self.pending_messages
             .iter()
-            .map(|message| QueuedMessage {
-                message: message.message.data().to_owned(),
-                target: match message.target {
-                    super::MessageTarget::Default => MessageTarget::Default,
-                    super::MessageTarget::ReservedChannel(offer_id) => {
-                        MessageTarget::ReservedChannel(
-                            self.channels[offer_id]
-                                .info
-                                .expect("channel must be offered to be reserved")
-                                .channel_id
-                                .0,
-                        )
-                    }
-                    super::MessageTarget::Custom(target) => {
-                        MessageTarget::Custom(ConnectionTarget {
-                            vp: target.vp,
-                            sint: target.sint,
-                        })
-                    }
-                },
-            })
+            .map(|message| PendingMessage::save(message, &self.channels))
             .collect()
     }
 }
@@ -238,6 +223,11 @@ pub enum RestoreError {
 
     #[error(transparent)]
     ServerError(#[from] anyhow::Error),
+
+    #[error(
+        "reserved channel with ID {0} has a pending message but is missing from the saved state"
+    )]
+    MissingReservedChannel(u32),
 }
 
 #[derive(Debug, Protobuf, Clone)]
@@ -246,7 +236,7 @@ pub struct SavedState {
     #[mesh(1)]
     state: Option<ConnectedState>,
     #[mesh(2)]
-    pending_messages: Option<Vec<QueuedMessage>>,
+    pending_messages: Option<Vec<PendingMessage>>,
 }
 
 #[derive(Debug, Clone, Protobuf)]
@@ -1016,6 +1006,22 @@ struct ConnectionTarget {
     pub sint: u8,
 }
 
+impl ConnectionTarget {
+    fn save(value: &super::ConnectionTarget) -> Self {
+        Self {
+            vp: value.vp,
+            sint: value.sint,
+        }
+    }
+
+    fn restore(self) -> super::ConnectionTarget {
+        super::ConnectionTarget {
+            vp: self.vp,
+            sint: self.sint,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Protobuf, PartialEq, Eq)]
 #[mesh(package = "vmbus.server.channels")]
 enum MessageTarget {
@@ -1027,11 +1033,70 @@ enum MessageTarget {
     Custom(ConnectionTarget),
 }
 
+impl MessageTarget {
+    fn save(value: &super::MessageTarget, channels: &super::ChannelList) -> Self {
+        match value {
+            super::MessageTarget::Default => Self::Default,
+            super::MessageTarget::ReservedChannel(offer_id) => Self::ReservedChannel(
+                // Save the channel ID instead of the offer ID, because the offer ID may not be the
+                // same after restore.
+                channels[*offer_id]
+                    .info
+                    .expect("channel must be offered to be reserved")
+                    .channel_id
+                    .0,
+            ),
+            super::MessageTarget::Custom(target) => {
+                MessageTarget::Custom(ConnectionTarget::save(target))
+            }
+        }
+    }
+
+    fn restore(
+        self,
+        channels: &super::AssignedChannels,
+    ) -> Result<super::MessageTarget, RestoreError> {
+        let result = match self {
+            Self::Default => super::MessageTarget::Default,
+            Self::ReservedChannel(channel_id) => {
+                let offer_id = channels
+                    .get(ChannelId(channel_id))
+                    .ok_or(RestoreError::MissingReservedChannel(channel_id))?;
+                super::MessageTarget::ReservedChannel(offer_id)
+            }
+            Self::Custom(target) => super::MessageTarget::Custom(target.restore()),
+        };
+
+        Ok(result)
+    }
+}
+
 #[derive(Debug, Clone, Protobuf, PartialEq, Eq)]
 #[mesh(package = "vmbus.server.channels")]
-struct QueuedMessage {
+struct PendingMessage {
     #[mesh(1)]
     message: Vec<u8>,
     #[mesh(2)]
     target: MessageTarget,
+}
+
+impl PendingMessage {
+    fn save(value: &super::PendingMessage, channels: &super::ChannelList) -> Self {
+        Self {
+            message: value.message.data().to_owned(),
+            target: MessageTarget::save(&value.target, channels),
+        }
+    }
+
+    fn restore(
+        self,
+        channels: &super::AssignedChannels,
+    ) -> Result<super::PendingMessage, RestoreError> {
+        let result = super::PendingMessage {
+            message: OutgoingMessage::from_message(&self.message),
+            target: self.target.restore(channels)?,
+        };
+
+        Ok(result)
+    }
 }

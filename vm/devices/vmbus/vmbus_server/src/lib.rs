@@ -16,7 +16,6 @@ use anyhow::Context;
 use async_trait::async_trait;
 use channel_bitmap::ChannelBitmap;
 use channels::ChannelError;
-use channels::ConnectionTarget;
 pub use channels::InitiateContactRequest;
 use channels::InterruptPageError;
 use channels::MessageTarget;
@@ -676,7 +675,6 @@ enum ChannelState {
         guest_to_host_event: Arc<ChannelEvent>,
         reserved_guest_message_port: Option<Box<dyn GuestMessagePort>>,
     },
-    ClosingReserved(Box<dyn GuestMessagePort>),
     FailedOpen,
 }
 
@@ -799,35 +797,15 @@ impl ServerTask {
             .get_mut(&offer_id)
             .expect("channel still exists");
 
-        match &mut channel.state {
-            ChannelState::Open {
-                reserved_guest_message_port,
-                ..
-            } => {
-                // If the channel is reserved, the message port needs to remain available to send
-                // the closed response.
-                let mut reserved = false;
-                channel.state = if let Some(port) = reserved_guest_message_port.take() {
-                    reserved = true;
-                    ChannelState::ClosingReserved(port)
-                } else {
-                    ChannelState::Closed
-                };
-
+        match &channel.state {
+            ChannelState::Open { .. } => {
+                // If the channel is reserved, this destroys the message port. It will be recreated
+                // when the close response is sent. This prevents the need to keep the message port
+                // alive even if the close response couldn't be sent immediately.
+                channel.state = ChannelState::Closed;
                 self.server
                     .with_notifier(&mut self.inner)
                     .close_complete(offer_id);
-
-                if reserved {
-                    // Now the message port can be dropped.
-                    let channel = self
-                        .inner
-                        .channels
-                        .get_mut(&offer_id)
-                        .expect("channel still exists");
-
-                    channel.state = ChannelState::Closed;
-                }
             }
             ChannelState::FailedOpen => {
                 // Now that the device has processed the close request after open failed, we can
@@ -1483,35 +1461,6 @@ impl Notifier for ServerTaskInner {
         let done = self.reset_done.take().expect("must have requested reset");
         done.complete(());
     }
-
-    fn update_reserved_channel(
-        &mut self,
-        offer_id: OfferId,
-        target: ConnectionTarget,
-    ) -> Result<(), ChannelError> {
-        let channel = self
-            .channels
-            .get_mut(&offer_id)
-            .expect("channel does not exist");
-
-        let ChannelState::Open {
-            reserved_guest_message_port,
-            ..
-        } = &mut channel.state
-        else {
-            panic!("channel is not reserved");
-        };
-
-        // Destroy the old port before creating a new one.
-        *reserved_guest_message_port = None;
-        *reserved_guest_message_port = Some(
-            self.synic
-                .new_guest_message_port(self.redirect_vtl, target.vp, target.sint)
-                .map_err(ChannelError::HypervisorError)?,
-        );
-
-        Ok(())
-    }
 }
 
 impl ServerTaskInner {
@@ -1739,8 +1688,7 @@ impl ServerTaskInner {
                     ChannelState::Open {
                         reserved_guest_message_port: Some(message_port),
                         ..
-                    }
-                    | ChannelState::ClosingReserved(message_port) => message_port.as_mut(),
+                    } => message_port.as_mut(),
                     _ => unreachable!("channel is not reserved"),
                 }
             }
