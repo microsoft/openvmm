@@ -311,7 +311,7 @@ impl StorageBuilder {
                 .hypervisor
                 .with_vtl2
                 .as_ref()
-                .map_or(true, |c| c.vtl0_alias_map)
+                .is_none_or(|c| c.vtl0_alias_map)
             {
                 anyhow::bail!("must specify --vtl2 and --no-alias-map to offer disks to VTL2");
             }
@@ -357,7 +357,7 @@ impl StorageBuilder {
                 .hypervisor
                 .with_vtl2
                 .as_ref()
-                .map_or(true, |c| c.vtl0_alias_map)
+                .is_none_or(|c| c.vtl0_alias_map)
             {
                 anyhow::bail!("must specify --vtl2 and --no-alias-map to offer disks to VTL2");
             }

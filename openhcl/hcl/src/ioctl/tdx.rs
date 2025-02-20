@@ -398,7 +398,6 @@ impl ProcessorRunner<'_, Tdx> {
         gla_info: TdxGlaListInfo,
     ) -> Result<(), TdCallResult> {
         tdcall_vp_invgla(&mut MshvVtlTdcall(&self.hcl.mshv_vtl), gla_flags, gla_info)
-            .map(Into::into)
     }
 
     /// Gets the FPU state for the VP.

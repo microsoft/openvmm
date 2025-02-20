@@ -1135,10 +1135,7 @@ mod tests {
         }
 
         async fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError> {
-            assert!(self
-                .dep
-                .as_ref()
-                .map_or(true, |v| v.load(Ordering::Relaxed)));
+            assert!(self.dep.as_ref().is_none_or(|v| v.load(Ordering::Relaxed)));
 
             if self.support_saved_state {
                 let state: SavedState = state.parse()?;

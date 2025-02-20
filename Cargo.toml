@@ -627,6 +627,9 @@ suboptimal_flops = "warn"
 undocumented_unsafe_blocks = "warn"
 unnecessary_box_returns = "warn"
 
+# TODO: Remove this allow in Rust 1.86. See https://github.com/rust-lang/rust-clippy/pull/14115.
+precedence = "allow"
+
 # Possible future additions:
 #
 # useful, but _very_ tedious to fix
