@@ -1434,10 +1434,23 @@ impl VtlPartition {
     }
 }
 
+struct WhpNoVtlProtections;
+impl hv1_emulator::hv::VtlProtectHypercallOverlay for WhpNoVtlProtections {
+    fn change_overlay(&mut self, _gpn: u64) {}
+    fn disable_overlay(&mut self) {}
+}
+
 impl Hv1State {
     fn reset(&self) {
         match self {
-            Hv1State::Emulated(hv) => hv.reset([None, None].into()),
+            Hv1State::Emulated(hv) => hv.reset(
+                [
+                    &mut WhpNoVtlProtections
+                        as &mut dyn hv1_emulator::hv::VtlProtectHypercallOverlay,
+                    &mut WhpNoVtlProtections,
+                ]
+                .into(),
+            ),
             Hv1State::Offloaded => {}
             Hv1State::Disabled => {}
         }

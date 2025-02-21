@@ -70,10 +70,9 @@ impl MutableHvState {
         }
     }
 
-    fn reset(&mut self, overlay_access: &mut Option<&mut dyn VtlProtectHypercallOverlay>) {
-        if let Some(overlay_access) = overlay_access {
-            overlay_access.disable_overlay();
-        }
+    fn reset(&mut self, overlay_access: &mut dyn VtlProtectHypercallOverlay) {
+        overlay_access.disable_overlay();
+
         self.hypercall = hvdef::hypercall::MsrHypercallContents::new();
         self.guest_os_id = hvdef::hypercall::HvGuestOsId::new();
         self.reference_tsc = hvdef::HvRegisterReferenceTsc::new();
@@ -121,13 +120,10 @@ impl GlobalHv {
     }
 
     /// Resets the global (but not per-processor) state.
-    pub fn reset(
-        &self,
-        mut overlay_access: VtlArray<Option<&mut dyn VtlProtectHypercallOverlay>, 2>,
-    ) {
+    pub fn reset(&self, mut overlay_access: VtlArray<&mut dyn VtlProtectHypercallOverlay, 2>) {
         for (state, overlay_access) in self.vtl_mutable_state.iter().zip(overlay_access.iter_mut())
         {
-            state.lock().reset(overlay_access);
+            state.lock().reset(*overlay_access);
         }
         // There is no global synic state to reset, since the synic is per-VP.
     }
@@ -214,7 +210,7 @@ impl ProcessorVtlHv {
         &mut self,
         n: u32,
         v: u64,
-        overlay_access: Option<&mut dyn VtlProtectHypercallOverlay>,
+        overlay_access: &mut dyn VtlProtectHypercallOverlay,
     ) -> Result<(), MsrError> {
         match n {
             hvdef::HV_X64_MSR_GUEST_OS_ID => {
@@ -242,13 +238,9 @@ impl ProcessorVtlHv {
                         return Err(MsrError::InvalidAccess);
                     }
 
-                    if let Some(overlay_access) = overlay_access {
-                        overlay_access.change_overlay(hc.gpn());
-                    }
+                    overlay_access.change_overlay(hc.gpn());
                 } else if !hc.enable() {
-                    if let Some(overlay_access) = overlay_access {
-                        overlay_access.disable_overlay();
-                    }
+                    overlay_access.disable_overlay();
                 }
                 mutable.hypercall = hc;
             }
