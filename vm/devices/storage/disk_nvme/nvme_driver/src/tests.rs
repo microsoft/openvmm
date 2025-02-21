@@ -331,13 +331,14 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     }
 
     // ====== SECOND DRIVER INIT & VERIFY =====
-    let new_device = NvmeTestEmulatedDevice::new(new_nvme_ctrl, new_msi_x, mem_new.clone());
+
+    let new_device = EmulatedDevice::new(new_nvme_ctrl, new_msi_x, mem_new.clone());
     let mut new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, new_device, &saved_state)
         .await
         .unwrap();
 
     // Verify restore functions will panic if verification failed.
-    new_nvme_driver.verify_restore(&saved_state, mem_block).await;
+    new_nvme_driver.verify_restore(&saved_state, mem_block.clone()).await;
 }
 
 #[derive(Inspect)]

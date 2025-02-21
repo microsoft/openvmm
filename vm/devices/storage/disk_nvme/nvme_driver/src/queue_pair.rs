@@ -341,9 +341,6 @@ impl QueuePair {
     /// Input memory block should already be constructed from the offsets.
     #[cfg(test)]
     pub(crate) async fn verify_restore(&self, saved_state: &QueuePairSavedState, saved_mem: MemoryBlock) {
-        // Entire memory region is checked below. No need for the the handler to check it again.
-        let _ = self.issuer.send.call(Req::Verify, saved_state.handler_data.clone()).await;
-
         // `cancel` and `issuers` params are runtime parameters so we don't check underlying values.
         let mut saved_mem_data: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
         let mut self_mem_data: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
@@ -357,13 +354,12 @@ impl QueuePair {
             self.mem.read_at(pfn * PAGE_SIZE, &mut self_mem_data);
 
             for i in 0..PAGE_SIZE {
-                // assert_eq!(saved_mem_data[i], self_mem_data[i]);
-                if saved_mem_data[i] != self_mem_data[i] {
-                    println!("BYTES NOT THE SAME PFN={} ADDRESS={} LEFT={} RIGHT={}", pfn, i, saved_mem_data[i], self_mem_data[i]);
-                }
+                assert_eq!(saved_mem_data[i], self_mem_data[i]);
             }
         }
 
+        // Entire memory region checked above. No need to send it along with the verify call
+        let _ = self.issuer.send.call(Req::Verify, saved_state.handler_data.clone()).await;
         assert_eq!(saved_state.qid, self.qid);
         assert_eq!(saved_state.sq_entries, self.sq_entries);
         assert_eq!(saved_state.cq_entries, self.cq_entries);
