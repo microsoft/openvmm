@@ -97,6 +97,7 @@ const SINT: u8 = 2;
 pub const REDIRECT_SINT: u8 = 7;
 pub const REDIRECT_VTL: Vtl = Vtl::Vtl2;
 const SHARED_EVENT_CONNECTION_ID: u32 = 2;
+const VMBUS_MESSAGE_TYPE: u32 = 1;
 
 const MAX_CONCURRENT_HVSOCK_REQUESTS: usize = 16;
 
@@ -1037,25 +1038,14 @@ impl ServerTask {
             // Try to send any queued messages while the VM is running.
             // Borrowing all this state separately is needed because we can't borrow &self.inner
             // entirely inside the future.
-            let channels = &mut self.inner.channels;
-            let synic = self.inner.synic.as_ref();
-            let redirect_vtl = self.inner.redirect_vtl;
             let message_port = self.inner.message_port.as_mut();
             let mut send_pending_message = OptionFuture::from(
                 self.running
                     .then(|| {
                         self.server.pending_message().map(|msg| {
-                            tracing::trace!(msg = ?msg.message, "sending queued message");
+                            tracing::trace!(?msg, "sending queued message");
                             poll_fn(move |cx| {
-                                ServerTaskInner::poll_send_message(
-                                    cx,
-                                    message_port,
-                                    channels,
-                                    synic,
-                                    redirect_vtl,
-                                    &msg.message,
-                                    msg.target,
-                                )
+                                message_port.poll_post_message(cx, VMBUS_MESSAGE_TYPE, msg.data())
                             })
                             .fuse()
                         })
@@ -1435,18 +1425,54 @@ impl Notifier for ServerTaskInner {
     }
 
     fn send_message(&mut self, message: &OutgoingMessage, target: MessageTarget) -> bool {
+        let mut port_storage;
+        let port = match target {
+            MessageTarget::Default => self.message_port.as_mut(),
+            MessageTarget::ReservedChannel(offer_id) => {
+                let channel = self
+                    .channels
+                    .get_mut(&offer_id)
+                    .expect("channel does not exist");
+                match &mut channel.state {
+                    ChannelState::Open {
+                        reserved_guest_message_port: Some(message_port),
+                        ..
+                    } => message_port.as_mut(),
+                    _ => unreachable!("channel is not reserved"),
+                }
+            }
+            MessageTarget::Custom(target) => {
+                port_storage = match self.synic.new_guest_message_port(
+                    self.redirect_vtl,
+                    target.vp,
+                    target.sint,
+                ) {
+                    Ok(port) => port,
+                    Err(err) => {
+                        tracing::error!(
+                            ?err,
+                            ?self.redirect_vtl,
+                            ?target,
+                            "could not create message port"
+                        );
+
+                        return true;
+                    }
+                };
+                port_storage.as_mut()
+            }
+        };
+
         // If this returns Pending, the channels module will queue the message and the ServerTask
         // main loop will try to send it again later.
-        Self::poll_send_message(
-            &mut std::task::Context::from_waker(noop_waker_ref()),
-            self.message_port.as_mut(),
-            &mut self.channels,
-            self.synic.as_ref(),
-            self.redirect_vtl,
-            message,
-            target,
+        matches!(
+            port.poll_post_message(
+                &mut std::task::Context::from_waker(noop_waker_ref()),
+                VMBUS_MESSAGE_TYPE,
+                message.data()
+            ),
+            Poll::Ready(())
         )
-        .is_ready()
     }
 
     fn notify_hvsock(&mut self, request: &HvsockConnectRequest) {
@@ -1671,50 +1697,6 @@ impl ServerTaskInner {
         }
 
         Ok(())
-    }
-
-    fn poll_send_message(
-        cx: &mut std::task::Context<'_>,
-        message_port: &mut dyn GuestMessagePort,
-        channels: &mut HashMap<OfferId, Channel>,
-        synic: &dyn SynicPortAccess,
-        redirect_vtl: Vtl,
-        message: &OutgoingMessage,
-        target: MessageTarget,
-    ) -> Poll<()> {
-        let mut port_storage;
-        let port = match target {
-            MessageTarget::Default => message_port,
-            MessageTarget::ReservedChannel(offer_id) => {
-                let channel = channels.get_mut(&offer_id).expect("channel does not exist");
-                match &mut channel.state {
-                    ChannelState::Open {
-                        reserved_guest_message_port: Some(message_port),
-                        ..
-                    } => message_port.as_mut(),
-                    _ => unreachable!("channel is not reserved"),
-                }
-            }
-            MessageTarget::Custom(target) => {
-                port_storage =
-                    match synic.new_guest_message_port(redirect_vtl, target.vp, target.sint) {
-                        Ok(port) => port,
-                        Err(err) => {
-                            tracing::error!(
-                                ?err,
-                                ?redirect_vtl,
-                                ?target,
-                                "could not create message port"
-                            );
-                            return Poll::Ready(());
-                        }
-                    };
-                port_storage.as_mut()
-            }
-        };
-
-        const VMBUS_MESSAGE_TYPE: u32 = 1;
-        port.poll_post_message(cx, VMBUS_MESSAGE_TYPE, message.data())
     }
 }
 

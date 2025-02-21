@@ -14,7 +14,6 @@ use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::FeatureFlags;
 use vmbus_core::protocol::GpadlId;
 use vmbus_core::protocol::Version;
-use vmbus_core::OutgoingMessage;
 use vmbus_ring::gparange;
 use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::monitor::MonitorId;
@@ -46,13 +45,12 @@ impl super::Server {
             }
         }
 
-        if let Some(pending_messages) = saved.pending_messages {
-            self.pending_messages.reserve(pending_messages.len());
-            for msg in pending_messages {
-                self.pending_messages
-                    .push_back(msg.restore(&self.assigned_channels)?);
-            }
-        }
+        self.pending_messages.0.extend(
+            saved
+                .pending_messages
+                .into_iter()
+                .map(OutgoingMessage::restore),
+        );
 
         Ok(())
     }
@@ -140,7 +138,7 @@ impl super::Server {
             None => {
                 return SavedState {
                     state: None,
-                    pending_messages: Some(self.save_pending_messages()),
+                    pending_messages: self.save_pending_messages(),
                 }
             }
         };
@@ -165,14 +163,15 @@ impl super::Server {
                 channels,
                 gpadls,
             }),
-            pending_messages: Some(self.save_pending_messages()),
+            pending_messages: self.save_pending_messages(),
         }
     }
 
-    fn save_pending_messages(&self) -> Vec<PendingMessage> {
+    fn save_pending_messages(&self) -> Vec<OutgoingMessage> {
         self.pending_messages
+            .0
             .iter()
-            .map(|message| PendingMessage::save(message, &self.channels))
+            .map(OutgoingMessage::save)
             .collect()
     }
 }
@@ -236,7 +235,7 @@ pub struct SavedState {
     #[mesh(1)]
     state: Option<ConnectedState>,
     #[mesh(2)]
-    pending_messages: Option<Vec<PendingMessage>>,
+    pending_messages: Vec<OutgoingMessage>,
 }
 
 #[derive(Debug, Clone, Protobuf)]
@@ -999,104 +998,14 @@ enum GpadlState {
 
 #[derive(Debug, Clone, Protobuf, PartialEq, Eq)]
 #[mesh(package = "vmbus.server.channels")]
-struct ConnectionTarget {
-    #[mesh(1)]
-    pub vp: u32,
-    #[mesh(2)]
-    pub sint: u8,
-}
+struct OutgoingMessage(Vec<u8>);
 
-impl ConnectionTarget {
-    fn save(value: &super::ConnectionTarget) -> Self {
-        Self {
-            vp: value.vp,
-            sint: value.sint,
-        }
+impl OutgoingMessage {
+    fn save(value: &vmbus_core::OutgoingMessage) -> Self {
+        Self(value.data().to_vec())
     }
 
-    fn restore(self) -> super::ConnectionTarget {
-        super::ConnectionTarget {
-            vp: self.vp,
-            sint: self.sint,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Protobuf, PartialEq, Eq)]
-#[mesh(package = "vmbus.server.channels")]
-enum MessageTarget {
-    #[mesh(1)]
-    Default,
-    #[mesh(2)]
-    ReservedChannel(u32),
-    #[mesh(3)]
-    Custom(ConnectionTarget),
-}
-
-impl MessageTarget {
-    fn save(value: &super::MessageTarget, channels: &super::ChannelList) -> Self {
-        match value {
-            super::MessageTarget::Default => Self::Default,
-            super::MessageTarget::ReservedChannel(offer_id) => Self::ReservedChannel(
-                // Save the channel ID instead of the offer ID, because the offer ID may not be the
-                // same after restore.
-                channels[*offer_id]
-                    .info
-                    .expect("channel must be offered to be reserved")
-                    .channel_id
-                    .0,
-            ),
-            super::MessageTarget::Custom(target) => {
-                MessageTarget::Custom(ConnectionTarget::save(target))
-            }
-        }
-    }
-
-    fn restore(
-        self,
-        channels: &super::AssignedChannels,
-    ) -> Result<super::MessageTarget, RestoreError> {
-        let result = match self {
-            Self::Default => super::MessageTarget::Default,
-            Self::ReservedChannel(channel_id) => {
-                let offer_id = channels
-                    .get(ChannelId(channel_id))
-                    .ok_or(RestoreError::MissingReservedChannel(channel_id))?;
-                super::MessageTarget::ReservedChannel(offer_id)
-            }
-            Self::Custom(target) => super::MessageTarget::Custom(target.restore()),
-        };
-
-        Ok(result)
-    }
-}
-
-#[derive(Debug, Clone, Protobuf, PartialEq, Eq)]
-#[mesh(package = "vmbus.server.channels")]
-struct PendingMessage {
-    #[mesh(1)]
-    message: Vec<u8>,
-    #[mesh(2)]
-    target: MessageTarget,
-}
-
-impl PendingMessage {
-    fn save(value: &super::PendingMessage, channels: &super::ChannelList) -> Self {
-        Self {
-            message: value.message.data().to_owned(),
-            target: MessageTarget::save(&value.target, channels),
-        }
-    }
-
-    fn restore(
-        self,
-        channels: &super::AssignedChannels,
-    ) -> Result<super::PendingMessage, RestoreError> {
-        let result = super::PendingMessage {
-            message: OutgoingMessage::from_message(&self.message),
-            target: self.target.restore(channels)?,
-        };
-
-        Ok(result)
+    fn restore(self) -> vmbus_core::OutgoingMessage {
+        vmbus_core::OutgoingMessage::from_message(&self.0)
     }
 }
