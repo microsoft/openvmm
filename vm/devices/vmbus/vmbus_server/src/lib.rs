@@ -1904,6 +1904,7 @@ mod tests {
     use pal_async::driver::SpawnDriver;
     use pal_async::timer::Instant;
     use pal_async::timer::PolledTimer;
+    use pal_async::DefaultDriver;
     use parking_lot::Mutex;
     use protocol::UserDefinedData;
     use std::time::Duration;
@@ -2134,7 +2135,7 @@ mod tests {
     }
 
     impl TestEnv {
-        fn new(spawner: impl SpawnDriver + 'static) -> Self {
+        fn new(spawner: DefaultDriver) -> Self {
             let spawner: Arc<dyn SpawnDriver> = Arc::new(spawner);
             let (message_send, message_recv) = mesh::channel();
             let synic = Arc::new(MockSynic::new(message_send, Arc::clone(&spawner)));
@@ -2295,7 +2296,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_save_restore(spawner: impl SpawnDriver + 'static) {
+    async fn test_save_restore(spawner: DefaultDriver) {
         // Most save/restore state is tested in mod channels::tests; this test specifically checks
         // that ServerTaskInner correctly handles some aspects of the save/restore.
         //
@@ -2351,7 +2352,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_confidential_connection(spawner: impl SpawnDriver + 'static) {
+    async fn test_confidential_connection(spawner: DefaultDriver) {
         let mut env = TestEnv::new(spawner);
         // Add regular bus child channels, one of which supports confidential external memory.
         let mut channel = env.offer(1, false).await;
@@ -2441,7 +2442,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_confidential_channels_unsupported(spawner: impl SpawnDriver + 'static) {
+    async fn test_confidential_channels_unsupported(spawner: DefaultDriver) {
         let mut env = TestEnv::new(spawner);
         let mut channel = env.offer(1, false).await;
         let mut channel2 = env.offer(2, true).await;
@@ -2465,7 +2466,7 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_confidential_channels_untrusted(spawner: impl SpawnDriver + 'static) {
+    async fn test_confidential_channels_untrusted(spawner: DefaultDriver) {
         let mut env = TestEnv::new(spawner);
         let mut channel = env.offer(1, false).await;
         let mut channel2 = env.offer(2, true).await;
