@@ -225,14 +225,33 @@ impl DeviceSharedMemory {
         })
     }
 
-    // TODO: [nvme-keepalive-testing] 
-    // This is only a stop-gap until we can swap out the back end of nvme tests to use real memory
-    pub fn alloc_specific(&self, len: usize, base_pfn: u64) -> Option<DmaBuffer>{
+    // Allocated specific pages that are requested for by base_pfn and length. Function will fail
+    // if those pages have already been allocated.
+    pub fn alloc_specific(&self, len: usize, base_pfn: usize) -> Option<DmaBuffer>{
         assert!(len % PAGE_SIZE == 0);
-        let count = len / PAGE_SIZE;
-        let start_page = base_pfn as usize;
 
-        let pages = (start_page..start_page + count).map(|p| p as u64).collect();
+        let count = len / PAGE_SIZE;
+        if base_pfn + count > self.len {
+            return None;  // Not enough space
+        }
+
+        // Iterate over each requested page to verify if it is unmapped.
+        {
+            let mut state = self.state.lock();
+            let mut i = base_pfn;
+            while i < base_pfn + count {
+                if state[i / 64] & 1 << (i % 64) != 0 {
+                    return None;
+                }
+                i += 1;
+            }
+            // Create a mapping for the requested pfns to mark them used
+            for j in base_pfn..i {
+                state[j / 64] |= 1 << (j % 64);
+            }
+        };
+
+        let pages = (base_pfn..base_pfn + count).map(|p| p as u64).collect();
         Some(DmaBuffer {
             mem: self.mem.clone(),
             pfns: pages,
@@ -301,7 +320,7 @@ impl DmaClient for EmulatedDmaAllocator {
     }
 
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock> {
-        let memory = MemoryBlock::new( self.shared_mem.alloc_specific(len, base_pfn).context("could not alloc specific. out of memory")?);
+        let memory = MemoryBlock::new( self.shared_mem.alloc_specific(len, base_pfn.try_into().unwrap()).context("could not alloc specific. out of memory")?);
         Ok(memory)
     }
 }

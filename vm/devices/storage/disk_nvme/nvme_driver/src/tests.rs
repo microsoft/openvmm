@@ -23,6 +23,7 @@ use user_driver::emulated::EmulatedDevice;
 use user_driver::emulated::EmulatedDmaAllocator;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
+use user_driver::memory::PAGE_SIZE;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
@@ -264,15 +265,20 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
         .unwrap();
 
     // ===== FIRST DRIVER INIT =====
-    let device = EmulatedDevice::new(nvme_ctrl, msi_x, mem.clone());
-    let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
-        .await
-        .unwrap();
-    let _ns1 = nvme_driver.namespace(1).await.unwrap();
-    let saved_state = nvme_driver.save().await.unwrap();
+    let saved_state = {
+        let device = EmulatedDevice::new(nvme_ctrl, msi_x, mem.clone());
+        let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
+            .await
+            .unwrap();
+        let _ns1 = nvme_driver.namespace(1).await.unwrap();
+        let saved = nvme_driver.save().await.unwrap();
 
-    // Tear down the original driver to kill the underlying tasks.
-    nvme_driver.shutdown().await;
+        // Tear down the original driver to kill the underlying tasks.
+        nvme_driver.shutdown().await;
+        saved
+    };
+
+    
     // As of today we do not save namespace data to avoid possible conflict
     // when namespace has changed during servicing.
     // TODO: Review and re-enable in future.
@@ -305,20 +311,33 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     // Wait for CSTS.RDY to set.
     backoff.back_off().await;
 
-    // ====== SECOND DRIVER INIT =====
-    let mem_new = DeviceSharedMemory::new(base_len, payload_len);
-    let new_device = EmulatedDevice::new(new_nvme_ctrl, new_msi_x, mem_new.clone());
+    // ===== COPY MEMORY =====
+    let mem_new= DeviceSharedMemory::new(base_len, payload_len);
+    let host_allocator = EmulatedDmaAllocator::new(mem.clone());
+    let mem_block= DmaClient::attach_dma_buffer(&host_allocator, base_len, 0).unwrap();
+    {
+        // Host allocator to new memory should be dropped so mem it can be consumed by the
+        // new driver.
+        let host_allocator_new_mem = EmulatedDmaAllocator::new(mem_new.clone());
+        let mem_block_new_mem= DmaClient::attach_dma_buffer(&host_allocator_new_mem, base_len, 0).unwrap();
+
+        let mut data_transfer_buffer: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
+
+        let total_pages = (base_len)/PAGE_SIZE;
+        for  pfn in 0..total_pages {
+            mem_block.read_at(pfn * PAGE_SIZE, &mut data_transfer_buffer);
+            mem_block_new_mem.write_at(pfn * PAGE_SIZE, &data_transfer_buffer);
+        }
+    }
+
+    // ====== SECOND DRIVER INIT & VERIFY =====
+    let new_device = NvmeTestEmulatedDevice::new(new_nvme_ctrl, new_msi_x, mem_new.clone());
     let mut new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, new_device, &saved_state)
         .await
         .unwrap();
 
-
-    // ===== VERIFY RESTORE =====
-    let host_allocator = EmulatedDmaAllocator::new(mem_new.clone());
-    let verify_mem = DmaClient::attach_dma_buffer(&host_allocator, base_len, 0).unwrap();
-    
     // Verify restore functions will panic if verification failed.
-    new_nvme_driver.verify_restore(&saved_state, verify_mem).await;
+    new_nvme_driver.verify_restore(&saved_state, mem_block).await;
 }
 
 #[derive(Inspect)]

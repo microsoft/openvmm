@@ -720,7 +720,8 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             }
             task.start();
         } else {
-            panic!("task cannot be None() after restore");
+            // driver should be enabled during restore so task cannot be None.
+            panic!("task cannot be None after restore");
         }
 
         assert_eq!(saved_state.device_id, self.device_id);
