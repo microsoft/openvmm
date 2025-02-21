@@ -3,6 +3,7 @@
 
 //! Gets the Github workflow id for a given commit hash
 
+use anyhow::anyhow;
 use flowey::node::prelude::*;
 
 flowey_request! {
@@ -74,22 +75,44 @@ impl SimpleFlowNode for Node {
                         --jq .[].databaseId"
                     )
                     .read()
+                    .map_err(|e| anyhow!(e))
+                };
+
+                let is_empty = |action_id: &Result<String, anyhow::Error>| {
+                    action_id
+                        .as_ref()
+                        .ok()
+                        .map_or(false, |s| s.trim().is_empty())
                 };
 
                 let mut github_commit_hash = github_commit_hash.clone();
                 let mut action_id = get_action_id(github_commit_hash.clone());
                 let mut loop_count = 0;
 
+                if is_empty(&action_id) {
+                    action_id = Err(anyhow!("action id is empty"));
+                }
+
                 // CI may not have finished the build for the merge base, so loop through commits
                 // until we find a finished build or fail after 5 attempts
                 while let Err(ref e) = action_id {
+                    println!(
+                        "Unable to get action id for commit {}, trying again",
+                        github_commit_hash
+                    );
+
                     if loop_count > 4 {
-                        anyhow::bail!("Failed to get action id after 5 attempts: {}", e);
+                        anyhow::bail!("Failed to get action id for after 5 attempts: {}", e);
                     }
 
                     github_commit_hash =
                         xshell::cmd!(sh, "git rev-parse {github_commit_hash}^").read()?;
                     action_id = get_action_id(github_commit_hash.clone());
+
+                    if is_empty(&action_id) {
+                        action_id = Err(anyhow!("action id is empty"));
+                    }
+
                     loop_count += 1;
                 }
 
