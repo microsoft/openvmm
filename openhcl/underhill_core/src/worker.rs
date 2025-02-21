@@ -22,6 +22,7 @@ use crate::dispatch::LoadedVm;
 use crate::dispatch::LoadedVmNetworkSettings;
 use crate::dma_manager::DmaClientSpawner;
 use crate::dma_manager::GlobalDmaManager;
+use crate::dma_manager::LowerVtlPermissionPolicy;
 use crate::emuplat::firmware::UnderhillLogger;
 use crate::emuplat::firmware::UnderhillVsmConfig;
 use crate::emuplat::framebuffer::FramebufferRemoteControl;
@@ -747,7 +748,10 @@ impl UhVmNetworkSettings {
             .unwrap_or(MAX_SUBCHANNELS_PER_VNIC)
             .min(vps_count as u16);
 
-        let dma_client = dma_client_spawner.create_client(format!("nic_{}", nic_config.pci_id))?;
+        let dma_client = dma_client_spawner.create_client(
+            format!("nic_{}", nic_config.pci_id),
+            LowerVtlPermissionPolicy::Default,
+        )?;
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
             nic_config.instance_id,
@@ -1497,59 +1501,26 @@ async fn new_underhill_vm(
             .expect("isolated VMs should have shared memory")
     };
 
-    let mut shared_vis_pages_pool = if shared_pool_size != 0 {
+    let dma_manager = GlobalDmaManager::new(
+        &shared_pool.iter().map(|r| r.range).collect::<Vec<_>>(),
+        &runtime_params
+            .private_pool_ranges()
+            .iter()
+            .map(|r| r.range)
+            .collect::<Vec<_>>(),
+        measured_vtl2_info
+            .vtom_offset_bit
+            .map(|bit| 1 << bit)
+            .unwrap_or(0),
+    )
+    .context("failed to create global dma manager")?;
+
+    if let Some(dma_manager_state) = servicing_state.dma_manager_state.flatten() {
         use vmcore::save_restore::SaveRestore;
-
-        let mut pool = PagePool::new(
-            &shared_pool.iter().map(|r| r.range).collect::<Vec<_>>(),
-            HclMapper::new_shared(
-                measured_vtl2_info
-                    .vtom_offset_bit
-                    .map(|bit| 1 << bit)
-                    .unwrap_or(0),
-            )
-            .context("failed to create hcl mapper")?,
-        )
-        .context("failed to create shared vis page pool")?;
-
-        if let Some(pool_state) = servicing_state.shared_pool_state.flatten() {
-            pool.restore(pool_state)
-                .context("failed to restore shared vis page pool")?;
-        }
-
-        Some(pool)
-    } else {
-        // There should be no saved state for the private pool. If there is, the
-        // memory layout & shared pool size did not match the previous openhcl
-        // instance.
-        if servicing_state.shared_pool_state.flatten().is_some() {
-            anyhow::bail!("shared pool state when shared pool was not configured");
-        }
-
-        None
-    };
-
-    // Enable the private pool which supports persisting ranges across servicing
-    // for DMA devices that support save restore.
-    let mut private_pool = if !runtime_params.private_pool_ranges().is_empty() {
-        use vmcore::save_restore::SaveRestore;
-
-        let ranges = runtime_params.private_pool_ranges();
-        let mut pool = PagePool::new(
-            &ranges.iter().map(|r| r.range).collect::<Vec<_>>(),
-            HclMapper::new_private().context("failed to create hcl mapper")?,
-        )
-        .context("failed to create private pool")?;
-
-        if let Some(pool_state) = servicing_state.private_pool_state.flatten() {
-            pool.restore(pool_state)
-                .context("failed to restore private pool")?;
-        }
-
-        Some(pool)
-    } else {
-        None
-    };
+        dma_manager
+            .restore(dma_manager_state)
+            .context("failed to restore global dma manager")?;
+    }
 
     // Test with the highest VTL for which we have a GuestMemory object
     let highest_vtl_gm = gm.vtl1().unwrap_or(gm.vtl0());
@@ -1586,6 +1557,13 @@ async fn new_underhill_vm(
     }
 
     // Set the gpa allocator to GET that is required by the attestation message.
+    //
+
+    get_client.set_gpa_allocator(
+        dma_manager
+            .new_dma_client("get", LowerVtlPermissionPolicy::Vtl0)
+            .context("get dma client")?,
+    );
     //
     // Note that the share visibility pool takes precedence, as when isolated
     // shared memory must be used.
@@ -1893,7 +1871,6 @@ async fn new_underhill_vm(
         },
     );
 
-    let dma_manager = GlobalDmaManager::new(vfio_dma_buffer_spawner);
     let nvme_manager = if env_cfg.nvme_vfio {
         let save_restore_supported = env_cfg.nvme_keep_alive && private_pool_spawner_available;
 
@@ -2972,22 +2949,9 @@ async fn new_underhill_vm(
     )
     .context("failed to create partition unit")?;
 
-    // Finalize the shared visibility pool. For now, allow leaking as pool users
-    // do not support restoring allocations.
-    shared_vis_pages_pool
-        .as_mut()
-        .map(|pool| pool.validate_restore(true))
-        .transpose()
-        .context("failed to validate restore for shared visibility pool")?;
-
-    // Finalize the private pool. This should be only used by devices that
-    // support restoring their allocations, so there should be no unmatched
-    // allocations.
-    private_pool
-        .as_mut()
-        .map(|pool| pool.validate_restore(false))
-        .transpose()
-        .context("failed to validate restore for private pool")?;
+    dma_manager
+        .validate_restore()
+        .context("failed to validate restore for dma manager")?;
 
     // Start the VP tasks on the thread pool.
     crate::vp::spawn_vps(tp, vps, vp_runners, &chipset, isolation)
@@ -3059,8 +3023,6 @@ async fn new_underhill_vm(
         control_send,
 
         _periodic_telemetry_task: periodic_telemetry_task,
-        shared_vis_pool: shared_vis_pages_pool,
-        private_pool,
         nvme_keep_alive: env_cfg.nvme_keep_alive,
         test_configuration: env_cfg.test_configuration,
         dma_manager,

@@ -8,6 +8,7 @@ pub use state::*;
 use crate::worker::FirmwareType;
 
 mod state {
+    use crate::dma_manager::save_restore::GlobalDmaManagerState;
     use mesh::payload::Protobuf;
     use state_unit::SavedStateUnit;
     use vmcore::save_restore::SaveRestore;
@@ -76,12 +77,9 @@ mod state {
         /// NVMe saved state.
         #[mesh(10000)]
         pub nvme_state: Option<NvmeSavedState>,
-        /// Shared pool information.
+        /// Dma manager state
         #[mesh(10001)]
-        pub shared_pool_state: Option<page_pool_alloc::save_restore::PagePoolState>,
-        /// Private pool information.
-        #[mesh(10002)]
-        pub private_pool_state: Option<page_pool_alloc::save_restore::PagePoolState>,
+        pub dma_manager_state: Option<GlobalDmaManagerState>,
     }
 
     #[derive(Protobuf)]
@@ -129,6 +127,7 @@ impl From<Firmware> for FirmwareType {
 #[allow(clippy::option_option)]
 pub mod transposed {
     use super::*;
+    use crate::dma_manager::save_restore::GlobalDmaManagerState;
     use vmcore::save_restore::SaveRestore;
 
     /// A transposed `Option<ServicingInitState>`, where each field of
@@ -145,8 +144,7 @@ pub mod transposed {
         )>,
         pub overlay_shutdown_device: Option<bool>,
         pub nvme_state: Option<Option<NvmeSavedState>>,
-        pub shared_pool_state: Option<Option<page_pool_alloc::save_restore::PagePoolState>>,
-        pub private_pool_state: Option<Option<page_pool_alloc::save_restore::PagePoolState>>,
+        pub dma_manager_state: Option<Option<GlobalDmaManagerState>>,
     }
 
     /// A transposed `Option<EmuplatSavedState>`, where each field of
@@ -175,8 +173,7 @@ pub mod transposed {
                     vmgs,
                     overlay_shutdown_device,
                     nvme_state,
-                    shared_pool_state,
-                    private_pool_state,
+                    dma_manager_state,
                 } = state;
 
                 OptionServicingInitState {
@@ -191,8 +188,7 @@ pub mod transposed {
                     vmgs: Some(vmgs),
                     overlay_shutdown_device: Some(overlay_shutdown_device),
                     nvme_state: Some(nvme_state),
-                    shared_pool_state: Some(shared_pool_state),
-                    private_pool_state: Some(private_pool_state),
+                    dma_manager_state: Some(dma_manager_state),
                 }
             } else {
                 OptionServicingInitState::default()

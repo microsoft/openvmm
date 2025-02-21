@@ -4696,6 +4696,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "openhcl_dma_manager"
+version = "0.0.0"
+
+[[package]]
 name = "openssl"
 version = "0.10.70"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7219,6 +7223,7 @@ dependencies = [
  "nvme_driver",
  "nvme_resources",
  "openhcl_attestation_protocol",
+ "openhcl_dma_manager",
  "page_pool_alloc",
  "pal",
  "pal_async",

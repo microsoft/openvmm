@@ -5,6 +5,10 @@
 //! global manager owns the regions used to allocate DMA buffers and provides
 //! clients with access to these buffers.
 
+#![cfg(target_os = "linux")]
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
 use anyhow::Context;
 use hcl_mapper::HclMapper;
 use inspect::Inspect;

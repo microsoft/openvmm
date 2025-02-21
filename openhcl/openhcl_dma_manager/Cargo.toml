@@ -1,0 +1,9 @@
+[package]
+name = "openhcl_dma_manager"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

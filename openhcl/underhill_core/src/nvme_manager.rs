@@ -5,6 +5,7 @@
 //! VFIO driver. Keeps track of all the NVMe drivers.
 
 use crate::dma_manager::DmaClientSpawner;
+use crate::dma_manager::LowerVtlPermissionPolicy;
 use crate::nvme_manager::save_restore::NvmeManagerSavedState;
 use crate::nvme_manager::save_restore::NvmeSavedDiskConfig;
 use crate::servicing::NvmeSavedState;
@@ -289,7 +290,10 @@ impl NvmeManagerWorker {
             hash_map::Entry::Vacant(entry) => {
                 let dma_client = self
                     .dma_client_spawner
-                    .create_client(format!("nvme_{}", pci_id))
+                    .create_client(
+                        format!("nvme_{}", pci_id),
+                        LowerVtlPermissionPolicy::Default,
+                    )
                     .map_err(InnerError::DmaClient)?;
 
                 let device = VfioDevice::new(&self.driver_source, entry.key(), dma_client)
@@ -349,9 +353,11 @@ impl NvmeManagerWorker {
         for disk in &saved_state.nvme_disks {
             let pci_id = disk.pci_id.clone();
 
-            let dma_client = self
-                .dma_client_spawner
-                .create_client(format!("nvme_{}", pci_id))?;
+            let dma_client = self.dma_client_spawner.create_client(
+                format!("nvme_{}", pci_id),
+                LowerVtlPermissionPolicy::Default,
+            )?;
+
             // This code can wait on each VFIO device until it is arrived.
             // A potential optimization would be to delay VFIO operation
             // until it is ready, but a redesign of VfioDevice is needed.
