@@ -16,6 +16,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use channel_bitmap::ChannelBitmap;
 use channels::ChannelError;
+use channels::ConnectionTarget;
 pub use channels::InitiateContactRequest;
 use channels::InterruptPageError;
 use channels::MessageTarget;
@@ -659,6 +660,13 @@ struct Channel {
     gpadls: Arc<GpadlMap>,
     guest_event_port: Box<dyn GuestEventPort>,
     flags: protocol::OfferFlags,
+    // A channel can be reserved no matter what state it is in.
+    reserved_state: ReservedState,
+}
+
+struct ReservedState {
+    message_port: Option<Box<dyn GuestMessagePort>>,
+    target: ConnectionTarget,
 }
 
 enum ChannelState {
@@ -674,7 +682,6 @@ enum ChannelState {
         monitor: Option<Box<dyn Send>>,
         host_to_guest_interrupt: Interrupt,
         guest_to_host_event: Arc<ChannelEvent>,
-        reserved_guest_message_port: Option<Box<dyn GuestMessagePort>>,
     },
     FailedOpen,
 }
@@ -713,6 +720,10 @@ impl ServerTask {
                 guest_event_port,
                 seq: id,
                 flags,
+                reserved_state: ReservedState {
+                    message_port: None,
+                    target: ConnectionTarget { vp: !0, sint: 0 },
+                },
             },
         );
 
@@ -798,11 +809,8 @@ impl ServerTask {
             .get_mut(&offer_id)
             .expect("channel still exists");
 
-        match &channel.state {
+        match &mut channel.state {
             ChannelState::Open { .. } => {
-                // If the channel is reserved, this destroys the message port. It will be recreated
-                // when the close response is sent. This prevents the need to keep the message port
-                // alive even if the close response couldn't be sent immediately.
                 channel.state = ChannelState::Closed;
                 self.server
                     .with_notifier(&mut self.inner)
@@ -1428,17 +1436,12 @@ impl Notifier for ServerTaskInner {
         let mut port_storage;
         let port = match target {
             MessageTarget::Default => self.message_port.as_mut(),
-            MessageTarget::ReservedChannel(offer_id) => {
-                let channel = self
-                    .channels
-                    .get_mut(&offer_id)
-                    .expect("channel does not exist");
-                match &mut channel.state {
-                    ChannelState::Open {
-                        reserved_guest_message_port: Some(message_port),
-                        ..
-                    } => message_port.as_mut(),
-                    _ => unreachable!("channel is not reserved"),
+            MessageTarget::ReservedChannel(offer_id, target) => {
+                if let Some(port) = self.get_reserved_channel_message_port(offer_id, target) {
+                    port.as_mut()
+                } else {
+                    // No way to send the message.
+                    return true;
                 }
             }
             MessageTarget::Custom(target) => {
@@ -1490,6 +1493,15 @@ impl Notifier for ServerTaskInner {
         let done = self.reset_done.take().expect("must have requested reset");
         done.complete(());
     }
+
+    fn unload_complete(&mut self) {
+        // Unreserve all closed channels.
+        for channel in self.channels.values_mut() {
+            if let ChannelState::Closed = channel.state {
+                channel.reserved_state.message_port = None;
+            }
+        }
+    }
 }
 
 impl ServerTaskInner {
@@ -1530,6 +1542,20 @@ impl ServerTaskInner {
                 .monitor_support()
                 .map(|monitor| monitor.register_monitor(monitor_id, open_params.connection_id))
         });
+
+        // Delete any previously reserved state.
+        channel.reserved_state.message_port = None;
+
+        // If the channel is reserved, create a message port for it.
+        if let Some(target) = open_params.reserved_target {
+            channel.reserved_state.message_port = Some(self.synic.new_guest_message_port(
+                self.redirect_vtl,
+                target.vp,
+                target.sint,
+            )?);
+
+            channel.reserved_state.target = target;
+        }
 
         channel.state = ChannelState::Opening {
             open_params: *open_params,
@@ -1576,28 +1602,13 @@ impl ServerTaskInner {
                             guest_to_host_event.clone(),
                         )
                         .map_err(ChannelError::SynicError)?;
-                    // Set up a message port if this is a reserved channel.
-                    let reserved_guest_message_port =
-                        if let Some(reserved_target) = open_params.reserved_target {
-                            Some(
-                                self.synic
-                                    .new_guest_message_port(
-                                        self.redirect_vtl,
-                                        reserved_target.vp,
-                                        reserved_target.sint,
-                                    )
-                                    .map_err(ChannelError::HypervisorError)?,
-                            )
-                        } else {
-                            None
-                        };
+
                     ChannelState::Open {
                         open_params,
                         _event_port: event_port,
                         monitor,
                         host_to_guest_interrupt,
                         guest_to_host_event,
-                        reserved_guest_message_port,
                     }
                 }
                 s => {
@@ -1697,6 +1708,64 @@ impl ServerTaskInner {
         }
 
         Ok(())
+    }
+
+    fn get_reserved_channel_message_port(
+        &mut self,
+        offer_id: OfferId,
+        new_target: ConnectionTarget,
+    ) -> Option<&mut Box<dyn GuestMessagePort>> {
+        let channel = self
+            .channels
+            .get_mut(&offer_id)
+            .expect("channel does not exist");
+
+        assert!(
+            channel.reserved_state.message_port.is_some(),
+            "channel is not reserved"
+        );
+        let old_target = channel.reserved_state.target;
+
+        if old_target.sint != new_target.sint {
+            // Destroy the old port before creating the new one.
+            channel.reserved_state.message_port = None;
+            let message_port = self
+                .synic
+                .new_guest_message_port(self.redirect_vtl, new_target.vp, new_target.sint)
+                .inspect_err(|err| {
+                    tracing::error!(
+                        ?err,
+                        ?self.redirect_vtl,
+                        ?new_target,
+                        "could not set target vp"
+                    )
+                })
+                .ok()?;
+
+            channel.reserved_state.message_port = Some(message_port);
+            channel.reserved_state.target = new_target;
+        } else if old_target.vp != new_target.vp {
+            // The vp has changed, but the sint is the same. Just update the vp.
+            // If it fails, we'll send to the old VP because we can't do anything
+            // better.
+            let message_port = channel.reserved_state.message_port.as_mut().unwrap();
+
+            let _ = message_port
+                .set_target_vp(new_target.vp)
+                .inspect_err(|err| {
+                    tracing::error!(
+                        ?err,
+                        ?self.redirect_vtl,
+                        ?new_target,
+                        "could not create reserved channel message port"
+                    );
+                });
+
+            channel.reserved_state.target = new_target;
+            return Some(message_port);
+        }
+
+        Some(channel.reserved_state.message_port.as_mut().unwrap())
     }
 }
 

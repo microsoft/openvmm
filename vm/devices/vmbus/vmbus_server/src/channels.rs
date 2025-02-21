@@ -86,8 +86,6 @@ pub enum ChannelError {
     UntrustedMessage,
     #[error("an error occurred creating an event port")]
     SynicError(#[source] vmcore::synic::Error),
-    #[error("an error occurred in the synic")]
-    HypervisorError(#[source] vmcore::synic::HypervisorError),
 }
 
 #[derive(Debug, Error)]
@@ -635,14 +633,14 @@ pub struct ConnectionTarget {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum MessageTarget {
     Default,
-    ReservedChannel(OfferId),
+    ReservedChannel(OfferId, ConnectionTarget),
     Custom(ConnectionTarget),
 }
 
 impl MessageTarget {
-    pub fn for_offer(offer_id: OfferId, reserved: bool) -> Self {
-        if reserved {
-            Self::ReservedChannel(offer_id)
+    pub fn for_offer(offer_id: OfferId, reserved_state: &Option<ReservedState>) -> Self {
+        if let Some(state) = reserved_state {
+            Self::ReservedChannel(offer_id, state.target)
         } else {
             Self::Default
         }
@@ -1236,6 +1234,9 @@ pub trait Notifier: Send {
 
     /// Notifies that a requested reset is complete.
     fn reset_complete(&mut self);
+
+    /// Notifies that a guest-requested unload is complete.
+    fn unload_complete(&mut self);
 }
 
 impl Server {
@@ -1439,7 +1440,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                             info.channel_id,
                             &request,
                             protocol::STATUS_SUCCESS,
-                            MessageTarget::for_offer(offer_id, reserved_state.is_some()),
+                            MessageTarget::for_offer(offer_id, &reserved_state),
                         );
                     channel.state = ChannelState::Open {
                         params: request,
@@ -1786,22 +1787,15 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     "opened channel"
                 );
 
-                let target = if let Some(reserved_state) = reserved_state {
-                    if result == protocol::STATUS_SUCCESS {
-                        MessageTarget::ReservedChannel(offer_id)
-                    } else {
-                        // If the open failed, no port was created for the channel, so use a custom
-                        // target to send the message to the correct destination.
-                        MessageTarget::Custom(reserved_state.target)
-                    }
-                } else {
-                    MessageTarget::Default
-                };
-
                 self.inner
                     .pending_messages
                     .sender(self.notifier)
-                    .send_open_result(channel_id, &request, result, target);
+                    .send_open_result(
+                        channel_id,
+                        &request,
+                        result,
+                        MessageTarget::for_offer(offer_id, &reserved_state),
+                    );
                 channel.state = if result >= 0 {
                     ChannelState::Open {
                         params: request,
@@ -2423,6 +2417,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     }
 
     fn complete_unload(&mut self) {
+        self.notifier.unload_complete();
         if let Some(version) = self.inner.delayed_max_version.take() {
             self.inner.set_compatibility_version(version, false);
         }
@@ -4089,6 +4084,8 @@ mod tests {
             self.target_message_vp = None;
             self.reset = true;
         }
+
+        fn unload_complete(&mut self) {}
     }
 
     #[test]
@@ -5164,7 +5161,7 @@ mod tests {
                 channel_id: ChannelId(1),
                 ..FromZeros::new_zeroed()
             }),
-            MessageTarget::ReservedChannel(offer_id1),
+            MessageTarget::ReservedChannel(offer_id1, ConnectionTarget { vp: 1, sint: SINT }),
         );
         env.open_reserved(2, 2, SINT.into());
         env.c().open_complete(offer_id2, 0);
