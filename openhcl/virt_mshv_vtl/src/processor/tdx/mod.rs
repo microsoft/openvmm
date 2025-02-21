@@ -2212,8 +2212,6 @@ impl UhProcessor<'_, TdxBacked> {
         self.runner
             .write_vmcs32(vtl, seg.attributes(), !0, attributes.into());
 
-        // TODO TDX: cache CS into last exit because last exit contains CS optionally?
-
         Ok(())
     }
 
