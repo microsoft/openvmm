@@ -299,6 +299,41 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             Self::intercepted_vtl(&message.header).map_err(|UnsupportedGuestVtl(vtl)| {
                 VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl(vtl))
             })?;
+
+        // Fast path for monitor page writes.
+        if Some(message.guest_physical_address & !(hvdef::HV_PAGE_SIZE - 1))
+            == self.partition.monitor_page.gpa()
+            && message.header.intercept_access_type == hvdef::HvInterceptAccessType::WRITE
+            && message.instruction_byte_count == 4
+        {
+            let gpa = message.guest_physical_address;
+            let guest_memory = &self.partition.gm[intercepted_vtl];
+            if let Some(mut bitmask) = emulate::emulate_mnf_write_fast_path(
+                u32::from_ne_bytes(message.instruction_bytes),
+                &mut UhEmulationState {
+                    vp: &mut *self,
+                    interruption_pending: intercept_state.interruption_pending,
+                    devices: dev,
+                    vtl: intercepted_vtl,
+                    cache: UhCpuStateCache::default(),
+                },
+                guest_memory,
+                dev,
+            ) {
+                let bit_offset = (gpa & (hvdef::HV_PAGE_SIZE - 1)) as u32 * 8;
+                while bitmask != 0 {
+                    let bit = 63 - bitmask.leading_zeros();
+                    bitmask &= !(1 << bit);
+                    if let Some(connection_id) =
+                        self.partition.monitor_page.write_bit(bit_offset + bit)
+                    {
+                        signal_mnf(dev, connection_id);
+                    }
+                }
+                return Ok(());
+            }
+        }
+
         self.emulate(dev, &intercept_state, intercepted_vtl).await?;
         Ok(())
     }
