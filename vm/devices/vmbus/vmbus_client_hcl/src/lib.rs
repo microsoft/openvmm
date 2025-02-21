@@ -20,7 +20,6 @@ use pal_async::driver::Driver;
 use pal_async::pipe::PolledPipe;
 use pal_async::timer::Instant;
 use pal_async::timer::PolledTimer;
-use parking_lot::Mutex;
 use std::io;
 use std::io::IoSliceMut;
 use std::os::fd::AsFd;
@@ -30,24 +29,24 @@ use std::task::ready;
 use std::task::Poll;
 use std::time::Duration;
 use vmbus_async::async_dgram::AsyncRecv;
-use vmbus_client::SynicClient;
+use vmbus_client::PollPostMessage;
+use vmbus_client::SynicEventClient;
+use vmbus_client::VmbusClientBuilder;
 use vmbus_client::VmbusMessageSource;
 use zerocopy::IntoBytes;
 
-/// Returns the synic client and message source for use with
-/// [`vmbus_client::VmbusClient`].
-pub fn new_synic_client_and_messsage_source<T: Driver + ?Sized>(
-    driver: &T,
-) -> anyhow::Result<(impl SynicClient + use<T>, impl VmbusMessageSource + use<T>)> {
+/// Returns a [`VmbusClientBuilder`] configured to use the Linux HCL driver.
+pub fn vmbus_client_builder<T: Driver + ?Sized>(driver: &T) -> anyhow::Result<VmbusClientBuilder> {
     // Open an HCL vmbus fd for issuing synic requests.
     let hcl_vmbus = Arc::new(HclVmbus::new().context("failed to open hcl_vmbus")?);
-    let synic = HclSynic {
+    let poster = HclSynicPoster {
         hcl_vmbus: Arc::clone(&hcl_vmbus),
-        timeout: Mutex::new(TimeoutState {
-            timer: PolledTimer::new(driver),
-            deadline: None,
-            next_wait: INITIAL_WAIT,
-        }),
+        timer: PolledTimer::new(driver),
+        deadline: None,
+        next_wait: INITIAL_WAIT,
+    };
+    let synic = HclSynicEvents {
+        hcl_vmbus: Arc::clone(&hcl_vmbus),
     };
 
     // Open another one for polling for messages.
@@ -56,20 +55,13 @@ pub fn new_synic_client_and_messsage_source<T: Driver + ?Sized>(
         .into_inner();
 
     let pipe = PolledPipe::new(driver, vmbus_fd).context("failed to created PolledPipe")?;
-    let msg_source = MessageSource {
-        pipe,
-        hcl_vmbus: Arc::clone(&hcl_vmbus),
-    };
+    let msg_source = HclMessageSource { pipe, hcl_vmbus };
 
-    Ok((synic, msg_source))
+    Ok(VmbusClientBuilder::new(synic, msg_source, poster))
 }
 
-struct HclSynic {
+struct HclSynicPoster {
     hcl_vmbus: Arc<HclVmbus>,
-    timeout: Mutex<TimeoutState>,
-}
-
-struct TimeoutState {
     timer: PolledTimer,
     deadline: Option<Instant>,
     next_wait: Duration,
@@ -77,19 +69,18 @@ struct TimeoutState {
 
 const INITIAL_WAIT: Duration = Duration::from_millis(1);
 
-impl SynicClient for HclSynic {
+impl PollPostMessage for HclSynicPoster {
     fn poll_post_message(
-        &self,
+        &mut self,
         cx: &mut std::task::Context<'_>,
         connection_id: u32,
         typ: u32,
         msg: &[u8],
     ) -> Poll<()> {
-        let mut timeout = self.timeout.lock();
         loop {
-            if let Some(deadline) = timeout.deadline {
-                ready!(timeout.timer.poll_sleep_until(cx, deadline));
-                timeout.deadline = None;
+            if let Some(deadline) = self.deadline {
+                ready!(self.timer.poll_until(cx, deadline));
+                self.deadline = None;
             }
             // If we receive HV_STATUS_INSUFFICIENT_BUFFERS, the host is backed
             // up in handling these messages. Wait for a while before trying
@@ -97,15 +88,15 @@ impl SynicClient for HclSynic {
             let ret = self.hcl_vmbus.post_message(connection_id, typ.into(), msg);
             match ret {
                 Ok(()) => {
-                    timeout.next_wait = INITIAL_WAIT;
+                    self.next_wait = INITIAL_WAIT;
                     break Poll::Ready(());
                 }
                 Err(HypercallError::Hypervisor(HvError::InsufficientBuffers)) => {
                     tracing::debug!("received HV_STATUS_INSUFFICIENT_BUFFERS, retrying");
-                    timeout.deadline = Some(Instant::now() + timeout.next_wait);
+                    self.deadline = Some(Instant::now() + self.next_wait);
                     // Wait longer each time.
-                    if timeout.next_wait < Duration::from_secs(1) {
-                        timeout.next_wait *= 2;
+                    if self.next_wait < Duration::from_secs(1) {
+                        self.next_wait *= 2;
                     }
                 }
                 Err(err) => {
@@ -114,7 +105,13 @@ impl SynicClient for HclSynic {
             }
         }
     }
+}
 
+struct HclSynicEvents {
+    hcl_vmbus: Arc<HclVmbus>,
+}
+
+impl SynicEventClient for HclSynicEvents {
     fn map_event(&self, event_flag: u16, event: &pal_event::Event) -> io::Result<()> {
         self.hcl_vmbus
             .set_eventfd(event_flag.into(), Some(event.as_fd()))
@@ -132,12 +129,12 @@ impl SynicClient for HclSynic {
     }
 }
 
-struct MessageSource {
+struct HclMessageSource {
     pipe: PolledPipe,
     hcl_vmbus: Arc<HclVmbus>,
 }
 
-impl AsyncRecv for MessageSource {
+impl AsyncRecv for HclMessageSource {
     fn poll_recv(
         &mut self,
         cx: &mut std::task::Context<'_>,
@@ -164,7 +161,7 @@ impl AsyncRecv for MessageSource {
     }
 }
 
-impl VmbusMessageSource for MessageSource {
+impl VmbusMessageSource for HclMessageSource {
     fn pause_message_stream(&mut self) {
         self.hcl_vmbus
             .pause_message_stream(true)

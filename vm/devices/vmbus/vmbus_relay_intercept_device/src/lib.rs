@@ -150,7 +150,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceWrapper<T> {
     pub fn new(
         driver: impl SpawnDriver + Clone,
         dma_alloc: Arc<dyn DmaClient>,
-        synic: Arc<dyn vmbus_client::SynicClient>,
+        synic: Arc<dyn vmbus_client::SynicEventClient>,
         device: T,
     ) -> Result<Self> {
         let spawner = Arc::new(driver.clone());
@@ -232,7 +232,7 @@ struct SimpleVmbusClientDeviceTaskState {
 
 struct SimpleVmbusClientDeviceTask<T: SimpleVmbusClientDeviceAsync> {
     device: TaskControl<RelayDeviceTask<T>, T::Runner>,
-    synic: Arc<dyn vmbus_client::SynicClient>,
+    synic: Arc<dyn vmbus_client::SynicEventClient>,
     saved_state: Option<T::SavedState>,
     spawner: Arc<dyn SpawnDriver>,
     dma_alloc: Arc<dyn DmaClient>,
@@ -267,7 +267,7 @@ impl<T: SimpleVmbusClientDeviceAsync> InspectTaskMut<SimpleVmbusClientDeviceTask
 impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
     pub fn new(
         device: T,
-        synic: Arc<dyn vmbus_client::SynicClient>,
+        synic: Arc<dyn vmbus_client::SynicEventClient>,
         spawner: Arc<dyn SpawnDriver>,
         dma_alloc: Arc<dyn DmaClient>,
     ) -> Self {

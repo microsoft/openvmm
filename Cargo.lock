@@ -8037,6 +8037,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "futures",
+ "getrandom",
  "guid",
  "inspect",
  "mesh",
@@ -8061,7 +8062,6 @@ dependencies = [
  "hvdef",
  "pal_async",
  "pal_event",
- "parking_lot",
  "tracing",
  "vmbus_async",
  "vmbus_client",

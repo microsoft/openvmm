@@ -27,5 +27,7 @@ zerocopy.workspace = true
 pal_async.workspace = true
 test_with_tracing.workspace = true
 
+getrandom.workspace = true
+
 [lints]
 workspace = true

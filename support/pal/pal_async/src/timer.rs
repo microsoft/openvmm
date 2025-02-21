@@ -130,7 +130,7 @@ impl PolledTimer {
 
     /// Returns `Pending` until the current time is later than `deadline`. Then
     /// returns `Ready` with the current time.
-    pub fn poll_sleep_until(&mut self, cx: &mut Context<'_>, deadline: Instant) -> Poll<Instant> {
+    pub fn poll_until(&mut self, cx: &mut Context<'_>, deadline: Instant) -> Poll<Instant> {
         self.0.poll_timer(cx, Some(deadline))
     }
 }
