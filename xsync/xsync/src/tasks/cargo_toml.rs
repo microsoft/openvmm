@@ -63,7 +63,7 @@ impl Cmd for CargoToml {
                 profile,
                 patch,
                 workspace: super::custom_meta::InheritWorkspace { lints, package },
-                rust_toolchain: _,
+                ..
             } = meta.inherit;
 
             if profile {

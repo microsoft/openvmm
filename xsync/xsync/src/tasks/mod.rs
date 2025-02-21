@@ -6,10 +6,12 @@
 pub mod cargo_lock;
 pub mod cargo_toml;
 pub mod rust_toolchain_toml;
+pub mod rustfmt_toml;
 
 pub use self::cargo_lock::CargoLock;
 pub use self::cargo_toml::CargoToml;
 pub use self::rust_toolchain_toml::RustToolchainToml;
+pub use self::rustfmt_toml::RustfmtToml;
 
 const GENERATED_HEADER: &str = r#"
 # Copyright (C) Microsoft Corporation. All rights reserved.
@@ -49,6 +51,7 @@ mod custom_meta {
         pub patch: bool,
         pub workspace: InheritWorkspace,
         pub rust_toolchain: InheritRustToolchain,
+        pub rustfmt: bool,
     }
 
     #[derive(Debug, Serialize, Deserialize)]

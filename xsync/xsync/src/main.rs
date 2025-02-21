@@ -59,6 +59,7 @@ enum Commands {
     CargoToml(tasks::CargoToml),
     CargoLock(tasks::CargoLock),
     RustToolchainToml(tasks::RustToolchainToml),
+    RustfmtToml(tasks::RustfmtToml),
 }
 
 fn main() {
@@ -101,6 +102,7 @@ fn try_main() -> anyhow::Result<()> {
             Commands::CargoToml(task) => task.run(ctx),
             Commands::CargoLock(task) => task.run(ctx),
             Commands::RustToolchainToml(task) => task.run(ctx),
+            Commands::RustfmtToml(task) => task.run(ctx),
         },
         None => do_full_sync(&ctx, check),
     };
@@ -120,6 +122,12 @@ fn try_main() -> anyhow::Result<()> {
 
 fn do_full_sync(ctx: &CmdCtx, check: bool) -> Result<(), anyhow::Error> {
     log::info!("running xsync cmd: `rust-toolchain regen`    (syncing overlay-repo's `rust-toolchain.toml` to base-repo's `rust-toolchain.toml`)");
+    tasks::RustToolchainToml {
+        cmd: tasks::rust_toolchain_toml::Command::Regen,
+    }
+    .run(ctx.clone())?;
+
+    log::info!("running xsync cmd: `rustfmt regen`    (syncing overlay-repo's `rustfmt.toml` to base-repo's `rustfmt.toml`)");
     tasks::RustToolchainToml {
         cmd: tasks::rust_toolchain_toml::Command::Regen,
     }
