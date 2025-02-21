@@ -9,6 +9,7 @@ use anyhow::Context;
 use guid::Guid;
 use hvlite_ttrpc_vmservice as vmservice;
 use pal_async::pipe::PolledPipe;
+use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::DefaultPool;
 use petri::ResolvedArtifact;
@@ -30,8 +31,6 @@ fn test_ttrpc_interface(
     params: petri::PetriTestParams<'_>,
     [openvmm, kernel_path, initrd_path]: [ResolvedArtifact; 3],
 ) -> anyhow::Result<()> {
-    use pal_async::socket::PolledSocket;
-
     let mut socket_path = std::env::temp_dir();
     socket_path.push(Guid::new_random().to_string());
 

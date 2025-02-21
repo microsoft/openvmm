@@ -127,7 +127,7 @@ impl PetriVmConfig for PetriVmConfigOpenVmm {
 
 /// Various channels and resources used to interact with the VM while it is running.
 struct PetriVmResourcesOpenVmm {
-    serial_tasks: Vec<Task<anyhow::Result<()>>>,
+    log_stream_tasks: Vec<Task<anyhow::Result<()>>>,
     firmware_event_recv: Receiver<FirmwareEvent>,
     shutdown_ic_send: Sender<ShutdownRpc>,
     expected_boot_event: Option<FirmwareEvent>,

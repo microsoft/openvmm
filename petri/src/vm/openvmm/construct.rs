@@ -128,7 +128,7 @@ impl PetriVmConfigOpenVmm {
 
         let SerialData {
             mut emulated_serial_config,
-            serial_tasks,
+            serial_tasks: log_stream_tasks,
             linux_direct_serial_agent,
         } = setup.configure_serial(params.logger)?;
 
@@ -357,7 +357,7 @@ impl PetriVmConfigOpenVmm {
             config,
 
             resources: PetriVmResourcesOpenVmm {
-                serial_tasks,
+                log_stream_tasks,
                 firmware_event_recv,
                 shutdown_ic_send,
                 expected_boot_event,

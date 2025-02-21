@@ -132,7 +132,7 @@ impl PetriVmOpenVmm {
         self.inner.mesh.shutdown().await;
 
         tracing::info!("Mesh shutdown, waiting for logging tasks");
-        for t in self.inner.resources.serial_tasks {
+        for t in self.inner.resources.log_stream_tasks {
             t.await?;
         }
 
