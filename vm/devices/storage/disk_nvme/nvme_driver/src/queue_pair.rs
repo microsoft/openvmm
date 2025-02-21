@@ -359,6 +359,7 @@ impl QueuePair {
         }
 
         // Entire memory region checked above. No need to send it along with the verify call
+        // Issue rpc call after checking memory because this will write to memory.
         let _ = self.issuer.send.call(Req::Verify, saved_state.handler_data.clone()).await;
         assert_eq!(saved_state.qid, self.qid);
         assert_eq!(saved_state.sq_entries, self.sq_entries);
