@@ -102,7 +102,7 @@ impl SimpleFlowNode for Node {
                     );
 
                     if loop_count > 4 {
-                        anyhow::bail!("Failed to get action id for after 5 attempts: {}", e);
+                        anyhow::bail!("Failed to get action id after 5 attempts: {}", e);
                     }
 
                     github_commit_hash =
