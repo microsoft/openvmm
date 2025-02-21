@@ -660,7 +660,10 @@ struct Channel {
     gpadls: Arc<GpadlMap>,
     guest_event_port: Box<dyn GuestEventPort>,
     flags: protocol::OfferFlags,
-    // A channel can be reserved no matter what state it is in.
+    // A channel can be reserved no matter what state it is in. This allows the message port for a
+    // reserved channel to remain available even if the channel is closed, so the guest can read the
+    // close reserved channel response. The reserved state is cleared when the channel is revoked,
+    // reopened, or the guest sends an unload message.
     reserved_state: ReservedState,
 }
 
@@ -722,7 +725,7 @@ impl ServerTask {
                 flags,
                 reserved_state: ReservedState {
                     message_port: None,
-                    target: ConnectionTarget { vp: !0, sint: 0 },
+                    target: ConnectionTarget { vp: 0, sint: 0 },
                 },
             },
         );
@@ -1023,7 +1026,7 @@ impl ServerTask {
                     .flatten(),
             );
 
-            // Try to send any queued messages while the VM is running.
+            // Try to send any pending messages while the VM is running.
             let has_pending_messages = self.server.has_pending_messages();
             let message_port = self.inner.message_port.as_mut();
             let mut flush_pending_messages =
@@ -1432,7 +1435,7 @@ impl Notifier for ServerTaskInner {
                 if let Some(port) = self.get_reserved_channel_message_port(offer_id, target) {
                     port.as_mut()
                 } else {
-                    // No way to send the message.
+                    // Updating the port failed, so there is no way to send the message.
                     return true;
                 }
             }
@@ -1451,6 +1454,7 @@ impl Notifier for ServerTaskInner {
                             "could not create message port"
                         );
 
+                        // There is no way to send the message.
                         return true;
                     }
                 };
@@ -1712,9 +1716,10 @@ impl ServerTaskInner {
             channel.reserved_state.message_port.is_some(),
             "channel is not reserved"
         );
-        let old_target = channel.reserved_state.target;
 
-        if old_target.sint != new_target.sint {
+        // On close, the guest may have changed the message target it wants to use for the close
+        // response. If so, update the message port.
+        if channel.reserved_state.target.sint != new_target.sint {
             // Destroy the old port before creating the new one.
             channel.reserved_state.message_port = None;
             let message_port = self
@@ -1725,29 +1730,26 @@ impl ServerTaskInner {
                         ?err,
                         ?self.redirect_vtl,
                         ?new_target,
-                        "could not set target vp"
+                        "could not create reserved channel message port"
                     )
                 })
                 .ok()?;
 
             channel.reserved_state.message_port = Some(message_port);
             channel.reserved_state.target = new_target;
-        } else if old_target.vp != new_target.vp {
-            // The vp has changed, but the sint is the same. Just update the vp.
-            // If it fails, we'll send to the old VP because we can't do anything
-            // better.
+        } else if channel.reserved_state.target.vp != new_target.vp {
             let message_port = channel.reserved_state.message_port.as_mut().unwrap();
 
-            let _ = message_port
-                .set_target_vp(new_target.vp)
-                .inspect_err(|err| {
-                    tracing::error!(
-                        ?err,
-                        ?self.redirect_vtl,
-                        ?new_target,
-                        "could not create reserved channel message port"
-                    );
-                });
+            // The vp has changed, but the SINT is the same. Just update the vp. If this fails,
+            // ignore it and just send to the old vp.
+            if let Err(err) = message_port.set_target_vp(new_target.vp) {
+                tracing::error!(
+                    ?err,
+                    ?self.redirect_vtl,
+                    ?new_target,
+                    "could not update reserved channel message port"
+                );
+            }
 
             channel.reserved_state.target = new_target;
             return Some(message_port);

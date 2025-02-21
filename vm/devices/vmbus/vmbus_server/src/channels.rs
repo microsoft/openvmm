@@ -1229,6 +1229,7 @@ pub trait Notifier: Send {
 
     /// Sends a synic message to the guest.
     /// Returns true if the message was sent, and false if it must be retried.
+    #[must_use]
     fn send_message(&mut self, message: &OutgoingMessage, target: MessageTarget) -> bool;
 
     /// Used to signal the hvsocket handler that there is a new connection request.
@@ -1372,20 +1373,12 @@ impl Server {
         ))
     }
 
+    /// Check if there are any messages in the pending queue.
     pub fn has_pending_messages(&self) -> bool {
         !self.pending_messages.0.is_empty()
     }
 
-    // pub fn flush_pending_messages<E>(
-    //     &mut self,
-    //     mut f: impl FnMut(&OutgoingMessage) -> Result<(), E>,
-    // ) -> Result<(), E> {
-    //     while let Some(message) = self.pending_messages.0.front() {
-    //         f(message)?;
-    //         self.pending_messages.0.pop_front();
-    //     }
-    //     Ok(())
-    // }
+    /// Tries to resend pending messages using the provided `send`` function.
     pub fn poll_flush_pending_messages(
         &mut self,
         cx: &mut std::task::Context<'_>,
@@ -1925,7 +1918,11 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 channel.state = ChannelState::Closed;
                 if matches!(self.inner.state, ConnectionState::Connected { .. }) {
                     let channel_id = channel.info.expect("assigned").channel_id;
-                    self.send_close_reserved_channel_response(channel_id, reserved_state.target);
+                    self.send_close_reserved_channel_response(
+                        channel_id,
+                        offer_id,
+                        reserved_state.target,
+                    );
                 } else {
                     // Handle closing reserved channels while disconnected/ing. Since we weren't waiting
                     // on the channel, no need to call check_disconnected, but we do need to release it.
@@ -1969,13 +1966,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     fn send_close_reserved_channel_response(
         &mut self,
         channel_id: ChannelId,
+        offer_id: OfferId,
         target: ConnectionTarget,
     ) {
-        // Responses are sent with a custom target, not a reserved channel target, because the
-        // message port for the reserved channel has already been closed.
         self.sender().send_message_with_target(
             &protocol::CloseReservedChannelResponse { channel_id },
-            MessageTarget::Custom(target),
+            MessageTarget::ReservedChannel(offer_id, target),
         );
     }
 
@@ -3417,6 +3413,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         }
     }
 
+    /// Creates a sender, in a convenient way for callers that are able to borrow all of `self`.
+    ///
+    /// If you cannot borrow all of `self`, you will need to use the `PendingMessages::sender`
+    /// method instead.
     fn sender(&mut self) -> MessageSender<'_, N> {
         self.inner.pending_messages.sender(self.notifier)
     }
@@ -3490,6 +3490,7 @@ fn revoke<N: Notifier>(
 struct PendingMessages(VecDeque<OutgoingMessage>);
 
 impl PendingMessages {
+    /// Creates a sender for the specified notifier.
     fn sender<'a, N: Notifier>(&'a mut self, notifier: &'a mut N) -> MessageSender<'a, N> {
         MessageSender {
             notifier,
@@ -3498,6 +3499,8 @@ impl PendingMessages {
     }
 }
 
+/// Wraps the state needed to send messages to the guest through the notifier, and queue them if
+/// they are not immediately sent.
 struct MessageSender<'a, N> {
     notifier: &'a mut N,
     pending_messages: &'a mut PendingMessages,
@@ -3511,7 +3514,15 @@ impl<N: Notifier> MessageSender<'_, N> {
         &mut self,
         msg: &T,
     ) {
-        self.send_message_with_target(msg, MessageTarget::Default);
+        let message = OutgoingMessage::new(msg);
+
+        // Don't try to send the message if there are already pending messages.
+        if !self.pending_messages.0.is_empty()
+            || !self.notifier.send_message(&message, MessageTarget::Default)
+        {
+            // Queue the message for retry later.
+            self.pending_messages.0.push_back(message);
+        }
     }
 
     /// Sends a VMBus channel message to the guest via an alternate port.
@@ -3523,15 +3534,11 @@ impl<N: Notifier> MessageSender<'_, N> {
         target: MessageTarget,
     ) {
         tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "sending message");
-        let message = OutgoingMessage::new(msg);
         if target == MessageTarget::Default {
-            // Don't try to send the message if there are already pending messages.
-            if !self.pending_messages.0.is_empty() || !self.notifier.send_message(&message, target)
-            {
-                self.pending_messages.0.push_back(message);
-            }
+            self.send_message(msg);
         } else {
             // Messages for other targets are not queued.
+            let message = OutgoingMessage::new(msg);
             if !self.notifier.send_message(&message, target) {
                 tracelimit::warn_ratelimited!(?target, "failed to send message");
             }
@@ -5227,7 +5234,7 @@ mod tests {
             OutgoingMessage::new(&protocol::CloseReservedChannelResponse {
                 channel_id: ChannelId(1),
             }),
-            MessageTarget::Custom(ConnectionTarget { vp: 4, sint: SINT }),
+            MessageTarget::ReservedChannel(offer_id1, ConnectionTarget { vp: 4, sint: SINT }),
         );
         env.teardown_gpadl(1, 10);
         env.c().gpadl_teardown_complete(offer_id1, GpadlId(10));

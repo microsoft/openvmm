@@ -133,16 +133,14 @@ impl super::Server {
 
     /// Saves state.
     pub fn save(&self) -> SavedState {
-        let connection = match Connection::save(&self.state) {
-            Some(c) => c,
-            None => {
-                return SavedState {
-                    state: None,
-                    pending_messages: self.save_pending_messages(),
-                }
-            }
-        };
+        SavedState {
+            state: self.save_connected_state(),
+            pending_messages: self.save_pending_messages(),
+        }
+    }
 
+    fn save_connected_state(&self) -> Option<ConnectedState> {
+        let connection = Connection::save(&self.state)?;
         let channels = self
             .channels
             .iter()
@@ -157,14 +155,11 @@ impl super::Server {
             })
             .collect();
 
-        SavedState {
-            state: Some(ConnectedState {
-                connection,
-                channels,
-                gpadls,
-            }),
-            pending_messages: self.save_pending_messages(),
-        }
+        Some(ConnectedState {
+            connection,
+            channels,
+            gpadls,
+        })
     }
 
     fn save_pending_messages(&self) -> Vec<OutgoingMessage> {
