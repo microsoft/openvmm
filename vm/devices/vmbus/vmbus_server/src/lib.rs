@@ -1490,17 +1490,13 @@ impl Notifier for ServerTaskInner {
             }
         }
 
+        self.unreserve_channels();
         let done = self.reset_done.take().expect("must have requested reset");
         done.complete(());
     }
 
     fn unload_complete(&mut self) {
-        // Unreserve all closed channels.
-        for channel in self.channels.values_mut() {
-            if let ChannelState::Closed = channel.state {
-                channel.reserved_state.message_port = None;
-            }
-        }
+        self.unreserve_channels();
     }
 }
 
@@ -1766,6 +1762,15 @@ impl ServerTaskInner {
         }
 
         Some(channel.reserved_state.message_port.as_mut().unwrap())
+    }
+
+    fn unreserve_channels(&mut self) {
+        // Unreserve all closed channels.
+        for channel in self.channels.values_mut() {
+            if let ChannelState::Closed = channel.state {
+                channel.reserved_state.message_port = None;
+            }
+        }
     }
 }
 
