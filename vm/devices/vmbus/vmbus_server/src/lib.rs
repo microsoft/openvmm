@@ -1023,12 +1023,25 @@ impl ServerTask {
                     .flatten(),
             );
 
+            // Try to send any queued messages while the VM is running.
+            let has_pending_messages = self.server.has_pending_messages();
+            let message_port = self.inner.message_port.as_mut();
+            let mut flush_pending_messages =
+                OptionFuture::from((self.running && has_pending_messages).then(|| {
+                    poll_fn(|cx| {
+                        self.server.poll_flush_pending_messages(cx, |cx, msg| {
+                            message_port.poll_post_message(cx, VMBUS_MESSAGE_TYPE, msg.data())
+                        })
+                    })
+                    .fuse()
+                }));
+
             // Only handle new incoming messages if there are no outgoing messages pending, and not
             // too many hvsock requests outstanding. This puts a bound on the resources used by the
             // guest.
             let mut message_recv = OptionFuture::from(
                 (self.running
-                    && self.server.pending_message().is_none()
+                    && !has_pending_messages
                     && self.inner.hvsock_requests < MAX_CONCURRENT_HVSOCK_REQUESTS)
                     .then(|| self.message_recv.select_next_some()),
             );
@@ -1042,24 +1055,6 @@ impl ServerTask {
             // Accept hvsock connect responses while the VM is running.
             let mut hvsock_response =
                 OptionFuture::from(self.running.then(|| hvsock_recv.select_next_some()));
-
-            // Try to send any queued messages while the VM is running.
-            // Borrowing all this state separately is needed because we can't borrow &self.inner
-            // entirely inside the future.
-            let message_port = self.inner.message_port.as_mut();
-            let mut send_pending_message = OptionFuture::from(
-                self.running
-                    .then(|| {
-                        self.server.pending_message().map(|msg| {
-                            tracing::trace!(?msg, "sending queued message");
-                            poll_fn(move |cx| {
-                                message_port.poll_post_message(cx, VMBUS_MESSAGE_TYPE, msg.data())
-                            })
-                            .fuse()
-                        })
-                    })
-                    .flatten(),
-            );
 
             futures::select! { // merge semantics
                 r = self.task_recv.recv().fuse() => {
@@ -1107,10 +1102,7 @@ impl ServerTask {
                     let r = r.unwrap();
                     self.handle_external_request(r);
                 }
-                r = send_pending_message => {
-                    r.unwrap();
-                    self.server.remove_pending_message();
-                }
+                _r = flush_pending_messages => {}
                 complete => break,
             }
         }

@@ -21,6 +21,8 @@ use std::collections::VecDeque;
 use std::fmt::Display;
 use std::ops::Index;
 use std::ops::IndexMut;
+use std::task::ready;
+use std::task::Poll;
 use thiserror::Error;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::GpadlRequest;
@@ -1370,15 +1372,31 @@ impl Server {
         ))
     }
 
-    pub fn pending_message(&self) -> Option<&OutgoingMessage> {
-        self.pending_messages.0.front()
+    pub fn has_pending_messages(&self) -> bool {
+        !self.pending_messages.0.is_empty()
     }
 
-    pub fn remove_pending_message(&mut self) {
-        self.pending_messages
-            .0
-            .pop_front()
-            .expect("message queue should not be empty");
+    // pub fn flush_pending_messages<E>(
+    //     &mut self,
+    //     mut f: impl FnMut(&OutgoingMessage) -> Result<(), E>,
+    // ) -> Result<(), E> {
+    //     while let Some(message) = self.pending_messages.0.front() {
+    //         f(message)?;
+    //         self.pending_messages.0.pop_front();
+    //     }
+    //     Ok(())
+    // }
+    pub fn poll_flush_pending_messages(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        mut send: impl FnMut(&mut std::task::Context<'_>, &OutgoingMessage) -> Poll<()>,
+    ) -> Poll<()> {
+        while let Some(message) = self.pending_messages.0.front() {
+            ready!(send(cx, message));
+            self.pending_messages.0.pop_front();
+        }
+
+        Poll::Ready(())
     }
 }
 
@@ -3602,6 +3620,7 @@ mod tests {
     use crate::MESSAGE_CONNECTION_ID;
 
     use super::*;
+    use futures::task::noop_waker_ref;
     use guid::Guid;
     use protocol::VmbusMessage;
     use std::collections::VecDeque;
@@ -5011,7 +5030,7 @@ mod tests {
 
         // Reserved channel message should not be queued, but just discarded if it cannot be sent.
         assert!(env.notifier.messages.is_empty());
-        assert!(env.server.pending_message().is_none());
+        assert!(!env.server.has_pending_messages());
 
         env.gpadl(1, 10);
         env.c()
@@ -5024,7 +5043,7 @@ mod tests {
 
         // No messages were received.
         assert!(env.notifier.messages.is_empty());
-        assert!(env.server.pending_message().is_some());
+        assert!(env.server.has_pending_messages());
         env.notifier.pend_messages = false;
 
         let state = env.server.save();
@@ -5042,27 +5061,34 @@ mod tests {
         env.c().post_restore().unwrap();
 
         // The messages should be pending again.
-        let msg = env.server.pending_message().unwrap();
+        assert!(env.server.has_pending_messages());
+        let mut pending_messages = Vec::new();
+        let r = env.server.poll_flush_pending_messages(
+            &mut std::task::Context::from_waker(noop_waker_ref()),
+            |_, msg| {
+                pending_messages.push(msg.clone());
+                Poll::Ready(())
+            },
+        );
+        assert!(r.is_ready());
+        assert_eq!(pending_messages.len(), 2);
         assert_eq!(
-            protocol::MessageHeader::read_from_prefix(msg.data())
+            protocol::MessageHeader::read_from_prefix(pending_messages[0].data())
                 .unwrap()
                 .0
                 .message_type(),
             protocol::MessageType::GPADL_CREATED
         );
 
-        env.server.remove_pending_message();
-        let msg = env.server.pending_message().unwrap();
         assert_eq!(
-            protocol::MessageHeader::read_from_prefix(msg.data())
+            protocol::MessageHeader::read_from_prefix(pending_messages[1].data())
                 .unwrap()
                 .0
                 .message_type(),
             protocol::MessageType::OPEN_CHANNEL_RESULT
         );
 
-        env.server.remove_pending_message();
-        assert!(env.server.pending_message().is_none());
+        assert!(!env.server.has_pending_messages());
     }
 
     #[test]
