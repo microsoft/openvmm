@@ -239,7 +239,6 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
 async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     // ===== SETUP =====
     const CPU_COUNT: u32 = 64;
-
     let base_len = 64 * 1024 * 1024;
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
 
@@ -261,28 +260,22 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
         let _ns1 = nvme_driver.namespace(1).await.unwrap();
         let saved = nvme_driver.save().await.unwrap();
 
-        // Tear down the original driver to kill the underlying tasks.
         nvme_driver.shutdown().await;
         saved
     };
     
-    // As of today we do not save namespace data to avoid possible conflict
-    // when namespace has changed during servicing.
+    // As of today we do not save namespace data to avoid possible conflict when namespace has changed during servicing.
     assert_eq!(saved_state.namespaces.len(), 0);
 
     // ===== SECOND DRIVER RESOURCES AND KEEPALIVE SETUP =======
     let (shared_mem_copy, new_msi_x, mut new_nvme_ctrl) = create_driver_resources(base_len, 0, &driver_source);
-    let mut backoff = user_driver::backoff::Backoff::new(&driver);
 
-    // Enable the controller for keep-alive test.
+    // Read Register::CC -> set CC.EN -> wait CSTS.RDY
     let mut dword = 0u32;
-    // Read Register::CC.
     new_nvme_ctrl.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
-    // Set CC.EN.
     dword |= 1;
     new_nvme_ctrl.write_bar0(0x14, dword.as_bytes()).unwrap();
-    // Wait for CSTS.RDY to set.
-    backoff.back_off().await;
+    user_driver::backoff::Backoff::new(&driver).back_off().await;
 
     // ===== COPY MEMORY =====
     let host_allocator_original = EmulatedDmaAllocator::new(shared_mem_original.clone());
