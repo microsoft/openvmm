@@ -79,10 +79,7 @@ impl SimpleFlowNode for Node {
                 };
 
                 let is_empty = |action_id: &Result<String, anyhow::Error>| {
-                    action_id
-                        .as_ref()
-                        .ok()
-                        .map_or(false, |s| s.trim().is_empty())
+                    action_id.as_ref().ok().is_some_and(|s| s.trim().is_empty())
                 };
 
                 let mut github_commit_hash = github_commit_hash.clone();
