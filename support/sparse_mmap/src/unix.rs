@@ -21,6 +21,8 @@ pub(crate) fn page_size() -> usize {
     if s != 0 {
         s
     } else {
+        // SAFETY: using the system API as required by the documentation.
+        // The values for the parameters are valid.
         let s = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize };
         PAGE_SIZE.store(s, Ordering::Relaxed);
         s
@@ -75,6 +77,8 @@ unsafe fn mmap(
     fd: i32,
     offset: i64,
 ) -> Result<*mut c_void, Error> {
+    // SAFETY: using the system API as required by the documentation.
+    // The values for the parameters are valid.
     let address = unsafe { libc::mmap(addr, len, prot, flags, fd, offset) };
     if address == libc::MAP_FAILED {
         return Err(Error::last_os_error());
@@ -83,6 +87,8 @@ unsafe fn mmap(
 }
 
 unsafe fn munmap(addr: *mut c_void, len: usize) -> Result<(), Error> {
+    // SAFETY: using the system API as required by the documentation.
+    // The values for the parameters are valid.
     if unsafe { libc::munmap(addr, len) } < 0 {
         return Err(Error::last_os_error());
     }
@@ -336,6 +342,8 @@ impl SparseMapping {
 
 impl Drop for SparseMapping {
     fn drop(&mut self) {
+        // SAFETY: using the system API as required by the documentation.
+        // The values for the parameters are valid.
         unsafe {
             libc::munmap(self.address, self.len)
                 .syscall_result()
@@ -361,6 +369,7 @@ fn new_memfd() -> io::Result<File> {
     // macOS limits the name length to 31 bytes, which is sufficient to ensure uniqueness.
     name.truncate(31);
     let name = std::ffi::CString::new(name).unwrap();
+    // SAFETY: using the system API as required. The input parameters are valid.
     unsafe {
         // Create a new shared memory object.
         let fd = libc::shm_open(name.as_ptr(), libc::O_RDWR | libc::O_EXCL | libc::O_CREAT)

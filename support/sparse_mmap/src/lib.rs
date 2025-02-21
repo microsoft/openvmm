@@ -2,12 +2,11 @@
 // Licensed under the MIT License.
 
 //! Memory-related abstractions.
-
 // UNSAFETY: Manual pointer manipulation, dealing with mmap, and a signal handler.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
 
 pub mod alloc;
+mod trycopy_unix;
 mod trycopy_windows_arm64;
 mod trycopy_windows_x64;
 pub mod unix;
@@ -37,9 +36,8 @@ pub fn initialize_try_copy() {
     #[cfg(unix)]
     {
         static INIT: std::sync::Once = std::sync::Once::new();
-        INIT.call_once(|| unsafe {
-            let err = install_signal_handlers();
-            if err != 0 {
+        INIT.call_once(|| {
+            if let Err(err) = trycopy_unix::install_signal_handlers() {
                 panic!(
                     "could not install signal handlers: {}",
                     std::io::Error::from_raw_os_error(err)
@@ -50,9 +48,6 @@ pub fn initialize_try_copy() {
 }
 
 unsafe extern "C" {
-    #[cfg(unix)]
-    fn install_signal_handlers() -> i32;
-
     fn try_memmove(
         dest: *mut u8,
         src: *const u8,
@@ -634,6 +629,7 @@ mod tests {
         };
         let af_addr = &mut af as *mut _;
 
+        // SAFETY: no memory is shared between threads.
         let res = unsafe {
             match size {
                 Size::Bit8 => match primitive {
@@ -680,6 +676,7 @@ mod tests {
             "Fault address must not be set for {primitive:?} and {size:?}"
         );
 
+        // SAFETY: no memory is shared between threads.
         let res = unsafe {
             match size {
                 Size::Bit8 => match primitive {
@@ -745,6 +742,7 @@ mod tests {
 
         let mapping = SparseMapping::new(range_size).unwrap();
         mapping.alloc(page_size, page_size).unwrap();
+        // SAFETY: no memory is shared between threads.
         let slice = unsafe {
             std::slice::from_raw_parts_mut(mapping.as_ptr().add(page_size).cast::<u8>(), page_size)
         };
@@ -752,6 +750,7 @@ mod tests {
         mapping.unmap(page_size, page_size).unwrap();
 
         mapping.alloc(range_size - page_size, page_size).unwrap();
+        // SAFETY: no memory is shared between threads.
         let slice = unsafe {
             std::slice::from_raw_parts_mut(
                 mapping.as_ptr().add(range_size - page_size).cast::<u8>(),
@@ -780,6 +779,7 @@ mod tests {
         let page_size = SparseMapping::page_size();
         mapping.alloc(page_size, page_size).unwrap();
         let base = mapping.as_ptr().cast::<u8>();
+        // SAFETY: no memory is shared between threads.
         unsafe {
             try_copy(BUF.as_ptr(), base, 100).unwrap_err();
             try_copy(BUF.as_ptr(), base.add(page_size), 100).unwrap();
@@ -795,6 +795,7 @@ mod tests {
         let mapping = SparseMapping::new(page_size * 2).unwrap();
         mapping.alloc(0, page_size).unwrap();
         let base = mapping.as_ptr().cast::<u8>();
+        // SAFETY: no memory is shared between threads.
         unsafe {
             assert_eq!(try_compare_exchange(base.add(8), 0, 1).unwrap().unwrap(), 1);
             assert_eq!(

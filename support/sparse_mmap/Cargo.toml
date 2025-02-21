@@ -6,9 +6,6 @@ name = "sparse_mmap"
 edition.workspace = true
 rust-version.workspace = true
 
-[build-dependencies]
-cc.workspace = true
-
 [dependencies]
 pal.workspace = true
 
