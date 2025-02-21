@@ -307,7 +307,7 @@ impl PetriVmConfigHyperV {
                     diag_client::hyperv::ComPortAccessInfo::PortPipePath(&serial_pipe_path),
                 )
                 .await?;
-                crate::serial_log_task(serial_log_file, PolledPipe::new(&driver, serial)?).await
+                crate::log_stream(serial_log_file, PolledPipe::new(&driver, serial)?).await
             }
         }));
 

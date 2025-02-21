@@ -8598,6 +8598,7 @@ dependencies = [
  "mesh",
  "mesh_rpc",
  "nvme_resources",
+ "pal",
  "pal_async",
  "petri",
  "petri_artifact_resolver_openvmm_known_paths",

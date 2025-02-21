@@ -8,11 +8,11 @@
 use anyhow::Context;
 use guid::Guid;
 use hvlite_ttrpc_vmservice as vmservice;
+use pal_async::pipe::PolledPipe;
+use pal_async::task::Spawn;
 use pal_async::DefaultPool;
 use petri::ResolvedArtifact;
 use petri_artifacts_vmm_test::artifacts;
-use std::io::BufRead;
-use std::io::BufReader;
 use std::io::Read;
 use std::process::Stdio;
 use unix_socket::UnixStream;
@@ -30,17 +30,20 @@ fn test_ttrpc_interface(
     params: petri::PetriTestParams<'_>,
     [openvmm, kernel_path, initrd_path]: [ResolvedArtifact; 3],
 ) -> anyhow::Result<()> {
+    use pal_async::socket::PolledSocket;
+
     let mut socket_path = std::env::temp_dir();
     socket_path.push(Guid::new_random().to_string());
 
     tracing::info!(socket_path = %socket_path.display(), "launching hvlite with ttrpc");
 
+    let (stderr_read, stderr_write) = pal::pipe_pair()?;
     let mut child = std::process::Command::new(openvmm)
         .arg("--ttrpc")
         .arg(&socket_path)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(stderr_write)
         .spawn()?;
 
     // Wait for stdout to close.
@@ -48,19 +51,17 @@ fn test_ttrpc_interface(
     let mut b = [0];
     assert_eq!(stdout.read(&mut b)?, 0);
 
-    // Copy the child's stderr to this process's, since internally this is
-    // wrapped by the test harness.
-    let stderr = child.stderr.take().context("failed to take stderr")?;
-    let stderr_log = params.logger.log_file("stderr").unwrap();
-    std::thread::spawn(move || {
-        let stderr = BufReader::new(stderr);
-        for line in stderr.lines() {
-            stderr_log.write_entry(line.unwrap());
-        }
-    });
+    DefaultPool::run_with(|driver| async {
+        let driver = driver;
+        let _stderr_task = driver.spawn(
+            "stderr",
+            petri::log_stream(
+                params.logger.log_file("stderr").unwrap(),
+                PolledPipe::new(&driver, stderr_read).unwrap(),
+            ),
+        );
 
-    let ttrpc_path = socket_path.clone();
-    DefaultPool::run_with(|driver| async move {
+        let ttrpc_path = socket_path.clone();
         let client = mesh_rpc::Client::new(
             &driver,
             mesh_rpc::client::UnixDialier::new(driver.clone(), ttrpc_path),
@@ -108,19 +109,13 @@ fn test_ttrpc_interface(
 
             let com1 = UnixStream::connect(&com1_path).unwrap();
 
-            let com1_log = params.logger.log_file("linux").unwrap();
-            std::thread::spawn(move || {
-                let read = BufReader::new(com1);
-                for line in read.lines() {
-                    match line {
-                        Ok(line) => com1_log.write_entry(line),
-                        Err(e) => tracing::error!(
-                            error = &e as &dyn std::error::Error,
-                            "failed to read from com1"
-                        ),
-                    }
-                }
-            });
+            let _com1_task = driver.spawn(
+                "com1",
+                petri::log_stream(
+                    params.logger.log_file("linux").unwrap(),
+                    PolledSocket::new(&driver, com1).unwrap(),
+                ),
+            );
 
             assert_eq!(
                 client

@@ -303,8 +303,8 @@ impl<'a> MakeWriter<'a> for PetriWriter {
     }
 }
 
-/// read from the serial reader and write entries to the log
-pub async fn serial_log_task(
+/// Logs lines from `reader` into `log_file`.
+pub async fn log_stream(
     log_file: PetriLogFile,
     reader: impl AsyncRead + Unpin + Send + 'static,
 ) -> anyhow::Result<()> {
