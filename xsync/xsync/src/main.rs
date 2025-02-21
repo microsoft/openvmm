@@ -128,8 +128,8 @@ fn do_full_sync(ctx: &CmdCtx, check: bool) -> Result<(), anyhow::Error> {
     .run(ctx.clone())?;
 
     log::info!("running xsync cmd: `rustfmt regen`    (syncing overlay-repo's `rustfmt.toml` to base-repo's `rustfmt.toml`)");
-    tasks::RustToolchainToml {
-        cmd: tasks::rust_toolchain_toml::Command::Regen,
+    tasks::RustfmtToml {
+        cmd: tasks::rustfmt_toml::Command::Regen,
     }
     .run(ctx.clone())?;
 
