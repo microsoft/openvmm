@@ -1200,7 +1200,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
     }
 }
 
-/// A small struct for delaying requrested TLB flushes.
+/// A small struct for delaying requested TLB flushes.
 /// This is only used in the context of the `write_msr_cvm` function,
 /// in which the only MSR of relevance is the hypercall overlay MSR, which
 /// only performs a basic TLB flush.
