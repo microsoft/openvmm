@@ -352,18 +352,13 @@ impl NvmeManagerWorker {
             let dma_client = self
                 .dma_client_spawner
                 .create_client(format!("nvme_{}", pci_id))?;
+            // This code can wait on each VFIO device until it is arrived.
+            // A potential optimization would be to delay VFIO operation
+            // until it is ready, but a redesign of VfioDevice is needed.
             let vfio_device =
-                // This code can wait on each VFIO device until it is arrived.
-                // A potential optimization would be to delay VFIO operation
-                // until it is ready, but a redesign of VfioDevice is needed.
-                VfioDevice::restore(
-                    &self.driver_source,
-                    &disk.pci_id.clone(),
-                    true,
-                    dma_client,
-                )
-                .instrument(tracing::info_span!("vfio_device_restore", pci_id))
-                .await?;
+                VfioDevice::restore(&self.driver_source, &disk.pci_id.clone(), true, dma_client)
+                    .instrument(tracing::info_span!("vfio_device_restore", pci_id))
+                    .await?;
 
             let nvme_driver = nvme_driver::NvmeDriver::restore(
                 &self.driver_source,

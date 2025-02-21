@@ -269,10 +269,10 @@ impl FlowNode for Node {
             }
         };
 
+        // The reason we need to check for relaunch on Local but not GH Actions is that GH Actions
+        // spawns a new shell for each step, so the new shell will have the new $PATH. On the local backend,
+        // the same shell is reused and needs to be relaunched to pick up the new $PATH.
         let is_installed =
-            // The reason we need to check for relaunch on Local but not GH Actions is that GH Actions
-            // spawns a new shell for each step, so the new shell will have the new $PATH. On the local backend,
-            // the same shell is reused and needs to be relaunched to pick up the new $PATH.
             if !ensure_installed.is_empty() && matches!(ctx.backend(), FlowBackend::Local) {
                 let (read_bin, write_cargo_bin) = ctx.new_var();
                 ctx.req(crate::check_needs_relaunch::Params {

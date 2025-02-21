@@ -126,7 +126,7 @@ impl LxVolume {
             let block_size = api::LxUtilFsGetFileSystemBlockSize(root.as_raw_handle());
             Ok(Self {
                 root,
-                #[allow(clippy::disallowed_methods)] // need actual canonical path here
+                #[allow(clippy::disallowed_methods, reason = "need actual canonical path here")]
                 root_path: root_path.canonicalize()?,
                 state: VolumeState::new(fs_context, options, block_size),
             })
