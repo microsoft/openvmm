@@ -62,7 +62,8 @@ pub struct PolledPipe {
 impl PolledPipe {
     /// Configures a pipe file for polled use.
     ///
-    /// Due to platform limitations, this will fail for unidirectional pipes and unbuffered pipes.
+    /// Due to platform limitations, this will fail for unidirectional pipes on
+    /// older versions of Windows and on unbuffered pipes.
     pub fn new(driver: &(impl ?Sized + Driver), file: File) -> io::Result<Self> {
         let message_mode = file.get_pipe_state()? & PIPE_READMODE_MESSAGE != 0;
         Self::new_internal(driver, file, message_mode)

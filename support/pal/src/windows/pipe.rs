@@ -406,7 +406,7 @@ const fn ctl_code(device_type: u32, function: u32, method: u32, access: u32) -> 
 
 const FSCTL_PIPE_EVENT_SELECT: u32 = ctl_code(
     winioctl::FILE_DEVICE_NAMED_PIPE,
-    30713,
+    3071,
     winioctl::METHOD_BUFFERED,
     winioctl::FILE_ANY_ACCESS,
 );
