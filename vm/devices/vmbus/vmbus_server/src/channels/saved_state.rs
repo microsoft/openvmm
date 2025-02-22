@@ -45,12 +45,13 @@ impl super::Server {
             }
         }
 
-        self.pending_messages.0.extend(
-            saved
-                .pending_messages
-                .into_iter()
-                .map(OutgoingMessage::restore),
-        );
+        self.pending_messages
+            .0
+            .reserve(saved.pending_messages.len());
+
+        for message in saved.pending_messages {
+            self.pending_messages.0.push_back(message.restore()?);
+        }
 
         Ok(())
     }
@@ -222,6 +223,8 @@ pub enum RestoreError {
         "reserved channel with ID {0} has a pending message but is missing from the saved state"
     )]
     MissingReservedChannel(u32),
+    #[error("a saved pending message is larger than the maximum message size")]
+    MessageTooLarge,
 }
 
 #[derive(Debug, Protobuf, Clone)]
@@ -1000,7 +1003,8 @@ impl OutgoingMessage {
         Self(value.data().to_vec())
     }
 
-    fn restore(self) -> vmbus_core::OutgoingMessage {
+    fn restore(self) -> Result<vmbus_core::OutgoingMessage, RestoreError> {
         vmbus_core::OutgoingMessage::from_message(&self.0)
+            .map_err(|_| RestoreError::MessageTooLarge)
     }
 }
