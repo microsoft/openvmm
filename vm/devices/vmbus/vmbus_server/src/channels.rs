@@ -1381,11 +1381,10 @@ impl Server {
     /// Tries to resend pending messages using the provided `send`` function.
     pub fn poll_flush_pending_messages(
         &mut self,
-        cx: &mut std::task::Context<'_>,
-        mut send: impl FnMut(&mut std::task::Context<'_>, &OutgoingMessage) -> Poll<()>,
+        mut send: impl FnMut(&OutgoingMessage) -> Poll<()>,
     ) -> Poll<()> {
         while let Some(message) = self.pending_messages.0.front() {
-            ready!(send(cx, message));
+            ready!(send(message));
             self.pending_messages.0.pop_front();
         }
 
@@ -3627,7 +3626,6 @@ mod tests {
     use crate::MESSAGE_CONNECTION_ID;
 
     use super::*;
-    use futures::task::noop_waker_ref;
     use guid::Guid;
     use protocol::VmbusMessage;
     use std::collections::VecDeque;
@@ -5070,13 +5068,10 @@ mod tests {
         // The messages should be pending again.
         assert!(env.server.has_pending_messages());
         let mut pending_messages = Vec::new();
-        let r = env.server.poll_flush_pending_messages(
-            &mut std::task::Context::from_waker(noop_waker_ref()),
-            |_, msg| {
-                pending_messages.push(msg.clone());
-                Poll::Ready(())
-            },
-        );
+        let r = env.server.poll_flush_pending_messages(|msg| {
+            pending_messages.push(msg.clone());
+            Poll::Ready(())
+        });
         assert!(r.is_ready());
         assert_eq!(pending_messages.len(), 2);
         assert_eq!(

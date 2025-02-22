@@ -1032,7 +1032,7 @@ impl ServerTask {
             let mut flush_pending_messages =
                 OptionFuture::from((self.running && has_pending_messages).then(|| {
                     poll_fn(|cx| {
-                        self.server.poll_flush_pending_messages(cx, |cx, msg| {
+                        self.server.poll_flush_pending_messages(|msg| {
                             message_port.poll_post_message(cx, VMBUS_MESSAGE_TYPE, msg.data())
                         })
                     })
