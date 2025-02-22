@@ -68,7 +68,7 @@ pub mod publish {
                             let OpenvmmHclOutput { bin, dbg } = openvmm_hcl_bin;
                             files.push((format!("{folder_name}/openhcl").into(), bin));
                             if let Some(dbg) = dbg {
-                                files.push((format!("{folder_name}/openhcl.dbg").into(), dbg));
+                                files.push((format!("{folder_name}/openvmm_hcl.dbg").into(), dbg));
                             }
                         }
 
@@ -167,7 +167,7 @@ pub mod resolve {
                             openvmm_hcl_bin: OpenvmmHclOutput {
                                 bin: folder_name.join("openhcl"),
                                 dbg: {
-                                    let p = folder_name.join("openhcl.dbg");
+                                    let p = folder_name.join("openvmm_hcl.dbg");
                                     p.exists().then_some(p)
                                 },
                             },
