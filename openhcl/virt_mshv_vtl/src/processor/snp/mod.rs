@@ -87,7 +87,7 @@ pub struct SnpBacked {
     direct_overlays_pfns: [u64; UhDirectOverlay::Count as usize],
     #[inspect(skip)]
     #[allow(dead_code)] // Allocation handle for direct overlays held until drop
-    direct_overlay_pfns_handle: page_pool_alloc::PagePoolHandle,
+    direct_overlay_pfns_handle: user_driver::memory::MemoryBlock,
     #[inspect(hex)]
     hv_sint_notifications: u16,
     general_stats: VtlArray<GeneralStats, 2>,
@@ -279,14 +279,13 @@ impl BackingPrivate for SnpBacked {
             .shared_vis_pages_pool
             .as_ref()
             .ok_or(Error::MissingSharedMemory)?
-            .alloc(
-                NonZeroU64::new(shared_pages_required_per_cpu()).expect("is nonzero"),
-                format!("direct overlay vp {}", params.vp_info.base.vp_index.index()),
+            .allocate_dma_buffer(
+                (shared_pages_required_per_cpu() * HV_PAGE_SIZE) as usize,
+                // format!("direct overlay vp {}", params.vp_info.base.vp_index.index()),
             )
             .map_err(Error::AllocateSharedVisOverlay)?;
-        let pfns = pfns_handle.base_pfn()..pfns_handle.base_pfn() + pfns_handle.size_pages();
 
-        let overlays: Vec<_> = pfns.collect();
+        let overlays: Vec<_> = pfns_handle.pfns().to_vec();
 
         Ok(Self {
             direct_overlays_pfns: overlays.try_into().unwrap(),

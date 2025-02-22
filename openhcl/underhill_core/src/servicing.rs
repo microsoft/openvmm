@@ -8,8 +8,8 @@ pub use state::*;
 use crate::worker::FirmwareType;
 
 mod state {
-    use crate::dma_manager::save_restore::GlobalDmaManagerState;
     use mesh::payload::Protobuf;
+    use openhcl_dma_manager::save_restore::GlobalDmaManagerState;
     use state_unit::SavedStateUnit;
     use vmcore::save_restore::SaveRestore;
     use vmcore::save_restore::SavedStateRoot;
@@ -127,7 +127,7 @@ impl From<Firmware> for FirmwareType {
 #[allow(clippy::option_option)]
 pub mod transposed {
     use super::*;
-    use crate::dma_manager::save_restore::GlobalDmaManagerState;
+    use openhcl_dma_manager::save_restore::GlobalDmaManagerState;
     use vmcore::save_restore::SaveRestore;
 
     /// A transposed `Option<ServicingInitState>`, where each field of

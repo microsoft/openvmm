@@ -4,8 +4,6 @@
 //! Provides access to NVMe namespaces that are backed by the user-mode NVMe
 //! VFIO driver. Keeps track of all the NVMe drivers.
 
-use crate::dma_manager::DmaClientSpawner;
-use crate::dma_manager::LowerVtlPermissionPolicy;
 use crate::nvme_manager::save_restore::NvmeManagerSavedState;
 use crate::nvme_manager::save_restore::NvmeSavedDiskConfig;
 use crate::servicing::NvmeSavedState;
@@ -20,6 +18,10 @@ use inspect::Inspect;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh::MeshPayload;
+use openhcl_dma_manager::AllocationVisibility;
+use openhcl_dma_manager::DmaClientParameters;
+use openhcl_dma_manager::DmaClientSpawner;
+use openhcl_dma_manager::LowerVtlPermissionPolicy;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::collections::hash_map;
@@ -290,10 +292,12 @@ impl NvmeManagerWorker {
             hash_map::Entry::Vacant(entry) => {
                 let dma_client = self
                     .dma_client_spawner
-                    .create_client(
-                        format!("nvme_{}", pci_id),
-                        LowerVtlPermissionPolicy::Default,
-                    )
+                    .create_client(DmaClientParameters {
+                        device_name: format!("nvme_{}", pci_id),
+                        lower_vtl_policy: LowerVtlPermissionPolicy::Default,
+                        allocation_visibility: AllocationVisibility::Default,
+                        persistent_allocations: self.save_restore_supported,
+                    })
                     .map_err(InnerError::DmaClient)?;
 
                 let device = VfioDevice::new(&self.driver_source, entry.key(), dma_client)
@@ -353,10 +357,12 @@ impl NvmeManagerWorker {
         for disk in &saved_state.nvme_disks {
             let pci_id = disk.pci_id.clone();
 
-            let dma_client = self.dma_client_spawner.create_client(
-                format!("nvme_{}", pci_id),
-                LowerVtlPermissionPolicy::Default,
-            )?;
+            let dma_client = self.dma_client_spawner.create_client(DmaClientParameters {
+                device_name: format!("nvme_{}", pci_id),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Default,
+                allocation_visibility: AllocationVisibility::Default,
+                persistent_allocations: true,
+            })?;
 
             // This code can wait on each VFIO device until it is arrived.
             // A potential optimization would be to delay VFIO operation

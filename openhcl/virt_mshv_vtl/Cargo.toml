@@ -39,6 +39,7 @@ pal_uring.workspace = true
 pal.workspace = true
 safeatomic.workspace = true
 tracelimit.workspace = true
+user_driver.workspace = true
 
 anyhow.workspace = true
 bitfield-struct.workspace = true

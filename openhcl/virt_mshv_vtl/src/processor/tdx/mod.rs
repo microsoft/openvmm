@@ -684,9 +684,9 @@ impl BackingPrivate for TdxBacked {
             .shared_vis_pages_pool
             .as_ref()
             .ok_or(crate::Error::MissingSharedMemory)?
-            .alloc(
-                NonZeroU64::new(shared_pages_required_per_cpu()).expect("is nonzero"),
-                format!("direct overlay vp {}", params.vp_info.base.vp_index.index()),
+            .allocate_dma_buffer(
+                (shared_pages_required_per_cpu() * HV_PAGE_SIZE) as usize,
+                // format!("direct overlay vp {}", params.vp_info.base.vp_index.index()),
             )
             .map_err(super::Error::AllocateSharedVisOverlay)?;
         let pfns = pfns_handle.base_pfn()..pfns_handle.base_pfn() + pfns_handle.size_pages();
@@ -697,7 +697,8 @@ impl BackingPrivate for TdxBacked {
             .private_vis_pages_pool
             .as_ref()
             .ok_or(crate::Error::MissingPrivateMemory)?
-            .alloc(1.try_into().unwrap(), "tdx_tlb_flush".into())
+            .allocate_dma_buffer(HV_PAGE_SIZE)
+            //"tdx_tlb_flush".into())
             .map_err(crate::Error::AllocateTlbFlushPage)?;
 
         let untrusted_synic = params

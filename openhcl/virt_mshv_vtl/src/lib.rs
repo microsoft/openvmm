@@ -97,6 +97,7 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::task::Waker;
 use thiserror::Error;
+use user_driver::DmaClient;
 use virt::irqcon::IoApicRouting;
 use virt::irqcon::MsiRequest;
 use virt::x86::apic_software_device::ApicSoftwareDevices;
@@ -146,7 +147,7 @@ pub enum Error {
     #[error("failed to map overlay page")]
     MapOverlay(#[source] std::io::Error),
     #[error("failed to allocate shared visibility pages for overlay")]
-    AllocateSharedVisOverlay(#[source] page_pool_alloc::Error),
+    AllocateSharedVisOverlay(#[source] anyhow::Error),
     #[error("failed to open msr device")]
     OpenMsr(#[source] std::io::Error),
     #[error("cpuid did not contain valid TSC frequency information")]
@@ -228,11 +229,11 @@ struct UhPartitionInner {
     #[inspect(skip)]
     isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    #[inspect(skip)]
-    shared_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
+    #[inspect(skip)] // TODO: remove inspect bound
+    shared_vis_pages_pool: Option<Arc<dyn DmaClient>>,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     #[inspect(skip)]
-    private_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
+    private_vis_pages_pool: Option<Arc<dyn DmaClient>>,
     #[inspect(with = "inspect::AtomicMut")]
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
@@ -1282,9 +1283,9 @@ pub struct UhLateParams<'a> {
     /// An object to call to change host visibility on guest memory.
     pub isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     /// Allocator for shared visibility pages.
-    pub shared_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
+    pub shared_vis_pages_pool: Option<Arc<dyn DmaClient>>,
     /// Allocator for private visibility pages.
-    pub private_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
+    pub private_vis_pages_pool: Option<Arc<dyn DmaClient>>,
 }
 
 /// Trait for CVM-related protections on guest memory.

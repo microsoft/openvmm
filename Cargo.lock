@@ -4698,6 +4698,20 @@ dependencies = [
 [[package]]
 name = "openhcl_dma_manager"
 version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "hcl",
+ "hcl_mapper",
+ "hvdef",
+ "inspect",
+ "lower_vtl_permissions_guard",
+ "memory_range",
+ "mesh",
+ "page_pool_alloc",
+ "user_driver",
+ "virt",
+ "vmcore",
+]
 
 [[package]]
 name = "openssl"
@@ -7742,6 +7756,7 @@ dependencies = [
  "thiserror 2.0.0",
  "tracelimit",
  "tracing",
+ "user_driver",
  "virt",
  "virt_support_aarch64emu",
  "virt_support_apic",

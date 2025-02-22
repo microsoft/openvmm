@@ -7,8 +7,6 @@ mod pci_shutdown;
 pub mod vtl2_settings_worker;
 
 use self::vtl2_settings_worker::DeviceInterfaces;
-use crate::dma_manager::DmaClientSpawner;
-use crate::dma_manager::GlobalDmaManager;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::emuplat::EmuplatServicing;
 use crate::nvme_manager::NvmeManager;
@@ -43,6 +41,8 @@ use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
+use openhcl_dma_manager::DmaClientSpawner;
+use openhcl_dma_manager::GlobalDmaManager;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;

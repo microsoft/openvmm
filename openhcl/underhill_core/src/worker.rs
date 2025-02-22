@@ -20,9 +20,6 @@ use crate::dispatch::vtl2_settings_worker::wait_for_mana;
 use crate::dispatch::vtl2_settings_worker::InitialControllers;
 use crate::dispatch::LoadedVm;
 use crate::dispatch::LoadedVmNetworkSettings;
-use crate::dma_manager::DmaClientSpawner;
-use crate::dma_manager::GlobalDmaManager;
-use crate::dma_manager::LowerVtlPermissionPolicy;
 use crate::emuplat::firmware::UnderhillLogger;
 use crate::emuplat::firmware::UnderhillVsmConfig;
 use crate::emuplat::framebuffer::FramebufferRemoteControl;
@@ -96,6 +93,11 @@ use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+use openhcl_dma_manager::AllocationVisibility;
+use openhcl_dma_manager::DmaClientParameters;
+use openhcl_dma_manager::DmaClientSpawner;
+use openhcl_dma_manager::GlobalDmaManager;
+use openhcl_dma_manager::LowerVtlPermissionPolicy;
 use page_pool_alloc::PagePool;
 use pal_async::local::LocalDriver;
 use pal_async::task::Spawn;
@@ -748,10 +750,12 @@ impl UhVmNetworkSettings {
             .unwrap_or(MAX_SUBCHANNELS_PER_VNIC)
             .min(vps_count as u16);
 
-        let dma_client = dma_client_spawner.create_client(
-            format!("nic_{}", nic_config.pci_id),
-            LowerVtlPermissionPolicy::Default,
-        )?;
+        let dma_client = dma_client_spawner.create_client(DmaClientParameters {
+            device_name: format!("nic_{}", nic_config.pci_id),
+            lower_vtl_policy: LowerVtlPermissionPolicy::Default,
+            allocation_visibility: AllocationVisibility::Default,
+            persistent_allocations: false,
+        })?;
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
             nic_config.instance_id,
@@ -1557,36 +1561,16 @@ async fn new_underhill_vm(
     }
 
     // Set the gpa allocator to GET that is required by the attestation message.
-    //
-
     get_client.set_gpa_allocator(
         dma_manager
-            .new_dma_client("get", LowerVtlPermissionPolicy::Vtl0)
+            .new_dma_client(DmaClientParameters {
+                device_name: "get".into(),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
+                allocation_visibility: AllocationVisibility::Default,
+                persistent_allocations: false,
+            })
             .context("get dma client")?,
     );
-    //
-    // Note that the share visibility pool takes precedence, as when isolated
-    // shared memory must be used.
-    if let Some(allocator) = shared_vis_pages_pool
-        .as_ref()
-        .map(|p| p.allocator("get".into()))
-    {
-        get_client.set_gpa_allocator(Arc::new(allocator.context("get shared memory allocator")?));
-    } else if let Some(allocator) = private_pool.as_ref().map(|p| p.allocator("get".into())) {
-        // Private memory requires the pages have vtl protection removed before
-        // sending to the host. Unfortuantely, normally we would use the
-        // partition object that implements this trait but it's not available
-        // yet. Use a special crate just for the get that implements this trait.
-        //
-        // TODO: Remove this requirement in the future when we can fix the host
-        // to handle this packet differently.
-        let allocator = LowerVtlMemorySpawner::new(
-            allocator.context("get private memory allocator")?,
-            get_lower_vtl::GetLowerVtl::new().context("get lower vtl")?,
-        );
-
-        get_client.set_gpa_allocator(Arc::new(allocator));
-    }
 
     // Create the `AttestationVmConfig` from `dps`, which will be used in
     // - stateful mode (the attestation is not suppressed)
