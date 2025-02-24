@@ -3,7 +3,6 @@
 
 //! Gets the Github workflow id for a given commit hash
 
-use anyhow::anyhow;
 use flowey::node::prelude::*;
 
 flowey_request! {
@@ -63,8 +62,8 @@ impl SimpleFlowNode for Node {
                 sh.change_dir(repo_path);
 
                 // Fetches the CI build workflow id for a given commit hash
-                let get_action_id = |commit: String| {
-                    xshell::cmd!(
+                let get_action_id = |commit: String| -> Result<Option<String>, anyhow::Error> {
+                    let output = xshell::cmd!(
                         sh,
                         "{gh_cli} run list
                         --commit {commit}
@@ -74,46 +73,40 @@ impl SimpleFlowNode for Node {
                         --json databaseId
                         --jq .[].databaseId"
                     )
-                    .read()
-                    .map_err(|e| anyhow!(e))
-                };
+                    .read()?;
 
-                let is_empty = |action_id: &Result<String, anyhow::Error>| {
-                    action_id.as_ref().ok().is_some_and(|s| s.trim().is_empty())
+                    if output.trim().is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(output))
+                    }
                 };
 
                 let mut github_commit_hash = github_commit_hash.clone();
                 let mut action_id = get_action_id(github_commit_hash.clone());
                 let mut loop_count = 0;
 
-                if is_empty(&action_id) {
-                    action_id = Err(anyhow!("action id is empty"));
-                }
-
                 // CI may not have finished the build for the merge base, so loop through commits
                 // until we find a finished build or fail after 5 attempts
-                while let Err(ref e) = action_id {
+                while let Ok(None) | Err(_) = action_id {
                     println!(
                         "Unable to get action id for commit {}, trying again",
                         github_commit_hash
                     );
 
                     if loop_count > 4 {
-                        anyhow::bail!("Failed to get action id after 5 attempts: {}", e);
+                        anyhow::bail!("Failed to get action id after 5 attempts");
                     }
 
                     github_commit_hash =
                         xshell::cmd!(sh, "git rev-parse {github_commit_hash}^").read()?;
                     action_id = get_action_id(github_commit_hash.clone());
 
-                    if is_empty(&action_id) {
-                        action_id = Err(anyhow!("action id is empty"));
-                    }
-
                     loop_count += 1;
                 }
 
-                let id = action_id.context("failed to get action id")?;
+                // We have an action id or we would've bailed in the loop above
+                let id = action_id.context("failed to get action id")?.unwrap();
 
                 println!("Got action id {id}, commit {github_commit_hash}");
                 rt.write(
