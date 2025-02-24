@@ -9,7 +9,7 @@ use crate::worker::FirmwareType;
 
 mod state {
     use mesh::payload::Protobuf;
-    use openhcl_dma_manager::save_restore::GlobalDmaManagerState;
+    use openhcl_dma_manager::save_restore::OpenhclDmaManagerState;
     use state_unit::SavedStateUnit;
     use vmcore::save_restore::SaveRestore;
     use vmcore::save_restore::SavedStateRoot;
@@ -79,7 +79,7 @@ mod state {
         pub nvme_state: Option<NvmeSavedState>,
         /// Dma manager state
         #[mesh(10001)]
-        pub dma_manager_state: Option<GlobalDmaManagerState>,
+        pub dma_manager_state: Option<OpenhclDmaManagerState>,
     }
 
     #[derive(Protobuf)]
@@ -127,7 +127,7 @@ impl From<Firmware> for FirmwareType {
 #[allow(clippy::option_option)]
 pub mod transposed {
     use super::*;
-    use openhcl_dma_manager::save_restore::GlobalDmaManagerState;
+    use openhcl_dma_manager::save_restore::OpenhclDmaManagerState;
     use vmcore::save_restore::SaveRestore;
 
     /// A transposed `Option<ServicingInitState>`, where each field of
@@ -144,7 +144,7 @@ pub mod transposed {
         )>,
         pub overlay_shutdown_device: Option<bool>,
         pub nvme_state: Option<Option<NvmeSavedState>>,
-        pub dma_manager_state: Option<Option<GlobalDmaManagerState>>,
+        pub dma_manager_state: Option<Option<OpenhclDmaManagerState>>,
     }
 
     /// A transposed `Option<EmuplatSavedState>`, where each field of

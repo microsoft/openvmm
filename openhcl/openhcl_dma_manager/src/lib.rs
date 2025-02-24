@@ -23,7 +23,7 @@ use user_driver::DmaClient;
 
 /// Save restore support for [`GlobalDmaManager`].
 pub mod save_restore {
-    use super::GlobalDmaManager;
+    use super::OpenhclDmaManager;
     use mesh::payload::Protobuf;
     use page_pool_alloc::save_restore::PagePoolState;
     use vmcore::save_restore::RestoreError;
@@ -32,16 +32,16 @@ pub mod save_restore {
 
     /// The saved state for [`GlobalDmaManager`].
     #[derive(Protobuf)]
-    #[mesh(package = "openhcl.globaldmamanager")]
-    pub struct GlobalDmaManagerState {
+    #[mesh(package = "openhcl.openhcldmamanager")]
+    pub struct OpenhclDmaManagerState {
         #[mesh(1)]
         shared_pool: Option<PagePoolState>,
         #[mesh(2)]
         private_pool: Option<PagePoolState>,
     }
 
-    impl SaveRestore for GlobalDmaManager {
-        type SavedState = GlobalDmaManagerState;
+    impl SaveRestore for OpenhclDmaManager {
+        type SavedState = OpenhclDmaManagerState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             let shared_pool = self
@@ -62,7 +62,7 @@ pub mod save_restore {
                     SaveError::ChildError("private pool save failed".into(), Box::new(e))
                 })?;
 
-            Ok(GlobalDmaManagerState {
+            Ok(OpenhclDmaManagerState {
                 shared_pool,
                 private_pool,
             })
@@ -115,7 +115,7 @@ pub mod save_restore {
 /// A global DMA manager that owns various pools of memory for managing
 /// buffers and clients using DMA.
 #[derive(Inspect)]
-pub struct GlobalDmaManager {
+pub struct OpenhclDmaManager {
     /// Page pool with pages that are mapped with shared visibility on CVMs.
     shared_pool: Option<PagePool>,
     /// Page pool with pages that are mapped with private visibility on CVMs.
@@ -192,27 +192,6 @@ impl virt::VtlMemoryProtection for DmaManagerLowerVtl {
                 hvdef::hypercall::HvInputVtl::CURRENT_VTL,
             )
             .context("failed to modify VTL page permissions")
-    }
-}
-
-/// Wrap a `dma_client` in a [`LowerVtlMemorySpawner`] if the `policy` requires
-/// it. This assumes that `dma_client` requires lowering permission for
-/// allocated buffers.
-fn wrap_in_lower_vtl(
-    dma_client: impl DmaClient + 'static,
-    policy: LowerVtlPermissionPolicy,
-    lower_vtl: &Arc<DmaManagerLowerVtl>,
-) -> anyhow::Result<Arc<dyn DmaClient>> {
-    match policy {
-        LowerVtlPermissionPolicy::Default => Ok(Arc::new(dma_client)),
-        LowerVtlPermissionPolicy::Vtl0 => {
-            // Private memory must be wrapped in a lower VTL memory spawner, as
-            // otherwise it is accessible to VTL2 only.
-            Ok(Arc::new(LowerVtlMemorySpawner::new(
-                dma_client,
-                lower_vtl.clone(),
-            )))
-        }
     }
 }
 
@@ -305,7 +284,7 @@ impl DmaManagerInner {
     }
 }
 
-impl GlobalDmaManager {
+impl OpenhclDmaManager {
     /// Creates a new `GlobalDmaManager` with the given ranges to use for the
     /// shared and private gpa pools.
     pub fn new(
@@ -337,7 +316,7 @@ impl GlobalDmaManager {
             )
         };
 
-        Ok(GlobalDmaManager {
+        Ok(OpenhclDmaManager {
             inner: Arc::new(DmaManagerInner {
                 shared_spawner: shared_pool.as_ref().map(|pool| pool.allocator_spawner()),
                 private_spawner: private_pool.as_ref().map(|pool| pool.allocator_spawner()),

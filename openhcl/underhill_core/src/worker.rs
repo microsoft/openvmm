@@ -71,7 +71,6 @@ use guest_emulation_transport::GuestEmulationTransportClient;
 use guestmem::GuestMemory;
 use guid::Guid;
 use hcl_compat_uefi_nvram_storage::HclCompatNvramQuirks;
-use hcl_mapper::HclMapper;
 use hvdef::hypercall::HvGuestOsId;
 use hvdef::HvRegisterValue;
 use hvdef::Vtl;
@@ -83,7 +82,6 @@ use input_core::InputData;
 use input_core::MultiplexedInputHandle;
 use inspect::Inspect;
 use loader_defs::shim::MemoryVtlType;
-use lower_vtl_permissions_guard::LowerVtlMemorySpawner;
 use memory_range::MemoryRange;
 use mesh::rpc::RpcSend;
 use mesh::CancelContext;
@@ -96,9 +94,8 @@ use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationV
 use openhcl_dma_manager::AllocationVisibility;
 use openhcl_dma_manager::DmaClientParameters;
 use openhcl_dma_manager::DmaClientSpawner;
-use openhcl_dma_manager::GlobalDmaManager;
 use openhcl_dma_manager::LowerVtlPermissionPolicy;
-use page_pool_alloc::PagePool;
+use openhcl_dma_manager::OpenhclDmaManager;
 use pal_async::local::LocalDriver;
 use pal_async::task::Spawn;
 use pal_async::DefaultDriver;
@@ -126,8 +123,6 @@ use uevent::UeventListener;
 use underhill_attestation::AttestationType;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
-use user_driver::lockmem::LockedMemorySpawner;
-use user_driver::DmaClient;
 use virt::state::HvRegisterState;
 use virt::Partition;
 use virt::VpIndex;
@@ -1505,7 +1500,7 @@ async fn new_underhill_vm(
             .expect("isolated VMs should have shared memory")
     };
 
-    let mut dma_manager = GlobalDmaManager::new(
+    let mut dma_manager = OpenhclDmaManager::new(
         &shared_pool.iter().map(|r| r.range).collect::<Vec<_>>(),
         &runtime_params
             .private_pool_ranges()

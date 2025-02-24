@@ -42,7 +42,7 @@ use mesh::MeshPayload;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
 use openhcl_dma_manager::DmaClientSpawner;
-use openhcl_dma_manager::GlobalDmaManager;
+use openhcl_dma_manager::OpenhclDmaManager;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
@@ -180,7 +180,7 @@ pub(crate) struct LoadedVm {
 
     pub nvme_keep_alive: bool,
     pub test_configuration: Option<TestScenarioConfig>,
-    pub dma_manager: GlobalDmaManager,
+    pub dma_manager: OpenhclDmaManager,
 }
 
 pub struct LoadedVmState<T> {

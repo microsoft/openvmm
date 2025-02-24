@@ -98,7 +98,6 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::task::Waker;
 use thiserror::Error;
-use user_driver::DmaClient;
 use virt::irqcon::IoApicRouting;
 use virt::irqcon::MsiRequest;
 use virt::x86::apic_software_device::ApicSoftwareDevices;
