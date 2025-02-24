@@ -292,9 +292,9 @@ struct ConnectedState {
 #[derive(Debug, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
 struct DisconnectedState {
-    #[mesh(2)]
+    #[mesh(1)]
     reserved_channels: Vec<Channel>,
-    #[mesh(3)]
+    #[mesh(2)]
     reserved_gpadls: Vec<Gpadl>,
 }
 
