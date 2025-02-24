@@ -2837,10 +2837,14 @@ async fn new_underhill_vm(
 
         let shutdown_guest = SimpleVmbusClientDeviceWrapper::new(
             driver_source.simple(),
-            Arc::new(LowerVtlMemorySpawner::new(
-                LockedMemorySpawner,
-                partition.clone(),
-            )),
+            dma_manager
+                .new_dma_client(DmaClientParameters {
+                    device_name: "shutdown-relay".into(),
+                    lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
+                    allocation_visibility: AllocationVisibility::Private,
+                    persistent_allocations: false,
+                })
+                .context("shutdown relay dma client")?,
             vmbus_synic_client.clone().unwrap(),
             shutdown_guest,
         )?;

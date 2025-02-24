@@ -124,29 +124,42 @@ pub struct GlobalDmaManager {
     inner: Arc<DmaManagerInner>,
 }
 
+/// The required VTL permissions on DMA allocations.
 #[derive(Inspect)]
 pub enum LowerVtlPermissionPolicy {
+    /// The default permissions for allocations. This may be any combination of
+    /// VTL2 only or all VTLs.
     Default,
+    /// All allocations must be accessible to VTL0.
     Vtl0,
 }
 
 /// The CVM page visibility required for DMA allocations.
 #[derive(Copy, Clone, Inspect)]
 pub enum AllocationVisibility {
+    /// The default visibility for allocations. This may be any combination of
+    /// shared or private, depending on what is available.
     Default,
+    /// Allocations must be shared aka host visible.
     Shared,
+    /// Allocations must be private.
     Private,
 }
 
+/// Client parameters for a new [`OpenhclDmaClient`].
 #[derive(Inspect)]
 pub struct DmaClientParameters {
+    /// The name for this client.
     pub device_name: String,
+    /// The required VTL permissions on allocations.
     pub lower_vtl_policy: LowerVtlPermissionPolicy,
+    /// The required CVM page visibility for allocations.
     pub allocation_visibility: AllocationVisibility,
+    /// Whether allocations must be persistent.
     pub persistent_allocations: bool,
 }
 
-pub struct DmaManagerInner {
+struct DmaManagerInner {
     shared_spawner: Option<PagePoolAllocatorSpawner>,
     private_spawner: Option<PagePoolAllocatorSpawner>,
     lower_vtl: Arc<DmaManagerLowerVtl>,
@@ -204,62 +217,6 @@ fn wrap_in_lower_vtl(
 }
 
 impl DmaManagerInner {
-    // // BUGBUG return wrapped dma client that implements identification via inspect about policy and backing used for allocations
-    // fn new_dma_client(&self, params: &DmaClientParameters) -> anyhow::Result<Arc<dyn DmaClient>> {
-    //     let DmaClientParameters {
-    //         device_name,
-    //         lower_vtl_policy,
-    //         allocation_visibility,
-    //         persistent_allocations,
-    //     } = params;
-
-    //     match (allocation_visibility, self.shared_spawner.as_ref()) {
-    //         (AllocationVisibility::Default, Some(spawner))
-    //         | (AllocationVisibility::Shared, Some(spawner)) => {
-    //             // Shared visibility memory by default has no protections on any
-    //             // VTLs, so no modification is required.
-    //             return Ok(Arc::new(
-    //                 spawner
-    //                     .allocator(device_name)
-    //                     .context("failed to create shared allocator")?,
-    //             ));
-    //         }
-
-    //         (AllocationVisibility::Shared, None) => {
-    //             // No sources available that support shared visibility.
-    //             anyhow::bail!("no sources available for shared visibility")
-    //         }
-
-    //         (AllocationVisibility::Private, _) | (AllocationVisibility::Default, _) => {
-    //             // This is handled by the match statement below.
-    //         }
-    //     }
-
-    //     assert!(matches!(
-    //         allocation_visibility,
-    //         AllocationVisibility::Default | AllocationVisibility::Private
-    //     ));
-
-    //     match (persistent_allocations, self.private_spawner.as_ref()) {
-    //         (true, Some(pool)) => {
-    //             // Persistent allocations are available via the private pool.
-    //             let allocator = pool
-    //                 .allocator(device_name)
-    //                 .context("failed to create private allocator")?;
-    //             wrap_in_lower_vtl(allocator, lower_vtl_policy, &self.lower_vtl)
-    //         }
-    //         (true, None) => {
-    //             // No sources available that support persistence.
-    //             anyhow::bail!("no sources available for persistent allocations")
-    //         }
-    //         (false, _) => {
-    //             // No persistence needeed means the LockedMemorySpawner using
-    //             // normal VTL2 ram is fine.
-    //             wrap_in_lower_vtl(LockedMemorySpawner, lower_vtl_policy, &self.lower_vtl)
-    //         }
-    //     }
-    // }
-
     fn new_dma_client(&self, params: DmaClientParameters) -> anyhow::Result<Arc<OpenhclDmaClient>> {
         // Allocate the inner client that actually performs the allocations.
         let backing = {
@@ -279,7 +236,9 @@ impl DmaManagerInner {
                 (AllocationVisibility::Default, _, Some(shared), _)
                 | (AllocationVisibility::Shared, _, Some(shared), _) => {
                     // The shared pool is used by default if available, or if
-                    // explicitly requested.
+                    // explicitly requested. All pages are accessible by all
+                    // VTLs, so no modification of VTL permissions are required
+                    // regardless of what the caller has asked for.
                     DmaClientBacking::SharedPool(
                         shared
                             .allocator(device_name.into())
@@ -291,25 +250,50 @@ impl DmaManagerInner {
                     anyhow::bail!("no sources available for shared visibility")
                 }
                 (AllocationVisibility::Default, true, None, Some(private))
-                | (AllocationVisibility::Private, true, _, Some(private)) => {
-                    // Only the private pool supports persistent allocations,
-                    // and is used if requested or no shared pool is available.
-                    DmaClientBacking::PrivatePool(
-                        private
-                            .allocator(device_name.into())
-                            .context("failed to create private allocator")?,
-                    )
-                }
+                | (AllocationVisibility::Private, true, _, Some(private)) => match lower_vtl_policy
+                {
+                    LowerVtlPermissionPolicy::Default => {
+                        // Only the private pool supports persistent
+                        // allocations, and is used if requested or no
+                        // shared pool is available.
+                        DmaClientBacking::PrivatePool(
+                            private
+                                .allocator(device_name.into())
+                                .context("failed to create private allocator")?,
+                        )
+                    }
+                    LowerVtlPermissionPolicy::Vtl0 => {
+                        // Private memory must be wrapped in a lower VTL
+                        // memory spawner, as otherwise it is accessible to
+                        // VTL2 only.
+                        DmaClientBacking::PrivatePoolLowerVtl(LowerVtlMemorySpawner::new(
+                            private
+                                .allocator(device_name.into())
+                                .context("failed to create private allocator")?,
+                            self.lower_vtl.clone(),
+                        ))
+                    }
+                },
                 (AllocationVisibility::Private, true, _, None) => {
                     // No sources available that support private persistence.
                     anyhow::bail!("no sources available for private persistent allocations")
                 }
                 (AllocationVisibility::Private, false, _, _)
-                | (AllocationVisibility::Default, false, _, _) => {
-                    // No persistence needeed means the LockedMemorySpawner
-                    // using normal VTL2 ram is fine.
-                    DmaClientBacking::LockedMemory(LockedMemorySpawner)
-                }
+                | (AllocationVisibility::Default, false, _, _) => match lower_vtl_policy {
+                    LowerVtlPermissionPolicy::Default => {
+                        // No persistence needeed means the LockedMemorySpawner
+                        // using normal VTL2 ram is fine.
+                        DmaClientBacking::LockedMemory(LockedMemorySpawner)
+                    }
+                    LowerVtlPermissionPolicy::Vtl0 => {
+                        // `LockedMemorySpawner` uses private VTL2 ram, so
+                        // lowering VTL permissions is required.
+                        DmaClientBacking::LockedMemoryLowerVtl(LowerVtlMemorySpawner::new(
+                            LockedMemorySpawner,
+                            self.lower_vtl.clone(),
+                        ))
+                    }
+                },
                 (_, true, None, None) => {
                     // No sources available that support persistence.
                     anyhow::bail!("no sources available for persistent allocations")
@@ -407,8 +391,7 @@ pub struct DmaClientSpawner {
 }
 
 impl DmaClientSpawner {
-    /// Creates a new DMA client with the given device name and lower VTL
-    /// policy.
+    /// Creates a new DMA client with the given parameters.
     pub fn create_client(
         &self,
         params: DmaClientParameters,
@@ -417,12 +400,16 @@ impl DmaClientSpawner {
     }
 }
 
+/// The backing for allocations for an individual dma client. This is used so
+/// clients can be inspected to see what actually is backing their allocations.
 #[derive(Inspect)]
 #[inspect(tag = "type")]
 enum DmaClientBacking {
     SharedPool(#[inspect(skip)] PagePoolAllocator),
     PrivatePool(#[inspect(skip)] PagePoolAllocator),
     LockedMemory(#[inspect(skip)] LockedMemorySpawner),
+    PrivatePoolLowerVtl(#[inspect(skip)] LowerVtlMemorySpawner<PagePoolAllocator>),
+    LockedMemoryLowerVtl(#[inspect(skip)] LowerVtlMemorySpawner<LockedMemorySpawner>),
 }
 
 impl DmaClientBacking {
@@ -434,6 +421,12 @@ impl DmaClientBacking {
             DmaClientBacking::SharedPool(allocator) => allocator.allocate_dma_buffer(total_size),
             DmaClientBacking::PrivatePool(allocator) => allocator.allocate_dma_buffer(total_size),
             DmaClientBacking::LockedMemory(spawner) => spawner.allocate_dma_buffer(total_size),
+            DmaClientBacking::PrivatePoolLowerVtl(spawner) => {
+                spawner.allocate_dma_buffer(total_size)
+            }
+            DmaClientBacking::LockedMemoryLowerVtl(spawner) => {
+                spawner.allocate_dma_buffer(total_size)
+            }
         }
     }
 
@@ -446,6 +439,12 @@ impl DmaClientBacking {
             DmaClientBacking::SharedPool(allocator) => allocator.attach_dma_buffer(len, base_pfn),
             DmaClientBacking::PrivatePool(allocator) => allocator.attach_dma_buffer(len, base_pfn),
             DmaClientBacking::LockedMemory(spawner) => spawner.attach_dma_buffer(len, base_pfn),
+            DmaClientBacking::PrivatePoolLowerVtl(spawner) => {
+                spawner.attach_dma_buffer(len, base_pfn)
+            }
+            DmaClientBacking::LockedMemoryLowerVtl(spawner) => {
+                spawner.attach_dma_buffer(len, base_pfn)
+            }
         }
     }
 }
