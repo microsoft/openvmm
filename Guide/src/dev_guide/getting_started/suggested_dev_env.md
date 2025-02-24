@@ -22,9 +22,8 @@ If you're using a different development environment, we nonetheless suggest
 reading through this section, so you can enable similar settings in whatever
 editor / IDE you happen to be using.
 
-```admonish tip
+~~~admonish tip
 Just want the recommended editor settings? Put this in `openvmm/.vscode/settings.json`:
-```
 
 ```json
 {
@@ -39,6 +38,7 @@ Just want the recommended editor settings? Put this in `openvmm/.vscode/settings
     },
 }
 ```
+~~~
 
 ### \[WSL2] Connecting to WSL using VSCode
 

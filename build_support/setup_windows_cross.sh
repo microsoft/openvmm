@@ -29,7 +29,7 @@ function setup_windows_cross {
 
     if [[ -x /bin/wslpath ]] && [[ $(wslpath -aw "$myfulldir") != '\\wsl.localhost\'* ]];
     then
-        fatal_error "\033[0;33mWARNING: This script is being run from a Windows partition. This will not work. Please move your repo clone to the WSL filesystem.\033[0m"
+        fatal_error "\033[0;33mWARNING: This script is being run from a Windows partition. This will not work. Please re-clone the repo within WSL2 itself (e.g: somewhere under /home/).\033[0m"
     fi
 
     local tooldir="$(realpath "$myfulldir/windows_cross")"
