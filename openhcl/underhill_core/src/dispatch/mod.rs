@@ -117,7 +117,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
     async fn remove_network(&mut self, instance_id: Guid) -> anyhow::Result<()>;
 
     /// Callback after stopping the VM and all workers, in preparation for a VTL2 reboot.
-    async fn unload_for_servicing(&mut self);
+    async fn unload_for_servicing(&mut self) -> anyhow::Result<()>;
 
     /// Handles packet capture related operations.
     async fn packet_capture(
@@ -519,7 +519,9 @@ impl LoadedVm {
                     network_settings
                         .unload_for_servicing()
                         .instrument(tracing::info_span!("shutdown_mana"))
-                        .await;
+                        .await
+                } else {
+                    Ok(())
                 }
             };
 
@@ -541,8 +543,9 @@ impl LoadedVm {
                     .await
             };
 
-            let (r, (), ()) = (shutdown_pci, shutdown_mana, shutdown_nvme).join().await;
+            let (r, r_mana, ()) = (shutdown_pci, shutdown_mana, shutdown_nvme).join().await;
             r?;
+            r_mana?;
 
             Ok(state)
         }
