@@ -61,7 +61,7 @@ pub trait DeviceRegisterIo: Send + Sync {
 }
 
 /// Device interfaces for DMA.
-pub trait DmaClient: Send + Sync {
+pub trait DmaClient: Send + Sync + Inspect {
     /// Allocate a new DMA buffer. This buffer must be zero initialized.
     ///
     /// TODO: string tag for allocation?

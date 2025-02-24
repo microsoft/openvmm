@@ -7744,6 +7744,7 @@ dependencies = [
  "libc",
  "memory_range",
  "mesh",
+ "openhcl_dma_manager",
  "page_pool_alloc",
  "pal",
  "pal_async",

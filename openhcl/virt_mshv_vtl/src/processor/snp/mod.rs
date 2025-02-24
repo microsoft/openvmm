@@ -44,7 +44,7 @@ use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
-use std::num::NonZeroU64;
+use user_driver::DmaClient;
 use virt::io::CpuIo;
 use virt::state::StateElement;
 use virt::vp;

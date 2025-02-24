@@ -644,8 +644,11 @@ impl PagePoolAllocatorSpawner {
 /// are left as-is in the pool. A new allocator can then be created with the
 /// same name. Exisitng allocations with that same device_name will be
 /// linked to the new allocator.
+#[derive(Inspect)]
 pub struct PagePoolAllocator {
+    #[inspect(skip)]
     inner: Arc<PagePoolInner>,
+    #[inspect(skip)]
     device_id: usize,
 }
 

@@ -204,67 +204,65 @@ fn wrap_in_lower_vtl(
 }
 
 impl DmaManagerInner {
-    // BUGBUG return wrapped dma client that implements identification via inspect about policy and backing used for allocations
-    fn new_dma_client(&self, params: &DmaClientParameters) -> anyhow::Result<Arc<dyn DmaClient>> {
-        let DmaClientParameters {
-            device_name,
-            lower_vtl_policy,
-            allocation_visibility,
-            persistent_allocations,
-        } = params;
+    // // BUGBUG return wrapped dma client that implements identification via inspect about policy and backing used for allocations
+    // fn new_dma_client(&self, params: &DmaClientParameters) -> anyhow::Result<Arc<dyn DmaClient>> {
+    //     let DmaClientParameters {
+    //         device_name,
+    //         lower_vtl_policy,
+    //         allocation_visibility,
+    //         persistent_allocations,
+    //     } = params;
 
-        match (allocation_visibility, self.shared_spawner.as_ref()) {
-            (AllocationVisibility::Default, Some(spawner))
-            | (AllocationVisibility::Shared, Some(spawner)) => {
-                // Shared visibility memory by default has no protections on any
-                // VTLs, so no modification is required.
-                return Ok(Arc::new(
-                    spawner
-                        .allocator(device_name)
-                        .context("failed to create shared allocator")?,
-                ));
-            }
+    //     match (allocation_visibility, self.shared_spawner.as_ref()) {
+    //         (AllocationVisibility::Default, Some(spawner))
+    //         | (AllocationVisibility::Shared, Some(spawner)) => {
+    //             // Shared visibility memory by default has no protections on any
+    //             // VTLs, so no modification is required.
+    //             return Ok(Arc::new(
+    //                 spawner
+    //                     .allocator(device_name)
+    //                     .context("failed to create shared allocator")?,
+    //             ));
+    //         }
 
-            (AllocationVisibility::Shared, None) => {
-                // No sources available that support shared visibility.
-                anyhow::bail!("no sources available for shared visibility")
-            }
+    //         (AllocationVisibility::Shared, None) => {
+    //             // No sources available that support shared visibility.
+    //             anyhow::bail!("no sources available for shared visibility")
+    //         }
 
-            (AllocationVisibility::Private, _) | (AllocationVisibility::Default, _) => {
-                // This is handled by the match statement below.
-            }
-        }
+    //         (AllocationVisibility::Private, _) | (AllocationVisibility::Default, _) => {
+    //             // This is handled by the match statement below.
+    //         }
+    //     }
 
-        assert!(matches!(
-            allocation_visibility,
-            AllocationVisibility::Default | AllocationVisibility::Private
-        ));
+    //     assert!(matches!(
+    //         allocation_visibility,
+    //         AllocationVisibility::Default | AllocationVisibility::Private
+    //     ));
 
-        match (persistent_allocations, self.private_spawner.as_ref()) {
-            (true, Some(pool)) => {
-                // Persistent allocations are available via the private pool.
-                let allocator = pool
-                    .allocator(device_name)
-                    .context("failed to create private allocator")?;
-                wrap_in_lower_vtl(allocator, lower_vtl_policy, &self.lower_vtl)
-            }
-            (true, None) => {
-                // No sources available that support persistence.
-                anyhow::bail!("no sources available for persistent allocations")
-            }
-            (false, _) => {
-                // No persistence needeed means the LockedMemorySpawner using
-                // normal VTL2 ram is fine.
-                wrap_in_lower_vtl(LockedMemorySpawner, lower_vtl_policy, &self.lower_vtl)
-            }
-        }
-    }
+    //     match (persistent_allocations, self.private_spawner.as_ref()) {
+    //         (true, Some(pool)) => {
+    //             // Persistent allocations are available via the private pool.
+    //             let allocator = pool
+    //                 .allocator(device_name)
+    //                 .context("failed to create private allocator")?;
+    //             wrap_in_lower_vtl(allocator, lower_vtl_policy, &self.lower_vtl)
+    //         }
+    //         (true, None) => {
+    //             // No sources available that support persistence.
+    //             anyhow::bail!("no sources available for persistent allocations")
+    //         }
+    //         (false, _) => {
+    //             // No persistence needeed means the LockedMemorySpawner using
+    //             // normal VTL2 ram is fine.
+    //             wrap_in_lower_vtl(LockedMemorySpawner, lower_vtl_policy, &self.lower_vtl)
+    //         }
+    //     }
+    // }
 
-    fn new_ohcl_dma_client(
-        &self,
-        params: DmaClientParameters,
-    ) -> anyhow::Result<Arc<OpenhclDmaClient>> {
-        let inner_client = {
+    fn new_dma_client(&self, params: DmaClientParameters) -> anyhow::Result<Arc<OpenhclDmaClient>> {
+        // Allocate the inner client that actually performs the allocations.
+        let backing = {
             let DmaClientParameters {
                 device_name,
                 lower_vtl_policy,
@@ -280,8 +278,8 @@ impl DmaManagerInner {
             ) {
                 (AllocationVisibility::Default, _, Some(shared), _)
                 | (AllocationVisibility::Shared, _, Some(shared), _) => {
-                    // Shared visibility memory by default has no protections on
-                    // any VTLs, so no modification is required.
+                    // The shared pool is used by default if available, or if
+                    // explicitly requested.
                     DmaClientBacking::SharedPool(
                         shared
                             .allocator(device_name.into())
@@ -294,8 +292,8 @@ impl DmaManagerInner {
                 }
                 (AllocationVisibility::Default, true, None, Some(private))
                 | (AllocationVisibility::Private, true, _, Some(private)) => {
-                    // Persistent allocations are available via the private
-                    // pool.
+                    // Only the private pool supports persistent allocations,
+                    // and is used if requested or no shared pool is available.
                     DmaClientBacking::PrivatePool(
                         private
                             .allocator(device_name.into())
@@ -319,15 +317,7 @@ impl DmaManagerInner {
             }
         };
 
-        Ok(OpenhclDmaClient {
-            inner_client,
-            backing: match params.allocation_visibility {
-                AllocationVisibility::Default => DmaClientBacking::LockedMemory,
-                AllocationVisibility::Shared => DmaClientBacking::SharedPool,
-                AllocationVisibility::Private => DmaClientBacking::PrivatePool,
-            },
-            params,
-        })
+        Ok(Arc::new(OpenhclDmaClient { backing, params }))
     }
 }
 
@@ -379,7 +369,7 @@ impl GlobalDmaManager {
     pub fn new_dma_client(
         &self,
         params: DmaClientParameters,
-    ) -> anyhow::Result<Arc<dyn DmaClient>> {
+    ) -> anyhow::Result<Arc<OpenhclDmaClient>> {
         self.inner.new_dma_client(params)
     }
 
@@ -419,23 +409,50 @@ pub struct DmaClientSpawner {
 impl DmaClientSpawner {
     /// Creates a new DMA client with the given device name and lower VTL
     /// policy.
-    pub fn create_client(&self, params: DmaClientParameters) -> anyhow::Result<Arc<dyn DmaClient>> {
+    pub fn create_client(
+        &self,
+        params: DmaClientParameters,
+    ) -> anyhow::Result<Arc<OpenhclDmaClient>> {
         self.inner.new_dma_client(params)
     }
 }
 
 #[derive(Inspect)]
+#[inspect(tag = "type")]
 enum DmaClientBacking {
-    SharedPool(PagePoolAllocator),
-    PrivatePool(PagePoolAllocator),
-    LockedMemory(LockedMemorySpawner),
+    SharedPool(#[inspect(skip)] PagePoolAllocator),
+    PrivatePool(#[inspect(skip)] PagePoolAllocator),
+    LockedMemory(#[inspect(skip)] LockedMemorySpawner),
+}
+
+impl DmaClientBacking {
+    fn allocate_dma_buffer(
+        &self,
+        total_size: usize,
+    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+        match self {
+            DmaClientBacking::SharedPool(allocator) => allocator.allocate_dma_buffer(total_size),
+            DmaClientBacking::PrivatePool(allocator) => allocator.allocate_dma_buffer(total_size),
+            DmaClientBacking::LockedMemory(spawner) => spawner.allocate_dma_buffer(total_size),
+        }
+    }
+
+    fn attach_dma_buffer(
+        &self,
+        len: usize,
+        base_pfn: u64,
+    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+        match self {
+            DmaClientBacking::SharedPool(allocator) => allocator.attach_dma_buffer(len, base_pfn),
+            DmaClientBacking::PrivatePool(allocator) => allocator.attach_dma_buffer(len, base_pfn),
+            DmaClientBacking::LockedMemory(spawner) => spawner.attach_dma_buffer(len, base_pfn),
+        }
+    }
 }
 
 /// An OpenHCL dma client.
 #[derive(Inspect)]
 pub struct OpenhclDmaClient {
-    #[inspect(skip)]
-    inner_client: Arc<dyn DmaClient>,
     backing: DmaClientBacking,
     params: DmaClientParameters,
 }
@@ -445,7 +462,7 @@ impl DmaClient for OpenhclDmaClient {
         &self,
         total_size: usize,
     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        self.inner_client.allocate_dma_buffer(total_size)
+        self.backing.allocate_dma_buffer(total_size)
     }
 
     fn attach_dma_buffer(
@@ -453,6 +470,6 @@ impl DmaClient for OpenhclDmaClient {
         len: usize,
         base_pfn: u64,
     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        self.inner_client.attach_dma_buffer(len, base_pfn)
+        self.backing.attach_dma_buffer(len, base_pfn)
     }
 }

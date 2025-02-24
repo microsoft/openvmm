@@ -56,7 +56,6 @@ pub struct VfioDevice {
     interrupts: Vec<Option<InterruptState>>,
     #[inspect(skip)]
     config_space: vfio_sys::RegionInfo,
-    #[inspect(skip)]
     dma_client: Arc<dyn DmaClient>,
 }
 
