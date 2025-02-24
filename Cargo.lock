@@ -2680,6 +2680,7 @@ dependencies = [
 name = "hcl"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "bitfield-struct",
  "build_rs_guest_arch",
  "fs-err",
@@ -2691,7 +2692,6 @@ dependencies = [
  "memory_range",
  "nix 0.26.4",
  "open_enum",
- "page_pool_alloc",
  "pal",
  "parking_lot",
  "safe_intrinsics",
@@ -2701,6 +2701,7 @@ dependencies = [
  "thiserror 2.0.0",
  "tracelimit",
  "tracing",
+ "user_driver",
  "x86defs",
  "zerocopy 0.8.14",
 ]

@@ -98,6 +98,7 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::task::Waker;
 use thiserror::Error;
+use user_driver::DmaClient;
 use virt::irqcon::IoApicRouting;
 use virt::irqcon::MsiRequest;
 use virt::x86::apic_software_device::ApicSoftwareDevices;
@@ -1553,7 +1554,16 @@ impl<'a> UhProtoPartition<'a> {
         // Do per-VP HCL initialization.
         hcl.add_vps(
             params.topology.vp_count(),
-            late_params.private_vis_pages_pool.as_ref(),
+            late_params
+                .private_vis_pages_pool
+                .as_ref()
+                .map(|client| {
+                    // BUGBUG icky
+                    let new_client = client.clone();
+                    let new_client: Arc<dyn DmaClient> = new_client;
+                    new_client
+                })
+                .as_ref(),
         )
         .map_err(Error::Hcl)?;
 
