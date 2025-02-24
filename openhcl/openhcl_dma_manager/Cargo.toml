@@ -1,3 +1,6 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 [package]
 name = "openhcl_dma_manager"
 rust-version.workspace = true

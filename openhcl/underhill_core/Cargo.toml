@@ -32,7 +32,6 @@ cvm_tracing.workspace = true
 diag_proto.workspace = true
 diag_server.workspace = true
 debug_worker_defs = { workspace = true, optional = true }
-page_pool_alloc.workspace = true
 virt.workspace = true
 vmm_core.workspace = true
 vmm_core_defs.workspace = true
@@ -58,16 +57,13 @@ hyperv_secure_boot_templates.workspace = true
 hyperv_uefi_custom_vars_json.workspace = true
 framebuffer.workspace = true
 hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect"] }
-hcl_mapper.workspace = true
 get_helpers.workspace = true
-get_lower_vtl.workspace = true
 get_protocol.workspace = true
 guest_emulation_transport.workspace = true
 ide.workspace = true
 ide_resources.workspace = true
 input_core.workspace = true
 kmsg_defs.workspace = true
-lower_vtl_permissions_guard.workspace = true
 mana_driver.workspace = true
 mcr_resources.workspace = true
 net_backend.workspace = true

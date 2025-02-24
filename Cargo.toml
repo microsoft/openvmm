@@ -151,7 +151,6 @@ build_info = { path = "openhcl/build_info" }
 diag_client = { path = "openhcl/diag_client" }
 diag_proto = { path = "openhcl/diag_proto" }
 diag_server = { path = "openhcl/diag_server" }
-get_lower_vtl = { path = "openhcl/get_lower_vtl" }
 hcl = { path = "openhcl/hcl" }
 hcl_mapper = { path = "openhcl/hcl_mapper" }
 host_fdt_parser = { path = "openhcl/host_fdt_parser" }

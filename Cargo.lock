@@ -2362,18 +2362,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "get_lower_vtl"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "hcl",
- "hvdef",
- "inspect",
- "memory_range",
- "virt",
-]
-
-[[package]]
 name = "get_protocol"
 version = "0.0.0"
 dependencies = [
@@ -7196,14 +7184,12 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "get_helpers",
- "get_lower_vtl",
  "get_protocol",
  "getrandom",
  "guest_emulation_transport",
  "guestmem",
  "guid",
  "hcl_compat_uefi_nvram_storage",
- "hcl_mapper",
  "hvdef",
  "hyperv_ic_guest",
  "hyperv_ic_resources",
@@ -7221,7 +7207,6 @@ dependencies = [
  "loader",
  "loader_defs",
  "local_clock",
- "lower_vtl_permissions_guard",
  "mana_driver",
  "mcr_resources",
  "memory_range",
@@ -7238,7 +7223,6 @@ dependencies = [
  "nvme_resources",
  "openhcl_attestation_protocol",
  "openhcl_dma_manager",
- "page_pool_alloc",
  "pal",
  "pal_async",
  "pal_uring",
@@ -7745,7 +7729,6 @@ dependencies = [
  "memory_range",
  "mesh",
  "openhcl_dma_manager",
- "page_pool_alloc",
  "pal",
  "pal_async",
  "pal_uring",
