@@ -86,7 +86,7 @@ pub struct SnpBacked {
     #[inspect(iter_by_index)]
     direct_overlays_pfns: [u64; UhDirectOverlay::Count as usize],
     #[inspect(skip)]
-    #[allow(dead_code)] // Allocation handle for direct overlays held until drop
+    #[expect(dead_code)] // Allocation handle for direct overlays held until drop
     direct_overlay_pfns_handle: user_driver::memory::MemoryBlock,
     #[inspect(hex)]
     hv_sint_notifications: u16,

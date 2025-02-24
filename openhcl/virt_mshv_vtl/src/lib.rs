@@ -169,7 +169,7 @@ pub enum Error {
     #[error("missing private memory for an isolated partition")]
     MissingPrivateMemory,
     #[error("failed to allocate TLB flush page")]
-    AllocateTlbFlushPage(#[source] page_pool_alloc::Error),
+    AllocateTlbFlushPage(#[source] anyhow::Error),
 }
 
 /// Error revoking guest VSM.

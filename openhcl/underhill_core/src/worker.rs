@@ -1505,7 +1505,7 @@ async fn new_underhill_vm(
             .expect("isolated VMs should have shared memory")
     };
 
-    let dma_manager = GlobalDmaManager::new(
+    let mut dma_manager = GlobalDmaManager::new(
         &shared_pool.iter().map(|r| r.range).collect::<Vec<_>>(),
         &runtime_params
             .private_pool_ranges()
@@ -1730,14 +1730,22 @@ async fn new_underhill_vm(
         crash_notification_send,
         vmtime: &vmtime_source,
         isolated_memory_protector: gm.isolated_memory_protector()?,
-        shared_vis_pages_pool: shared_vis_pages_pool.as_ref().map(|p| {
-            p.allocator("partition-shared".into())
-                .expect("partition name should be unique")
-        }),
-        private_vis_pages_pool: private_pool.as_ref().map(|p| {
-            p.allocator("partition-private".into())
-                .expect("partition name should be unique")
-        }),
+        shared_vis_pages_pool: dma_manager
+            .new_dma_client(DmaClientParameters {
+                device_name: "partition-shared".into(),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Default,
+                allocation_visibility: AllocationVisibility::Shared,
+                persistent_allocations: false,
+            })
+            .ok(),
+        private_vis_pages_pool: dma_manager
+            .new_dma_client(DmaClientParameters {
+                device_name: "partition-private".into(),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Default,
+                allocation_visibility: AllocationVisibility::Private,
+                persistent_allocations: false,
+            })
+            .ok(),
     };
 
     let (partition, vps) = proto_partition
@@ -1825,45 +1833,18 @@ async fn new_underhill_vm(
         crate::inspect_proc::periodic_telemetry_task(driver_source.simple()),
     );
 
-    let shared_vis_pool_spawner = shared_vis_pages_pool
-        .as_ref()
-        .map(|p| p.allocator_spawner());
-
-    let private_pool_spanwer = private_pool.as_ref().map(|p| p.allocator_spawner());
-
-    let private_pool_spawner_available = private_pool_spanwer.is_some();
-
-    let vfio_dma_buffer_spawner = Box::new(
-        move |device_id: String| -> anyhow::Result<Arc<dyn DmaClient>> {
-            shared_vis_pool_spawner
-                .as_ref()
-                .map(|spawner| {
-                    spawner
-                        .allocator(device_id.clone())
-                        .map(|alloc| Arc::new(alloc) as _)
-                })
-                .unwrap_or_else(|| {
-                    private_pool_spanwer
-                        .as_ref()
-                        .map(|spawner| {
-                            spawner
-                                .allocator(device_id.clone())
-                                .map(|alloc| Arc::new(alloc) as _)
-                        })
-                        .unwrap_or(Ok(Arc::new(LockedMemorySpawner) as _))
-                })
-        },
-    );
-
     let nvme_manager = if env_cfg.nvme_vfio {
-        let save_restore_supported = env_cfg.nvme_keep_alive && private_pool_spawner_available;
+        // TODO: reevaluate enablement of nvme save restore when private pool
+        // save restore to bootshim is available.
+        let private_pool_available = !runtime_params.private_pool_ranges().is_empty();
+        let save_restore_supported = env_cfg.nvme_keep_alive && private_pool_available;
 
         let manager = NvmeManager::new(
             &driver_source,
             processor_topology.vp_count(),
             save_restore_supported,
             servicing_state.nvme_state.unwrap_or(None),
-            dma_manager.get_client_spawner().clone(),
+            dma_manager.client_spawner(),
         );
 
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(
@@ -2448,30 +2429,23 @@ async fn new_underhill_vm(
             )
         };
 
-        // AK cert request depends on the availability of the shared memory
-        //
         // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
-        //
-        // TODO: Remove the has_page_pool_available when private_pool is always
-        // available on non isolated.
-        let has_page_pool_available = shared_vis_pages_pool.is_some() || private_pool.is_some();
-        let ak_cert_type =
-            if !matches!(isolation, virt::IsolationType::Vbs) && has_page_pool_available {
-                let request_ak_cert = GetTpmRequestAkCertHelperHandle::new(
-                    attestation_type,
-                    attestation_vm_config,
-                    platform_attestation_data.agent_data,
-                )
-                .into_resource();
+        let ak_cert_type = if !matches!(isolation, virt::IsolationType::Vbs) {
+            let request_ak_cert = GetTpmRequestAkCertHelperHandle::new(
+                attestation_type,
+                attestation_vm_config,
+                platform_attestation_data.agent_data,
+            )
+            .into_resource();
 
-                if !matches!(attestation_type, AttestationType::Host) {
-                    TpmAkCertTypeResource::HwAttested(request_ak_cert)
-                } else {
-                    TpmAkCertTypeResource::Trusted(request_ak_cert)
-                }
+            if !matches!(attestation_type, AttestationType::Host) {
+                TpmAkCertTypeResource::HwAttested(request_ak_cert)
             } else {
-                TpmAkCertTypeResource::None
-            };
+                TpmAkCertTypeResource::Trusted(request_ak_cert)
+            }
+        } else {
+            TpmAkCertTypeResource::None
+        };
 
         let register_layout = if cfg!(guest_arch = "x86_64") {
             TpmRegisterLayout::IoPort
@@ -2801,7 +2775,7 @@ async fn new_underhill_vm(
                     partition.clone(),
                     &state_units,
                     &vmbus_server,
-                    dma_manager.get_client_spawner().clone(),
+                    dma_manager.client_spawner(),
                 )
                 .await?;
 
