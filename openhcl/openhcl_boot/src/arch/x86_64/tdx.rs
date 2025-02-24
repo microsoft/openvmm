@@ -7,12 +7,14 @@ use crate::single_threaded::SingleThreaded;
 use core::arch::asm;
 use core::cell::Cell;
 use memory_range::MemoryRange;
+use tdcall::tdcall_hypercall;
 use tdcall::tdcall_map_gpa;
 use tdcall::tdcall_rdmsr;
 use tdcall::AcceptPagesError;
 use tdcall::Tdcall;
 use tdcall::TdcallInput;
 use tdcall::TdcallOutput;
+use x86defs::tdx::TdVmCallR10Result;
 
 /// Perform a tdcall instruction with the specified inputs.
 fn tdcall(input: TdcallInput) -> TdcallOutput {
@@ -103,6 +105,21 @@ fn read_msr_tdcall(msr_index: u32) -> u64 {
     let mut msr_value: u64 = 0;
     tdcall_rdmsr(&mut TdcallInstruction, msr_index, &mut msr_value).unwrap();
     msr_value
+}
+
+pub fn invoke_tdcall_hypercall(
+    control: hvdef::hypercall::Control,
+    input_page: u64,
+    output_page: u64,
+) -> hvdef::hypercall::HypercallOutput {
+    let result = tdcall_hypercall(&mut TdcallInstruction, control, input_page, output_page);
+    match result {
+        Ok(()) => 0.into(),
+        Err(val) => {
+            let TdVmCallR10Result(return_code) = val;
+            return_code.into()
+        }
+    }
 }
 
 /// Global variable to store tsc frequency.

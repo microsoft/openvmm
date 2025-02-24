@@ -78,6 +78,48 @@ pub trait Tdcall {
     fn tdcall(&mut self, input: TdcallInput) -> TdcallOutput;
 }
 
+/// Perform a tdcall based Hypercall. This is done by issuing a TDG.VP.VMCALL.
+pub fn tdcall_hypercall(
+    call: &mut impl Tdcall,
+    control: hvdef::hypercall::Control,
+    input_gpa: u64,
+    output_gpa: u64,
+) -> Result<(), TdVmCallR10Result> {
+    let input = TdcallInput {
+        leaf: TdCallLeaf::VP_VMCALL,
+        rcx: 0x0d04, // pass RDX, R8, R10, R11
+        rdx: input_gpa,
+        r8: output_gpa,
+        r9: 0,
+        r10: u64::from(control), // hypercall control code
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    if output.rax.code() != TdCallResultCode::SUCCESS {
+        // This means something has gone horribly wrong with the TDX module, as
+        // this call should always succeed with hypercall errors returned in
+        // r11.
+        panic!(
+            "unexpected nonzero rax {:x} on tdcall_hypercall",
+            u64::from(output.rax)
+        );
+    }
+
+    // TD.VMCALL for Hypercall passes return code in r11
+    let result = TdVmCallR10Result(output.r11);
+
+    match result {
+        TdVmCallR10Result::SUCCESS => Ok(()),
+        val => Err(val),
+    }
+}
+
 /// Perform a tdcall based MSR read. This is done by issuing a TDG.VP.VMCALL.
 pub fn tdcall_rdmsr(
     call: &mut impl Tdcall,
@@ -574,7 +616,15 @@ pub fn tdcall_map_gpa(
 
         let output = call.tdcall(input);
 
-        // TODO TDX: check rax return code
+        if output.rax.code() != TdCallResultCode::SUCCESS {
+            // This means something has gone horribly wrong with the TDX module, as
+            // this call should always succeed with hypercall errors returned in
+            // r11.
+            panic!(
+                "unexpected nonzero rax {:x} on tdcall_map_gpa",
+                u64::from(output.rax)
+            );
+        }
 
         let result = TdVmCallR10Result(output.r10);
 
