@@ -12,6 +12,7 @@ use crate::RecvError;
 use mesh_node::message::MeshField;
 use mesh_protobuf::Protobuf;
 use std::convert::Infallible;
+use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::ready;
@@ -21,12 +22,18 @@ use thiserror::Error;
 /// An RPC message for a request with input of type `I` and output of type `R`.
 /// The receiver of the message should process the request and return results
 /// via the `Sender<R>`.
-#[derive(Debug, Protobuf)]
+#[derive(Protobuf)]
 #[mesh(
     bound = "I: 'static + MeshField + Send, R: 'static + MeshField + Send",
     resource = "mesh_node::resource::Resource"
 )]
 pub struct Rpc<I, R>(I, OneshotSender<R>);
+
+impl<I: Debug, R> Debug for Rpc<I, R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Rpc").field(&self.0).finish()
+    }
+}
 
 /// An RPC message with a failable result.
 pub type FailableRpc<I, R> = Rpc<I, RemoteResult<R>>;
@@ -117,6 +124,14 @@ impl<I, R: 'static + Send> Rpc<I, Result<R, RemoteError>> {
     {
         let r = f(self.0).await;
         self.1.send(r.map_err(RemoteError::new));
+    }
+
+    /// Fails the RPC with the specified error.
+    pub fn fail<E>(self, error: E)
+    where
+        E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        self.1.send(Err(RemoteError::new(error)));
     }
 }
 

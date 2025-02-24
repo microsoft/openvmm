@@ -8,7 +8,6 @@ use crate::protocol::Version;
 use crate::Guid;
 use crate::SynicMessage;
 use crate::SINT;
-use guestmem::GuestMemoryError;
 use hvdef::Vtl;
 use inspect::Inspect;
 pub use saved_state::RestoreError;
@@ -86,8 +85,6 @@ pub enum ChannelError {
     ChannelNotReserved,
     #[error("received untrusted message for trusted connection")]
     UntrustedMessage,
-    #[error("an error occurred creating an event port")]
-    SynicError(#[source] vmcore::synic::Error),
 }
 
 #[derive(Debug, Error)]
@@ -291,7 +288,7 @@ pub struct OpenRequest {
     pub downstream_ring_buffer_page_offset: u32,
     pub user_data: UserDefinedData,
     pub guest_specified_interrupt_info: Option<SignalInfo>,
-    pub flags: u16,
+    pub flags: protocol::OpenChannelFlags,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -1160,7 +1157,7 @@ impl OpenParams {
             connection_id,
             event_flag,
             monitor_id,
-            flags: protocol::OpenChannelFlags::from(request.flags).with_unused(0),
+            flags: request.flags.with_unused(0),
             reserved_target,
         }
     }
@@ -1195,17 +1192,6 @@ static SUPPORTED_VERSIONS: &[Version] = &[
     Version::Iron,
     Version::Copper,
 ];
-
-/// An error that occurred while mapping the interrupt page.
-#[derive(Error, Debug)]
-pub enum InterruptPageError {
-    #[error("memory")]
-    MemoryError(#[from] GuestMemoryError),
-    #[error("synic")]
-    SynicError(#[from] vmcore::synic::Error),
-    #[error("gpa {0:#x} is not page aligned")]
-    NotPageAligned(u64),
-}
 
 /// Trait for sending requests to devices and the guest.
 pub trait Notifier: Send {
@@ -2726,7 +2712,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         {
             input.flags
         } else {
-            0
+            Default::default()
         };
 
         let request = OpenRequest {
@@ -2836,7 +2822,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             open_id: 0,
             user_data: UserDefinedData::new_zeroed(),
             guest_specified_interrupt_info: None,
-            flags: 0,
+            flags: Default::default(),
         };
 
         match channel.state {
@@ -4266,9 +4252,10 @@ mod tests {
                         open_channel,
                         event_flag: 2,
                         connection_id: 0x2002,
-                        flags: u16::from(
+                        flags: (u16::from(
                             protocol::OpenChannelFlags::new().with_redirect_interrupt(true),
-                        ) | 0xabc, // a real flag and some junk
+                        ) | 0xabc)
+                            .into(), // a real flag and some junk
                     },
                 ))
                 .unwrap();

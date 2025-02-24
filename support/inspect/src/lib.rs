@@ -1414,6 +1414,18 @@ impl<T: Into<ValueKind> + Clone> From<&'_ T> for ValueKind {
     }
 }
 
+impl Inspect for () {
+    fn inspect(&self, req: Request<'_>) {
+        req.respond();
+    }
+}
+
+impl InspectMut for () {
+    fn inspect_mut(&mut self, req: Request<'_>) {
+        req.respond();
+    }
+}
+
 macro_rules! inspect_value_immut {
     ($($(#[$attr:meta])* $ty:ty),* $(,)?) => {
         $(

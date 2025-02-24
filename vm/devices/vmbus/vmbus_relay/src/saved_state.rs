@@ -7,6 +7,7 @@ use crate::InterceptChannelRequest;
 use crate::RelayChannelRequest;
 use crate::RelayChannelTask;
 use crate::RelayTask;
+use anyhow::Context as _;
 use anyhow::Result;
 use mesh::payload::Protobuf;
 use mesh::rpc::RpcSend;
@@ -49,24 +50,45 @@ impl RelayTask {
         self.use_interrupt_relay
             .store(use_interrupt_relay, Ordering::SeqCst);
         let (version, offers) = self.vmbus_client.restore(client_saved_state).await?;
-        self.relay_state = relay_state.restore(version);
-        channels.sort_by_key(|k| k.channel_id);
-        for offer in offers {
-            let channel = channels
-                .binary_search_by_key(&offer.offer.offer.channel_id.0, |k| k.channel_id)
-                .ok()
-                .and_then(|i| {
-                    if offer.open || channels[i].intercepted {
-                        Some(&channels[i])
-                    } else {
-                        None
-                    }
-                });
+        // Start the client now so that we can issue per-channel operations.
+        self.vmbus_client.start();
+        let r = async {
+            self.relay_state = relay_state.restore(version);
+            channels.sort_by_key(|k| k.channel_id);
+            for offer in offers {
+                let offer_info = offer.offer.offer;
+                let channel = channels
+                    .binary_search_by_key(&offer_info.channel_id.0, |k| k.channel_id)
+                    .ok()
+                    .and_then(|i| {
+                        if offer.open || channels[i].intercepted {
+                            Some(&channels[i])
+                        } else {
+                            None
+                        }
+                    });
 
-            self.handle_offer(offer.offer, Some((offer.open, channel)))
-                .await?;
+                self.handle_offer(offer.offer, Some((offer.open, channel)))
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to restore {{{}}}-{{{}}}-{}",
+                            offer_info.interface_id,
+                            offer_info.instance_id,
+                            offer_info.subchannel_index
+                        )
+                    })?;
+            }
+            Ok(())
         }
-        Ok(())
+        .await;
+
+        // Close any channels that weren't restored.
+        self.vmbus_client.post_restore().await;
+
+        // Stop the client to keep the state machine in a consistent state.
+        self.vmbus_client.stop().await;
+        r
     }
 
     async fn save_channel_state(
@@ -129,7 +151,7 @@ impl RelayChannelTask {
                 .channel
                 .interrupt_relay
                 .as_ref()
-                .map(|interrupt| interrupt.event.get_flag_index()),
+                .map(|interrupt| interrupt.event_flag),
             intercepted: false,
             intercepted_save_state: Vec::new(),
         }

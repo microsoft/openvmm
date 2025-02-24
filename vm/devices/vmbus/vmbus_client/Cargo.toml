@@ -10,12 +10,14 @@ rust-version.workspace = true
 vmbus_async.workspace = true
 vmbus_channel.workspace = true
 vmbus_core.workspace = true
+vmcore.workspace = true
 
 guid.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 pal_event.workspace = true
 inspect.workspace = true
+tracelimit.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true
