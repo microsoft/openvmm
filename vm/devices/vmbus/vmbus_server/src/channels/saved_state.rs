@@ -682,7 +682,7 @@ impl OpenRequest {
                 .guest_specified_interrupt_info
                 .as_ref()
                 .map(SignalInfo::save),
-            flags: value.flags,
+            flags: value.flags.into(),
         }
     }
 
@@ -696,7 +696,7 @@ impl OpenRequest {
             guest_specified_interrupt_info: self
                 .guest_specified_interrupt_info
                 .map(SignalInfo::restore),
-            flags: self.flags,
+            flags: self.flags.into(),
         }
     }
 }

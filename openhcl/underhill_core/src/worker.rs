@@ -2659,7 +2659,6 @@ async fn new_underhill_vm(
 
     let mut vmbus_server = None;
     let mut host_vmbus_relay = None;
-    let mut vmbus_synic_client = None;
 
     // VMBus
     if with_vmbus {
@@ -2726,8 +2725,6 @@ async fn new_underhill_vm(
             let builder = vmbus_client_hcl::vmbus_client_builder(relay_driver)
                 .context("failed to create synic client and message source")?;
 
-            let synic = builder.event_client().clone();
-
             let vmbus_relay = vmbus_relay::HostVmbusTransport::new(
                 relay_driver.clone(),
                 Arc::clone(vmbus.control()),
@@ -2737,7 +2734,6 @@ async fn new_underhill_vm(
             )
             .context("failed to create host vmbus transport")?;
 
-            vmbus_synic_client = Some(synic);
             host_vmbus_relay = Some(VmbusRelayHandle::new(
                 &tp,
                 state_units
@@ -2916,7 +2912,6 @@ async fn new_underhill_vm(
                 LockedMemorySpawner,
                 partition.clone(),
             )),
-            vmbus_synic_client.clone().unwrap(),
             shutdown_guest,
         )?;
         vmbus_intercept_devices
