@@ -5018,6 +5018,40 @@ mod tests {
     }
 
     #[test]
+    fn test_save_restore_disconnected_reserved() {
+        let mut env = TestEnv::new();
+
+        let offer_id1 = env.offer(1);
+        let _offer_id2 = env.offer(2);
+        let _offer_id3 = env.offer(3);
+
+        env.connect(Version::Copper, FeatureFlags::new());
+        env.c().handle_request_offers().unwrap();
+
+        env.gpadl(1, 1);
+        env.c().gpadl_create_complete(offer_id1, GpadlId(1), 0);
+        env.open_reserved(1, 0, 3);
+        env.c().open_complete(offer_id1, protocol::STATUS_SUCCESS);
+        env.c().handle_unload();
+
+        let state = env.server.save();
+        let mut env = TestEnv::new();
+        let offer_id1 = env.offer(1);
+        let offer_id2 = env.offer(2);
+        let offer_id3 = env.offer(3);
+        env.server.restore(state).unwrap();
+
+        // This will panic if the reserved channel was not restored.
+        env.c().restore_channel(offer_id1, true).unwrap();
+        env.c().restore_channel(offer_id2, false).unwrap();
+        env.c().restore_channel(offer_id3, false).unwrap();
+        env.c().post_restore().unwrap();
+
+        // Make sure the gpadl was restored as well.
+        assert!(env.server.gpadls.contains_key(&(GpadlId(1), offer_id1)));
+    }
+
+    #[test]
     fn test_pending_messages() {
         let mut env = TestEnv::new();
 

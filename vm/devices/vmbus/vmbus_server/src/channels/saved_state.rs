@@ -43,6 +43,15 @@ impl super::Server {
             for saved_gpadl in saved.gpadls {
                 self.restore_one_gpadl(saved_gpadl)?;
             }
+        } else if let Some(saved) = saved.disconnected_state {
+            self.state = super::ConnectionState::Disconnected;
+            for saved_channel in saved.reserved_channels {
+                self.restore_one_channel(saved_channel)?;
+            }
+
+            for saved_gpadl in saved.reserved_gpadls {
+                self.restore_one_gpadl(saved_gpadl)?;
+            }
         }
 
         self.pending_messages
@@ -134,8 +143,11 @@ impl super::Server {
 
     /// Saves state.
     pub fn save(&self) -> SavedState {
+        let state = self.save_connected_state();
+        let disconnected_state = state.is_none().then(|| self.save_disconnected_state());
         SavedState {
-            state: self.save_connected_state(),
+            state,
+            disconnected_state,
             pending_messages: self.save_pending_messages(),
         }
     }
@@ -148,19 +160,44 @@ impl super::Server {
             .filter_map(|(_, channel)| Channel::save(channel))
             .collect();
 
-        let gpadls = self
-            .gpadls
-            .iter()
-            .filter_map(|((gpadl_id, offer_id), gpadl)| {
-                Gpadl::save(*gpadl_id, self.channels[*offer_id].info?.channel_id, gpadl)
-            })
-            .collect();
-
+        let gpadls = self.save_gpadls();
         Some(ConnectedState {
             connection,
             channels,
             gpadls,
         })
+    }
+
+    fn save_gpadls(&self) -> Vec<Gpadl> {
+        self.gpadls
+            .iter()
+            .filter_map(|((gpadl_id, offer_id), gpadl)| {
+                Gpadl::save(*gpadl_id, self.channels[*offer_id].info?.channel_id, gpadl)
+            })
+            .collect()
+    }
+
+    fn save_disconnected_state(&self) -> DisconnectedState {
+        // Save reserved channels only.
+        let channels = self
+            .channels
+            .iter()
+            .filter_map(|(_, channel)| {
+                channel
+                    .state
+                    .is_reserved()
+                    .then(|| Channel::save(channel))
+                    .flatten()
+            })
+            .collect();
+
+        // Save the GPADLs for reserved channels.
+        // N.B. There cannot be any other GPADLs while disconnected.
+        let gpadls = self.save_gpadls();
+        DisconnectedState {
+            reserved_channels: channels,
+            reserved_gpadls: gpadls,
+        }
     }
 
     fn save_pending_messages(&self) -> Vec<OutgoingMessage> {
@@ -232,7 +269,12 @@ pub enum RestoreError {
 pub struct SavedState {
     #[mesh(1)]
     state: Option<ConnectedState>,
+    // Disconnected state is used to save any open reserved channels while the guest is
+    // disconnected. It is mutually exclusive with `state`, but is separate to maintain saved state
+    // compatibility.
     #[mesh(2)]
+    disconnected_state: Option<DisconnectedState>,
+    #[mesh(3)]
     pending_messages: Vec<OutgoingMessage>,
 }
 
@@ -245,6 +287,15 @@ struct ConnectedState {
     channels: Vec<Channel>,
     #[mesh(3)]
     gpadls: Vec<Gpadl>,
+}
+
+#[derive(Debug, Clone, Protobuf)]
+#[mesh(package = "vmbus.server.channels")]
+struct DisconnectedState {
+    #[mesh(2)]
+    reserved_channels: Vec<Channel>,
+    #[mesh(3)]
+    reserved_gpadls: Vec<Gpadl>,
 }
 
 #[derive(Debug, Clone, Protobuf)]
