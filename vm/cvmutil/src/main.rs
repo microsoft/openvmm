@@ -1,19 +1,22 @@
 use ms_tpm_20_ref;
 use ms_tpm_20_ref::MsTpm20RefPlatform;
 //use tpm::{self, tpm_helper};
+use tpm::tpm20proto::protocol::TpmtPublic;
+use tpm::tpm20proto::AlgId;
 use tpm::tpm_helper::{self, TpmEngineHelper};
 //use ms_tpm_20_ref::PlatformCallbacks;
 //use crate::Tpm;
 // use inspect::InspectMut;
 use ms_tpm_20_ref::DynResult;
-use std::fs;
 use std::io::Read;
 use std::io::Seek;
 use std::io::Write;
 use std::time::Instant;
+use std::{fs, vec};
 use tpm::TPM_RSA_SRK_HANDLE;
 use tracing::Level;
 
+use base64::Engine;
 use sha2::{Digest, Sha256};
 
 use clap::Parser;
@@ -165,26 +168,58 @@ fn print_vtpm_srk_pub_key_name(srkpub_path: String) {
 
     // Deserialize the srkpub to a public area.
 
-    let public_key = tpm::tpm20proto::protocol::Tpm2bPublic::deserialize(&srkpub_content_buf)
-        .expect("failed to deserialize srkpub");
-    let public_area = public_key.public_area;
+    let public_key =
+        TpmtPublic::deserialize(&srkpub_content_buf).expect("failed to deserialize srkpub");
+    let public_area: TpmtPublic = public_key.into();
     // Compute SHA256 hash of the public area
     let mut hasher = Sha256::new();
     hasher.update(public_area.serialize());
-    let result = hasher.finalize();
+    let public_area_hash = hasher.finalize();
+
+    // Compute the key name
+    let rsa_key = public_area.unique;
+    // Compute SHA256 hash of the public key
+    let mut hasher = Sha256::new();
+    hasher.update(rsa_key.buffer);
+    let rsa_key_hash = hasher.finalize();
+
     println!("Printing key properties.\n");
     println!("SHA256 Hash:");
     print!("  ");
-    for i in 0..result.len() {
-        print!("{:02X} ", result[i]);
+    for i in 0..rsa_key_hash.len() {
+        if i % 16 == 0 {
+            println!();
+            print!("  ");
+        }
+        print!("{:02X} ", rsa_key_hash[i]);
     }
     println!();
 
-    //println!("Key name: {:?}\n", result);
-    //let algorithm_id = public_area.name_alg;
+    // Compute the key name
+    let algorithm_id = public_area.name_alg;
+    let mut output_key = vec![0u8; size_of::<AlgId>() + public_area_hash.len()];
+    output_key[0] = (algorithm_id.0.get() >> 8) as u8;
+    output_key[1] = (algorithm_id.0.get() & 0xFF) as u8;
+    for i in 0..public_area_hash.len() {
+        output_key[i + 2] = public_area_hash[i];
+    }
 
-    println!("Operation completed successfully.\n");
-    
+    let base64_key = base64::engine::general_purpose::STANDARD.encode(&output_key);
+    println!("Key name:\n");
+    println!(" {}", base64_key);
+
+    // Print RSA bytes in hex to be able to compare with tpm2_readpublic -c 0x81000001
+    println!("\nRSA key bytes:");
+    print!("  ");
+    for i in 0..tpm_helper::RSA_2K_MODULUS_SIZE {
+        if i % 32 == 0 {
+            println!();
+            print!("  ");
+        }
+        print!("{:02X}", rsa_key.buffer[i]);
+    }
+    println!();
+    println!("\nOperation completed successfully.\n");
 }
 
 struct TestPlatformCallbacks {

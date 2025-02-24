@@ -60,7 +60,7 @@ const MAX_NV_INDEX_SIZE: u16 = 4096;
 const MAX_ATTESTATION_INDEX_SIZE: u16 = 2600;
 
 const RSA_2K_MODULUS_BITS: u16 = 2048;
-const RSA_2K_MODULUS_SIZE: usize = (RSA_2K_MODULUS_BITS / 8) as usize;
+pub const RSA_2K_MODULUS_SIZE: usize = (RSA_2K_MODULUS_BITS / 8) as usize;
 const RSA_2K_EXPONENT_SIZE: usize = 3;
 
 /// TPM command debug information used by error logs.
