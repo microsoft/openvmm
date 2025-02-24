@@ -62,7 +62,7 @@ impl SimpleFlowNode for Node {
                 sh.change_dir(repo_path);
 
                 // Fetches the CI build workflow id for a given commit hash
-                let get_action_id = |commit: String| -> Result<Option<String>, anyhow::Error> {
+                let get_action_id = |commit: String| -> Option<String> {
                     let output = xshell::cmd!(
                         sh,
                         "{gh_cli} run list
@@ -73,12 +73,15 @@ impl SimpleFlowNode for Node {
                         --json databaseId
                         --jq .[].databaseId"
                     )
-                    .read()?;
+                    .read();
 
-                    if output.trim().is_empty() {
-                        Ok(None)
-                    } else {
-                        Ok(Some(output))
+                    match output {
+                        Ok(output) if output.trim().is_empty() => None,
+                        Ok(output) => Some(output),
+                        Err(e) => {
+                            println!("Failed to get action id for commit {}: {}", commit, e);
+                            None
+                        }
                     }
                 };
 
@@ -88,7 +91,7 @@ impl SimpleFlowNode for Node {
 
                 // CI may not have finished the build for the merge base, so loop through commits
                 // until we find a finished build or fail after 5 attempts
-                while let Ok(None) | Err(_) = action_id {
+                while action_id.is_none() {
                     println!(
                         "Unable to get action id for commit {}, trying again",
                         github_commit_hash
@@ -106,7 +109,7 @@ impl SimpleFlowNode for Node {
                 }
 
                 // We have an action id or we would've bailed in the loop above
-                let id = action_id.context("failed to get action id")?.unwrap();
+                let id = action_id.context("failed to get action id")?;
 
                 println!("Got action id {id}, commit {github_commit_hash}");
                 rt.write(
