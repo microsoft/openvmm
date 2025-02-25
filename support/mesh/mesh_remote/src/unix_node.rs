@@ -1164,7 +1164,7 @@ impl UnixSocket {
 /// ErrorKind::WouldBlock.
 #[cfg_attr(
     not(target_env = "musl"),
-    expect(
+    allow(
         clippy::needless_update,
         clippy::useless_conversion,
         reason = "gnu and musl targets differ on their definition of cmsghdr"
