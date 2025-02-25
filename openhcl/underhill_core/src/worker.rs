@@ -1564,20 +1564,25 @@ async fn new_underhill_vm(
     }
 
     // Set the gpa allocator to GET that is required by the attestation message.
-    get_client.set_gpa_allocator(
-        dma_manager
-            .new_dma_client(DmaClientParameters {
-                device_name: "get".into(),
-                lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
-                allocation_visibility: if isolation.is_isolated() {
-                    AllocationVisibility::Shared
-                } else {
-                    AllocationVisibility::Private
-                },
-                persistent_allocations: false,
-            })
-            .context("get dma client")?,
-    );
+    //
+    // TODO: VBS does not support attestation, so only do this on non-VBS
+    // platforms for now.
+    if !matches!(isolation, virt::IsolationType::Vbs) {
+        get_client.set_gpa_allocator(
+            dma_manager
+                .new_dma_client(DmaClientParameters {
+                    device_name: "get".into(),
+                    lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
+                    allocation_visibility: if isolation.is_isolated() {
+                        AllocationVisibility::Shared
+                    } else {
+                        AllocationVisibility::Private
+                    },
+                    persistent_allocations: false,
+                })
+                .context("get dma client")?,
+        );
+    }
 
     // Create the `AttestationVmConfig` from `dps`, which will be used in
     // - stateful mode (the attestation is not suppressed)
