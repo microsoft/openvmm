@@ -23,6 +23,7 @@ uevent.workspace = true
 event-listener.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
+getrandom.workspace = true
 
 anyhow.workspace = true
 parking_lot.workspace = true

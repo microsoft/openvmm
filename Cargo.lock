@@ -7458,6 +7458,7 @@ dependencies = [
  "fs-err",
  "futures",
  "futures-concurrency",
+ "getrandom",
  "guestmem",
  "inspect",
  "inspect_counters",
