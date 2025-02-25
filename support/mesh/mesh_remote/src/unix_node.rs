@@ -1249,7 +1249,16 @@ fn try_recv(socket: &Socket, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::R
             return Err(ErrorKind::InvalidData.into());
         }
 
-        (cmsg.hdr.cmsg_len as usize - size_of_val(&cmsg.hdr)) / size_of::<RawFd>()
+        #[cfg_attr(
+            not(target_env = "musl"),
+            allow(
+                clippy::useless_conversion,
+                reason = "gnu and musl targets differ on their definition of cmsghdr"
+            )
+        )]
+        {
+            (cmsg.hdr.cmsg_len as usize - size_of_val(&cmsg.hdr)) / size_of::<RawFd>()
+        }
     } else {
         0
     };
