@@ -92,6 +92,7 @@ impl NvmeManager {
         driver_source: &VmTaskDriverSource,
         vp_count: u32,
         save_restore_supported: bool,
+        is_isolated: bool,
         saved_state: Option<NvmeSavedState>,
         dma_client_spawner: DmaClientSpawner,
     ) -> Self {
@@ -102,6 +103,7 @@ impl NvmeManager {
             devices: HashMap::new(),
             vp_count,
             save_restore_supported,
+            is_isolated,
             dma_client_spawner,
         };
         let task = driver.spawn("nvme-manager", async move {
@@ -212,6 +214,8 @@ struct NvmeManagerWorker {
     vp_count: u32,
     /// Running environment (memory layout) allows save/restore.
     save_restore_supported: bool,
+    /// If this VM is isolated or not. This influences DMA client allocations.
+    is_isolated: bool,
     #[inspect(skip)]
     dma_client_spawner: DmaClientSpawner,
 }
@@ -295,7 +299,11 @@ impl NvmeManagerWorker {
                     .create_client(DmaClientParameters {
                         device_name: format!("nvme_{}", pci_id),
                         lower_vtl_policy: LowerVtlPermissionPolicy::Any,
-                        allocation_visibility: AllocationVisibility::Default,
+                        allocation_visibility: if self.is_isolated {
+                            AllocationVisibility::Shared
+                        } else {
+                            AllocationVisibility::Private
+                        },
                         persistent_allocations: self.save_restore_supported,
                     })
                     .map_err(InnerError::DmaClient)?;
@@ -360,7 +368,11 @@ impl NvmeManagerWorker {
             let dma_client = self.dma_client_spawner.create_client(DmaClientParameters {
                 device_name: format!("nvme_{}", pci_id),
                 lower_vtl_policy: LowerVtlPermissionPolicy::Any,
-                allocation_visibility: AllocationVisibility::Default,
+                allocation_visibility: if self.is_isolated {
+                    AllocationVisibility::Shared
+                } else {
+                    AllocationVisibility::Private
+                },
                 persistent_allocations: true,
             })?;
 

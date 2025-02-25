@@ -739,6 +739,7 @@ impl UhVmNetworkSettings {
         tp: &AffinitizedThreadpool,
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
+        is_isolated: bool,
     ) -> anyhow::Result<RuntimeSavedState> {
         let instance_id = nic_config.instance_id;
         let nic_max_sub_channels = nic_config
@@ -749,7 +750,11 @@ impl UhVmNetworkSettings {
         let dma_client = dma_client_spawner.create_client(DmaClientParameters {
             device_name: format!("nic_{}", nic_config.pci_id),
             lower_vtl_policy: LowerVtlPermissionPolicy::Any,
-            allocation_visibility: AllocationVisibility::Default,
+            allocation_visibility: if is_isolated {
+                AllocationVisibility::Shared
+            } else {
+                AllocationVisibility::Private
+            },
             persistent_allocations: false,
         })?;
 
@@ -879,6 +884,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
+        is_isolated: bool,
     ) -> anyhow::Result<RuntimeSavedState> {
         if self.vf_managers.contains_key(&instance_id) {
             return Err(NetworkSettingsError::VFManagerExists(instance_id).into());
@@ -911,6 +917,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
                 threadpool,
                 vmbus_server,
                 dma_client_spawner,
+                is_isolated,
             )
             .await?;
 
@@ -1562,7 +1569,11 @@ async fn new_underhill_vm(
             .new_dma_client(DmaClientParameters {
                 device_name: "get".into(),
                 lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
-                allocation_visibility: AllocationVisibility::Default,
+                allocation_visibility: if isolation.is_isolated() {
+                    AllocationVisibility::Shared
+                } else {
+                    AllocationVisibility::Private
+                },
                 persistent_allocations: false,
             })
             .context("get dma client")?,
@@ -1847,6 +1858,7 @@ async fn new_underhill_vm(
             &driver_source,
             processor_topology.vp_count(),
             save_restore_supported,
+            isolation.is_isolated(),
             servicing_state.nvme_state.unwrap_or(None),
             dma_manager.client_spawner(),
         );
@@ -2780,6 +2792,7 @@ async fn new_underhill_vm(
                     &state_units,
                     &vmbus_server,
                     dma_manager.client_spawner(),
+                    isolation.is_isolated(),
                 )
                 .await?;
 

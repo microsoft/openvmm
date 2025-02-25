@@ -110,6 +110,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
+        is_isolated: bool,
     ) -> anyhow::Result<RuntimeSavedState>;
 
     /// Callback when network is removed externally.
@@ -740,6 +741,7 @@ impl LoadedVm {
                 &self.state_units,
                 &self.vmbus_server,
                 self.dma_manager.client_spawner(),
+                self.isolation.is_isolated(),
             )
             .await?;
 

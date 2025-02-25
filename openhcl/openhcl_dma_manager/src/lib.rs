@@ -136,9 +136,6 @@ pub enum LowerVtlPermissionPolicy {
 /// The CVM page visibility required for DMA allocations.
 #[derive(Copy, Clone, Inspect)]
 pub enum AllocationVisibility {
-    /// The default visibility for allocations. This may be any combination of
-    /// shared or private, depending on what is available.
-    Default,
     /// Allocations must be shared aka host visible.
     Shared,
     /// Allocations must be private.
@@ -211,8 +208,7 @@ impl DmaManagerInner {
                 self.shared_spawner.as_ref(),
                 self.private_spawner.as_ref(),
             ) {
-                (AllocationVisibility::Default, _, Some(shared), _)
-                | (AllocationVisibility::Shared, _, Some(shared), _) => {
+                (AllocationVisibility::Shared, _, Some(shared), _) => {
                     // The shared pool is used by default if available, or if
                     // explicitly requested. All pages are accessible by all
                     // VTLs, so no modification of VTL permissions are required
@@ -227,9 +223,7 @@ impl DmaManagerInner {
                     // No sources available that support shared visibility.
                     anyhow::bail!("no sources available for shared visibility")
                 }
-                (AllocationVisibility::Default, true, None, Some(private))
-                | (AllocationVisibility::Private, true, _, Some(private)) => match lower_vtl_policy
-                {
+                (AllocationVisibility::Private, true, _, Some(private)) => match lower_vtl_policy {
                     LowerVtlPermissionPolicy::Any => {
                         // Only the private pool supports persistent
                         // allocations, and is used if requested or no
@@ -256,8 +250,7 @@ impl DmaManagerInner {
                     // No sources available that support private persistence.
                     anyhow::bail!("no sources available for private persistent allocations")
                 }
-                (AllocationVisibility::Private, false, _, _)
-                | (AllocationVisibility::Default, false, _, _) => match lower_vtl_policy {
+                (AllocationVisibility::Private, false, _, _) => match lower_vtl_policy {
                     LowerVtlPermissionPolicy::Any => {
                         // No persistence needeed means the LockedMemorySpawner
                         // using normal VTL2 ram is fine.
@@ -272,10 +265,6 @@ impl DmaManagerInner {
                         ))
                     }
                 },
-                (_, true, None, None) => {
-                    // No sources available that support persistence.
-                    anyhow::bail!("no sources available for persistent allocations")
-                }
             }
         };
 
