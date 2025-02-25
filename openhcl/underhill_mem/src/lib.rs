@@ -808,7 +808,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             .apply_protections_from_flags(
                 MemoryRange::new(gpn * HV_PAGE_SIZE..(gpn + 1) * HV_PAGE_SIZE),
                 vtl,
-                HV_MAP_GPA_PERMISSIONS_ALL.with_writable(false),
+                HV_MAP_GPA_PERMISSIONS_ALL,
             )
             .expect("applying vtl protections should succeed");
 
