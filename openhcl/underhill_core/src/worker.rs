@@ -182,14 +182,6 @@ pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new(
 
 const MAX_SUBCHANNELS_PER_VNIC: u16 = 32;
 
-/// Creates a thread to run GET and VMGS clients on.
-///
-/// This must be a separate thread from the thread pool because sometimes thread
-/// pool threads will block synchronously waiting on the GET or VMGS.
-fn new_get_thread() -> (JoinHandle<()>, DefaultDriver) {
-    DefaultPool::spawn_on_thread("get")
-}
-
 struct GuestEmulationTransportInfra {
     get_thread: JoinHandle<()>,
     get_spawner: DefaultDriver,
@@ -198,7 +190,11 @@ struct GuestEmulationTransportInfra {
 
 async fn construct_get(
 ) -> Result<(GuestEmulationTransportInfra, pal_async::task::Task<()>), anyhow::Error> {
-    let (get_thread, get_spawner) = new_get_thread();
+    // Create a thread to run GET and VMGS clients on.
+    //
+    // This must be a separate thread from the thread pool because sometimes
+    // thread pool threads will block synchronously waiting on the GET or VMGS.
+    let (get_thread, get_spawner) = DefaultPool::spawn_on_thread("get");
 
     let (get_client, get_task) = guest_emulation_transport::spawn_get_worker(get_spawner.clone())
         .await
