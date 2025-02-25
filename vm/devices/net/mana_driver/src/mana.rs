@@ -330,7 +330,7 @@ impl<T: DeviceBacking> Vport<T> {
         let mut gdma = self.inner.gdma.lock().await;
         let dma_client = gdma.device().dma_client();
         let mem = dma_client
-            .allocate_dma_buffer(size as usize)
+            .allocate_dma_buffer(size as usize, "mana-event-queue".into())
             .context("Failed to allocate DMA buffer")?;
 
         let gdma_region = gdma
@@ -373,7 +373,7 @@ impl<T: DeviceBacking> Vport<T> {
         let dma_client = gdma.device().dma_client();
 
         let mem = dma_client
-            .allocate_dma_buffer((wq_size + cq_size) as usize)
+            .allocate_dma_buffer((wq_size + cq_size) as usize, "mana-work-queue".into())
             .context("failed to allocate DMA buffer")?;
 
         let wq_mem = mem.subblock(0, wq_size as usize);
