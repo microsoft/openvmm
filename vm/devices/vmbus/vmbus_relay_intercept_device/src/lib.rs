@@ -416,7 +416,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
 
         let mem = self
             .dma_alloc
-            .allocate_dma_buffer(page_count * PAGE_SIZE)
+            .allocate_dma_buffer(page_count * PAGE_SIZE, "vmbus-relay-intercept-rings".into())
             .context("allocating memory for vmbus rings")?;
         state.vtl_pages = Some(mem.clone());
         let buf: Vec<_> = [mem.len() as u64]

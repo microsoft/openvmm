@@ -185,7 +185,7 @@ impl QueuePair {
             QueuePair::SQ_SIZE + QueuePair::CQ_SIZE + QueuePair::PER_QUEUE_PAGES * PAGE_SIZE;
         let dma_client = device.dma_client();
         let mem = dma_client
-            .allocate_dma_buffer(total_size)
+            .allocate_dma_buffer(total_size, "nvme-queues".into())
             .context("failed to allocate memory for queues")?;
 
         assert!(sq_entries <= Self::MAX_SQ_ENTRIES);

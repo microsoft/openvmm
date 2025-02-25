@@ -1835,7 +1835,7 @@ async fn request_igvm_attest(
     let allocator = gpa_allocator.ok_or(FatalError::GpaAllocatorUnavailable)?;
     let dma_size = request.response_buffer_len;
     let mem = allocator
-        .allocate_dma_buffer(dma_size)
+        .allocate_dma_buffer(dma_size, "attest request".into())
         .map_err(FatalError::GpaMemoryAllocationError)?;
 
     // Host expects the vTOM bit to be stripped
