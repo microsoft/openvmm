@@ -66,7 +66,7 @@ pub mod publish {
 
                         {
                             let OpenvmmHclOutput { bin, dbg } = openvmm_hcl_bin;
-                            files.push((format!("{folder_name}/openhcl").into(), bin));
+                            files.push((format!("{folder_name}/openvmm_hcl").into(), bin));
                             if let Some(dbg) = dbg {
                                 files.push((format!("{folder_name}/openvmm_hcl.dbg").into(), dbg));
                             }
