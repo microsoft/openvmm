@@ -45,6 +45,7 @@ use virt_mshv_vtl::TlbFlushLockAccess;
 use vm_topology::memory::MemoryLayout;
 use x86defs::snp::SevRmpAdjust;
 use x86defs::tdx::GpaVmAttributes;
+use x86defs::tdx::GpaVmAttributesMask;
 use x86defs::tdx::TdgMemPageAttrWriteR8;
 use x86defs::tdx::TdgMemPageGpaAttr;
 
@@ -156,17 +157,20 @@ impl GpaVtlPermissions {
                     .with_kernel_execute(protections.kernel_executable())
                     .with_user_execute(protections.user_executable());
 
+                // TODO TDX GUEST VSM: We need to track previous permissions to
+                // be able to set the change mask appropriately.
+
                 let (new_attributes, new_mask) = match vtl {
                     GuestVtl::Vtl0 => {
                         let attributes = TdgMemPageGpaAttr::new().with_l2_vm1(vm_attributes);
-                        let mask =
-                            TdgMemPageAttrWriteR8::new().with_l2_vm1(vm_attributes.to_mask());
+                        let mask = TdgMemPageAttrWriteR8::new()
+                            .with_l2_vm1(GpaVmAttributesMask::ALL_CHANGED);
                         (attributes, mask)
                     }
                     GuestVtl::Vtl1 => {
                         let attributes = TdgMemPageGpaAttr::new().with_l2_vm2(vm_attributes);
-                        let mask =
-                            TdgMemPageAttrWriteR8::new().with_l2_vm2(vm_attributes.to_mask());
+                        let mask = TdgMemPageAttrWriteR8::new()
+                            .with_l2_vm2(GpaVmAttributesMask::ALL_CHANGED);
                         (attributes, mask)
                     }
                 };
@@ -227,8 +231,8 @@ impl MemoryAcceptor {
 
             IsolationType::Tdx => {
                 let attributes = TdgMemPageGpaAttr::new().with_l2_vm1(GpaVmAttributes::FULL_ACCESS);
-                let mask = TdgMemPageAttrWriteR8::new()
-                    .with_l2_vm1(GpaVmAttributes::FULL_ACCESS.to_mask());
+                let mask =
+                    TdgMemPageAttrWriteR8::new().with_l2_vm1(GpaVmAttributesMask::ALL_CHANGED);
 
                 self.mshv_vtl
                     .tdx_accept_pages(range, Some((attributes, mask)))
