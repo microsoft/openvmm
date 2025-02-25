@@ -102,6 +102,17 @@ pub struct MemoryBlock {
     mem: Arc<dyn MappedDmaTarget>,
 }
 
+impl std::fmt::Debug for MemoryBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryBlock")
+            .field("base", &self.base)
+            .field("len", &self.len)
+            .field("pfns", &self.pfns())
+            .field("pfn_bias", &self.pfn_bias())
+            .finish()
+    }
+}
+
 // SAFETY: The inner MappedDmaTarget is Send + Sync, so a view of it is too.
 unsafe impl Send for MemoryBlock {}
 // SAFETY: The inner MappedDmaTarget is Send + Sync, so a view of it is too.
