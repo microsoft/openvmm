@@ -277,8 +277,7 @@ pub struct UnderhillEnvCfg {
     pub mcr: bool,
 
     /// Enable the shared visibility pool. This is enabled by default on
-    /// hardware isolated platforms, but can be enabled for testing. Hardware
-    /// devices will use the shared pool for DMA if enabled.
+    /// hardware isolated platforms, but can be enabled for testing.
     pub enable_shared_visibility_pool: bool,
     /// Enable support for guest vsm in CVMs. This is disabled by default.
     pub cvm_guest_vsm: bool,
