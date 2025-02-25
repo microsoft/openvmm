@@ -168,6 +168,9 @@ impl super::ClientTask {
             match state {
                 crate::GpadlState::Offered(_) => unreachable!(),
                 crate::GpadlState::Created => {
+                    self.inner
+                        .teardown_gpadls
+                        .insert(gpadl_id, Some(channel_id));
                     self.inner.messages.send(&protocol::GpadlTeardown {
                         channel_id,
                         gpadl_id,
