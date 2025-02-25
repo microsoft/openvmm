@@ -746,7 +746,7 @@ impl UhVmNetworkSettings {
             .unwrap_or(MAX_SUBCHANNELS_PER_VNIC)
             .min(vps_count as u16);
 
-        let dma_client = dma_client_spawner.create_client(DmaClientParameters {
+        let dma_client = dma_client_spawner.new_client(DmaClientParameters {
             device_name: format!("nic_{}", nic_config.pci_id),
             lower_vtl_policy: LowerVtlPermissionPolicy::Any,
             allocation_visibility: if is_isolated {
@@ -1569,7 +1569,7 @@ async fn new_underhill_vm(
     if !matches!(isolation, virt::IsolationType::Vbs) {
         get_client.set_gpa_allocator(
             dma_manager
-                .new_dma_client(DmaClientParameters {
+                .new_client(DmaClientParameters {
                     device_name: "get".into(),
                     lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
                     allocation_visibility: if isolation.is_isolated() {
@@ -1742,7 +1742,7 @@ async fn new_underhill_vm(
         vmtime: &vmtime_source,
         isolated_memory_protector: gm.isolated_memory_protector()?,
         shared_vis_pages_pool: dma_manager
-            .new_dma_client(DmaClientParameters {
+            .new_client(DmaClientParameters {
                 device_name: "partition-shared".into(),
                 lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                 allocation_visibility: AllocationVisibility::Shared,
@@ -1754,7 +1754,7 @@ async fn new_underhill_vm(
                 client
             }),
         private_vis_pages_pool: dma_manager
-            .new_dma_client(DmaClientParameters {
+            .new_client(DmaClientParameters {
                 device_name: "partition-private".into(),
                 lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                 allocation_visibility: AllocationVisibility::Private,
@@ -2859,7 +2859,7 @@ async fn new_underhill_vm(
         let shutdown_guest = SimpleVmbusClientDeviceWrapper::new(
             driver_source.simple(),
             dma_manager
-                .new_dma_client(DmaClientParameters {
+                .new_client(DmaClientParameters {
                     device_name: "shutdown-relay".into(),
                     lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
                     allocation_visibility: AllocationVisibility::Private,

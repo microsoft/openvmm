@@ -296,7 +296,7 @@ impl NvmeManagerWorker {
             hash_map::Entry::Vacant(entry) => {
                 let dma_client = self
                     .dma_client_spawner
-                    .create_client(DmaClientParameters {
+                    .new_client(DmaClientParameters {
                         device_name: format!("nvme_{}", pci_id),
                         lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                         allocation_visibility: if self.is_isolated {
@@ -365,7 +365,7 @@ impl NvmeManagerWorker {
         for disk in &saved_state.nvme_disks {
             let pci_id = disk.pci_id.clone();
 
-            let dma_client = self.dma_client_spawner.create_client(DmaClientParameters {
+            let dma_client = self.dma_client_spawner.new_client(DmaClientParameters {
                 device_name: format!("nvme_{}", pci_id),
                 lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                 allocation_visibility: if self.is_isolated {

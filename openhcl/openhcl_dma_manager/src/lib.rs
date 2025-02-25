@@ -77,7 +77,6 @@ pub mod save_restore {
                     )))
                 }
                 (None, Some(_)) => {
-                    // BUGBUG Is this right?
                     // It's possible that previously we did not have a shared
                     // pool, so there may not be any state to restore.
                 }
@@ -96,7 +95,6 @@ pub mod save_restore {
                     )))
                 }
                 (None, Some(_)) => {
-                    // BUGBUG Is this right?
                     // It's possible that previously we did not have a private
                     // pool, so there may not be any state to restore.
                 }
@@ -349,10 +347,7 @@ impl OpenhclDmaManager {
 
     /// Creates a new DMA client with the given device name and lower VTL
     /// policy.
-    pub fn new_dma_client(
-        &self,
-        params: DmaClientParameters,
-    ) -> anyhow::Result<Arc<OpenhclDmaClient>> {
+    pub fn new_client(&self, params: DmaClientParameters) -> anyhow::Result<Arc<OpenhclDmaClient>> {
         self.inner.new_dma_client(params)
     }
 
@@ -391,10 +386,7 @@ pub struct DmaClientSpawner {
 
 impl DmaClientSpawner {
     /// Creates a new DMA client with the given parameters.
-    pub fn create_client(
-        &self,
-        params: DmaClientParameters,
-    ) -> anyhow::Result<Arc<OpenhclDmaClient>> {
+    pub fn new_client(&self, params: DmaClientParameters) -> anyhow::Result<Arc<OpenhclDmaClient>> {
         self.inner.new_dma_client(params)
     }
 }

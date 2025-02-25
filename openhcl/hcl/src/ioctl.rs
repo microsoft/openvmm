@@ -1484,6 +1484,7 @@ impl MshvHvcall {
 }
 
 /// The HCL device and collection of fds.
+#[derive(Debug)]
 pub struct Hcl {
     mshv_hvcall: MshvHvcall,
     mshv_vtl: MshvVtl,
@@ -1529,6 +1530,7 @@ impl Hcl {
     }
 }
 
+#[derive(Debug)]
 struct HclVp {
     state: Mutex<VpState>,
     run: MappedPage<hcl_run>,
@@ -1546,6 +1548,29 @@ enum BackingState {
         vtl0_apic_page: MappedPage<ApicPage>,
         vtl1_apic_page: MemoryBlock,
     },
+}
+
+impl Debug for BackingState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BackingState::Mshv { reg_page } => f
+                .debug_struct("BackingState::Mshv")
+                .field("reg_page", reg_page)
+                .finish(),
+            BackingState::Snp { vmsa } => f
+                .debug_struct("BackingState::Snp")
+                .field("vmsa", vmsa)
+                .finish(),
+            BackingState::Tdx {
+                vtl0_apic_page,
+                vtl1_apic_page,
+            } => f
+                .debug_struct("BackingState::Tdx")
+                .field("vtl0_apic_page", vtl0_apic_page)
+                .field("vtl1_apic_page", &vtl1_apic_page.pfns())
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug)]

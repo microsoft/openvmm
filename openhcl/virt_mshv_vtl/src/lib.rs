@@ -1551,15 +1551,7 @@ impl<'a> UhProtoPartition<'a> {
         // Do per-VP HCL initialization.
         hcl.add_vps(
             params.topology.vp_count(),
-            late_params
-                .private_vis_pages_pool
-                .as_ref()
-                .map(|client| {
-                    // BUGBUG icky
-                    let new_client: Arc<dyn DmaClient> = client.clone();
-                    new_client
-                })
-                .as_ref(),
+            late_params.private_vis_pages_pool.as_ref(),
         )
         .map_err(Error::Hcl)?;
 
