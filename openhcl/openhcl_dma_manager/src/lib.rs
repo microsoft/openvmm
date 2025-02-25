@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! This module provides a global DMA manager and client implementation. The
-//! global manager owns the regions used to allocate DMA buffers and provides
-//! clients with access to these buffers.
+//! This module provides a global DMA manager and client implementation for
+//! OpenHCL. The global manager owns the regions used to allocate DMA buffers
+//! and provides clients with access to these buffers.
 
 #![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
@@ -242,7 +242,6 @@ impl DmaManagerInner {
                     // No sources available that support shared visibility.
                     anyhow::bail!("no sources available for shared visibility")
                 }
-
                 ClientCreation {
                     allocation_visibility: AllocationVisibility::Private,
                     persistent_allocations: true,
