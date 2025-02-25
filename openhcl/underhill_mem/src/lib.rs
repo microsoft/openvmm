@@ -157,9 +157,6 @@ impl GpaVtlPermissions {
                     .with_kernel_execute(protections.kernel_executable())
                     .with_user_execute(protections.user_executable());
 
-                // TODO TDX GUEST VSM: We need to track previous permissions to
-                // be able to set the change mask appropriately.
-
                 let (new_attributes, new_mask) = match vtl {
                     GuestVtl::Vtl0 => {
                         let attributes = TdgMemPageGpaAttr::new().with_l2_vm1(vm_attributes);
@@ -228,7 +225,6 @@ impl MemoryAcceptor {
                         range,
                     })
             }
-
             IsolationType::Tdx => {
                 let attributes = TdgMemPageGpaAttr::new().with_l2_vm1(GpaVmAttributes::FULL_ACCESS);
                 let mask =

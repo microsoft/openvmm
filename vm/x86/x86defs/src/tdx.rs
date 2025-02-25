@@ -107,7 +107,8 @@ impl GpaVmAttributesMask {
         .with_read(true)
         .with_write(true)
         .with_kernel_execute(true)
-        .with_user_execute(true);
+        .with_user_execute(true)
+        .with_inv_ept(true);
 }
 
 /// Corresponds to GPA_ATTR, which is used as input to TDG.MEM.PAGE.ATTR.WR and
