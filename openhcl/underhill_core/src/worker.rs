@@ -123,6 +123,7 @@ use uevent::UeventListener;
 use underhill_attestation::AttestationType;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
+use user_driver::DmaClient;
 use virt::state::HvRegisterState;
 use virt::Partition;
 use virt::VpIndex;
@@ -747,7 +748,7 @@ impl UhVmNetworkSettings {
 
         let dma_client = dma_client_spawner.create_client(DmaClientParameters {
             device_name: format!("nic_{}", nic_config.pci_id),
-            lower_vtl_policy: LowerVtlPermissionPolicy::Default,
+            lower_vtl_policy: LowerVtlPermissionPolicy::Any,
             allocation_visibility: AllocationVisibility::Default,
             persistent_allocations: false,
         })?;
@@ -1728,19 +1729,27 @@ async fn new_underhill_vm(
         shared_vis_pages_pool: dma_manager
             .new_dma_client(DmaClientParameters {
                 device_name: "partition-shared".into(),
-                lower_vtl_policy: LowerVtlPermissionPolicy::Default,
+                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                 allocation_visibility: AllocationVisibility::Shared,
                 persistent_allocations: false,
             })
-            .ok(),
+            .ok()
+            .map(|client| {
+                let client: Arc<dyn DmaClient> = client;
+                client
+            }),
         private_vis_pages_pool: dma_manager
             .new_dma_client(DmaClientParameters {
                 device_name: "partition-private".into(),
-                lower_vtl_policy: LowerVtlPermissionPolicy::Default,
+                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                 allocation_visibility: AllocationVisibility::Private,
                 persistent_allocations: false,
             })
-            .ok(),
+            .ok()
+            .map(|client| {
+                let client: Arc<dyn DmaClient> = client;
+                client
+            }),
     };
 
     let (partition, vps) = proto_partition

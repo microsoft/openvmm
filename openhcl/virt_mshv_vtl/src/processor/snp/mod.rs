@@ -44,7 +44,6 @@ use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
-use user_driver::DmaClient;
 use virt::io::CpuIo;
 use virt::state::StateElement;
 use virt::vp;
@@ -279,10 +278,7 @@ impl BackingPrivate for SnpBacked {
             .shared_vis_pages_pool
             .as_ref()
             .ok_or(Error::MissingSharedMemory)?
-            .allocate_dma_buffer(
-                (shared_pages_required_per_cpu() * HV_PAGE_SIZE) as usize,
-                // format!("direct overlay vp {}", params.vp_info.base.vp_index.index()),
-            )
+            .allocate_dma_buffer((shared_pages_required_per_cpu() * HV_PAGE_SIZE) as usize)
             .map_err(Error::AllocateSharedVisOverlay)?;
 
         let overlays: Vec<_> = pfns_handle.pfns().to_vec();

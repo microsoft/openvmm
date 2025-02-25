@@ -294,7 +294,7 @@ impl NvmeManagerWorker {
                     .dma_client_spawner
                     .create_client(DmaClientParameters {
                         device_name: format!("nvme_{}", pci_id),
-                        lower_vtl_policy: LowerVtlPermissionPolicy::Default,
+                        lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                         allocation_visibility: AllocationVisibility::Default,
                         persistent_allocations: self.save_restore_supported,
                     })
@@ -359,7 +359,7 @@ impl NvmeManagerWorker {
 
             let dma_client = self.dma_client_spawner.create_client(DmaClientParameters {
                 device_name: format!("nvme_{}", pci_id),
-                lower_vtl_policy: LowerVtlPermissionPolicy::Default,
+                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                 allocation_visibility: AllocationVisibility::Default,
                 persistent_allocations: true,
             })?;

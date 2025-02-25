@@ -21,7 +21,7 @@ use std::sync::Arc;
 use user_driver::lockmem::LockedMemorySpawner;
 use user_driver::DmaClient;
 
-/// Save restore support for [`GlobalDmaManager`].
+/// Save restore support for [`OpenhclDmaManager`].
 pub mod save_restore {
     use super::OpenhclDmaManager;
     use mesh::payload::Protobuf;
@@ -30,7 +30,7 @@ pub mod save_restore {
     use vmcore::save_restore::SaveError;
     use vmcore::save_restore::SaveRestore;
 
-    /// The saved state for [`GlobalDmaManager`].
+    /// The saved state for [`OpenhclDmaManager`].
     #[derive(Protobuf)]
     #[mesh(package = "openhcl.openhcldmamanager")]
     pub struct OpenhclDmaManagerState {
@@ -127,9 +127,8 @@ pub struct OpenhclDmaManager {
 /// The required VTL permissions on DMA allocations.
 #[derive(Inspect)]
 pub enum LowerVtlPermissionPolicy {
-    /// The default permissions for allocations. This may be any combination of
-    /// VTL2 only or all VTLs.
-    Default,
+    /// No specific permission constraints are required.
+    Any,
     /// All allocations must be accessible to VTL0.
     Vtl0,
 }
@@ -165,12 +164,12 @@ struct DmaManagerInner {
     lower_vtl: Arc<DmaManagerLowerVtl>,
 }
 
-/// Used by [`GlobalDmaManager`] to modify VTL permissions via
+/// Used by [`OpenhclDmaManager`] to modify VTL permissions via
 /// [`LowerVtlMemorySpawner`].
 ///
-/// This is required due to devices (like the GET) that unfortunately are
-/// constructed before the partition struct which normally implements this
-/// trait.
+/// This is required due to some users (like the GET or partition struct itself)
+/// that are constructed before the partition struct which normally implements
+/// this trait.
 struct DmaManagerLowerVtl {
     mshv_hvcall: hcl::ioctl::MshvHvcall,
 }
@@ -231,7 +230,7 @@ impl DmaManagerInner {
                 (AllocationVisibility::Default, true, None, Some(private))
                 | (AllocationVisibility::Private, true, _, Some(private)) => match lower_vtl_policy
                 {
-                    LowerVtlPermissionPolicy::Default => {
+                    LowerVtlPermissionPolicy::Any => {
                         // Only the private pool supports persistent
                         // allocations, and is used if requested or no
                         // shared pool is available.
@@ -259,7 +258,7 @@ impl DmaManagerInner {
                 }
                 (AllocationVisibility::Private, false, _, _)
                 | (AllocationVisibility::Default, false, _, _) => match lower_vtl_policy {
-                    LowerVtlPermissionPolicy::Default => {
+                    LowerVtlPermissionPolicy::Any => {
                         // No persistence needeed means the LockedMemorySpawner
                         // using normal VTL2 ram is fine.
                         DmaClientBacking::LockedMemory(LockedMemorySpawner)
@@ -285,7 +284,7 @@ impl DmaManagerInner {
 }
 
 impl OpenhclDmaManager {
-    /// Creates a new `GlobalDmaManager` with the given ranges to use for the
+    /// Creates a new [`OpenhclDmaManager`] with the given ranges to use for the
     /// shared and private gpa pools.
     pub fn new(
         shared_ranges: &[MemoryRange],
@@ -428,7 +427,8 @@ impl DmaClientBacking {
     }
 }
 
-/// An OpenHCL dma client.
+/// An OpenHCL dma client. This client implements inspect to allow seeing what
+/// policy and backing is used for this client.
 #[derive(Inspect)]
 pub struct OpenhclDmaClient {
     backing: DmaClientBacking,

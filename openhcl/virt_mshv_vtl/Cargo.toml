@@ -13,7 +13,6 @@ gdb = []
 aarch64emu.workspace = true
 aarch64defs.workspace = true
 hcl.workspace = true
-openhcl_dma_manager.workspace = true
 virt.workspace = true
 virt_support_aarch64emu.workspace = true
 virt_support_apic.workspace = true

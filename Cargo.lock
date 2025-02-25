@@ -7729,7 +7729,6 @@ dependencies = [
  "libc",
  "memory_range",
  "mesh",
- "openhcl_dma_manager",
  "pal",
  "pal_async",
  "pal_uring",

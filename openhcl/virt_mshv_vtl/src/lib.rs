@@ -76,7 +76,6 @@ use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
-use openhcl_dma_manager::OpenhclDmaClient;
 use pal::unix::affinity;
 use pal::unix::affinity::CpuSet;
 use pal_async::driver::Driver;
@@ -229,10 +228,8 @@ struct UhPartitionInner {
     guest_vsm: RwLock<GuestVsmState>,
     #[inspect(skip)]
     isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    shared_vis_pages_pool: Option<Arc<OpenhclDmaClient>>,
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    private_vis_pages_pool: Option<Arc<OpenhclDmaClient>>,
+    shared_vis_pages_pool: Option<Arc<dyn DmaClient>>,
+    private_vis_pages_pool: Option<Arc<dyn DmaClient>>,
     #[inspect(with = "inspect::AtomicMut")]
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
@@ -1282,9 +1279,9 @@ pub struct UhLateParams<'a> {
     /// An object to call to change host visibility on guest memory.
     pub isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     /// Allocator for shared visibility pages.
-    pub shared_vis_pages_pool: Option<Arc<OpenhclDmaClient>>,
+    pub shared_vis_pages_pool: Option<Arc<dyn DmaClient>>,
     /// Allocator for private visibility pages.
-    pub private_vis_pages_pool: Option<Arc<OpenhclDmaClient>>,
+    pub private_vis_pages_pool: Option<Arc<dyn DmaClient>>,
 }
 
 /// Trait for CVM-related protections on guest memory.
@@ -1559,8 +1556,7 @@ impl<'a> UhProtoPartition<'a> {
                 .as_ref()
                 .map(|client| {
                     // BUGBUG icky
-                    let new_client = client.clone();
-                    let new_client: Arc<dyn DmaClient> = new_client;
+                    let new_client: Arc<dyn DmaClient> = client.clone();
                     new_client
                 })
                 .as_ref(),

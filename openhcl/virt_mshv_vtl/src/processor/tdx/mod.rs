@@ -52,7 +52,6 @@ use thiserror::Error;
 use tlb_flush::TdxFlushState;
 use tlb_flush::TdxPartitionFlushState;
 use tlb_flush::FLUSH_GVA_LIST_SIZE;
-use user_driver::DmaClient;
 use virt::io::CpuIo;
 use virt::state::StateElement;
 use virt::vp;
@@ -684,10 +683,7 @@ impl BackingPrivate for TdxBacked {
             .shared_vis_pages_pool
             .as_ref()
             .ok_or(crate::Error::MissingSharedMemory)?
-            .allocate_dma_buffer(
-                (shared_pages_required_per_cpu() * HV_PAGE_SIZE) as usize,
-                // format!("direct overlay vp {}", params.vp_info.base.vp_index.index()),
-            )
+            .allocate_dma_buffer((shared_pages_required_per_cpu() * HV_PAGE_SIZE) as usize)
             .map_err(super::Error::AllocateSharedVisOverlay)?;
         let overlays: Vec<_> = pfns_handle.pfns().to_vec();
 
@@ -697,7 +693,6 @@ impl BackingPrivate for TdxBacked {
             .as_ref()
             .ok_or(crate::Error::MissingPrivateMemory)?
             .allocate_dma_buffer(HV_PAGE_SIZE as usize)
-            //"tdx_tlb_flush".into())
             .map_err(crate::Error::AllocateTlbFlushPage)?;
 
         let untrusted_synic = params
