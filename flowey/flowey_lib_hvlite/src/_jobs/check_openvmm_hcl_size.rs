@@ -113,7 +113,7 @@ impl SimpleFlowNode for Node {
                 let new_openhcl = rt.read(new_openhcl);
                 let merge_run = rt.read(merge_run);
 
-                let old_path = old_openhcl.join("openhcl");
+                let old_path = old_openhcl.join(file_name).join("openhcl");
                 let new_path = new_openhcl.bin;
 
                 println!(
