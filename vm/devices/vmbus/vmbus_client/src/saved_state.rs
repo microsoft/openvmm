@@ -57,12 +57,14 @@ impl super::ClientTask {
                 .collect(),
             gpadls: self
                 .inner
-                .gpadls
+                .channels
                 .iter()
-                .map(|(&(channel_id, gpadl_id), gpadl_state)| Gpadl {
-                    gpadl_id: gpadl_id.0,
-                    channel_id: channel_id.0,
-                    state: GpadlState::save(gpadl_state),
+                .flat_map(|(channel_id, channel)| {
+                    channel.gpadls.iter().map(|(gpadl_id, gpadl_state)| Gpadl {
+                        gpadl_id: gpadl_id.0,
+                        channel_id: channel_id.0,
+                        state: GpadlState::save(gpadl_state),
+                    })
                 })
                 .collect(),
             pending_messages: self
@@ -110,12 +112,13 @@ impl super::ClientTask {
             let gpadl_state = gpadl.state.restore();
             let tearing_down = matches!(gpadl_state, super::GpadlState::TearingDown);
 
-            if self
+            let channel = self
                 .inner
-                .gpadls
-                .insert((channel_id, gpadl_id), gpadl_state)
-                .is_some()
-            {
+                .channels
+                .get_mut(&channel_id)
+                .ok_or(RestoreError::GpadlForUnknownChannelId(channel_id.0))?;
+
+            if channel.gpadls.insert(gpadl_id, gpadl_state).is_some() {
                 return Err(RestoreError::DuplicateGpadlId(gpadl_id.0));
             }
 
@@ -123,7 +126,7 @@ impl super::ClientTask {
                 && self
                     .inner
                     .teardown_gpadls
-                    .insert(gpadl_id, Some(channel_id))
+                    .insert(gpadl_id, channel_id)
                     .is_some()
             {
                 unreachable!("gpadl ID validated above");
@@ -141,7 +144,6 @@ impl super::ClientTask {
     }
 
     pub fn handle_post_restore(&mut self) {
-        let mut closed = Vec::new();
         // Close restored channels that have not been claimed.
         for (&channel_id, channel) in &mut self.inner.channels {
             if let super::ChannelState::Restored = channel.state {
@@ -153,32 +155,23 @@ impl super::ClientTask {
                     .messages
                     .send(&protocol::CloseChannel { channel_id });
                 channel.state = super::ChannelState::Offered;
-                closed.push(channel_id);
-            }
-        }
 
-        closed.sort();
-
-        // Tear down GPADLs for unclaimed channels.
-        for (&(channel_id, gpadl_id), state) in &mut self.inner.gpadls {
-            if closed.binary_search(&channel_id).is_err() {
-                continue;
-            }
-            // FUTURE: wait for GPADL teardown so that everything is in a clean
-            // state after this.
-            match state {
-                crate::GpadlState::Offered(_) => unreachable!(),
-                crate::GpadlState::Created => {
-                    self.inner
-                        .teardown_gpadls
-                        .insert(gpadl_id, Some(channel_id));
-                    self.inner.messages.send(&protocol::GpadlTeardown {
-                        channel_id,
-                        gpadl_id,
-                    });
-                    *state = crate::GpadlState::TearingDown;
+                for (&gpadl_id, gpadl_state) in &mut channel.gpadls {
+                    // FUTURE: wait for GPADL teardown so that everything is in a clean
+                    // state after this.
+                    match gpadl_state {
+                        crate::GpadlState::Offered(_) => unreachable!(),
+                        crate::GpadlState::Created => {
+                            self.inner.teardown_gpadls.insert(gpadl_id, channel_id);
+                            self.inner.messages.send(&protocol::GpadlTeardown {
+                                channel_id,
+                                gpadl_id,
+                            });
+                            *gpadl_state = crate::GpadlState::TearingDown;
+                        }
+                        crate::GpadlState::TearingDown => {}
+                    }
                 }
-                crate::GpadlState::TearingDown => {}
             }
         }
     }

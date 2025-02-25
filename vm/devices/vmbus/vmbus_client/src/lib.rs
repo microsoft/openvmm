@@ -149,7 +149,6 @@ impl VmbusClientBuilder {
                 queued: VecDeque::new(),
             },
             channels: HashMap::new(),
-            gpadls: HashMap::new(),
             teardown_gpadls: HashMap::new(),
             channel_requests: SelectAll::new(),
             synic: SynicState {
@@ -352,6 +351,9 @@ pub enum RestoreError {
     #[error("duplicate gpadl id {0}")]
     DuplicateGpadlId(u32),
 
+    #[error("gpadl for unknown channel id {0}")]
+    GpadlForUnknownChannelId(u32),
+
     #[error("invalid pending message")]
     InvalidPendingMessage(#[source] vmbus_core::MessageTooLarge),
 }
@@ -529,6 +531,8 @@ struct Channel {
     state: ChannelState,
     #[inspect(with = "|x| x.is_some()")]
     modify_response_send: Option<Rpc<(), i32>>,
+    #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|x| x.0)")]
+    gpadls: HashMap<GpadlId, GpadlState>,
 }
 
 impl std::fmt::Debug for Channel {
@@ -746,6 +750,7 @@ impl ClientTask {
                 offer,
                 state,
                 modify_response_send: None,
+                gpadls: HashMap::new(),
             },
         );
 
@@ -815,34 +820,14 @@ impl ClientTask {
 
         // Teardown all remaining gpadls for this channel. We don't care about GpadlTorndown
         // responses at this point.
-        self.inner
-            .gpadls
-            .retain(|&(channel_id, gpadl_id), gpadl_state| {
-                if channel_id != rescind.channel_id {
-                    return true;
-                }
-
-                // If the gpadl was already tearing down, send a response now.
-                if matches!(gpadl_state, GpadlState::TearingDown) {
-                    channel
-                        .response_send
-                        .send(ChannelResponse::TeardownGpadl(gpadl_id));
-                } else {
-                    // TODO: is this really necessary? The host should have
-                    // already unmapped all GPADLs. Remove if possible.
-                    self.inner.messages.send_with_data(
-                        &protocol::GpadlTeardown {
-                            channel_id,
-                            gpadl_id,
-                        },
-                        &[],
-                    );
-                }
-
-                self.inner.teardown_gpadls.insert(gpadl_id, None);
-
-                false
-            });
+        for (gpadl_id, gpadl_state) in channel.gpadls.drain() {
+            // If the gpadl was already tearing down, send a response now.
+            if matches!(gpadl_state, GpadlState::TearingDown) {
+                channel
+                    .response_send
+                    .send(ChannelResponse::TeardownGpadl(gpadl_id));
+            }
+        }
 
         // Drop the channel, which will close the response channel, which will
         // cause the client to know the channel has been revoked.
@@ -877,10 +862,10 @@ impl ClientTask {
     }
 
     fn handle_gpadl_created(&mut self, request: protocol::GpadlCreated) {
-        let Some(gpadl_state) = self
-            .inner
-            .gpadls
-            .get_mut(&(request.channel_id, request.gpadl_id))
+        let mut channel = self.inner.channels.get_mut(&request.channel_id);
+        let Some(gpadl_state) = channel
+            .as_mut()
+            .and_then(|channel| channel.gpadls.get_mut(&request.gpadl_id))
         else {
             tracing::warn!(
                 gpadl_id = request.gpadl_id.0,
@@ -907,11 +892,7 @@ impl ClientTask {
 
         let gpadl_created = request.status == protocol::STATUS_SUCCESS;
         if !gpadl_created {
-            self.inner
-                .gpadls
-                .remove(&(request.channel_id, request.gpadl_id))
-                .unwrap();
-
+            channel.unwrap().gpadls.remove(&request.gpadl_id).unwrap();
             rpc.fail(anyhow::anyhow!(
                 "gpadl creation failed: {:#x}",
                 request.status
@@ -974,22 +955,12 @@ impl ClientTask {
     }
 
     fn handle_gpadl_torndown(&mut self, request: protocol::GpadlTorndown) {
-        let channel_id = match self.inner.teardown_gpadls.remove(&request.gpadl_id) {
-            Some(Some(channel_id)) => channel_id,
-            Some(None) => {
-                tracing::debug!(
-                    gpadl_id = request.gpadl_id.0,
-                    "GpadlTorndown for gpadl torn down by rescind"
-                );
-                return;
-            }
-            None => {
-                tracing::warn!(
-                    gpadl_id = request.gpadl_id.0,
-                    "Unknown ID or invalid state for GpadlTorndown"
-                );
-                return;
-            }
+        let Some(channel_id) = self.inner.teardown_gpadls.remove(&request.gpadl_id) else {
+            tracing::warn!(
+                gpadl_id = request.gpadl_id.0,
+                "Unknown ID or invalid state for GpadlTorndown"
+            );
+            return;
         };
 
         tracing::debug!(
@@ -998,18 +969,16 @@ impl ClientTask {
             "Received GpadlTorndown"
         );
 
-        let gpadl_state = self
-            .inner
+        let channel = self.inner.channels.get_mut(&channel_id).unwrap();
+        let gpadl_state = channel
             .gpadls
-            .remove(&(channel_id, request.gpadl_id))
+            .remove(&request.gpadl_id)
             .expect("gpadl validated above");
 
         assert!(
             matches!(gpadl_state, GpadlState::TearingDown),
             "gpadl should be tearing down if in teardown list, state = {gpadl_state:?}"
         );
-
-        let channel = &self.inner.channels[&channel_id];
 
         channel
             .response_send
@@ -1267,10 +1236,15 @@ impl ClientTask {
 
     fn handle_gpadl(&mut self, channel_id: ChannelId, rpc: FailableRpc<GpadlRequest, ()>) {
         let (request, rpc) = rpc.split();
-        if self
+        let channel = self
             .inner
+            .channels
+            .get_mut(&channel_id)
+            .expect("invalid channel");
+
+        if channel
             .gpadls
-            .insert((channel_id, request.id), GpadlState::Offered(rpc))
+            .insert(request.id, GpadlState::Offered(rpc))
             .is_some()
         {
             panic!(
@@ -1320,7 +1294,13 @@ impl ClientTask {
     }
 
     fn handle_gpadl_teardown(&mut self, channel_id: ChannelId, gpadl_id: GpadlId) {
-        let Some(gpadl_state) = self.inner.gpadls.get_mut(&(channel_id, gpadl_id)) else {
+        let channel = self
+            .inner
+            .channels
+            .get_mut(&channel_id)
+            .expect("invalid channel");
+
+        let Some(gpadl_state) = channel.gpadls.get_mut(&gpadl_id) else {
             tracing::warn!(
                 gpadl_id = gpadl_id.0,
                 channel_id = channel_id.0,
@@ -1345,7 +1325,7 @@ impl ClientTask {
         assert!(
             self.inner
                 .teardown_gpadls
-                .insert(gpadl_id, Some(channel_id))
+                .insert(gpadl_id, channel_id)
                 .is_none(),
             "Gpadl state validated above"
         );
@@ -1665,10 +1645,8 @@ struct ClientTaskInner {
     messages: OutgoingMessages,
     #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|id| id.0)")]
     channels: HashMap<ChannelId, Channel>,
-    #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|id| id.1.0)")]
-    gpadls: HashMap<(ChannelId, GpadlId), GpadlState>,
     #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|id| id.0)")]
-    teardown_gpadls: HashMap<GpadlId, Option<ChannelId>>,
+    teardown_gpadls: HashMap<GpadlId, ChannelId>,
     #[inspect(skip)]
     channel_requests: SelectAll<TaggedStream<ChannelId, mesh::Receiver<ChannelRequest>>>,
     synic: SynicState,
