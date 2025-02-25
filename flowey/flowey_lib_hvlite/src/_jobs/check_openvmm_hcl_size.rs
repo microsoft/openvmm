@@ -68,8 +68,8 @@ impl SimpleFlowNode for Node {
         });
 
         let file_name = match target.common_arch().unwrap() {
-            CommonArch::X86_64 => "x64-openhcl-igvm-extras",
-            CommonArch::Aarch64 => "aarch64-openhcl-igvm-extras",
+            CommonArch::X86_64 => "x64-openhcl-baseline",
+            CommonArch::Aarch64 => "aarch64-openhcl-baseline",
         };
 
         let merge_commit = ctx.reqv(|v| git_merge_commit::Request {
@@ -113,14 +113,7 @@ impl SimpleFlowNode for Node {
                 let new_openhcl = rt.read(new_openhcl);
                 let merge_run = rt.read(merge_run);
 
-                let arch = target.common_arch().unwrap();
-
-                let old_path = match arch {
-                    CommonArch::X86_64 => {
-                        old_openhcl.join("x64-openhcl-igvm-extras/openhcl/openhcl")
-                    }
-                    CommonArch::Aarch64 => old_openhcl.join("openhcl-aarch64/openhcl"),
-                };
+                let old_path = old_openhcl.join("openhcl");
                 let new_path = new_openhcl.bin;
 
                 println!(
