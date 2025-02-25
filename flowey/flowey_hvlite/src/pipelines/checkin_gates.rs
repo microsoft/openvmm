@@ -698,7 +698,6 @@ impl IntoPipeline for CheckinGatesCli {
 
                     flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
                         igvm_files: igvm_recipes
-                            .clone()
                             .into_iter()
                             .map(|recipe| OpenhclIgvmBuildParams {
                                 profile: openvmm_hcl_profile,

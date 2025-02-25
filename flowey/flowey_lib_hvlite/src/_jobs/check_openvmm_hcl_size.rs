@@ -9,12 +9,12 @@ use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl;
 use crate::build_openvmm_hcl::OpenvmmHclBuildParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile::OpenvmmHclShip;
+use crate::gh_merge_commit;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::download_gh_artifact;
 use flowey_lib_common::gh_workflow_id;
-use flowey_lib_common::git_merge_commit;
 
 flowey_request! {
     pub struct Request {
@@ -33,7 +33,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_xtask::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<download_gh_artifact::Node>();
-        ctx.import::<git_merge_commit::Node>();
+        ctx.import::<gh_merge_commit::Node>();
         ctx.import::<gh_workflow_id::Node>();
         ctx.import::<build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<build_openvmm_hcl::Node>();
@@ -72,7 +72,7 @@ impl SimpleFlowNode for Node {
             CommonArch::Aarch64 => "aarch64-openhcl-igvm-extras",
         };
 
-        let merge_commit = ctx.reqv(|v| git_merge_commit::Request {
+        let merge_commit = ctx.reqv(|v| gh_merge_commit::Request {
             repo_path: openvmm_repo_path.clone(),
             merge_commit: v,
             base_branch: "main".into(),
