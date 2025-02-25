@@ -8,6 +8,8 @@ use crate::monitor::MonitorId;
 use hvdef::Vtl;
 use inspect::Inspect;
 use std::sync::Arc;
+use std::task::Context;
+use std::task::Poll;
 use thiserror::Error;
 
 pub trait MessagePort: Send + Sync {
@@ -16,7 +18,7 @@ pub trait MessagePort: Send + Sync {
     /// A message is `trusted` if it was was received from the guest without using host-visible
     /// mechanisms on a hardware-isolated VM. The `trusted` parameter is always `false` if not
     /// running in the paravisor of a hardware-isolated VM.
-    fn handle_message(&self, msg: &[u8], trusted: bool) -> bool;
+    fn poll_handle_message(&self, cx: &mut Context<'_>, msg: &[u8], trusted: bool) -> Poll<()>;
 }
 
 pub trait EventPort: Send + Sync {
@@ -113,11 +115,9 @@ pub trait GuestEventPort: Send + Sync {
 pub trait GuestMessagePort: Send + Sync + Inspect {
     /// Posts a message to the guest.
     ///
-    /// It is the caller's responsibility to not queue too many messages. There
-    /// is no backpressure mechanism at the transport layer.
-    ///
-    /// FUTURE: add backpressure.
-    fn post_message(&mut self, typ: u32, payload: &[u8]);
+    /// It is the caller's responsibility to not queue too many messages. Not all transport layers
+    /// are guaranteed to support backpressure.
+    fn poll_post_message(&mut self, cx: &mut Context<'_>, typ: u32, payload: &[u8]) -> Poll<()>;
 
     /// Changes the virtual processor to which messages are sent.
     fn set_target_vp(&mut self, vp: u32) -> Result<(), HypervisorError>;

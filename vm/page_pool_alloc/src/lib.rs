@@ -4,39 +4,44 @@
 //! This module implements a page memory allocator for allocating pages from a
 //! given portion of the guest address space.
 
-#![cfg(unix)]
 #![warn(missing_docs)]
 
 mod device_dma;
 
 pub use device_dma::PagePoolDmaBuffer;
 
-#[cfg(all(feature = "vfio", target_os = "linux"))]
 use anyhow::Context;
-#[cfg(all(feature = "hcl_mapping", target_os = "linux"))]
-use hcl::ioctl::MshvVtlLow;
-use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
+use inspect::Response;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
+use safeatomic::AtomicSliceOps;
+use sparse_mmap::alloc_shared_memory;
+use sparse_mmap::Mappable;
+use sparse_mmap::MappableRef;
 use sparse_mmap::SparseMapping;
+use std::fmt::Debug;
 use std::num::NonZeroU64;
+use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
 use thiserror::Error;
-use vm_topology::memory::MemoryRangeWithNode;
+
+const PAGE_SIZE: u64 = 4096;
 
 /// Save restore suport for [`PagePool`].
 pub mod save_restore {
     use super::PagePool;
     use super::Slot;
     use super::SlotState;
+    use super::PAGE_SIZE;
+    use crate::ResolvedSlotState;
     use memory_range::MemoryRange;
     use mesh::payload::Protobuf;
     use vmcore::save_restore::SaveRestore;
     use vmcore::save_restore::SavedStateRoot;
 
     #[derive(Protobuf)]
-    #[mesh(package = "openhcl.pagepool")]
+    #[mesh(package = "openvmm.pagepool")]
     enum InnerSlotState {
         #[mesh(1)]
         Free,
@@ -57,7 +62,7 @@ pub mod save_restore {
     }
 
     #[derive(Protobuf)]
-    #[mesh(package = "openhcl.pagepool")]
+    #[mesh(package = "openvmm.pagepool")]
     struct SlotSavedState {
         #[mesh(1)]
         base_pfn: u64,
@@ -69,7 +74,7 @@ pub mod save_restore {
 
     /// The saved state for [`PagePool`].
     #[derive(Protobuf, SavedStateRoot)]
-    #[mesh(package = "openhcl.pagepool")]
+    #[mesh(package = "openvmm.pagepool")]
     pub struct PagePoolState {
         #[mesh(1)]
         state: Vec<SlotSavedState>,
@@ -81,23 +86,28 @@ pub mod save_restore {
         type SavedState = PagePoolState;
 
         fn save(&mut self) -> Result<Self::SavedState, vmcore::save_restore::SaveError> {
-            let state = self.inner.lock();
+            let state = self.inner.state.lock();
             Ok(PagePoolState {
                 state: state
                     .slots
                     .iter()
                     .map(|slot| {
-                        let inner_state = match &slot.state {
-                            SlotState::Free => InnerSlotState::Free,
-                            SlotState::Allocated { device_id, tag } => InnerSlotState::Allocated {
-                                device_id: state.device_ids[*device_id].name().to_string(),
-                                tag: tag.clone(),
-                            },
-                            SlotState::Leaked { device_id, tag } => InnerSlotState::Leaked {
-                                device_id: device_id.clone(),
-                                tag: tag.clone(),
-                            },
-                            SlotState::AllocatedPendingRestore { .. } => {
+                        let slot = slot.resolve(&state.device_ids);
+                        let inner_state = match slot.state {
+                            ResolvedSlotState::Free => InnerSlotState::Free,
+                            ResolvedSlotState::Allocated { device_id, tag } => {
+                                InnerSlotState::Allocated {
+                                    device_id: device_id.to_string(),
+                                    tag: tag.to_string(),
+                                }
+                            }
+                            ResolvedSlotState::Leaked { device_id, tag } => {
+                                InnerSlotState::Leaked {
+                                    device_id: device_id.to_string(),
+                                    tag: tag.to_string(),
+                                }
+                            }
+                            ResolvedSlotState::AllocatedPendingRestore { .. } => {
                                 panic!("should not save allocated pending restore")
                             }
                         };
@@ -115,7 +125,7 @@ pub mod save_restore {
 
         fn restore(
             &mut self,
-            state: Self::SavedState,
+            mut state: Self::SavedState,
         ) -> Result<(), vmcore::save_restore::RestoreError> {
             // Verify that the pool describes the same regions of memory as the
             // saved state.
@@ -128,7 +138,7 @@ pub mod save_restore {
                 }
             }
 
-            let mut inner = self.inner.lock();
+            let mut inner = self.inner.state.lock();
 
             // Verify there are no existing allocators present, as we rely on
             // the pool being completely free since we will overwrite the state
@@ -143,6 +153,9 @@ pub mod save_restore {
                 ));
             }
 
+            state.state.sort_by_key(|slot| slot.base_pfn);
+
+            let mut mapping_offset = 0;
             inner.slots = state
                 .state
                 .into_iter()
@@ -157,13 +170,22 @@ pub mod save_restore {
                         }
                     };
 
-                    Slot {
+                    let slot = Slot {
                         base_pfn: slot.base_pfn,
+                        mapping_offset: mapping_offset as usize,
                         size_pages: slot.size_pages,
                         state: inner,
-                    }
+                    };
+                    mapping_offset += slot.size_pages * PAGE_SIZE;
+                    slot
                 })
                 .collect();
+
+            if mapping_offset != self.inner.mapping.len() as u64 {
+                return Err(vmcore::save_restore::RestoreError::InvalidSavedState(
+                    anyhow::anyhow!("missing slots in saved state"),
+                ));
+            }
 
             Ok(())
         }
@@ -197,6 +219,7 @@ pub struct UnrestoredAllocations;
 #[derive(Debug, PartialEq, Eq)]
 struct Slot {
     base_pfn: u64,
+    mapping_offset: usize,
     size_pages: u64,
     state: SlotState,
 }
@@ -223,6 +246,31 @@ enum SlotState {
     },
 }
 
+impl Slot {
+    fn resolve<'a>(&'a self, device_ids: &'a [DeviceId]) -> ResolvedSlot<'a> {
+        ResolvedSlot {
+            base_pfn: self.base_pfn,
+            mapping_offset: self.mapping_offset,
+            size_pages: self.size_pages,
+            state: match self.state {
+                SlotState::Free => ResolvedSlotState::Free,
+                SlotState::Allocated { device_id, ref tag } => ResolvedSlotState::Allocated {
+                    device_id: device_ids[device_id].name(),
+                    tag,
+                },
+                SlotState::AllocatedPendingRestore {
+                    ref device_id,
+                    ref tag,
+                } => ResolvedSlotState::AllocatedPendingRestore { device_id, tag },
+                SlotState::Leaked {
+                    ref device_id,
+                    ref tag,
+                } => ResolvedSlotState::Leaked { device_id, tag },
+            },
+        }
+    }
+}
+
 impl SlotState {
     fn restore_allocated(&mut self, device_id: usize) {
         if !matches!(self, SlotState::AllocatedPendingRestore { .. }) {
@@ -239,25 +287,23 @@ impl SlotState {
             _ => unreachable!(),
         };
     }
-
-    fn name(&self) -> &str {
-        match self {
-            SlotState::Free => "free",
-            SlotState::Allocated { .. } => "allocated",
-            SlotState::AllocatedPendingRestore { .. } => "allocated_pending_restore",
-            SlotState::Leaked { .. } => "leaked",
-        }
-    }
 }
 
-/// What kind of memory this pool is.
-#[derive(Inspect, Debug, Clone, Copy, PartialEq, Eq)]
-enum PoolType {
-    /// Private memory, that is not visible to the host.
-    Private,
-    /// Shared memory, that is visible to the host. This requires mapping pages
-    /// with the decrypted bit set on mmap calls.
-    Shared,
+#[derive(Inspect)]
+struct ResolvedSlot<'a> {
+    base_pfn: u64,
+    mapping_offset: usize,
+    size_pages: u64,
+    state: ResolvedSlotState<'a>,
+}
+
+#[derive(Inspect)]
+#[inspect(external_tag)]
+enum ResolvedSlotState<'a> {
+    Free,
+    Allocated { device_id: &'a str, tag: &'a str },
+    AllocatedPendingRestore { device_id: &'a str, tag: &'a str },
+    Leaked { device_id: &'a str, tag: &'a str },
 }
 
 #[derive(Inspect, Debug, Clone, PartialEq, Eq)]
@@ -279,46 +325,44 @@ impl DeviceId {
     }
 }
 
-#[derive(Debug)]
+#[derive(Inspect)]
 struct PagePoolInner {
-    /// The internal slots for the pool, representing page state.
-    slots: Vec<Slot>,
+    #[inspect(flatten)]
+    state: Mutex<PagePoolState>,
     /// The pfn_bias for the pool.
     pfn_bias: u64,
+    /// The mapper used to create mappings for allocations.
+    source: Box<dyn PoolSource>,
+    #[inspect(skip)]
+    mapping: SparseMapping,
+}
+
+impl Debug for PagePoolInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PagePoolInner")
+            .field("state", &self.state)
+            .field("pfn_bias", &self.pfn_bias)
+            .field("mapping", &self.mapping)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+struct PagePoolState {
+    /// The internal slots for the pool, representing page state.
+    slots: Vec<Slot>,
     /// The list of device ids for outstanding allocators. Each name must be
     /// unique.
     device_ids: Vec<DeviceId>,
 }
 
-// Manually implement inspect so device_ids can be rendered as strings, not
-// their actual usize index.
-impl Inspect for PagePoolInner {
+impl Inspect for PagePoolState {
     fn inspect(&self, req: inspect::Request<'_>) {
-        req.respond()
-            .field("device_ids", inspect::iter_by_index(&self.device_ids))
-            .child("slots", |req| {
-                let mut resp = req.respond();
-                for (i, slot) in self.slots.iter().enumerate() {
-                    resp.child(&i.to_string(), |req| {
-                        let mut resp = req.respond();
-                        resp.field("base_pfn", inspect::AsHex(slot.base_pfn))
-                            .field("size_pages", inspect::AsHex(slot.size_pages))
-                            .field("state", slot.state.name());
-
-                        match &slot.state {
-                            SlotState::Free => {}
-                            SlotState::Allocated { device_id, tag } => {
-                                resp.field("device_id", self.device_ids[*device_id].name())
-                                    .field("tag", tag);
-                            }
-                            SlotState::AllocatedPendingRestore { device_id, tag }
-                            | SlotState::Leaked { device_id, tag } => {
-                                resp.field("device_id", device_id.clone()).field("tag", tag);
-                            }
-                        }
-                    });
-                }
-            });
+        let Self { slots, device_ids } = self;
+        req.respond().field(
+            "slots",
+            inspect::iter_by_index(slots).map_value(|s| s.resolve(device_ids)),
+        );
     }
 }
 
@@ -326,17 +370,16 @@ impl Inspect for PagePoolInner {
 /// freed.
 #[derive(Debug)]
 pub struct PagePoolHandle {
-    inner: Arc<Mutex<PagePoolInner>>,
+    inner: Arc<PagePoolInner>,
     base_pfn: u64,
-    pfn_bias: u64,
     size_pages: u64,
-    mapping: Option<SparseMapping>,
+    mapping_offset: usize,
 }
 
 impl PagePoolHandle {
     /// The base pfn (with bias) for this allocation.
     pub fn base_pfn(&self) -> u64 {
-        self.base_pfn + self.pfn_bias
+        self.base_pfn + self.inner.pfn_bias
     }
 
     /// The base pfn without bias for this allocation.
@@ -349,48 +392,26 @@ impl PagePoolHandle {
         self.size_pages
     }
 
-    /// The associated mapping with this allocation. This is only available if
-    /// this was allocated with [`PagePoolAllocator::alloc_with_mapping`].
-    pub fn mapping(&self) -> Option<&SparseMapping> {
-        self.mapping.as_ref()
+    /// The associated mapping with this allocation.
+    pub fn mapping(&self) -> &[AtomicU8] {
+        self.inner
+            .mapping
+            .atomic_slice(self.mapping_offset, (self.size_pages * PAGE_SIZE) as usize)
     }
 
     /// Create a memory block from this allocation.
-    #[cfg(all(feature = "vfio", target_os = "linux"))]
-    fn into_memory_block(
-        mut self,
-        zero_block: bool,
-    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        // Take ownership of the mapping, as the outer memory block type will
-        // guarantee the mapping is dropped when the allocation is also dropped.
-        let mapping = self
-            .mapping
-            .take()
-            .context("allocation did not have associated mapping")?;
-
-        // Zero memory block if requested.
-        if zero_block {
-            let len = (self.size_pages * HV_PAGE_SIZE) as usize;
-            mapping
-                .fill_at(0, 0, len)
-                .context("failed to zero allocated memory")?;
-        }
-
+    fn into_memory_block(self) -> anyhow::Result<user_driver::memory::MemoryBlock> {
         let pfns: Vec<_> = (self.base_pfn()..self.base_pfn() + self.size_pages).collect();
-        let pfn_bias = self.pfn_bias;
-
         Ok(user_driver::memory::MemoryBlock::new(PagePoolDmaBuffer {
-            mapping,
-            _alloc: self,
+            alloc: self,
             pfns,
-            pfn_bias,
         }))
     }
 }
 
 impl Drop for PagePoolHandle {
     fn drop(&mut self) {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.state.lock();
 
         let slot = inner
             .slots
@@ -404,7 +425,59 @@ impl Drop for PagePoolHandle {
             })
             .expect("must find allocation");
 
+        assert_eq!(slot.mapping_offset, self.mapping_offset);
         slot.state = SlotState::Free;
+    }
+}
+
+/// A source for pool allocations.
+pub trait PoolSource: Inspect + Send + Sync {
+    /// The bias to apply to the physical address of each allocation.
+    fn address_bias(&self) -> u64;
+    /// Translates a physical address into the file offset to use when mapping
+    /// the page.
+    fn file_offset(&self, address: u64) -> u64;
+    /// Returns the OS object to map pages from.
+    fn mappable(&self) -> MappableRef<'_>;
+}
+
+/// A mapper that uses an internal buffer to map pages. This is meant to be used
+/// for tests that use [`PagePool`].
+#[derive(Inspect)]
+#[inspect(extra = "TestMapper::inspect_extra")]
+pub struct TestMapper {
+    #[inspect(skip)]
+    mem: Mappable,
+}
+
+impl TestMapper {
+    /// Create a new test mapper that holds an internal buffer of `size_pages`.
+    pub fn new(size_pages: u64) -> anyhow::Result<Self> {
+        let len = (size_pages * PAGE_SIZE) as usize;
+        let fd = alloc_shared_memory(len).context("creating shared mem")?;
+
+        Ok(Self { mem: fd })
+    }
+
+    fn inspect_extra(&self, resp: &mut Response<'_>) {
+        resp.field("type", "test");
+    }
+}
+
+impl PoolSource for TestMapper {
+    fn address_bias(&self) -> u64 {
+        0
+    }
+
+    fn file_offset(&self, address: u64) -> u64 {
+        address
+    }
+
+    fn mappable(&self) -> MappableRef<'_> {
+        #[cfg(windows)]
+        return std::os::windows::io::AsHandle::as_handle(&self.mem);
+        #[cfg(not(windows))]
+        std::os::unix::io::AsFd::as_fd(&self.mem)
     }
 }
 
@@ -421,59 +494,66 @@ impl Drop for PagePoolHandle {
 #[derive(Inspect)]
 pub struct PagePool {
     #[inspect(flatten)]
-    inner: Arc<Mutex<PagePoolInner>>,
+    inner: Arc<PagePoolInner>,
     #[inspect(iter_by_index)]
     ranges: Vec<MemoryRange>,
-    typ: PoolType,
 }
 
 impl PagePool {
-    /// Create a new private pool allocator, with the specified memory. The
-    /// memory must not be used by any other entity.
-    pub fn new_private_pool(private_pool: &[MemoryRangeWithNode]) -> anyhow::Result<Self> {
-        Self::new_internal(private_pool, PoolType::Private, 0)
+    /// Returns a new page pool managing the address ranges in `ranges`,
+    /// using `source` to access the memory.
+    pub fn new<T: PoolSource + 'static>(ranges: &[MemoryRange], source: T) -> anyhow::Result<Self> {
+        Self::new_internal(ranges, Box::new(source))
     }
 
-    /// Create a shared visibility page pool allocator, with the specified
-    /// memory. The supplied guest physical address ranges must be in the
-    /// correct shared state and usable. The memory must not be used by any
-    /// other entity.
-    ///
-    /// `addr_bias` represents a bias to apply to addresses in `shared_pool`.
-    /// This should be vtom on hardware isolated platforms.
-    pub fn new_shared_visibility_pool(
-        shared_pool: &[MemoryRangeWithNode],
-        addr_bias: u64,
-    ) -> anyhow::Result<Self> {
-        Self::new_internal(shared_pool, PoolType::Shared, addr_bias)
-    }
-
-    fn new_internal(
-        memory: &[MemoryRangeWithNode],
-        typ: PoolType,
-        addr_bias: u64,
-    ) -> anyhow::Result<Self> {
+    fn new_internal(memory: &[MemoryRange], source: Box<dyn PoolSource>) -> anyhow::Result<Self> {
         // TODO: Allow callers to specify the vnode, but today we discard this
         // information. In the future we may keep ranges with vnode in order to
         // allow per-node allocations.
 
+        let mut mapping_offset = 0;
         let pages = memory
             .iter()
-            .map(|range| Slot {
-                base_pfn: range.range.start() / HV_PAGE_SIZE,
-                size_pages: range.range.len() / HV_PAGE_SIZE,
-                state: SlotState::Free,
+            .map(|range| {
+                let slot = Slot {
+                    base_pfn: range.start() / PAGE_SIZE,
+                    size_pages: range.len() / PAGE_SIZE,
+                    mapping_offset,
+                    state: SlotState::Free,
+                };
+                mapping_offset += range.len() as usize;
+                slot
             })
             .collect();
 
+        let total_len = mapping_offset;
+
+        // Create a contiguous mapping of the memory ranges.
+        let mapping = SparseMapping::new(total_len).context("failed to reserve VA")?;
+        let mappable = source.mappable();
+        let mut mapping_offset = 0;
+        for range in memory {
+            let file_offset = source.file_offset(range.start());
+            let len = range.len() as usize;
+            mapping
+                .map_file(mapping_offset, len, mappable, file_offset, true)
+                .context("failed to map range")?;
+            mapping_offset += len;
+        }
+
+        assert_eq!(mapping_offset, total_len);
+
         Ok(Self {
-            inner: Arc::new(Mutex::new(PagePoolInner {
-                slots: pages,
-                pfn_bias: addr_bias / HV_PAGE_SIZE,
-                device_ids: Vec::new(),
-            })),
-            ranges: memory.iter().map(|r| r.range).collect(),
-            typ,
+            inner: Arc::new(PagePoolInner {
+                state: Mutex::new(PagePoolState {
+                    slots: pages,
+                    device_ids: Vec::new(),
+                }),
+                pfn_bias: source.address_bias() / PAGE_SIZE,
+                source,
+                mapping,
+            }),
+            ranges: memory.to_vec(),
         })
     }
 
@@ -483,14 +563,13 @@ impl PagePool {
     /// Users should create a new allocator for each device, as the device name
     /// is used to track allocations in the pool.
     pub fn allocator(&self, device_name: String) -> anyhow::Result<PagePoolAllocator> {
-        PagePoolAllocator::new(&self.inner, self.typ, device_name)
+        PagePoolAllocator::new(&self.inner, device_name)
     }
 
     /// Create a spawner that allows creating multiple allocators.
     pub fn allocator_spawner(&self) -> PagePoolAllocatorSpawner {
         PagePoolAllocatorSpawner {
             inner: self.inner.clone(),
-            typ: self.typ,
         }
     }
 
@@ -504,7 +583,7 @@ impl PagePool {
     ///
     /// Unmatched allocations are always logged via a `tracing::warn!` log.
     pub fn validate_restore(&self, leak_unrestored: bool) -> Result<(), UnrestoredAllocations> {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.state.lock();
         let mut unrestored_allocation = false;
 
         // Mark unrestored allocations as leaked.
@@ -545,10 +624,8 @@ impl PagePool {
 ///
 /// Useful when you need to create multiple allocators, without having ownership
 /// of the actual [`PagePool`].
-#[derive(Debug)]
 pub struct PagePoolAllocatorSpawner {
-    inner: Arc<Mutex<PagePoolInner>>,
-    typ: PoolType,
+    inner: Arc<PagePoolInner>,
 }
 
 impl PagePoolAllocatorSpawner {
@@ -558,7 +635,7 @@ impl PagePoolAllocatorSpawner {
     /// Users should create a new allocator for each device, as the device name
     /// is used to track allocations in the pool.
     pub fn allocator(&self, device_name: String) -> anyhow::Result<PagePoolAllocator> {
-        PagePoolAllocator::new(&self.inner, self.typ, device_name)
+        PagePoolAllocator::new(&self.inner, device_name)
     }
 }
 
@@ -571,23 +648,16 @@ impl PagePoolAllocatorSpawner {
 /// are left as-is in the pool. A new allocator can then be created with the
 /// same name. Exisitng allocations with that same device_name will be
 /// linked to the new allocator.
-#[derive(Debug)]
 pub struct PagePoolAllocator {
-    inner: Arc<Mutex<PagePoolInner>>,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    typ: PoolType,
+    inner: Arc<PagePoolInner>,
     device_id: usize,
 }
 
 impl PagePoolAllocator {
-    fn new(
-        inner: &Arc<Mutex<PagePoolInner>>,
-        typ: PoolType,
-        device_name: String,
-    ) -> anyhow::Result<Self> {
+    fn new(inner: &Arc<PagePoolInner>, device_name: String) -> anyhow::Result<Self> {
         let device_id;
         {
-            let mut inner = inner.lock();
+            let mut inner = inner.state.lock();
 
             let index = inner
                 .device_ids
@@ -618,59 +688,12 @@ impl PagePoolAllocator {
 
         Ok(Self {
             inner: inner.clone(),
-            typ,
             device_id,
         })
     }
 
-    #[cfg(all(feature = "hcl_mapping", target_os = "linux"))]
-    fn create_mapping(
-        base_pfn: u64,
-        page_count: u64,
-        pool_type: PoolType,
-    ) -> Result<SparseMapping, anyhow::Error> {
-        let len = (page_count * HV_PAGE_SIZE) as usize;
-        let gpa_fd = MshvVtlLow::new().context("failed to open gpa fd")?;
-        let mapping = SparseMapping::new(len).context("failed to create mapping")?;
-        let gpa = base_pfn * HV_PAGE_SIZE;
-
-        // When the pool references shared memory, on hardware isolated
-        // platforms the file_offset must have the shared bit set as these
-        // are decrypted pages. Setting this bit is okay on non-hardware
-        // isolated platforms, as it does nothing.
-        let file_offset = match pool_type {
-            PoolType::Private => gpa,
-            PoolType::Shared => {
-                tracing::trace!("setting MshvVtlLow::SHARED_MEMORY_FLAG");
-                gpa | MshvVtlLow::SHARED_MEMORY_FLAG
-            }
-        };
-
-        tracing::trace!(gpa, file_offset, len, "mapping allocation");
-
-        mapping
-            .map_file(0, len, gpa_fd.get(), file_offset, true)
-            .context("unable to map allocation")?;
-
-        Ok(mapping)
-    }
-
-    #[cfg(not(all(feature = "hcl_mapping", target_os = "linux")))]
-    fn create_mapping(
-        _base_pfn: u64,
-        _page_count: u64,
-        _pool_type: PoolType,
-    ) -> Result<SparseMapping, anyhow::Error> {
-        anyhow::bail!("not supported on this platform")
-    }
-
-    fn alloc_inner(
-        &self,
-        size_pages: NonZeroU64,
-        tag: String,
-        with_mapping: bool,
-    ) -> Result<PagePoolHandle, Error> {
-        let mut inner = self.inner.lock();
+    fn alloc_inner(&self, size_pages: NonZeroU64, tag: String) -> Result<PagePoolHandle, Error> {
+        let mut inner = self.inner.state.lock();
         let size_pages = size_pages.get();
 
         let index = inner
@@ -687,17 +710,16 @@ impl PagePoolAllocator {
                 tag: tag.clone(),
             })?;
 
-        let pfn_bias = inner.pfn_bias;
-
         // Track which slots we should append if the mapping creation succeeds.
         // If the mapping creation fails, we instead commit the original free
         // slot back to the pool.
-        let (original_slot, allocation_slot, free_slot) = {
+        let (allocation_slot, free_slot) = {
             let slot = inner.slots.swap_remove(index);
             assert!(matches!(slot.state, SlotState::Free));
 
             let allocation_slot = Slot {
                 base_pfn: slot.base_pfn,
+                mapping_offset: slot.mapping_offset,
                 size_pages,
                 state: SlotState::Allocated {
                     device_id: self.device_id,
@@ -708,6 +730,7 @@ impl PagePoolAllocator {
             let free_slot = if slot.size_pages > size_pages {
                 Some(Slot {
                     base_pfn: slot.base_pfn + size_pages,
+                    mapping_offset: slot.mapping_offset + (size_pages * PAGE_SIZE) as usize,
                     size_pages: slot.size_pages - size_pages,
                     state: SlotState::Free,
                 })
@@ -715,26 +738,12 @@ impl PagePoolAllocator {
                 None
             };
 
-            (slot, allocation_slot, free_slot)
+            (allocation_slot, free_slot)
         };
 
         let base_pfn = allocation_slot.base_pfn;
-
-        let mapping = if with_mapping {
-            let mapping = match Self::create_mapping(base_pfn, size_pages, self.typ) {
-                Ok(mapping) => mapping,
-                Err(e) => {
-                    // Commit the original slot back to the pool.
-                    inner.slots.push(original_slot);
-
-                    return Err(Error::Mapping(e));
-                }
-            };
-
-            Some(mapping)
-        } else {
-            None
-        };
+        let mapping_offset = allocation_slot.mapping_offset;
+        assert_eq!(mapping_offset % PAGE_SIZE as usize, 0);
 
         // Commit state to the pool.
         inner.slots.push(allocation_slot);
@@ -745,9 +754,8 @@ impl PagePoolAllocator {
         Ok(PagePoolHandle {
             inner: self.inner.clone(),
             base_pfn,
-            pfn_bias,
             size_pages,
-            mapping,
+            mapping_offset,
         })
     }
 
@@ -755,19 +763,7 @@ impl PagePoolAllocator {
     /// contiguous region of free pages is not available, then an error is
     /// returned.
     pub fn alloc(&self, size_pages: NonZeroU64, tag: String) -> Result<PagePoolHandle, Error> {
-        self.alloc_inner(size_pages, tag, false)
-    }
-
-    /// The same as [`Self::alloc`], but also creates an associated mapping for
-    /// the allocation so the user can use the mapping via
-    /// [`PagePoolHandle::mapping`].
-    #[cfg(all(feature = "hcl_mapping", target_os = "linux"))]
-    pub fn alloc_with_mapping(
-        &self,
-        size_pages: NonZeroU64,
-        tag: String,
-    ) -> Result<PagePoolHandle, Error> {
-        self.alloc_inner(size_pages, tag, true)
+        self.alloc_inner(size_pages, tag)
     }
 
     /// Restore an allocation that was previously allocated in the pool. The
@@ -779,14 +775,14 @@ impl PagePoolAllocator {
         &self,
         base_pfn: u64,
         size_pages: NonZeroU64,
-        with_mapping: bool,
     ) -> Result<PagePoolHandle, Error> {
         let size_pages = size_pages.get();
-        let mut inner = self.inner.lock();
-        let index = inner
+        let mut inner = self.inner.state.lock();
+        let inner = &mut *inner;
+        let slot = inner
             .slots
-            .iter()
-            .position(|slot| {
+            .iter_mut()
+            .find(|slot| {
                 if let SlotState::AllocatedPendingRestore { device_id, tag: _ } = &slot.state {
                     device_id == inner.device_ids[self.device_id].name()
                         && slot.base_pfn == base_pfn
@@ -797,29 +793,21 @@ impl PagePoolAllocator {
             })
             .ok_or(Error::NoMatchingAllocation)?;
 
-        let mapping = if with_mapping {
-            let mapping =
-                Self::create_mapping(base_pfn, size_pages, self.typ).map_err(Error::Mapping)?;
-            Some(mapping)
-        } else {
-            None
-        };
-
-        inner.slots[index].state.restore_allocated(self.device_id);
+        slot.state.restore_allocated(self.device_id);
+        assert_eq!(slot.mapping_offset % PAGE_SIZE as usize, 0);
 
         Ok(PagePoolHandle {
             inner: self.inner.clone(),
             base_pfn,
-            pfn_bias: inner.pfn_bias,
             size_pages,
-            mapping,
+            mapping_offset: slot.mapping_offset,
         })
     }
 }
 
 impl Drop for PagePoolAllocator {
     fn drop(&mut self) {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.state.lock();
         let device_name = inner.device_ids[self.device_id].name().to_string();
         let prev = std::mem::replace(
             &mut inner.device_ids[self.device_id],
@@ -829,72 +817,105 @@ impl Drop for PagePoolAllocator {
     }
 }
 
-#[cfg(all(feature = "vfio", target_os = "linux"))]
-impl user_driver::vfio::VfioDmaBuffer for PagePoolAllocator {
-    fn create_dma_buffer(&self, len: usize) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        if len as u64 % HV_PAGE_SIZE != 0 {
+impl user_driver::DmaClient for PagePoolAllocator {
+    fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+        if len as u64 % PAGE_SIZE != 0 {
             anyhow::bail!("not a page-size multiple");
         }
 
-        let size_pages = NonZeroU64::new(len as u64 / HV_PAGE_SIZE)
+        let size_pages = NonZeroU64::new(len as u64 / PAGE_SIZE)
             .context("allocation of size 0 not supported")?;
 
         let alloc = self
-            .alloc_with_mapping(size_pages, "vfio dma".into())
+            .alloc(size_pages, "vfio dma".into())
             .context("failed to allocate shared mem")?;
 
         // The VfioDmaBuffer trait requires that newly allocated buffers are
         // zeroed.
-        alloc.into_memory_block(true)
+        alloc.mapping().atomic_fill(0);
+        alloc.into_memory_block()
     }
 
     /// Restore a dma buffer in the predefined location with the given `len` in
     /// bytes.
-    fn restore_dma_buffer(
+    fn attach_dma_buffer(
         &self,
         len: usize,
         base_pfn: u64,
     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        if len as u64 % HV_PAGE_SIZE != 0 {
+        if len as u64 % PAGE_SIZE != 0 {
             anyhow::bail!("not a page-size multiple");
         }
 
-        let size_pages = NonZeroU64::new(len as u64 / HV_PAGE_SIZE)
+        let size_pages = NonZeroU64::new(len as u64 / PAGE_SIZE)
             .context("allocation of size 0 not supported")?;
 
         let alloc = self
-            .restore_alloc(base_pfn, size_pages, true)
+            .restore_alloc(base_pfn, size_pages)
             .context("failed to restore allocation")?;
 
         // Preserve the existing contents of memory and do not zero the restored
         // allocation.
-        alloc.into_memory_block(false)
+        alloc.into_memory_block()
     }
 }
 
 #[cfg(test)]
 mod test {
-    use super::*;
+    use crate::PagePool;
+    use crate::PoolSource;
+    use crate::TestMapper;
+    use crate::PAGE_SIZE;
+    use inspect::Inspect;
     use memory_range::MemoryRange;
+    use safeatomic::AtomicSliceOps;
+    use sparse_mmap::MappableRef;
     use vmcore::save_restore::SaveRestore;
+
+    #[derive(Inspect)]
+    #[inspect(bound = "T: Inspect")]
+    struct BiasedMapper<T> {
+        mapper: T,
+        bias: u64,
+    }
+
+    impl<T: PoolSource> BiasedMapper<T> {
+        fn new(mapper: T, bias: u64) -> Self {
+            Self { mapper, bias }
+        }
+    }
+
+    impl<T: PoolSource> PoolSource for BiasedMapper<T> {
+        fn address_bias(&self) -> u64 {
+            self.bias.wrapping_add(self.mapper.address_bias())
+        }
+
+        fn file_offset(&self, address: u64) -> u64 {
+            self.mapper.file_offset(address)
+        }
+
+        fn mappable(&self) -> MappableRef<'_> {
+            self.mapper.mappable()
+        }
+    }
+
+    fn big_test_mapper() -> TestMapper {
+        TestMapper::new(1024 * 1024).unwrap()
+    }
 
     #[test]
     fn test_basic_alloc() {
         let pfn_bias = 15;
-        let pool = PagePool::new_shared_visibility_pool(
-            &[MemoryRangeWithNode {
-                range: MemoryRange::from_4k_gpn_range(10..30),
-                vnode: 0,
-            }],
-            pfn_bias * HV_PAGE_SIZE,
+        let pool = PagePool::new(
+            &[MemoryRange::from_4k_gpn_range(10..30)],
+            BiasedMapper::new(big_test_mapper(), pfn_bias * PAGE_SIZE),
         )
         .unwrap();
         let alloc = pool.allocator("test".into()).unwrap();
 
         let a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
         assert_eq!(a1.base_pfn, 10);
-        assert_eq!(a1.pfn_bias, pfn_bias);
-        assert_eq!(a1.base_pfn(), a1.base_pfn + a1.pfn_bias);
+        assert_eq!(a1.base_pfn(), a1.base_pfn + pfn_bias);
         assert_eq!(a1.base_pfn_without_bias(), a1.base_pfn);
         assert_eq!(a1.size_pages, 5);
 
@@ -902,8 +923,7 @@ mod test {
             .alloc(15.try_into().unwrap(), "alloc2".into())
             .unwrap();
         assert_eq!(a2.base_pfn, 15);
-        assert_eq!(a2.pfn_bias, pfn_bias);
-        assert_eq!(a2.base_pfn(), a2.base_pfn + a2.pfn_bias);
+        assert_eq!(a2.base_pfn(), a2.base_pfn + pfn_bias);
         assert_eq!(a2.base_pfn_without_bias(), a2.base_pfn);
         assert_eq!(a2.size_pages, 15);
 
@@ -912,20 +932,14 @@ mod test {
         drop(a1);
         drop(a2);
 
-        let inner = alloc.inner.lock();
+        let inner = alloc.inner.state.lock();
         assert_eq!(inner.slots.len(), 2);
     }
 
     #[test]
     fn test_duplicate_device_name() {
-        let pool = PagePool::new_shared_visibility_pool(
-            &[MemoryRangeWithNode {
-                range: MemoryRange::from_4k_gpn_range(10..30),
-                vnode: 0,
-            }],
-            0,
-        )
-        .unwrap();
+        let pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
         let _alloc = pool.allocator("test".into()).unwrap();
 
         assert!(pool.allocator("test".into()).is_err());
@@ -933,14 +947,8 @@ mod test {
 
     #[test]
     fn test_dropping_allocator() {
-        let pool = PagePool::new_shared_visibility_pool(
-            &[MemoryRangeWithNode {
-                range: MemoryRange::from_4k_gpn_range(10..40),
-                vnode: 0,
-            }],
-            0,
-        )
-        .unwrap();
+        let pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..40)], big_test_mapper()).unwrap();
         let alloc = pool.allocator("test".into()).unwrap();
         let _alloc2 = pool.allocator("test2".into()).unwrap();
 
@@ -957,54 +965,38 @@ mod test {
 
     #[test]
     fn test_save_restore() {
-        let mut pool = PagePool::new_shared_visibility_pool(
-            &[MemoryRangeWithNode {
-                range: MemoryRange::from_4k_gpn_range(10..30),
-                vnode: 0,
-            }],
-            0,
-        )
-        .unwrap();
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
         let alloc = pool.allocator("test".into()).unwrap();
 
         let a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
         let a1_pfn = a1.base_pfn();
-        let a1_pfn_bias = a1.pfn_bias;
         let a1_size = a1.size_pages;
 
         let a2 = alloc
             .alloc(15.try_into().unwrap(), "alloc2".into())
             .unwrap();
         let a2_pfn = a2.base_pfn();
-        let a2_pfn_bias = a2.pfn_bias;
         let a2_size = a2.size_pages;
 
         let state = pool.save().unwrap();
 
-        let mut pool = PagePool::new_shared_visibility_pool(
-            &[MemoryRangeWithNode {
-                range: MemoryRange::from_4k_gpn_range(10..30),
-                vnode: 0,
-            }],
-            0,
-        )
-        .unwrap();
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
         pool.restore(state).unwrap();
         let alloc = pool.allocator("test".into()).unwrap();
 
         let restored_a1 = alloc
-            .restore_alloc(a1_pfn, a1_size.try_into().unwrap(), false)
+            .restore_alloc(a1_pfn, a1_size.try_into().unwrap())
             .unwrap();
         let restored_a2 = alloc
-            .restore_alloc(a2_pfn, a2_size.try_into().unwrap(), false)
+            .restore_alloc(a2_pfn, a2_size.try_into().unwrap())
             .unwrap();
 
         assert_eq!(restored_a1.base_pfn(), a1_pfn);
-        assert_eq!(restored_a1.pfn_bias, a1_pfn_bias);
         assert_eq!(restored_a1.size_pages, a1_size);
 
         assert_eq!(restored_a2.base_pfn(), a2_pfn);
-        assert_eq!(restored_a2.pfn_bias, a2_pfn_bias);
         assert_eq!(restored_a2.size_pages, a2_size);
 
         pool.validate_restore(false).unwrap();
@@ -1012,28 +1004,16 @@ mod test {
 
     #[test]
     fn test_save_restore_unmatched_allocations() {
-        let mut pool = PagePool::new_shared_visibility_pool(
-            &[MemoryRangeWithNode {
-                range: MemoryRange::from_4k_gpn_range(10..30),
-                vnode: 0,
-            }],
-            0,
-        )
-        .unwrap();
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
 
         let alloc = pool.allocator("test".into()).unwrap();
         let _a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
 
         let state = pool.save().unwrap();
 
-        let mut pool = PagePool::new_shared_visibility_pool(
-            &[MemoryRangeWithNode {
-                range: MemoryRange::from_4k_gpn_range(10..30),
-                vnode: 0,
-            }],
-            0,
-        )
-        .unwrap();
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
 
         pool.restore(state).unwrap();
 
@@ -1042,34 +1022,43 @@ mod test {
 
     #[test]
     fn test_restore_other_allocator() {
-        let mut pool = PagePool::new_shared_visibility_pool(
-            &[MemoryRangeWithNode {
-                range: MemoryRange::from_4k_gpn_range(10..30),
-                vnode: 0,
-            }],
-            0,
-        )
-        .unwrap();
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
 
         let alloc = pool.allocator("test".into()).unwrap();
         let a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
 
         let state = pool.save().unwrap();
 
-        let mut pool = PagePool::new_shared_visibility_pool(
-            &[MemoryRangeWithNode {
-                range: MemoryRange::from_4k_gpn_range(10..30),
-                vnode: 0,
-            }],
-            0,
-        )
-        .unwrap();
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
 
         pool.restore(state).unwrap();
 
         let alloc = pool.allocator("test2".into()).unwrap();
         assert!(alloc
-            .restore_alloc(a1.base_pfn, a1.size_pages.try_into().unwrap(), false)
+            .restore_alloc(a1.base_pfn, a1.size_pages.try_into().unwrap())
             .is_err());
+    }
+
+    #[test]
+    fn test_mapping() {
+        let pool = PagePool::new(
+            &[MemoryRange::from_4k_gpn_range(0..30)],
+            TestMapper::new(30).unwrap(),
+        )
+        .unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+
+        let a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
+        let a1_mapping = a1.mapping();
+        assert_eq!(a1_mapping.len(), 5 * PAGE_SIZE as usize);
+        a1_mapping[123..][..4].atomic_write(&[1, 2, 3, 4]);
+        let mut data = [0; 4];
+        a1_mapping[123..][..4].atomic_read(&mut data);
+        assert_eq!(data, [1, 2, 3, 4]);
+        let mut data = [0; 2];
+        a1_mapping[125..][..2].atomic_read(&mut data);
+        assert_eq!(data, [3, 4]);
     }
 }

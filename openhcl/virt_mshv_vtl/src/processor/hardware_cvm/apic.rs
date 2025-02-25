@@ -39,7 +39,7 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
 ) -> Result<(), UhRunVpError> {
     // Check for interrupt requests from the host and kernel offload.
     if vtl == GuestVtl::Vtl0 {
-        if let Some(irr) = apic_backing.vp().runner.proxy_irr() {
+        if let Some(irr) = apic_backing.vp().runner.proxy_irr_vtl0() {
             // We can't put the interrupts directly into offload (where supported) because we might need
             // to clear the tmr state. This can happen if a vector was previously used for a level
             // triggered interrupt, and is now being used for an edge-triggered interrupt.
@@ -64,7 +64,7 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
     // Check VTL enablement inside each block to avoid taking a lock on the hot path,
     // INIT and SIPI are quite cold.
     if init {
-        if !*apic_backing.vp().inner.hcvm_vtl1_enabled.lock() {
+        if !*apic_backing.vp().cvm_vp_inner().vtl1_enabled.lock() {
             debug_assert_eq!(vtl, GuestVtl::Vtl0);
             apic_backing.handle_init(vtl)?;
         }
@@ -72,7 +72,7 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
 
     if let Some(vector) = sipi {
         if apic_backing.vp().backing.cvm_state_mut().lapics[vtl].activity == MpState::WaitForSipi {
-            if !*apic_backing.vp().inner.hcvm_vtl1_enabled.lock() {
+            if !*apic_backing.vp().cvm_vp_inner().vtl1_enabled.lock() {
                 debug_assert_eq!(vtl, GuestVtl::Vtl0);
                 let base = (vector as u64) << 12;
                 let selector = (vector as u16) << 8;

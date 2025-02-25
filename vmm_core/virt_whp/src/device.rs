@@ -78,10 +78,11 @@ impl Device {
 
     pub fn _retarget_interrupt(&self, address: u64, data: u32, params: &HvInterruptParameters<'_>) {
         let mut flags = Default::default();
-        if params.multicast && params.target_processors.len() > 1 {
+        if params.multicast && params.target_processors.count() > 1 {
             flags |= whp::abi::WHvVpciInterruptTargetFlagMulticast;
         }
-        let target = VpciInterruptTarget::new(params.vector, flags, params.target_processors);
+        let target_processors = Vec::from_iter(params.target_processors);
+        let target = VpciInterruptTarget::new(params.vector, flags, &target_processors);
         self.device()
             .retarget_interrupt(address, data, &target)
             .expect("BUGBUG");

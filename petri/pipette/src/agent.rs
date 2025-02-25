@@ -17,7 +17,6 @@ use pipette_protocol::DiagnosticFile;
 use pipette_protocol::PipetteBootstrap;
 use pipette_protocol::PipetteRequest;
 use socket2::Socket;
-use std::sync::Arc;
 use std::time::Duration;
 use unicycle::FuturesUnordered;
 use vmsocket::VmAddress;
@@ -33,17 +32,11 @@ pub struct Agent {
 
 #[allow(dead_code)] // Not used on all platforms yet
 #[derive(Clone)]
-pub struct DiagnosticSender(Arc<mesh::Sender<DiagnosticFile>>);
+pub struct DiagnosticSender(mesh::Sender<DiagnosticFile>);
 
 impl Agent {
     pub async fn new(driver: DefaultDriver) -> anyhow::Result<Self> {
-        // These shouldn't need `.fuse()`, but without it the code panics with
-        // 'async fn' resumed after completion.
-        // https://github.com/yoshuawuyts/futures-concurrency/pull/204
-        let socket = (
-            connect_client(&driver).fuse(),
-            connect_server(&driver).fuse(),
-        )
+        let socket = (connect_client(&driver), connect_server(&driver))
             .race_ok()
             .await
             .map_err(|e| {
@@ -74,7 +67,7 @@ impl Agent {
             driver,
             mesh,
             request_recv,
-            diag_file_send: DiagnosticSender(Arc::new(diag_file_send)),
+            diag_file_send: DiagnosticSender(diag_file_send),
             watch_send,
         })
     }

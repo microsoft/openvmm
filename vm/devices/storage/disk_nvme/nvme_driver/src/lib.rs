@@ -8,7 +8,6 @@
 
 mod driver;
 mod namespace;
-mod page_allocator;
 mod queue_pair;
 mod queues;
 mod registers;

@@ -15,21 +15,21 @@ use super::NoRunner;
 use super::ProcessorRunner;
 use crate::vmsa::VmsaWrapper;
 use crate::GuestVtl;
+use hv1_structs::VtlArray;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
 use sidecar_client::SidecarVp;
+use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
-use std::ptr::NonNull;
 use thiserror::Error;
-use vtl_array::VtlArray;
 use x86defs::snp::SevRmpAdjust;
 use x86defs::snp::SevVmsa;
 
 /// Runner backing for SNP partitions.
-pub struct Snp {
-    vmsa: VtlArray<NonNull<SevVmsa>, 2>,
+pub struct Snp<'a> {
+    vmsa: VtlArray<&'a UnsafeCell<SevVmsa>, 2>,
 }
 
 /// Error returned by failing SNP operations.
@@ -172,15 +172,15 @@ impl MshvVtl {
     }
 }
 
-impl super::private::BackingPrivate for Snp {
-    fn new(vp: &HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
+impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
+    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
-        let super::BackingState::Snp { vmsa, vmsa_vtl1 } = &vp.backing else {
+        let super::BackingState::Snp { vmsa } = &vp.backing else {
             return Err(NoRunner::MismatchedIsolation);
         };
 
         Ok(Self {
-            vmsa: VtlArray::from([vmsa.0, vmsa_vtl1.0]),
+            vmsa: vmsa.each_ref().map(|mp| mp.as_ref()),
         })
     }
 
@@ -206,12 +206,12 @@ impl super::private::BackingPrivate for Snp {
     }
 }
 
-impl ProcessorRunner<'_, Snp> {
+impl ProcessorRunner<'_, Snp<'_>> {
     /// Gets a reference to the VMSA and backing state of a VTL
     pub fn vmsa(&self, vtl: GuestVtl) -> VmsaWrapper<'_, &SevVmsa> {
         // SAFETY: the VMSA will not be concurrently accessed by the processor
         // while this VP is in VTL2.
-        let vmsa = unsafe { self.state.vmsa[vtl].as_ref() };
+        let vmsa = unsafe { &*self.state.vmsa[vtl].get() };
 
         VmsaWrapper::new(vmsa, &self.hcl.snp_register_bitmap)
     }
@@ -220,21 +220,23 @@ impl ProcessorRunner<'_, Snp> {
     pub fn vmsa_mut(&mut self, vtl: GuestVtl) -> VmsaWrapper<'_, &mut SevVmsa> {
         // SAFETY: the VMSA will not be concurrently accessed by the processor
         // while this VP is in VTL2.
-        let vmsa = unsafe { self.state.vmsa[vtl].as_mut() };
+        let vmsa = unsafe { &mut *self.state.vmsa[vtl].get() };
 
         VmsaWrapper::new(vmsa, &self.hcl.snp_register_bitmap)
     }
 
     /// Returns the VMSAs for [VTL0, VTL1].
     pub fn vmsas_mut(&mut self) -> [VmsaWrapper<'_, &mut SevVmsa>; 2] {
-        let [mut vtl0, mut vtl1] = *self.state.vmsa;
-        // SAFETY: the VMSA will not be concurrently accessed by the processor
-        // while this VP is in VTL2.
-        let (vmsa0, vmsa1) = unsafe { (vtl0.as_mut(), vtl1.as_mut()) };
+        self.state
+            .vmsa
+            .each_ref()
+            .map(|vmsa| {
+                // SAFETY: the VMSA will not be concurrently accessed by the processor
+                // while this VP is in VTL2.
+                let vmsa = unsafe { &mut *vmsa.get() };
 
-        [
-            VmsaWrapper::new(vmsa0, &self.hcl.snp_register_bitmap),
-            VmsaWrapper::new(vmsa1, &self.hcl.snp_register_bitmap),
-        ]
+                VmsaWrapper::new(vmsa, &self.hcl.snp_register_bitmap)
+            })
+            .into_inner()
     }
 }

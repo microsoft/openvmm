@@ -1,0 +1,19 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "hcl_mapper"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hcl.workspace = true
+page_pool_alloc.workspace = true
+
+inspect.workspace = true
+sparse_mmap.workspace = true
+
+anyhow.workspace = true
+
+[lints]
+workspace = true

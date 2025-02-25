@@ -4,14 +4,19 @@
 //! Helpers to modify a [`PetriVmConfigOpenVmm`] from its defaults.
 
 use super::PetriVmConfigOpenVmm;
+use super::MANA_INSTANCE;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use fs_err::File;
+use gdma_resources::GdmaDeviceHandle;
+use gdma_resources::VportDefinition;
 use hvlite_defs::config::Config;
+use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::LoadMode;
+use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use petri_artifacts_common::tags::IsOpenhclIgvm;
-use petri_artifacts_core::ArtifactHandle;
+use petri_artifacts_core::ResolvedArtifact;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
 use vm_resource::IntoResource;
@@ -131,6 +136,37 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Enable an emulated mana device for the VM.
+    pub fn with_nic(mut self) -> Self {
+        self.config.vpci_devices.push(VpciDeviceConfig {
+            vtl: DeviceVtl::Vtl2,
+            instance_id: MANA_INSTANCE,
+            resource: GdmaDeviceHandle {
+                vports: vec![VportDefinition {
+                    mac_address: [0x00, 0x15, 0x5D, 0x12, 0x12, 0x12].into(),
+                    endpoint: net_backend_resources::consomme::ConsommeHandle { cidr: None }
+                        .into_resource(),
+                }],
+            }
+            .into_resource(),
+        });
+
+        self.vtl2_settings
+            .as_mut()
+            .unwrap()
+            .dynamic
+            .as_mut()
+            .unwrap()
+            .nic_devices
+            .push(vtl2_settings_proto::NicDeviceLegacy {
+                instance_id: MANA_INSTANCE.to_string(),
+                subordinate_instance_id: None,
+                max_sub_channels: None,
+            });
+
+        self
+    }
+
     /// Add custom command line arguments to OpenHCL.
     pub fn with_openhcl_command_line(mut self, additional_cmdline: &str) -> Self {
         if !self.firmware.is_openhcl() {
@@ -157,11 +193,11 @@ impl PetriVmConfigOpenVmm {
     }
 
     /// Load a custom OpenHCL firmware file.
-    pub fn with_custom_openhcl<A: IsOpenhclIgvm>(mut self, artifact: ArtifactHandle<A>) -> Self {
+    pub fn with_custom_openhcl<A: IsOpenhclIgvm>(mut self, artifact: ResolvedArtifact<A>) -> Self {
         let LoadMode::Igvm { file, .. } = &mut self.config.load_mode else {
             panic!("Custom OpenHCL is only supported for OpenHCL firmware.")
         };
-        *file = File::open(self.resources.artifacts.get(artifact))
+        *file = File::open(artifact)
             .expect("Failed to open custom OpenHCL file")
             .into();
         self

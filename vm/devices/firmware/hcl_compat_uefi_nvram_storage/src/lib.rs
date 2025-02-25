@@ -200,10 +200,11 @@ impl<S: StorageBackend> HclCompatNvram<S> {
             // corresponds to a VARIABLE entry
 
             let (var_header, var_name, var_data) = {
+                // TODO: zerocopy: error propagation (https://github.com/microsoft/openvmm/issues/759)
+                // TODO: zerocopy: manual fix - review carefully! (https://github.com/microsoft/openvmm/issues/759)
                 let (var_header, var_length_data) =
-                    // TODO: zerocopy: error propagation (https://github.com/microsoft/openvmm/issues/759)
-                    // TODO: zerocopy: manual fix - review carefully! (https://github.com/microsoft/openvmm/issues/759)
-                    format::NvramVariable::read_from_prefix(entry_buf).map_err(|_| NvramStorageError::Load("variable entry too short".into()))?;
+                    format::NvramVariable::read_from_prefix(entry_buf)
+                        .map_err(|_| NvramStorageError::Load("variable entry too short".into()))?;
 
                 if var_length_data.len()
                     != var_header.name_bytes as usize + var_header.data_bytes as usize

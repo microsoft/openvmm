@@ -40,8 +40,6 @@ pub mod artifacts {
         OPENVMM_LINUX_AARCH64,
         /// openvmm macos aarch64 executable
         OPENVMM_MACOS_AARCH64,
-        /// Directory to put OpenHCL dumps in
-        OPENHCL_DUMP_DIRECTORY,
     }
 
     /// Loadable artifacts

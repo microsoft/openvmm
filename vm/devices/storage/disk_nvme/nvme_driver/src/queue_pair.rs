@@ -9,8 +9,6 @@ use crate::driver::save_restore::PendingCommandSavedState;
 use crate::driver::save_restore::PendingCommandsSavedState;
 use crate::driver::save_restore::QueueHandlerSavedState;
 use crate::driver::save_restore::QueuePairSavedState;
-use crate::page_allocator::PageAllocator;
-use crate::page_allocator::ScopedPages;
 use crate::queues::CompletionQueue;
 use crate::queues::SubmissionQueue;
 use crate::registers::DeviceRegisters;
@@ -39,6 +37,8 @@ use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
+use user_driver::page_allocator::PageAllocator;
+use user_driver::page_allocator::ScopedPages;
 use user_driver::DeviceBacking;
 use zerocopy::FromZeros;
 
@@ -517,7 +517,15 @@ impl Issuer {
             .expect("pool cap is >= 1 page");
 
         mem.write(data);
-        let prp = mem.prp();
+        assert_eq!(
+            mem.page_count(),
+            1,
+            "larger requests not currently supported"
+        );
+        let prp = Prp {
+            dptr: [mem.physical_address(0), INVALID_PAGE_ADDR],
+            _pages: None,
+        };
         command.dptr = prp.dptr;
         self.issue_raw(command).await
     }
@@ -533,25 +541,19 @@ impl Issuer {
             .await
             .expect("pool cap is sufficient");
 
-        let prp = mem.prp();
+        assert_eq!(
+            mem.page_count(),
+            1,
+            "larger requests not currently supported"
+        );
+        let prp = Prp {
+            dptr: [mem.physical_address(0), INVALID_PAGE_ADDR],
+            _pages: None,
+        };
         command.dptr = prp.dptr;
         let completion = self.issue_raw(command).await;
         mem.read(data);
         completion
-    }
-}
-
-impl ScopedPages<'_> {
-    fn prp(&self) -> Prp<'_> {
-        assert_eq!(
-            self.page_count(),
-            1,
-            "larger requests not currently supported"
-        );
-        Prp {
-            dptr: [self.physical_address(0), INVALID_PAGE_ADDR],
-            _pages: None,
-        }
     }
 }
 

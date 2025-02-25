@@ -4,8 +4,8 @@
 #![expect(missing_docs)]
 
 use crate::mapping::GuestMemoryMapping;
-use crate::mapping::HardwareIsolatedMemoryProtector;
-use crate::mapping::MemoryAcceptor;
+use crate::HardwareIsolatedMemoryProtector;
+use crate::MemoryAcceptor;
 use anyhow::Context;
 use futures::future::try_join_all;
 use guestmem::GuestMemory;

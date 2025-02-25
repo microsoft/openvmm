@@ -98,9 +98,11 @@ parking_lot.workspace = true
 prost.workspace = true
 rustyline = { workspace = true, features = ["derive"] }
 shell-words.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+unicycle.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 vmswitch.workspace = true

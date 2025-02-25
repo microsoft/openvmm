@@ -29,7 +29,7 @@ prs = subprocess.check_output(
      '--limit', '10000',
      '--base', 'main',
      '--state', 'merged',
-     '--label', f'backported_{release}',
+     '--label', f'backport_{release}',
      '--json', 'title,url,number']
 )
 prs = json.loads(prs)

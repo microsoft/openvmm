@@ -4,8 +4,9 @@
 //! Integration tests for Generation 2 UEFI x86_64 guests with OpenHCL.
 
 use petri::openvmm::PetriVmConfigOpenVmm;
-use petri::ArtifactHandle;
 use petri::OpenHclServicingFlags;
+use petri::ResolvedArtifact;
+#[cfg(guest_arch = "x86_64")]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
@@ -32,7 +33,7 @@ async fn nvme_relay_test_core(
 async fn nvme_relay_servicing_core(
     config: PetriVmConfigOpenVmm,
     openhcl_cmdline: &str,
-    new_openhcl: ArtifactHandle<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+    new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
     flags: OpenHclServicingFlags,
 ) -> Result<(), anyhow::Error> {
     let (mut vm, agent) = config
@@ -89,12 +90,15 @@ async fn nvme_relay_private_pool(config: PetriVmConfigOpenVmm) -> Result<(), any
 /// linux, with vmbus relay. This should expose a disk to VTL0 via vmbus.
 /// Use the private pool override to test the private pool dma path.
 /// Pass 'keepalive' servicing flag which impacts NVMe save/restore.
-#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64)))]
-async fn nvme_keepalive(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+#[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64))[LATEST_STANDARD_X64])]
+async fn nvme_keepalive(
+    config: PetriVmConfigOpenVmm,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
     nvme_relay_servicing_core(
         config,
         "OPENHCL_ENABLE_VTL2_GPA_POOL=1024",
-        LATEST_STANDARD_X64,
+        igvm_file,
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,
         },

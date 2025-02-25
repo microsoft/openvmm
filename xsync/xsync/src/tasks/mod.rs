@@ -6,10 +6,12 @@
 pub mod cargo_lock;
 pub mod cargo_toml;
 pub mod rust_toolchain_toml;
+pub mod rustfmt_toml;
 
 pub use self::cargo_lock::CargoLock;
 pub use self::cargo_toml::CargoToml;
 pub use self::rust_toolchain_toml::RustToolchainToml;
+pub use self::rustfmt_toml::RustfmtToml;
 
 const GENERATED_HEADER: &str = r#"
 # Copyright (C) Microsoft Corporation. All rights reserved.
@@ -28,3 +30,39 @@ const GENERATED_HEADER: &str = r#"
 ################################################################################
 
 "#;
+
+mod custom_meta {
+    use serde::Deserialize;
+    use serde::Serialize;
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct CargoOverlayMetadata {
+        pub xsync: Xsync,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct Xsync {
+        pub inherit: Inherit,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct Inherit {
+        pub profile: bool,
+        pub patch: bool,
+        pub workspace: InheritWorkspace,
+        pub rust_toolchain: InheritRustToolchain,
+        pub rustfmt: bool,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct InheritWorkspace {
+        pub lints: bool,
+        pub package: bool,
+    }
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct InheritRustToolchain {
+        pub inherit: bool,
+        pub channel_prefix: Option<String>,
+    }
+}

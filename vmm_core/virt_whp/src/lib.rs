@@ -28,6 +28,7 @@ use hv1_emulator::hv::GlobalHv;
 use hv1_emulator::hv::GlobalHvParams;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::message_queues::MessageQueues;
+use hv1_structs::VtlSet;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvMessage;
 use hvdef::HvMessageType;
@@ -68,7 +69,6 @@ use vmcore::vmtime::VmTimeAccess;
 use vmcore::vmtime::VmTimeSource;
 use vp::WhpRunVpError;
 use vp_state::WhpVpStateAccess;
-use vtl_array::VtlSet;
 use x86defs::cpuid::Vendor;
 
 #[derive(Debug)]
@@ -1349,7 +1349,6 @@ impl VtlPartition {
                     vendor,
                     tsc_frequency,
                     ref_time,
-                    hypercall_page_protectors: vtl_array::VtlArray::from_fn(|_| None),
                 }))
             }
         } else {
@@ -1435,10 +1434,23 @@ impl VtlPartition {
     }
 }
 
+struct WhpNoVtlProtections;
+impl hv1_emulator::hv::VtlProtectHypercallOverlay for WhpNoVtlProtections {
+    fn change_overlay(&mut self, _gpn: u64) {}
+    fn disable_overlay(&mut self) {}
+}
+
 impl Hv1State {
     fn reset(&self) {
         match self {
-            Hv1State::Emulated(hv) => hv.reset(),
+            Hv1State::Emulated(hv) => hv.reset(
+                [
+                    &mut WhpNoVtlProtections
+                        as &mut dyn hv1_emulator::hv::VtlProtectHypercallOverlay,
+                    &mut WhpNoVtlProtections,
+                ]
+                .into(),
+            ),
             Hv1State::Offloaded => {}
             Hv1State::Disabled => {}
         }

@@ -33,7 +33,7 @@ use task_control::StopTask;
 use task_control::TaskControl;
 use tracing::Instrument;
 use user_driver::memory::MemoryBlock;
-use user_driver::vfio::VfioDmaBuffer;
+use user_driver::DmaClient;
 use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::OpenData;
 use vmbus_channel::ChannelClosed;
@@ -149,8 +149,8 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceWrapper<T> {
     /// Create a new instance.
     pub fn new(
         driver: impl SpawnDriver + Clone,
-        dma_alloc: Arc<dyn VfioDmaBuffer>,
-        synic: Arc<dyn vmbus_client::SynicClient>,
+        dma_alloc: Arc<dyn DmaClient>,
+        synic: Arc<dyn vmbus_client::SynicEventClient>,
         device: T,
     ) -> Result<Self> {
         let spawner = Arc::new(driver.clone());
@@ -232,10 +232,10 @@ struct SimpleVmbusClientDeviceTaskState {
 
 struct SimpleVmbusClientDeviceTask<T: SimpleVmbusClientDeviceAsync> {
     device: TaskControl<RelayDeviceTask<T>, T::Runner>,
-    synic: Arc<dyn vmbus_client::SynicClient>,
+    synic: Arc<dyn vmbus_client::SynicEventClient>,
     saved_state: Option<T::SavedState>,
     spawner: Arc<dyn SpawnDriver>,
-    dma_alloc: Arc<dyn VfioDmaBuffer>,
+    dma_alloc: Arc<dyn DmaClient>,
 }
 
 impl<T: SimpleVmbusClientDeviceAsync> AsyncRun<SimpleVmbusClientDeviceTaskState>
@@ -267,9 +267,9 @@ impl<T: SimpleVmbusClientDeviceAsync> InspectTaskMut<SimpleVmbusClientDeviceTask
 impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
     pub fn new(
         device: T,
-        synic: Arc<dyn vmbus_client::SynicClient>,
+        synic: Arc<dyn vmbus_client::SynicEventClient>,
         spawner: Arc<dyn SpawnDriver>,
-        dma_alloc: Arc<dyn VfioDmaBuffer>,
+        dma_alloc: Arc<dyn DmaClient>,
     ) -> Self {
         Self {
             device: TaskControl::new(RelayDeviceTask(device)),
@@ -446,7 +446,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
 
         let mem = self
             .dma_alloc
-            .create_dma_buffer(page_count * PAGE_SIZE)
+            .allocate_dma_buffer(page_count * PAGE_SIZE)
             .context("allocating memory for vmbus rings")?;
         state.vtl_pages = Some(mem.clone());
         let buf: Vec<_> = [mem.len() as u64]

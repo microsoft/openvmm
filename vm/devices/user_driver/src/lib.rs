@@ -16,16 +16,13 @@ pub mod emulated;
 pub mod interrupt;
 pub mod lockmem;
 pub mod memory;
+pub mod page_allocator;
 pub mod vfio;
-
-pub type DmaAllocator<T> = <T as DeviceBacking>::DmaAllocator;
 
 /// An interface to access device hardware.
 pub trait DeviceBacking: 'static + Send + Inspect {
     /// An object for accessing device registers.
     type Registers: 'static + DeviceRegisterIo + Inspect;
-    /// An object for allocating host memory to share with the device.
-    type DmaAllocator: 'static + HostDmaAllocator;
 
     /// Returns a device ID for diagnostics.
     fn id(&self) -> &str;
@@ -63,17 +60,11 @@ pub trait DeviceRegisterIo: Send + Sync {
     fn write_u64(&self, offset: usize, data: u64);
 }
 
-pub trait HostDmaAllocator: Send + Sync {
-    /// Allocate a new block using default allocation strategy.
-    fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock>;
-    /// Attach to a previously allocated memory block with contiguous PFNs.
-    fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
-}
-
+/// Device interfaces for DMA.
 pub trait DmaClient: Send + Sync {
-    /// Allocate a new DMA buffer.
+    /// Allocate a new DMA buffer. This buffer must be zero initialized.
     fn allocate_dma_buffer(&self, total_size: usize) -> anyhow::Result<MemoryBlock>;
 
-    /// Attach to a previously allocated memory block
+    /// Attach to a previously allocated memory block.
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 }

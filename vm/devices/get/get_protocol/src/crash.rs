@@ -11,7 +11,7 @@ use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 use zerocopy::Unaligned;
 
-pub const CRASHDUMP_GUID: Guid = Guid::from_static_str("427b03e7-4ceb-4286-b5fc-486f4a1dd439");
+pub const CRASHDUMP_GUID: Guid = guid::guid!("427b03e7-4ceb-4286-b5fc-486f4a1dd439");
 
 /// Capabilities supported by the host crash dump services
 #[bitfield(u64)]

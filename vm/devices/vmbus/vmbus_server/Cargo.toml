@@ -37,10 +37,11 @@ unicycle.workspace = true
 zerocopy.workspace = true
 [target.'cfg(windows)'.dependencies]
 vmbus_proxy.workspace = true
-winapi.workspace = true
+windows.workspace = true
 
 [dev-dependencies]
 test_with_tracing.workspace = true
+getrandom.workspace = true
 
 [lints]
 workspace = true

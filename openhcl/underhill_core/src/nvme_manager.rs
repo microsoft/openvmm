@@ -23,7 +23,6 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::collections::hash_map;
 use std::collections::HashMap;
-use std::sync::Arc;
 use thiserror::Error;
 use tracing::Instrument;
 use user_driver::vfio::VfioDevice;
@@ -113,9 +112,7 @@ impl NvmeManager {
         });
         Self {
             task,
-            client: NvmeManagerClient {
-                sender: Arc::new(send),
-            },
+            client: NvmeManagerClient { sender: send },
             save_restore_supported,
         }
     }
@@ -177,7 +174,7 @@ enum Request {
 
 #[derive(Debug, Clone)]
 pub struct NvmeManagerClient {
-    sender: Arc<mesh::Sender<Request>>,
+    sender: mesh::Sender<Request>,
 }
 
 impl NvmeManagerClient {
@@ -355,18 +352,13 @@ impl NvmeManagerWorker {
             let dma_client = self
                 .dma_client_spawner
                 .create_client(format!("nvme_{}", pci_id))?;
+            // This code can wait on each VFIO device until it is arrived.
+            // A potential optimization would be to delay VFIO operation
+            // until it is ready, but a redesign of VfioDevice is needed.
             let vfio_device =
-                // This code can wait on each VFIO device until it is arrived.
-                // A potential optimization would be to delay VFIO operation
-                // until it is ready, but a redesign of VfioDevice is needed.
-                VfioDevice::restore(
-                    &self.driver_source,
-                    &disk.pci_id.clone(),
-                    true,
-                    dma_client,
-                )
-                .instrument(tracing::info_span!("vfio_device_restore", pci_id))
-                .await?;
+                VfioDevice::restore(&self.driver_source, &disk.pci_id.clone(), true, dma_client)
+                    .instrument(tracing::info_span!("vfio_device_restore", pci_id))
+                    .await?;
 
             let nvme_driver = nvme_driver::NvmeDriver::restore(
                 &self.driver_source,

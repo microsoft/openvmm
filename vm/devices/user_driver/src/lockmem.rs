@@ -125,14 +125,12 @@ unsafe impl MappedDmaTarget for LockedMemory {
 #[derive(Clone)]
 pub struct LockedMemorySpawner;
 
-#[cfg(feature = "vfio")]
-impl crate::vfio::VfioDmaBuffer for LockedMemorySpawner {
-    fn create_dma_buffer(&self, len: usize) -> anyhow::Result<crate::memory::MemoryBlock> {
+impl crate::DmaClient for LockedMemorySpawner {
+    fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<crate::memory::MemoryBlock> {
         Ok(crate::memory::MemoryBlock::new(LockedMemory::new(len)?))
     }
 
-    /// Restore mapped DMA memory at the same physical location after servicing.
-    fn restore_dma_buffer(
+    fn attach_dma_buffer(
         &self,
         _len: usize,
         _base_pfn: u64,

@@ -63,6 +63,16 @@ macro_rules! result_helper {
     };
 }
 
+/// Creates a new GUID from a string, parsing the GUID at compile time.
+/// "{00000000-0000-0000-0000-000000000000}" and
+/// "00000000-0000-0000-0000-000000000000".
+#[macro_export]
+macro_rules! guid {
+    ($x:expr $(,)?) => {
+        const { $crate::Guid::from_str_private($x) }
+    };
+}
+
 impl Guid {
     /// Return a new randomly-generated Version 4 UUID
     pub fn new_random() -> Self {
@@ -76,15 +86,9 @@ impl Guid {
         guid
     }
 
-    /// Creates a new GUID from a string, panicking if the input is invalid. Accepted formats are
-    /// "{00000000-0000-0000-0000-000000000000}" and "00000000-0000-0000-0000-000000000000".
-    ///
-    /// # Note
-    ///
-    /// This is a const function, intended to initialize GUID constants at compile time.
-    /// While it can be used at runtime, it will panic if the input is invalid. For initializing
-    /// non-constants, `from_str` should be used instead.
-    pub const fn from_static_str(value: &'static str) -> Guid {
+    /// Do not use. Use the [`guid`] macro instead.
+    #[doc(hidden)]
+    pub const fn from_str_private(value: &str) -> Guid {
         // Unwrap and expect are not supported in const fn.
         match Self::parse(value.as_bytes()) {
             Ok(guid) => guid,
@@ -94,7 +98,7 @@ impl Guid {
         }
     }
 
-    /// Helper used by `from_static_str`, `from_str`, and `TryFrom<&[u8]>`.
+    /// Helper used by `from_str_private`, `from_str`, and `TryFrom<&[u8]>`.
     const fn parse(value: &[u8]) -> Result<Self, ParseError> {
         // Slicing is not possible in const fn, so use an index offset.
         let offset = if value.len() == 38 {
@@ -136,7 +140,7 @@ impl Guid {
     }
 
     /// The all-zero GUID.
-    pub const ZERO: Self = Self::from_static_str("00000000-0000-0000-0000-000000000000");
+    pub const ZERO: Self = guid!("00000000-0000-0000-0000-000000000000");
 
     /// Returns true if this is the all-zero GUID.
     pub fn is_zero(&self) -> bool {
@@ -280,10 +284,33 @@ mod windows {
             }
         }
     }
+
+    impl From<windows::core::GUID> for Guid {
+        fn from(guid: windows::core::GUID) -> Self {
+            Self {
+                data1: guid.data1,
+                data2: guid.data2,
+                data3: guid.data3,
+                data4: guid.data4,
+            }
+        }
+    }
+
+    impl From<Guid> for windows::core::GUID {
+        fn from(guid: Guid) -> Self {
+            Self {
+                data1: guid.data1,
+                data2: guid.data2,
+                data3: guid.data3,
+                data4: guid.data4,
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::guid;
     use super::Guid;
 
     #[test]
@@ -319,10 +346,9 @@ mod tests {
         );
 
         // Test GUID parsing at compile time.
-        const TEST_GUID: Guid = Guid::from_static_str("cf127acc-c960-41e4-9b1e-513e8a89147d");
+        const TEST_GUID: Guid = guid!("cf127acc-c960-41e4-9b1e-513e8a89147d");
         assert_eq!(guid, TEST_GUID);
-        const TEST_BRACED_GUID: Guid =
-            Guid::from_static_str("{cf127acc-c960-41e4-9b1e-513e8a89147d}");
+        const TEST_BRACED_GUID: Guid = guid!("{cf127acc-c960-41e4-9b1e-513e8a89147d}");
         assert_eq!(guid, TEST_BRACED_GUID);
     }
 }

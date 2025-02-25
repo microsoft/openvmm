@@ -28,7 +28,7 @@ impl KernelVmNic {
         friendly_name: &str,
         mac_address: [u8; 6],
         instance_id: &Guid,
-        vmbus_handle: &OwnedHandle,
+        vmbus_handle: BorrowedHandle<'_>,
     ) -> io::Result<Self> {
         let full_nic_name = format!("{}--{}", vm_id, nic_name);
         let path = format!(r#"\\.\VmSwitch\{}"#, &full_nic_name);

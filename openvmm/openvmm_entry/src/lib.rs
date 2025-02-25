@@ -5,6 +5,7 @@
 //! for the worker process.
 
 mod cli_args;
+mod crash_dump;
 mod meshworker;
 mod serial_io;
 mod storage_builder;
@@ -28,6 +29,7 @@ use cli_args::NicConfigCli;
 use cli_args::SerialConfigCli;
 use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
+use crash_dump::spawn_dump_handler;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use disk_backend_resources::layer::SqliteAutoCacheDiskLayerHandle;
@@ -68,7 +70,6 @@ use hvlite_defs::rpc::PulseSaveRestoreError;
 use hvlite_defs::rpc::VmRpc;
 use hvlite_defs::worker::VmWorkerParameters;
 use hvlite_defs::worker::VM_WORKER;
-use hvlite_helpers::crash_dump::spawn_dump_handler;
 use hvlite_helpers::disk::open_disk_type;
 use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
@@ -191,14 +192,7 @@ fn vm_config_from_command_line(
     spawner: impl Spawn,
     opt: &Options,
 ) -> anyhow::Result<(Config, VmResources)> {
-    let serial_pool = DefaultPool::new();
-    let serial_driver = serial_pool.driver();
-    // Ensure the serial driver stays alive with no tasks.
-    serial_driver.spawn("leak", pending::<()>()).detach();
-    thread::Builder::new()
-        .name("serial".to_string())
-        .spawn(|| serial_pool.run())
-        .unwrap();
+    let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
 
     let openhcl_vtl = if opt.vtl2 {
         DeviceVtl::Vtl2
@@ -562,7 +556,7 @@ fn vm_config_from_command_line(
         tracing::info!("Instantiating MCR controller");
 
         // Arbitrary but constant instance ID to be consistent across boots.
-        const MCR_INSTANCE_ID: Guid = Guid::from_static_str("07effd8f-7501-426c-a947-d8345f39113d");
+        const MCR_INSTANCE_ID: Guid = guid::guid!("07effd8f-7501-426c-a947-d8345f39113d");
 
         vpci_devices.push(VpciDeviceConfig {
             vtl: DeviceVtl::Vtl0,
@@ -583,8 +577,7 @@ fn vm_config_from_command_line(
         getrandom::getrandom(&mut mac_address[3..]).expect("rng failure");
 
         // Pick a fixed instance ID based on the index.
-        const BASE_INSTANCE_ID: Guid =
-            Guid::from_static_str("00000000-435d-11ee-9f59-00155d5016fc");
+        const BASE_INSTANCE_ID: Guid = guid::guid!("00000000-435d-11ee-9f59-00155d5016fc");
         let instance_id = Guid {
             data1: index as u32,
             ..BASE_INSTANCE_ID
@@ -1283,7 +1276,7 @@ fn vm_config_from_command_line(
         },
         #[cfg(windows)]
         kernel_vmnics,
-        input: mesh::MpscReceiver::new(),
+        input: mesh::Receiver::new(),
         framebuffer,
         vga_firmware,
         vtl2_gfx: opt.vtl2_gfx,
@@ -1408,7 +1401,7 @@ fn parse_endpoint(
     getrandom::getrandom(&mut mac_address[3..]).expect("rng failure");
 
     // Pick a fixed instance ID based on the index.
-    const BASE_INSTANCE_ID: Guid = Guid::from_static_str("00000000-da43-11ed-936a-00155d6db52f");
+    const BASE_INSTANCE_ID: Guid = guid::guid!("00000000-da43-11ed-936a-00155d6db52f");
     let instance_id = Guid {
         data1: *index as u32,
         ..BASE_INSTANCE_ID
@@ -1959,7 +1952,6 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
 
     // spin up the VM
     let (vm_rpc, rpc_recv) = mesh::channel();
-    let vm_rpc = Arc::new(vm_rpc);
     let (notify_send, notify_recv) = mesh::channel();
     let mut vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
@@ -2831,7 +2823,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
 
 struct DiagDialer {
     driver: DefaultDriver,
-    vm_rpc: Arc<mesh::Sender<VmRpc>>,
+    vm_rpc: mesh::Sender<VmRpc>,
     openhcl_vtl: DeviceVtl,
 }
 

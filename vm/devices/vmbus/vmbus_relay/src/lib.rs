@@ -45,6 +45,7 @@ use vmbus_channel::bus::OpenRequest;
 use vmbus_channel::bus::OpenResult;
 use vmbus_client as client;
 use vmbus_client::VmbusClient;
+use vmbus_client::VmbusClientBuilder;
 use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::FeatureFlags;
@@ -74,7 +75,7 @@ const REQUIRED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
     .with_guest_specified_signal_parameters(true)
     .with_modify_connection(true);
 
-const VMBUS_RELAY_CLIENT_ID: Guid = Guid::from_static_str("ceb1cd55-6a3b-41c5-9473-4dd30624c3d8");
+const VMBUS_RELAY_CLIENT_ID: Guid = guid::guid!("ceb1cd55-6a3b-41c5-9473-4dd30624c3d8");
 
 /// Represents a relay between a vmbus server on the host, and the vmbus server running in
 /// Underhill, allowing offers from the host and offers from Underhill to be mixed.
@@ -94,11 +95,11 @@ impl HostVmbusTransport {
         control: Arc<VmbusServerControl>,
         channel: VmbusRelayChannelHalf,
         hvsock_relay: HvsockRelayChannelHalf,
-        synic: Arc<dyn client::SynicClient>,
-        msg_source: impl 'static + client::VmbusMessageSource,
+        vmbus_client: VmbusClientBuilder,
     ) -> Result<Self> {
         let (offer_send, offer_recv) = mesh::channel();
-        let vmbus_client = VmbusClient::new(synic.clone(), offer_send, msg_source, &driver);
+        let synic = vmbus_client.event_client().clone();
+        let vmbus_client = vmbus_client.build(&driver, offer_send);
 
         let mut relay_task = RelayTask::new(
             Arc::new(driver.clone()),
@@ -184,7 +185,7 @@ pub struct RegisteredEvent {
     #[inspect(skip)]
     wait: PolledWait<Event>,
     #[inspect(skip)]
-    hcl_vmbus: Arc<dyn client::SynicClient>,
+    hcl_vmbus: Arc<dyn client::SynicEventClient>,
 }
 
 impl RegisteredEvent {
@@ -194,7 +195,7 @@ impl RegisteredEvent {
     /// with the host, and can be retrieved via a call to get_flag_index().
     pub fn new(
         driver: &(impl ?Sized + Driver),
-        synic: Arc<dyn client::SynicClient>,
+        synic: Arc<dyn client::SynicEventClient>,
     ) -> Result<Self> {
         let flag = {
             let mut used_indices = REGISTERED_EVENT_USED_FLAG_INDICES.lock();
@@ -213,7 +214,7 @@ impl RegisteredEvent {
     /// connections across save/restore.
     pub fn new_with_flag(
         driver: &(impl ?Sized + Driver),
-        synic: Arc<dyn client::SynicClient>,
+        synic: Arc<dyn client::SynicEventClient>,
         flag: u16,
     ) -> Result<Self> {
         {
@@ -232,7 +233,7 @@ impl RegisteredEvent {
 
     fn new_internal(
         driver: &(impl ?Sized + Driver),
-        synic: Arc<dyn client::SynicClient>,
+        synic: Arc<dyn client::SynicEventClient>,
         flag: u16,
     ) -> Result<Self> {
         let event = Event::new();
@@ -345,7 +346,7 @@ struct RelayChannel {
     /// connection, which sets this to true only if the guest uses the channel bitmap.
     use_interrupt_relay: Arc<AtomicBool>,
     /// Synic instance used to register for relayed interrupts.
-    synic: Arc<dyn client::SynicClient>,
+    synic: Arc<dyn client::SynicEventClient>,
     /// Connection ID used to forward guest-to-host interrupts. This is shared with the guest
     /// interrupt handler lambda.
     connection_id: Arc<AtomicU32>,
@@ -691,7 +692,7 @@ struct RelayTask {
     channel_workers: FuturesUnordered<Task<RelayChannelTask>>,
     intercept_channels: HashMap<Guid, mesh::Sender<InterceptChannelRequest>>,
     relay_state: RelayState,
-    synic: Arc<dyn client::SynicClient>,
+    synic: Arc<dyn client::SynicEventClient>,
     use_interrupt_relay: Arc<AtomicBool>,
     server_response_send: mesh::Sender<ModifyConnectionResponse>,
     hvsock_relay: HvsockRelayChannelHalf,
@@ -707,7 +708,7 @@ impl RelayTask {
         spawner: Arc<dyn SpawnDriver>,
         vmbus_client: VmbusClient,
         vmbus_control: Arc<VmbusServerControl>,
-        synic: Arc<dyn client::SynicClient>,
+        synic: Arc<dyn client::SynicEventClient>,
         server_response_send: mesh::Sender<ModifyConnectionResponse>,
         hvsock_relay: HvsockRelayChannelHalf,
     ) -> Self {

@@ -208,13 +208,7 @@ async fn node_from_environment() -> anyhow::Result<Option<NodeResult>> {
         };
 
         // FUTURE: use pool provided by the caller.
-        let pool = DefaultPool::new();
-        let driver = pool.driver();
-        thread::Builder::new()
-            .name("mesh-worker-pool".to_owned())
-            .spawn(|| pool.run())
-            .unwrap();
-
+        let (_, driver) = DefaultPool::spawn_on_thread("mesh-worker-pool");
         node = mesh_remote::unix::UnixNode::join(driver, invitation, left)
             .await
             .context("failed to join mesh")?;
@@ -401,13 +395,7 @@ impl Mesh {
         #[cfg(unix)]
         let node = {
             // FUTURE: use pool provided by the caller.
-            let pool = DefaultPool::new();
-            let driver = pool.driver();
-            thread::Builder::new()
-                .name("mesh-worker-pool".to_owned())
-                .spawn(|| pool.run())
-                .unwrap();
-
+            let (_, driver) = DefaultPool::spawn_on_thread("mesh-worker-pool");
             mesh_remote::unix::UnixNode::new(driver)
         };
 
@@ -424,15 +412,11 @@ impl Mesh {
 
         // Spawn a separate thread for launching mesh processes to avoid bad
         // interactions with any other pools.
-        let pool = DefaultPool::new();
-        let task = pool.driver().spawn(
+        let (_, driver) = DefaultPool::spawn_on_thread("mesh");
+        let task = driver.spawn(
             format!("mesh-{}", &mesh_name),
             async move { inner.run().await },
         );
-        thread::Builder::new()
-            .name("mesh".to_owned())
-            .spawn(|| pool.run())
-            .unwrap();
 
         Ok(Self {
             request,

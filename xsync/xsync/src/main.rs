@@ -59,6 +59,7 @@ enum Commands {
     CargoToml(tasks::CargoToml),
     CargoLock(tasks::CargoLock),
     RustToolchainToml(tasks::RustToolchainToml),
+    RustfmtToml(tasks::RustfmtToml),
 }
 
 fn main() {
@@ -101,6 +102,7 @@ fn try_main() -> anyhow::Result<()> {
             Commands::CargoToml(task) => task.run(ctx),
             Commands::CargoLock(task) => task.run(ctx),
             Commands::RustToolchainToml(task) => task.run(ctx),
+            Commands::RustfmtToml(task) => task.run(ctx),
         },
         None => do_full_sync(&ctx, check),
     };
@@ -125,6 +127,12 @@ fn do_full_sync(ctx: &CmdCtx, check: bool) -> Result<(), anyhow::Error> {
     }
     .run(ctx.clone())?;
 
+    log::info!("running xsync cmd: `rustfmt regen`    (syncing overlay-repo's `rustfmt.toml` to base-repo's `rustfmt.toml`)");
+    tasks::RustfmtToml {
+        cmd: tasks::rustfmt_toml::Command::Regen,
+    }
+    .run(ctx.clone())?;
+
     log::info!("running xsync cmd: `cargo-toml regen`    (regenerating overlay-repo `Cargo.toml` using `Cargo.xsync.toml`)");
     tasks::CargoToml {
         cmd: tasks::cargo_toml::Command::Regen,
@@ -136,14 +144,18 @@ fn do_full_sync(ctx: &CmdCtx, check: bool) -> Result<(), anyhow::Error> {
             "running: `cargo update --workspace` in {}    (ensuring base-repo `Cargo.lock` is up-to-date)",
             ctx.base_workspace.display()
         );
-        std::process::Command::new("cargo")
+        let status = std::process::Command::new("cargo")
             .arg("update")
             .arg("--workspace")
+            .arg("--quiet")
             .current_dir(&ctx.base_workspace)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()?
-            .wait()?;
+            .status()?;
+        if !status.success() {
+            return Err(anyhow::anyhow!(
+                "cargo update failed with status: {}",
+                status
+            ));
+        }
     }
 
     log::info!("running xsync cmd: `cargo-lock gen-external base`    (regenerating list of base-repo external dependencies)");

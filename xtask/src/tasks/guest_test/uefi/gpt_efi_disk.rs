@@ -13,7 +13,7 @@ use std::path::Path;
 use zerocopy::IntoBytes;
 
 const SECTOR_SIZE: usize = 512;
-const EFI_GUID: Guid = Guid::from_static_str("{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}");
+const EFI_GUID: Guid = guid::guid!("{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}");
 
 pub fn create_gpt_efi_disk(out_img: &Path, with_files: &[(&Path, &Path)]) -> Result<()> {
     if out_img.extension().unwrap_or_default() != "img" {

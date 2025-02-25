@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use std::convert::Infallible;
-use std::sync::Arc;
 use video_core::FramebufferControl;
 use video_core::FramebufferFormat;
 use video_core::ResolvedFramebuffer;
@@ -13,7 +12,7 @@ use vm_resource::ResolveResource;
 #[derive(Clone)]
 pub struct FramebufferRemoteControl {
     pub get: guest_emulation_transport::GuestEmulationTransportClient,
-    pub format_send: Arc<mesh::Sender<FramebufferFormat>>,
+    pub format_send: mesh::Sender<FramebufferFormat>,
 }
 
 #[async_trait::async_trait]

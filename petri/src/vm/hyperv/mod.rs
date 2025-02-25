@@ -7,22 +7,26 @@ pub mod vm;
 use vmsocket::VmAddress;
 use vmsocket::VmSocket;
 
-use crate::disk_image::build_agent_image;
+use crate::disk_image::AgentImage;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::Firmware;
 use crate::IsolationType;
+use crate::PetriLogSource;
 use crate::PetriTestParams;
 use crate::PetriVm;
 use crate::PetriVmConfig;
 use anyhow::Context;
 use async_trait::async_trait;
+use pal_async::pipe::PolledPipe;
 use pal_async::socket::PolledSocket;
+use pal_async::task::Spawn;
+use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
 use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
-use petri_artifacts_core::AsArtifactHandle;
-use petri_artifacts_core::TestArtifacts;
+use petri_artifacts_core::ArtifactResolver;
+use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
 use std::fs;
 use std::io::Write;
@@ -46,27 +50,27 @@ pub struct PetriVmConfigHyperV {
     // virtual machine as SCSI (Gen2) or IDE (Gen1) drives.
     vhd_paths: Vec<Vec<PathBuf>>,
     secure_boot_template: Option<powershell::HyperVSecureBootTemplate>,
-    openhcl_igvm: Option<PathBuf>,
+    openhcl_igvm: Option<ResolvedArtifact>,
 
-    // Petri test dependency artifacts
-    artifacts: TestArtifacts,
     driver: DefaultDriver,
+    agent_image: AgentImage,
 
-    arch: MachineArch,
     os_flavor: OsFlavor,
 
     // Folder to store temporary data for this test
     temp_dir: tempfile::TempDir,
+
+    log_source: PetriLogSource,
 }
 
 #[async_trait]
 impl PetriVmConfig for PetriVmConfigHyperV {
     async fn run_without_agent(self: Box<Self>) -> anyhow::Result<Box<dyn PetriVm>> {
-        Ok(Box::new(Self::run_without_agent(*self)?))
+        Ok(Box::new(Self::run_without_agent(*self).await?))
     }
 
     async fn run_with_lazy_pipette(mut self: Box<Self>) -> anyhow::Result<Box<dyn PetriVm>> {
-        Ok(Box::new(Self::run_with_lazy_pipette(*self)?))
+        Ok(Box::new(Self::run_with_lazy_pipette(*self).await?))
     }
 
     async fn run(self: Box<Self>) -> anyhow::Result<(Box<dyn PetriVm>, PipetteClient)> {
@@ -80,16 +84,17 @@ pub struct PetriVmHyperV {
     config: PetriVmConfigHyperV,
     vm: HyperVVM,
     openhcl_diag_handler: Option<OpenHclDiagHandler>,
+    log_tasks: Vec<Task<anyhow::Result<()>>>,
 }
 
 #[async_trait]
 impl PetriVm for PetriVmHyperV {
     async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
-        Self::wait_for_halt(self)
+        Self::wait_for_halt(self).await
     }
 
     async fn wait_for_teardown(self: Box<Self>) -> anyhow::Result<HaltReason> {
-        Self::wait_for_teardown(*self)
+        Self::wait_for_teardown(*self).await
     }
 
     async fn test_inspect_openhcl(&mut self) -> anyhow::Result<()> {
@@ -105,72 +110,80 @@ impl PetriVm for PetriVmHyperV {
     }
 }
 
+/// Artifacts needed to create a [`PetriVmConfigHyperV`].
+pub struct PetriVmArtifactsHyperV {
+    agent_image: AgentImage,
+    firmware: Firmware,
+}
+
+impl PetriVmArtifactsHyperV {
+    /// Resolves the artifacts needed to instantiate a [`PetriVmConfigHyperV`].
+    pub fn new(resolver: &ArtifactResolver<'_>, firmware: Firmware, arch: MachineArch) -> Self {
+        Self {
+            agent_image: AgentImage::new(resolver, arch, firmware.os_flavor()),
+            firmware,
+        }
+    }
+}
+
 impl PetriVmConfigHyperV {
     /// Create a new Hyper-V petri VM config
     pub fn new(
         params: &PetriTestParams<'_>,
-        firmware: Firmware,
-        arch: MachineArch,
+        artifacts: PetriVmArtifactsHyperV,
         driver: &DefaultDriver,
     ) -> anyhow::Result<Self> {
+        let PetriVmArtifactsHyperV {
+            agent_image,
+            firmware,
+        } = artifacts;
         let temp_dir = tempfile::tempdir()?;
 
-        let (guest_state_isolation_type, generation, guest_artifact, igvm_artifact) = match &firmware {
-            Firmware::LinuxDirect | Firmware::OpenhclLinuxDirect => {
-                todo!("linux direct not supported on hyper-v")
-            }
-            Firmware::Pcat { guest } => (
-                powershell::HyperVGuestStateIsolationType::Disabled,
-                powershell::HyperVGeneration::One,
-                guest.artifact(),
-                None,
-            ),
-            Firmware::Uefi { guest } => (
-                powershell::HyperVGuestStateIsolationType::Disabled,
-                powershell::HyperVGeneration::Two,
-                guest.artifact(),
-                None,
-            ),
-            Firmware::OpenhclUefi {
-                guest,
-                isolation,
-                vtl2_nvme_boot: _, // TODO
-            } => (
-                match isolation {
-                    Some(IsolationType::Vbs) => powershell::HyperVGuestStateIsolationType::Vbs,
-                    Some(IsolationType::Snp) => powershell::HyperVGuestStateIsolationType::Snp,
-                    Some(IsolationType::Tdx) => powershell::HyperVGuestStateIsolationType::Tdx,
-                    None => powershell::HyperVGuestStateIsolationType::TrustedLaunch,
-                },
-                powershell::HyperVGeneration::Two,
-                guest.artifact(),
-                Some(match (arch, isolation) {
-                    (MachineArch::X86_64, None) => {
-                        petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64
-                            .erase()
-                    }
-                    (MachineArch::X86_64, Some(_)) => {
-                        petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_CVM_X64.erase()
-                    }
-                    (MachineArch::Aarch64, None) => {
-                        petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64
-                            .erase()
-                    }
-                    _ => anyhow::bail!("unsupported arch/isolation combination"),
-                }),
-            ),
-            // TODO: OpenHCL PCAT
-        };
+        let (guest_state_isolation_type, generation, guest_artifact, igvm_artifact) =
+            match &firmware {
+                Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => {
+                    todo!("linux direct not supported on hyper-v")
+                }
+                Firmware::Pcat { guest, .. } => (
+                    powershell::HyperVGuestStateIsolationType::Disabled,
+                    powershell::HyperVGeneration::One,
+                    guest.artifact(),
+                    None,
+                ),
+                Firmware::Uefi { guest, .. } => (
+                    powershell::HyperVGuestStateIsolationType::Disabled,
+                    powershell::HyperVGeneration::Two,
+                    guest.artifact(),
+                    None,
+                ),
+                Firmware::OpenhclUefi {
+                    guest,
+                    isolation,
+                    igvm_path,
+                    vtl2_nvme_boot: _, // TODO
+                } => (
+                    match isolation {
+                        Some(IsolationType::Vbs) => powershell::HyperVGuestStateIsolationType::Vbs,
+                        Some(IsolationType::Snp) => powershell::HyperVGuestStateIsolationType::Snp,
+                        Some(IsolationType::Tdx) => powershell::HyperVGuestStateIsolationType::Tdx,
+                        None => powershell::HyperVGuestStateIsolationType::TrustedLaunch,
+                    },
+                    powershell::HyperVGeneration::Two,
+                    guest.artifact(),
+                    Some(igvm_path),
+                ),
+                // TODO: OpenHCL PCAT
+            };
 
-        let reference_disk_path = params.artifacts.get(guest_artifact);
-        let openhcl_igvm = igvm_artifact.map(|a| params.artifacts.get(a).to_owned());
+        let reference_disk_path = guest_artifact;
+        let openhcl_igvm = igvm_artifact.cloned();
 
         Ok(PetriVmConfigHyperV {
             name: params.test_name.to_owned(),
             generation,
             guest_state_isolation_type,
             memory: 0x1_0000_0000,
-            vhd_paths: vec![vec![reference_disk_path.to_owned()]],
+            vhd_paths: vec![vec![reference_disk_path.clone().into()]],
             secure_boot_template: matches!(generation, powershell::HyperVGeneration::Two)
                 .then_some(match firmware.os_flavor() {
                     OsFlavor::Windows => powershell::HyperVSecureBootTemplate::MicrosoftWindows,
@@ -182,46 +195,47 @@ impl PetriVmConfigHyperV {
                     }
                 }),
             openhcl_igvm,
-            artifacts: params.artifacts.clone(),
+            agent_image,
             driver: driver.clone(),
-            arch,
             os_flavor: firmware.os_flavor(),
             temp_dir,
+            log_source: params.logger.clone(),
         })
     }
 
     /// Build and boot the requested VM. Does not configure and start pipette.
     /// Should only be used for testing platforms that pipette does not support.
-    pub fn run_without_agent(self) -> anyhow::Result<PetriVmHyperV> {
-        self.run_core(false)
+    pub async fn run_without_agent(self) -> anyhow::Result<PetriVmHyperV> {
+        self.run_core(false).await
     }
 
     /// Run the VM, configuring pipette to automatically start, but do not wait
     /// for it to connect. This is useful for tests where the first boot attempt
     /// is expected to not succeed, but pipette functionality is still desired.
-    pub fn run_with_lazy_pipette(self) -> anyhow::Result<PetriVmHyperV> {
-        self.run_core(true)
+    pub async fn run_with_lazy_pipette(self) -> anyhow::Result<PetriVmHyperV> {
+        self.run_core(true).await
     }
 
     /// Run the VM, launching pipette and returning a client to it.
     pub async fn run(self) -> anyhow::Result<(PetriVmHyperV, PipetteClient)> {
-        let mut vm = self.run_core(true)?;
+        let mut vm = self.run_core(true).await?;
         let client = vm.wait_for_agent().await?;
         Ok((vm, client))
     }
 
     /// Build and boot the requested VM
-    fn run_core(self, with_agent: bool) -> anyhow::Result<PetriVmHyperV> {
+    async fn run_core(self, with_agent: bool) -> anyhow::Result<PetriVmHyperV> {
         let mut vm = HyperVVM::new(
             &self.name,
             self.generation,
             self.guest_state_isolation_type,
             self.memory,
+            self.log_source.log_file("hyperv")?,
         )?;
 
         if let Some(igvm_file) = &self.openhcl_igvm {
             // TODO: only increase VTL2 memory on debug builds
-            vm.set_openhcl_firmware(igvm_file, true)?;
+            vm.set_openhcl_firmware(igvm_file.as_ref(), true)?;
         }
 
         if let Some(secure_boot_template) = self.secure_boot_template {
@@ -253,7 +267,9 @@ impl PetriVmConfigHyperV {
             // Construct the agent disk.
             let agent_disk_path = self.temp_dir.path().join("cidata.vhd");
             {
-                let agent_disk = build_agent_image(self.arch, self.os_flavor, &self.artifacts)
+                let agent_disk = self
+                    .agent_image
+                    .build()
                     .context("failed to build agent image")?;
                 disk_vhd1::Vhd1Disk::make_fixed(agent_disk.as_file())
                     .context("failed to make vhd for agent image")?;
@@ -279,11 +295,43 @@ impl PetriVmConfigHyperV {
             vm.add_vhd(&agent_disk_path, Some(0), Some(self.vhd_paths.len() as u32))?;
         }
 
+        let mut log_tasks = Vec::new();
+
+        let serial_pipe_path = vm.set_vm_com_port(1)?;
+        let serial_log_file = self.log_source.log_file("guest")?;
+        log_tasks.push(self.driver.spawn("guest-log", {
+            let driver = self.driver.clone();
+            async move {
+                let serial = diag_client::hyperv::open_serial_port(
+                    &driver,
+                    diag_client::hyperv::ComPortAccessInfo::PortPipePath(&serial_pipe_path),
+                )
+                .await?;
+                crate::log_stream(serial_log_file, PolledPipe::new(&driver, serial)?).await
+            }
+        }));
+
         let openhcl_diag_handler = if self.openhcl_igvm.is_some() {
-            Some(OpenHclDiagHandler {
-                client: diag_client::DiagClient::from_hyperv_name(self.driver.clone(), &self.name)?,
-                vtl2_vsock_path: PathBuf::from("TODO get rid of this"),
-            })
+            let openhcl_log_file = self.log_source.log_file("openhcl")?;
+            log_tasks.push(self.driver.spawn("openhcl-log", {
+                let driver = self.driver.clone();
+                let name = self.name.clone();
+                async move {
+                    let diag_client =
+                        diag_client::DiagClient::from_hyperv_name(driver.clone(), &name)?;
+                    loop {
+                        diag_client.wait_for_server().await?;
+                        crate::kmsg_log_task(
+                            openhcl_log_file.clone(),
+                            diag_client.kmsg(true).await?,
+                        )
+                        .await?
+                    }
+                }
+            }));
+            Some(OpenHclDiagHandler::new(
+                diag_client::DiagClient::from_hyperv_name(self.driver.clone(), &self.name)?,
+            ))
         } else {
             None
         };
@@ -294,21 +342,25 @@ impl PetriVmConfigHyperV {
             config: self,
             vm,
             openhcl_diag_handler,
+            log_tasks,
         })
     }
 }
 
 impl PetriVmHyperV {
     /// Wait for the VM to halt, returning the reason for the halt.
-    pub fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
-        self.vm.wait_for_power_off()?;
+    pub async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
+        self.vm.wait_for_power_off(&self.config.driver).await?;
         Ok(HaltReason::PowerOff) // TODO: Get actual halt reason
     }
 
     /// Wait for the VM to halt, returning the reason for the halt,
     /// and cleanly tear down the VM.
-    pub fn wait_for_teardown(mut self) -> anyhow::Result<HaltReason> {
-        let halt_reason = self.wait_for_halt()?;
+    pub async fn wait_for_teardown(mut self) -> anyhow::Result<HaltReason> {
+        let halt_reason = self.wait_for_halt().await?;
+        for t in self.log_tasks {
+            _ = t.cancel();
+        }
         self.vm.remove()?;
         Ok(halt_reason)
     }

@@ -34,7 +34,7 @@ pub struct Config {
     pub vtl2_vmbus: Option<VmbusConfig>,
     #[cfg(windows)]
     pub kernel_vmnics: Vec<KernelVmNicConfig>,
-    pub input: mesh::MpscReceiver<InputData>,
+    pub input: mesh::Receiver<InputData>,
     pub framebuffer: Option<framebuffer::Framebuffer>,
     pub vga_firmware: Option<RomFileLocation>,
     pub vtl2_gfx: bool,
@@ -48,7 +48,7 @@ pub struct Config {
     pub secure_boot_enabled: bool,
     pub custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     // TODO: move FirmwareEvent somewhere not GED-specific.
-    pub firmware_event_send: Option<mesh::MpscSender<get_resources::ged::FirmwareEvent>>,
+    pub firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
     pub debugger_rpc: Option<mesh::Receiver<vmm_core_defs::debug_rpc::DebugRequest>>,
     pub vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     pub chipset_devices: Vec<ChipsetDeviceHandle>,

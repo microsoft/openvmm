@@ -2,15 +2,11 @@
 # Licensed under the MIT License.
 
 [package]
-name = "vtl_array"
-edition.workspace = true
+name = "headervec"
 rust-version.workspace = true
+edition.workspace = true
 
 [dependencies]
-hvdef.workspace = true
-inspect.workspace = true
-
-bitvec.workspace = true
 
 [lints]
 workspace = true

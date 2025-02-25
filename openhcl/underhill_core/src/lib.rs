@@ -72,7 +72,6 @@ use pal_async::DefaultPool;
 use profiler_worker::ProfilerWorker;
 #[cfg(feature = "profiler")]
 use profiler_worker::ProfilerWorkerParameters;
-use std::sync::Arc;
 use std::time::Duration;
 use vmsocket::VmAddress;
 use vmsocket::VmListener;
@@ -107,7 +106,7 @@ fn new_underhill_remote_console_cfg(
                 synth_keyboard: true,
                 synth_mouse: true,
                 synth_video: true,
-                input: mesh::MpscReceiver::new(),
+                input: mesh::Receiver::new(),
                 framebuffer: Some(fb),
             },
             Some(fba),
@@ -118,7 +117,7 @@ fn new_underhill_remote_console_cfg(
                 synth_keyboard: false,
                 synth_mouse: false,
                 synth_video: false,
-                input: mesh::MpscReceiver::new(),
+                input: mesh::Receiver::new(),
                 framebuffer: None,
             },
             None,
@@ -146,12 +145,7 @@ pub fn main() -> anyhow::Result<()> {
     }
 
     // FUTURE: create and use the affinitized threadpool here.
-    let tracing_pool = DefaultPool::new();
-    let tracing_driver = tracing_pool.driver();
-    std::thread::Builder::new()
-        .name("tracing".to_owned())
-        .spawn(|| tracing_pool.run())
-        .unwrap();
+    let (_, tracing_driver) = DefaultPool::spawn_on_thread("tracing");
 
     // Try to run as a worker host, sending a remote tracer that will forward
     // tracing events back to the initial process for logging to the host. See
@@ -450,7 +444,6 @@ async fn run_control(
     let mut diag = DiagState::new().await?;
 
     let (diag_reinspect_send, mut diag_reinspect_recv) = mesh::channel();
-    let diag_reinspect_send = Arc::new(diag_reinspect_send);
     #[cfg(feature = "profiler")]
     let mut profiler_host = None;
     let mut state;

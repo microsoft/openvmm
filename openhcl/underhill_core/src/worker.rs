@@ -73,6 +73,7 @@ use guest_emulation_transport::GuestEmulationTransportClient;
 use guestmem::GuestMemory;
 use guid::Guid;
 use hcl_compat_uefi_nvram_storage::HclCompatNvramQuirks;
+use hcl_mapper::HclMapper;
 use hvdef::hypercall::HvGuestOsId;
 use hvdef::HvRegisterValue;
 use hvdef::Vtl;
@@ -123,7 +124,7 @@ use underhill_attestation::AttestationType;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
 use user_driver::lockmem::LockedMemorySpawner;
-use user_driver::vfio::VfioDmaBuffer;
+use user_driver::DmaClient;
 use virt::state::HvRegisterState;
 use virt::Partition;
 use virt::VpIndex;
@@ -181,20 +182,6 @@ pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new(
 
 const MAX_SUBCHANNELS_PER_VNIC: u16 = 32;
 
-/// Creates a thread to run GET and VMGS clients on.
-///
-/// This must be a separate thread from the thread pool because sometimes thread
-/// pool threads will block synchronously waiting on the GET or VMGS.
-fn new_get_thread() -> (JoinHandle<()>, DefaultDriver) {
-    let pool = DefaultPool::new();
-    let driver = pool.driver();
-    let thread = std::thread::Builder::new()
-        .name("get".into())
-        .spawn(move || pool.run())
-        .unwrap();
-    (thread, driver)
-}
-
 struct GuestEmulationTransportInfra {
     get_thread: JoinHandle<()>,
     get_spawner: DefaultDriver,
@@ -203,7 +190,11 @@ struct GuestEmulationTransportInfra {
 
 async fn construct_get(
 ) -> Result<(GuestEmulationTransportInfra, pal_async::task::Task<()>), anyhow::Error> {
-    let (get_thread, get_spawner) = new_get_thread();
+    // Create a thread to run GET and VMGS clients on.
+    //
+    // This must be a separate thread from the thread pool because sometimes
+    // thread pool threads will block synchronously waiting on the GET or VMGS.
+    let (get_thread, get_spawner) = DefaultPool::spawn_on_thread("get");
 
     let (get_client, get_task) = guest_emulation_transport::spawn_get_worker(get_spawner.clone())
         .await
@@ -314,7 +305,7 @@ pub struct UnderhillRemoteConsoleCfg {
     pub synth_keyboard: bool,
     pub synth_mouse: bool,
     pub synth_video: bool,
-    pub input: mesh::MpscReceiver<InputData>,
+    pub input: mesh::Receiver<InputData>,
     pub framebuffer: Option<framebuffer::Framebuffer>,
 }
 
@@ -426,7 +417,7 @@ impl Worker for UnderhillVmWorker {
                     synth_keyboard: false,
                     synth_mouse: false,
                     synth_video: false,
-                    input: mesh::MpscReceiver::new(),
+                    input: mesh::Receiver::new(),
                     framebuffer: None,
                 },
                 debugger_rpc: None,
@@ -1509,12 +1500,15 @@ async fn new_underhill_vm(
     let mut shared_vis_pages_pool = if shared_pool_size != 0 {
         use vmcore::save_restore::SaveRestore;
 
-        let mut pool = PagePool::new_shared_visibility_pool(
-            &shared_pool,
-            measured_vtl2_info
-                .vtom_offset_bit
-                .map(|bit| 1 << bit)
-                .unwrap_or(0),
+        let mut pool = PagePool::new(
+            &shared_pool.iter().map(|r| r.range).collect::<Vec<_>>(),
+            HclMapper::new_shared(
+                measured_vtl2_info
+                    .vtom_offset_bit
+                    .map(|bit| 1 << bit)
+                    .unwrap_or(0),
+            )
+            .context("failed to create hcl mapper")?,
         )
         .context("failed to create shared vis page pool")?;
 
@@ -1541,8 +1535,11 @@ async fn new_underhill_vm(
         use vmcore::save_restore::SaveRestore;
 
         let ranges = runtime_params.private_pool_ranges();
-        let mut pool =
-            PagePool::new_private_pool(ranges).context("failed to create private pool")?;
+        let mut pool = PagePool::new(
+            &ranges.iter().map(|r| r.range).collect::<Vec<_>>(),
+            HclMapper::new_private().context("failed to create hcl mapper")?,
+        )
+        .context("failed to create private pool")?;
 
         if let Some(pool_state) = servicing_state.private_pool_state.flatten() {
             pool.restore(pool_state)
@@ -1810,7 +1807,7 @@ async fn new_underhill_vm(
     if env_cfg.mcr {
         use crate::dispatch::vtl2_settings_worker::UhVpciDeviceConfig;
         tracing::info!("Instantiating The MCR Device");
-        const MCR_INSTANCE_ID: Guid = Guid::from_static_str("07effd8f-7501-426c-a947-d8345f39113d");
+        const MCR_INSTANCE_ID: Guid = guid::guid!("07effd8f-7501-426c-a947-d8345f39113d");
 
         let res = UhVpciDeviceConfig {
             instance_id: MCR_INSTANCE_ID,
@@ -1875,7 +1872,7 @@ async fn new_underhill_vm(
     let private_pool_spawner_available = private_pool_spanwer.is_some();
 
     let vfio_dma_buffer_spawner = Box::new(
-        move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
+        move |device_id: String| -> anyhow::Result<Arc<dyn DmaClient>> {
             shared_vis_pool_spawner
                 .as_ref()
                 .map(|spawner| {
@@ -2716,19 +2713,17 @@ async fn new_underhill_vm(
         let vmbus = VmbusServerHandle::new(&tp, state_units.add("vmbus"), vmbus)?;
         if let Some((relay_channel, hvsock_relay)) = relay_channels {
             let relay_driver = tp.driver(0);
-            let (synic, msg_source) =
-                vmbus_client_hcl::new_synic_client_and_messsage_source(relay_driver)
-                    .context("failed to create synic client and message source")?;
+            let builder = vmbus_client_hcl::vmbus_client_builder(relay_driver)
+                .context("failed to create synic client and message source")?;
 
-            let synic = Arc::new(synic);
+            let synic = builder.event_client().clone();
 
             let vmbus_relay = vmbus_relay::HostVmbusTransport::new(
                 relay_driver.clone(),
                 Arc::clone(vmbus.control()),
                 relay_channel,
                 hvsock_relay,
-                synic.clone(),
-                msg_source,
+                builder,
             )
             .context("failed to create host vmbus transport")?;
 
@@ -2858,7 +2853,7 @@ async fn new_underhill_vm(
     if let Some(framebuffer) = remote_console_cfg.framebuffer {
         resolver.add_resolver(FramebufferRemoteControl {
             get: get_client.clone(),
-            format_send: Arc::new(framebuffer.format_send()),
+            format_send: framebuffer.format_send(),
         });
 
         vmbus_device_handles.push(

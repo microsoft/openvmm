@@ -2,15 +2,15 @@
 # Licensed under the MIT License.
 
 [package]
-name = "vmm_test_petri_support"
+name = "hv1_structs"
 edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-petri_artifacts_vmm_test.workspace = true
+hvdef.workspace = true
+inspect.workspace = true
 
-petri_artifacts_common.workspace = true
-petri.workspace = true
+bitvec.workspace = true
 
 [lints]
 workspace = true

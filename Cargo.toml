@@ -75,7 +75,6 @@ petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact
 petri_artifacts_vmm_test = { path = "vmm_tests/petri_artifacts_vmm_test" }
 vmm_test_images = { path = "vmm_tests/vmm_test_images" }
 vmm_test_macros = { path = "vmm_tests/vmm_test_macros" }
-vmm_test_petri_support = { path = "vmm_tests/vmm_test_petri_support" }
 
 petri = { path = "petri" }
 petri_artifacts_common = { path = "petri/petri_artifacts_common" }
@@ -96,6 +95,7 @@ debug_ptr = { path = "support/debug_ptr" }
 fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }
+headervec = { path = "support/headervec" }
 inspect = { path = "support/inspect", default-features = false, features = ["derive"] }
 inspect_counters = { path = "support/inspect_counters" }
 inspect_derive = { path = "support/inspect_derive" }
@@ -153,12 +153,12 @@ diag_proto = { path = "openhcl/diag_proto" }
 diag_server = { path = "openhcl/diag_server" }
 get_lower_vtl = { path = "openhcl/get_lower_vtl" }
 hcl = { path = "openhcl/hcl" }
+hcl_mapper = { path = "openhcl/hcl_mapper" }
 host_fdt_parser = { path = "openhcl/host_fdt_parser" }
 kmsg_defs = { path = "openhcl/kmsg_defs" }
 lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
-page_pool_alloc = { path = "openhcl/page_pool_alloc" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
 underhill_attestation = { path = "openhcl/underhill_attestation" }
@@ -319,14 +319,15 @@ vmbus_server = { path = "vm/devices/vmbus/vmbus_server" }
 vmbus_user_channel = { path = "vm/devices/vmbus/vmbus_user_channel" }
 hv1_emulator = { path = "vm/hv1/hv1_emulator" }
 hv1_hypercall = { path = "vm/hv1/hv1_hypercall" }
+hv1_structs = { path = "vm/hv1/hv1_structs" }
 hvdef = { path = "vm/hv1/hvdef" }
-vtl_array = { path = "vm/hv1/vtl_array" }
 vhd1_defs = { path = "vm/vhd1_defs" }
 kvm = { path = "vm/kvm" }
 loader = { path = "vm/loader" }
 igvmfilegen_config = { path = "vm/loader/igvmfilegen_config" }
 loader_defs = { path = "vm/loader/loader_defs" }
 page_table = { path = "vm/loader/page_table" }
+page_pool_alloc = { path = "vm/page_pool_alloc" }
 vbs_defs = { path = "vm/vbs_defs" }
 vmgs = { path = "vm/vmgs/vmgs" }
 vmgs_broker = { path = "vm/vmgs/vmgs_broker" }
@@ -407,7 +408,7 @@ filepath = "0.1"
 fs-err = "2.9"
 fscommon = "0.1.1"
 futures = "0.3.31"
-futures-concurrency = "7.2.1"
+futures-concurrency = "7.6.3"
 futures-executor = "0.3"
 futures-core = "0.3"
 futures-channel = "0.3"
@@ -467,7 +468,7 @@ pbjson = "0.5"
 pbjson-build = "0.5"
 pbjson-types = "0.5"
 pcap-file = "2.0.0"
-petgraph = "0.6.4"
+petgraph = "0.7.1"
 proc-macro2 = "1.0"
 prost = "0.11"
 prost-build = "0.11"
@@ -516,7 +517,7 @@ which = "6"
 widestring = "1.0"
 win_etw_tracing = "0.1"
 winapi = "0.3"
-windows = "0.56"
+windows = "0.59"
 windows-service = "0.7"
 windows-sys = "0.52"
 xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshell/issues/63
@@ -625,6 +626,9 @@ string_to_string = "warn"
 suboptimal_flops = "warn"
 undocumented_unsafe_blocks = "warn"
 unnecessary_box_returns = "warn"
+
+# TODO: Remove this allow in Rust 1.86. See https://github.com/rust-lang/rust-clippy/pull/14115.
+precedence = "allow"
 
 # Possible future additions:
 #

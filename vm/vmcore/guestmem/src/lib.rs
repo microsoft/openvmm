@@ -105,7 +105,7 @@ impl std::fmt::Display for GuestMemoryErrorInner {
         // Include the precise GPA if provided and different from the start of
         // the range.
         if let Some(gpa) = self.gpa {
-            if self.range.as_ref().map_or(true, |range| range.start != gpa) {
+            if self.range.as_ref().is_none_or(|range| range.start != gpa) {
                 write!(f, " at {:#x}", gpa)?;
             }
         }

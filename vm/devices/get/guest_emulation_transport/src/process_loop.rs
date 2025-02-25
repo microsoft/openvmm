@@ -35,7 +35,7 @@ use thiserror::Error;
 use underhill_config::Vtl2SettingsErrorInfo;
 use underhill_config::Vtl2SettingsErrorInfoVec;
 use unicycle::FuturesUnordered;
-use user_driver::vfio::VfioDmaBuffer;
+use user_driver::DmaClient;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_async::pipe::MessagePipe;
@@ -150,7 +150,7 @@ pub(crate) mod msg {
     use guid::Guid;
     use mesh::rpc::Rpc;
     use std::sync::Arc;
-    use user_driver::vfio::VfioDmaBuffer;
+    use user_driver::DmaClient;
     use vpci::bus_control::VpciBusEvent;
 
     #[derive(Debug)]
@@ -180,7 +180,7 @@ pub(crate) mod msg {
         /// Inspect the state of the process loop.
         Inspect(inspect::Deferred),
         /// Store the gpa allocator to be used for attestation.
-        SetGpaAllocator(Arc<dyn VfioDmaBuffer>),
+        SetGpaAllocator(Arc<dyn DmaClient>),
 
         // Late bound receivers for Guest Notifications
         /// Take the late-bound GuestRequest receiver for Generation Id updates.
@@ -483,7 +483,7 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     #[inspect(skip)]
     igvm_attest_read_send: mesh::Sender<Vec<u8>>,
     #[inspect(skip)]
-    gpa_allocator: Option<Arc<dyn VfioDmaBuffer>>,
+    gpa_allocator: Option<Arc<dyn DmaClient>>,
     stats: Stats,
 
     guest_notification_listeners: GuestNotificationListeners,
@@ -549,7 +549,7 @@ mod inspect_helpers {
 struct HostRequestPipeAccess {
     response_message_recv_mutex: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
     response_message_recv: Option<mesh::Receiver<Vec<u8>>>,
-    request_message_send: Arc<mesh::Sender<WriteRequest>>,
+    request_message_send: mesh::Sender<WriteRequest>,
 }
 
 impl Drop for HostRequestPipeAccess {
@@ -563,7 +563,7 @@ struct PipeChannels {
     response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
     // This is None when a `HostRequestPipeAccess` has ownership for an IgvmAttest request.
     igvm_attest_response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
-    message_send: Arc<mesh::Sender<WriteRequest>>,
+    message_send: mesh::Sender<WriteRequest>,
 }
 
 enum WriteRequest {
@@ -574,7 +574,7 @@ enum WriteRequest {
 impl HostRequestPipeAccess {
     fn new(
         response_message_recv_mutex: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
-        request_message_send: Arc<mesh::Sender<WriteRequest>>,
+        request_message_send: mesh::Sender<WriteRequest>,
     ) -> Self {
         let response_message_recv = response_message_recv_mutex.lock().take().unwrap();
         Self {
@@ -672,7 +672,7 @@ impl<T: RingMem> ProcessLoop<T> {
                 igvm_attest_response_message_recv: Arc::new(Mutex::new(Some(
                     igvm_attest_read_recv,
                 ))),
-                message_send: Arc::new(write_send),
+                message_send: write_send,
             },
             read_send,
             write_recv,
@@ -1831,12 +1831,12 @@ async fn request_saved_state(
 async fn request_igvm_attest(
     mut access: HostRequestPipeAccess,
     request: msg::IgvmAttestRequestData,
-    gpa_allocator: Option<Arc<dyn VfioDmaBuffer>>,
+    gpa_allocator: Option<Arc<dyn DmaClient>>,
 ) -> Result<Result<Vec<u8>, IgvmAttestError>, FatalError> {
     let allocator = gpa_allocator.ok_or(FatalError::GpaAllocatorUnavailable)?;
     let dma_size = request.response_buffer_len;
     let mem = allocator
-        .create_dma_buffer(dma_size)
+        .allocate_dma_buffer(dma_size)
         .map_err(FatalError::GpaMemoryAllocationError)?;
 
     // Host expects the vTOM bit to be stripped

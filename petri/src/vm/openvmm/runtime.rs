@@ -26,7 +26,7 @@ use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
 use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::GuestQuirks;
-use petri_artifacts_core::ArtifactHandle;
+use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
 use std::future::Future;
 use std::path::Path;
@@ -104,12 +104,11 @@ impl PetriVmOpenVmm {
 
     /// Get the path to the VTL 2 vsock socket, if the VM is configured with OpenHCL.
     pub fn vtl2_vsock_path(&self) -> anyhow::Result<&Path> {
-        self.inner.openhcl_diag().map(|x| &*x.vtl2_vsock_path)
-    }
-
-    /// Get the artifacts for this VM.
-    pub fn artifacts(&self) -> &petri_artifacts_core::TestArtifacts {
-        &self.inner.resources.artifacts
+        self.inner
+            .resources
+            .vtl2_vsock_path
+            .as_deref()
+            .context("VM is not configured with OpenHCL")
     }
 
     /// Wait for the VM to halt, returning the reason for the halt.
@@ -142,7 +141,7 @@ impl PetriVmOpenVmm {
         self.inner.mesh.shutdown().await;
 
         tracing::info!("Mesh shutdown, waiting for logging tasks");
-        for t in self.inner.resources.serial_tasks {
+        for t in self.inner.resources.log_stream_tasks {
             t.await?;
         }
 
@@ -175,7 +174,7 @@ impl PetriVmOpenVmm {
         /// Restarts OpenHCL.
         pub async fn restart_openhcl(
             &mut self,
-            new_openhcl: ArtifactHandle<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+            new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
             flags: OpenHclServicingFlags
         ) -> anyhow::Result<()>
     );
@@ -349,7 +348,7 @@ impl PetriVmInner {
 
     async fn restart_openhcl(
         &self,
-        new_openhcl: ArtifactHandle<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+        new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
         flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()> {
         let ged_send = self
@@ -358,8 +357,7 @@ impl PetriVmInner {
             .as_ref()
             .context("openhcl not configured")?;
 
-        let igvm_path = self.resources.artifacts.get(new_openhcl);
-        let igvm_file = fs_err::File::open(igvm_path).context("failed to open igvm file")?;
+        let igvm_file = fs_err::File::open(new_openhcl).context("failed to open igvm file")?;
         self.worker
             .restart_openhcl(ged_send, flags, igvm_file.into())
             .await

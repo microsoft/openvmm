@@ -7,14 +7,15 @@ edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+hv1_structs.workspace = true
 hvdef.workspace = true
 pal.workspace = true
 memory_range.workspace = true
 sidecar_client.workspace = true
 tdcall = { workspace = true, features = ["tracing"] }
-vtl_array.workspace = true
 x86defs.workspace = true
 inspect.workspace = true
+page_pool_alloc.workspace = true
 
 parking_lot.workspace = true
 signal-hook.workspace = true

@@ -85,10 +85,7 @@ fn build_kernel_command_line(
         "printk.time=1",
         // Enable facility and level output on console for ohcldiag-dev.
         "console_msg_format=syslog",
-        // Set uio parameters to size and configure vmbus ring buffer behavior.
-        "uio_hv_generic.send_buf_size=0",
-        "uio_hv_generic.recv_buf_size=0",
-        "uio_hv_generic.ring_size=0x11000",
+        // Set uio parameter to configure vmbus ring buffer behavior.
         "uio_hv_generic.no_mask=1",
         // RELIABILITY: Dump anonymous pages and ELF headers only. Skip over
         // huge pages and the shared pages.
@@ -153,8 +150,10 @@ fn build_kernel_command_line(
         "unknown_nmi_panic=1",
         // Even with iommu=off, the SWIOTLB is still allocated on AARCH64
         // (iommu=off ignored entirely), and CVMs (memory encryption forces it on).
-        // Set it to the minimum, saving ~63 MiB.
-        "swiotlb=1",
+        // Set it to the minimum, saving ~63 MiB. The first parameter controls the
+        // area size, the second controls the number of areas (default is # of CPUs).
+        // Set them both to the minimum.
+        "swiotlb=1,1",
         // Use vfio for MANA devices.
         "vfio_pci.ids=1414:00ba",
         // WORKAROUND: Enable no-IOMMU mode. This mode provides no device isolation,

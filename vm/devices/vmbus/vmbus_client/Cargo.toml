@@ -22,9 +22,12 @@ futures.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+
 [dev-dependencies]
-parking_lot.workspace = true
 pal_async.workspace = true
+test_with_tracing.workspace = true
+
+getrandom.workspace = true
 
 [lints]
 workspace = true

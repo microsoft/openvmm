@@ -1,5 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
+
 #
 # The test script that reads AK CERT from TPM and validate its content
 

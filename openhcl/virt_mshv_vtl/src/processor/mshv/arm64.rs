@@ -75,7 +75,7 @@ struct ProcessorStatsArm64 {
 }
 
 impl BackingPrivate for HypervisorBackedArm64 {
-    type HclBacking = MshvArm64;
+    type HclBacking<'mshv> = MshvArm64;
     type EmulationCache = UhCpuStateCache;
     type Shared = ();
 
@@ -87,7 +87,6 @@ impl BackingPrivate for HypervisorBackedArm64 {
         vp::Registers::at_reset(&params.partition.caps, params.vp_info);
         // TODO: reset the registers in the CPU context.
         let _ = params.runner;
-        assert!(params.hv.is_none());
         Ok(Self {
             deliverability_notifications: Default::default(),
             next_deliverability_notifications: Default::default(),
@@ -229,6 +228,12 @@ impl BackingPrivate for HypervisorBackedArm64 {
     ) -> Result<(), UhRunVpError> {
         unimplemented!()
     }
+
+    fn vtl1_inspectable(_this: &UhProcessor<'_, Self>) -> bool {
+        // TODO: Use the VsmVpStatus register to query the hypervisor for
+        // whether VTL 1 is enabled on the vp (this can be cached).
+        false
+    }
 }
 
 impl UhProcessor<'_, HypervisorBackedArm64> {
@@ -317,6 +322,41 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
             Self::intercepted_vtl(&message.header).map_err(|UnsupportedGuestVtl(vtl)| {
                 VpHaltReason::InvalidVmState(UhRunVpError::InvalidInterceptedVtl(vtl))
             })?;
+
+        // Fast path for monitor page writes.
+        if Some(message.guest_physical_address & !(hvdef::HV_PAGE_SIZE - 1))
+            == self.partition.monitor_page.gpa()
+            && message.header.intercept_access_type == hvdef::HvInterceptAccessType::WRITE
+            && message.instruction_byte_count == 4
+        {
+            let gpa = message.guest_physical_address;
+            let guest_memory = &self.partition.gm[intercepted_vtl];
+            if let Some(mut bitmask) = emulate::emulate_mnf_write_fast_path(
+                u32::from_ne_bytes(message.instruction_bytes),
+                &mut UhEmulationState {
+                    vp: &mut *self,
+                    interruption_pending: intercept_state.interruption_pending,
+                    devices: dev,
+                    vtl: intercepted_vtl,
+                    cache: UhCpuStateCache::default(),
+                },
+                guest_memory,
+                dev,
+            ) {
+                let bit_offset = (gpa & (hvdef::HV_PAGE_SIZE - 1)) as u32 * 8;
+                while bitmask != 0 {
+                    let bit = 63 - bitmask.leading_zeros();
+                    bitmask &= !(1 << bit);
+                    if let Some(connection_id) =
+                        self.partition.monitor_page.write_bit(bit_offset + bit)
+                    {
+                        signal_mnf(dev, connection_id);
+                    }
+                }
+                return Ok(());
+            }
+        }
+
         let cache = UhCpuStateCache::default();
         self.emulate(dev, &intercept_state, intercepted_vtl, cache)
             .await?;
@@ -731,7 +771,7 @@ impl<T: CpuIo> hv1_hypercall::RetargetDeviceInterrupt
         device_id: u64,
         address: u64,
         data: u32,
-        params: &hv1_hypercall::HvInterruptParameters<'_>,
+        params: hv1_hypercall::HvInterruptParameters<'_>,
     ) -> hvdef::HvResult<()> {
         self.retarget_virtual_interrupt(
             device_id,

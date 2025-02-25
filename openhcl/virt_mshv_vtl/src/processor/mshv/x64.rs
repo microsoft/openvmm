@@ -31,6 +31,7 @@ use hcl::protocol;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::HvRepResult;
+use hv1_structs::VtlSet;
 use hvdef::hypercall;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvError;
@@ -62,7 +63,6 @@ use virt_support_x86emu::emulate::EmuCheckVtlAccessError;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::EmulatorSupport;
-use vtl_array::VtlSet;
 use x86defs::xsave::Fxsave;
 use x86defs::xsave::XsaveHeader;
 use x86defs::xsave::XFEATURE_SSE;
@@ -119,7 +119,7 @@ pub struct MshvEmulationCache {
 }
 
 impl BackingPrivate for HypervisorBackedX86 {
-    type HclBacking = MshvX64;
+    type HclBacking<'mshv> = MshvX64<'mshv>;
     type Shared = ();
     type EmulationCache = MshvEmulationCache;
 
@@ -338,6 +338,12 @@ impl BackingPrivate for HypervisorBackedX86 {
         _vtl: GuestVtl,
     ) -> Result<(), UhRunVpError> {
         unimplemented!()
+    }
+
+    fn vtl1_inspectable(_this: &UhProcessor<'_, Self>) -> bool {
+        // TODO: Use the VsmVpStatus register to query the hypervisor for
+        // whether VTL 1 is enabled on the vp (this can be cached).
+        false
     }
 }
 
@@ -1712,7 +1718,7 @@ impl<T: CpuIo> hv1_hypercall::RetargetDeviceInterrupt
         device_id: u64,
         address: u64,
         data: u32,
-        params: &hv1_hypercall::HvInterruptParameters<'_>,
+        params: hv1_hypercall::HvInterruptParameters<'_>,
     ) -> hvdef::HvResult<()> {
         self.retarget_virtual_interrupt(
             device_id,
@@ -1995,8 +2001,6 @@ mod save_restore {
                         // Topology information
                         vp_info: _,
                         cpu_index: _,
-                        // Only relevant for CVMs
-                        hcvm_vtl1_enabled: _,
                         hv_start_enable_vtl_vp: _,
                     },
                 // Saved

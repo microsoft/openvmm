@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 use mesh_channel::rpc::Rpc;
-use mesh_channel::MpscReceiver;
+use mesh_channel::Receiver;
 use vmgs::Vmgs;
 use vmgs::VmgsFileInfo;
 use vmgs_format::FileId;
@@ -27,7 +27,7 @@ impl VmgsBrokerTask {
         VmgsBrokerTask { vmgs }
     }
 
-    pub async fn run(&mut self, mut recv: MpscReceiver<VmgsBrokerRpc>) {
+    pub async fn run(&mut self, mut recv: Receiver<VmgsBrokerRpc>) {
         loop {
             match recv.recv().await {
                 Ok(message) => self.process_message(message).await,

@@ -7,7 +7,6 @@ use hvdef::Vtl;
 use inspect::Inspect;
 use mesh::payload::Protobuf;
 use open_enum::open_enum;
-use static_assertions::const_assert_eq;
 use std::mem::size_of;
 use std::ops::BitAnd;
 use std::ops::BitAndAssign;
@@ -147,6 +146,7 @@ impl MessageHeader {
     }
 }
 
+#[derive(Inspect)]
 #[bitfield(u32)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, PartialEq, Eq)]
 pub struct FeatureFlags {
@@ -288,36 +288,12 @@ impl From<InitiateContact> for InitiateContact2 {
 }
 
 /// Helper struct to interpret the `InitiateContact::interrupt_page_or_target_info` field.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
+#[bitfield(u64)]
 pub struct TargetInfo {
     pub sint: u8,
     pub vtl: u8,
-    pub _padding: [u8; 2],
+    pub _padding: u16,
     pub feature_flags: u32,
-}
-
-const_assert_eq!(size_of::<u64>(), size_of::<TargetInfo>());
-
-impl TargetInfo {
-    pub fn new(sint: u8, vtl: u8, feature_flags: FeatureFlags) -> Self {
-        Self {
-            sint,
-            vtl,
-            _padding: [0; 2],
-            feature_flags: feature_flags.into(),
-        }
-    }
-
-    /// Interprets a 64 bit value as the `TargetInfo` struct.
-    pub fn from_u64(value: &u64) -> &Self {
-        Self::ref_from_prefix(value.as_bytes()).unwrap().0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-    }
-
-    /// Represents the `TargetInfo` struct as a 64 bit number.
-    pub fn as_u64(&self) -> &u64 {
-        u64::ref_from_prefix(self.as_bytes()).unwrap().0 // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-    }
 }
 
 pub const fn make_version(major: u16, minor: u16) -> u32 {
@@ -325,7 +301,7 @@ pub const fn make_version(major: u16, minor: u16) -> u32 {
 }
 
 #[repr(u32)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Inspect)]
 pub enum Version {
     V1 = make_version(0, 13),
     Win7 = make_version(1, 1),
@@ -464,12 +440,12 @@ impl Default for UserDefinedData {
 #[derive(
     Copy, Clone, Debug, Inspect, PartialEq, Eq, IntoBytes, FromBytes, Immutable, KnownLayout,
 )]
+#[inspect(extra = "Self::inspect_extra")]
 pub struct OfferChannel {
     pub interface_id: Guid,
     pub instance_id: Guid,
     #[inspect(skip)]
     pub rsvd: [u32; 4],
-    #[inspect(debug)]
     pub flags: OfferFlags,
     pub mmio_megabytes: u16,
     pub user_defined: UserDefinedData,
@@ -482,6 +458,46 @@ pub struct OfferChannel {
     pub connection_id: u32,
 }
 
+impl OfferChannel {
+    fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
+        // TODO: There doesn't exist a single crate that has all these interface
+        // IDs. Today they're defined in each individual crate, but we don't
+        // want to include all those crates as dependencies here.
+        //
+        // In the future, it might make sense to have a common protocol crate
+        // that has all of these defined, but for now just redefine the most
+        // common ones here. Add more as needed.
+        const SHUTDOWN_IC: Guid = guid::guid!("0e0b6031-5213-4934-818b-38d90ced39db");
+        const KVP_IC: Guid = guid::guid!("a9a0f4e7-5a45-4d96-b827-8a841e8c03e6");
+        const VSS_IC: Guid = guid::guid!("35fa2e29-ea23-4236-96ae-3a6ebacba440");
+        const TIMESYNC_IC: Guid = guid::guid!("9527e630-d0ae-497b-adce-e80ab0175caf");
+        const HEARTBEAT_IC: Guid = guid::guid!("57164f39-9115-4e78-ab55-382f3bd5422d");
+        const RDV_IC: Guid = guid::guid!("276aacf4-ac15-426c-98dd-7521ad3f01fe");
+
+        const INHERITED_ACTIVATION: Guid = guid::guid!("3375baf4-9e15-4b30-b765-67acb10d607b");
+
+        const NET: Guid = guid::guid!("f8615163-df3e-46c5-913f-f2d2f965ed0e");
+        const SCSI: Guid = guid::guid!("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f");
+        const VPCI: Guid = guid::guid!("44c4f61d-4444-4400-9d52-802e27ede19f");
+
+        let interface_type = match self.interface_id {
+            SHUTDOWN_IC => "shutdown_ic",
+            KVP_IC => "kvp_ic",
+            VSS_IC => "vss_ic",
+            TIMESYNC_IC => "timesync_ic",
+            HEARTBEAT_IC => "heartbeat_ic",
+            RDV_IC => "rdv_ic",
+            INHERITED_ACTIVATION => "inherited_activation",
+            NET => "net",
+            SCSI => "scsi",
+            VPCI => "vpci",
+            _ => "unknown",
+        };
+        resp.field("interface_name", interface_type);
+    }
+}
+
+#[derive(Inspect)]
 #[bitfield(u16)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, PartialEq, Eq, Protobuf)]
 #[mesh(transparent)]
