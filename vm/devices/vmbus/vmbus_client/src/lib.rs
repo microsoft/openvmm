@@ -307,7 +307,7 @@ pub enum ChannelRequest {
     Restore(FailableRpc<RestoreRequest, OpenOutput>),
     Close,
     Gpadl(FailableRpc<GpadlRequest, ()>),
-    TeardownGpadl(GpadlId),
+    TeardownGpadl(Rpc<GpadlId, ()>),
     Modify(Rpc<ModifyRequest, i32>),
 }
 
@@ -333,9 +333,7 @@ impl std::fmt::Display for ChannelRequest {
 
 /// Expresses a response sent from the server.
 #[derive(Debug)]
-pub enum ChannelResponse {
-    TeardownGpadl(GpadlId),
-}
+pub enum ChannelResponse {}
 
 #[derive(Debug, Error)]
 pub enum RestoreError {
@@ -526,8 +524,9 @@ impl std::fmt::Display for ChannelState {
 #[derive(Inspect)]
 struct Channel {
     offer: protocol::OfferChannel,
+    // When dropped, notifies the caller the channel has been revoked.
     #[inspect(skip)]
-    response_send: mesh::Sender<ChannelResponse>,
+    _response_send: mesh::Sender<ChannelResponse>,
     state: ChannelState,
     #[inspect(with = "|x| x.is_some()")]
     modify_response_send: Option<Rpc<(), i32>>,
@@ -746,7 +745,7 @@ impl ClientTask {
         self.inner.channels.insert(
             offer.channel_id,
             Channel {
-                response_send,
+                _response_send: response_send,
                 offer,
                 state,
                 modify_response_send: None,
@@ -821,11 +820,17 @@ impl ClientTask {
         // Teardown all remaining gpadls for this channel. We don't care about GpadlTorndown
         // responses at this point.
         for (gpadl_id, gpadl_state) in channel.gpadls.drain() {
-            // If the gpadl was already tearing down, send a response now.
-            if matches!(gpadl_state, GpadlState::TearingDown) {
-                channel
-                    .response_send
-                    .send(ChannelResponse::TeardownGpadl(gpadl_id));
+            match gpadl_state {
+                GpadlState::Offered(rpc) => {
+                    rpc.fail(anyhow::anyhow!("channel revoked"));
+                }
+                GpadlState::Created => {}
+                GpadlState::TearingDown { rpcs } => {
+                    self.inner.teardown_gpadls.remove(&gpadl_id).unwrap();
+                    for rpc in rpcs {
+                        rpc.complete(());
+                    }
+                }
             }
         }
 
@@ -975,14 +980,13 @@ impl ClientTask {
             .remove(&request.gpadl_id)
             .expect("gpadl validated above");
 
-        assert!(
-            matches!(gpadl_state, GpadlState::TearingDown),
-            "gpadl should be tearing down if in teardown list, state = {gpadl_state:?}"
-        );
+        let GpadlState::TearingDown { rpcs } = gpadl_state else {
+            panic!("gpadl should be tearing down if in teardown list, state = {gpadl_state:?}");
+        };
 
-        channel
-            .response_send
-            .send(ChannelResponse::TeardownGpadl(request.gpadl_id));
+        for rpc in rpcs {
+            rpc.complete(());
+        }
     }
 
     fn handle_unload_complete(&mut self) {
@@ -1293,7 +1297,8 @@ impl ClientTask {
         }
     }
 
-    fn handle_gpadl_teardown(&mut self, channel_id: ChannelId, gpadl_id: GpadlId) {
+    fn handle_gpadl_teardown(&mut self, channel_id: ChannelId, rpc: Rpc<GpadlId, ()>) {
+        let (gpadl_id, rpc) = rpc.split();
         let channel = self
             .inner
             .channels
@@ -1309,31 +1314,37 @@ impl ClientTask {
             return;
         };
 
-        if matches!(gpadl_state, GpadlState::TearingDown) {
-            tracing::warn!(
-                gpadl_id = gpadl_id.0,
-                channel_id = channel_id.0,
-                "Gpadl already tearing down"
-            );
-            return;
+        match gpadl_state {
+            GpadlState::Offered(_) => {
+                tracing::warn!(
+                    gpadl_id = gpadl_id.0,
+                    channel_id = channel_id.0,
+                    "gpadl teardown for offered gpadl"
+                );
+                return;
+            }
+            GpadlState::Created => {
+                *gpadl_state = GpadlState::TearingDown { rpcs: vec![rpc] };
+                // The caller must guarantee that GPADL teardown requests are only made
+                // for unique GPADL IDs. This is currently enforced in vmbus_server by
+                // blocking GPADL teardown messages for reserved channels.
+                assert!(
+                    self.inner
+                        .teardown_gpadls
+                        .insert(gpadl_id, channel_id)
+                        .is_none(),
+                    "Gpadl state validated above"
+                );
+
+                self.inner.messages.send(&protocol::GpadlTeardown {
+                    channel_id,
+                    gpadl_id,
+                });
+            }
+            GpadlState::TearingDown { rpcs } => {
+                rpcs.push(rpc);
+            }
         }
-
-        *gpadl_state = GpadlState::TearingDown;
-        // The caller must guarantee that GPADL teardown requests are only made
-        // for unique GPADL IDs. This is currently enforced in vmbus_server by
-        // blocking GPADL teardown messages for reserved channels.
-        assert!(
-            self.inner
-                .teardown_gpadls
-                .insert(gpadl_id, channel_id)
-                .is_none(),
-            "Gpadl state validated above"
-        );
-
-        self.inner.messages.send(&protocol::GpadlTeardown {
-            channel_id,
-            gpadl_id,
-        });
     }
 
     fn handle_close_channel(&mut self, channel_id: ChannelId) {
@@ -1575,7 +1586,10 @@ enum GpadlState {
     /// Host has responded with GpadlCreated.
     Created,
     /// GpadlTeardown message has been sent to the host.
-    TearingDown,
+    TearingDown {
+        #[inspect(skip)]
+        rpcs: Vec<Rpc<(), ()>>,
+    },
 }
 
 #[derive(Inspect)]
@@ -2454,7 +2468,7 @@ mod tests {
     #[async_test]
     async fn test_gpadl_success(driver: DefaultDriver) {
         let (mut server, mut client, _) = test_init(&driver);
-        let mut channel = server.get_channel(&mut client).await;
+        let channel = server.get_channel(&mut client).await;
         let recv = channel.request_send.call(
             ChannelRequest::Gpadl,
             GpadlRequest {
@@ -2486,9 +2500,9 @@ mod tests {
 
         recv.await.unwrap().unwrap();
 
-        channel
+        let rpc = channel
             .request_send
-            .send(ChannelRequest::TeardownGpadl(GpadlId(1)));
+            .call(ChannelRequest::TeardownGpadl, GpadlId(1));
 
         check_message(
             server.next().await.unwrap(),
@@ -2505,9 +2519,7 @@ mod tests {
             },
         ));
 
-        let ChannelResponse::TeardownGpadl(gpadl_id) = channel.response_recv.next().await.unwrap();
-
-        assert_eq!(gpadl_id, GpadlId(1));
+        rpc.await.unwrap();
     }
 
     #[async_test]
@@ -2583,9 +2595,9 @@ mod tests {
 
         recv.await.unwrap().unwrap();
 
-        channel
+        let rpc = channel
             .request_send
-            .send(ChannelRequest::TeardownGpadl(gpadl_id));
+            .call(ChannelRequest::TeardownGpadl, gpadl_id);
 
         check_message(
             server.next().await.unwrap(),
@@ -2600,9 +2612,7 @@ mod tests {
             protocol::RescindChannelOffer { channel_id },
         ));
 
-        let ChannelResponse::TeardownGpadl(id) = channel.response_recv.next().await.unwrap();
-
-        assert_eq!(id, gpadl_id);
+        rpc.await.unwrap();
 
         check_message(
             server.next().await.unwrap(),

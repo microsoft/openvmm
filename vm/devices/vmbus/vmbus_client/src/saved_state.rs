@@ -110,7 +110,7 @@ impl super::ClientTask {
             let channel_id = ChannelId(gpadl.channel_id);
             let gpadl_id = GpadlId(gpadl.gpadl_id);
             let gpadl_state = gpadl.state.restore();
-            let tearing_down = matches!(gpadl_state, super::GpadlState::TearingDown);
+            let tearing_down = matches!(gpadl_state, super::GpadlState::TearingDown { .. });
 
             let channel = self
                 .inner
@@ -167,9 +167,9 @@ impl super::ClientTask {
                                 channel_id,
                                 gpadl_id,
                             });
-                            *gpadl_state = crate::GpadlState::TearingDown;
+                            *gpadl_state = crate::GpadlState::TearingDown { rpcs: Vec::new() };
                         }
-                        crate::GpadlState::TearingDown => {}
+                        crate::GpadlState::TearingDown { .. } => {}
                     }
                 }
             }
@@ -316,14 +316,14 @@ impl GpadlState {
         match value {
             super::GpadlState::Offered(..) => unreachable!("Cannot save gpadl in offered state."),
             super::GpadlState::Created => Self::Created,
-            super::GpadlState::TearingDown => Self::TearingDown,
+            super::GpadlState::TearingDown { .. } => Self::TearingDown,
         }
     }
 
     fn restore(self) -> super::GpadlState {
         match self {
             GpadlState::Created => super::GpadlState::Created,
-            GpadlState::TearingDown => super::GpadlState::TearingDown,
+            GpadlState::TearingDown => super::GpadlState::TearingDown { rpcs: Vec::new() },
         }
     }
 }
