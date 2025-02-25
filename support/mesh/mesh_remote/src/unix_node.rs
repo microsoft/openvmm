@@ -1252,7 +1252,7 @@ fn try_recv(socket: &Socket, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::R
         #[cfg_attr(
             not(target_env = "musl"),
             allow(
-                clippy::useless_conversion,
+                clippy::unnecessary_cast,
                 reason = "gnu and musl targets differ on their definition of cmsghdr"
             )
         )]

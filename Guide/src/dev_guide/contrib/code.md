@@ -152,7 +152,7 @@ e.g:
 ```rust
 // x86_64-unknown-linux-musl targets have a different type defn for
 // `libc::cmsghdr`, hence why these lints are being suppressed.
-#[expect(clippy::needless_update, clippy::useless_conversion)]
+#[allow(clippy::needless_update, clippy::useless_conversion)]
 libc::cmsghdr {
     cmsg_level: libc::SOL_SOCKET,
     cmsg_type: libc::SCM_RIGHTS,
