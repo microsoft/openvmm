@@ -92,7 +92,7 @@ impl Cmd for CargoToml {
                     .unwrap()
                     .rust_version)
                     .clone_from(
-                        base_cargo_toml
+                        &base_cargo_toml
                             .workspace
                             .as_ref()
                             .unwrap()
