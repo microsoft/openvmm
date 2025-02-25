@@ -1178,8 +1178,8 @@ impl ClientTask {
             open_data.connection_id
         };
 
-        // No failure paths after this point, since otherwise we would need to
-        // free the event flag.
+        // No failure paths after the one for allocating the event flag, since
+        // otherwise we would need to free the event flag.
         let mut flags = OpenChannelFlags::new();
         let event_flag = if let Some(event) = &request.incoming_event {
             if !supports_interrupt_redirection {
