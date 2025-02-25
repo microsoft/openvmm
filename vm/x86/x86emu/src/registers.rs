@@ -7,7 +7,7 @@ use x86defs::SegmentRegister;
 
 #[repr(usize)]
 #[derive(Debug, Copy, Clone, PartialEq)]
-#[allow(clippy::upper_case_acronyms)]
+#[expect(clippy::upper_case_acronyms)]
 pub enum Gp {
     RAX = 0,
     RCX = 1,
@@ -28,7 +28,7 @@ pub enum Gp {
 }
 
 #[derive(Debug, Copy, Clone)]
-#[allow(clippy::upper_case_acronyms)]
+#[expect(clippy::upper_case_acronyms)]
 pub enum GpSize {
     /// 8-bit registers have a shift value, depending on if we're capturing the high/low bits
     BYTE(usize),
@@ -39,7 +39,6 @@ pub enum GpSize {
 
 #[repr(usize)]
 #[derive(Debug, Copy, Clone)]
-#[allow(clippy::upper_case_acronyms)]
 pub enum Segment {
     ES = 0,
     CS = 1,

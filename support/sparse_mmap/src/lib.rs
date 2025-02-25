@@ -5,7 +5,7 @@
 
 // UNSAFETY: Manual pointer manipulation, dealing with mmap, and a signal handler.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 pub mod alloc;
 mod trycopy_windows_arm64;
@@ -816,7 +816,7 @@ mod tests {
 
     #[test]
     fn test_overlapping_mappings() {
-        #![allow(clippy::identity_op)]
+        #![expect(clippy::identity_op)]
 
         let page_size = SparseMapping::page_size();
         let mapping = SparseMapping::new(0x10 * page_size).unwrap();

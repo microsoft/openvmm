@@ -598,7 +598,6 @@ async fn vmgs_file_write(
 
     // manually allow, since we want to differentiate between the file not being
     // accessible, and a read operation failing
-    #[allow(clippy::verbose_file_reads)]
     file.read_to_end(&mut buf).map_err(Error::DataFile)?;
 
     println!("Size: {} bytes", buf.len());

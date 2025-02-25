@@ -771,7 +771,6 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             Err(self.unsupported_instruction(instr))?;
         }
 
-        #[allow(clippy::wildcard_in_or_patterns)]
         match instr.code() {
             // mov r/m, r
             // mov r, r/m

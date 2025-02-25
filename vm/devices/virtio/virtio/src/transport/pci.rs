@@ -300,7 +300,7 @@ impl VirtioPciDevice {
                 } else {
                     0
                 };
-                #[allow(clippy::if_same_then_else)] // fix when TODO is resolved
+                #[expect(clippy::if_same_then_else)] // fix when TODO is resolved
                 let notify_offset = if queue_select < self.queues.len() {
                     0 // TODO: when should this be non-zero? ever?
                 } else {

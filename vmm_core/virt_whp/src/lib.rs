@@ -6,7 +6,7 @@
 #![cfg(all(windows, guest_is_native))]
 // UNSAFETY: Calling WHP APIs and manually managing memory.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 mod apic;
 pub mod device;

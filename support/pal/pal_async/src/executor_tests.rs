@@ -4,7 +4,7 @@
 //! Tests common to every executor.
 
 // Uses futures channels, but is only test code.
-#![allow(clippy::disallowed_methods)]
+#![expect(clippy::disallowed_methods)]
 
 use crate::driver::Driver;
 use crate::socket::PolledSocket;

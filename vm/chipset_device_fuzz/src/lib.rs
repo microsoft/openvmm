@@ -453,7 +453,6 @@ macro_rules! impl_intercept {
             fn offset_of(&self, addr: $usize) -> Option<$usize> {
                 let base = self.addr?;
 
-                #[allow(clippy::unnecessary_lazy_evaluations)] // prevents underflow error
                 (base..(base + self.len))
                     .contains(&addr)
                     .then(|| addr - base)

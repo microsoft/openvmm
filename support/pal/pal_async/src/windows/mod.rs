@@ -6,7 +6,7 @@
 // UNSAFETY: Calls to various Win32 functions to interact with os-level primitives
 // and handling their return values.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 pub mod iocp;
 pub mod local;

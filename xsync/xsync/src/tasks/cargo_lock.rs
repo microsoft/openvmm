@@ -265,7 +265,7 @@ impl Cmd for CargoLock {
     }
 }
 
-#[allow(clippy::module_inception)]
+#[expect(clippy::module_inception)]
 mod cargo_external_lock {
     use serde::Deserialize;
     use serde::Serialize;

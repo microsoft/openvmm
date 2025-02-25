@@ -112,7 +112,6 @@ pub struct Run {
 }
 
 flowey_request! {
-    #[allow(clippy::large_enum_variant)]
     pub enum Request {
         /// Set the default nextest fast fail behavior. Defaults to not
         /// fast-failing when a single test fails.

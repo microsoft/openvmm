@@ -7,7 +7,7 @@
 // UNSAFETY: Manual memory management to prepare the testing environment and
 // calling WHP APIs.
 #[expect(unsafe_code)]
-#[allow(clippy::undocumented_unsafe_blocks)]
+#[expect(clippy::undocumented_unsafe_blocks)]
 mod windows {
     use criterion::criterion_group;
     use criterion::BenchmarkId;

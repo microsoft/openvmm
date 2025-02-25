@@ -3,7 +3,7 @@
 
 // UNSAFETY: Calling libc file APIs.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 pub(crate) mod path;
 mod util;

@@ -476,7 +476,7 @@ pub fn check_lx_error_size(result: isize) -> lx::Result<usize> {
 }
 
 // Convert a DOS path to an NT path depending on whether the root is set.
-#[allow(clippy::join_absolute_paths)] // https://github.com/rust-lang/rust-clippy/issues/12244
+#[expect(clippy::join_absolute_paths)] // https://github.com/rust-lang/rust-clippy/issues/12244
 pub fn dos_to_nt_path(
     root: Option<&OwnedHandle>,
     path: &Path,

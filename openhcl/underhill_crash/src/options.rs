@@ -29,7 +29,6 @@ pub struct Options {
 }
 
 impl Options {
-    #[allow(clippy::expect_fun_call)]
     pub(crate) fn parse() -> Self {
         let mut args = std::env::args_os();
 
@@ -38,7 +37,7 @@ impl Options {
 
         let parse_number = |arg: Option<OsString>| {
             arg.and_then(|x| x.to_string_lossy().parse().ok())
-                .expect(Self::usage())
+                .expect(Self::USAGE)
         };
 
         let pid = parse_number(args.next());
@@ -46,19 +45,19 @@ impl Options {
         let sig = parse_number(args.next());
         let comm = args
             .next()
-            .expect(Self::usage())
+            .expect(Self::USAGE)
             .to_string_lossy()
             .into_owned();
 
         if args.next().is_some() {
-            panic!("{}", Self::usage());
+            panic!("{}", Self::USAGE);
         }
 
         let timeout = Duration::from_secs(
             std::env::var("UNDERHILL_CRASH_TIMEOUT")
                 .unwrap_or_else(|_| "15".into())
                 .parse()
-                .expect(Self::usage()),
+                .expect(Self::USAGE),
         );
 
         let verbose_var = std::env::var("UNDERHILL_CRASH_VERBOSE").unwrap_or_default();
@@ -75,10 +74,8 @@ impl Options {
         }
     }
 
-    fn usage() -> &'static str {
-        "Usage: {pid} {tid} {signal} {command line}
+    const USAGE: &'static str = "Usage: {pid} {tid} {signal} {command line}
         Environment Variables:
         \tUNDERHILL_CRASH_TIMEOUT - Timeout duration in seconds, default 15
-        \tUNDERHILL_CRASH_VERBOSE - Be verbose, default false"
-    }
+        \tUNDERHILL_CRASH_VERBOSE - Be verbose, default false";
 }

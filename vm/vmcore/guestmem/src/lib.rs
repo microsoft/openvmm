@@ -206,9 +206,9 @@ struct AlignedPage([AtomicU8; PAGE_SIZE]);
 impl AlignedHeapMemory {
     /// Allocates a new memory of `size` bytes, rounded up to a page size.
     pub fn new(size: usize) -> Self {
-        #[allow(clippy::declare_interior_mutable_const)] // <https://github.com/rust-lang/rust-clippy/issues/7665>
+        #[expect(clippy::declare_interior_mutable_const)] // <https://github.com/rust-lang/rust-clippy/issues/7665>
         const ZERO: AtomicU8 = AtomicU8::new(0);
-        #[allow(clippy::declare_interior_mutable_const)]
+        #[expect(clippy::declare_interior_mutable_const)]
         const ZERO_PAGE: AlignedPage = AlignedPage([ZERO; PAGE_SIZE]);
         let mut pages = Vec::new();
         pages.resize_with(size.div_ceil(PAGE_SIZE), || ZERO_PAGE);
@@ -2201,7 +2201,7 @@ pub trait UnmapRom: Send + Sync {
 }
 
 #[cfg(test)]
-#[allow(clippy::undocumented_unsafe_blocks)]
+#[expect(clippy::undocumented_unsafe_blocks)]
 mod tests {
     use crate::BitmapInfo;
     use crate::GuestMemory;

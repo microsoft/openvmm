@@ -240,7 +240,6 @@ impl QueuePair {
         });
 
         // Page allocator uses remaining part of the buffer for dynamic allocation.
-        #[allow(clippy::assertions_on_constants)]
         const _: () = assert!(
             QueuePair::PER_QUEUE_PAGES * PAGE_SIZE >= 128 * 1024 + PAGE_SIZE,
             "not enough room for an ATAPI IO plus a PRP list"

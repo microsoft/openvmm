@@ -3,7 +3,7 @@
 
 // UNSAFETY: Calling into lxutil external dll.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 mod macros;
 
@@ -126,7 +126,7 @@ impl LxVolume {
             let block_size = api::LxUtilFsGetFileSystemBlockSize(root.as_raw_handle());
             Ok(Self {
                 root,
-                #[allow(clippy::disallowed_methods, reason = "need actual canonical path here")]
+                #[expect(clippy::disallowed_methods, reason = "need actual canonical path here")]
                 root_path: root_path.canonicalize()?,
                 state: VolumeState::new(fs_context, options, block_size),
             })
@@ -1122,7 +1122,7 @@ impl LxVolume {
         path.push(symlink_parent);
         path.push(target);
         path = {
-            #[allow(clippy::disallowed_methods)] // need actual canonical path here
+            #[expect(clippy::disallowed_methods)] // need actual canonical path here
             match path.canonicalize() {
                 Ok(p) => p,
                 Err(_) => return SymlinkType::Lx,

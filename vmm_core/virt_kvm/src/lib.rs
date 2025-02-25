@@ -6,7 +6,7 @@
 #![cfg(all(target_os = "linux", guest_is_native))]
 // UNSAFETY: Calling KVM APIs and manually managing memory.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 use guestmem::GuestMemory;
 use inspect::Inspect;

@@ -179,7 +179,7 @@ impl AlpcNode {
         let port = PolledWait::new(&driver, port)?;
 
         let invitations = Default::default();
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods)] // TODO
         let (connect_send, connect_recv) = mpsc::unbounded();
         let local_node = Arc::new(LocalNode::with_id(
             local_id,

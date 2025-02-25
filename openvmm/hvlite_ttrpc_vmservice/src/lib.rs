@@ -4,7 +4,7 @@
 //! Rust binadings to the `vmservice.proto` TTRPC API
 
 #![forbid(unsafe_code)]
-#![allow(clippy::enum_variant_names, clippy::large_enum_variant, non_snake_case)]
+#![expect(clippy::enum_variant_names, clippy::large_enum_variant)]
 
 // Crates used by generated code. Reference them explicitly to ensure that
 // automated tools do not remove them.

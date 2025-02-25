@@ -147,7 +147,7 @@ pub mod save_restore {
     }
 
     #[derive(Debug, Default, PartialEq, Eq, Copy, Clone, inspect::Inspect, Protobuf)]
-    #[allow(clippy::enum_variant_names)]
+    #[expect(clippy::enum_variant_names)]
     #[mesh(package = "storage.scsi.dvd")]
     pub enum DriveState {
         #[mesh(1)]

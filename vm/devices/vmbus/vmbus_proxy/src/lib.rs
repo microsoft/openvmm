@@ -4,7 +4,7 @@
 #![cfg(windows)]
 // UNSAFETY: Calling vmbus proxy ioctls.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 use futures::poll;
 use guestmem::GuestMemory;
