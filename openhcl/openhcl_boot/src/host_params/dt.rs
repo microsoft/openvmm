@@ -464,7 +464,8 @@ impl PartitionInfo {
             let isolation_requirements = match params.isolation_type {
                 #[cfg(target_arch = "x86_64")]
                 // Supporting TLB flush hypercalls on TDX requires 1 page per VP
-                IsolationType::Tdx => parsed.cpus.len() as u64,
+                // Supproting guest VSM on TDX requires 1 page per VP for VTL 1's APIC
+                IsolationType::Tdx => parsed.cpus.len() as u64 * 2,
                 _ => 0,
             };
 
