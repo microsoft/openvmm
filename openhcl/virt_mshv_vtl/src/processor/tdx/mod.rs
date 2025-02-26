@@ -1352,7 +1352,7 @@ impl UhProcessor<'_, TdxBacked> {
             return Ok(());
         }
 
-        // The L2 was entered, so clear any TLB flush reqeusts and process the exit.
+        // The L2 was entered, so clear any TLB flush requests and process the exit.
         self.backing.vtls[entered_from_vtl]
             .private_regs
             .vp_entry_flags
