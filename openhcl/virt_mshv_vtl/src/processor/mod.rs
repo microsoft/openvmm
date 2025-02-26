@@ -278,6 +278,9 @@ impl<T: BackingPrivate> Backing for T {}
 /// Trait for processor backings that have hardware isolation support.
 #[cfg(guest_arch = "x86_64")]
 pub trait HardwareIsolatedBacking: Backing {
+    /// Gets the number of pages that will be allocated from the shared page pool
+    /// for each CPU.
+    fn shared_pages_required_per_cpu() -> u64;
     /// Gets CVM specific VP state.
     fn cvm_state_mut(&mut self) -> &mut crate::UhCvmVpState;
     /// Gets CVM specific partition state.

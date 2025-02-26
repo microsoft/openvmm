@@ -8,6 +8,7 @@ cfg_if::cfg_if! {
         pub use hvdef::HvX64RegisterName as HvArchRegisterName;
         use chipset_device_resources::BSP_LINT_LINE_SET;
         use virt::irqcon::MsiRequest;
+        use virt_mshv_vtl::HardwareIsolatedBacking;
         use vmm_core::acpi_builder::AcpiTablesBuilder;
     } else if #[cfg(guest_arch = "aarch64")] {
         pub use hvdef::HvArm64RegisterName as HvArchRegisterName;
@@ -1246,7 +1247,7 @@ async fn new_underhill_vm(
         #[cfg(guest_arch = "x86_64")]
         virt::IsolationType::Snp => {
             let cpu_bytes = boot_info.cpus.len() as u64
-                * virt_mshv_vtl::snp_shared_pages_required_per_cpu()
+                * virt_mshv_vtl::SnpBacked::shared_pages_required_per_cpu()
                 * hvdef::HV_PAGE_SIZE;
 
             round_up_to_2mb(cpu_bytes + device_dma + attestation)
@@ -1254,7 +1255,7 @@ async fn new_underhill_vm(
         #[cfg(guest_arch = "x86_64")]
         virt::IsolationType::Tdx => {
             let cpu_bytes = boot_info.cpus.len() as u64
-                * virt_mshv_vtl::tdx_shared_pages_required_per_cpu()
+                * virt_mshv_vtl::TdxBacked::shared_pages_required_per_cpu()
                 * hvdef::HV_PAGE_SIZE;
 
             round_up_to_2mb(cpu_bytes + device_dma + attestation)

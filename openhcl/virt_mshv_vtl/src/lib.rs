@@ -13,9 +13,8 @@ mod devmsr;
 cfg_if::cfg_if!(
     if #[cfg(target_arch = "x86_64")] { // xtask-fmt allow-target-arch sys-crate
         mod cvm_cpuid;
-        pub use processor::snp::shared_pages_required_per_cpu as snp_shared_pages_required_per_cpu;
+        pub use processor::HardwareIsolatedBacking;
         pub use processor::snp::SnpBacked;
-        pub use processor::tdx::shared_pages_required_per_cpu as tdx_shared_pages_required_per_cpu;
         pub use processor::tdx::TdxBacked;
         pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
         use bitvec::prelude::BitArray;
@@ -335,6 +334,9 @@ impl From<EnterMode> for hcl::protocol::EnterMode {
 #[derive(Inspect)]
 /// VP state for CVMs.
 pub struct UhCvmVpState {
+    // Allocation handle for direct overlays
+    #[inspect(debug)]
+    direct_overlay_handle: user_driver::memory::MemoryBlock,
     /// The VTLs on this VP waiting for TLB locks on other VPs.
     vtls_tlb_waiting: VtlArray<bool, 2>,
     /// Used in VTL 2 exit code to determine which VTL to exit to.
@@ -352,7 +354,15 @@ impl UhCvmVpState {
         cvm_partition: &UhCvmPartitionState,
         inner: &UhPartitionInner,
         vp_info: &TargetVpInfo,
-    ) -> Self {
+        overlay_pages_required: usize,
+    ) -> Result<Self, Error> {
+        let direct_overlay_handle = inner
+            .shared_dma_client
+            .as_ref()
+            .ok_or(Error::MissingSharedMemory)?
+            .allocate_dma_buffer(overlay_pages_required * HV_PAGE_SIZE as usize)
+            .map_err(Error::AllocateSharedVisOverlay)?;
+
         let apic_base = virt::vp::Apic::at_reset(&inner.caps, vp_info).apic_base;
         let lapics = VtlArray::from_fn(|vtl| {
             let apic_set = &cvm_partition.lapic[vtl];
@@ -374,12 +384,13 @@ impl UhCvmVpState {
                 .add_vp(inner.gm[vtl].clone(), vp_info.base.vp_index, vtl)
         });
 
-        Self {
+        Ok(Self {
+            direct_overlay_handle,
             vtls_tlb_waiting: VtlArray::new(false),
             exit_vtl: GuestVtl::Vtl0,
             hv,
             lapics,
-        }
+        })
     }
 }
 
