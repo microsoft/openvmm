@@ -428,6 +428,8 @@ pub struct UhCvmVpInner {
     tlb_lock_info: VtlArray<TlbLockInfo, 2>,
     /// Whether VTL 1 has been enabled on the vp
     vtl1_enabled: Mutex<bool>,
+    /// Whether the VP has been started via the StartVp hypercall.
+    started: AtomicBool,
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -503,7 +505,7 @@ struct VbsIsolatedVtl1State {
 #[derive(Clone, Copy, Default, Inspect)]
 struct HardwareCvmVtl1State {
     /// Whether VTL 1 has been enabled on any vp
-    enabled_on_vp_count: u32,
+    enabled_on_any_vp: bool,
     /// Whether guest memory should be zeroed before it resets.
     zero_memory_on_reset: bool,
     /// Whether a vp can be started or reset by a lower vtl.
@@ -654,11 +656,20 @@ struct UhVpInner {
     vp_info: TargetVpInfo,
     cpu_index: u32,
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
-    hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<hvdef::hypercall::InitialVpContextX64>>>, 2>,
+    hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<VpStartEnableVtl>>>, 2>,
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
 }
 
 #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+#[derive(Debug, Inspect)]
+/// State for handling StartVp/EnableVpVtl hypercalls.
+pub struct VpStartEnableVtl {
+    /// True if the context is for startvp, false for enablevpvtl
+    is_start: bool,
+    #[inspect(skip)]
+    context: hvdef::hypercall::InitialVpContextX64,
+}
+
 #[derive(Debug, Inspect)]
 struct TlbLockInfo {
     /// The set of VPs that are waiting for this VP to release the TLB lock.
@@ -1867,9 +1878,10 @@ impl UhProtoPartition<'_> {
     ) -> Result<UhCvmPartitionState, Error> {
         let vp_count = params.topology.vp_count() as usize;
         let vps = (0..vp_count)
-            .map(|_vp_index| UhCvmVpInner {
+            .map(|vp_index| UhCvmVpInner {
                 tlb_lock_info: VtlArray::from_fn(|_| TlbLockInfo::new(vp_count)),
                 vtl1_enabled: Mutex::new(false),
+                started: AtomicBool::new(vp_index == 0),
             })
             .collect();
         let tlb_locked_vps =

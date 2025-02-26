@@ -286,18 +286,18 @@ pub trait HardwareIsolatedBacking: Backing {
     /// Gets CVM specific partition state.
     fn cvm_partition_state(shared: &Self::Shared) -> &crate::UhCvmPartitionState;
     /// Copies shared registers (per VSM TLFS spec) from the source VTL to
-    /// the target VTL that will become active.
-    fn switch_vtl_state(
-        this: &mut UhProcessor<'_, Self>,
-        source_vtl: GuestVtl,
-        target_vtl: GuestVtl,
-    );
+    /// the target VTL that will become active, and set the exit vtl
+    fn switch_vtl(this: &mut UhProcessor<'_, Self>, source_vtl: GuestVtl, target_vtl: GuestVtl);
     /// Gets registers needed for gva to gpa translation
     fn translation_registers(
         &self,
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
     ) -> TranslationRegisters;
+    /// Sets the exit vtl
+    fn set_exit_vtl(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
+        this.backing.cvm_state_mut().exit_vtl = vtl;
+    }
 }
 
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
