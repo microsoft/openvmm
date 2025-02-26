@@ -1754,17 +1754,22 @@ impl SynicState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_concurrency::future::Join;
     use guid::Guid;
     use pal_async::async_test;
     use pal_async::timer::PolledTimer;
     use pal_async::DefaultDriver;
     use protocol::TargetInfo;
+    use std::fmt::Debug;
     use std::task::ready;
     use std::time::Duration;
     use test_with_tracing::test;
+    use vmbus_core::protocol::MessageHeader;
     use vmbus_core::protocol::MessageType;
     use vmbus_core::protocol::OfferFlags;
     use vmbus_core::protocol::UserDefinedData;
+    use vmbus_core::protocol::VmbusMessage;
+    use zerocopy::FromBytes;
     use zerocopy::FromZeros;
     use zerocopy::Immutable;
     use zerocopy::IntoBytes;
@@ -1778,6 +1783,33 @@ mod tests {
         data.extend_from_slice(&0u32.to_ne_bytes());
         data.extend_from_slice(t.as_bytes());
         data
+    }
+
+    #[track_caller]
+    fn check_message<T>(msg: OutgoingMessage, chk: T)
+    where
+        T: IntoBytes + FromBytes + Immutable + KnownLayout + Debug + VmbusMessage,
+    {
+        check_message_with_data(msg, chk, &[]);
+    }
+
+    #[track_caller]
+    fn check_message_with_data<T>(msg: OutgoingMessage, chk: T, data: &[u8])
+    where
+        T: IntoBytes + FromBytes + Immutable + KnownLayout + Debug + VmbusMessage,
+    {
+        let chk_data = OutgoingMessage::with_data(&chk, data);
+        if msg.data() != chk_data.data() {
+            let (header, rest) = MessageHeader::read_from_prefix(msg.data()).unwrap();
+            assert_eq!(header.message_type(), <T as VmbusMessage>::MESSAGE_TYPE);
+            let (msg, rest) = T::read_from_prefix(rest).expect("incorrect message size");
+            if msg.as_bytes() != chk.as_bytes() {
+                panic!("mismatched messages, expected {:#?}, got {:#?}", chk, msg);
+            }
+            if rest != data {
+                panic!("mismatched data, expected {:#?}, got {:#?}", data, rest);
+            }
+        }
     }
 
     struct TestServer {
@@ -1821,41 +1853,42 @@ mod tests {
         }
 
         async fn get_channel(&mut self, client: &mut VmbusClient) -> OfferInfo {
+            let [channel] = self.get_channels(client, 1).await.try_into().unwrap();
+            channel
+        }
+
+        async fn get_channels(&mut self, client: &mut VmbusClient, count: usize) -> Vec<OfferInfo> {
             self.connect(client).await;
 
-            let (send, mut recv) = mesh::channel();
-            client
-                .access
-                .client_request_send
-                .send(ClientRequest::RequestOffers(send));
+            let request_offers = client.request_offers();
+            let send_offers = async {
+                check_message(self.next().await.unwrap(), protocol::RequestOffers {});
 
-            let _ = self.next().await.unwrap();
+                for i in 0..count {
+                    let offer = protocol::OfferChannel {
+                        interface_id: Guid::new_random(),
+                        instance_id: Guid::new_random(),
+                        rsvd: [0; 4],
+                        flags: OfferFlags::new(),
+                        mmio_megabytes: 0,
+                        user_defined: UserDefinedData::new_zeroed(),
+                        subchannel_index: 0,
+                        mmio_megabytes_optional: 0,
+                        channel_id: ChannelId(i as u32),
+                        monitor_id: 0,
+                        monitor_allocated: 0,
+                        is_dedicated: 0,
+                        connection_id: 0,
+                    };
 
-            let offer = protocol::OfferChannel {
-                interface_id: Guid::new_random(),
-                instance_id: Guid::new_random(),
-                rsvd: [0; 4],
-                flags: OfferFlags::new(),
-                mmio_megabytes: 0,
-                user_defined: UserDefinedData::new_zeroed(),
-                subchannel_index: 0,
-                mmio_megabytes_optional: 0,
-                channel_id: ChannelId(0),
-                monitor_id: 0,
-                monitor_allocated: 0,
-                is_dedicated: 0,
-                connection_id: 0,
+                    self.send(in_msg(MessageType::OFFER_CHANNEL, offer));
+                }
+
+                self.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
             };
 
-            self.send(in_msg(MessageType::OFFER_CHANNEL, offer));
-
-            let received_offer = recv.next().await.unwrap();
-
-            self.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
-
-            assert!(recv.next().await.is_none());
-
-            received_offer
+            let ((), offers) = (send_offers, request_offers).join().await;
+            offers
         }
     }
 
@@ -1900,12 +1933,10 @@ mod tests {
 
     impl SynicEventClient for NoopSynicEvents {
         fn map_event(&self, _event_flag: u16, _event: &Event) -> std::io::Result<()> {
-            Err(std::io::ErrorKind::Unsupported.into())
+            Ok(())
         }
 
-        fn unmap_event(&self, _event_flag: u16) {
-            unreachable!()
-        }
+        fn unmap_event(&self, _event_flag: u16) {}
 
         fn signal_event(&self, _connection_id: u32, _event_flag: u16) -> std::io::Result<()> {
             Err(std::io::ErrorKind::Unsupported.into())
@@ -1970,9 +2001,9 @@ mod tests {
             InitiateContactRequest::default(),
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact2 {
+            protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
@@ -1985,7 +2016,7 @@ mod tests {
                     child_to_parent_monitor_page_gpa: 0,
                 },
                 ..FromZeros::new_zeroed()
-            })
+            },
         );
     }
 
@@ -1997,9 +2028,9 @@ mod tests {
             InitiateContactRequest::default(),
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact2 {
+            protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
@@ -2012,7 +2043,7 @@ mod tests {
                     child_to_parent_monitor_page_gpa: 0,
                 },
                 ..FromZeros::new_zeroed()
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2042,9 +2073,9 @@ mod tests {
             InitiateContactRequest::default(),
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact2 {
+            protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
@@ -2057,7 +2088,7 @@ mod tests {
                     child_to_parent_monitor_page_gpa: 0,
                 },
                 ..FromZeros::new_zeroed()
-            })
+            },
         );
 
         // Report the server doesn't support some of the feature flags, and make
@@ -2096,9 +2127,9 @@ mod tests {
             .client_request_send
             .call(ClientRequest::InitiateContact, initiate_contact);
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact2 {
+            protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
@@ -2111,7 +2142,7 @@ mod tests {
                     child_to_parent_monitor_page_gpa: 0,
                 },
                 client_id: VMBUS_TEST_CLIENT_ID,
-            })
+            },
         )
     }
 
@@ -2123,9 +2154,9 @@ mod tests {
             InitiateContactRequest::default(),
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact2 {
+            protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
@@ -2138,7 +2169,7 @@ mod tests {
                     child_to_parent_monitor_page_gpa: 0,
                 },
                 ..FromZeros::new_zeroed()
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2151,9 +2182,9 @@ mod tests {
             },
         ));
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact {
+            protocol::InitiateContact {
                 version_requested: Version::Iron as u32,
                 target_message_vp: 0,
                 interrupt_page_or_target_info: TargetInfo::new()
@@ -2163,7 +2194,7 @@ mod tests {
                     .into(),
                 parent_to_child_monitor_page_gpa: 0,
                 child_to_parent_monitor_page_gpa: 0,
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2194,10 +2225,7 @@ mod tests {
             .client_request_send
             .send(ClientRequest::RequestOffers(send));
 
-        assert_eq!(
-            server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::RequestOffers {})
-        );
+        check_message(server.next().await.unwrap(), protocol::RequestOffers {});
 
         let offer = protocol::OfferChannel {
             interface_id: Guid::new_random(),
@@ -2247,9 +2275,9 @@ mod tests {
             },
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::OpenChannel2 {
+            protocol::OpenChannel2 {
                 open_channel: protocol::OpenChannel {
                     channel_id: ChannelId(0),
                     open_id: 0,
@@ -2261,7 +2289,7 @@ mod tests {
                 connection_id: 0,
                 event_flag: 0,
                 flags: Default::default(),
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2297,9 +2325,9 @@ mod tests {
             },
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::OpenChannel2 {
+            protocol::OpenChannel2 {
                 open_channel: protocol::OpenChannel {
                     channel_id: ChannelId(0),
                     open_id: 0,
@@ -2311,7 +2339,7 @@ mod tests {
                 connection_id: 0,
                 event_flag: 0,
                 flags: Default::default(),
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2338,12 +2366,12 @@ mod tests {
             ModifyRequest::TargetVp { target_vp: 1 },
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::ModifyChannel {
+            protocol::ModifyChannel {
                 channel_id: ChannelId(0),
                 target_vp: 1,
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2432,11 +2460,11 @@ mod tests {
             },
         ));
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::RelIdReleased {
-                channel_id: ChannelId(5)
-            })
+            protocol::RelIdReleased {
+                channel_id: ChannelId(5),
+            },
         );
 
         assert!(info.response_recv.next().await.is_none());
@@ -2455,17 +2483,15 @@ mod tests {
             },
         );
 
-        assert_eq!(
+        check_message_with_data(
             server.next().await.unwrap(),
-            OutgoingMessage::with_data(
-                &protocol::GpadlHeader {
-                    channel_id: ChannelId(0),
-                    gpadl_id: GpadlId(1),
-                    len: 8,
-                    count: 1,
-                },
-                0x5u64.as_bytes()
-            )
+            protocol::GpadlHeader {
+                channel_id: ChannelId(0),
+                gpadl_id: GpadlId(1),
+                len: 8,
+                count: 1,
+            },
+            0x5u64.as_bytes(),
         );
 
         server.send(in_msg(
@@ -2483,12 +2509,12 @@ mod tests {
             .request_send
             .send(ChannelRequest::TeardownGpadl(GpadlId(1)));
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::GpadlTeardown {
+            protocol::GpadlTeardown {
                 channel_id: ChannelId(0),
                 gpadl_id: GpadlId(1),
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2516,17 +2542,15 @@ mod tests {
             },
         );
 
-        assert_eq!(
+        check_message_with_data(
             server.next().await.unwrap(),
-            OutgoingMessage::with_data(
-                &protocol::GpadlHeader {
-                    channel_id: ChannelId(0),
-                    gpadl_id: GpadlId(1),
-                    len: 8,
-                    count: 1,
-                },
-                0x7u64.as_bytes()
-            )
+            protocol::GpadlHeader {
+                channel_id: ChannelId(0),
+                gpadl_id: GpadlId(1),
+                len: 8,
+                count: 1,
+            },
+            0x7u64.as_bytes(),
         );
 
         server.send(in_msg(
@@ -2556,17 +2580,15 @@ mod tests {
             },
         );
 
-        assert_eq!(
+        check_message_with_data(
             server.next().await.unwrap(),
-            OutgoingMessage::with_data(
-                &protocol::GpadlHeader {
-                    channel_id,
-                    gpadl_id,
-                    len: 8,
-                    count: 1,
-                },
-                0x3u64.as_bytes()
-            )
+            protocol::GpadlHeader {
+                channel_id,
+                gpadl_id,
+                len: 8,
+                count: 1,
+            },
+            0x3u64.as_bytes(),
         );
 
         server.send(in_msg(
@@ -2584,12 +2606,12 @@ mod tests {
             .request_send
             .send(ChannelRequest::TeardownGpadl(gpadl_id));
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::GpadlTeardown {
+            protocol::GpadlTeardown {
                 channel_id,
                 gpadl_id,
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2601,9 +2623,9 @@ mod tests {
 
         assert_eq!(id, gpadl_id);
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::RelIdReleased { channel_id })
+            protocol::RelIdReleased { channel_id },
         );
 
         assert!(channel.response_recv.next().await.is_none());
@@ -2623,12 +2645,12 @@ mod tests {
             },
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::ModifyConnection {
+            protocol::ModifyConnection {
                 child_to_parent_monitor_page_gpa: 5,
                 parent_to_child_monitor_page_gpa: 6,
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2653,15 +2675,15 @@ mod tests {
         };
 
         let resp = client.access().connect_hvsock(request);
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::TlConnectRequest2 {
+            protocol::TlConnectRequest2 {
                 base: protocol::TlConnectRequest {
                     service_id: request.service_id,
                     endpoint_id: request.endpoint_id,
                 },
                 silo_id: request.silo_id,
-            })
+            },
         );
 
         // Now send a failure result.
@@ -2676,5 +2698,76 @@ mod tests {
 
         let result = resp.await;
         assert!(result.is_none());
+    }
+
+    #[async_test]
+    async fn test_synic_event_flags(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
+        let channels = server.get_channels(&mut client, 5).await;
+        let event = Event::new();
+
+        for _ in 0..5 {
+            for (i, channel) in channels.iter().enumerate() {
+                let recv = channel.request_send.call(
+                    ChannelRequest::Open,
+                    OpenRequest {
+                        open_data: OpenData {
+                            target_vp: 0,
+                            ring_offset: 0,
+                            ring_gpadl_id: GpadlId(0),
+                            event_flag: 0,
+                            connection_id: 0,
+                            user_data: UserDefinedData::new_zeroed(),
+                        },
+                        incoming_event: Some(event.clone()),
+                        use_vtl2_connection_id: false,
+                    },
+                );
+
+                let expected_event_flag = i as u16 + 1;
+
+                check_message(
+                    server.next().await.unwrap(),
+                    protocol::OpenChannel2 {
+                        open_channel: protocol::OpenChannel {
+                            channel_id: channel.offer.channel_id,
+                            open_id: 0,
+                            ring_buffer_gpadl_id: GpadlId(0),
+                            target_vp: 0,
+                            downstream_ring_buffer_page_offset: 0,
+                            user_data: UserDefinedData::new_zeroed(),
+                        },
+                        connection_id: 0,
+                        event_flag: expected_event_flag,
+                        flags: OpenChannelFlags::new().with_redirect_interrupt(true),
+                    },
+                );
+
+                server.send(in_msg(
+                    MessageType::OPEN_CHANNEL_RESULT,
+                    protocol::OpenResult {
+                        channel_id: channel.offer.channel_id,
+                        open_id: 0,
+                        status: protocol::STATUS_SUCCESS as u32,
+                    },
+                ));
+
+                let output = recv.await.unwrap().unwrap();
+                assert_eq!(output.redirected_event_flag, Some(expected_event_flag));
+            }
+
+            for (i, channel) in channels.iter().enumerate() {
+                // Close the channel to prepare for the next iteration of the loop.
+                // The event flag should be the same each time.
+                channel.request_send.send(ChannelRequest::Close);
+
+                check_message(
+                    server.next().await.unwrap(),
+                    protocol::CloseChannel {
+                        channel_id: ChannelId(i as u32),
+                    },
+                );
+            }
+        }
     }
 }

@@ -21,6 +21,7 @@ tracelimit.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true
+futures-concurrency.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
