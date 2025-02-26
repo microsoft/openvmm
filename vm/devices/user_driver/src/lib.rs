@@ -63,10 +63,10 @@ pub trait DeviceRegisterIo: Send + Sync {
 /// Device interfaces for DMA.
 pub trait DmaClient: Send + Sync + Inspect {
     /// Allocate a new DMA buffer. This buffer must be zero initialized.
-    ///
-    /// TODO: string tag for allocation?
-    fn allocate_dma_buffer(&self, total_size: usize) -> anyhow::Result<MemoryBlock>;
+    fn allocate_dma_buffer(&self, total_size: usize, tag: String) -> anyhow::Result<MemoryBlock>;
 
     /// Attach to a previously allocated memory block.
+    ///
+    /// TODO: add tag and require tag to match allocated
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 }
