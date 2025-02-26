@@ -118,7 +118,7 @@ impl FlowNode for Node {
                 target.clone(),
             ));
 
-            let platform = ctx.platform().clone();
+            let platform = ctx.platform();
 
             ctx.emit_rust_step(format!("cargo build {crate_name}"), |ctx| {
                 pre_build_deps.claim(ctx);
