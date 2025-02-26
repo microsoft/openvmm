@@ -189,7 +189,7 @@ impl VmbusClient {
         target_message_vp: u32,
         monitor_page: Option<MonitorPageGpas>,
         client_id: Guid,
-    ) -> Result<VersionInfo, ConnectError> {
+    ) -> Result<ConnectResult, ConnectError> {
         let request = InitiateContactRequest {
             target_message_vp,
             monitor_page,
@@ -201,16 +201,6 @@ impl VmbusClient {
             .call(ClientRequest::InitiateContact, request)
             .await
             .unwrap()
-    }
-
-    /// Send the RequestOffers message to the server, providing a sender to
-    /// which the client can forward received offers to.
-    pub async fn request_offers(&mut self) -> Vec<OfferInfo> {
-        let (send, recv) = mesh::channel();
-        self.access
-            .client_request_send
-            .send(ClientRequest::RequestOffers(send));
-        recv.collect().await
     }
 
     /// Send the Unload message to the server.
@@ -266,6 +256,12 @@ impl Inspect for VmbusClient {
     fn inspect(&self, req: inspect::Request<'_>) {
         self.task_send.send(TaskRequest::Inspect(req.defer()));
     }
+}
+
+#[derive(Debug)]
+pub struct ConnectResult {
+    pub version: VersionInfo,
+    pub offers: Vec<OfferInfo>,
 }
 
 impl VmbusClientAccess {
@@ -369,8 +365,7 @@ pub struct OfferInfo {
 
 #[derive(Debug)]
 enum ClientRequest {
-    InitiateContact(Rpc<InitiateContactRequest, Result<VersionInfo, ConnectError>>),
-    RequestOffers(mesh::Sender<OfferInfo>),
+    InitiateContact(Rpc<InitiateContactRequest, Result<ConnectResult, ConnectError>>),
     Unload(Rpc<(), ()>),
     Modify(Rpc<ModifyConnectionRequest, ConnectionState>),
     HvsockConnect(Rpc<HvsockConnectRequest, Option<OfferInfo>>),
@@ -380,7 +375,6 @@ impl std::fmt::Display for ClientRequest {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ClientRequest::InitiateContact(..) => write!(fmt, "InitiateContact"),
-            ClientRequest::RequestOffers { .. } => write!(fmt, "RequestOffers"),
             ClientRequest::Unload { .. } => write!(fmt, "Unload"),
             ClientRequest::Modify(..) => write!(fmt, "Modify"),
             ClientRequest::HvsockConnect(..) => write!(fmt, "HvsockConnect"),
@@ -418,7 +412,7 @@ enum ClientState {
     Connecting {
         version: Version,
         #[inspect(skip)]
-        rpc: Rpc<InitiateContactRequest, Result<VersionInfo, ConnectError>>,
+        rpc: Rpc<InitiateContactRequest, Result<ConnectResult, ConnectError>>,
     },
     /// The client has negotiated the protocol version with the server.
     Connected { version: VersionInfo },
@@ -426,7 +420,9 @@ enum ClientState {
     RequestingOffers {
         version: VersionInfo,
         #[inspect(skip)]
-        sender: mesh::Sender<OfferInfo>,
+        rpc: Rpc<(), Result<ConnectResult, ConnectError>>,
+        #[inspect(skip)]
+        offers: Vec<OfferInfo>,
     },
     /// The client has initiated an unload from the server.
     Disconnecting {
@@ -440,8 +436,8 @@ impl ClientState {
     fn get_version(&self) -> Option<VersionInfo> {
         match self {
             ClientState::Connected { version } => Some(*version),
-            ClientState::RequestingOffers { version, sender: _ } => Some(*version),
-            ClientState::Disconnecting { version, rpc: _ } => Some(*version),
+            ClientState::RequestingOffers { version, .. } => Some(*version),
+            ClientState::Disconnecting { version, .. } => Some(*version),
             ClientState::Disconnected | ClientState::Connecting { .. } => None,
         }
     }
@@ -562,56 +558,44 @@ struct ClientTask {
 impl ClientTask {
     fn handle_initiate_contact(
         &mut self,
-        rpc: Rpc<InitiateContactRequest, Result<VersionInfo, ConnectError>>,
+        rpc: Rpc<InitiateContactRequest, Result<ConnectResult, ConnectError>>,
         version: Version,
     ) {
-        if let ClientState::Disconnected = self.state {
-            let feature_flags = if version >= Version::Copper {
-                SUPPORTED_FEATURE_FLAGS
-            } else {
-                FeatureFlags::new()
-            };
-
-            let request = rpc.input();
-
-            tracing::debug!(version = ?version, ?feature_flags, "VmBus client connecting");
-            let target_info = protocol::TargetInfo::new()
-                .with_sint(SINT)
-                .with_vtl(VTL)
-                .with_feature_flags(feature_flags.into());
-            let monitor_page = request.monitor_page.unwrap_or_default();
-            let msg = protocol::InitiateContact2 {
-                initiate_contact: protocol::InitiateContact {
-                    version_requested: version as u32,
-                    target_message_vp: request.target_message_vp,
-                    interrupt_page_or_target_info: target_info.into(),
-                    parent_to_child_monitor_page_gpa: monitor_page.parent_to_child,
-                    child_to_parent_monitor_page_gpa: monitor_page.child_to_parent,
-                },
-                client_id: request.client_id,
-            };
-
-            self.state = ClientState::Connecting { version, rpc };
-            if version < Version::Copper {
-                self.inner.messages.send(&msg.initiate_contact)
-            } else {
-                self.inner.messages.send(&msg);
-            }
-        } else {
+        let ClientState::Disconnected = self.state else {
             tracing::warn!(client_state = %self.state, "invalid client state for InitiateContact");
             rpc.complete(Err(ConnectError::InvalidState));
-        }
-    }
-
-    fn handle_request_offers(&mut self, send: mesh::Sender<OfferInfo>) {
-        if let ClientState::Connected { version } = self.state {
-            self.state = ClientState::RequestingOffers {
-                version,
-                sender: send,
-            };
-            self.inner.messages.send(&protocol::RequestOffers {});
+            return;
+        };
+        let feature_flags = if version >= Version::Copper {
+            SUPPORTED_FEATURE_FLAGS
         } else {
-            tracing::warn!(client_state = %self.state, "invalid client state for RequestOffers");
+            FeatureFlags::new()
+        };
+
+        let request = rpc.input();
+
+        tracing::debug!(version = ?version, ?feature_flags, "VmBus client connecting");
+        let target_info = protocol::TargetInfo::new()
+            .with_sint(SINT)
+            .with_vtl(VTL)
+            .with_feature_flags(feature_flags.into());
+        let monitor_page = request.monitor_page.unwrap_or_default();
+        let msg = protocol::InitiateContact2 {
+            initiate_contact: protocol::InitiateContact {
+                version_requested: version as u32,
+                target_message_vp: request.target_message_vp,
+                interrupt_page_or_target_info: target_info.into(),
+                parent_to_child_monitor_page_gpa: monitor_page.parent_to_child,
+                child_to_parent_monitor_page_gpa: monitor_page.child_to_parent,
+            },
+            client_id: request.client_id,
+        };
+
+        self.state = ClientState::Connecting { version, rpc };
+        if version < Version::Copper {
+            self.inner.messages.send(&msg.initiate_contact)
+        } else {
+            self.inner.messages.send(&msg);
         }
     }
 
@@ -659,9 +643,6 @@ impl ClientTask {
             ClientRequest::InitiateContact(rpc) => {
                 self.handle_initiate_contact(rpc, *SUPPORTED_VERSIONS.last().unwrap());
             }
-            ClientRequest::RequestOffers(send) => {
-                self.handle_request_offers(send);
-            }
             ClientRequest::Unload(rpc) => {
                 self.handle_unload(rpc);
             }
@@ -672,53 +653,57 @@ impl ClientTask {
 
     fn handle_version_response(&mut self, msg: protocol::VersionResponse2) {
         let old_state = std::mem::replace(&mut self.state, ClientState::Disconnected);
-        if let ClientState::Connecting { version, rpc } = old_state {
-            if msg.version_response.version_supported > 0 {
-                if msg.version_response.connection_state != ConnectionState::SUCCESSFUL {
-                    rpc.complete(Err(ConnectError::FailedToConnect(
-                        msg.version_response.connection_state,
-                    )));
-                    return;
-                }
-
-                let feature_flags = if version >= Version::Copper {
-                    FeatureFlags::from(msg.supported_features)
-                } else {
-                    FeatureFlags::new()
-                };
-
-                let version = VersionInfo {
-                    version,
-                    feature_flags,
-                };
-
-                self.state = ClientState::Connected { version };
-                tracing::info!(?version, "VmBus client connected");
-                rpc.complete(Ok(version));
-            } else {
-                let index = SUPPORTED_VERSIONS
-                    .iter()
-                    .position(|v| *v == version)
-                    .unwrap();
-
-                if index == 0 {
-                    rpc.complete(Err(ConnectError::NoSupportedVersions));
-                    return;
-                }
-                let next_version = SUPPORTED_VERSIONS[index - 1];
-                tracing::debug!(
-                    version = version as u32,
-                    next_version = next_version as u32,
-                    "Unsupported version, retrying"
-                );
-                self.handle_initiate_contact(rpc, next_version);
-            }
-        } else {
+        let ClientState::Connecting { version, rpc } = old_state else {
             self.state = old_state;
             tracing::warn!(
                 client_state = %self.state,
                 "invalid client state to handle VersionResponse"
             );
+            return;
+        };
+        if msg.version_response.version_supported > 0 {
+            if msg.version_response.connection_state != ConnectionState::SUCCESSFUL {
+                rpc.complete(Err(ConnectError::FailedToConnect(
+                    msg.version_response.connection_state,
+                )));
+                return;
+            }
+
+            let feature_flags = if version >= Version::Copper {
+                FeatureFlags::from(msg.supported_features)
+            } else {
+                FeatureFlags::new()
+            };
+
+            let version = VersionInfo {
+                version,
+                feature_flags,
+            };
+
+            self.inner.messages.send(&protocol::RequestOffers {});
+            self.state = ClientState::RequestingOffers {
+                version,
+                rpc: rpc.split().1,
+                offers: Vec::new(),
+            };
+            tracing::info!(?version, "VmBus client connected, requesting offers");
+        } else {
+            let index = SUPPORTED_VERSIONS
+                .iter()
+                .position(|v| *v == version)
+                .unwrap();
+
+            if index == 0 {
+                rpc.complete(Err(ConnectError::NoSupportedVersions));
+                return;
+            }
+            let next_version = SUPPORTED_VERSIONS[index - 1];
+            tracing::debug!(
+                version = version as u32,
+                next_version = next_version as u32,
+                "Unsupported version, retrying"
+            );
+            self.handle_initiate_contact(rpc, next_version);
         }
     }
 
@@ -773,12 +758,8 @@ impl ClientTask {
             if let Some(offer) = self.hvsock_tracker.check_offer(&offer_info.offer) {
                 offer.complete(Some(offer_info));
             } else {
-                if let ClientState::RequestingOffers {
-                    version: _,
-                    sender: send,
-                } = &self.state
-                {
-                    send.send(offer_info);
+                if let ClientState::RequestingOffers { offers, .. } = &mut self.state {
+                    offers.push(offer_info);
                 } else {
                     self.offer_send.send(offer_info);
                 }
@@ -861,18 +842,20 @@ impl ClientTask {
     }
 
     fn handle_offers_delivered(&mut self) {
-        if let ClientState::RequestingOffers {
-            version,
-            sender: _send,
-        } = &self.state
-        {
-            // This will drop the sender and cause the client to know the offers are done.
-            self.state = ClientState::Connected { version: *version };
-        } else {
-            tracing::warn!(
-                client_state = %self.state,
-                "invalid client state to handle AllOffersDelivered"
-            );
+        match std::mem::replace(&mut self.state, ClientState::Disconnected) {
+            ClientState::RequestingOffers {
+                version,
+                rpc,
+                offers,
+            } => {
+                tracing::info!(version = ?version, "VmBus client connected, offers delivered");
+                self.state = ClientState::Connected { version };
+                rpc.complete(Ok(ConnectResult { version, offers }));
+            }
+            state => {
+                tracing::warn!(client_state = %state, "invalid client state for OffersDelivered");
+                self.state = state;
+            }
         }
     }
 
@@ -1830,29 +1813,44 @@ mod tests {
         }
 
         async fn connect(&mut self, client: &mut VmbusClient) {
-            let recv = client.access.client_request_send.call(
-                ClientRequest::InitiateContact,
-                InitiateContactRequest::default(),
-            );
+            self.connect_with_channels(client, |_| {}).await;
+        }
 
-            let _ = self.next().await.unwrap();
+        async fn connect_with_channels(
+            &mut self,
+            client: &mut VmbusClient,
+            send_offers: impl FnOnce(&mut Self),
+        ) -> Vec<OfferInfo> {
+            let client_connect = client.connect(0, None, Guid::ZERO);
 
-            self.send(in_msg(
-                MessageType::VERSION_RESPONSE,
-                protocol::VersionResponse2 {
-                    version_response: protocol::VersionResponse {
-                        version_supported: 1,
-                        connection_state: ConnectionState::SUCCESSFUL,
-                        padding: 0,
-                        selected_version_or_connection_id: 0,
+            let server_connect = async {
+                let _ = self.next().await.unwrap();
+
+                self.send(in_msg(
+                    MessageType::VERSION_RESPONSE,
+                    protocol::VersionResponse2 {
+                        version_response: protocol::VersionResponse {
+                            version_supported: 1,
+                            connection_state: ConnectionState::SUCCESSFUL,
+                            padding: 0,
+                            selected_version_or_connection_id: 0,
+                        },
+                        supported_features: SUPPORTED_FEATURE_FLAGS.into(),
                     },
-                    supported_features: SUPPORTED_FEATURE_FLAGS.into(),
-                },
-            ));
+                ));
 
-            let version = recv.await.unwrap().unwrap();
-            assert_eq!(version.version, Version::Copper);
-            assert_eq!(version.feature_flags, SUPPORTED_FEATURE_FLAGS);
+                check_message(self.next().await.unwrap(), protocol::RequestOffers {});
+
+                send_offers(self);
+                self.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
+            };
+
+            let (connection, ()) = (client_connect, server_connect).join().await;
+
+            let connection = connection.unwrap();
+            assert_eq!(connection.version.version, Version::Copper);
+            assert_eq!(connection.version.feature_flags, SUPPORTED_FEATURE_FLAGS);
+            connection.offers
         }
 
         async fn get_channel(&mut self, client: &mut VmbusClient) -> OfferInfo {
@@ -1861,12 +1859,7 @@ mod tests {
         }
 
         async fn get_channels(&mut self, client: &mut VmbusClient, count: usize) -> Vec<OfferInfo> {
-            self.connect(client).await;
-
-            let request_offers = client.request_offers();
-            let send_offers = async {
-                check_message(self.next().await.unwrap(), protocol::RequestOffers {});
-
+            self.connect_with_channels(client, |this| {
                 for i in 0..count {
                     let offer = protocol::OfferChannel {
                         interface_id: Guid::new_random(),
@@ -1884,14 +1877,10 @@ mod tests {
                         connection_id: 0,
                     };
 
-                    self.send(in_msg(MessageType::OFFER_CHANNEL, offer));
+                    this.send(in_msg(MessageType::OFFER_CHANNEL, offer));
                 }
-
-                self.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
-            };
-
-            let ((), offers) = (send_offers, request_offers).join().await;
-            offers
+            })
+            .await
         }
     }
 
@@ -2025,95 +2014,101 @@ mod tests {
 
     #[async_test]
     async fn test_connect_success(driver: DefaultDriver) {
-        let (mut server, client, _) = test_init(&driver);
-        let recv = client.access.client_request_send.call(
-            ClientRequest::InitiateContact,
-            InitiateContactRequest::default(),
-        );
+        let (mut server, mut client, _) = test_init(&driver);
+        let client_connect = client.connect(0, None, Guid::ZERO);
 
-        check_message(
-            server.next().await.unwrap(),
-            protocol::InitiateContact2 {
-                initiate_contact: protocol::InitiateContact {
-                    version_requested: Version::Copper as u32,
-                    target_message_vp: 0,
-                    interrupt_page_or_target_info: TargetInfo::new()
-                        .with_sint(2)
-                        .with_vtl(0)
-                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
-                        .into(),
-                    parent_to_child_monitor_page_gpa: 0,
-                    child_to_parent_monitor_page_gpa: 0,
+        let server_connect = async {
+            check_message(
+                server.next().await.unwrap(),
+                protocol::InitiateContact2 {
+                    initiate_contact: protocol::InitiateContact {
+                        version_requested: Version::Copper as u32,
+                        target_message_vp: 0,
+                        interrupt_page_or_target_info: TargetInfo::new()
+                            .with_sint(2)
+                            .with_vtl(0)
+                            .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
+                            .into(),
+                        parent_to_child_monitor_page_gpa: 0,
+                        child_to_parent_monitor_page_gpa: 0,
+                    },
+                    ..FromZeros::new_zeroed()
                 },
-                ..FromZeros::new_zeroed()
-            },
-        );
+            );
 
-        server.send(in_msg(
-            MessageType::VERSION_RESPONSE,
-            protocol::VersionResponse2 {
-                version_response: protocol::VersionResponse {
-                    version_supported: 1,
-                    connection_state: ConnectionState::SUCCESSFUL,
-                    padding: 0,
-                    selected_version_or_connection_id: 0,
+            server.send(in_msg(
+                MessageType::VERSION_RESPONSE,
+                protocol::VersionResponse2 {
+                    version_response: protocol::VersionResponse {
+                        version_supported: 1,
+                        connection_state: ConnectionState::SUCCESSFUL,
+                        padding: 0,
+                        selected_version_or_connection_id: 0,
+                    },
+                    supported_features: SUPPORTED_FEATURE_FLAGS.into_bits(),
                 },
-                supported_features: SUPPORTED_FEATURE_FLAGS.into_bits(),
-            },
-        ));
+            ));
 
-        let version = recv.await.unwrap().unwrap();
+            check_message(server.next().await.unwrap(), protocol::RequestOffers {});
+            server.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
+        };
 
-        assert_eq!(version.version, Version::Copper);
-        assert_eq!(version.feature_flags, SUPPORTED_FEATURE_FLAGS);
+        let (connection, ()) = (client_connect, server_connect).join().await;
+        let connection = connection.unwrap();
+
+        assert_eq!(connection.version.version, Version::Copper);
+        assert_eq!(connection.version.feature_flags, SUPPORTED_FEATURE_FLAGS);
     }
 
     #[async_test]
     async fn test_feature_flags(driver: DefaultDriver) {
-        let (mut server, client, _) = test_init(&driver);
-        let recv = client.access.client_request_send.call(
-            ClientRequest::InitiateContact,
-            InitiateContactRequest::default(),
-        );
+        let (mut server, mut client, _) = test_init(&driver);
+        let client_connect = client.connect(0, None, Guid::ZERO);
 
-        check_message(
-            server.next().await.unwrap(),
-            protocol::InitiateContact2 {
-                initiate_contact: protocol::InitiateContact {
-                    version_requested: Version::Copper as u32,
-                    target_message_vp: 0,
-                    interrupt_page_or_target_info: TargetInfo::new()
-                        .with_sint(2)
-                        .with_vtl(0)
-                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
-                        .into(),
-                    parent_to_child_monitor_page_gpa: 0,
-                    child_to_parent_monitor_page_gpa: 0,
+        let server_connect = async {
+            check_message(
+                server.next().await.unwrap(),
+                protocol::InitiateContact2 {
+                    initiate_contact: protocol::InitiateContact {
+                        version_requested: Version::Copper as u32,
+                        target_message_vp: 0,
+                        interrupt_page_or_target_info: TargetInfo::new()
+                            .with_sint(2)
+                            .with_vtl(0)
+                            .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
+                            .into(),
+                        parent_to_child_monitor_page_gpa: 0,
+                        child_to_parent_monitor_page_gpa: 0,
+                    },
+                    ..FromZeros::new_zeroed()
                 },
-                ..FromZeros::new_zeroed()
-            },
-        );
+            );
 
-        // Report the server doesn't support some of the feature flags, and make
-        // sure this is reflected in the returned version.
-        server.send(in_msg(
-            MessageType::VERSION_RESPONSE,
-            protocol::VersionResponse2 {
-                version_response: protocol::VersionResponse {
-                    version_supported: 1,
-                    connection_state: ConnectionState::SUCCESSFUL,
-                    padding: 0,
-                    selected_version_or_connection_id: 0,
+            // Report the server doesn't support some of the feature flags, and make
+            // sure this is reflected in the returned version.
+            server.send(in_msg(
+                MessageType::VERSION_RESPONSE,
+                protocol::VersionResponse2 {
+                    version_response: protocol::VersionResponse {
+                        version_supported: 1,
+                        connection_state: ConnectionState::SUCCESSFUL,
+                        padding: 0,
+                        selected_version_or_connection_id: 0,
+                    },
+                    supported_features: 2,
                 },
-                supported_features: 2,
-            },
-        ));
+            ));
 
-        let version = recv.await.unwrap().unwrap();
+            check_message(server.next().await.unwrap(), protocol::RequestOffers {});
+            server.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
+        };
 
-        assert_eq!(version.version, Version::Copper);
+        let (connection, ()) = (client_connect, server_connect).join().await;
+        let connection = connection.unwrap();
+
+        assert_eq!(connection.version.version, Version::Copper);
         assert_eq!(
-            version.feature_flags,
+            connection.version.feature_flags,
             FeatureFlags::new().with_channel_interrupt_redirection(true)
         );
     }
@@ -2151,110 +2146,72 @@ mod tests {
 
     #[async_test]
     async fn test_version_negotiation(driver: DefaultDriver) {
-        let (mut server, client, _) = test_init(&driver);
-        let recv = client.access.client_request_send.call(
-            ClientRequest::InitiateContact,
-            InitiateContactRequest::default(),
-        );
+        let (mut server, mut client, _) = test_init(&driver);
+        let client_connect = client.connect(0, None, Guid::ZERO);
 
-        check_message(
-            server.next().await.unwrap(),
-            protocol::InitiateContact2 {
-                initiate_contact: protocol::InitiateContact {
-                    version_requested: Version::Copper as u32,
+        let server_connect = async {
+            check_message(
+                server.next().await.unwrap(),
+                protocol::InitiateContact2 {
+                    initiate_contact: protocol::InitiateContact {
+                        version_requested: Version::Copper as u32,
+                        target_message_vp: 0,
+                        interrupt_page_or_target_info: TargetInfo::new()
+                            .with_sint(2)
+                            .with_vtl(0)
+                            .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
+                            .into(),
+                        parent_to_child_monitor_page_gpa: 0,
+                        child_to_parent_monitor_page_gpa: 0,
+                    },
+                    ..FromZeros::new_zeroed()
+                },
+            );
+
+            server.send(in_msg(
+                MessageType::VERSION_RESPONSE,
+                protocol::VersionResponse {
+                    version_supported: 0,
+                    connection_state: ConnectionState::SUCCESSFUL,
+                    padding: 0,
+                    selected_version_or_connection_id: 0,
+                },
+            ));
+
+            check_message(
+                server.next().await.unwrap(),
+                protocol::InitiateContact {
+                    version_requested: Version::Iron as u32,
                     target_message_vp: 0,
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
+                        .with_feature_flags(FeatureFlags::new().into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
-                ..FromZeros::new_zeroed()
-            },
-        );
+            );
 
-        server.send(in_msg(
-            MessageType::VERSION_RESPONSE,
-            protocol::VersionResponse {
-                version_supported: 0,
-                connection_state: ConnectionState::SUCCESSFUL,
-                padding: 0,
-                selected_version_or_connection_id: 0,
-            },
-        ));
+            server.send(in_msg(
+                MessageType::VERSION_RESPONSE,
+                protocol::VersionResponse {
+                    version_supported: 1,
+                    connection_state: ConnectionState::SUCCESSFUL,
+                    padding: 0,
+                    selected_version_or_connection_id: 0,
+                },
+            ));
 
-        check_message(
-            server.next().await.unwrap(),
-            protocol::InitiateContact {
-                version_requested: Version::Iron as u32,
-                target_message_vp: 0,
-                interrupt_page_or_target_info: TargetInfo::new()
-                    .with_sint(2)
-                    .with_vtl(0)
-                    .with_feature_flags(FeatureFlags::new().into())
-                    .into(),
-                parent_to_child_monitor_page_gpa: 0,
-                child_to_parent_monitor_page_gpa: 0,
-            },
-        );
-
-        server.send(in_msg(
-            MessageType::VERSION_RESPONSE,
-            protocol::VersionResponse {
-                version_supported: 1,
-                connection_state: ConnectionState::SUCCESSFUL,
-                padding: 0,
-                selected_version_or_connection_id: 0,
-            },
-        ));
-
-        let version = recv.await.unwrap().unwrap();
-
-        assert_eq!(version.version, Version::Iron);
-        assert_eq!(version.feature_flags, FeatureFlags::new());
-    }
-
-    #[async_test]
-    async fn test_request_offers_success(driver: DefaultDriver) {
-        let (mut server, mut client, _) = test_init(&driver);
-
-        server.connect(&mut client).await;
-
-        let (send, mut recv) = mesh::channel();
-        client
-            .access
-            .client_request_send
-            .send(ClientRequest::RequestOffers(send));
-
-        check_message(server.next().await.unwrap(), protocol::RequestOffers {});
-
-        let offer = protocol::OfferChannel {
-            interface_id: Guid::new_random(),
-            instance_id: Guid::new_random(),
-            rsvd: [0; 4],
-            flags: OfferFlags::new(),
-            mmio_megabytes: 0,
-            user_defined: UserDefinedData::new_zeroed(),
-            subchannel_index: 0,
-            mmio_megabytes_optional: 0,
-            channel_id: ChannelId(0),
-            monitor_id: 0,
-            monitor_allocated: 0,
-            is_dedicated: 0,
-            connection_id: 0,
+            check_message(server.next().await.unwrap(), protocol::RequestOffers {});
+            server.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
         };
 
-        server.send(in_msg(MessageType::OFFER_CHANNEL, offer));
+        let (connection, ()) = (client_connect, server_connect).join().await;
+        let connection = connection.unwrap();
 
-        let received_offer = recv.next().await.unwrap();
-
-        assert_eq!(received_offer.offer, offer);
-
-        server.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
-
-        assert!(recv.next().await.is_none());
+        assert_eq!(connection.version.version, Version::Iron);
+        assert_eq!(connection.version.feature_flags, FeatureFlags::new());
     }
 
     #[async_test]

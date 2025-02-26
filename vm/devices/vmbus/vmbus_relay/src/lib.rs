@@ -911,17 +911,21 @@ impl RelayTask {
         // Always use VP0 for messages from the host, regardless of what the guest requested, since
         // the relay cannot receive messages on other VPs. This does not affect messages sent to
         // VTL0 by the vmbus server.
-        let version = self
+        let connection = self
             .vmbus_client
             .connect(0, None, VMBUS_RELAY_CLIENT_ID)
             .await
             .expect("Client was in an incorrect state for initiate contact.");
 
-        if version.feature_flags & REQUIRED_FEATURE_FLAGS != REQUIRED_FEATURE_FLAGS {
-            panic!("Underhill host must support required feature flags. Required: {REQUIRED_FEATURE_FLAGS:?}, actual: {:?}.", version.feature_flags)
+        if connection.version.feature_flags & REQUIRED_FEATURE_FLAGS != REQUIRED_FEATURE_FLAGS {
+            panic!(
+                "Underhill host must support required feature flags. \
+                 Required: {REQUIRED_FEATURE_FLAGS:?}, actual: {:?}.",
+                connection.version.feature_flags
+            )
         }
 
-        for offer in self.vmbus_client.request_offers().await {
+        for offer in connection.offers {
             if let Err(err) = self.handle_offer(offer, None).await {
                 tracing::error!(
                     error = err.as_ref() as &dyn std::error::Error,
@@ -930,7 +934,7 @@ impl RelayTask {
             }
         }
 
-        self.relay_state = RelayState::Connected(version);
+        self.relay_state = RelayState::Connected(connection.version);
         tracing::debug!("vmbus relay connected");
     }
 
