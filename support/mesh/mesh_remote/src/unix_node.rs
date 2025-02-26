@@ -1162,14 +1162,9 @@ impl UnixSocket {
 
 /// Sends a packet, including the specified file descriptors. May fail with
 /// ErrorKind::WouldBlock.
-#[cfg_attr(
-    not(target_env = "musl"),
-    allow(
-        clippy::needless_update,
-        clippy::useless_conversion,
-        reason = "gnu and musl targets differ on their definition of cmsghdr"
-    )
-)]
+// x86_64-unknown-linux-musl targets have a different type defn for
+// `libc::cmsghdr`, hence why these lints are being suppressed.
+#[allow(clippy::needless_update, clippy::useless_conversion)]
 fn try_send(socket: &Socket, msg: &[IoSlice<'_>], fds: &[OsResource]) -> io::Result<usize> {
     let mut cmsg = CmsgScmRights {
         hdr: libc::cmsghdr {
@@ -1178,6 +1173,7 @@ fn try_send(socket: &Socket, msg: &[IoSlice<'_>], fds: &[OsResource]) -> io::Res
             cmsg_len: (size_of::<libc::cmsghdr>() + size_of_val(fds))
                 .try_into()
                 .unwrap(),
+
             ..{
                 // SAFETY: type has no invariants
                 unsafe { std::mem::zeroed() }
@@ -1248,14 +1244,7 @@ fn try_recv(socket: &Socket, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::R
             // BUGBUG: need to loop: possible to leak fds
             return Err(ErrorKind::InvalidData.into());
         }
-
-        #[cfg_attr(
-            not(target_env = "musl"),
-            allow(
-                clippy::unnecessary_cast,
-                reason = "gnu and musl targets differ on their definition of cmsghdr"
-            )
-        )]
+        #[allow(clippy::unnecessary_cast)] // cmsg_len is u32 on musl and usize on gnu.
         {
             (cmsg.hdr.cmsg_len as usize - size_of_val(&cmsg.hdr)) / size_of::<RawFd>()
         }
