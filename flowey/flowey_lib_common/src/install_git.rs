@@ -39,9 +39,7 @@ impl FlowNode for Node {
         }
 
         let ensure_installed = ensure_installed;
-        let auto_install = auto_install.ok_or(anyhow::anyhow!(
-            "Missing essential request: LocalOnlyAutoInstall",
-        ))?;
+        let auto_install = auto_install.unwrap_or(false);
 
         // -- end of req processing -- //
 

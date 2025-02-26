@@ -18,7 +18,9 @@ new_simple_flow_node!(struct Node);
 impl SimpleFlowNode for Node {
     type Request = Request;
 
-    fn imports(_ctx: &mut ImportCtx<'_>) {}
+    fn imports(ctx: &mut ImportCtx<'_>) {
+        ctx.import::<flowey_lib_common::install_git::Node>();
+    }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
@@ -29,7 +31,11 @@ impl SimpleFlowNode for Node {
 
         let pr_event = ctx.get_gh_context_var().event().pull_request();
 
+        let ensure_git_installed =
+            ctx.reqv(flowey_lib_common::install_git::Request::EnsureInstalled);
+
         ctx.emit_rust_step("get merge commit", move |ctx| {
+            ensure_git_installed.claim(ctx);
             let merge_commit = merge_commit.claim(ctx);
             let pr_event = pr_event.claim(ctx);
             let repo_path = repo_path.claim(ctx);
