@@ -224,6 +224,40 @@ impl DeviceSharedMemory {
             state: self.state.clone(),
         })
     }
+
+    // Allocated specific pages that are requested for by base_pfn and length. Function will fail
+    // if those pages have already been allocated.
+    pub fn alloc_specific(&self, len: usize, base_pfn: usize) -> Option<DmaBuffer>{
+        assert!(len % PAGE_SIZE == 0);
+
+        let count = len / PAGE_SIZE;
+        if base_pfn + count > self.len {
+            return None;  // Not enough space
+        }
+
+        // Iterate over each requested page to verify if it is unmapped.
+        {
+            let mut state = self.state.lock();
+            let mut i = base_pfn;
+            while i < base_pfn + count {
+                if state[i / 64] & 1 << (i % 64) != 0 {
+                    return None;
+                }
+                i += 1;
+            }
+            // Create a mapping for the requested pfns to mark them used
+            for j in base_pfn..i {
+                state[j / 64] |= 1 << (j % 64);
+            }
+        };
+
+        let pages = (base_pfn..base_pfn + count).map(|p| p as u64).collect();
+        Some(DmaBuffer {
+            mem: self.mem.clone(),
+            pfns: pages,
+            state: self.state.clone(),
+        })
+    }
 }
 
 pub struct DmaBuffer {
@@ -270,6 +304,14 @@ pub struct EmulatedDmaAllocator {
     shared_mem: DeviceSharedMemory,
 }
 
+impl EmulatedDmaAllocator {
+    pub fn new(shared_mem: DeviceSharedMemory) -> Self {
+        EmulatedDmaAllocator {
+            shared_mem,
+        }
+    }
+}
+
 impl DmaClient for EmulatedDmaAllocator {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
         let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);
@@ -277,8 +319,9 @@ impl DmaClient for EmulatedDmaAllocator {
         Ok(memory)
     }
 
-    fn attach_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
-        anyhow::bail!("restore is not supported for emulated DMA")
+    fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+        let memory = MemoryBlock::new( self.shared_mem.alloc_specific(len, base_pfn.try_into().unwrap()).context("could not alloc specific. out of memory")?);
+        Ok(memory)
     }
 }
 

@@ -127,7 +127,7 @@ pub struct Aqa {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Inspect, PartialEq)]
 pub struct Command {
     pub cdw0: Cdw0,
     pub nsid: u32,
@@ -146,7 +146,7 @@ pub struct Command {
 
 #[derive(Inspect)]
 #[bitfield(u32)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq)]
 pub struct Cdw0 {
     pub opcode: u8,
     #[bits(2)]
