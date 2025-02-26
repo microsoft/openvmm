@@ -76,7 +76,7 @@ pub mod resolve {
                 artifact_dir,
             } = request;
 
-            ctx.emit_rust_step("resolve guest_test_uefi artifact", |ctx| {
+            ctx.emit_rust_step("resolve baseline openhcl artifact", |ctx| {
                 let openvmm_openhcl_x86 = openvmm_openhcl_x86.claim(ctx);
                 let artifact_dir = artifact_dir.claim(ctx);
                 move |rt| {
