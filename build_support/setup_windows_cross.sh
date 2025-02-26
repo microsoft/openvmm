@@ -24,10 +24,6 @@ function tool {
 }
 
 function setup_windows_cross {
-    local print_only=0
-    if [ "$1" = "--print-only" ]; then
-        print_only=1
-    fi
     local mydir="$(dirname -- "${BASH_SOURCE[0]}")"
     local myfulldir="$(realpath "$mydir")"
 
@@ -47,29 +43,10 @@ function setup_windows_cross {
     export AR_x86_64_pc_windows_msvc=$(tool "$tooldir" x86_64-llvm-lib)
     export RC_x86_64_pc_windows_msvc=$(tool "$tooldir" x86_64-llvm-rc)
     export DLLTOOL_x86_64_pc_windows_msvc=$(tool "$tooldir" x86_64-llvm-dlltool)
-
-    if [ "$print_only" = "1" ]; then
-        echo "CC_aarch64_pc_windows_msvc=$CC_aarch64_pc_windows_msvc"
-        echo "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER=$CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER"
-        echo "AR_aarch64_pc_windows_msvc=$AR_aarch64_pc_windows_msvc"
-        echo "RC_aarch64_pc_windows_msvc=$RC_aarch64_pc_windows_msvc"
-        echo "DLLTOOL_aarch64_pc_windows_msvc=$DLLTOOL_aarch64_pc_windows_msvc"
-        echo "CC_x86_64_pc_windows_msvc=$CC_x86_64_pc_windows_msvc"
-        echo "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"
-        echo "AR_x86_64_pc_windows_msvc=$AR_x86_64_pc_windows_msvc"
-        echo "RC_x86_64_pc_windows_msvc=$RC_x86_64_pc_windows_msvc"
-        echo "DLLTOOL_x86_64_pc_windows_msvc=$DLLTOOL_x86_64_pc_windows_msvc"
-    fi
 }
 
-# Check if this file was run directly without --print-only instead of sourced, and fail with a
+# Check if this file was run directly instead of sourced, and fail with a
 # warning if so.
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    if [[ "$1" == "--print-only" ]]; then
-        setup_windows_cross --print-only
-    else
-        fatal_error "You must run $0 by sourcing it unless using the '--print-only' argument. Try instead:\n  . $0"
-    fi
-else
-    setup_windows_cross
-fi
+(return 0 2>/dev/null) || fatal_error "You must run $0 by sourcing it. Try instead:\n  . $0"
+
+setup_windows_cross

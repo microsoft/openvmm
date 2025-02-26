@@ -44,7 +44,6 @@ impl FlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::init_openvmm_magicpath_lxutil::Node>();
         ctx.import::<crate::run_cargo_build::Node>();
-        ctx.import::<crate::init_cross_build::Node>();
         ctx.import::<flowey_lib_common::install_dist_pkg::Node>();
     }
 
@@ -65,11 +64,6 @@ impl FlowNode for Node {
             openvmm: openvmm_bin,
         } in requests
         {
-            let extra_env = ctx.reqv(|v| crate::init_cross_build::Request {
-                injected_env: v,
-                target: target.as_triple(),
-            });
-
             let mut pre_build_deps = vec![installed_apt_deps.clone()];
 
             let lxutil_arch = match target.as_triple().architecture {
@@ -121,7 +115,7 @@ impl FlowNode for Node {
                     .collect(),
                 target: target.as_triple(),
                 no_split_dbg_info: false,
-                extra_env: Some(extra_env),
+                extra_env: None,
                 pre_build_deps,
                 output: v,
             });

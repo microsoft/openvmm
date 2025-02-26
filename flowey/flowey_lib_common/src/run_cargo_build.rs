@@ -118,6 +118,8 @@ impl FlowNode for Node {
                 target.clone(),
             ));
 
+            let platform = ctx.platform().clone();
+
             ctx.emit_rust_step(format!("cargo build {crate_name}"), |ctx| {
                 pre_build_deps.claim(ctx);
                 let rust_toolchain = rust_toolchain.clone().claim(ctx);
@@ -189,6 +191,14 @@ impl FlowNode for Node {
                                     v.push("--lib".into());
                                 }
                             }
+
+                            if matches!(platform, FlowPlatform::Linux(_)) && matches!(target.operating_system, target_lexicon::OperatingSystem::Windows) {
+                                println!("using cross build config toml");
+
+                                v.push("--config".into());
+                                v.push("build_support/windows_cross/config.toml".into());
+                            }
+
                             v
                         },
                         with_env,

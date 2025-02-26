@@ -117,12 +117,12 @@ impl IntoPipeline for RunIgvmCli {
 
         let (pub_out_dir, _) = pipeline.new_artifact("build-igvm");
 
-        // Build OpenHCL
+        // Build and run
         pipeline
             .new_job(
                 FlowPlatform::host(backend_hint),
                 FlowArch::host(backend_hint),
-                "build-igvm",
+                "run-igvm",
             )
             .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request {})
             .dep_on(
