@@ -275,7 +275,7 @@ impl BackingPrivate for SnpBacked {
     fn new(params: BackingParams<'_, '_, Self>, shared: &SnpBackedShared) -> Result<Self, Error> {
         let pfns_handle = params
             .partition
-            .shared_vis_pages_pool
+            .shared_dma_client
             .as_ref()
             .ok_or(Error::MissingSharedMemory)?
             .allocate_dma_buffer((shared_pages_required_per_cpu() * HV_PAGE_SIZE) as usize)

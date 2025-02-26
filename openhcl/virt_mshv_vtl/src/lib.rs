@@ -228,8 +228,8 @@ struct UhPartitionInner {
     guest_vsm: RwLock<GuestVsmState>,
     #[inspect(skip)]
     isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
-    shared_vis_pages_pool: Option<Arc<dyn DmaClient>>,
-    private_vis_pages_pool: Option<Arc<dyn DmaClient>>,
+    shared_dma_client: Option<Arc<dyn DmaClient>>,
+    private_dma_client: Option<Arc<dyn DmaClient>>,
     #[inspect(with = "inspect::AtomicMut")]
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
@@ -1278,10 +1278,10 @@ pub struct UhLateParams<'a> {
     pub vmtime: &'a VmTimeSource,
     /// An object to call to change host visibility on guest memory.
     pub isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
-    /// Allocator for shared visibility pages.
-    pub shared_vis_pages_pool: Option<Arc<dyn DmaClient>>,
+    /// Dma client for shared visibility pages.
+    pub shared_dma_client: Option<Arc<dyn DmaClient>>,
     /// Allocator for private visibility pages.
-    pub private_vis_pages_pool: Option<Arc<dyn DmaClient>>,
+    pub private_dma_client: Option<Arc<dyn DmaClient>>,
 }
 
 /// Trait for CVM-related protections on guest memory.
@@ -1551,7 +1551,7 @@ impl<'a> UhProtoPartition<'a> {
         // Do per-VP HCL initialization.
         hcl.add_vps(
             params.topology.vp_count(),
-            late_params.private_vis_pages_pool.as_ref(),
+            late_params.private_dma_client.as_ref(),
         )
         .map_err(Error::Hcl)?;
 
@@ -1695,8 +1695,8 @@ impl<'a> UhProtoPartition<'a> {
             untrusted_synic,
             guest_vsm: RwLock::new(vsm_state),
             isolated_memory_protector: late_params.isolated_memory_protector.clone(),
-            shared_vis_pages_pool: late_params.shared_vis_pages_pool,
-            private_vis_pages_pool: late_params.private_vis_pages_pool,
+            shared_dma_client: late_params.shared_dma_client,
+            private_dma_client: late_params.private_dma_client,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
             backing_shared: BackingShared::new(

@@ -1563,7 +1563,7 @@ impl HclVp {
         vp: u32,
         map_reg_page: bool,
         isolation_type: IsolationType,
-        private_pool: Option<&Arc<dyn DmaClient>>,
+        private_dma_client: Option<&Arc<dyn DmaClient>>,
     ) -> Result<Self, Error> {
         let fd = &hcl.mshv_vtl.file;
         let run: MappedPage<hcl_run> =
@@ -1597,7 +1597,7 @@ impl HclVp {
             IsolationType::Tdx => BackingState::Tdx {
                 vtl0_apic_page: MappedPage::new(fd, MSHV_APIC_PAGE_OFFSET | vp as i64)
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,
-                vtl1_apic_page: private_pool
+                vtl1_apic_page: private_dma_client
                     .ok_or(Error::MissingPrivateMemory)?
                     .allocate_dma_buffer(HV_PAGE_SIZE as usize)
                     .map_err(Error::AllocVp)?,

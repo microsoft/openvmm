@@ -1741,7 +1741,7 @@ async fn new_underhill_vm(
         crash_notification_send,
         vmtime: &vmtime_source,
         isolated_memory_protector: gm.isolated_memory_protector()?,
-        shared_vis_pages_pool: dma_manager
+        shared_dma_client: dma_manager
             .new_client(DmaClientParameters {
                 device_name: "partition-shared".into(),
                 lower_vtl_policy: LowerVtlPermissionPolicy::Any,
@@ -1753,7 +1753,7 @@ async fn new_underhill_vm(
                 let client: Arc<dyn DmaClient> = client;
                 client
             }),
-        private_vis_pages_pool: dma_manager
+        private_dma_client: dma_manager
             .new_client(DmaClientParameters {
                 device_name: "partition-private".into(),
                 lower_vtl_policy: LowerVtlPermissionPolicy::Any,
