@@ -153,40 +153,6 @@ adding the following line to `keybindings.json`:
 }
 ```
 
-### Running `cargo xtask fmt house-rules` on-save
-
-The OpenVMM project includes a handful of custom "house rule" lints that are
-external to `rustfmt`. These are things like checking for the presence of
-copyright headers, enforcing single-trailing newlines, etc...
-
-These lints are enfoced using `cargo xtask fmt house-rules`, and can be
-automatically fixed by passing the `--fix` flag.
-
-We recommend installing the
-[RunOnSave](https://marketplace.visualstudio.com/items?itemName=emeraldwalk.RunOnSave)
-extension, and configuring it to run these lints as part of your regular
-development flow.
-
-Set the following configuration in your `.vscode/settings.json`
-
-```json
-{
-    "emeraldwalk.runonsave": {
-        "commands": [
-            {
-                "match": ".*",
-                "cmd": "cd ${workspaceFolder}"
-            },
-            {
-                "match": ".*",
-                "isAsync": true,
-                "cmd": "$(cat ./target/xtask-path) fmt house-rules --fix ${file}"
-            }
-        ]
-    },
-}
-```
-
 ### GitHub Pull Request Integration
 
 As the repo is hosted on GitHub, you might find convenient to use the
