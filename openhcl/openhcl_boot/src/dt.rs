@@ -158,6 +158,7 @@ pub fn write_dt(
     cmdline: &ArrayString<COMMAND_LINE_SIZE>,
     sidecar: Option<&SidecarConfig<'_>>,
     boot_times: Option<BootTimes>,
+    report_boot_log: bool,
 ) -> Result<(), DtError> {
     // First, the reservation map is built. That keyes off of the x86 E820 memory map.
     // The `/memreserve/` is used to tell the kernel that the reserved memory is RAM
@@ -460,6 +461,20 @@ pub fn write_dt(
         IsolationType::Tdx => "tdx",
     };
     openhcl_builder = openhcl_builder.add_str(p_isolation_type, isolation_type)?;
+
+    // If requested, capture the current memory log and report it to usermode.
+    //
+    // NOTE: This log is not all-inclusive, as any logs after this point are not
+    // saved to the device tree.
+    let p_boot_log = openhcl_builder.add_string("boot-log")?;
+    if report_boot_log {
+        openhcl_builder = openhcl_builder.add_str(
+            p_boot_log,
+            crate::boot_logger::BOOT_LOGGER.log_buffer().as_str(),
+        )?;
+    } else {
+        openhcl_builder = openhcl_builder.add_str(p_boot_log, "")?;
+    }
 
     // Indicate what kind of memory allocation mode was done by the bootloader
     // to usermode.
