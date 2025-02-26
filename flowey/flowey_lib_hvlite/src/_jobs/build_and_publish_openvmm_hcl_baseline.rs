@@ -13,7 +13,7 @@ use flowey::node::prelude::*;
 
 flowey_request! {
     pub struct Request {
-        pub artifact_dir: ReadVar<PathBuf>,
+        pub artifact_dir: Option<ReadVar<PathBuf>>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -31,23 +31,25 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request { done, artifact_dir } = request;
 
-        let baseline_hcl_build = ctx.reqv(|v| build_openvmm_hcl::Request {
-            build_params: OpenvmmHclBuildParams {
-                target: CommonTriple::X86_64_LINUX_MUSL,
-                profile: OpenvmmHclBuildProfile::OpenvmmHclShip,
-                features: (OpenhclIgvmRecipe::X64)
-                    .recipe_details(OpenvmmHclBuildProfile::OpenvmmHclShip)
-                    .openvmm_hcl_features,
-                no_split_dbg_info: false,
-            },
-            openvmm_hcl_output: v,
-        });
+        if let Some(artifact_dir) = artifact_dir {
+            let baseline_hcl_build = ctx.reqv(|v| build_openvmm_hcl::Request {
+                build_params: OpenvmmHclBuildParams {
+                    target: CommonTriple::X86_64_LINUX_MUSL,
+                    profile: OpenvmmHclBuildProfile::OpenvmmHclShip,
+                    features: (OpenhclIgvmRecipe::X64)
+                        .recipe_details(OpenvmmHclBuildProfile::OpenvmmHclShip)
+                        .openvmm_hcl_features,
+                    no_split_dbg_info: false,
+                },
+                openvmm_hcl_output: v,
+            });
 
-        ctx.req(artifact_openvmm_hcl_sizecheck::publish::Request {
-            openvmm_openhcl_x86: baseline_hcl_build,
-            artifact_dir,
-            done,
-        });
+            ctx.req(artifact_openvmm_hcl_sizecheck::publish::Request {
+                openvmm_openhcl_x86: baseline_hcl_build,
+                artifact_dir,
+                done,
+            });
+        }
 
         Ok(())
     }

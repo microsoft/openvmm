@@ -693,9 +693,6 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 .dep_on(|ctx| {
-                    let publish_baseline_artifact = pub_openhcl_baseline
-                        .map(|baseline_artifact| ctx.publish_artifact(baseline_artifact));
-
                     flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
                         igvm_files: igvm_recipes
                             .into_iter()
@@ -710,7 +707,6 @@ impl IntoPipeline for CheckinGatesCli {
                         artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
                         artifact_dir_openhcl_igvm_extras: ctx
                             .publish_artifact(pub_openhcl_igvm_extras),
-                        artifact_openhcl_verify_size_baseline: publish_baseline_artifact,
                         done: ctx.new_done_handle(),
                     }
                 })
@@ -724,7 +720,16 @@ impl IntoPipeline for CheckinGatesCli {
                         artifact_dir: ctx.publish_artifact(pub_pipette_linux_musl),
                         done: ctx.new_done_handle(),
                     },
-                );
+                )
+                .dep_on(|ctx| {
+                    let publish_baseline_artifact = pub_openhcl_baseline
+                        .map(|baseline_artifact| ctx.publish_artifact(baseline_artifact));
+
+                    flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline::Request {
+                        artifact_dir: publish_baseline_artifact,
+                        done: ctx.new_done_handle(),
+                    }
+                });
 
             all_jobs.push(job.finish());
 

@@ -82,12 +82,6 @@ pub mod resolve {
                 move |rt| {
                     let artifact_dir = rt.read(artifact_dir);
 
-                    for ext in ["efi", "pdb", "img"] {
-                        if !artifact_dir.join(format!("guest_test_uefi.{ext}")).exists() {
-                            anyhow::bail!("malformed artifact! did not find guest_test_uefi.{ext}");
-                        }
-                    }
-
                     let openvmm_openhcl_x86_output = OpenvmmHclOutput {
                         bin: artifact_dir.join("openhcl"),
                         dbg: None,

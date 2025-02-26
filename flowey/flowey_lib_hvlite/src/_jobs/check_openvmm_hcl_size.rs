@@ -4,6 +4,7 @@
 //! Compares the size of the OpenHCL binary in the current PR with the size of the binary from the last successful merge to main.
 
 use crate::artifact_openhcl_igvm_from_recipe_extras;
+use crate::artifact_openvmm_hcl_sizecheck;
 use crate::build_openhcl_igvm_from_recipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl;
@@ -38,6 +39,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<build_openvmm_hcl::Node>();
         ctx.import::<artifact_openhcl_igvm_from_recipe_extras::publish::Node>();
+        ctx.import::<artifact_openvmm_hcl_sizecheck::resolve::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -68,8 +70,8 @@ impl SimpleFlowNode for Node {
         });
 
         let file_name = match target.common_arch().unwrap() {
-            CommonArch::X86_64 => "x64-openhcl-igvm-extras",
-            CommonArch::Aarch64 => "aarch64-openhcl-igvm-extras",
+            CommonArch::X86_64 => "x64-openhcl-baseline",
+            CommonArch::Aarch64 => "aarch64-openhcl-baseline",
         };
 
         let merge_commit = ctx.reqv(|v| gh_merge_commit::Request {
@@ -96,10 +98,15 @@ impl SimpleFlowNode for Node {
             gh_token: gh_token.clone(),
         });
 
+        let old_openhcl = ctx.reqv(|v| artifact_openvmm_hcl_sizecheck::resolve::Request {
+            openvmm_openhcl_x86: v,
+            artifact_dir: merge_head_artifact,
+        });
+
         let comparison = ctx.emit_rust_step("binary size comparison", |ctx| {
             let xtask = xtask.claim(ctx);
             let openvmm_repo_path = openvmm_repo_path.claim(ctx);
-            let old_openhcl = merge_head_artifact.claim(ctx);
+            let old_openhcl = old_openhcl.claim(ctx);
             let new_openhcl = built_openvmm_hcl.claim(ctx);
             let merge_run = merge_run.claim(ctx);
 
@@ -113,14 +120,7 @@ impl SimpleFlowNode for Node {
                 let new_openhcl = rt.read(new_openhcl);
                 let merge_run = rt.read(merge_run);
 
-                let arch = target.common_arch().unwrap();
-
-                let old_path = match arch {
-                    CommonArch::X86_64 => {
-                        old_openhcl.join("x64-openhcl-igvm-extras/openhcl/openhcl")
-                    }
-                    CommonArch::Aarch64 => old_openhcl.join("openhcl-aarch64/openhcl"),
-                };
+                let old_path = old_openhcl.bin;
                 let new_path = new_openhcl.bin;
 
                 println!(
