@@ -1,40 +1,25 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! See [`BuildIgvmCli`]
-
+use super::build_igvm::bail_if_running_in_ci;
+use super::build_igvm::BuildIgvmArch;
+use super::build_igvm::BuildIgvmCliCustomizations;
+use super::build_igvm::KernelPackageKindCli;
+use super::build_igvm::OpenhclRecipeCli;
+use flowey::node::prelude::FlowArch;
+use flowey::node::prelude::FlowPlatform;
 use flowey::node::prelude::ReadVar;
-use flowey::pipeline::prelude::*;
+use flowey::pipeline::prelude::HostExt;
+use flowey::pipeline::prelude::IntoPipeline;
+use flowey::pipeline::prelude::Pipeline;
+use flowey::pipeline::prelude::PipelineBackendHint;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclKernelPackage;
 use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
-use std::path::PathBuf;
 
-#[derive(clap::ValueEnum, Copy, Clone)]
-pub enum OpenhclRecipeCli {
-    /// Aarch64 OpenHCL
-    Aarch64,
-    /// Aarch64 OpenHCL, using the dev kernel in VTL2
-    Aarch64Devkern,
-    /// X64 OpenHCL, with CVM support.
-    X64Cvm,
-    /// X64 OpenHCL, with CVM support using the dev kernel in VTL2
-    X64CvmDevkern,
-    /// X64 OpenHCL booting VTL0 using a test linux-direct kernel + initrd (no
-    /// UEFI).
-    X64TestLinuxDirect,
-    /// X64 OpenHCL booting VTL0 using a test linux-direct kernel + initrd (no
-    /// UEFI), using the dev kernel in VTL2.
-    X64TestLinuxDirectDevkern,
-    /// X64 OpenHCL
-    X64,
-    /// X64 OpenHCL, using the dev kernel in VTL2
-    X64Devkern,
-}
-
-/// Build OpenHCL IGVM files for local development. DO NOT USE IN CI.
+/// Run OpenHCL IGVM files for local development. DO NOT USE IN CI.
 #[derive(clap::Args)]
-pub struct BuildIgvmCli<Recipe = OpenhclRecipeCli>
+pub struct RunIgvmCli<Recipe = OpenhclRecipeCli>
 where
     // Make the recipe generic so that out-of-tree flowey implementations can
     // slot in a custom set of recipes to build with.
@@ -72,147 +57,16 @@ where
 
     #[clap(flatten)]
     pub customizations: BuildIgvmCliCustomizations,
+
+    /// Additional parameters to pass to OpenVMM
+    #[clap(trailing_var_arg = true)]
+    pub trailing_args: Vec<String>,
 }
 
-#[derive(clap::Args)]
-#[clap(next_help_heading = "Customizations")]
-pub struct BuildIgvmCliCustomizations {
-    /// Set a custom label for this `build-igvm` invocation. If no label is
-    /// provided, customized IGVM files will be output with the label
-    /// `{base_recipe_name}-custom`
-    #[clap(long, short = 'o')]
-    pub build_label: Option<String>,
-
-    /// Override which kernel package to use.
-    #[clap(long)]
-    pub override_kernel_pkg: Option<KernelPackageKindCli>,
-
-    /// Pass additional features when building openmm_hcl
-    #[clap(long)]
-    pub override_openvmm_hcl_feature: Vec<String>,
-
-    /// Override architecture used when building. You probably don't want this -
-    /// prefer changing the base recipe to something more appropriate.
-    #[clap(long)]
-    pub override_arch: Option<BuildIgvmArch>,
-
-    /// Override the json manifest passed to igvmfilegen, none means the
-    /// debug/release manifest from the base recipe will be used.
-    #[clap(long)]
-    pub override_manifest: Option<PathBuf>,
-
-    /// Ensure perf tools are included in the release initrd.
-    ///
-    /// Ensures that openvmm_hcl is not stripped, so that perf tools work
-    /// correctly, and requires that the file be built in `--release` mode, so
-    /// that perf numbers are more representative of production binaries.
-    #[clap(long, requires = "release")]
-    pub with_perf_tools: bool,
-
-    /// Preserve debuginfo in the openvmm_hcl binary in the IGVM file.
-    ///
-    /// This increases the VTL2 memory requirements significantly, and will
-    /// likely require passing a `--override-manifest` to compensate.
-    #[clap(long)]
-    pub with_debuginfo: bool,
-
-    /// Path to custom openvmm_hcl binary, none means openhcl will be built.
-    #[clap(long)]
-    pub custom_openvmm_hcl: Option<PathBuf>,
-
-    /// Path to custom openhcl_boot, none means the boot loader will be built.
-    #[clap(long)]
-    pub custom_openhcl_boot: Option<PathBuf>,
-
-    /// Path to custom uefi MSVM.fd, none means the packaged uefi will be used.
-    #[clap(long)]
-    pub custom_uefi: Option<PathBuf>,
-
-    /// Path to custom kernel vmlinux / Image, none means the packaged kernel
-    /// will be used.
-    #[clap(long)]
-    pub custom_kernel: Option<PathBuf>,
-
-    /// Path to kernel modules, none means the packaged kernel modules will be
-    /// used.
-    #[clap(long)]
-    pub custom_kernel_modules: Option<PathBuf>,
-
-    /// Path to custom vtl0 linux kernel to use if the manifest includes a
-    /// direct-boot linux VM.
-    ///
-    /// If not specified, the packaged openvmm test linux direct kernel is used.
-    #[clap(long)]
-    pub custom_vtl0_kernel: Option<PathBuf>,
-
-    /// Additional layers to be included in the initrd
-    #[clap(long)]
-    pub custom_layer: Vec<PathBuf>,
-
-    /// Additional directories to be included in the initrd
-    #[clap(long)]
-    pub custom_directory: Vec<PathBuf>,
-
-    /// Additional rootfs.config files to use to generate the initrd
-    #[clap(long)]
-    pub custom_extra_rootfs: Vec<PathBuf>,
-
-    /// (experimental) Include the AP kernel in the IGVM file
-    #[clap(long)]
-    pub with_sidecar: bool,
-
-    /// (experimental) Path to custom sidecar kernel binary, none means sidecar
-    /// will be built.
-    #[clap(long, requires = "with_sidecar")]
-    pub custom_sidecar: Option<PathBuf>,
-}
-
-#[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
-pub enum KernelPackageKindCli {
-    /// Kernel from the hcl-main branch
-    Main,
-    /// CVM kernel from the hcl-main branch
-    Cvm,
-    /// Kernel from the hcl-dev branch
-    Dev,
-    /// CVM kernel from the hcl-dev brnach
-    CvmDev,
-}
-
-#[derive(clap::ValueEnum, Copy, Clone, PartialEq, Eq, Debug)]
-pub enum BuildIgvmArch {
-    X86_64,
-    Aarch64,
-}
-
-pub fn bail_if_running_in_ci() -> anyhow::Result<()> {
-    const OVERRIDE_ENV: &str = "I_HAVE_A_GOOD_REASON_TO_RUN_BUILD_IGVM_IN_CI";
-
-    if std::env::var(OVERRIDE_ENV).is_ok() {
-        return Ok(());
-    }
-
-    for ci_env in ["TF_BUILD", "GITHUB_ACTIONS"] {
-        if std::env::var(ci_env).is_ok() {
-            log::warn!("Detected that {ci_env} is set");
-            log::warn!("");
-            log::warn!("Do not use `build-igvm` in CI scripts!");
-            log::warn!("This is a local-only, inner-dev-loop tool to build IGVM files, with an UNSTABLE CLI.");
-            log::warn!("");
-            log::warn!("Automated pipelines should use the underlying `flowey` nodes that power build-igvm directly, _without_ relying on its CLI!");
-            log::warn!("");
-            log::warn!("If you _really_ know what you're doing, you can set {OVERRIDE_ENV} to disable this error.");
-            anyhow::bail!("attempted to run `build-igvm` in CI")
-        }
-    }
-
-    Ok(())
-}
-
-impl IntoPipeline for BuildIgvmCli {
+impl IntoPipeline for RunIgvmCli {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline> {
         if !matches!(backend_hint, PipelineBackendHint::Local) {
-            anyhow::bail!("build-igvm is for local use only")
+            anyhow::bail!("run-igvm is for local use only")
         }
 
         bail_if_running_in_ci()?;
@@ -222,6 +76,7 @@ impl IntoPipeline for BuildIgvmCli {
         );
 
         let Self {
+            trailing_args,
             recipe,
             release,
             verbose,
@@ -262,11 +117,12 @@ impl IntoPipeline for BuildIgvmCli {
 
         let (pub_out_dir, _) = pipeline.new_artifact("build-igvm");
 
+        // Build and run
         pipeline
             .new_job(
                 FlowPlatform::host(backend_hint),
                 FlowArch::host(backend_hint),
-                "build-igvm",
+                "run-igvm",
             )
             .dep_on(|_| flowey_lib_hvlite::_jobs::cfg_versions::Request {})
             .dep_on(
@@ -286,11 +142,9 @@ impl IntoPipeline for BuildIgvmCli {
                 locked,
                 deny_warnings: false,
             })
-            .dep_on(|ctx| flowey_lib_hvlite::_jobs::local_build_igvm::Params {
-                artifact_dir: ctx.publish_artifact(pub_out_dir),
-                done: ctx.new_done_handle(),
-                bin_path: None,
-
+            .dep_on(|ctx| flowey_lib_hvlite::_jobs::local_run_igvm::Params {
+                release,
+                openvmm_args: trailing_args,
                 base_recipe: match recipe {
                     OpenhclRecipeCli::X64 => OpenhclIgvmRecipe::X64,
                     OpenhclRecipeCli::X64Devkern => OpenhclIgvmRecipe::X64Devkern,
@@ -303,8 +157,8 @@ impl IntoPipeline for BuildIgvmCli {
                     OpenhclRecipeCli::Aarch64 => OpenhclIgvmRecipe::Aarch64,
                     OpenhclRecipeCli::Aarch64Devkern => OpenhclIgvmRecipe::Aarch64Devkern,
                 },
-                release,
-
+                artifact_dir: ctx.publish_artifact(pub_out_dir),
+                done: ctx.new_done_handle(),
                 customizations: flowey_lib_hvlite::_jobs::local_build_igvm::Customizations {
                     build_label,
                     override_arch: override_arch.map(|a| match a {
