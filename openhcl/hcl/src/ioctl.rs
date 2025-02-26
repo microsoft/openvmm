@@ -2207,7 +2207,6 @@ impl Hcl {
         // within VTL2. Future vtl return actions may be different, requiring granular handling.
         let supports_vtl_ret_action = supports_vtl_ret_action && !isolation.is_hardware_isolated();
         let supports_register_page = supports_register_page && !isolation.is_hardware_isolated();
-        let dr6_shared = dr6_shared && !isolation.is_hardware_isolated();
         let snp_register_bitmap = [0u8; 64];
 
         Ok(Hcl {
@@ -2815,11 +2814,14 @@ impl Hcl {
             IsolationType::Snp => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
                 .with_intercept_page_available(caps.intercept_page_available()),
-            // TODO TDX: Figure out what these values should be.
             IsolationType::Tdx => hvdef::HvRegisterVsmCapabilities::new()
                 .with_deny_lower_vtl_startup(caps.deny_lower_vtl_startup())
-                .with_intercept_page_available(caps.intercept_page_available()),
+                .with_intercept_page_available(caps.intercept_page_available())
+                .with_dr6_shared(true),
         };
+
+        assert_eq!(caps.dr6_shared(), self.dr6_shared());
+
         Ok(caps)
     }
 
