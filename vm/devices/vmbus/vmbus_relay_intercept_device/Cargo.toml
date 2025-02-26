@@ -12,13 +12,13 @@ vmbus_client.workspace = true
 vmbus_core.workspace = true
 vmbus_relay.workspace = true
 vmbus_ring.workspace = true
-vmbus_server.workspace = true
 vmcore.workspace = true
 
 guid.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
+pal_event.workspace = true
 safeatomic.workspace = true
 task_control.workspace = true
 user_driver.workspace = true
@@ -26,7 +26,6 @@ user_driver.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
-tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 [lints]
