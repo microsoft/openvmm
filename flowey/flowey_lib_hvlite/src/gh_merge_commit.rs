@@ -18,9 +18,7 @@ new_simple_flow_node!(struct Node);
 impl SimpleFlowNode for Node {
     type Request = Request;
 
-    fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::install_git::Node>();
-    }
+    fn imports(_ctx: &mut ImportCtx<'_>) {}
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
