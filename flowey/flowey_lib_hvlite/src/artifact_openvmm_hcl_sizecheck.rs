@@ -51,12 +51,16 @@ pub mod publish {
 
 /// Resolve the contents of an existing artifact.
 pub mod resolve {
-    use crate::build_openvmm_hcl::OpenvmmHclOutput;
     use flowey::node::prelude::*;
+
+    #[derive(Serialize, Deserialize)]
+    pub struct OpenvmmSizeCheckArtifact {
+        pub bin: PathBuf,
+    }
 
     flowey_request! {
         pub struct Request {
-            pub openvmm_openhcl_x86: WriteVar<OpenvmmHclOutput>,
+            pub openvmm_openhcl_x86: WriteVar<OpenvmmSizeCheckArtifact>,
             pub artifact_dir: ReadVar<PathBuf>,
         }
     }
@@ -82,9 +86,8 @@ pub mod resolve {
                 move |rt| {
                     let artifact_dir = rt.read(artifact_dir);
 
-                    let openvmm_openhcl_x86_output = OpenvmmHclOutput {
+                    let openvmm_openhcl_x86_output = OpenvmmSizeCheckArtifact {
                         bin: artifact_dir.join("openhcl"),
-                        dbg: None,
                     };
 
                     rt.write(openvmm_openhcl_x86, &openvmm_openhcl_x86_output);

@@ -2111,7 +2111,7 @@ jobs:
     - name: download artifacts from github actions run
       run: flowey e 13 flowey_lib_common::download_gh_artifact 0
       shell: bash
-    - name: resolve guest_test_uefi artifact
+    - name: resolve baseline openhcl artifact
       run: flowey e 13 flowey_lib_hvlite::artifact_openvmm_hcl_sizecheck::resolve 0
       shell: bash
     - name: binary size comparison

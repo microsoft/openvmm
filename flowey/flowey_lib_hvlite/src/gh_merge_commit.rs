@@ -4,7 +4,6 @@
 //! Gets the merge commit of a PR to base branch
 
 use flowey::node::prelude::*;
-use flowey_lib_common::install_git;
 
 flowey_request! {
     pub struct Request {
@@ -19,9 +18,7 @@ new_simple_flow_node!(struct Node);
 impl SimpleFlowNode for Node {
     type Request = Request;
 
-    fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<install_git::Node>();
-    }
+    fn imports(_ctx: &mut ImportCtx<'_>) {}
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
