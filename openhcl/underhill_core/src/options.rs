@@ -112,8 +112,7 @@ pub struct Options {
 
     /// (OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1)
     /// Enable the shared visibility pool. This is enabled by default on
-    /// hardware isolated platforms, but can be enabled for testing. Hardware
-    /// devices will use the shared pool for DMA if enabled.
+    /// hardware isolated platforms, but can be enabled for testing.
     pub enable_shared_visibility_pool: bool,
 
     /// (OPENHCL_CVM_GUEST_VSM=1)

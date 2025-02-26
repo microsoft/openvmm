@@ -151,7 +151,6 @@ build_info = { path = "openhcl/build_info" }
 diag_client = { path = "openhcl/diag_client" }
 diag_proto = { path = "openhcl/diag_proto" }
 diag_server = { path = "openhcl/diag_server" }
-get_lower_vtl = { path = "openhcl/get_lower_vtl" }
 hcl = { path = "openhcl/hcl" }
 hcl_mapper = { path = "openhcl/hcl_mapper" }
 host_fdt_parser = { path = "openhcl/host_fdt_parser" }
@@ -159,6 +158,7 @@ kmsg_defs = { path = "openhcl/kmsg_defs" }
 lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
+openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
 underhill_attestation = { path = "openhcl/underhill_attestation" }

@@ -44,7 +44,6 @@ use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
-use std::num::NonZeroU64;
 use virt::io::CpuIo;
 use virt::state::StateElement;
 use virt::vp;
@@ -81,13 +80,6 @@ use zerocopy::IntoBytes;
 /// A backing for SNP partitions.
 #[derive(InspectMut)]
 pub struct SnpBacked {
-    // TODO CVM GUEST VSM Do we need two sets of any other fields in here?
-    /// PFNs used for overlays.
-    #[inspect(iter_by_index)]
-    direct_overlays_pfns: [u64; UhDirectOverlay::Count as usize],
-    #[inspect(skip)]
-    #[allow(dead_code)] // Allocation handle for direct overlays held until drop
-    direct_overlay_pfns_handle: page_pool_alloc::PagePoolHandle,
     #[inspect(hex)]
     hv_sint_notifications: u16,
     general_stats: VtlArray<GeneralStats, 2>,
@@ -124,11 +116,6 @@ pub struct ExitStats {
     pub excp_db: Counter,
 }
 
-/// The number of shared pages required per cpu.
-pub const fn shared_pages_required_per_cpu() -> u64 {
-    UhDirectOverlay::Count as u64
-}
-
 enum UhDirectOverlay {
     Sipp,
     Sifp,
@@ -149,6 +136,10 @@ impl SnpBacked {
 }
 
 impl HardwareIsolatedBacking for SnpBacked {
+    fn shared_pages_required_per_cpu() -> u64 {
+        UhDirectOverlay::Count as u64
+    }
+
     fn cvm_state_mut(&mut self) -> &mut UhCvmVpState {
         &mut self.cvm
     }
@@ -274,27 +265,16 @@ impl BackingPrivate for SnpBacked {
     }
 
     fn new(params: BackingParams<'_, '_, Self>, shared: &SnpBackedShared) -> Result<Self, Error> {
-        let pfns_handle = params
-            .partition
-            .shared_vis_pages_pool
-            .as_ref()
-            .ok_or(Error::MissingSharedMemory)?
-            .alloc(
-                NonZeroU64::new(shared_pages_required_per_cpu()).expect("is nonzero"),
-                format!("direct overlay vp {}", params.vp_info.base.vp_index.index()),
-            )
-            .map_err(Error::AllocateSharedVisOverlay)?;
-        let pfns = pfns_handle.base_pfn()..pfns_handle.base_pfn() + pfns_handle.size_pages();
-
-        let overlays: Vec<_> = pfns.collect();
-
         Ok(Self {
-            direct_overlays_pfns: overlays.try_into().unwrap(),
-            direct_overlay_pfns_handle: pfns_handle,
             hv_sint_notifications: 0,
             general_stats: VtlArray::from_fn(|_| Default::default()),
             exit_stats: VtlArray::from_fn(|_| Default::default()),
-            cvm: UhCvmVpState::new(&shared.cvm, params.partition, params.vp_info),
+            cvm: UhCvmVpState::new(
+                &shared.cvm,
+                params.partition,
+                params.vp_info,
+                UhDirectOverlay::Count as usize,
+            )?,
         })
     }
 
@@ -341,7 +321,7 @@ impl BackingPrivate for SnpBacked {
 
         // So far, only VTL 0 is using these (for VMBus). Initialize the direct
         // overlays for VTL 0.
-        let pfns = &this.backing.direct_overlays_pfns;
+        let pfns = &this.backing.cvm.direct_overlay_handle.pfns();
         let values: &[(HvX64RegisterName, u64); 3] = &[
             (
                 HvX64RegisterName::Sipp,
@@ -774,6 +754,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpB
                 .with_vector(2)
                 .with_valid(true),
         );
+        self.backing.cvm.lapics[vtl].nmi_pending = false;
         self.backing.cvm.lapics[vtl].activity = MpState::Running;
         Ok(())
     }
@@ -827,7 +808,7 @@ impl UhProcessor<'_, SnpBacked> {
                 let ghcb_pfn = ghcb_msr.pfn();
 
                 let ghcb_overlay =
-                    self.backing.direct_overlays_pfns[UhDirectOverlay::Ghcb as usize];
+                    self.backing.cvm.direct_overlay_handle.pfns()[UhDirectOverlay::Ghcb as usize];
 
                 // TODO SNP: Should allow arbitrary page to be used for GHCB
                 if ghcb_pfn != ghcb_overlay {

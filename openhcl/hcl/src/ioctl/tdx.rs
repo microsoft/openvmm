@@ -424,7 +424,7 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
 
         // SAFETY: The mapping is held for the appropriate lifetime, and the
         // APIC page is never accessed as any other type, or by any other location.
-        let vtl1_apic_page = unsafe { &*vtl1_apic_page.mapping().as_ptr().cast() };
+        let vtl1_apic_page = unsafe { &*vtl1_apic_page.base().cast() };
 
         Ok(Self {
             apic_pages: [vtl0_apic_page.as_ref(), vtl1_apic_page].into(),

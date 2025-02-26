@@ -4,7 +4,6 @@
 //! Provides access to NVMe namespaces that are backed by the user-mode NVMe
 //! VFIO driver. Keeps track of all the NVMe drivers.
 
-use crate::dma_manager::DmaClientSpawner;
 use crate::nvme_manager::save_restore::NvmeManagerSavedState;
 use crate::nvme_manager::save_restore::NvmeSavedDiskConfig;
 use crate::servicing::NvmeSavedState;
@@ -19,6 +18,10 @@ use inspect::Inspect;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh::MeshPayload;
+use openhcl_dma_manager::AllocationVisibility;
+use openhcl_dma_manager::DmaClientParameters;
+use openhcl_dma_manager::DmaClientSpawner;
+use openhcl_dma_manager::LowerVtlPermissionPolicy;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::collections::hash_map;
@@ -89,6 +92,7 @@ impl NvmeManager {
         driver_source: &VmTaskDriverSource,
         vp_count: u32,
         save_restore_supported: bool,
+        is_isolated: bool,
         saved_state: Option<NvmeSavedState>,
         dma_client_spawner: DmaClientSpawner,
     ) -> Self {
@@ -99,6 +103,7 @@ impl NvmeManager {
             devices: HashMap::new(),
             vp_count,
             save_restore_supported,
+            is_isolated,
             dma_client_spawner,
         };
         let task = driver.spawn("nvme-manager", async move {
@@ -209,6 +214,8 @@ struct NvmeManagerWorker {
     vp_count: u32,
     /// Running environment (memory layout) allows save/restore.
     save_restore_supported: bool,
+    /// If this VM is isolated or not. This influences DMA client allocations.
+    is_isolated: bool,
     #[inspect(skip)]
     dma_client_spawner: DmaClientSpawner,
 }
@@ -289,7 +296,16 @@ impl NvmeManagerWorker {
             hash_map::Entry::Vacant(entry) => {
                 let dma_client = self
                     .dma_client_spawner
-                    .create_client(format!("nvme_{}", pci_id))
+                    .new_client(DmaClientParameters {
+                        device_name: format!("nvme_{}", pci_id),
+                        lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                        allocation_visibility: if self.is_isolated {
+                            AllocationVisibility::Shared
+                        } else {
+                            AllocationVisibility::Private
+                        },
+                        persistent_allocations: self.save_restore_supported,
+                    })
                     .map_err(InnerError::DmaClient)?;
 
                 let device = VfioDevice::new(&self.driver_source, entry.key(), dma_client)
@@ -349,9 +365,17 @@ impl NvmeManagerWorker {
         for disk in &saved_state.nvme_disks {
             let pci_id = disk.pci_id.clone();
 
-            let dma_client = self
-                .dma_client_spawner
-                .create_client(format!("nvme_{}", pci_id))?;
+            let dma_client = self.dma_client_spawner.new_client(DmaClientParameters {
+                device_name: format!("nvme_{}", pci_id),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                allocation_visibility: if self.is_isolated {
+                    AllocationVisibility::Shared
+                } else {
+                    AllocationVisibility::Private
+                },
+                persistent_allocations: true,
+            })?;
+
             // This code can wait on each VFIO device until it is arrived.
             // A potential optimization would be to delay VFIO operation
             // until it is ready, but a redesign of VfioDevice is needed.

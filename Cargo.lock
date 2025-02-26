@@ -2362,18 +2362,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "get_lower_vtl"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "hcl",
- "hvdef",
- "inspect",
- "memory_range",
- "virt",
-]
-
-[[package]]
 name = "get_protocol"
 version = "0.0.0"
 dependencies = [
@@ -2692,6 +2680,7 @@ dependencies = [
 name = "hcl"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "bitfield-struct",
  "build_rs_guest_arch",
  "fs-err",
@@ -2703,7 +2692,6 @@ dependencies = [
  "memory_range",
  "nix 0.26.4",
  "open_enum",
- "page_pool_alloc",
  "pal",
  "parking_lot",
  "safe_intrinsics",
@@ -2713,6 +2701,7 @@ dependencies = [
  "thiserror 2.0.0",
  "tracelimit",
  "tracing",
+ "user_driver",
  "x86defs",
  "zerocopy 0.8.14",
 ]
@@ -4693,6 +4682,24 @@ dependencies = [
  "underhill_confidentiality",
  "x86defs",
  "zerocopy 0.8.14",
+]
+
+[[package]]
+name = "openhcl_dma_manager"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "hcl",
+ "hcl_mapper",
+ "hvdef",
+ "inspect",
+ "lower_vtl_permissions_guard",
+ "memory_range",
+ "mesh",
+ "page_pool_alloc",
+ "user_driver",
+ "virt",
+ "vmcore",
 ]
 
 [[package]]
@@ -7178,14 +7185,12 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "get_helpers",
- "get_lower_vtl",
  "get_protocol",
  "getrandom",
  "guest_emulation_transport",
  "guestmem",
  "guid",
  "hcl_compat_uefi_nvram_storage",
- "hcl_mapper",
  "hvdef",
  "hyperv_ic_guest",
  "hyperv_ic_resources",
@@ -7203,7 +7208,6 @@ dependencies = [
  "loader",
  "loader_defs",
  "local_clock",
- "lower_vtl_permissions_guard",
  "mana_driver",
  "mcr_resources",
  "memory_range",
@@ -7219,7 +7223,7 @@ dependencies = [
  "nvme_driver",
  "nvme_resources",
  "openhcl_attestation_protocol",
- "page_pool_alloc",
+ "openhcl_dma_manager",
  "pal",
  "pal_async",
  "pal_uring",
@@ -7725,7 +7729,6 @@ dependencies = [
  "libc",
  "memory_range",
  "mesh",
- "page_pool_alloc",
  "pal",
  "pal_async",
  "pal_uring",
@@ -7737,6 +7740,7 @@ dependencies = [
  "thiserror 2.0.0",
  "tracelimit",
  "tracing",
+ "user_driver",
  "virt",
  "virt_support_aarch64emu",
  "virt_support_apic",

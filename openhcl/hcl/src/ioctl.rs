@@ -58,8 +58,6 @@ use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PARTITION_ID_SELF;
 use hvdef::HV_VP_INDEX_SELF;
 use memory_range::MemoryRange;
-use page_pool_alloc::PagePoolAllocator;
-use page_pool_alloc::PagePoolHandle;
 use pal::unix::pthread::*;
 use parking_lot::Mutex;
 use private::BackingPrivate;
@@ -76,8 +74,11 @@ use std::os::unix::prelude::*;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::sync::Once;
 use thiserror::Error;
+use user_driver::memory::MemoryBlock;
+use user_driver::DmaClient;
 use x86defs::snp::SevVmsa;
 use x86defs::tdx::TdCallResultCode;
 use x86defs::vmx::ApicPage;
@@ -160,7 +161,7 @@ pub enum Error {
     #[error("private page pool allocator missing, required for requested isolation type")]
     MissingPrivateMemory,
     #[error("failed to allocate pages for vp")]
-    AllocVp(#[source] page_pool_alloc::Error),
+    AllocVp(#[source] anyhow::Error),
 }
 
 /// Error for IOCTL errors specifically.
@@ -1546,7 +1547,7 @@ enum BackingState {
     },
     Tdx {
         vtl0_apic_page: MappedPage<ApicPage>,
-        vtl1_apic_page: PagePoolHandle,
+        vtl1_apic_page: MemoryBlock,
     },
 }
 
@@ -1562,7 +1563,7 @@ impl HclVp {
         vp: u32,
         map_reg_page: bool,
         isolation_type: IsolationType,
-        private_pool: Option<&PagePoolAllocator>,
+        private_dma_client: Option<&Arc<dyn DmaClient>>,
     ) -> Result<Self, Error> {
         let fd = &hcl.mshv_vtl.file;
         let run: MappedPage<hcl_run> =
@@ -1596,9 +1597,9 @@ impl HclVp {
             IsolationType::Tdx => BackingState::Tdx {
                 vtl0_apic_page: MappedPage::new(fd, MSHV_APIC_PAGE_OFFSET | vp as i64)
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,
-                vtl1_apic_page: private_pool
+                vtl1_apic_page: private_dma_client
                     .ok_or(Error::MissingPrivateMemory)?
-                    .alloc(1.try_into().unwrap(), "tdx-vtl1-apic-page".to_owned())
+                    .allocate_dma_buffer(HV_PAGE_SIZE as usize)
                     .map_err(Error::AllocVp)?,
             },
         };
@@ -2226,7 +2227,7 @@ impl Hcl {
     pub fn add_vps(
         &mut self,
         vp_count: u32,
-        private_pool: Option<&PagePoolAllocator>,
+        private_pool: Option<&Arc<dyn DmaClient>>,
     ) -> Result<(), Error> {
         self.vps = (0..vp_count)
             .map(|vp| {

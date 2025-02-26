@@ -266,7 +266,9 @@ unsafe impl MappedDmaTarget for DmaBuffer {
     }
 }
 
+#[derive(Inspect)]
 pub struct EmulatedDmaAllocator {
+    #[inspect(skip)]
     shared_mem: DeviceSharedMemory,
 }
 

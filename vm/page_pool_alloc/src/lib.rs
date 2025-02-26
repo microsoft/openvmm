@@ -507,10 +507,6 @@ impl PagePool {
     }
 
     fn new_internal(memory: &[MemoryRange], source: Box<dyn PoolSource>) -> anyhow::Result<Self> {
-        // TODO: Allow callers to specify the vnode, but today we discard this
-        // information. In the future we may keep ranges with vnode in order to
-        // allow per-node allocations.
-
         let mut mapping_offset = 0;
         let pages = memory
             .iter()
@@ -648,8 +644,11 @@ impl PagePoolAllocatorSpawner {
 /// are left as-is in the pool. A new allocator can then be created with the
 /// same name. Exisitng allocations with that same device_name will be
 /// linked to the new allocator.
+#[derive(Inspect)]
 pub struct PagePoolAllocator {
+    #[inspect(skip)]
     inner: Arc<PagePoolInner>,
+    #[inspect(skip)]
     device_id: usize,
 }
 

@@ -46,7 +46,6 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
 use parking_lot::RwLock;
-use std::num::NonZeroU64;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use thiserror::Error;
@@ -398,20 +397,13 @@ pub struct TdxBacked {
     #[inspect(mut)]
     vtls: VtlArray<TdxVtl, 2>,
 
-    /// PFNs used for overlays.
-    #[inspect(iter_by_index)]
-    direct_overlays_pfns: [u64; UhDirectOverlay::Count as usize],
-    #[inspect(skip)]
-    #[allow(dead_code)] // Allocation handle for direct overlays held until drop
-    direct_overlay_pfns_handle: page_pool_alloc::PagePoolHandle,
-
     untrusted_synic: Option<ProcessorSynic>,
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
     eoi_exit_bitmap: [u64; 4],
 
     /// A mapped page used for issuing INVGLA hypercalls.
     #[inspect(skip)]
-    flush_page: page_pool_alloc::PagePoolHandle,
+    flush_page: user_driver::memory::MemoryBlock,
 
     cvm: UhCvmVpState,
 }
@@ -483,11 +475,6 @@ pub struct ExitStats {
     pub exception: Counter,
 }
 
-/// The number of shared pages required per cpu.
-pub const fn shared_pages_required_per_cpu() -> u64 {
-    UhDirectOverlay::Count as u64
-}
-
 enum UhDirectOverlay {
     Sipp,
     Sifp,
@@ -495,6 +482,10 @@ enum UhDirectOverlay {
 }
 
 impl HardwareIsolatedBacking for TdxBacked {
+    fn shared_pages_required_per_cpu() -> u64 {
+        UhDirectOverlay::Count as u64
+    }
+
     fn cvm_state_mut(&mut self) -> &mut UhCvmVpState {
         &mut self.cvm
     }
@@ -678,26 +669,12 @@ impl BackingPrivate for TdxBacked {
             }
         }
 
-        // Allocate PFNs for direct overlays
-        let pfns_handle = params
-            .partition
-            .shared_vis_pages_pool
-            .as_ref()
-            .ok_or(crate::Error::MissingSharedMemory)?
-            .alloc(
-                NonZeroU64::new(shared_pages_required_per_cpu()).expect("is nonzero"),
-                format!("direct overlay vp {}", params.vp_info.base.vp_index.index()),
-            )
-            .map_err(super::Error::AllocateSharedVisOverlay)?;
-        let pfns = pfns_handle.base_pfn()..pfns_handle.base_pfn() + pfns_handle.size_pages();
-        let overlays: Vec<_> = pfns.collect();
-
         let flush_page = params
             .partition
-            .private_vis_pages_pool
+            .private_dma_client
             .as_ref()
             .ok_or(crate::Error::MissingPrivateMemory)?
-            .alloc(1.try_into().unwrap(), "tdx_tlb_flush".into())
+            .allocate_dma_buffer(HV_PAGE_SIZE as usize)
             .map_err(crate::Error::AllocateTlbFlushPage)?;
 
         let untrusted_synic = params
@@ -757,12 +734,15 @@ impl BackingPrivate for TdxBacked {
                     exit_stats: Default::default(),
                 }
             }),
-            direct_overlays_pfns: overlays.try_into().unwrap(),
-            direct_overlay_pfns_handle: pfns_handle,
             untrusted_synic,
             eoi_exit_bitmap: [0; 4],
             flush_page,
-            cvm: UhCvmVpState::new(&shared.cvm, params.partition, params.vp_info),
+            cvm: UhCvmVpState::new(
+                &shared.cvm,
+                params.partition,
+                params.vp_info,
+                UhDirectOverlay::Count as usize,
+            )?,
         })
     }
 
@@ -784,7 +764,7 @@ impl BackingPrivate for TdxBacked {
         // when VTL 1 is enabled.
 
         // Configure the synic overlays.
-        let pfns = &this.backing.direct_overlays_pfns;
+        let pfns = &this.backing.cvm.direct_overlay_handle.pfns();
         let reg = |gpn| {
             u64::from(
                 HvSynicSimpSiefp::new()

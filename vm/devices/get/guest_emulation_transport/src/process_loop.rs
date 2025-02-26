@@ -482,7 +482,6 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     igvm_attest_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
     #[inspect(skip)]
     igvm_attest_read_send: mesh::Sender<Vec<u8>>,
-    #[inspect(skip)]
     gpa_allocator: Option<Arc<dyn DmaClient>>,
     stats: Stats,
 

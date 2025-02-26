@@ -260,7 +260,8 @@ impl<T: SimpleVmbusClientDeviceAsync> InspectTaskMut<SimpleVmbusClientDeviceTask
     ) {
         req.respond()
             .merge(state)
-            .field_mut("device", &mut self.device);
+            .field_mut("device", &mut self.device)
+            .field("dma_alloc", &self.dma_alloc);
     }
 }
 

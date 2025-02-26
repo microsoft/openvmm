@@ -13,9 +13,8 @@ mod devmsr;
 cfg_if::cfg_if!(
     if #[cfg(target_arch = "x86_64")] { // xtask-fmt allow-target-arch sys-crate
         mod cvm_cpuid;
-        pub use processor::snp::shared_pages_required_per_cpu as snp_shared_pages_required_per_cpu;
+        pub use processor::HardwareIsolatedBacking;
         pub use processor::snp::SnpBacked;
-        pub use processor::tdx::shared_pages_required_per_cpu as tdx_shared_pages_required_per_cpu;
         pub use processor::tdx::TdxBacked;
         pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
         use bitvec::prelude::BitArray;
@@ -97,6 +96,7 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::task::Waker;
 use thiserror::Error;
+use user_driver::DmaClient;
 use virt::irqcon::IoApicRouting;
 use virt::irqcon::MsiRequest;
 use virt::x86::apic_software_device::ApicSoftwareDevices;
@@ -146,7 +146,7 @@ pub enum Error {
     #[error("failed to map overlay page")]
     MapOverlay(#[source] std::io::Error),
     #[error("failed to allocate shared visibility pages for overlay")]
-    AllocateSharedVisOverlay(#[source] page_pool_alloc::Error),
+    AllocateSharedVisOverlay(#[source] anyhow::Error),
     #[error("failed to open msr device")]
     OpenMsr(#[source] std::io::Error),
     #[error("cpuid did not contain valid TSC frequency information")]
@@ -168,7 +168,7 @@ pub enum Error {
     #[error("missing private memory for an isolated partition")]
     MissingPrivateMemory,
     #[error("failed to allocate TLB flush page")]
-    AllocateTlbFlushPage(#[source] page_pool_alloc::Error),
+    AllocateTlbFlushPage(#[source] anyhow::Error),
 }
 
 /// Error revoking guest VSM.
@@ -227,12 +227,8 @@ struct UhPartitionInner {
     guest_vsm: RwLock<GuestVsmState>,
     #[inspect(skip)]
     isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    #[inspect(skip)]
-    shared_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    #[inspect(skip)]
-    private_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
+    shared_dma_client: Option<Arc<dyn DmaClient>>,
+    private_dma_client: Option<Arc<dyn DmaClient>>,
     #[inspect(with = "inspect::AtomicMut")]
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
@@ -338,6 +334,9 @@ impl From<EnterMode> for hcl::protocol::EnterMode {
 #[derive(Inspect)]
 /// VP state for CVMs.
 pub struct UhCvmVpState {
+    // Allocation handle for direct overlays
+    #[inspect(debug)]
+    direct_overlay_handle: user_driver::memory::MemoryBlock,
     /// The VTLs on this VP waiting for TLB locks on other VPs.
     vtls_tlb_waiting: VtlArray<bool, 2>,
     /// Used in VTL 2 exit code to determine which VTL to exit to.
@@ -355,7 +354,15 @@ impl UhCvmVpState {
         cvm_partition: &UhCvmPartitionState,
         inner: &UhPartitionInner,
         vp_info: &TargetVpInfo,
-    ) -> Self {
+        overlay_pages_required: usize,
+    ) -> Result<Self, Error> {
+        let direct_overlay_handle = inner
+            .shared_dma_client
+            .as_ref()
+            .ok_or(Error::MissingSharedMemory)?
+            .allocate_dma_buffer(overlay_pages_required * HV_PAGE_SIZE as usize)
+            .map_err(Error::AllocateSharedVisOverlay)?;
+
         let apic_base = virt::vp::Apic::at_reset(&inner.caps, vp_info).apic_base;
         let lapics = VtlArray::from_fn(|vtl| {
             let apic_set = &cvm_partition.lapic[vtl];
@@ -377,12 +384,13 @@ impl UhCvmVpState {
                 .add_vp(inner.gm[vtl].clone(), vp_info.base.vp_index, vtl)
         });
 
-        Self {
+        Ok(Self {
+            direct_overlay_handle,
             vtls_tlb_waiting: VtlArray::new(false),
             exit_vtl: GuestVtl::Vtl0,
             hv,
             lapics,
-        }
+        })
     }
 }
 
@@ -1281,10 +1289,10 @@ pub struct UhLateParams<'a> {
     pub vmtime: &'a VmTimeSource,
     /// An object to call to change host visibility on guest memory.
     pub isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
-    /// Allocator for shared visibility pages.
-    pub shared_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
+    /// Dma client for shared visibility pages.
+    pub shared_dma_client: Option<Arc<dyn DmaClient>>,
     /// Allocator for private visibility pages.
-    pub private_vis_pages_pool: Option<page_pool_alloc::PagePoolAllocator>,
+    pub private_dma_client: Option<Arc<dyn DmaClient>>,
 }
 
 /// Trait for CVM-related protections on guest memory.
@@ -1554,7 +1562,7 @@ impl<'a> UhProtoPartition<'a> {
         // Do per-VP HCL initialization.
         hcl.add_vps(
             params.topology.vp_count(),
-            late_params.private_vis_pages_pool.as_ref(),
+            late_params.private_dma_client.as_ref(),
         )
         .map_err(Error::Hcl)?;
 
@@ -1698,8 +1706,8 @@ impl<'a> UhProtoPartition<'a> {
             untrusted_synic,
             guest_vsm: RwLock::new(vsm_state),
             isolated_memory_protector: late_params.isolated_memory_protector.clone(),
-            shared_vis_pages_pool: late_params.shared_vis_pages_pool,
-            private_vis_pages_pool: late_params.private_vis_pages_pool,
+            shared_dma_client: late_params.shared_dma_client,
+            private_dma_client: late_params.private_dma_client,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
             backing_shared: BackingShared::new(
