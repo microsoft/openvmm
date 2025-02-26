@@ -362,7 +362,7 @@ impl UhCvmVpState {
             .ok_or(Error::MissingSharedMemory)?
             .allocate_dma_buffer(
                 overlay_pages_required * HV_PAGE_SIZE as usize,
-                format!("vp-{}-direct-overlay", vp_info.base.vp_index),
+                format!("vp-{}-direct-overlay", vp_info.base.vp_index.index()),
             )
             .map_err(Error::AllocateSharedVisOverlay)?;
 
