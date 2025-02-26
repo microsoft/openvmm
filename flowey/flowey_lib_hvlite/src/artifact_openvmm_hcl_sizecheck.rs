@@ -87,7 +87,7 @@ pub mod resolve {
                     let artifact_dir = rt.read(artifact_dir);
 
                     let openvmm_openhcl_x86_output = OpenvmmSizeCheckArtifact {
-                        bin: artifact_dir.join("openhcl"),
+                        bin: artifact_dir.join("x64-openhcl-baseline").join("openhcl"),
                     };
 
                     rt.write(openvmm_openhcl_x86, &openvmm_openhcl_x86_output);

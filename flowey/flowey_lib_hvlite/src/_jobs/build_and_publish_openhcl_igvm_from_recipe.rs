@@ -39,7 +39,6 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe_extras::publish::Node>();
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe::publish::Node>();
-        ctx.import::<crate::artifact_openvmm_hcl_sizecheck::publish::Node>();
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
     }
 
