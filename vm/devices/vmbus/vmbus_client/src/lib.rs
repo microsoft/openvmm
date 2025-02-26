@@ -149,8 +149,10 @@ impl VmbusClientBuilder {
             gpadls: HashMap::new(),
             teardown_gpadls: HashMap::new(),
             channel_requests: SelectAll::new(),
-            event_flag_state: Vec::new(),
-            event_client: self.event_client,
+            synic: SynicState {
+                event_flag_state: Vec::new(),
+                event_client: self.event_client,
+            },
         };
 
         let mut task = ClientTask {
@@ -805,7 +807,7 @@ impl ClientTask {
             } => redirected_event_flag,
         };
         if let Some(event_flag) = event_flag {
-            self.inner.event_client.unmap_event(event_flag);
+            self.inner.synic.free_event_flag(event_flag);
         }
 
         // Teardown all remaining gpadls for this channel. We don't care about GpadlTorndown
@@ -950,7 +952,7 @@ impl ClientTask {
 
         if !channel_opened {
             if let Some(event_flag) = redirected_event_flag {
-                self.inner.event_client.unmap_event(event_flag);
+                self.inner.synic.free_event_flag(event_flag);
             }
             rpc.fail(anyhow::anyhow!("open failed: {:#x}", result.status));
             return;
@@ -964,7 +966,7 @@ impl ClientTask {
 
         rpc.complete(Ok(OpenOutput {
             redirected_event_flag,
-            guest_to_host_signal: self.inner.guest_to_host_interrupt(connection_id),
+            guest_to_host_signal: self.inner.synic.guest_to_host_interrupt(connection_id),
         }));
     }
 
@@ -1190,7 +1192,7 @@ impl ClientTask {
             }
 
             flags.set_redirect_interrupt(true);
-            match self.inner.allocate_event_flag(event) {
+            match self.inner.synic.allocate_event_flag(event) {
                 Ok(flag) => flag,
                 Err(err) => {
                     rpc.fail(err.context("failed to allocate event flag"));
@@ -1212,7 +1214,7 @@ impl ClientTask {
             self.inner.messages.send(&open_channel);
         }
 
-        self.inner.channels.get_mut(&channel_id).unwrap().state = ChannelState::Opening {
+        channel.state = ChannelState::Opening {
             connection_id,
             redirected_event_flag: (request.incoming_event.is_some()).then_some(event_flag),
             redirected_event: request.incoming_event,
@@ -1243,17 +1245,20 @@ impl ClientTask {
             .redirected_event_flag
             .zip(request.incoming_event.as_ref())
         {
-            self.inner.restore_event_flag(flag, event)?;
+            self.inner.synic.restore_event_flag(flag, event)?;
         }
 
-        self.inner.channels.get_mut(&channel_id).unwrap().state = ChannelState::Opened {
+        channel.state = ChannelState::Opened {
             connection_id: request.connection_id,
             redirected_event_flag: request.redirected_event_flag,
             redirected_event: request.incoming_event,
         };
         Ok(OpenOutput {
             redirected_event_flag: request.redirected_event_flag,
-            guest_to_host_signal: self.inner.guest_to_host_interrupt(request.connection_id),
+            guest_to_host_signal: self
+                .inner
+                .synic
+                .guest_to_host_interrupt(request.connection_id),
         })
     }
 
@@ -1355,7 +1360,7 @@ impl ClientTask {
         } = *self.inner.channel_state(channel_id).unwrap()
         {
             if let Some(flag) = redirected_event_flag {
-                self.inner.free_event_flag(flag);
+                self.inner.synic.free_event_flag(flag);
             }
             tracing::info!(channel_id = channel_id.0, "closing channel on host");
             self.inner
@@ -1663,6 +1668,11 @@ struct ClientTaskInner {
     teardown_gpadls: HashMap<GpadlId, Option<ChannelId>>,
     #[inspect(skip)]
     channel_requests: SelectAll<TaggedStream<ChannelId, mesh::Receiver<ChannelRequest>>>,
+    synic: SynicState,
+}
+
+#[derive(Inspect)]
+struct SynicState {
     #[inspect(skip)]
     event_client: Arc<dyn SynicEventClient>,
     #[inspect(iter_by_index)]
@@ -1673,7 +1683,9 @@ impl ClientTaskInner {
     fn channel_state(&self, channel_id: ChannelId) -> Option<&ChannelState> {
         self.channels.get(&channel_id).map(|c| &c.state)
     }
+}
 
+impl SynicState {
     fn guest_to_host_interrupt(&self, connection_id: u32) -> Interrupt {
         Interrupt::from_fn({
             let event_client = self.event_client.clone();
