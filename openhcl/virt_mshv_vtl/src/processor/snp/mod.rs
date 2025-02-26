@@ -774,6 +774,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpB
                 .with_vector(2)
                 .with_valid(true),
         );
+        self.backing.cvm.lapics[vtl].nmi_pending = false;
         self.backing.cvm.lapics[vtl].activity = MpState::Running;
         Ok(())
     }
