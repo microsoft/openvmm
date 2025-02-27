@@ -1301,11 +1301,6 @@ impl UhProcessor<'_, TdxBacked> {
         let entered_from_vtl = next_vtl;
         self.runner
             .read_private_regs(&mut self.backing.vtls[entered_from_vtl].private_regs);
-        // TODO: Remove this line once the kernel does it for us
-        self.backing.vtls[entered_from_vtl]
-            .private_regs
-            .vp_entry_flags
-            .set_invd_translations(0);
 
         // Kernel offload may have set or cleared the halt/idle states
         if offload_enabled && kernel_known_state {
@@ -1340,7 +1335,11 @@ impl UhProcessor<'_, TdxBacked> {
             return Ok(());
         }
 
-        // The L2 was entered, so process the exit.
+        // The L2 was entered, so clear any TLB flush requests and process the exit.
+        self.backing.vtls[entered_from_vtl]
+            .private_regs
+            .vp_entry_flags
+            .set_invd_translations(0);
         let stat = match exit_info.code().tdx_exit() {
             TdCallResultCode::SUCCESS => {
                 &mut self.backing.vtls[entered_from_vtl].enter_stats.success
