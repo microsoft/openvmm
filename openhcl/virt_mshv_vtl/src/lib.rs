@@ -427,7 +427,7 @@ pub struct UhCvmVpInner {
     /// The current status of TLB locks
     tlb_lock_info: VtlArray<TlbLockInfo, 2>,
     /// Whether VTL 1 has been enabled on the vp
-    vtl1_enabled: Mutex<bool>,
+    vtl1_enabled: RwLock<bool>,
     /// Whether the VP has been started via the StartVp hypercall.
     started: AtomicBool,
 }
@@ -1891,7 +1891,7 @@ impl UhProtoPartition<'_> {
         let vps = (0..vp_count)
             .map(|vp_index| UhCvmVpInner {
                 tlb_lock_info: VtlArray::from_fn(|_| TlbLockInfo::new(vp_count)),
-                vtl1_enabled: Mutex::new(false),
+                vtl1_enabled: RwLock::new(false),
                 started: AtomicBool::new(vp_index == 0),
             })
             .collect();

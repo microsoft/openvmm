@@ -840,7 +840,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
                 self.intercepted_vtl
             );
             false
-        } else if !*self.vp.cvm_vp_inner().vtl1_enabled.lock() {
+        } else if !*self.vp.cvm_vp_inner().vtl1_enabled.read() {
             // VTL 1 must be enabled on the vp
             tracelimit::warn_ratelimited!("vtl call not allowed because vtl 1 is not enabled");
             false
@@ -940,7 +940,7 @@ impl<T, B: HardwareIsolatedBacking>
         let target_vp_inner = self.vp.cvm_partition().vp_inner(target_vp);
 
         // The target VTL must have been enabled.
-        if target_vtl == GuestVtl::Vtl1 && !*target_vp_inner.vtl1_enabled.lock() {
+        if target_vtl == GuestVtl::Vtl1 && !*target_vp_inner.vtl1_enabled.read() {
             return Err(HvError::InvalidVpState);
         }
 
@@ -1123,7 +1123,7 @@ impl<T, B: HardwareIsolatedBacking>
             .cvm_partition()
             .vp_inner(vp_index)
             .vtl1_enabled
-            .lock();
+            .write();
 
         if *vtl1_enabled {
             return Err(HvError::VtlAlreadyEnabled);
@@ -1514,7 +1514,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             if let InitialVpContextOperation::StartVp = start_enable_vtl_state.operation {
                 match vtl {
                     GuestVtl::Vtl0 => {
-                        if *self.cvm_vp_inner().vtl1_enabled.lock() {
+                        if *self.cvm_vp_inner().vtl1_enabled.read() {
                             // When starting a VP targeting VTL on a
                             // hardware confidential VM, if VTL 1 has been
                             // enabled, switch to it (the highest enabled
@@ -1545,7 +1545,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     }
 
     pub(crate) fn hcvm_vtl1_inspectable(&self) -> bool {
-        *self.cvm_vp_inner().vtl1_enabled.lock()
+        *self.cvm_vp_inner().vtl1_enabled.read()
     }
 
     fn get_vsm_vp_secure_config_vtl(
