@@ -2985,11 +2985,7 @@ async fn new_underhill_vm(
         buffer[hvdef::HV_PAGE_SIZE_USIZE * 3 - 1] = 42;
 
         // do "dma"
-        let dma_ranges = PagedRange::new(0, hvdef::HV_PAGE_SIZE_USIZE * 5, &bounced_pfns).unwrap();
-        dma_ranges
-            .writer(gm.vtl0())
-            .write(&buffer)
-            .context("fake dma")?;
+        transaction.bounced_pages.as_ref().unwrap().write(&buffer);
 
         client
             .unmap_dma_ranges(transaction)
