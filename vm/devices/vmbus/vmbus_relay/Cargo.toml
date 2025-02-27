@@ -17,14 +17,12 @@ vmcore.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 mesh_protobuf.workspace = true
-pal_event.workspace = true
 pal_async.workspace = true
+pal_event.workspace = true
 tracelimit.workspace = true
 
 anyhow.workspace = true
 futures.workspace = true
-once_cell.workspace = true
-parking_lot.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
 

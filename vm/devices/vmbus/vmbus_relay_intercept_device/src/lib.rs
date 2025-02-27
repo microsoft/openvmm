@@ -13,7 +13,6 @@
 pub mod ring_buffer;
 
 use crate::ring_buffer::MemoryBlockRingBuffer;
-use anyhow::anyhow;
 use anyhow::Context;
 use anyhow::Result;
 use futures::StreamExt;
@@ -42,18 +41,14 @@ use vmbus_channel::SignalVmbusChannel;
 use vmbus_client::ChannelRequest;
 use vmbus_client::ChannelResponse;
 use vmbus_client::OfferInfo;
+use vmbus_client::OpenOutput;
 use vmbus_client::OpenRequest;
-use vmbus_core::protocol::ConnectionId;
 use vmbus_core::protocol::GpadlId;
-use vmbus_core::protocol::OpenChannelFlags;
 use vmbus_core::protocol::UserDefinedData;
 use vmbus_relay::InterceptChannelRequest;
-use vmbus_relay::RegisteredEvent;
 use vmbus_ring::IncomingRing;
 use vmbus_ring::OutgoingRing;
 use vmbus_ring::PAGE_SIZE;
-use vmbus_server::REDIRECT_SINT;
-use vmbus_server::REDIRECT_VTL;
 use vmcore::interrupt::Interrupt;
 use vmcore::notify::Notify;
 use vmcore::notify::PolledNotify;
@@ -150,7 +145,6 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceWrapper<T> {
     pub fn new(
         driver: impl SpawnDriver + Clone,
         dma_alloc: Arc<dyn DmaClient>,
-        synic: Arc<dyn vmbus_client::SynicEventClient>,
         device: T,
     ) -> Result<Self> {
         let spawner = Arc::new(driver.clone());
@@ -158,7 +152,6 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceWrapper<T> {
             instance_id: device.instance_id(),
             vmbus_listener: TaskControl::new(SimpleVmbusClientDeviceTask::new(
                 device,
-                synic,
                 spawner.clone(),
                 dma_alloc,
             )),
@@ -179,7 +172,6 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceWrapper<T> {
             &self.spawner,
             format!("{}", self.instance_id),
             SimpleVmbusClientDeviceTaskState {
-                interrupt_event: None,
                 offer: None,
                 recv_relay,
                 vtl_pages: None,
@@ -220,7 +212,6 @@ impl<T: SimpleVmbusClientDeviceAsync> InspectTaskMut<T::Runner> for RelayDeviceT
 
 #[derive(InspectMut)]
 struct SimpleVmbusClientDeviceTaskState {
-    interrupt_event: Option<RegisteredEvent>,
     offer: Option<OfferInfo>,
     #[inspect(skip)]
     recv_relay: mesh::Receiver<InterceptChannelRequest>,
@@ -232,7 +223,6 @@ struct SimpleVmbusClientDeviceTaskState {
 
 struct SimpleVmbusClientDeviceTask<T: SimpleVmbusClientDeviceAsync> {
     device: TaskControl<RelayDeviceTask<T>, T::Runner>,
-    synic: Arc<dyn vmbus_client::SynicEventClient>,
     saved_state: Option<T::SavedState>,
     spawner: Arc<dyn SpawnDriver>,
     dma_alloc: Arc<dyn DmaClient>,
@@ -266,15 +256,9 @@ impl<T: SimpleVmbusClientDeviceAsync> InspectTaskMut<SimpleVmbusClientDeviceTask
 }
 
 impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
-    pub fn new(
-        device: T,
-        synic: Arc<dyn vmbus_client::SynicEventClient>,
-        spawner: Arc<dyn SpawnDriver>,
-        dma_alloc: Arc<dyn DmaClient>,
-    ) -> Self {
+    pub fn new(device: T, spawner: Arc<dyn SpawnDriver>, dma_alloc: Arc<dyn DmaClient>) -> Self {
         Self {
             device: TaskControl::new(RelayDeviceTask(device)),
-            synic,
             saved_state: None,
             spawner,
             dma_alloc,
@@ -288,12 +272,6 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             format!("{}-{}", offer.interface_id, offer.instance_id),
             runner,
         );
-    }
-
-    /// The connection ID has a preferred format that includes the VTL and SINT
-    /// information encoded in the ID. Update these to reflect the redirected state.
-    fn get_redirected_connection_id(connection_id: u32) -> ConnectionId {
-        ConnectionId::new(connection_id & 0xff00ffff, REDIRECT_VTL, REDIRECT_SINT)
     }
 
     /// Configures channel.
@@ -315,26 +293,19 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             return Ok(());
         }
 
-        let connection_id = Self::get_redirected_connection_id(offer.offer.connection_id);
-        let interrupt_event = RegisteredEvent::new(self.spawner.as_ref(), self.synic.clone())
-            .context("create event")?;
-
+        let interrupt_event = pal_event::Event::new();
         let (memory, ring_gpadl_id) = self
             .reserve_memory(state, &offer.request_send, 4)
             .await
             .context("reserve memory")?;
         state.offer = Some(offer);
         let offer = state.offer.as_ref().unwrap();
-        self.open_channel(
-            &offer.request_send,
-            ring_gpadl_id,
-            interrupt_event.get_flag_index(),
-            connection_id.0,
-        )
-        .await
-        .context("open channel")?;
+        let opened = self
+            .open_channel(&offer.request_send, ring_gpadl_id, &interrupt_event)
+            .await
+            .context("open channel")?;
         let channel = self
-            .create_vmbus_channel(&memory, connection_id, &interrupt_event)
+            .create_vmbus_channel(&memory, &interrupt_event, opened.guest_to_host_signal)
             .context("create vmbus queue")?;
 
         let save_restore = self.device.task_mut().0.supports_save_restore();
@@ -351,7 +322,6 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
                 .open(offer.offer.subchannel_index, channel)
                 .context("device open callback")?
         };
-        state.interrupt_event = Some(interrupt_event);
         self.insert_runner(state, device_runner);
         self.device.start();
         Ok(())
@@ -397,7 +367,6 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
 
             state.vtl_pages = None;
         }
-        state.interrupt_event = None;
     }
 
     /// Stop channel
@@ -457,8 +426,8 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             .collect();
 
         let gpadl_id = GpadlId(state.vtl_pages.as_ref().unwrap().pfns()[1] as u32);
-        let success = request_send
-            .call(
+        request_send
+            .call_failable(
                 ChannelRequest::Gpadl,
                 GpadlRequest {
                     id: gpadl_id,
@@ -468,9 +437,6 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             )
             .await
             .context("registering gpadl")?;
-        if !success {
-            return Err(anyhow!("Failed reserving GPADL ID"));
-        }
         Ok((mem, gpadl_id))
     }
 
@@ -479,40 +445,36 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
         &self,
         request_send: &mesh::Sender<ChannelRequest>,
         ring_gpadl_id: GpadlId,
-        event_flag: u16,
-        connection_id: u32,
-    ) -> Result<()> {
+        event: &pal_event::Event,
+    ) -> Result<OpenOutput> {
         let open_request = OpenRequest {
             open_data: OpenData {
                 target_vp: 0,
                 ring_offset: 2,
                 ring_gpadl_id,
-                event_flag,
-                connection_id,
+                event_flag: !0,
+                connection_id: !0,
                 user_data: UserDefinedData::new_zeroed(),
             },
-            flags: OpenChannelFlags::new().with_redirect_interrupt(true),
+            incoming_event: Some(event.clone()),
+            use_vtl2_connection_id: true,
         };
 
-        let opened = request_send
-            .call(ChannelRequest::Open, open_request)
+        request_send
+            .call_failable(ChannelRequest::Open, open_request)
             .instrument(tracing::info_span!(
                 "opening vmbus channel for intercepted device"
             ))
             .await
-            .context("open vmbus channel")?;
-        if !opened {
-            return Err(anyhow!("Failed open request"));
-        }
-        Ok(())
+            .context("open vmbus channel")
     }
 
     /// Create a raw vmbus channel.
     fn create_vmbus_channel(
         &self,
         mem: &MemoryBlock,
-        connection_id: ConnectionId,
-        host_to_guest_event: &RegisteredEvent,
+        host_to_guest_event: &pal_event::Event,
+        guest_to_host_interrupt: Interrupt,
     ) -> Result<RawAsyncChannel<MemoryBlockRingBuffer>> {
         let (out_ring_mem, in_ring_mem) = (
             mem.subblock(0, 2 * PAGE_SIZE),
@@ -523,17 +485,8 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             OutgoingRing::new(out_ring_mem.into()).unwrap(),
         );
 
-        let synic = self.synic.clone();
-        let guest_to_host_interrupt = Interrupt::from_fn(move || {
-            if let Err(err) = synic.signal_event(connection_id.0, 0) {
-                tracelimit::error_ratelimited!(
-                    err = &err as &dyn std::error::Error,
-                    "Failed to signal vmbus host device"
-                );
-            }
-        });
         let signal = MemoryBlockChannelSignal {
-            event: Notify::from_event(host_to_guest_event.event().clone())
+            event: Notify::from_event(host_to_guest_event.clone())
                 .pollable(self.spawner.as_ref())
                 .unwrap(),
             interrupt: guest_to_host_interrupt,

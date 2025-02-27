@@ -646,7 +646,7 @@ pub struct OpenChannel2 {
     pub event_flag: u16,
 
     // Only valid with FeatureFlags::CHANNEL_INTERRUPT_REDIRECTION
-    pub flags: u16,
+    pub flags: OpenChannelFlags,
 }
 
 impl From<OpenChannel> for OpenChannel2 {
