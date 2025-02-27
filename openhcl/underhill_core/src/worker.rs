@@ -69,7 +69,9 @@ use get_protocol::TripleFaultType;
 use guest_emulation_transport::api::platform_settings::DevicePlatformSettings;
 use guest_emulation_transport::api::platform_settings::General;
 use guest_emulation_transport::GuestEmulationTransportClient;
+use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
+use guestmem::MemoryWrite;
 use guid::Guid;
 use hcl_compat_uefi_nvram_storage::HclCompatNvramQuirks;
 use hvdef::hypercall::HvGuestOsId;
@@ -125,6 +127,7 @@ use underhill_attestation::AttestationType;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
 use user_driver::DmaClient;
+use user_driver::MapDmaOptions;
 use virt::state::HvRegisterState;
 use virt::Partition;
 use virt::VpIndex;
@@ -756,6 +759,7 @@ impl UhVmNetworkSettings {
                 AllocationVisibility::Private
             },
             persistent_allocations: false,
+            bounce_buffer_pages: None,
         })?;
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
@@ -1579,6 +1583,7 @@ async fn new_underhill_vm(
                         AllocationVisibility::Private
                     },
                     persistent_allocations: false,
+                    bounce_buffer_pages: None,
                 })
                 .context("get dma client")?,
         );
@@ -1747,6 +1752,7 @@ async fn new_underhill_vm(
                 lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                 allocation_visibility: AllocationVisibility::Shared,
                 persistent_allocations: false,
+                bounce_buffer_pages: None,
             })
             .ok()
             .map(|client| {
@@ -1759,6 +1765,7 @@ async fn new_underhill_vm(
                 lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                 allocation_visibility: AllocationVisibility::Private,
                 persistent_allocations: false,
+                bounce_buffer_pages: None,
             })
             .ok()
             .map(|client| {
@@ -2862,6 +2869,7 @@ async fn new_underhill_vm(
                     lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
                     allocation_visibility: AllocationVisibility::Private,
                     persistent_allocations: false,
+                    bounce_buffer_pages: None,
                 })
                 .context("shutdown relay dma client")?,
             shutdown_guest,
@@ -2932,6 +2940,63 @@ async fn new_underhill_vm(
     dma_manager
         .validate_restore()
         .context("failed to validate restore for dma manager")?;
+
+    {
+        use guestmem::MemoryRead;
+
+        // DMA SELF TEST
+        let client = dma_manager
+            .new_client(DmaClientParameters {
+                device_name: "self-test".into(),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                allocation_visibility: AllocationVisibility::Private,
+                persistent_allocations: true,
+                bounce_buffer_pages: Some(10),
+            })
+            .context("self test client")?;
+
+        let pages = PagedRange::new(0, hvdef::HV_PAGE_SIZE_USIZE * 5, &[1, 2, 3, 4, 5]).unwrap();
+        pages
+            .writer(gm.vtl0())
+            .fill(12, hvdef::HV_PAGE_SIZE_USIZE * 5)
+            .context("initial self test fill")?;
+
+        let transaction = client
+            .map_dma_ranges(
+                gm.vtl0(),
+                pages,
+                MapDmaOptions {
+                    always_bounce: true,
+                    is_rx: true,
+                    is_tx: true,
+                },
+            )
+            .await?;
+
+        let bounced_pfns = transaction.pfns().collect::<Vec<_>>();
+        tracing::error!(?transaction, ?bounced_pfns, "self test transaction");
+
+        let mut buffer = [9u8; hvdef::HV_PAGE_SIZE_USIZE * 5];
+        buffer[0] = 42;
+        buffer[hvdef::HV_PAGE_SIZE_USIZE * 3 - 1] = 42;
+
+        // do "dma"
+        let dma_ranges = PagedRange::new(0, hvdef::HV_PAGE_SIZE_USIZE * 5, &bounced_pfns).unwrap();
+        dma_ranges
+            .writer(gm.vtl0())
+            .write(&buffer)
+            .context("fake dma")?;
+
+        client
+            .unmap_dma_ranges(transaction)
+            .context("self test unmap dma")?;
+
+        let read_buf: Vec<u8> = pages
+            .reader(gm.vtl0())
+            .read_n(hvdef::HV_PAGE_SIZE_USIZE * 5)?;
+
+        assert_eq!(read_buf, buffer);
+    }
 
     // Start the VP tasks on the thread pool.
     crate::vp::spawn_vps(tp, vps, vp_runners, &chipset, isolation)

@@ -20,10 +20,15 @@ use page_pool_alloc::PagePool;
 use page_pool_alloc::PagePoolAllocator;
 use page_pool_alloc::PagePoolAllocatorSpawner;
 use std::future::Future;
+use std::pin::pin;
+use std::pin::Pin;
 use std::sync::Arc;
 use user_driver::lockmem::LockedMemorySpawner;
+use user_driver::memory::PAGE_SIZE64;
 use user_driver::page_allocator::PageAllocator;
+use user_driver::page_allocator::ScopedPages;
 use user_driver::DmaClient;
+use user_driver::DmaPage;
 use user_driver::DmaTransaction;
 use user_driver::MapDmaError;
 use user_driver::MapDmaOptions;
@@ -158,6 +163,8 @@ pub struct DmaClientParameters {
     pub allocation_visibility: AllocationVisibility,
     /// Whether allocations must be persistent.
     pub persistent_allocations: bool,
+    /// Whether to allocate a bounce buffer for this client.
+    pub bounce_buffer_pages: Option<u64>,
 }
 
 struct DmaManagerInner {
@@ -205,6 +212,7 @@ impl DmaManagerInner {
                 lower_vtl_policy,
                 allocation_visibility,
                 persistent_allocations,
+                bounce_buffer_pages: _,
             } = &params;
 
             struct ClientCreation<'a> {
@@ -305,10 +313,20 @@ impl DmaManagerInner {
             }
         };
 
+        let bounce_pfns = if let Some(pages) = params.bounce_buffer_pages {
+            let pages = backing
+                .allocate_dma_buffer((pages * PAGE_SIZE64) as usize)
+                .context(format!("unable to allocate bounce buffer {pages} pages"))?;
+
+            Some(PageAllocator::new(pages))
+        } else {
+            None
+        };
+
         Ok(Arc::new(OpenhclDmaClient {
             backing,
             params,
-            bounce_pfns: None,
+            bounce_pfns,
         }))
     }
 }
@@ -461,13 +479,124 @@ pub struct OpenhclDmaClient {
 }
 
 impl OpenhclDmaClient {
+    fn needs_pinning(&self, pfn: u64) -> bool {
+        // TODO impl
+        true
+    }
+
+    /// pin a page. returns if the pin succeeded or not
+    fn pin_page(&self, pfn: u64) -> bool {
+        // TODO impl
+        false
+    }
+
+    fn unpin_page(&self, pfn: u64) {
+        // TODO impl
+    }
+
+    /// copy any bounced pages in pagedrange to the corresponding bounce page.
+    fn copy_to_bounced(
+        &self,
+        guest_memory: &GuestMemory,
+        ranges: PagedRange<'_>,
+        page_info: &[DmaPage],
+        bounce_pages: &ScopedPages<'_>,
+    ) {
+        for (info, page) in page_info.iter().zip(ranges.gpns()) {
+            if let DmaPage::Bounced { index } = info {
+                let bounce_page = bounce_pages.page_as_slice(*index);
+
+                // BUGBUG: does not handle subranges, copies whole pages.
+                // there's not a good method for this in PagedRange, needs some
+                // thinking.
+                guest_memory
+                    .read_to_atomic(*page * PAGE_SIZE64, bounce_page)
+                    .expect("BUGBUG handle bounce copy error");
+            }
+        }
+    }
+
+    /// copy from bounced pages to original ranges
+    fn copy_from_bounced(
+        &self,
+        guest_memory: &GuestMemory,
+        ranges: PagedRange<'_>,
+        page_info: &[DmaPage],
+        bounce_pages: &ScopedPages<'_>,
+    ) {
+        for (info, page) in page_info.iter().zip(ranges.gpns()) {
+            if let DmaPage::Bounced { index } = info {
+                let bounce_page = bounce_pages.page_as_slice(*index);
+
+                // BUGBUG: does not handle subranges, copies whole pages.
+                // there's not a good method for this in PagedRange, needs some
+                // thinking.
+                guest_memory
+                    .write_from_atomic(*page * PAGE_SIZE64, bounce_page)
+                    .expect("BUGBUG handle bounce copy error");
+            }
+        }
+    }
+
     async fn map_dma_ranges_inner<'a, 'b: 'a>(
         &'a self,
         guest_memory: &'a GuestMemory,
         ranges: PagedRange<'b>,
         options: MapDmaOptions,
     ) -> Result<DmaTransaction<'a>, MapDmaError> {
-        todo!()
+        let mut mapped_ranges = Vec::with_capacity(ranges.gpns().len());
+        let mut bounce_pages_required = 0;
+        for pfn in ranges.gpns() {
+            let page_type = if options.always_bounce {
+                DmaPage::Bounced {
+                    index: bounce_pages_required,
+                }
+            } else if self.needs_pinning(*pfn) {
+                if self.pin_page(*pfn) {
+                    DmaPage::Pinned
+                } else {
+                    DmaPage::Bounced {
+                        index: bounce_pages_required,
+                    }
+                }
+            } else {
+                DmaPage::PrePinned
+            };
+
+            if matches!(page_type, DmaPage::Bounced { .. }) {
+                bounce_pages_required += 1;
+            }
+            mapped_ranges.push(page_type);
+        }
+
+        // allocate required pages
+        let bounce_pages = if bounce_pages_required > 0 {
+            let bounce_pfns = self
+                .bounce_pfns
+                .as_ref()
+                .ok_or(MapDmaError::NoBounceBufferAvailable)?;
+            let pages = bounce_pfns
+                .alloc_pages(bounce_pages_required)
+                .await
+                .expect("BUGBUG more bouncing required than pages available");
+
+            // copy to bounced pages
+            if options.is_tx {
+                self.copy_to_bounced(guest_memory, ranges, &mapped_ranges, &pages);
+            }
+
+            Some(pages)
+        } else {
+            None
+        };
+
+        Ok(DmaTransaction {
+            guest_memory,
+            ranges,
+            mapped_ranges,
+            options,
+            bounced_pages: bounce_pages,
+        })
     }
 }
 
@@ -492,14 +621,35 @@ impl DmaClient for OpenhclDmaClient {
         guest_memory: &'a GuestMemory,
         ranges: PagedRange<'b>,
         options: MapDmaOptions,
-    ) -> Box<dyn Future<Output = Result<DmaTransaction<'a>, MapDmaError>> + 'a> {
-        Box::new(self.map_dma_ranges_inner(guest_memory, ranges, options))
+    ) -> Pin<Box<dyn Future<Output = Result<DmaTransaction<'a>, MapDmaError>> + 'a>> {
+        Box::pin(self.map_dma_ranges_inner(guest_memory, ranges, options))
     }
 
-    fn unmap_dma_ranges(
-        &self,
-        transaction: DmaTransaction<'_>,
-    ) -> Result<(), user_driver::MapDmaError> {
-        todo!()
+    fn unmap_dma_ranges(&self, transaction: DmaTransaction<'_>) -> Result<(), MapDmaError> {
+        if let Some(bounced_pages) = transaction.bounced_pages.as_ref() {
+            if transaction.options.is_rx || transaction.options.always_bounce {
+                // copy from bounced pages
+                self.copy_from_bounced(
+                    transaction.guest_memory,
+                    transaction.ranges,
+                    &transaction.mapped_ranges,
+                    bounced_pages,
+                );
+            }
+        }
+
+        // Unpin pages
+        for (page_info, page) in transaction
+            .mapped_ranges
+            .iter()
+            .zip(transaction.ranges.gpns())
+        {
+            if matches!(page_info, DmaPage::Pinned) {
+                // TODO unpin
+                self.unpin_page(*page);
+            }
+        }
+
+        Ok(())
     }
 }

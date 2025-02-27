@@ -145,10 +145,12 @@ impl crate::DmaClient for LockedMemorySpawner {
         guest_memory: &'a GuestMemory,
         ranges: guestmem::ranges::PagedRange<'b>,
         options: crate::MapDmaOptions,
-    ) -> Box<
-        dyn std::prelude::rust_2024::Future<
-                Output = Result<crate::DmaTransaction<'a>, crate::MapDmaError>,
-            > + 'a,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::prelude::rust_2024::Future<
+                    Output = Result<crate::DmaTransaction<'a>, crate::MapDmaError>,
+                > + 'a,
+        >,
     > {
         todo!()
     }
