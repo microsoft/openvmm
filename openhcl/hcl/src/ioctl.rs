@@ -1599,7 +1599,7 @@ impl HclVp {
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,
                 vtl1_apic_page: private_dma_client
                     .ok_or(Error::MissingPrivateMemory)?
-                    .allocate_dma_buffer(HV_PAGE_SIZE as usize)
+                    .allocate_dma_buffer(HV_PAGE_SIZE as usize, format!("vp-{vp}-vtl1-apic"))
                     .map_err(Error::AllocVp)?,
             },
         };

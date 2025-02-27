@@ -407,16 +407,21 @@ impl DmaClientBacking {
     fn allocate_dma_buffer(
         &self,
         total_size: usize,
+        tag: String,
     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
         match self {
-            DmaClientBacking::SharedPool(allocator) => allocator.allocate_dma_buffer(total_size),
-            DmaClientBacking::PrivatePool(allocator) => allocator.allocate_dma_buffer(total_size),
-            DmaClientBacking::LockedMemory(spawner) => spawner.allocate_dma_buffer(total_size),
+            DmaClientBacking::SharedPool(allocator) => {
+                allocator.allocate_dma_buffer(total_size, tag)
+            }
+            DmaClientBacking::PrivatePool(allocator) => {
+                allocator.allocate_dma_buffer(total_size, tag)
+            }
+            DmaClientBacking::LockedMemory(spawner) => spawner.allocate_dma_buffer(total_size, tag),
             DmaClientBacking::PrivatePoolLowerVtl(spawner) => {
-                spawner.allocate_dma_buffer(total_size)
+                spawner.allocate_dma_buffer(total_size, tag)
             }
             DmaClientBacking::LockedMemoryLowerVtl(spawner) => {
-                spawner.allocate_dma_buffer(total_size)
+                spawner.allocate_dma_buffer(total_size, tag)
             }
         }
     }
@@ -452,8 +457,9 @@ impl DmaClient for OpenhclDmaClient {
     fn allocate_dma_buffer(
         &self,
         total_size: usize,
+        tag: String,
     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        self.backing.allocate_dma_buffer(total_size)
+        self.backing.allocate_dma_buffer(total_size, tag)
     }
 
     fn attach_dma_buffer(

@@ -283,7 +283,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let dma_client = device.dma_client();
 
         let dma_buffer = dma_client
-            .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
+            .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE, "gdma-pages".into())
             .context("failed to allocate DMA buffer")?;
 
         let pages = dma_buffer.pfns();
