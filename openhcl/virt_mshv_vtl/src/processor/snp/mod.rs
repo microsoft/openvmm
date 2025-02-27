@@ -636,7 +636,6 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
             hv1_hypercall::HvSetVpRegisters,
             hv1_hypercall::HvModifyVtlProtectionMask,
             hv1_hypercall::HvX64TranslateVirtualAddress,
-            hv1_hypercall::HvX64StartVirtualProcessor,
         ],
     );
 
@@ -2165,17 +2164,6 @@ impl UhProcessor<'_, SnpBacked> {
             }
         }
         Ok(())
-    }
-}
-
-impl<T: CpuIo> hv1_hypercall::EnablePartitionVtl for UhHypercallHandler<'_, '_, T, SnpBacked> {
-    fn enable_partition_vtl(
-        &mut self,
-        partition_id: u64,
-        target_vtl: Vtl,
-        flags: hvdef::hypercall::EnablePartitionVtlFlags,
-    ) -> hvdef::HvResult<()> {
-        self.hcvm_enable_partition_vtl(partition_id, target_vtl, flags)
     }
 }
 

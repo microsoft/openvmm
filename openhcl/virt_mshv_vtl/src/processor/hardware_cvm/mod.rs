@@ -47,79 +47,6 @@ use virt_support_x86emu::translate::TranslateCachingInfo;
 use virt_support_x86emu::translate::TranslationRegisters;
 use zerocopy::FromZeros;
 
-impl<'b, T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, 'b, T, B>
-where
-    UhProcessor<'b, B>: TlbFlushLockAccess,
-{
-    pub fn hcvm_enable_partition_vtl(
-        &mut self,
-        partition_id: u64,
-        target_vtl: Vtl,
-        flags: hvdef::hypercall::EnablePartitionVtlFlags,
-    ) -> HvResult<()> {
-        if partition_id != hvdef::HV_PARTITION_ID_SELF {
-            return Err(HvError::InvalidPartitionId);
-        }
-
-        let target_vtl = GuestVtl::try_from(target_vtl).map_err(|_| HvError::AccessDenied)?;
-        if target_vtl != GuestVtl::Vtl1 {
-            return Err(HvError::AccessDenied);
-        }
-
-        if flags.enable_supervisor_shadow_stack() || flags.enable_hardware_hvpt() {
-            return Err(HvError::InvalidParameter);
-        }
-
-        let mut gvsm_state = self.vp.partition.guest_vsm.write();
-
-        match *gvsm_state {
-            GuestVsmState::NotPlatformSupported => return Err(HvError::AccessDenied),
-            GuestVsmState::NotGuestEnabled => (),
-            GuestVsmState::Enabled { vtl1: _ } => {
-                // VTL 1 cannot be already enabled
-                return Err(HvError::VtlAlreadyEnabled);
-            }
-        }
-
-        self.vp.partition.hcl.enable_partition_vtl(
-            target_vtl,
-            // These flags are managed and enforced internally; CVMs can't rely
-            // on the hypervisor
-            0.into(),
-        )?;
-
-        *gvsm_state = GuestVsmState::Enabled {
-            vtl1: GuestVsmVtl1State::HardwareCvm {
-                state: crate::HardwareCvmVtl1State {
-                    mbec_enabled: flags.enable_mbec(),
-                    ..Default::default()
-                },
-            },
-        };
-
-        let protector = self
-            .vp
-            .partition
-            .isolated_memory_protector
-            .as_ref()
-            .expect("exists for a cvm");
-
-        // Grant VTL 1 access to lower VTL memory
-        tracing::debug!("Granting VTL 1 access to lower VTL memory");
-        protector.change_default_vtl_protections(
-            GuestVtl::Vtl1,
-            hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
-            self.vp,
-        )?;
-
-        tracing::debug!("Successfully granted vtl 1 access to lower vtl memory");
-
-        tracing::info!("Enabled vtl 1 on the partition");
-
-        Ok(())
-    }
-}
-
 impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     fn validate_register_access(
         &mut self,
@@ -1052,6 +979,80 @@ where
         // given that only VTL 1 can set the protections, the default
         // permissions should be changed for VTL 0.
         protector.change_vtl_protections(GuestVtl::Vtl0, gpa_pages, map_flags, self.vp)
+    }
+}
+
+impl<'b, T, B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
+    for UhHypercallHandler<'_, 'b, T, B>
+where
+    UhProcessor<'b, B>: TlbFlushLockAccess,
+{
+    fn enable_partition_vtl(
+        &mut self,
+        partition_id: u64,
+        target_vtl: Vtl,
+        flags: hvdef::hypercall::EnablePartitionVtlFlags,
+    ) -> HvResult<()> {
+        if partition_id != hvdef::HV_PARTITION_ID_SELF {
+            return Err(HvError::InvalidPartitionId);
+        }
+
+        let target_vtl = GuestVtl::try_from(target_vtl).map_err(|_| HvError::AccessDenied)?;
+        if target_vtl != GuestVtl::Vtl1 {
+            return Err(HvError::AccessDenied);
+        }
+
+        if flags.enable_supervisor_shadow_stack() || flags.enable_hardware_hvpt() {
+            return Err(HvError::InvalidParameter);
+        }
+
+        let mut gvsm_state = self.vp.partition.guest_vsm.write();
+
+        match *gvsm_state {
+            GuestVsmState::NotPlatformSupported => return Err(HvError::AccessDenied),
+            GuestVsmState::NotGuestEnabled => (),
+            GuestVsmState::Enabled { vtl1: _ } => {
+                // VTL 1 cannot be already enabled
+                return Err(HvError::VtlAlreadyEnabled);
+            }
+        }
+
+        self.vp.partition.hcl.enable_partition_vtl(
+            target_vtl,
+            // These flags are managed and enforced internally; CVMs can't rely
+            // on the hypervisor
+            0.into(),
+        )?;
+
+        *gvsm_state = GuestVsmState::Enabled {
+            vtl1: GuestVsmVtl1State::HardwareCvm {
+                state: crate::HardwareCvmVtl1State {
+                    mbec_enabled: flags.enable_mbec(),
+                    ..Default::default()
+                },
+            },
+        };
+
+        let protector = self
+            .vp
+            .partition
+            .isolated_memory_protector
+            .as_ref()
+            .expect("exists for a cvm");
+
+        // Grant VTL 1 access to lower VTL memory
+        tracing::debug!("Granting VTL 1 access to lower VTL memory");
+        protector.change_default_vtl_protections(
+            GuestVtl::Vtl1,
+            hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
+            self.vp,
+        )?;
+
+        tracing::debug!("Successfully granted vtl 1 access to lower vtl memory");
+
+        tracing::info!("Enabled vtl 1 on the partition");
+
+        Ok(())
     }
 }
 
