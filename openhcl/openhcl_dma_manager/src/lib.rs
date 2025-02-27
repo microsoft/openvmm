@@ -10,6 +10,8 @@
 #![warn(missing_docs)]
 
 use anyhow::Context;
+use guestmem::ranges::PagedRange;
+use guestmem::GuestMemory;
 use hcl_mapper::HclMapper;
 use inspect::Inspect;
 use lower_vtl_permissions_guard::LowerVtlMemorySpawner;
@@ -17,9 +19,14 @@ use memory_range::MemoryRange;
 use page_pool_alloc::PagePool;
 use page_pool_alloc::PagePoolAllocator;
 use page_pool_alloc::PagePoolAllocatorSpawner;
+use std::future::Future;
 use std::sync::Arc;
 use user_driver::lockmem::LockedMemorySpawner;
+use user_driver::page_allocator::PageAllocator;
 use user_driver::DmaClient;
+use user_driver::DmaTransaction;
+use user_driver::MapDmaError;
+use user_driver::MapDmaOptions;
 
 /// Save restore support for [`OpenhclDmaManager`].
 pub mod save_restore {
@@ -298,7 +305,11 @@ impl DmaManagerInner {
             }
         };
 
-        Ok(Arc::new(OpenhclDmaClient { backing, params }))
+        Ok(Arc::new(OpenhclDmaClient {
+            backing,
+            params,
+            bounce_pfns: None,
+        }))
     }
 }
 
@@ -446,6 +457,18 @@ impl DmaClientBacking {
 pub struct OpenhclDmaClient {
     backing: DmaClientBacking,
     params: DmaClientParameters,
+    bounce_pfns: Option<PageAllocator>,
+}
+
+impl OpenhclDmaClient {
+    async fn map_dma_ranges_inner<'a, 'b: 'a>(
+        &'a self,
+        guest_memory: &'a GuestMemory,
+        ranges: PagedRange<'b>,
+        options: MapDmaOptions,
+    ) -> Result<DmaTransaction<'a>, MapDmaError> {
+        todo!()
+    }
 }
 
 impl DmaClient for OpenhclDmaClient {
@@ -462,5 +485,21 @@ impl DmaClient for OpenhclDmaClient {
         base_pfn: u64,
     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
         self.backing.attach_dma_buffer(len, base_pfn)
+    }
+
+    fn map_dma_ranges<'a, 'b: 'a>(
+        &'a self,
+        guest_memory: &'a GuestMemory,
+        ranges: PagedRange<'b>,
+        options: MapDmaOptions,
+    ) -> Box<dyn Future<Output = Result<DmaTransaction<'a>, MapDmaError>> + 'a> {
+        Box::new(self.map_dma_ranges_inner(guest_memory, ranges, options))
+    }
+
+    fn unmap_dma_ranges(
+        &self,
+        transaction: DmaTransaction<'_>,
+    ) -> Result<(), user_driver::MapDmaError> {
+        todo!()
     }
 }

@@ -11,6 +11,8 @@ mod device_dma;
 pub use device_dma::PagePoolDmaBuffer;
 
 use anyhow::Context;
+use guestmem::ranges::PagedRange;
+use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::Response;
 use memory_range::MemoryRange;
@@ -856,6 +858,26 @@ impl user_driver::DmaClient for PagePoolAllocator {
         // Preserve the existing contents of memory and do not zero the restored
         // allocation.
         alloc.into_memory_block()
+    }
+
+    fn unmap_dma_ranges(
+        &self,
+        transaction: user_driver::DmaTransaction<'_>,
+    ) -> Result<(), user_driver::MapDmaError> {
+        todo!()
+    }
+
+    fn map_dma_ranges<'a, 'b: 'a>(
+        &'a self,
+        guest_memory: &'a GuestMemory,
+        ranges: PagedRange<'b>,
+        options: user_driver::MapDmaOptions,
+    ) -> Box<
+        dyn std::prelude::rust_2024::Future<
+                Output = Result<user_driver::DmaTransaction<'a>, user_driver::MapDmaError>,
+            > + 'a,
+    > {
+        todo!()
     }
 }
 

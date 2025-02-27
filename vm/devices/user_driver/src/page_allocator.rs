@@ -46,6 +46,7 @@ impl PageAllocator {
         }
     }
 
+    // BUGBUG remove the single page restriction - the nvme code should instead allocate the PRP list first, and not have this restriction?
     pub async fn alloc_pages(&self, n: usize) -> Option<ScopedPages<'_>> {
         // A single page must be left over for the PRP list, so one request may
         // not use all pages.

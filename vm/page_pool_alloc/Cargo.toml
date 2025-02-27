@@ -7,6 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+guestmem.workspace = true
 user_driver.workspace = true
 sparse_mmap.workspace = true
 vmcore.workspace = true
