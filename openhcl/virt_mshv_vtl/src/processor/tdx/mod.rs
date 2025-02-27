@@ -1645,10 +1645,7 @@ impl UhProcessor<'_, TdxBacked> {
                 if exit_info.cpl() != 0 {
                     self.inject_gpf(intercepted_vtl);
                 } else {
-                    let is_64bit =
-                        self.backing.vtls[intercepted_vtl].cr0.read(&self.runner) & X64_CR0_PE != 0
-                            && self.backing.vtls[intercepted_vtl].efer & X64_EFER_LMA != 0;
-
+                    let is_64bit = self.long_mode(intercepted_vtl);
                     let guest_memory = &self.partition.gm[intercepted_vtl];
                     let handler = UhHypercallHandler {
                         trusted: !self.partition.hide_isolation,
@@ -2205,6 +2202,11 @@ impl UhProcessor<'_, TdxBacked> {
             attributes: attributes as u16,
         }
     }
+
+    fn long_mode(&self, vtl: GuestVtl) -> bool {
+        let backing = &self.backing.vtls[vtl];
+        backing.cr0.read(&self.runner) & X64_CR0_PE != 0 && backing.efer & X64_EFER_LMA != 0
+    }
 }
 
 impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
@@ -2725,8 +2727,8 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
             hv1_hypercall::HvSetVpRegisters,
             // hv1_hypercall::HvEnablePartitionVtl,
             // hv1_hypercall::HvX64EnableVpVtl,
-            // hv1_hypercall::HvVtlCall,
-            // hv1_hypercall::HvVtlReturn,
+            hv1_hypercall::HvVtlCall,
+            hv1_hypercall::HvVtlReturn,
             hv1_hypercall::HvModifyVtlProtectionMask,
             hv1_hypercall::HvX64TranslateVirtualAddress,
         ]
@@ -3519,6 +3521,22 @@ impl UhProcessor<'_, TdxBacked> {
         }
 
         // TODO TDX GUEST VSM: We need to wait here until all woken VPs actually enter VTL 2.
+    }
+}
+
+impl<T> hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, T, TdxBacked> {
+    fn advance_ip(&mut self) {
+        let long_mode = self.vp.long_mode(self.intercepted_vtl);
+        let mut io = hv1_hypercall::X64RegisterIo::new(self, long_mode);
+        io.advance_ip();
+    }
+
+    fn inject_invalid_opcode_fault(&mut self) {
+        self.vp.backing.vtls[self.intercepted_vtl].interruption_information =
+            InterruptionInformation::new()
+                .with_valid(true)
+                .with_interruption_type(INTERRUPT_TYPE_HARDWARE_EXCEPTION)
+                .with_vector(x86defs::Exception::INVALID_OPCODE.0);
     }
 }
 
