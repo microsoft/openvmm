@@ -1532,13 +1532,13 @@ mod tests {
                         padding: 0,
                         selected_version_or_connection_id: 0,
                     },
-                    supported_features: FeatureFlags::all().into(),
+                    supported_features: SUPPORTED_FEATURE_FLAGS.into(),
                 },
             ));
 
             let version = recv.await.unwrap().unwrap();
             assert_eq!(version.version, Version::Copper);
-            assert_eq!(version.feature_flags, FeatureFlags::all());
+            assert_eq!(version.feature_flags, SUPPORTED_FEATURE_FLAGS);
         }
 
         async fn get_channel(&mut self, client: &mut VmbusClient) -> OfferInfo {
@@ -1700,7 +1700,7 @@ mod tests {
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(FeatureFlags::all().into())
+                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
@@ -1727,7 +1727,7 @@ mod tests {
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(FeatureFlags::all().into())
+                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
@@ -1745,14 +1745,14 @@ mod tests {
                     padding: 0,
                     selected_version_or_connection_id: 0,
                 },
-                supported_features: FeatureFlags::all().into_bits(),
+                supported_features: SUPPORTED_FEATURE_FLAGS.into_bits(),
             },
         ));
 
         let version = recv.await.unwrap().unwrap();
 
         assert_eq!(version.version, Version::Copper);
-        assert_eq!(version.feature_flags, FeatureFlags::all());
+        assert_eq!(version.feature_flags, SUPPORTED_FEATURE_FLAGS);
     }
 
     #[async_test]
@@ -1772,7 +1772,7 @@ mod tests {
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(FeatureFlags::all().into())
+                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
@@ -1826,7 +1826,7 @@ mod tests {
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(FeatureFlags::all().into())
+                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
@@ -1853,7 +1853,7 @@ mod tests {
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(FeatureFlags::all().into())
+                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
