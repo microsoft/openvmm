@@ -51,7 +51,6 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
     }
 
     fn extended_max_function(&self) -> u32 {
-        // TODO TDX: Check if this is the same value in the OS repo
         CpuidFunction::ExtendedIntelMaximum.0
     }
 
@@ -111,7 +110,6 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
             }
             CpuidFunction::TmulInformation => {
                 if subleaf == 0 {
-                    // TODO TDX: does this actually have subleaves? the spec says 1+ are reserved
                     Some(CpuidResultMask::new(
                         0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, true,
                     ))
@@ -164,7 +162,6 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
         results: &mut CpuidSubtable,
         extended_state_mask: u64,
     ) -> Result<(), CpuidResultsError> {
-        // TODO TDX: See HvlpPopulateExtendedStateCpuid
         let xfd_supported = if let Some(support) = results.get(&1).map(
             |CpuidResult {
                  eax,
@@ -183,12 +180,13 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
 
         let summary_mask = extended_state_mask & !xsave::X86X_XSAVE_LEGACY_FEATURES;
 
+        let mut _max_xfd_value: u32 = 0;
         for i in 0..=super::MAX_EXTENDED_STATE_ENUMERATION_SUBLEAF {
             if (1 << i) & summary_mask != 0 {
                 let result = Self::cpuid(CpuidFunction::ExtendedStateEnumeration.0, i);
                 let result_xfd = cpuid::ExtendedStateEnumerationSubleafNEcx::from(result.ecx).xfd();
                 if xfd_supported && result_xfd {
-                    // TODO TDX: update some maximum xfd value; see HvlpMaximumXfd
+                    _max_xfd_value |= 1 << i;
                 }
 
                 results.insert(i, result);
@@ -205,8 +203,6 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
         _address_space_sizes_ecx: cpuid::ExtendedAddressSpaceSizesEcx,
         _processor_topology_ebx: Option<cpuid::ProcessorTopologyDefinitionEbx>, // Will be None for Intel
     ) -> Result<super::ExtendedTopologyResult, CpuidResultsError> {
-        // TODO TDX: see HvlpInitializeCpuidTopologyIntel
-        // TODO TDX: fix returned errors
         let vps_per_socket;
         if !version_and_features_edx.mt_per_socket() {
             if version_and_features_ebx.lps_per_package() > 1 {
@@ -220,7 +216,27 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
             vps_per_socket = version_and_features_ebx.lps_per_package();
         }
 
-        // TODO TDX: validation of leaf 0xB
+        // Validation for Leaf 0xB subleaf 0
+        let extended_topology_ecx_0 = cpuid::ExtendedTopologyEcx::from(
+            Self::cpuid(CpuidFunction::ExtendedTopologyEnumeration.0, 0).ecx,
+        );
+
+        if (extended_topology_ecx_0.level_number() != super::CPUID_LEAF_B_LEVEL_NUMBER_SMT)
+            || (extended_topology_ecx_0.level_type() != super::CPUID_LEAF_B_LEVEL_TYPE_SMT)
+        {
+            tracing::error!("Incorrect values received: {:?}. Level Number should represent sub-leaf 0, while Level Type should represent domain type 1 for logical processor.", extended_topology_ecx_0);
+        }
+
+        // Validation for Leaf 0xB subleaf 1
+        let extended_topology_ecx_1 = cpuid::ExtendedTopologyEcx::from(
+            Self::cpuid(CpuidFunction::ExtendedTopologyEnumeration.0, 1).ecx,
+        );
+
+        if (extended_topology_ecx_1.level_number() != super::CPUID_LEAF_B_LEVEL_NUMBER_CORE)
+            || (extended_topology_ecx_1.level_type() != super::CPUID_LEAF_B_LEVEL_TYPE_CORE)
+        {
+            tracing::error!("Incorrect values received: {:?}. Level Number should represent sub-leaf 1, while Level Type should represent domain type 2 for Core.", extended_topology_ecx_1);
+        }
 
         Ok(super::ExtendedTopologyResult {
             subleaf0: None,
