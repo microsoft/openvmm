@@ -67,5 +67,25 @@ async fn openhcl_servicing_keepalive(
     .await
 }
 
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn openhcl_servicing_shutdown_ic(
+    config: PetriVmConfigOpenVmm,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    let (mut vm, agent) = config.with_vmbus_redirect().run().await?;
+    agent.ping().await?;
+    let shutdown_ic = vm.wait_for_enlightened_shutdown_ready().await?;
+    vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
+        .await?;
+    // VTL2 will disconnect and then reconnect the shutdown IC across a servicing event.
+    tracing::info!("waiting for shutdown IC to close");
+    shutdown_ic.await.unwrap_err();
+    vm.wait_for_enlightened_shutdown_ready().await?;
+    vm.send_enlightened_shutdown(petri::ShutdownKind::Shutdown)
+        .await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
 // TODO: add tests with guest workloads while doing servicing.
 // TODO: add tests from previous release branch to current.
