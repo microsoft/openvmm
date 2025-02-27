@@ -58,7 +58,11 @@ use zerocopy::KnownLayout;
 const SINT: u8 = 2;
 const VTL: u8 = 0;
 const SUPPORTED_VERSIONS: &[Version] = &[Version::Iron, Version::Copper];
-const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::all();
+const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
+    .with_guest_specified_signal_parameters(true)
+    .with_channel_interrupt_redirection(true)
+    .with_modify_connection(true)
+    .with_client_id(true);
 
 /// The client interface synic events.
 pub trait SynicEventClient: Send + Sync {
