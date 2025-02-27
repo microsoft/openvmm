@@ -316,7 +316,7 @@ impl VersionInfo {
         }
     }
 
-    fn restore(self) -> Result<vmbus_core::VersionInfo, RestoreError> {
+    fn restore(self, trusted: bool) -> Result<vmbus_core::VersionInfo, RestoreError> {
         let version = super::SUPPORTED_VERSIONS
             .iter()
             .find(|v| self.version == **v as u32)
@@ -324,7 +324,8 @@ impl VersionInfo {
             .ok_or(RestoreError::UnsupportedVersion(self.version))?;
 
         let feature_flags = FeatureFlags::from(self.feature_flags);
-        if !SUPPORTED_FEATURE_FLAGS.contains(feature_flags) {
+        let supported_flags = SUPPORTED_FEATURE_FLAGS.with_confidential_channels(trusted);
+        if !supported_flags.contains(feature_flags) {
             return Err(RestoreError::UnsupportedFeatureFlags(feature_flags.into()));
         }
 
@@ -430,7 +431,7 @@ impl Connection {
                 trusted,
             } => super::ConnectionState::Connecting {
                 info: super::ConnectionInfo {
-                    version: version.restore()?,
+                    version: version.restore(trusted)?,
                     trusted,
                     interrupt_page,
                     monitor_page: monitor_page.map(MonitorPageGpas::restore),
@@ -451,7 +452,7 @@ impl Connection {
                 client_id,
                 trusted,
             } => super::ConnectionState::Connected(super::ConnectionInfo {
-                version: version.restore()?,
+                version: version.restore(trusted)?,
                 trusted,
                 offers_sent,
                 interrupt_page,
@@ -806,7 +807,9 @@ impl ReservedState {
     }
 
     fn restore(&self) -> Result<super::ReservedState, RestoreError> {
-        let version = self.version.clone().restore().map_err(|e| match e {
+        // We don't know if the connection when the channel was reserved was trusted, so assume it
+        // was for what feature flags are accepted here; it doesn't affect any actual behavior.
+        let version = self.version.clone().restore(true).map_err(|e| match e {
             RestoreError::UnsupportedVersion(v) => RestoreError::UnsupportedReserveVersion(v),
             RestoreError::UnsupportedFeatureFlags(f) => {
                 RestoreError::UnsupportedReserveFeatureFlags(f)
