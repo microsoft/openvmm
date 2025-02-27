@@ -24,6 +24,7 @@ use async_trait::async_trait;
 use buffers::sub_allocation_size_for_mtu;
 pub use buffers::BufferPool;
 use futures::channel::mpsc;
+use futures::Future;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures_concurrency::future::Race;
@@ -65,6 +66,7 @@ use std::fmt::Debug;
 use std::future::pending;
 use std::mem::offset_of;
 use std::ops::Range;
+use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -1165,12 +1167,12 @@ impl VmbusDevice for Nic {
         {
             let coordinator = &mut self.coordinator.state_mut().unwrap();
             coordinator.workers[0].stop().await;
-            coordinator.workers[0].start();
         }
 
         if r.is_err() && channel_idx == 0 {
             self.coordinator.remove();
         } else {
+            // The coordinator will restart any stopped workers.
             self.coordinator.start();
         }
         r?;
@@ -1228,7 +1230,7 @@ impl VmbusDevice for Nic {
         // Stop the coordinator and worker associated with this channel.
         let coordinator_running = self.coordinator.stop().await;
         let worker = &mut self.coordinator.state_mut().unwrap().workers[channel_idx as usize];
-        let worker_running = worker.stop().await;
+        worker.stop().await;
         let (net_queue, worker_state) = worker.get_mut();
 
         // Update the target VP on the driver.
@@ -1243,10 +1245,7 @@ impl VmbusDevice for Nic {
             }
         }
 
-        if worker_running {
-            worker.start();
-        }
-
+        // The coordinator will restart any stopped workers.
         if coordinator_running {
             self.coordinator.start();
         }
@@ -1254,9 +1253,6 @@ impl VmbusDevice for Nic {
 
     fn start(&mut self) {
         if !self.coordinator.is_running() {
-            if let Some(coordinator) = self.coordinator.state_mut() {
-                coordinator.start_workers();
-            }
             self.coordinator.start();
         }
     }
@@ -3692,6 +3688,13 @@ impl Coordinator {
                 self.restore_guest_vf_state(state).await;
                 self.restart = false;
             }
+
+            // Ensure that all workers except the primary are started. The
+            // primary is started below if there are no outstanding messages.
+            for worker in &mut self.workers[1..] {
+                worker.start();
+            }
+
             enum Message {
                 Internal(CoordinatorMessage),
                 ChannelDisconnected,
@@ -3701,7 +3704,6 @@ impl Coordinator {
                 PendingVfStateComplete,
                 TimerExpired,
             }
-            self.start_workers();
             let timer_sleep = async {
                 if let Some(sleep_duration) = sleep_duration {
                     let mut timer = PolledTimer::new(&state.adapter.driver);
@@ -3767,7 +3769,37 @@ impl Coordinator {
                         (internal_msg, endpoint_restart, timer_sleep).race().await
                     }
                 };
-                stop.until_stopped(wait_for_message).await?
+
+                struct StartWorkerIfNoMessage<'a, T: Future<Output = Message>> {
+                    next_message: Pin<&'a mut T>,
+                    workers: &'a mut Vec<TaskControl<NetQueue, Worker<GpadlRingMem>>>,
+                    started: bool,
+                }
+
+                impl<T: Future<Output = Message>> Future for StartWorkerIfNoMessage<'_, T> {
+                    type Output = Message;
+
+                    fn poll(
+                        mut self: Pin<&mut Self>,
+                        cx: &mut std::task::Context<'_>,
+                    ) -> Poll<Self::Output> {
+                        if !self.started {
+                            if let Poll::Ready(message) = self.next_message.as_mut().poll(cx) {
+                                return Poll::Ready(message);
+                            }
+                            self.workers[0].start();
+                            self.started = true;
+                        }
+                        Poll::Ready(std::task::ready!(self.next_message.as_mut().poll(cx)))
+                    }
+                }
+
+                let wait_message = StartWorkerIfNoMessage {
+                    next_message: std::pin::pin!(wait_for_message),
+                    workers: &mut self.workers,
+                    started: false,
+                };
+                stop.until_stopped(wait_message).await?
             };
             match message {
                 Message::UpdateFromVf(rpc) => {
@@ -3777,12 +3809,7 @@ impl Coordinator {
                     .await;
                 }
                 Message::OfferVfDevice => {
-                    let stopped = if self.workers[0].is_running() {
-                        self.workers[0].stop().await;
-                        true
-                    } else {
-                        false
-                    };
+                    self.workers[0].stop().await;
                     if let Some(primary) = self.primary_mut() {
                         if matches!(
                             primary.guest_vf_state,
@@ -3790,9 +3817,6 @@ impl Coordinator {
                         ) {
                             primary.guest_vf_state = PrimaryChannelGuestVfState::Ready;
                         }
-                    }
-                    if stopped {
-                        self.workers[0].start();
                     }
 
                     state.pending_vf_state = CoordinatorStatePendingVfState::Pending;
@@ -3809,7 +3833,6 @@ impl Coordinator {
                                 primary.pending_link_action = PendingLinkAction::Active(up);
                             }
                         }
-                        self.workers[0].start();
                     }
                     sleep_duration = None;
                 }
@@ -3818,12 +3841,7 @@ impl Coordinator {
                 }
                 Message::UpdateFromEndpoint(EndpointAction::RestartRequired) => self.restart = true,
                 Message::UpdateFromEndpoint(EndpointAction::LinkStatusNotify(connect)) => {
-                    let stopped = if self.workers[0].is_running() {
-                        self.workers[0].stop().await;
-                        true
-                    } else {
-                        false
-                    };
+                    self.workers[0].stop().await;
 
                     // These are the only link state transitions that are tracked.
                     // 1. up -> down or down -> up
@@ -3838,18 +3856,12 @@ impl Coordinator {
 
                     // If there is any existing sleep timer running, cancel it out.
                     sleep_duration = None;
-                    if stopped {
-                        self.workers[0].start();
-                    }
                 }
                 Message::Internal(CoordinatorMessage::Restart) => self.restart = true,
                 Message::Internal(CoordinatorMessage::StartTimer(duration)) => {
                     sleep_duration = Some(duration);
                     // Restart primary task.
-                    if self.workers[0].is_running() {
-                        self.workers[0].stop().await;
-                        self.workers[0].start();
-                    }
+                    self.workers[0].stop().await;
                 }
                 Message::ChannelDisconnected => {
                     break;
@@ -4266,12 +4278,6 @@ impl Coordinator {
         Ok(())
     }
 
-    fn start_workers(&mut self) {
-        for worker in &mut self.workers {
-            worker.start();
-        }
-    }
-
     fn primary_mut(&mut self) -> Option<&mut PrimaryChannelState> {
         self.workers[0]
             .state_mut()
@@ -4284,12 +4290,8 @@ impl Coordinator {
     }
 
     async fn update_guest_vf_state(&mut self, c_state: &mut CoordinatorState) {
-        if !self.workers[0].is_running() {
-            return;
-        }
         self.workers[0].stop().await;
         self.restore_guest_vf_state(c_state).await;
-        self.workers[0].start();
     }
 }
 
