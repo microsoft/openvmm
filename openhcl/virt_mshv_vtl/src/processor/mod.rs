@@ -263,9 +263,9 @@ mod private {
     }
 }
 
-#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 pub struct BackingSharedParams {
     pub(crate) cvm_state: Option<crate::UhCvmPartitionState>,
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     pub(crate) vp_count: u32,
     pub(crate) guest_vsm_available: bool,
 }

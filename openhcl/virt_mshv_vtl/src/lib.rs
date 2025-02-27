@@ -691,11 +691,11 @@ impl WakeReason {
 impl UhPartition {
     /// Revokes guest VSM.
     pub fn revoke_guest_vsm(&self) -> Result<(), RevokeGuestVsmError> {
-        fn revoke<T: Inspect>(gvsm: &mut GuestVsmState<T>) -> Result<(), RevokeGuestVsmError> {
-            if matches!(gvsm, GuestVsmState::Enabled { .. }) {
+        fn revoke<T: Inspect>(vsm_state: &mut GuestVsmState<T>) -> Result<(), RevokeGuestVsmError> {
+            if matches!(vsm_state, GuestVsmState::Enabled { .. }) {
                 return Err(RevokeGuestVsmError::Vtl1AlreadyEnabled);
             }
-            *gvsm = GuestVsmState::NotPlatformSupported;
+            *vsm_state = GuestVsmState::NotPlatformSupported;
             Ok(())
         }
 
