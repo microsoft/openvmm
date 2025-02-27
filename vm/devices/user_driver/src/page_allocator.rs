@@ -142,6 +142,10 @@ impl ScopedPages<'_> {
         self.pages[index].physical_address / PAGE_SIZE64
     }
 
+    pub fn pfns(&self) -> impl Iterator<Item = u64> + use<'_> {
+        self.pages.iter().map(|p| p.physical_address / PAGE_SIZE64)
+    }
+
     pub fn page_as_slice(&self, index: usize) -> &[AtomicU8] {
         &self.alloc.mem.as_slice()[self.pages[index].page_index * PAGE_SIZE..][..PAGE_SIZE]
     }

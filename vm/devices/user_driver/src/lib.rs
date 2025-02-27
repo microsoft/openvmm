@@ -85,11 +85,42 @@ pub struct MapDmaOptions {
     // pub non_blocking: bool,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum DmaPage {
-    PrePinned,
-    Pinned,
-    Bounced { index: usize },
+/// what we did to pages in a transaction
+#[derive(Debug)]
+pub enum DmaOperation<'a> {
+    /// pages were already pinned/physically backed, original ranges
+    PrePinned(PagedRange<'a>),
+    /// pinned pages, must be unpinned, original ranges
+    Pinned(PagedRange<'a>),
+    /// allocated bounce buffers, original ranges
+    Bounced(ScopedPages<'a>, PagedRange<'a>),
+}
+
+enum DmaOperationIter<A, B> {
+    PagedRange(A),
+    ScopedPages(B),
+}
+
+impl<A: Iterator, B: Iterator<Item = A::Item>> Iterator for DmaOperationIter<A, B> {
+    type Item = A::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            DmaOperationIter::PagedRange(iter) => iter.next(),
+            DmaOperationIter::ScopedPages(iter) => iter.next(),
+        }
+    }
+}
+
+impl DmaOperation<'_> {
+    /// the mapped ranges for this transaction
+    pub fn gpns_iter(&self) -> impl Iterator<Item = u64> + '_ {
+        match self {
+            DmaOperation::PrePinned(r) => DmaOperationIter::PagedRange(r.gpns().iter().copied()),
+            DmaOperation::Pinned(r) => DmaOperationIter::PagedRange(r.gpns().iter().copied()),
+            DmaOperation::Bounced(pages, _) => DmaOperationIter::ScopedPages(pages.pfns()),
+        }
+    }
 }
 
 // TODO: make trait w/ associated type in dmaclient return for map to allow dma client implementer to hide details
@@ -97,25 +128,14 @@ pub enum DmaPage {
 pub struct DmaTransaction<'a> {
     /// guest memory object to use to bounce in/out
     pub guest_memory: &'a GuestMemory,
-    /// original dma ranges
-    pub ranges: PagedRange<'a>,
-    /// dma ranges after map call
-    /// TODO: this allocates on map - can we avoid? do we need to make the user pass a different kind of pagedrange?
-    pub mapped_ranges: Vec<DmaPage>,
+    pub operation: DmaOperation<'a>,
     pub options: MapDmaOptions,
-    pub bounced_pages: Option<ScopedPages<'a>>,
 }
 
 impl DmaTransaction<'_> {
     /// the mapped ranges for this transaction
-    pub fn pfns(&self) -> impl Iterator<Item = u64> + use<'_> {
-        self.mapped_ranges
-            .iter()
-            .zip(self.ranges.gpns().iter())
-            .map(|(info, orig_page)| match info {
-                DmaPage::PrePinned | DmaPage::Pinned => *orig_page,
-                DmaPage::Bounced { index } => self.bounced_pages.as_ref().unwrap().pfn(*index),
-            })
+    pub fn pfns(&self) -> impl Iterator<Item = u64> + '_ {
+        self.operation.gpns_iter()
     }
 }
 
@@ -129,6 +149,12 @@ pub trait DmaClient: Send + Sync + Inspect {
     /// Attach to a previously allocated memory block.
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 
+    // Do these methods move? Do we have some other trait that just provides
+    // pin/unpin/query pin required, then this code moves up into common code
+    // and is not a trait method?
+    //
+    // This would remove the Box<..> for the async closure.
+
     /// Map the given ranges for DMA. A caller must call `unmap_dma_ranges` to
     /// complete a dma transaction to observe the dma in the passed in ranges.
     ///
@@ -137,7 +163,7 @@ pub trait DmaClient: Send + Sync + Inspect {
     fn map_dma_ranges<'a, 'b: 'a>(
         &'a self,
         guest_memory: &'a GuestMemory,
-        ranges: PagedRange<'b>,
+        range: PagedRange<'b>,
         options: MapDmaOptions,
     ) -> Pin<Box<dyn Future<Output = Result<DmaTransaction<'a>, MapDmaError>> + 'a>>;
 
