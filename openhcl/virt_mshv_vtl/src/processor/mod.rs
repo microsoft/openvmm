@@ -282,6 +282,8 @@ pub trait HardwareIsolatedBacking: Backing {
     /// for each CPU.
     fn shared_pages_required_per_cpu() -> u64;
     /// Gets CVM specific VP state.
+    fn cvm_state(&self) -> &crate::UhCvmVpState;
+    /// Gets CVM specific VP state.
     fn cvm_state_mut(&mut self) -> &mut crate::UhCvmVpState;
     /// Gets CVM specific partition state.
     fn cvm_partition_state(shared: &Self::Shared) -> &crate::UhCvmPartitionState;

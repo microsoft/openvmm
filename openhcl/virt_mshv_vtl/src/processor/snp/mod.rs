@@ -140,6 +140,10 @@ impl HardwareIsolatedBacking for SnpBacked {
         UhDirectOverlay::Count as u64
     }
 
+    fn cvm_state(&self) -> &UhCvmVpState {
+        &self.cvm
+    }
+
     fn cvm_state_mut(&mut self) -> &mut UhCvmVpState {
         &mut self.cvm
     }

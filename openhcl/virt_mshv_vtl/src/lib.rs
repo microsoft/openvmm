@@ -345,6 +345,8 @@ pub struct UhCvmVpState {
     hv: VtlArray<ProcessorVtlHv, 2>,
     /// LAPIC state.
     lapics: VtlArray<LapicState, 2>,
+    /// Whether VTL 1 has been started on this VP.
+    vtl1_active: bool,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -390,6 +392,7 @@ impl UhCvmVpState {
             exit_vtl: GuestVtl::Vtl0,
             hv,
             lapics,
+            vtl1_active: false,
         })
     }
 }

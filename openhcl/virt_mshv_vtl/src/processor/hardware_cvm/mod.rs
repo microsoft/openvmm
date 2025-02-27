@@ -840,9 +840,9 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
                 self.intercepted_vtl
             );
             false
-        } else if !*self.vp.cvm_vp_inner().vtl1_enabled.lock() {
-            // VTL 1 must be enabled on the vp
-            tracelimit::warn_ratelimited!("vtl call not allowed because vtl 1 is not enabled");
+        } else if !self.vp.backing.cvm_state().vtl1_active {
+            // VTL 1 must be active on the vp
+            tracelimit::warn_ratelimited!("vtl call not allowed because vtl 1 is not active");
             false
         } else {
             true
@@ -1532,10 +1532,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                             // not be desirable.
 
                             self.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
+                            self.backing.cvm_state_mut().vtl1_active = true;
                         }
                     }
                     GuestVtl::Vtl1 => {
                         self.backing.cvm_state_mut().exit_vtl = GuestVtl::Vtl1;
+                        self.backing.cvm_state_mut().vtl1_active = true;
                     }
                 }
             }
