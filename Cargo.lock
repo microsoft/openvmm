@@ -3729,6 +3729,7 @@ name = "lower_vtl_permissions_guard"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "guestmem",
  "hvdef",
  "inspect",
  "user_driver",
@@ -4689,6 +4690,7 @@ name = "openhcl_dma_manager"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "guestmem",
  "hcl",
  "hcl_mapper",
  "hvdef",
@@ -4979,6 +4981,7 @@ name = "page_pool_alloc"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "guestmem",
  "inspect",
  "memory_range",
  "mesh",
@@ -7473,6 +7476,7 @@ dependencies = [
  "pci_core",
  "safeatomic",
  "sparse_mmap",
+ "thiserror 2.0.0",
  "tracing",
  "uevent",
  "vfio-bindings",

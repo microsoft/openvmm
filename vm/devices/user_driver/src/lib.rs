@@ -6,9 +6,12 @@
 // UNSAFETY: Manual memory management around buffers and mmap.
 #![expect(unsafe_code)]
 
+use guestmem::ranges::PagedRange;
+use guestmem::GuestMemory;
 use inspect::Inspect;
 use interrupt::DeviceInterrupt;
 use memory::MemoryBlock;
+use std::future::Future;
 use std::sync::Arc;
 
 pub mod backoff;
@@ -60,6 +63,41 @@ pub trait DeviceRegisterIo: Send + Sync {
     fn write_u64(&self, offset: usize, data: u64);
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum MapDmaError {
+    #[error("failed to map ranges")]
+    MapFailed,
+    // UnmapFailed,
+    // PinFailed,
+    // BounceBufferFailed,
+}
+
+pub struct MapDmaOptions {
+    pub always_bounce: bool,
+    pub is_rx: bool,
+    pub is_tx: bool,
+    // todo?
+    // pub non_blocking: bool,
+}
+
+enum DmaPage {
+    PrePinned,
+    Pinned,
+    Bounced { bounce_pfn: u64 },
+}
+
+// TODO: make trait w/ associated type in dmaclient return for map to allow dma client implementer to hide details
+pub struct DmaTransaction<'a> {
+    /// guest memory object to use to bounce in/out
+    pub guest_memory: &'a GuestMemory,
+    /// original dma ranges
+    pub ranges: PagedRange<'a>,
+    /// dma ranges after map call
+    /// TODO: this allocates on map - can we avoid? do we need to make the user pass a different kind of pagedrange?
+    pub mapped_ranges: Vec<DmaPage>,
+    pub options: MapDmaOptions,
+}
+
 /// Device interfaces for DMA.
 pub trait DmaClient: Send + Sync + Inspect {
     /// Allocate a new DMA buffer. This buffer must be zero initialized.
@@ -69,4 +107,21 @@ pub trait DmaClient: Send + Sync + Inspect {
 
     /// Attach to a previously allocated memory block.
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
+
+    /// Map the given ranges for DMA. A caller must call `unmap_dma_ranges` to
+    /// complete a dma transaction to observe the dma in the passed in ranges.
+    ///
+    /// This function may block, as if a page is required to be bounced it may
+    /// block waiting for bounce buffer space to become available.
+    fn map_dma_ranges<'a, 'b: 'a>(
+        &'a self,
+        guest_memory: &'a GuestMemory,
+        ranges: PagedRange<'b>,
+        options: MapDmaOptions,
+    ) -> Box<dyn Future<Output = Result<DmaTransaction<'a>, MapDmaError>> + 'a>;
+
+    /// Unmap a dma transaction to observe the dma into the requested ranges.
+    ///
+    /// TODO: return original ranges?
+    fn unmap_dma_ranges(&self, transaction: DmaTransaction<'_>) -> Result<(), MapDmaError>;
 }

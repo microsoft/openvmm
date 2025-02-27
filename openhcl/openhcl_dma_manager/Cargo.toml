@@ -11,6 +11,7 @@ hcl.workspace = true
 hcl_mapper.workspace = true
 lower_vtl_permissions_guard.workspace = true
 
+guestmem.workspace = true
 hvdef.workspace = true
 inspect.workspace = true
 memory_range.workspace = true
