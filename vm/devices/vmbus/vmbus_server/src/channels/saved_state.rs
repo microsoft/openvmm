@@ -5,6 +5,7 @@ use super::OfferError;
 use super::OfferParamsInternal;
 use super::OfferedInfo;
 use super::RestoreState;
+use super::SUPPORTED_FEATURE_FLAGS;
 use guid::Guid;
 use mesh::payload::Protobuf;
 use std::fmt::Display;
@@ -323,7 +324,7 @@ impl VersionInfo {
             .ok_or(RestoreError::UnsupportedVersion(self.version))?;
 
         let feature_flags = FeatureFlags::from(self.feature_flags);
-        if feature_flags.contains_unsupported_bits() {
+        if !SUPPORTED_FEATURE_FLAGS.contains(feature_flags) {
             return Err(RestoreError::UnsupportedFeatureFlags(feature_flags.into()));
         }
 

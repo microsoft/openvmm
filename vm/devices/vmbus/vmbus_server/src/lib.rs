@@ -444,7 +444,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
                     .map(|_| {
                         ModifyConnectionResponse::Supported(
                             protocol::ConnectionState::SUCCESSFUL,
-                            protocol::FeatureFlags::all(),
+                            protocol::FeatureFlags::from_bits(u32::MAX),
                         )
                     })
                     .boxed()

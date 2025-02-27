@@ -4,6 +4,7 @@
 use crate::OfferInfo;
 use crate::RestoreError;
 use crate::RestoredChannel;
+use crate::SUPPORTED_FEATURE_FLAGS;
 use guid::Guid;
 use mesh::payload::Protobuf;
 use vmbus_channel::bus::OfferKey;
@@ -241,7 +242,7 @@ impl TryFrom<ClientState> for super::ClientState {
                     .ok_or(RestoreError::UnsupportedVersion(version))?;
 
                 let feature_flags = FeatureFlags::from(feature_flags);
-                if feature_flags.contains_unsupported_bits() {
+                if !SUPPORTED_FEATURE_FLAGS.contains(feature_flags) {
                     return Err(RestoreError::UnsupportedFeatureFlags(feature_flags.into()));
                 }
 
