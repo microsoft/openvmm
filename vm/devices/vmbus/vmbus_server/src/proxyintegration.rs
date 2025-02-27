@@ -222,12 +222,18 @@ impl ProxyTask {
     ) -> Option<mesh::Receiver<ChannelRequest>> {
         let server = match offer.TargetVtl {
             0 => self.server.as_ref(),
-            2 => self
-                .vtl2_server
-                .as_ref()
-                .expect("VTL2 offer without VTL2 server")
-                .as_ref(),
-            _ => panic!("BUGBUG: unsupported VTL {}", offer.TargetVtl),
+            2 => {
+                if let Some(server) = self.vtl2_server.as_ref() {
+                    server
+                } else {
+                    tracing::error!(?offer, "VTL2 offer without VTL2 server");
+                    return None;
+                }
+            }
+            _ => {
+                tracing::error!(?offer, "unsupported offer VTL");
+                return None;
+            }
         };
 
         let channel_type = if offer.ChannelFlags & VMBUS_CHANNEL_ENUMERATE_DEVICE_INTERFACE != 0 {
@@ -235,7 +241,10 @@ impl ProxyTask {
             let message_mode = match pipe_mode {
                 vmbus_proxy::vmbusioctl::VMBUS_PIPE_TYPE_BYTE => false,
                 vmbus_proxy::vmbusioctl::VMBUS_PIPE_TYPE_MESSAGE => true,
-                _ => panic!("BUGBUG: unsupported"),
+                _ => {
+                    tracing::error!(?offer, "unsupported offer pipe mode");
+                    return None;
+                }
             };
             ChannelType::Pipe { message_mode }
         } else {
