@@ -569,15 +569,6 @@ impl VmbusServer {
         let _ = self.task.await;
     }
 
-    #[cfg(windows)]
-    pub async fn start_kernel_proxy(
-        &self,
-        driver: &(impl pal_async::driver::SpawnDriver + Clone),
-        handle: ProxyHandle,
-    ) -> std::io::Result<ProxyIntegration> {
-        ProxyIntegration::start(driver, handle, self.control(), Some(&self.control.mem)).await
-    }
-
     /// Returns an object that can be used to offer channels.
     pub fn control(&self) -> Arc<VmbusServerControl> {
         self.control.clone()

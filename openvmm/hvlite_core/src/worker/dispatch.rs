@@ -113,6 +113,7 @@ use vm_topology::processor::TopologyBuilder;
 use vmbus_channel::channel::VmbusDevice;
 use vmbus_server::hvsock::HvsockRelay;
 use vmbus_server::HvsockRelayChannel;
+use vmbus_server::ProxyIntegration;
 use vmbus_server::VmbusServer;
 use vmcore::save_restore::SavedStateRoot;
 use vmcore::vm_task::thread::ThreadDriverBackend;
@@ -500,7 +501,7 @@ struct LoadedVmInner {
     vmbus_server: Option<VmbusServerHandle>,
     vtl2_vmbus_server: Option<VmbusServerHandle>,
     #[cfg(windows)]
-    _vmbus_proxy: Option<vmbus_server::ProxyIntegration>,
+    _vmbus_proxy: Option<ProxyIntegration>,
     #[cfg(windows)]
     _kernel_vmnics: Vec<vmswitch::kernel::KernelVmNic>,
     memory_cfg: MemoryConfig,
@@ -1678,10 +1679,15 @@ impl InitializedVm {
             #[cfg(windows)]
             if let Some(proxy_handle) = vmbus_cfg.vmbusproxy_handle {
                 vmbus_proxy = Some(
-                    vmbus
-                        .start_kernel_proxy(&vmbus_driver, proxy_handle)
-                        .await
-                        .context("failed to start the vmbus proxy")?,
+                    ProxyIntegration::start(
+                        &vmbus_driver,
+                        proxy_handle,
+                        vmbus.control(),
+                        vtl2_vmbus.as_ref().map(|server| server.control().clone()),
+                        Some(&gm),
+                    )
+                    .await
+                    .context("failed to start the vmbus proxy")?,
                 )
             }
 
