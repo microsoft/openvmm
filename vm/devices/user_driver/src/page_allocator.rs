@@ -115,6 +115,15 @@ pub struct ScopedPages<'a> {
     pages: Vec<ScopedPage>,
 }
 
+impl std::fmt::Debug for ScopedPages<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScopedPages")
+            .field("pages", &self.pages)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
 struct ScopedPage {
     page_index: usize,
     physical_address: u64,
@@ -127,6 +136,10 @@ impl ScopedPages<'_> {
 
     pub fn physical_address(&self, index: usize) -> u64 {
         self.pages[index].physical_address
+    }
+
+    pub fn pfn(&self, index: usize) -> u64 {
+        self.pages[index].physical_address / PAGE_SIZE64
     }
 
     pub fn page_as_slice(&self, index: usize) -> &[AtomicU8] {

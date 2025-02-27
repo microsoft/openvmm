@@ -11,7 +11,9 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use interrupt::DeviceInterrupt;
 use memory::MemoryBlock;
+use page_allocator::ScopedPages;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 pub mod backoff;
@@ -67,11 +69,14 @@ pub trait DeviceRegisterIo: Send + Sync {
 pub enum MapDmaError {
     #[error("failed to map ranges")]
     MapFailed,
+    #[error("no bounce buffers available")]
+    NoBounceBufferAvailable,
     // UnmapFailed,
     // PinFailed,
     // BounceBufferFailed,
 }
 
+#[derive(Debug)]
 pub struct MapDmaOptions {
     pub always_bounce: bool,
     pub is_rx: bool,
@@ -80,13 +85,15 @@ pub struct MapDmaOptions {
     // pub non_blocking: bool,
 }
 
-enum DmaPage {
+#[derive(Debug, PartialEq, Eq)]
+pub enum DmaPage {
     PrePinned,
     Pinned,
-    Bounced { bounce_pfn: u64 },
+    Bounced { index: usize },
 }
 
 // TODO: make trait w/ associated type in dmaclient return for map to allow dma client implementer to hide details
+#[derive(Debug)]
 pub struct DmaTransaction<'a> {
     /// guest memory object to use to bounce in/out
     pub guest_memory: &'a GuestMemory,
@@ -96,6 +103,20 @@ pub struct DmaTransaction<'a> {
     /// TODO: this allocates on map - can we avoid? do we need to make the user pass a different kind of pagedrange?
     pub mapped_ranges: Vec<DmaPage>,
     pub options: MapDmaOptions,
+    pub bounced_pages: Option<ScopedPages<'a>>,
+}
+
+impl DmaTransaction<'_> {
+    /// the mapped ranges for this transaction
+    pub fn pfns(&self) -> impl Iterator<Item = u64> + use<'_> {
+        self.mapped_ranges
+            .iter()
+            .zip(self.ranges.gpns().iter())
+            .map(|(info, orig_page)| match info {
+                DmaPage::PrePinned | DmaPage::Pinned => *orig_page,
+                DmaPage::Bounced { index } => self.bounced_pages.as_ref().unwrap().pfn(*index),
+            })
+    }
 }
 
 /// Device interfaces for DMA.
@@ -118,7 +139,7 @@ pub trait DmaClient: Send + Sync + Inspect {
         guest_memory: &'a GuestMemory,
         ranges: PagedRange<'b>,
         options: MapDmaOptions,
-    ) -> Box<dyn Future<Output = Result<DmaTransaction<'a>, MapDmaError>> + 'a>;
+    ) -> Pin<Box<dyn Future<Output = Result<DmaTransaction<'a>, MapDmaError>> + 'a>>;
 
     /// Unmap a dma transaction to observe the dma into the requested ranges.
     ///

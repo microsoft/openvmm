@@ -872,10 +872,12 @@ impl user_driver::DmaClient for PagePoolAllocator {
         guest_memory: &'a GuestMemory,
         ranges: PagedRange<'b>,
         options: user_driver::MapDmaOptions,
-    ) -> Box<
-        dyn std::prelude::rust_2024::Future<
-                Output = Result<user_driver::DmaTransaction<'a>, user_driver::MapDmaError>,
-            > + 'a,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::prelude::rust_2024::Future<
+                    Output = Result<user_driver::DmaTransaction<'a>, user_driver::MapDmaError>,
+                > + 'a,
+        >,
     > {
         todo!()
     }
