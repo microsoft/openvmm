@@ -46,6 +46,8 @@ impl SimpleFlowNode for Node {
 
                 sh.change_dir(repo_path);
 
+                xshell::cmd!(sh, "git fetch --unshallow").run()?;
+
                 xshell::cmd!(sh, "git fetch origin {base_branch}").run()?;
                 xshell::cmd!(sh, "git fetch origin pull/{pr_number}/merge:{merge_ref}").run()?;
                 let commit =
