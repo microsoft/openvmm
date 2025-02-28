@@ -311,7 +311,7 @@ struct QueueState {
 
 struct RxBufferRange {
     id_range: Range<u32>,
-    remote_buffer_id_recv: Option<mpsc::UnboundedReceiver<u32>>,
+    remote_buffer_id_recv: Option<mesh::Receiver<u32>>,
     remote_ranges: Arc<RxBufferRanges>,
 }
 
@@ -319,7 +319,7 @@ impl RxBufferRange {
     fn new(
         ranges: Arc<RxBufferRanges>,
         id_range: Range<u32>,
-        remote_buffer_id_recv: Option<mpsc::UnboundedReceiver<u32>>,
+        remote_buffer_id_recv: Option<mesh::Receiver<u32>>,
     ) -> Self {
         Self {
             id_range,
@@ -331,10 +331,19 @@ impl RxBufferRange {
     fn send_if_remote(&self, id: u32) -> bool {
         if self.id_range.contains(&id) {
             false
+        } else if id < RX_RESERVED_CONTROL_BUFFERS
+            && self.remote_ranges.excluded_primary_send.is_some()
+        {
+            self.remote_ranges
+                .excluded_primary_send
+                .as_ref()
+                .unwrap()
+                .send(id);
+            true
         } else {
             let i = id.saturating_sub(RX_RESERVED_CONTROL_BUFFERS)
                 / self.remote_ranges.buffers_per_queue;
-            let _ = self.remote_ranges.buffer_id_send[i as usize].unbounded_send(id);
+            self.remote_ranges.buffer_id_send[i as usize].send(id);
             true
         }
     }
@@ -342,18 +351,30 @@ impl RxBufferRange {
 
 struct RxBufferRanges {
     buffers_per_queue: u32,
-    buffer_id_send: Vec<mpsc::UnboundedSender<u32>>,
+    buffer_id_send: Vec<mesh::Sender<u32>>,
+    excluded_primary_send: Option<mesh::Sender<u32>>,
 }
 
 impl RxBufferRanges {
-    fn new(buffer_count: u32, queue_count: u32) -> (Self, Vec<mpsc::UnboundedReceiver<u32>>) {
+    fn new(
+        buffer_count: u32,
+        queue_count: u32,
+        primary_queue_excluded: bool,
+    ) -> (Self, Vec<mesh::Receiver<u32>>) {
         let buffers_per_queue = (buffer_count - RX_RESERVED_CONTROL_BUFFERS) / queue_count;
-        #[expect(clippy::disallowed_methods)] // TODO
-        let (send, recv): (Vec<_>, Vec<_>) = (0..queue_count).map(|_| mpsc::unbounded()).unzip();
+        let remote_queue_count = queue_count + if primary_queue_excluded { 1 } else { 0 };
+        let (mut send, recv): (Vec<_>, Vec<_>) =
+            (0..remote_queue_count).map(|_| mesh::channel()).unzip();
+        let excluded_primary_send = if primary_queue_excluded {
+            Some(send.pop().unwrap())
+        } else {
+            None
+        };
         (
             Self {
                 buffers_per_queue,
                 buffer_id_send: send,
+                excluded_primary_send,
             },
             recv,
         )
@@ -1253,9 +1274,6 @@ impl VmbusDevice for Nic {
 
     fn start(&mut self) {
         if !self.coordinator.is_running() {
-            if let Some(coordinator) = self.coordinator.state_mut() {
-                coordinator.start_workers();
-            }
             self.coordinator.start();
         }
     }
@@ -3326,6 +3344,7 @@ impl Adapter {
         reader
             .skip(params.indirection_table_offset as usize)?
             .read(indirection_table[..indirection_table_size].as_mut_bytes())?;
+        tracing::info!(?indirection_table, "OID_GEN_RECEIVE_SCALE_PARAMETERS");
         if indirection_table
             .iter()
             .any(|&x| x >= self.max_queues as u32)
@@ -4115,14 +4134,23 @@ impl Coordinator {
                     .into_iter()
                     .filter(|&index| index < num_queues)
                     .collect::<Vec<_>>();
-                active_queues.len() as u16
+                if !active_queues.is_empty() {
+                    active_queues.len() as u16
+                } else {
+                    tracing::warn!("Invalid RSS indirection table");
+                    num_queues
+                }
             } else {
                 num_queues
             };
 
+        let primary_queue_excluded = !active_queues.is_empty() && active_queues[0] != 0;
         // Distribute the rx buffers to only the active queues.
-        let (ranges, mut remote_buffer_id_recvs) =
-            RxBufferRanges::new(state.buffers.recv_buffer.count, active_queue_count.into());
+        let (ranges, mut remote_buffer_id_recvs) = RxBufferRanges::new(
+            state.buffers.recv_buffer.count,
+            active_queue_count.into(),
+            primary_queue_excluded,
+        );
         let ranges = Arc::new(ranges);
 
         let mut queues = Vec::new();
@@ -4162,14 +4190,36 @@ impl Coordinator {
 
                 let mut initial_rx = initial_rx.as_slice();
                 let mut range_start = 0;
-                let mut active_count = 0;
-                for queue_index in 0..num_queues {
-                    let queue_active =
-                        active_queues.is_empty() || active_queues.contains(&queue_index);
+                let first_queue = if !primary_queue_excluded {
+                    0
+                } else {
+                    // If the primary queue is excluded from the guest supplied
+                    // indirection table, it is assigned just the reserved
+                    // buffers.
+                    queue_config.push(QueueConfig {
+                        pool: Box::new(BufferPool::new(guest_buffers.clone())),
+                        initial_rx: &[RxId(0)],
+                        driver: Box::new(drivers[0].clone()),
+                    });
+                    rx_buffers.push(RxBufferRange::new(
+                        ranges.clone(),
+                        0..RX_RESERVED_CONTROL_BUFFERS,
+                        Some(remote_buffer_id_recvs.remove(0)),
+                    ));
+                    range_start = RX_RESERVED_CONTROL_BUFFERS;
+                    1
+                };
+                for queue_index in first_queue..num_queues {
+                    let queue_active = active_queues.is_empty()
+                        || active_queues.binary_search(&queue_index).is_ok();
                     let (range_end, end, buffer_id_recv) = if queue_active {
-                        active_count += 1;
-                        let range_end =
-                            RX_RESERVED_CONTROL_BUFFERS + active_count * ranges.buffers_per_queue;
+                        let range_end = range_start
+                            + ranges.buffers_per_queue
+                            + if range_start == 0 {
+                                RX_RESERVED_CONTROL_BUFFERS
+                            } else {
+                                0
+                            };
                         (
                             range_end,
                             initial_rx.partition_point(|id| id.0 < range_end),
