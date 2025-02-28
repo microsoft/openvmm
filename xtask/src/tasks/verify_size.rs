@@ -93,8 +93,8 @@ impl Xtask for VerifySize {
 
         println!("Total difference: {total_diff} KiB.");
 
-        if total_diff > 100 {
-            anyhow::bail!("{} size verification failed: The total difference ({} KiB) is greater than the allowed difference ({} KiB).", self.new.display(), total_diff, 100);
+        if total_diff > 50 {
+            anyhow::bail!("{} size verification failed: The total difference ({} KiB) is greater than the allowed difference ({} KiB).", self.new.display(), total_diff, 50);
         }
 
         Ok(())
