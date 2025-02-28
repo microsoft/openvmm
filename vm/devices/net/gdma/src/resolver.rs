@@ -45,7 +45,7 @@ impl AsyncResolveResource<PciDeviceHandleKind, GdmaDeviceHandle> for GdmaDeviceR
         resource: GdmaDeviceHandle,
         input: ResolvePciDeviceHandleParams<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let vports = try_join_all(resource.vports.into_iter().map(|vport| async move {
+        let vports = try_join_all(resource.vports.into_iter().map(async |vport| {
             let endpoint = resolver
                 .resolve(
                     vport.endpoint,

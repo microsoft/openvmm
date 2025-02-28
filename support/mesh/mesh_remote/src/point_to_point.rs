@@ -60,7 +60,7 @@ impl PointToPointMesh {
     /// # use mesh_channel::channel;
     /// # use unix_socket::UnixStream;
     /// # use pal_async::socket::PolledSocket;
-    /// # pal_async::DefaultPool::run_with(|driver| async move {
+    /// # pal_async::DefaultPool::run_with(async |driver| {
     /// let (left, right) = UnixStream::pair().unwrap();
     /// let (a, ax) = channel::<u32>();
     /// let (bx, mut b) = channel::<u32>();

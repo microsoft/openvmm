@@ -585,7 +585,7 @@ impl<T: LegacyVirtioDevice> VirtioDevice for LegacyWrapper<T> {
         let mut workers = self.workers.drain(..).collect::<Vec<_>>();
         self.driver
             .spawn("shutdown-legacy-virtio-queues".to_owned(), async move {
-                futures::future::join_all(workers.iter_mut().map(|worker| async {
+                futures::future::join_all(workers.iter_mut().map(async |worker| {
                     worker.stop().await;
                     if let Some(VirtioQueueStateInner::Running { queue, .. }) =
                         worker.state_mut().map(|s| &s.inner)

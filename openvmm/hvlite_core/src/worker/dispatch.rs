@@ -331,7 +331,7 @@ impl Worker for VmWorker {
             manifest,
             Some(shared_memory),
         ))?;
-        block_with_io(|_| async {
+        pal_async::local::block_on(async {
             let mut vm = vm.load(Some(saved_state), notify).await?;
 
             LOADED_VM.store(&vm);
@@ -348,7 +348,7 @@ impl Worker for VmWorker {
     }
 
     fn run(self, worker_rpc: mesh::Receiver<WorkerRpc<Self::State>>) -> anyhow::Result<()> {
-        DefaultPool::run_with(|driver| async {
+        DefaultPool::run_with(async |driver| {
             let driver = driver;
             self.vm.run(&driver, self.rpc, worker_rpc).await
         });
@@ -1196,7 +1196,7 @@ impl InitializedVm {
 
         let input_distributor = state_units
             .add("input")
-            .spawn(driver_source.simple(), |mut recv| async move {
+            .spawn(driver_source.simple(), async |mut recv| {
                 input_distributor.run(&mut recv).await;
                 input_distributor
             })
@@ -1745,34 +1745,32 @@ impl InitializedVm {
                     .context("failed to create a virtio pci device")
                 })?;
 
-            {
-                let mut builder = chipset_builder.arc_mutex_device(vpci_device_name);
-                let mut mmio = builder.services().register_mmio();
-                builder
-                    .try_add_async(|_services| async {
-                        let vmbus = vmbus_server.as_ref().context("vmbus not configured")?;
-                        let hv_device = partition
-                            .new_virtual_device(Vtl::Vtl0, device_id)
-                            .context("failed to create virtual device")?;
+            chipset_builder
+                .arc_mutex_device(vpci_device_name)
+                .try_add_async(async |services| {
+                    let mut mmio = services.register_mmio();
+                    let vmbus = vmbus_server.as_ref().context("vmbus not configured")?;
+                    let hv_device = partition
+                        .new_virtual_device(Vtl::Vtl0, device_id)
+                        .context("failed to create virtual device")?;
 
-                        let msi_controller = hv_device.clone().target();
-                        let interrupt_mapper = hv_device.clone().interrupt_mapper();
-                        msi_set.connect(msi_controller.as_ref());
+                    let msi_controller = hv_device.clone().target();
+                    let interrupt_mapper = hv_device.clone().interrupt_mapper();
+                    msi_set.connect(msi_controller.as_ref());
 
-                        let bus = VpciBus::new(
-                            driver_source,
-                            instance_id,
-                            device,
-                            &mut mmio,
-                            vmbus.control().as_ref(),
-                            interrupt_mapper,
-                        )
-                        .await?;
-
-                        anyhow::Ok(bus)
-                    })
+                    let bus = VpciBus::new(
+                        driver_source,
+                        instance_id,
+                        device,
+                        &mut mmio,
+                        vmbus.control().as_ref(),
+                        interrupt_mapper,
+                    )
                     .await?;
-            }
+
+                    anyhow::Ok(bus)
+                })
+                .await?;
 
             Ok(())
         }
@@ -1914,14 +1912,13 @@ impl InitializedVm {
 
                     {
                         let mut builder = chipset_builder.arc_mutex_device(vpci_bus_name);
-                        let mut register_mmio = builder.services().register_mmio();
                         builder
-                            .try_add_async(|_services| async {
+                            .try_add_async(async |services| {
                                 VpciBus::new(
                                     &driver_source,
                                     instance_id,
                                     device,
-                                    &mut register_mmio,
+                                    &mut services.register_mmio(),
                                     vmbus,
                                     crate::partition::VpciDevice::interrupt_mapper(hv_device),
                                 )
@@ -2554,18 +2551,18 @@ impl LoadedVm {
                 },
                 Event::VmRpc(Err(_)) => break,
                 Event::VmRpc(Ok(message)) => match message {
-                    VmRpc::Reset(rpc) => rpc.handle_failable(|()| self.reset(true)).await,
+                    VmRpc::Reset(rpc) => {
+                        rpc.handle_failable(async |()| self.reset(true).await).await
+                    }
                     VmRpc::ClearHalt(rpc) => {
-                        rpc.handle(|()| self.inner.partition_unit.clear_halt())
+                        rpc.handle(async |()| self.inner.partition_unit.clear_halt().await)
                             .await
                     }
-                    VmRpc::Resume(rpc) => rpc.handle(|()| self.resume()).await,
-                    VmRpc::Pause(rpc) => rpc.handle(|()| self.pause()).await,
+                    VmRpc::Resume(rpc) => rpc.handle(async |()| self.resume().await).await,
+                    VmRpc::Pause(rpc) => rpc.handle(async |()| self.pause().await).await,
                     VmRpc::Save(rpc) => {
-                        rpc.handle_failable(|()| async {
-                            self.save().await.map(ProtobufMessage::new)
-                        })
-                        .await
+                        rpc.handle_failable(async |()| self.save().await.map(ProtobufMessage::new))
+                            .await
                     }
                     VmRpc::Nmi(rpc) => rpc.handle_sync(|vpindex| {
                         if vpindex < self.inner.processor_topology.vp_count() {
@@ -2593,27 +2590,24 @@ impl LoadedVm {
                         }
                     }),
                     VmRpc::AddVmbusDevice(rpc) => {
-                        rpc.handle_failable(|(vtl, resource)| {
-                            let this = &mut self;
-                            async move {
-                                let vmbus = match vtl {
-                                    DeviceVtl::Vtl0 => this.inner.vmbus_server.as_ref(),
-                                    DeviceVtl::Vtl1 => None,
-                                    DeviceVtl::Vtl2 => this.inner.vtl2_vmbus_server.as_ref(),
-                                }
-                                .context("no vmbus available")?;
-                                let device = offer_vmbus_device_handle_unit(
-                                    &this.inner.driver_source,
-                                    &this.state_units,
-                                    vmbus,
-                                    &this.inner.resolver,
-                                    resource,
-                                )
-                                .await?;
-                                this.inner.vmbus_devices.push(device);
-                                this.state_units.start_stopped_units().await;
-                                anyhow::Ok(())
+                        rpc.handle_failable(async |(vtl, resource)| {
+                            let vmbus = match vtl {
+                                DeviceVtl::Vtl0 => self.inner.vmbus_server.as_ref(),
+                                DeviceVtl::Vtl1 => None,
+                                DeviceVtl::Vtl2 => self.inner.vtl2_vmbus_server.as_ref(),
                             }
+                            .context("no vmbus available")?;
+                            let device = offer_vmbus_device_handle_unit(
+                                &self.inner.driver_source,
+                                &self.state_units,
+                                vmbus,
+                                &self.inner.resolver,
+                                resource,
+                            )
+                            .await?;
+                            self.inner.vmbus_devices.push(device);
+                            self.state_units.start_stopped_units().await;
+                            anyhow::Ok(())
                         })
                         .await
                     }
@@ -2633,7 +2627,7 @@ impl LoadedVm {
                         }
                     }
                     VmRpc::PulseSaveRestore(rpc) => {
-                        rpc.handle(|()| async {
+                        rpc.handle(async |()| {
                             if !self.inner.partition.supports_reset() {
                                 return Err(PulseSaveRestoreError::ResetNotSupported);
                             }
@@ -2651,8 +2645,10 @@ impl LoadedVm {
                         rpc.handle_failable_sync(|file| self.start_reload_igvm(&file))
                     }
                     VmRpc::CompleteReloadIgvm(rpc) => {
-                        rpc.handle_failable(|complete| self.complete_reload_igvm(complete))
-                            .await
+                        rpc.handle_failable(async |complete| {
+                            self.complete_reload_igvm(complete).await
+                        })
+                        .await
                     }
                     VmRpc::ReadMemory(rpc) => {
                         rpc.handle_failable_sync(|(gpa, size)| {

@@ -155,7 +155,7 @@ pub fn main() -> anyhow::Result<()> {
     // not return). Any worker host setup errors are return and bubbled up.
     try_run_mesh_host("underhill", {
         let tracing_driver = tracing_driver.clone();
-        |params: MeshHostParams| async move {
+        async |params: MeshHostParams| {
             if let Some(remote_tracer) = params.tracer {
                 init_tracing(tracing_driver, remote_tracer).context("failed to init tracing")?;
             }
@@ -486,7 +486,7 @@ async fn run_control(
             Event::Diag(request) => {
                 match request {
                     diag_server::DiagRequest::Start(rpc) => {
-                        rpc.handle_failable(|params| async {
+                        rpc.handle_failable(async |params| {
                             if workers.is_some() {
                                 Err(anyhow::anyhow!("workers have already been started"))?;
                             }
@@ -719,13 +719,10 @@ async fn run_control(
             },
             Event::Control(req) => match req {
                 ControlRequest::FlushLogs(rpc) => {
-                    rpc.handle(|mut ctx| {
-                        let tracing = &mut tracing;
-                        async move {
-                            tracing::info!("flushing logs");
-                            ctx.until_cancelled(tracing.flush()).await?;
-                            Ok(())
-                        }
+                    rpc.handle(async |mut ctx| {
+                        tracing::info!("flushing logs");
+                        ctx.until_cancelled(tracing.flush()).await?;
+                        Ok(())
                     })
                     .await
                 }

@@ -98,7 +98,7 @@ where
     }
 
     fn run(self, mut rpc_recv: mesh::Receiver<WorkerRpc<Self::Parameters>>) -> anyhow::Result<()> {
-        block_with_io(|driver| async move {
+        block_with_io(async |driver| {
             tracing::info!(
                 address = %self.listener.local_addr().unwrap(),
                 "gdbstub listening",

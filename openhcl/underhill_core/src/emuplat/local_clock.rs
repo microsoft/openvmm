@@ -131,8 +131,7 @@ impl LocalClock for UnderhillLocalClock {
             .unwrap();
 
         // TODO: swap this out for a non-blocking version that guarantees the skew is written out _eventually_
-        let res =
-            pal_async::local::block_with_io(|_| self.store.persist(raw_skew.to_le_bytes().into()));
+        let res = pal_async::local::block_on(self.store.persist(raw_skew.to_le_bytes().into()));
         if let Err(err) = res {
             tracing::error!(
                 err = &err as &dyn std::error::Error,

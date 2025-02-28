@@ -669,7 +669,7 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
                     (#artifacts, extra_deps)
                 },
                 |params, (artifacts, extra_deps)| {
-                    ::pal_async::DefaultPool::run_with(|driver| async move {
+                    ::pal_async::DefaultPool::run_with(async |driver| {
                         let config = #petri_vm_config;
                         #original_name(#original_args).await
                     })

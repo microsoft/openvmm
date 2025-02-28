@@ -65,14 +65,12 @@ impl<T: IoBackend + Default> IoPool<T> {
 
     /// Creates and runs a task pool, seeding it with an initial future
     /// `f(driver)`, until all tasks have completed.
-    pub fn run_with<F, Fut>(f: F) -> Fut::Output
+    pub fn run_with<F, R>(f: F) -> R
     where
-        F: FnOnce(IoDriver<T>) -> Fut,
-        Fut: Future + Send,
-        Fut::Output: 'static + Send,
+        F: AsyncFnOnce(IoDriver<T>) -> R,
     {
         let mut pool = Self::named(std::thread::current().name().unwrap_or_else(|| T::name()));
-        let fut = f(pool.driver());
+        let fut = f(pool.driver.clone());
         drop(pool.driver.scheduler);
         pool.driver
             .inner

@@ -2892,7 +2892,7 @@ pub mod tests {
         p4.send(bmsg(b"i"));
         drop(p4);
 
-        let recv_all = |mut p: Channel| async move {
+        let recv_all = async |mut p: Channel| {
             let mut v = Vec::new();
             loop {
                 match p.recv().await {

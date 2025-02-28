@@ -104,16 +104,12 @@ impl UeventListener {
     ///
     /// This is inefficient if there are lots of waiters and lots of incoming
     /// uevents, but this is not an expected use case.
-    pub async fn wait_for_matching_child<T: 'static + Send, F, Fut>(
-        &self,
-        path: &Path,
-        f: F,
-    ) -> io::Result<T>
+    pub async fn wait_for_matching_child<T, F, Fut>(&self, path: &Path, f: F) -> io::Result<T>
     where
         F: Fn(PathBuf, bool) -> Fut,
         Fut: Future<Output = Option<T>>,
     {
-        let scan_for_matching_child = || async {
+        let scan_for_matching_child = async || {
             for entry in path.fs_err_read_dir()? {
                 let entry = entry?;
                 if let Some(r) = f(entry.path(), false).await {

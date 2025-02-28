@@ -316,7 +316,7 @@ impl LoadedVm {
                 }
                 Event::UhVmRpc(msg) => match msg {
                     UhVmRpc::Resume(rpc) => {
-                        rpc.handle(|()| async {
+                        rpc.handle(async |()| {
                             if !self.state_units.is_running() {
                                 self.start(None).await;
                                 true
@@ -326,9 +326,9 @@ impl LoadedVm {
                         })
                         .await
                     }
-                    UhVmRpc::Pause(rpc) => rpc.handle(|()| self.stop()).await,
+                    UhVmRpc::Pause(rpc) => rpc.handle(async |()| self.stop().await).await,
                     UhVmRpc::Save(rpc) => {
-                        rpc.handle_failable(|()| async {
+                        rpc.handle_failable(async |()| {
                             let running = self.stop().await;
                             let r = self.save(None, false).await;
                             if running {
@@ -339,10 +339,11 @@ impl LoadedVm {
                         .await
                     }
                     UhVmRpc::ClearHalt(rpc) => {
-                        rpc.handle(|()| self.partition_unit.clear_halt()).await
+                        rpc.handle(async |()| self.partition_unit.clear_halt().await)
+                            .await
                     }
                     UhVmRpc::PacketCapture(rpc) => {
-                        rpc.handle_failable(|params| async {
+                        rpc.handle_failable(async |params| {
                             let network_settings = self
                                 .network_settings
                                 .as_ref()
@@ -381,7 +382,7 @@ impl LoadedVm {
                     }
                 }
                 Event::ShutdownRequest(rpc) => {
-                    rpc.handle(|msg| async {
+                    rpc.handle(async |msg| {
                         if matches!(msg.shutdown_type, ShutdownType::Hibernate) {
                             self.handle_hibernate_request(false).await;
                         }

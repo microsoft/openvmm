@@ -36,7 +36,6 @@ use slab::Slab;
 use std::borrow::Cow;
 use std::ffi::OsString;
 use std::fs::File;
-use std::future::Future;
 #[cfg(unix)]
 use std::os::unix::prelude::*;
 #[cfg(windows)]
@@ -82,11 +81,10 @@ static PROCESS_NAME: DebugPtr<String> = DebugPtr::new();
 /// If a mesh invitation is available, this function joins the mesh and runs the
 /// future returned by `f` until `f` returns or the parent process shuts down
 /// the mesh.
-pub fn try_run_mesh_host<U, Fut, F, T>(base_name: &str, f: F) -> anyhow::Result<()>
+pub fn try_run_mesh_host<U, F, T>(base_name: &str, f: F) -> anyhow::Result<()>
 where
     U: 'static + MeshPayload + Send,
-    F: FnOnce(U) -> Fut,
-    Fut: Future<Output = anyhow::Result<T>>,
+    F: AsyncFnOnce(U) -> anyhow::Result<T>,
 {
     block_on(async {
         if let Some(r) = node_from_environment().await? {
@@ -525,7 +523,8 @@ impl MeshInner {
             match event {
                 Event::Request(request) => match request {
                     MeshRequest::NewHost(rpc) => {
-                        rpc.handle(|params| self.spawn_process(params)).await
+                        rpc.handle(async |params| self.spawn_process(params).await)
+                            .await
                     }
                     MeshRequest::Inspect(deferred) => {
                         deferred.respond(|resp| {

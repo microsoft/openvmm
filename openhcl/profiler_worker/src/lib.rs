@@ -73,7 +73,7 @@ impl Worker for ProfilerWorker {
 
     /// Run profiler worker and start a profiling session
     fn run(self, mut recv: mesh::Receiver<WorkerRpc<Self::State>>) -> anyhow::Result<()> {
-        DefaultPool::run_with(|driver| async move {
+        DefaultPool::run_with(async |driver| {
             let mut profiling = pin!(profile(self.profiler_request, &driver).fuse());
             loop {
                 let msg = futures::select! { // merge semantics

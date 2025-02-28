@@ -648,10 +648,10 @@ impl Tpm {
             };
 
             if update_ppi {
-                let res = pal_async::local::block_with_io(|_| {
+                let res = pal_async::local::block_on(
                     (self.rt.ppi_store)
-                        .persist(persist_restore::serialize_ppi_state(self.ppi_state))
-                });
+                        .persist(persist_restore::serialize_ppi_state(self.ppi_state)),
+                );
                 if let Err(e) = res {
                     tracing::warn!(
                         error = &e as &dyn std::error::Error,
@@ -985,7 +985,7 @@ impl ChangeDeviceState for Tpm {
         self.tpm_engine_helper
             .initialize_tpm_engine()
             .expect("failed to send TPM startup commands");
-        pal_async::local::block_with_io(|_| self.flush_pending_nvram())
+        pal_async::local::block_on(self.flush_pending_nvram())
             .expect("failed to flush nvram on reset");
     }
 }
@@ -1216,7 +1216,7 @@ impl MmioIntercept for Tpm {
             _ => return IoResult::Err(IoError::InvalidRegister),
         }
 
-        let res = pal_async::local::block_with_io(|_| self.flush_pending_nvram());
+        let res = pal_async::local::block_on(self.flush_pending_nvram());
         if let Err(e) = res {
             tracing::warn!(
                 error = &e as &dyn std::error::Error,

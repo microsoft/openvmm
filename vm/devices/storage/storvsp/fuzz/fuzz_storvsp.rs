@@ -202,7 +202,7 @@ async fn do_fuzz_loop(
 }
 
 fn do_fuzz(u: &mut Unstructured<'_>) -> Result<(), anyhow::Error> {
-    DefaultPool::run_with(|driver| async move {
+    DefaultPool::run_with(async |driver| {
         let (host, guest_channel) = connected_async_channels(16 * 1024); // TODO: [use-arbitrary-input]
         let guest_queue = Queue::new(guest_channel).unwrap();
 

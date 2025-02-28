@@ -70,7 +70,7 @@ fn make_async_test(item: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
         #(#attrs)*
         fn #name() {
             #item
-            ::pal_async::DefaultPool::run_with(|driver| async move {
+            ::pal_async::DefaultPool::run_with(async |driver| {
                 #name(#args).await
             })
             #unwrap

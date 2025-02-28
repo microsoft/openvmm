@@ -104,7 +104,7 @@ impl<T: 'static + Listener + MeshField + Send> VncWorker<T> {
         self,
         mut rpc_recv: mesh::Receiver<WorkerRpc<VncParameters<T>>>,
     ) -> anyhow::Result<()> {
-        block_with_io(|driver| async move {
+        block_with_io(async |driver| {
             tracing::info!(
                 address = ?self.listener.local_addr().unwrap(),
                 "VNC server listening",

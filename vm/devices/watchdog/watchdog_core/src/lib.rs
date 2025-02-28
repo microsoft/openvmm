@@ -222,7 +222,7 @@ impl WatchdogServices {
             tracing::error!(name = self.debug_id, "Encountered a watchdog timeout");
             self.state.config.set_configured(false);
             self.state.config.set_enabled(false);
-            pal_async::local::block_with_io(|_driver| self.platform.on_timeout());
+            pal_async::local::block_with_io(async |_driver| self.platform.on_timeout().await);
         }
     }
 }

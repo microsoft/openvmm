@@ -22,7 +22,6 @@ use inspect::Inspect;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use pal_async::local::block_with_io;
 use parking_lot::Mutex;
 use slab::Slab;
 use std::future::Future;
@@ -800,7 +799,7 @@ impl VpSet {
         self.vps
             .iter()
             .enumerate()
-            .map(|(index, vp)| async move {
+            .map(async |(index, vp)| {
                 let data = vp
                     .send
                     .call(|x| VpEvent::State(StateEvent::Save(x)), ())
@@ -1500,11 +1499,9 @@ impl<T: virt::Partition> RequestYield for T {
 /// waker needs to ask the VP to yield).
 pub fn block_on_vp<F: Future>(partition: Arc<dyn RequestYield>, vp: VpIndex, fut: F) -> F::Output {
     let mut fut = pin!(fut);
-    block_with_io(|_| {
-        std::future::poll_fn(|cx| {
-            let waker = Arc::new(VpWaker::new(partition.clone(), vp, cx.waker().clone())).into();
-            let mut cx = Context::from_waker(&waker);
-            fut.poll_unpin(&mut cx)
-        })
-    })
+    pal_async::local::block_on(std::future::poll_fn(|cx| {
+        let waker = Arc::new(VpWaker::new(partition.clone(), vp, cx.waker().clone())).into();
+        let mut cx = Context::from_waker(&waker);
+        fut.poll_unpin(&mut cx)
+    }))
 }

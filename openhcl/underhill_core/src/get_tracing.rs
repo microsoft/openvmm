@@ -94,7 +94,7 @@ pub fn init_tracing_backend(driver: impl 'static + SpawnDriver) -> anyhow::Resul
         driver,
         trace_filter,
         perf_trace_filter,
-        move |requests, flush| async move {
+        async move |requests, flush| {
             if let Some(get_backend) = &mut get_backend {
                 get_backend.run(requests, kmsg, flush).await;
             }

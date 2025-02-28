@@ -35,7 +35,7 @@ pub fn relay_console(path: &Path) -> anyhow::Result<()> {
     // But we use sync to read/write to stdio because it's quite challenging to
     // poll for stdio readiness, especially on Windows. So we use a separate
     // thread for input and output.
-    block_with_io(|driver| async move {
+    block_with_io(async |driver| {
         #[cfg(unix)]
         let (read, mut write) = {
             let pipe = pal_async::socket::PolledSocket::connect_unix(&driver, path)

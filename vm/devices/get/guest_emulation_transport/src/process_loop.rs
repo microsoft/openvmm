@@ -997,10 +997,9 @@ impl<T: RingMem> ProcessLoop<T> {
         I: 'static + Send,
         Resp: 'static + IntoBytes + FromBytes + Send + Immutable + KnownLayout,
     {
-        self.push_host_request_handler(|mut access| {
-            req.handle_must_succeed(move |input| async move {
-                access.send_request_fixed_size(&f(input)).await
-            })
+        self.push_host_request_handler(async move |mut access| {
+            req.handle_must_succeed(async |input| access.send_request_fixed_size(&f(input)).await)
+                .await
         });
     }
 
@@ -1071,7 +1070,9 @@ impl<T: RingMem> ProcessLoop<T> {
             // Host Requests
             Msg::DevicePlatformSettingsV2(req) => {
                 self.push_host_request_handler(|access| {
-                    req.handle_must_succeed(|()| request_device_platform_settings_v2(access))
+                    req.handle_must_succeed(async |()| {
+                        request_device_platform_settings_v2(access).await
+                    })
                 });
             }
             Msg::VmgsFlush(req) => {
@@ -1085,7 +1086,7 @@ impl<T: RingMem> ProcessLoop<T> {
                 });
             }
             Msg::GetVtl2SavedStateFromHost(req) => self.push_host_request_handler(|access| {
-                req.handle_must_succeed(|()| request_saved_state(access))
+                req.handle_must_succeed(async |()| request_saved_state(access).await)
             }),
             Msg::GuestStateProtection(req) => {
                 self.push_basic_host_request_handler(req, |request| *request);
@@ -1102,19 +1103,19 @@ impl<T: RingMem> ProcessLoop<T> {
                 let shared_pool_allocator = self.gpa_allocator.clone();
 
                 self.push_igvm_attest_request_handler(|access| {
-                    req.handle_must_succeed(|request| {
-                        request_igvm_attest(access, *request, shared_pool_allocator)
+                    req.handle_must_succeed(async |request| {
+                        request_igvm_attest(access, *request, shared_pool_allocator).await
                     })
                 });
             }
             Msg::VmgsRead(req) => {
                 self.push_host_request_handler(|access| {
-                    req.handle_must_succeed(|input| request_vmgs_read(access, input))
+                    req.handle_must_succeed(async |input| request_vmgs_read(access, input).await)
                 });
             }
             Msg::VmgsWrite(req) => {
                 self.push_host_request_handler(|access| {
-                    req.handle_must_succeed(|input| request_vmgs_write(access, input))
+                    req.handle_must_succeed(async |input| request_vmgs_write(access, input).await)
                 });
             }
             Msg::VpciDeviceControl(req) => {
@@ -1167,7 +1168,9 @@ impl<T: RingMem> ProcessLoop<T> {
                 });
             }
             Msg::SendServicingState(req) => self.push_host_request_handler(move |access| {
-                req.handle_must_succeed(|data| request_send_servicing_state(access, data))
+                req.handle_must_succeed(async |data| {
+                    request_send_servicing_state(access, data).await
+                })
             }),
             Msg::CompleteStartVtl0(rpc) => {
                 let (input, res) = rpc.split();
@@ -1179,7 +1182,7 @@ impl<T: RingMem> ProcessLoop<T> {
             Msg::PowerState(state) => {
                 // Queue behind any pending requests to avoid terminating while
                 // something important is in flight.
-                self.push_host_request_handler(move |mut access| async move {
+                self.push_host_request_handler(async move |mut access| {
                     let message = match state {
                         msg::PowerState::PowerOff => get_protocol::PowerOffNotification::new(false)
                             .as_bytes()

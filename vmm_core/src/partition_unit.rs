@@ -214,7 +214,7 @@ impl PartitionUnit {
         };
 
         let handle = builder
-            .spawn(spawner, |recv| async move {
+            .spawn(spawner, async |recv| {
                 runner.run(recv).await;
                 runner
             })
@@ -326,11 +326,11 @@ impl PartitionUnitRunner {
                 Event::Request(request) => match request {
                     PartitionRequest::ClearHalt(rpc) => rpc.handle_sync(|()| self.clear_halt()),
                     PartitionRequest::SetInitialRegs(rpc) => {
-                        rpc.handle(|(vtl, state)| self.set_initial_regs(vtl, state))
+                        rpc.handle(async |(vtl, state)| self.set_initial_regs(vtl, state).await)
                             .await
                     }
                     PartitionRequest::SetInitialPageVisibility(rpc) => {
-                        rpc.handle(|vis| self.set_initial_page_visibility(vis))
+                        rpc.handle(async |vis| self.set_initial_page_visibility(vis).await)
                             .await
                     }
                 },

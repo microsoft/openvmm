@@ -120,7 +120,7 @@ async fn handle_dvd_requests(
     while let Some(req) = requests.next().await {
         match req {
             SimpleScsiDvdRequest::ChangeMedia(rpc) => {
-                rpc.handle_failable(|resource| async {
+                rpc.handle_failable(async |resource| {
                     let media = if let Some(resource) = resource {
                         Some(
                             resolver

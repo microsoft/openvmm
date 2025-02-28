@@ -384,7 +384,7 @@ impl RelayChannelTask {
         tracing::trace!(request = ?request, "received channel request");
         match request {
             ChannelRequest::Open(rpc) => {
-                rpc.handle(|open_request| async move {
+                rpc.handle(async |open_request| {
                     self.handle_open_channel(&open_request)
                         .await
                         .inspect_err(|err| {
@@ -399,7 +399,7 @@ impl RelayChannelTask {
                 .await;
             }
             ChannelRequest::Gpadl(rpc) => {
-                rpc.handle(|gpadl| async move {
+                rpc.handle(async |gpadl| {
                     let id = gpadl.id;
                     self.handle_gpadl(gpadl)
                         .await
@@ -416,17 +416,15 @@ impl RelayChannelTask {
                 .await;
             }
             ChannelRequest::Close(rpc) => {
-                rpc.handle(|()| async move { self.handle_close_channel().await })
+                rpc.handle(async |()| self.handle_close_channel().await)
                     .await;
             }
             ChannelRequest::TeardownGpadl(rpc) => {
                 self.handle_gpadl_teardown(rpc);
             }
             ChannelRequest::Modify(rpc) => {
-                rpc.handle(|request| async move {
-                    self.handle_modify_channel(request).await.unwrap_or(-1)
-                })
-                .await;
+                rpc.handle(async |request| self.handle_modify_channel(request).await.unwrap_or(-1))
+                    .await;
             }
         }
 
@@ -864,14 +862,14 @@ impl RelayTask {
                 r = task_recv.recv().fuse() => {
                     match r.unwrap() {
                         TaskRequest::Inspect(req) => req.inspect(&mut *self),
-                        TaskRequest::Save(rpc) => rpc.handle(|()| {
-                             self.handle_save()
+                        TaskRequest::Save(rpc) => rpc.handle(async |()| {
+                             self.handle_save().await
                         }).await,
-                        TaskRequest::Restore(rpc) => rpc.handle(|state|  {
-                            self.handle_restore(state)
+                        TaskRequest::Restore(rpc) => rpc.handle(async |state|  {
+                            self.handle_restore(state).await
                         }).await,
                         TaskRequest::Start => self.handle_start().await,
-                        TaskRequest::Stop(rpc) => rpc.handle(|()| self.handle_stop()).await,
+                        TaskRequest::Stop(rpc) => rpc.handle(async |()| self.handle_stop().await).await,
                     }
                 }
                 r = self.channel_workers.select_next_some() => {

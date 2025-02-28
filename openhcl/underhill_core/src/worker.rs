@@ -334,7 +334,7 @@ impl Worker for UnderhillVmWorker {
     const ID: WorkerId<Self::Parameters> = UNDERHILL_WORKER;
 
     fn new(params: Self::Parameters) -> anyhow::Result<Self> {
-        pal_async::local::block_with_io(|driver| async {
+        pal_async::local::block_with_io(async |driver| {
             let (get_infra, get_watchdog_task) = construct_get().await?;
             let get_client = get_infra.get_client.clone();
 
@@ -369,7 +369,7 @@ impl Worker for UnderhillVmWorker {
     }
 
     fn restart(state: Self::State) -> anyhow::Result<Self> {
-        pal_async::local::block_with_io(|driver| async {
+        pal_async::local::block_with_io(async |driver| {
             let (get_infra, get_watchdog_task) = construct_get().await?;
             let result = Self::new_or_restart(
                 get_infra,
@@ -685,20 +685,19 @@ impl UhVmNetworkSettings {
         }
 
         // Close vmbus channels and drop all of the NICs.
-        let mut endpoints: Vec<_> = join_all(nic_channels.drain(..).map(
-            |(instance_id, channel)| async move {
+        let mut endpoints: Vec<_> =
+            join_all(nic_channels.drain(..).map(async |(instance_id, channel)| {
                 async {
                     let nic = channel.remove().await.revoke().await;
                     nic.shutdown()
                 }
                 .instrument(tracing::info_span!("nic_shutdown", %instance_id))
                 .await
-            },
-        ))
-        .await;
+            }))
+            .await;
 
         let shutdown_vfs = join_all(vf_managers.drain(..).map(
-            |(instance_id, mut manager)| async move {
+            async |(instance_id, mut manager)| {
                 manager
                     .complete(keep_vf_alive)
                     .instrument(tracing::info_span!("vf_manager_shutdown", %instance_id))
@@ -2136,7 +2135,7 @@ async fn new_underhill_vm(
 
     let input_distributor = state_units
         .add("input")
-        .spawn(&tp, |mut recv| async move {
+        .spawn(&tp, async |mut recv| {
             input_distributor.run(&mut recv).await;
             input_distributor
         })
@@ -3162,7 +3161,7 @@ async fn halt_task(
     get_client: GuestEmulationTransportClient,
     halt_on_guest_halt: bool,
 ) {
-    let prepare_for_shutdown = || async {
+    let prepare_for_shutdown = async || {
         // Flush logs. Wait up to 5 seconds.
         let ctx = CancelContext::new().with_timeout(Duration::from_secs(5));
         let call = control_send
