@@ -4698,6 +4698,7 @@ dependencies = [
  "memory_range",
  "mesh",
  "page_pool_alloc",
+ "tracing",
  "user_driver",
  "virt",
  "vmcore",

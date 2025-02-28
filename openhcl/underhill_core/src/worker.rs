@@ -2995,6 +2995,36 @@ async fn new_underhill_vm(
             .read_n(hvdef::HV_PAGE_SIZE_USIZE * 5)?;
 
         assert_eq!(read_buf, buffer);
+
+        let transaction = client
+            .map_dma_ranges(
+                gm.vtl0(),
+                pages,
+                MapDmaOptions {
+                    always_bounce: false,
+                    is_rx: true,
+                    is_tx: true,
+                },
+            )
+            .await?;
+
+        tracing::error!(?transaction, "self test transaction2");
+
+        client
+            .unmap_dma_ranges(transaction)
+            .context("self test unmap dma")?;
+
+        // 5 pages with each page being the number of its
+        let expected_buf = [1, 2, 3, 4, 5]
+            .iter()
+            .flat_map(|i| vec![*i; hvdef::HV_PAGE_SIZE_USIZE])
+            .collect::<Vec<u8>>();
+
+        let read_buf: Vec<u8> = pages
+            .reader(gm.vtl0())
+            .read_n(hvdef::HV_PAGE_SIZE_USIZE * 5)?;
+
+        assert_eq!(read_buf, expected_buf);
     }
 
     // Start the VP tasks on the thread pool.

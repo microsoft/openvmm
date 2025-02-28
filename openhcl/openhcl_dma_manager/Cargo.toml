@@ -22,6 +22,7 @@ virt.workspace = true
 vmcore.workspace = true
 
 anyhow.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

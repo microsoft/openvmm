@@ -9,6 +9,7 @@ use crate::WhpProcessor;
 use aarch64 as arch;
 use hv1_hypercall::HvRepResult;
 use hvdef::hypercall::HostVisibilityType;
+use hvdef::hypercall::HvGpaRange;
 use hvdef::hypercall::HvInterceptType;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
@@ -63,6 +64,8 @@ impl<T: CpuIo> WhpHypercallExit<'_, '_, T> {
             hv1_hypercall::HvGetVpIndexFromApicId,
             hv1_hypercall::HvAcceptGpaPages,
             hv1_hypercall::HvModifySparseGpaPageHostVisibility,
+            hv1_hypercall::HvPinGpaPageRanges,
+            hv1_hypercall::HvUnpinGpaPageRanges,
         ]
     );
 }
@@ -675,6 +678,39 @@ impl<T: CpuIo> hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercall
                     .expect("cannot handle failure");
             }
         }
+
+        Ok(())
+    }
+}
+
+impl<T: CpuIo> hv1_hypercall::PinGpaRangePages for WhpHypercallExit<'_, '_, T> {
+    fn pin_gpa_range_pages(&mut self, gpa_page_ranges: &[HvGpaRange]) -> HvRepResult {
+        tracing::error!(?gpa_page_ranges, "pin ranges");
+
+        // DMATEST: Fill each page number with the page it is
+        for range in gpa_page_ranges {
+            let range = range.as_simple();
+            let gpa = range.gpa_page_number() * HV_PAGE_SIZE;
+            let len = (1 + range.additional_pages()) * HV_PAGE_SIZE;
+            let val = range.gpa_page_number() as u8;
+
+            tracing::error!(gpa, len, val, "pin fill range");
+
+            self.vp
+                .vp
+                .partition
+                .gm
+                .fill_at(gpa, val, len as usize)
+                .unwrap();
+        }
+
+        Ok(())
+    }
+}
+
+impl<T: CpuIo> hv1_hypercall::UnpinGpaRangePages for WhpHypercallExit<'_, '_, T> {
+    fn unpin_gpa_range_pages(&mut self, gpa_page_ranges: &[HvGpaRange]) -> HvRepResult {
+        tracing::error!(?gpa_page_ranges, "unpin ranges");
 
         Ok(())
     }

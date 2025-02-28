@@ -222,18 +222,40 @@ impl PinPages {
 
     /// Check if all the pages are pinned.
     fn is_pinned(&self, pfns: &[u64]) -> bool {
-        true
+        pfns[0] > 100
     }
 
     /// returns true if successful pin, false otherwise
     #[must_use]
     fn pin_pages(&self, pfns: &[u64]) -> bool {
         // TODO: impl
-        true
+
+        tracing::error!(?pfns, "pinning pfns");
+
+        // TODO: What happens if some pages are already physically backed and
+        // some are VA backed? is that valid?
+
+        // TODO: change mshvcall methods to not require memory ranges?
+        // TODO: allocates...
+        let ranges = pfns
+            .iter()
+            .map(|pfn| MemoryRange::from_4k_gpn_range(*pfn..*pfn + 1))
+            .collect::<Vec<_>>();
+        self.mshv_hvcall.pin_gpa_ranges(&ranges).is_ok()
     }
 
     fn unpin_pages(&self, pfns: &[u64]) {
-        // TODO: impl
+        tracing::error!(?pfns, "unpinning pfns");
+
+        // TODO: change mshvcall methods to not require memory ranges?
+        // TODO: allocates...
+        let ranges = pfns
+            .iter()
+            .map(|pfn| MemoryRange::from_4k_gpn_range(*pfn..*pfn + 1))
+            .collect::<Vec<_>>();
+        self.mshv_hvcall
+            .unpin_gpa_ranges(&ranges)
+            .expect("unpin cannot fail");
     }
 }
 

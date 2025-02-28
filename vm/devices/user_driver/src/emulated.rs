@@ -285,9 +285,9 @@ impl DmaClient for EmulatedDmaAllocator {
 
     fn map_dma_ranges<'a, 'b: 'a>(
         &'a self,
-        guest_memory: &'a GuestMemory,
-        ranges: guestmem::ranges::PagedRange<'b>,
-        options: crate::MapDmaOptions,
+        _guest_memory: &'a GuestMemory,
+        _ranges: guestmem::ranges::PagedRange<'b>,
+        _options: crate::MapDmaOptions,
     ) -> std::pin::Pin<
         Box<
             dyn std::prelude::rust_2024::Future<
@@ -300,7 +300,7 @@ impl DmaClient for EmulatedDmaAllocator {
 
     fn unmap_dma_ranges(
         &self,
-        transaction: crate::DmaTransaction<'_>,
+        _transaction: crate::DmaTransaction<'_>,
     ) -> Result<(), crate::MapDmaError> {
         todo!()
     }
