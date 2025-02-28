@@ -130,9 +130,11 @@ impl crate::DmaClient for LockedMemorySpawner {
     fn allocate_dma_buffer(
         &self,
         len: usize,
-        _tag: String,
+        tag: String,
     ) -> anyhow::Result<crate::memory::MemoryBlock> {
-        Ok(crate::memory::MemoryBlock::new(LockedMemory::new(len)?))
+        Ok(crate::memory::MemoryBlock::new(
+            LockedMemory::new(len).context(format!("failed to create locked memory for {tag}"))?,
+        ))
     }
 
     fn attach_dma_buffer(

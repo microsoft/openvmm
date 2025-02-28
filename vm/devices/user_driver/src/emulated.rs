@@ -273,8 +273,12 @@ pub struct EmulatedDmaAllocator {
 }
 
 impl DmaClient for EmulatedDmaAllocator {
-    fn allocate_dma_buffer(&self, len: usize, _tag: String) -> anyhow::Result<MemoryBlock> {
-        let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);
+    fn allocate_dma_buffer(&self, len: usize, tag: String) -> anyhow::Result<MemoryBlock> {
+        let memory = MemoryBlock::new(
+            self.shared_mem
+                .alloc(len)
+                .context(format!("out of memory for {tag}"))?,
+        );
         memory.as_slice().atomic_fill(0);
         Ok(memory)
     }
