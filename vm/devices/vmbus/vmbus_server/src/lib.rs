@@ -46,6 +46,8 @@ use pal_async::task::Task;
 use pal_event::Event;
 #[cfg(windows)]
 pub use proxyintegration::ProxyIntegration;
+#[cfg(windows)]
+pub use proxyintegration::ProxyServerInfo;
 use ring::PAGE_SIZE;
 use std::collections::HashMap;
 use std::future;

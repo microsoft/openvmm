@@ -201,14 +201,16 @@ pub struct HvsockConnectRequest {
     pub service_id: Guid,
     pub endpoint_id: Guid,
     pub silo_id: Guid,
+    pub hosted_silo_unaware: bool,
 }
 
-impl From<protocol::TlConnectRequest2> for HvsockConnectRequest {
-    fn from(value: protocol::TlConnectRequest2) -> Self {
+impl HvsockConnectRequest {
+    pub fn from_message(value: protocol::TlConnectRequest2, hosted_silo_unaware: bool) -> Self {
         Self {
             service_id: value.base.service_id,
             endpoint_id: value.base.endpoint_id,
             silo_id: value.silo_id,
+            hosted_silo_unaware,
         }
     }
 }

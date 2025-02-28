@@ -8182,8 +8182,10 @@ dependencies = [
 name = "vmbus_proxy"
 version = "0.0.0"
 dependencies = [
+ "bitfield-struct",
  "futures",
  "guestmem",
+ "guid",
  "mesh",
  "pal",
  "pal_async",

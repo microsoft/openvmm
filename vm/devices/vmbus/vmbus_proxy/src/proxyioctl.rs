@@ -11,6 +11,9 @@
 
 use super::vmbusioctl::VMBUS_CHANNEL_OFFER;
 use super::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
+use bitfield_struct::bitfield;
+use windows::core::GUID;
+use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::System::Ioctl::FILE_DEVICE_UNKNOWN;
 use windows::Win32::System::Ioctl::FILE_READ_ACCESS;
 use windows::Win32::System::Ioctl::FILE_WRITE_ACCESS;
@@ -41,6 +44,8 @@ pub const IOCTL_VMBUS_PROXY_CREATE_GPADL: u32 = VMBUS_PROXY_IOCTL(0x7);
 pub const IOCTL_VMBUS_PROXY_DELETE_GPADL: u32 = VMBUS_PROXY_IOCTL(0x8);
 pub const IOCTL_VMBUS_PROXY_RELEASE_CHANNEL: u32 = VMBUS_PROXY_IOCTL(0x9);
 pub const IOCTL_VMBUS_PROXY_RUN_CHANNEL: u32 = VMBUS_PROXY_IOCTL(0xa);
+pub const IOCTL_VMBUS_PROXY_SET_VID_HANDLE: u32 = VMBUS_PROXY_IOCTL(0xb);
+pub const IOCTL_VMBUS_PROXY_TL_CONNECT_REQUEST: u32 = VMBUS_PROXY_IOCTL(0xc);
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -68,6 +73,7 @@ pub struct VMBUS_PROXY_SET_MEMORY_INPUT {
 pub const VmbusProxyActionTypeOffer: u32 = 1;
 pub const VmbusProxyActionTypeRevoke: u32 = 2;
 pub const VmbusProxyActionTypeInterruptPolicy: u32 = 3;
+pub const VmbusProxyActionTypeTlConnectResult: u32 = 4;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -81,6 +87,7 @@ pub struct VMBUS_PROXY_NEXT_ACTION_OUTPUT {
 #[derive(Copy, Clone)]
 pub union VMBUS_PROXY_NEXT_ACTION_OUTPUT_union {
     pub Offer: VMBUS_PROXY_NEXT_ACTION_OUTPUT_union_Offer,
+    pub TlConnectResult: VMBUS_PROXY_NEXT_ACTION_OUTPUT_union_TlConnectResult,
 }
 
 #[repr(C)]
@@ -89,6 +96,15 @@ pub struct VMBUS_PROXY_NEXT_ACTION_OUTPUT_union_Offer {
     pub Offer: VMBUS_CHANNEL_OFFER,
     pub DeviceIncomingRingEvent: u64, // BUGBUG: HANDLE
     pub DeviceOutgoingRingEvent: u64, // BUGBUG: HANDLE
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct VMBUS_PROXY_NEXT_ACTION_OUTPUT_union_TlConnectResult {
+    pub EndpointId: GUID,
+    pub ServiceId: GUID,
+    pub Status: NTSTATUS,
+    pub Vtl: u8,
 }
 
 #[repr(C)]
@@ -138,4 +154,21 @@ pub struct VMBUS_PROXY_RELEASE_CHANNEL_INPUT {
 #[derive(Copy, Clone)]
 pub struct VMBUS_PROXY_RUN_CHANNEL_INPUT {
     pub ChannelId: u64,
+}
+
+#[bitfield(u32)]
+pub struct VMBUS_PROXY_TL_CONNECT_REQUEST_FLAGS {
+    pub hosted_silo_unaware: bool,
+    #[bits(31)]
+    pub reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct VMBUS_PROXY_TL_CONNECT_REQUEST_INPUT {
+    pub EndpoindId: GUID,
+    pub ServiceId: GUID,
+    pub SiloId: GUID,
+    pub Flags: VMBUS_PROXY_TL_CONNECT_REQUEST_FLAGS,
+    pub Vtl: u8,
 }

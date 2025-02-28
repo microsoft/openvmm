@@ -3033,7 +3033,19 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     /// Handles MessageType::TL_CONNECT_REQUEST, which requests for an hvsocket
     /// connection.
     fn handle_tl_connect_request(&mut self, request: protocol::TlConnectRequest2) {
-        self.notifier.notify_hvsock(&request.into());
+        let version = self
+            .inner
+            .state
+            .get_version()
+            .expect("must be connected")
+            .version;
+
+        let hosted_silo_unaware = version < Version::Win10Rs5;
+        self.notifier
+            .notify_hvsock(&HvsockConnectRequest::from_message(
+                request,
+                hosted_silo_unaware,
+            ));
     }
 
     /// Sends a message to the guest if an hvsocket connect request failed.
