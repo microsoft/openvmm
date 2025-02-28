@@ -52,13 +52,18 @@ impl SimpleFlowNode for Node {
 
         let run_id = run.map(ctx, |r| r.id);
 
-        let linux_direct = ctx.reqv(|v| flowey_lib_common::download_gh_artifact::Request {
-            repo_owner: "microsoft".into(),
-            repo_name: "openvmm".into(),
-            file_name: "x64-openhcl-igvm".into(),
-            path: v,
-            run_id,
-        });
+        let mut downloaded = Vec::new();
+        for arch in ["x64", "aarch64"] {
+            downloaded.push(
+                ctx.reqv(|v| flowey_lib_common::download_gh_artifact::Request {
+                    repo_owner: "microsoft".into(),
+                    repo_name: "openvmm".into(),
+                    file_name: format!("{arch}-openhcl-igvm").into(),
+                    path: v,
+                    run_id: run_id.clone(),
+                }),
+            );
+        }
 
         let mut deps = vec![ctx.reqv(crate::init_openvmm_magicpath_protoc::Request)];
 
@@ -119,10 +124,12 @@ impl SimpleFlowNode for Node {
 
         deps.push(
             ctx.emit_rust_step("copy downloaded release igvm files", |ctx| {
-                let linux_direct = linux_direct.claim(ctx);
+                let downloaded = downloaded.claim(ctx);
                 |rt| {
-                    let directory = rt.read(linux_direct);
-                    println!("linux_direct downloaded to {:?}", directory);
+                    for directory in downloaded {
+                        let directory = rt.read(directory);
+                        println!("downloaded to {:?}", directory);
+                    }
 
                     Ok(())
                 }
