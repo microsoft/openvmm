@@ -683,7 +683,7 @@ impl IntoPipeline for CheckinGatesCli {
                 }
             };
 
-            let job = pipeline
+            let mut job = pipeline
                 .new_job(
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                     FlowArch::X86_64,
@@ -693,12 +693,8 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 .dep_on(|ctx| {
-                    let publish_baseline_artifact = pub_openhcl_baseline
-                        .map(|baseline_artifact| ctx.publish_artifact(baseline_artifact));
-
                     flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
                         igvm_files: igvm_recipes
-                            .clone()
                             .into_iter()
                             .map(|recipe| OpenhclIgvmBuildParams {
                                 profile: openvmm_hcl_profile,
@@ -711,7 +707,6 @@ impl IntoPipeline for CheckinGatesCli {
                         artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
                         artifact_dir_openhcl_igvm_extras: ctx
                             .publish_artifact(pub_openhcl_igvm_extras),
-                        artifact_openhcl_verify_size_baseline: publish_baseline_artifact,
                         done: ctx.new_done_handle(),
                     }
                 })
@@ -726,6 +721,15 @@ impl IntoPipeline for CheckinGatesCli {
                         done: ctx.new_done_handle(),
                     },
                 );
+
+            if let Some(pub_openhcl_baseline) = pub_openhcl_baseline {
+                job = job.dep_on(|ctx| {
+                    flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline::Request {
+                        artifact_dir: ctx.publish_artifact(pub_openhcl_baseline),
+                        done: ctx.new_done_handle(),
+                    }
+                });
+            }
 
             all_jobs.push(job.finish());
 
