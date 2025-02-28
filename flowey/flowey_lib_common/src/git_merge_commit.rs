@@ -47,6 +47,8 @@ impl SimpleFlowNode for Node {
 
                 sh.change_dir(repo_path);
 
+                let original_branch = xshell::cmd!(sh, "git rev-parse --abbrev-ref HEAD").read()?;
+
                 xshell::cmd!(sh, "git fetch origin {base_branch}").run()?;
                 xshell::cmd!(sh, "git fetch origin pull/{pr_number}/head:{head_ref}").run()?;
                 xshell::cmd!(sh, "git checkout -b {temp_branch} origin/{base_branch}").run()?;
@@ -54,6 +56,9 @@ impl SimpleFlowNode for Node {
                 let commit =
                     xshell::cmd!(sh, "git merge-base {temp_branch} origin/{base_branch}").read()?;
                 rt.write(merge_commit, &commit);
+
+                xshell::cmd!(sh, "git checkout {original_branch}").run()?;
+                xshell::cmd!(sh, "git branch -D {temp_branch}").run()?;
 
                 Ok(())
             }
