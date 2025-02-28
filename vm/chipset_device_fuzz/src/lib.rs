@@ -27,6 +27,7 @@ use std::sync::Arc;
 use std::sync::Weak;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 use zerocopy::FromBytes;
 
 type InterceptRanges<U> =
@@ -190,7 +191,7 @@ impl FuzzChipset {
             .lock()
             .supports_poll_device()
             .expect("objects supporting polling support polling")
-            .poll_device(&mut Context::from_waker(futures::task::noop_waker_ref()));
+            .poll_device(&mut Context::from_waker(Waker::noop()));
         Some(())
     }
 
@@ -201,7 +202,7 @@ impl FuzzChipset {
         mut t: DeferredToken,
         data: &mut [u8],
     ) {
-        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        let mut cx = Context::from_waker(Waker::noop());
         let dev = dev
             .supports_poll_device()
             .expect("objects returning a DeferredToken support polling");
@@ -229,7 +230,7 @@ impl FuzzChipset {
 
     /// Poll a deferred write once, panic if it isn't complete afterwards.
     fn defer_write_now_or_never(&self, dev: &mut dyn ChipsetDevice, mut t: DeferredToken) {
-        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        let mut cx = Context::from_waker(Waker::noop());
         let dev = dev
             .supports_poll_device()
             .expect("objects returning a DeferredToken support polling");

@@ -10,7 +10,6 @@ pub use self::saved_state::SavedState;
 use anyhow::Result;
 use futures::future::OptionFuture;
 use futures::stream::SelectAll;
-use futures::task::noop_waker_ref;
 use futures::FutureExt;
 use futures::StreamExt;
 use guid::Guid;
@@ -1414,7 +1413,7 @@ impl OutgoingMessages {
         let msg = OutgoingMessage::with_data(msg, data);
         if self.queued.is_empty() {
             let r = self.poster.poll_post_message(
-                &mut Context::from_waker(noop_waker_ref()),
+                &mut Context::from_waker(std::task::Waker::noop()),
                 protocol::VMBUS_MESSAGE_REDIRECT_CONNECTION_ID,
                 1,
                 msg.data(),

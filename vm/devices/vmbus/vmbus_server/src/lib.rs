@@ -33,7 +33,6 @@ use futures::channel::mpsc::SendError;
 use futures::future::poll_fn;
 use futures::future::OptionFuture;
 use futures::stream::SelectAll;
-use futures::task::noop_waker_ref;
 use futures::FutureExt;
 use futures::StreamExt;
 use guestmem::GuestMemory;
@@ -1457,7 +1456,7 @@ impl Notifier for ServerTaskInner {
         // main loop will try to send it again later.
         matches!(
             port.poll_post_message(
-                &mut std::task::Context::from_waker(noop_waker_ref()),
+                &mut std::task::Context::from_waker(std::task::Waker::noop()),
                 VMBUS_MESSAGE_TYPE,
                 message.data()
             ),
@@ -1892,7 +1891,6 @@ impl ParentBus for VmbusServerControl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::task::noop_waker_ref;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
     use pal_async::timer::Instant;
@@ -1948,7 +1946,7 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .poll_handle_message(
-                        &mut std::task::Context::from_waker(noop_waker_ref()),
+                        &mut std::task::Context::from_waker(std::task::Waker::noop()),
                         msg.data(),
                         trusted,
                     ),
