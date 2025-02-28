@@ -1910,22 +1910,20 @@ impl InitializedVm {
                         })
                         .context("failed to assign device")?;
 
-                    {
-                        let mut builder = chipset_builder.arc_mutex_device(vpci_bus_name);
-                        builder
-                            .try_add_async(async |services| {
-                                VpciBus::new(
-                                    &driver_source,
-                                    instance_id,
-                                    device,
-                                    &mut services.register_mmio(),
-                                    vmbus,
-                                    crate::partition::VpciDevice::interrupt_mapper(hv_device),
-                                )
-                                .await
-                            })
-                            .await?;
-                    }
+                    chipset_builder
+                        .arc_mutex_device(vpci_bus_name)
+                        .try_add_async(async |services| {
+                            VpciBus::new(
+                                &driver_source,
+                                instance_id,
+                                device,
+                                &mut services.register_mmio(),
+                                vmbus,
+                                crate::partition::VpciDevice::interrupt_mapper(hv_device),
+                            )
+                            .await
+                        })
+                        .await?;
                 }
             }
         }

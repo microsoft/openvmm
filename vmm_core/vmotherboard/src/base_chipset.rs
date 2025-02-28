@@ -624,7 +624,7 @@ impl<'a> BaseChipsetBuilder<'a> {
                         gm: gm.clone(),
                         nvram_storage,
                         logger,
-                        vmtime: &vmtime,
+                        vmtime,
                         watchdog_platform,
                         generation_id_deps: generation_id::GenerationIdRuntimeDeps {
                             generation_id_recv,
