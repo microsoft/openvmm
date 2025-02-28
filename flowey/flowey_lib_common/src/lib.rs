@@ -35,6 +35,7 @@ pub mod gh_download_azure_key_vault_secret;
 pub mod gh_task_azure_login;
 pub mod gh_workflow_id;
 pub mod git_checkout;
+pub mod git_latest_commit;
 pub mod git_merge_commit;
 pub mod install_azure_cli;
 pub mod install_dist_pkg;

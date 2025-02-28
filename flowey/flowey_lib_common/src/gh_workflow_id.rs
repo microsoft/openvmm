@@ -40,10 +40,6 @@ impl SimpleFlowNode for Node {
         } = request;
 
         let pipeline_name = pipeline_name.clone();
-
-        ctx.req(crate::use_gh_cli::Request::WithAuth(
-            crate::use_gh_cli::GhCliAuth::AuthToken(gh_token.clone()),
-        ));
         let gh_cli = ctx.reqv(crate::use_gh_cli::Request::Get);
 
         ctx.emit_rust_step("get action id", |ctx| {

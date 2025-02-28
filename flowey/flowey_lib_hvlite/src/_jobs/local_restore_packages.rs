@@ -26,10 +26,43 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
         ctx.import::<crate::init_openvmm_magicpath_protoc::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
+        ctx.import::<crate::git_checkout_openvmm_repo::Node>();
+        ctx.import::<flowey_lib_common::download_gh_artifact::Node>();
+        ctx.import::<flowey_lib_common::gh_workflow_id::Node>();
+        ctx.import::<flowey_lib_common::git_latest_commit::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request { arch, done } = request;
+
+        // Download 2411 release IGVM files for running servicing tests
+        let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
+        let latest_commit = ctx.reqv(|v| flowey_lib_common::git_latest_commit::Request {
+            repo_path: openvmm_repo_path.clone(),
+            branch: "release/2411".into(),
+            commit: v,
+        });
+
+        let token = ctx.new_var().0;
+
+        let run = ctx.reqv(|v| flowey_lib_common::gh_workflow_id::Request {
+            github_commit_hash: latest_commit,
+            repo_path: openvmm_repo_path,
+            pipeline_name: "[flowey] OpenVMM CI".into(),
+            gh_token: token.clone(),
+            gh_workflow: v,
+        });
+
+        let run_id = run.map(ctx, |r| r.id);
+
+        let linux_direct = ctx.reqv(|v| flowey_lib_common::download_gh_artifact::Request {
+            repo_owner: "microsoft".into(),
+            repo_name: "openvmm".into(),
+            file_name: "x64-openhcl-igvm".into(),
+            path: v,
+            run_id,
+            gh_token: token,
+        });
 
         let mut deps = vec![ctx.reqv(crate::init_openvmm_magicpath_protoc::Request)];
 
@@ -87,6 +120,18 @@ impl SimpleFlowNode for Node {
                 ]);
             }
         }
+
+        deps.push(
+            ctx.emit_rust_step("copy downloaded release igvm files", |ctx| {
+                let linux_direct = linux_direct.claim(ctx);
+                |rt| {
+                    let directory = rt.read(linux_direct);
+                    println!("linux_direct downloaded to {:?}", directory);
+
+                    Ok(())
+                }
+            }),
+        );
 
         ctx.emit_side_effect_step(deps, [done]);
 

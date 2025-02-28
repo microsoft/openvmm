@@ -2091,7 +2091,7 @@ jobs:
       run: flowey e 13 flowey_lib_common::download_gh_cli 1
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 13 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:2:flowey_core/src/node/github_context.rs:42:41' --is-secret --update-from-file {0} --is-raw-string
+      shell: flowey v 13 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_core/src/node/github_context.rs:42:41' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: setup gh cli
       run: flowey e 13 flowey_lib_common::use_gh_cli 0
@@ -2106,13 +2106,13 @@ jobs:
       run: flowey e 13 flowey_lib_common::gh_workflow_id 0
       shell: bash
     - name: 🌼 write_into Var
-      run: flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
+      run: flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 0
       shell: bash
     - name: download artifacts from github actions run
       run: flowey e 13 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: binary size comparison
-      run: flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 2
+      run: flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
       shell: bash
     - name: 'validate cache entry: gh-cli'
       run: flowey e 13 flowey_lib_common::cache 3

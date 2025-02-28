@@ -8,6 +8,7 @@ use petri::OpenHclServicingFlags;
 use petri::ResolvedArtifact;
 #[cfg(guest_arch = "x86_64")]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_2_4_11_LINUX_DIRECT_X64;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
 
@@ -67,5 +68,21 @@ async fn openhcl_servicing_keepalive(
     .await
 }
 
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, RELEASE_2_4_11_LINUX_DIRECT_X64])]
+async fn test_servicing_x64_linux_direct_2411_to_latest(
+    config: PetriVmConfigOpenVmm,
+    (latest_igvm, release_igvm): (
+        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+    ),
+) -> Result<(), anyhow::Error> {
+    openhcl_servicing_core(
+        config.with_custom_openhcl(release_igvm),
+        "",
+        latest_igvm,
+        OpenHclServicingFlags::default(),
+    )
+    .await
+}
+
 // TODO: add tests with guest workloads while doing servicing.
-// TODO: add tests from previous release branch to current.
