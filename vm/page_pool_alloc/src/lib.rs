@@ -862,16 +862,16 @@ impl user_driver::DmaClient for PagePoolAllocator {
 
     fn unmap_dma_ranges(
         &self,
-        transaction: user_driver::DmaTransaction<'_>,
+        _transaction: user_driver::DmaTransaction<'_>,
     ) -> Result<(), user_driver::MapDmaError> {
         todo!()
     }
 
     fn map_dma_ranges<'a, 'b: 'a>(
         &'a self,
-        guest_memory: &'a GuestMemory,
-        ranges: PagedRange<'b>,
-        options: user_driver::MapDmaOptions,
+        _guest_memory: &'a GuestMemory,
+        _ranges: PagedRange<'b>,
+        _options: user_driver::MapDmaOptions,
     ) -> std::pin::Pin<
         Box<
             dyn std::prelude::rust_2024::Future<

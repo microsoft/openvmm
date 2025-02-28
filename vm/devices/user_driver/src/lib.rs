@@ -76,7 +76,7 @@ pub enum MapDmaError {
     // BounceBufferFailed,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct MapDmaOptions {
     pub always_bounce: bool,
     pub is_rx: bool,

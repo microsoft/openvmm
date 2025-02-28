@@ -26,7 +26,6 @@ use user_driver::lockmem::LockedMemorySpawner;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::page_allocator::PageAllocator;
-use user_driver::page_allocator::ScopedPages;
 use user_driver::DmaClient;
 use user_driver::DmaOperation;
 use user_driver::DmaTransaction;
@@ -531,6 +530,42 @@ pub struct OpenhclDmaClient {
 }
 
 impl OpenhclDmaClient {
+    /// Allocate bounce pages and prepare the bounce buffers with the required
+    /// data.
+    async fn allocate_bounce_pages<'a, 'b: 'a>(
+        &'a self,
+        guest_memory: &'a GuestMemory,
+        range: PagedRange<'b>,
+        options: MapDmaOptions,
+    ) -> Result<DmaOperation<'a>, MapDmaError> {
+        // TODO: nonblocking mode return immediately on allocation failure
+
+        // allocate bounce buffer
+        let bounce_pages = self
+            .bounce_pfns
+            .as_ref()
+            .ok_or(MapDmaError::NoBounceBufferAvailable)?
+            .alloc_pages(range.gpns().len())
+            .await
+            .expect("BUGBUG more bouncing required than pages available");
+
+        // copy to bounced pages
+        if options.is_tx {
+            for (index, page) in range.gpns().iter().enumerate() {
+                let bounce_page = bounce_pages.page_as_slice(index);
+
+                // BUGBUG: does not handle subranges, copies whole pages.
+                // there's not a good method for this in PagedRange, needs some
+                // thinking.
+                guest_memory
+                    .read_to_atomic(*page * PAGE_SIZE64, bounce_page)
+                    .expect("BUGBUG handle bounce copy error");
+            }
+        }
+
+        Ok(DmaOperation::Bounced(bounce_pages, range))
+    }
+
     async fn map_dma_ranges_inner<'a, 'b: 'a>(
         &'a self,
         guest_memory: &'a GuestMemory,
@@ -542,38 +577,17 @@ impl OpenhclDmaClient {
         assert_eq!(range.len() % PAGE_SIZE, 0);
 
         // the transaction is either all bounced, or all pinned.
-        let operation = if self.inner.pin_pages.is_pinned(range.gpns()) {
+        let operation = if options.always_bounce {
+            self.allocate_bounce_pages(guest_memory, range, options)
+                .await?
+        } else if self.inner.pin_pages.is_pinned(range.gpns()) {
             DmaOperation::PrePinned(range)
         } else {
-            if !options.always_bounce && self.inner.pin_pages.pin_pages(range.gpns()) {
+            if self.inner.pin_pages.pin_pages(range.gpns()) {
                 DmaOperation::Pinned(range)
             } else {
-                // TODO: nonblocking mode return immediately on allocation failure
-
-                // allocate bounce buffer
-                let bounce_pages = self
-                    .bounce_pfns
-                    .as_ref()
-                    .ok_or(MapDmaError::NoBounceBufferAvailable)?
-                    .alloc_pages(range.gpns().len())
-                    .await
-                    .expect("BUGBUG more bouncing required than pages available");
-
-                // copy to bounced pages
-                if options.is_tx {
-                    for (index, page) in range.gpns().iter().enumerate() {
-                        let bounce_page = bounce_pages.page_as_slice(index);
-
-                        // BUGBUG: does not handle subranges, copies whole pages.
-                        // there's not a good method for this in PagedRange, needs some
-                        // thinking.
-                        guest_memory
-                            .read_to_atomic(*page * PAGE_SIZE64, bounce_page)
-                            .expect("BUGBUG handle bounce copy error");
-                    }
-                }
-
-                DmaOperation::Bounced(bounce_pages, range)
+                self.allocate_bounce_pages(guest_memory, range, options)
+                    .await?
             }
         };
 
