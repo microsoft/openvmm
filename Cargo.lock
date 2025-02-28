@@ -514,7 +514,6 @@ dependencies = [
  "chipset_arc_mutex_device",
  "chipset_device",
  "closeable_mutex",
- "futures",
  "parking_lot",
  "range_map_vec",
  "tracing",
