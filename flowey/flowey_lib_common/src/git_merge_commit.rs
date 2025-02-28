@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Gets the merge commit of the result of merging a PR branch into base_branch
+//! Gets the merge commit of a PR to base branch
 
 use flowey::node::prelude::*;
 
@@ -41,24 +41,16 @@ impl SimpleFlowNode for Node {
                 let repo_path = rt.read(repo_path);
                 let pr_event = rt.read(pr_event).expect("PR event not found");
 
-                let head_ref = pr_event.head.head_ref;
                 let pr_number = pr_event.number.to_string();
-                let temp_branch = format!("temp-merge-{}", pr_number);
+                let merge_ref = format!("temp-pr-{}-merge", pr_number);
 
                 sh.change_dir(repo_path);
 
-                let original_branch = xshell::cmd!(sh, "git rev-parse --abbrev-ref HEAD").read()?;
-
                 xshell::cmd!(sh, "git fetch origin {base_branch}").run()?;
-                xshell::cmd!(sh, "git fetch origin pull/{pr_number}/head:{head_ref}").run()?;
-                xshell::cmd!(sh, "git checkout -b {temp_branch} origin/{base_branch}").run()?;
-                xshell::cmd!(sh, "git merge --no-commit --no-ff {head_ref}").run()?;
+                xshell::cmd!(sh, "git fetch origin pull/{pr_number}/merge:{merge_ref}").run()?;
                 let commit =
-                    xshell::cmd!(sh, "git merge-base {temp_branch} origin/{base_branch}").read()?;
+                    xshell::cmd!(sh, "git merge-base {merge_ref} origin/{base_branch}").read()?;
                 rt.write(merge_commit, &commit);
-
-                xshell::cmd!(sh, "git checkout {original_branch}").run()?;
-                xshell::cmd!(sh, "git branch -D {temp_branch}").run()?;
 
                 Ok(())
             }
