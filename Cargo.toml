@@ -49,7 +49,7 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.84"
+rust-version = "1.85"
 edition = "2021"
 
 [workspace.dependencies]
