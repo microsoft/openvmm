@@ -2096,8 +2096,11 @@ jobs:
     - name: setup gh cli
       run: flowey e 13 flowey_lib_common::use_gh_cli 0
       shell: bash
+    - run: ${{ toJSON(github.event.pull_request) }}
+      shell: flowey v 13 'flowey_lib_common::git_merge_commit:0:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0}
+      name: 🌼 Read from 'github.event.pull_request'
     - name: get merge commit
-      run: flowey e 13 flowey_lib_common::git_merge_commit 0
+      run: flowey e 13 flowey_lib_common::git_merge_commit 1
       shell: bash
     - name: get action id
       run: flowey e 13 flowey_lib_common::gh_workflow_id 0
