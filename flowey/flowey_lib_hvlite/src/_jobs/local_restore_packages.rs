@@ -43,13 +43,10 @@ impl SimpleFlowNode for Node {
             commit: v,
         });
 
-        let token = ctx.new_var().0;
-
         let run = ctx.reqv(|v| flowey_lib_common::gh_workflow_id::Request {
             github_commit_hash: latest_commit,
             repo_path: openvmm_repo_path,
             pipeline_name: "[flowey] OpenVMM CI".into(),
-            gh_token: token.clone(),
             gh_workflow: v,
         });
 
@@ -61,7 +58,6 @@ impl SimpleFlowNode for Node {
             file_name: "x64-openhcl-igvm".into(),
             path: v,
             run_id,
-            gh_token: token,
         });
 
         let mut deps = vec![ctx.reqv(crate::init_openvmm_magicpath_protoc::Request)];

@@ -76,14 +76,11 @@ impl SimpleFlowNode for Node {
             base_branch: "main".into(),
         });
 
-        let gh_token = ctx.new_var().0;
-
         let merge_run = ctx.reqv(|v| gh_workflow_id::Request {
             repo_path: openvmm_repo_path.clone(),
             github_commit_hash: merge_commit,
             gh_workflow: v,
             pipeline_name,
-            gh_token: gh_token.clone(),
         });
 
         let run_id = merge_run.map(ctx, |r| r.id);
@@ -93,7 +90,6 @@ impl SimpleFlowNode for Node {
             file_name: file_name.into(),
             path: old_openhcl,
             run_id,
-            gh_token: gh_token.clone(),
         });
 
         let comparison = ctx.emit_rust_step("binary size comparison", |ctx| {

@@ -10,7 +10,6 @@ flowey_request! {
         pub github_commit_hash: ReadVar<String>,
         pub repo_path: ReadVar<PathBuf>,
         pub pipeline_name: String,
-        pub gh_token: ReadVar<String>,
         pub gh_workflow: WriteVar<GithubWorkflow>,
     }
 }
@@ -36,7 +35,6 @@ impl SimpleFlowNode for Node {
             github_commit_hash,
             gh_workflow,
             pipeline_name,
-            gh_token,
         } = request;
 
         let pipeline_name = pipeline_name.clone();

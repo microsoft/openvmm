@@ -25,8 +25,8 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
             repo_path,
-            branch,
             commit,
+            branch,
         } = request;
 
         let gh_cli = ctx.reqv(crate::use_gh_cli::Request::Get);
@@ -45,7 +45,7 @@ impl SimpleFlowNode for Node {
 
                 let latest_commit = xshell::cmd!(
                     sh,
-                    "{gh_cli} api repos/microsoft/openvmm/commits/release/2411 --jq .sha"
+                    "{gh_cli} api repos/microsoft/openvmm/commits/{branch} --jq .sha"
                 )
                 .read()?;
                 rt.write(commit, &latest_commit);

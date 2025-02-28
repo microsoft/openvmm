@@ -21,8 +21,6 @@ flowey_request! {
         pub path: WriteVar<PathBuf>,
         /// The Github actions run id to download artifacts from
         pub run_id: ReadVar<String>,
-        /// Github token to authenticate with
-        pub gh_token: ReadVar<String>,
     }
 }
 
@@ -43,7 +41,6 @@ impl SimpleFlowNode for Node {
             file_name,
             path,
             run_id,
-            gh_token,
         } = request;
 
         let gh_cli = ctx.reqv(crate::use_gh_cli::Request::Get);
