@@ -1321,7 +1321,6 @@ impl ClientTask {
                     channel_id = channel_id.0,
                     "gpadl teardown for offered gpadl"
                 );
-                return;
             }
             GpadlState::Created => {
                 *gpadl_state = GpadlState::TearingDown { rpcs: vec![rpc] };
