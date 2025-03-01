@@ -1201,17 +1201,6 @@ const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
     .with_modify_connection(true)
     .with_client_id(true);
 
-/// An error that occurred while mapping the interrupt page.
-#[derive(Error, Debug)]
-pub enum InterruptPageError {
-    #[error("memory")]
-    MemoryError(#[from] GuestMemoryError),
-    #[error("synic")]
-    SynicError(#[from] vmcore::synic::Error),
-    #[error("gpa {0:#x} is not page aligned")]
-    NotPageAligned(u64),
-}
-
 /// Trait for sending requests to devices and the guest.
 pub trait Notifier: Send {
     /// Requests a channel action.
