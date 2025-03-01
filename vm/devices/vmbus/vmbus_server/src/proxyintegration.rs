@@ -489,20 +489,21 @@ impl ProxyTask {
         mut vtl2_hvsock_request_recv: Option<mesh::Receiver<HvsockConnectRequest>>,
     ) {
         let mut channel_requests = SelectAll::new();
-        let mut hvsock_requests = OptionFuture::from(
-            hvsock_request_recv
-                .as_mut()
-                .map(|recv| Box::pin(recv.recv()).fuse()),
-        );
-
-        let mut vtl2_hvsock_requests = OptionFuture::from(
-            vtl2_hvsock_request_recv
-                .as_mut()
-                .map(|recv| Box::pin(recv.recv()).fuse()),
-        );
 
         'outer: loop {
             let (proxy_id, request) = loop {
+                let mut hvsock_requests = OptionFuture::from(
+                    hvsock_request_recv
+                        .as_mut()
+                        .map(|recv| Box::pin(recv.recv()).fuse()),
+                );
+
+                let mut vtl2_hvsock_requests = OptionFuture::from(
+                    vtl2_hvsock_request_recv
+                        .as_mut()
+                        .map(|recv| Box::pin(recv.recv()).fuse()),
+                );
+
                 futures::select! { // merge semantics
                     r = recv.select_next_some() => {
                         channel_requests.push(r);

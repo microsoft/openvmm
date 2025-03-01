@@ -3522,10 +3522,12 @@ impl<N: Notifier> MessageSender<'_, N> {
     ) {
         let message = OutgoingMessage::new(msg);
 
+        tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "sending message");
         // Don't try to send the message if there are already pending messages.
         if !self.pending_messages.0.is_empty()
             || !self.notifier.send_message(&message, MessageTarget::Default)
         {
+            tracing::trace!("message queued");
             // Queue the message for retry later.
             self.pending_messages.0.push_back(message);
         }
@@ -3539,11 +3541,11 @@ impl<N: Notifier> MessageSender<'_, N> {
         msg: &T,
         target: MessageTarget,
     ) {
-        tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "sending message");
         if target == MessageTarget::Default {
             self.send_message(msg);
         } else {
             // Messages for other targets are not queued.
+            tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "sending message");
             let message = OutgoingMessage::new(msg);
             if !self.notifier.send_message(&message, target) {
                 tracelimit::warn_ratelimited!(?target, "failed to send message");
