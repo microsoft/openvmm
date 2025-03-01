@@ -27,6 +27,7 @@ use crate::deque::ErasedVecDeque;
 use crate::error::ChannelError;
 use crate::error::RecvError;
 use crate::error::TryRecvError;
+use crate::sync_unsafe_cell::SyncUnsafeCell;
 use core::fmt::Debug;
 use core::future::Future;
 use core::marker::PhantomData;
@@ -213,6 +214,7 @@ impl SenderCore {
                     ..LocalQueue::new(vtable)
                 }),
                 remote: OnceLock::from(RemoteQueueState { port, send }),
+                receiver: Default::default(),
             })))
         }
 
@@ -348,21 +350,6 @@ impl<T> Default for Receiver<T> {
 #[derive(Debug)]
 struct ReceiverCore {
     queue: ReceiverQueue,
-    ports: PortHandlerList,
-    terminated: bool,
-}
-
-#[derive(Debug)]
-struct ReceiverQueue(Arc<Queue>);
-
-impl Drop for ReceiverQueue {
-    fn drop(&mut self) {
-        let mut local = self.0.local.lock();
-        local.receiver_gone = true;
-        let _waker = std::mem::take(&mut local.waker);
-        local.messages.clear_and_shrink();
-        let _ports = std::mem::take(&mut local.ports);
-    }
 }
 
 impl<T> Receiver<T> {
@@ -451,15 +438,59 @@ impl<T> Future for Recv<'_, T> {
     }
 }
 
+#[derive(Default)]
+struct ReceiverState {
+    ports: PortHandlerList,
+    terminated: bool,
+}
+
+#[derive(Debug)]
+struct ReceiverQueue(Arc<Queue>);
+
+impl Drop for ReceiverQueue {
+    fn drop(&mut self) {
+        // Drop the receiver state now to propagate the close signal and to
+        // eliminate circular references.
+        //
+        // SAFETY: `receiver` is exclusively owned by this receiver and will never
+        // be accessed again.
+        unsafe { ManuallyDrop::drop(&mut *self.0.receiver.0.get()) };
+        let mut local = self.0.local.lock();
+        local.receiver_gone = true;
+        let _waker = std::mem::take(&mut local.waker);
+        local.messages.clear_and_shrink();
+        let _ports = std::mem::take(&mut local.ports);
+    }
+}
+
+impl ReceiverQueue {
+    fn state(&self) -> &ReceiverState {
+        // SAFETY: `receiver` is exclusively owned by this receiver.
+        unsafe { &*self.0.receiver.0.get() }
+    }
+
+    fn state_mut(&mut self) -> &mut ReceiverState {
+        self.split_mut().1
+    }
+
+    fn split_mut(&mut self) -> (&Arc<Queue>, &mut ReceiverState) {
+        // SAFETY: `receiver` is exclusively owned by this receiver.
+        let state = unsafe { &mut *self.0.receiver.0.get() };
+        (&self.0, state)
+    }
+}
+
 impl ReceiverCore {
     fn new(vtable: &'static ElementVtable) -> Self {
         Self {
             queue: ReceiverQueue(Arc::new(Queue {
                 local: Mutex::new(LocalQueue::new(vtable)),
                 remote: OnceLock::new(),
+                receiver: SyncUnsafeCell::new(ManuallyDrop::new(ReceiverState {
+                    ports: PortHandlerList::default(),
+                    terminated: true,
+                })),
             })),
-            ports: PortHandlerList::new(),
-            terminated: true,
         }
     }
 
@@ -475,20 +506,24 @@ impl ReceiverCore {
             this: &'a mut ReceiverCore,
             cx: Option<&mut Context<'_>>,
         ) -> Poll<Result<MutexGuard<'a, LocalQueue>, RecvError>> {
+            let (queue, state) = this.queue.split_mut();
             loop {
-                debug_assert!(this.queue.0.remote.get().is_none());
-                let mut local = this.queue.0.local.lock();
+                debug_assert!(queue.remote.get().is_none());
+                let mut local = queue.local.lock();
                 if local.remove_closed {
                     local.remove_closed = false;
                     drop(local);
-                    if let Err(err) = this.ports.remove_closed() {
+                    if let Err(err) = state.ports.remove_closed() {
                         // Propagate the error to the caller only if there
                         // are no more senders. Otherwise, the caller might
                         // stop receiving messages from the remaining
                         // senders.
-                        let local = this.queue.0.local.lock();
-                        if local.messages.is_empty() && local.ports.is_empty() && this.is_closed() {
-                            this.terminated = true;
+                        let local = queue.local.lock();
+                        if local.messages.is_empty()
+                            && local.ports.is_empty()
+                            && ReceiverCore::is_closed(queue)
+                        {
+                            state.terminated = true;
                             return Poll::Ready(Err(RecvError::Error(err)));
                         } else {
                             trace_channel_error(&err);
@@ -498,10 +533,10 @@ impl ReceiverCore {
                     let new_handler = local.new_handler;
                     let ports = std::mem::take(&mut local.ports);
                     drop(local);
-                    this.ports.0.extend(ports.into_iter().map(|port| {
+                    state.ports.0.extend(ports.into_iter().map(|port| {
                         // SAFETY: `new_handler` has been set to a function whose
                         // element type matches the queue's element type.
-                        let handler = unsafe { new_handler(this.queue.0.clone()) };
+                        let handler = unsafe { new_handler(queue.clone()) };
                         port.set_handler(handler)
                     }));
                     continue;
@@ -511,13 +546,13 @@ impl ReceiverCore {
                             .waker
                             .as_ref()
                             .is_some_and(|waker| waker.will_wake(cx.waker()))
-                            && !this.is_closed()
+                            && !ReceiverCore::is_closed(queue)
                         {
                             local.waker = Some(cx.waker().clone());
                         }
                     }
-                    if this.is_closed() {
-                        this.terminated = true;
+                    if ReceiverCore::is_closed(queue) {
+                        state.terminated = true;
                         return Poll::Ready(Err(RecvError::Closed));
                     } else {
                         return Poll::Pending;
@@ -537,12 +572,12 @@ impl ReceiverCore {
             .into()
     }
 
-    fn is_closed(&self) -> bool {
-        Arc::strong_count(&self.queue.0) == 1
+    fn is_closed(queue: &Arc<Queue>) -> bool {
+        Arc::strong_count(queue) == 1
     }
 
     fn sender(&mut self) -> SenderCore {
-        self.terminated = false;
+        self.queue.state_mut().terminated = false;
         SenderCore(ManuallyDrop::new(self.queue.0.clone()))
     }
 
@@ -552,7 +587,7 @@ impl ReceiverCore {
     /// The caller must ensure that the queue has element type `T`.
     unsafe fn into_port<T: MeshField>(self) -> Port {
         fn into_port(mut this: ReceiverCore, send: SendFn) -> Port {
-            let ports = this.ports.into_ports();
+            let ports = std::mem::take(&mut this.queue.state_mut().ports).into_ports();
             if ports.len() == 1 {
                 if let Some(queue) = Arc::get_mut(&mut this.queue.0) {
                     let local = queue.local.get_mut();
@@ -600,11 +635,10 @@ impl ReceiverCore {
                     ..LocalQueue::new(vtable)
                 }),
                 remote: OnceLock::new(),
+                receiver: Default::default(),
             });
             ReceiverCore {
                 queue: ReceiverQueue(queue),
-                ports: PortHandlerList::new(),
-                terminated: false,
             }
         }
         from_port(
@@ -639,18 +673,14 @@ impl<T> futures_core::Stream for Receiver<T> {
 
 impl<T> futures_core::FusedStream for Receiver<T> {
     fn is_terminated(&self) -> bool {
-        self.0.terminated
+        self.0.queue.state().terminated
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct PortHandlerList(Vec<PortWithHandler<RemotePortHandler>>);
 
 impl PortHandlerList {
-    fn new() -> Self {
-        Self(Vec::new())
-    }
-
     fn remove_closed(&mut self) -> Result<(), ChannelError> {
         let mut r = Ok(());
         self.0.retain(|port| match port.is_closed() {
@@ -707,6 +737,9 @@ impl<T: MeshField> Receiver<T> {
 struct Queue {
     remote: OnceLock<RemoteQueueState>,
     local: Mutex<LocalQueue>,
+    // Stored in this shared state but owned exclusively by the `ReceiverCore`.
+    // This minimizes the size of the `ReceiverCore`.
+    receiver: SyncUnsafeCell<ManuallyDrop<ReceiverState>>,
 }
 
 enum QueueAccess<'a> {

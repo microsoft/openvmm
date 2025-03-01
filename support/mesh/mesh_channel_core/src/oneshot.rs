@@ -17,6 +17,7 @@
 // UNSAFETY: needed to avoid monomorphization.
 #![allow(unsafe_code)]
 
+use crate::sync_unsafe_cell::SyncUnsafeCell;
 use crate::ChannelError;
 use crate::RecvError;
 use mesh_node::local_node::HandleMessageError;
@@ -68,11 +69,11 @@ use thiserror::Error;
 /// [`channel`]: crate::mpsc::channel
 pub fn oneshot<T>() -> (OneshotSender<T>, OneshotReceiver<T>) {
     fn oneshot_core() -> (OneshotSenderCore, OneshotReceiverCore) {
-        let slot = Arc::new(Slot(Mutex::new(SlotState::Waiting(None))));
-        (
-            OneshotSenderCore(slot.clone()),
-            OneshotReceiverCore { slot, port: None },
-        )
+        let slot = Arc::new(Slot {
+            state: Mutex::new(SlotState::Waiting(None)),
+            receiver: Default::default(),
+        });
+        (OneshotSenderCore(slot.clone()), OneshotReceiverCore(slot))
     }
 
     let (sender, receiver) = oneshot_core();
@@ -139,7 +140,12 @@ fn decode_message<T: MeshField>(message: Message<'_>) -> Result<BoxedValue, Chan
 }
 
 #[derive(Debug)]
-struct Slot(Mutex<SlotState>);
+struct Slot {
+    state: Mutex<SlotState>,
+    // Stored in the slot to but exclusively owned by the `OneshotReceiverCore`.
+    // This minimizes the size of the `OneshotReceiverCore`.
+    receiver: SyncUnsafeCell<ManuallyDrop<ReceiverState>>,
+}
 
 #[derive(Debug)]
 struct OneshotSenderCore(Arc<Slot>);
@@ -158,7 +164,7 @@ impl OneshotSenderCore {
     }
 
     fn close(&self) {
-        let mut state = self.0 .0.lock();
+        let mut state = self.0.state.lock();
         match std::mem::replace(&mut *state, SlotState::Done) {
             SlotState::Waiting(waker) => {
                 drop(state);
@@ -178,7 +184,7 @@ impl OneshotSenderCore {
     }
 
     fn is_closed(&self) -> bool {
-        match &*self.0 .0.lock() {
+        match &*self.0.state.lock() {
             SlotState::Done => true,
             SlotState::Sent(_) => true,
             SlotState::Waiting(_) => false,
@@ -192,7 +198,7 @@ impl OneshotSenderCore {
     unsafe fn send<T>(self, value: T) {
         fn send(this: OneshotSenderCore, value: BoxedValue) -> Option<BoxedValue> {
             let slot = this.into_slot();
-            let mut state = slot.0.lock();
+            let mut state = slot.state.lock();
             match std::mem::replace(&mut *state, SlotState::Done) {
                 SlotState::ReceiverRemote(port, send) => {
                     // SAFETY: `send` has been set to operate on values of type
@@ -223,7 +229,7 @@ impl OneshotSenderCore {
     unsafe fn into_port<T: MeshField>(self) -> Port {
         fn into_port(this: OneshotSenderCore, decode: DecodeFn) -> Port {
             let slot = this.into_slot();
-            let mut state = slot.0.lock();
+            let mut state = slot.state.lock();
             match std::mem::replace(&mut *state, SlotState::Done) {
                 SlotState::Waiting(waker) => {
                     let (send, recv) = Port::new_pair();
@@ -244,7 +250,10 @@ impl OneshotSenderCore {
 
     fn from_port<T: MeshField>(port: Port) -> Self {
         fn from_port(port: Port, send: SendFn) -> OneshotSenderCore {
-            let slot = Arc::new(Slot(Mutex::new(SlotState::ReceiverRemote(port, send))));
+            let slot = Arc::new(Slot {
+                state: Mutex::new(SlotState::ReceiverRemote(port, send)),
+                receiver: Default::default(),
+            });
             OneshotSenderCore(slot)
         }
         from_port(port, send_message::<T>)
@@ -323,16 +332,27 @@ impl<T: MeshField> From<Port> for OneshotReceiver<T> {
 }
 
 #[derive(Debug)]
-struct OneshotReceiverCore {
-    slot: Arc<Slot>,
-    // FUTURE: move this into the allocation. This may require rethinking how
-    // the allocation's lifetime is tracked, since just moving this into `Slot`
-    // would create a circular reference that is hard/expensive to remove in
-    // `drop`.
+struct OneshotReceiverCore(Arc<Slot>);
+
+#[derive(Default)]
+struct ReceiverState {
     port: Option<PortWithHandler<SlotHandler>>,
 }
 
 impl OneshotReceiverCore {
+    fn split(self) -> (Arc<Slot>, ReceiverState) {
+        // SAFETY: the receiver state is exclusively owned by the receiver. This
+        // ownership is being transferred to the caller.
+        let receiver = unsafe { ManuallyDrop::take(&mut *self.0.receiver.0.get()) };
+        (self.0, receiver)
+    }
+
+    fn split_mut(&mut self) -> (&Arc<Slot>, &mut ReceiverState) {
+        // SAFETY: the receiver state is exclusively owned by the receiver.
+        let receiver = unsafe { &mut *self.0.receiver.0.get() };
+        (&self.0, receiver)
+    }
+
     /// Drops the receiver.
     ///
     /// This must be called to ensure the value is dropped if it has been
@@ -342,14 +362,14 @@ impl OneshotReceiverCore {
     /// The caller must ensure that the slot is of type `T`.
     unsafe fn drop<T>(self) {
         fn clear(this: OneshotReceiverCore) -> Option<BoxedValue> {
-            let OneshotReceiverCore { slot, port } = this;
+            let (slot, ReceiverState { port }) = this.split();
             drop(port);
             // FUTURE: remember in `poll_recv` that this is not necessary to
             // avoid taking the lock here. A naive implementation would require
             // extra storage in `OneshotReceiverCore` to remember this, which is
             // probably undesirable.
             let v = if let SlotState::Sent(value) =
-                std::mem::replace(&mut *slot.0.lock(), SlotState::Done)
+                std::mem::replace(&mut *slot.state.lock(), SlotState::Done)
             {
                 Some(value)
             } else {
@@ -370,15 +390,16 @@ impl OneshotReceiverCore {
             this: &mut OneshotReceiverCore,
             cx: &mut Context<'_>,
         ) -> Poll<Result<BoxedValue, RecvError>> {
+            let (slot, recv) = this.split_mut();
             let v = loop {
-                let mut state = this.slot.0.lock();
+                let mut state = slot.state.lock();
                 break match std::mem::replace(&mut *state, SlotState::Done) {
                     SlotState::SenderRemote(port, decode) => {
                         *state = SlotState::Waiting(None);
                         drop(state);
-                        assert!(this.port.is_none());
-                        this.port = Some(port.set_handler(SlotHandler {
-                            slot: this.slot.clone(),
+                        assert!(recv.port.is_none());
+                        recv.port = Some(port.set_handler(SlotHandler {
+                            slot: slot.clone(),
                             decode,
                         }));
                         continue;
@@ -394,7 +415,7 @@ impl OneshotReceiverCore {
                     }
                     SlotState::Sent(data) => Ok(data),
                     SlotState::Done => {
-                        let err = this.port.as_ref().map_or(RecvError::Closed, |port| {
+                        let err = recv.port.as_ref().map_or(RecvError::Closed, |port| {
                             port.is_closed()
                                 .map(|_| RecvError::Closed)
                                 .unwrap_or_else(|err| RecvError::Error(err.into()))
@@ -421,9 +442,9 @@ impl OneshotReceiverCore {
     /// values of type `T`, the type of this slot.
     unsafe fn into_port<T: MeshField>(self) -> Port {
         fn into_port(this: OneshotReceiverCore, send: SendFn) -> Port {
-            let OneshotReceiverCore { slot, port } = this;
+            let (slot, ReceiverState { port }) = this.split();
             let existing = port.map(|port| port.remove_handler().0);
-            let mut state = slot.0.lock();
+            let mut state = slot.state.lock();
             match std::mem::replace(&mut *state, SlotState::Done) {
                 SlotState::SenderRemote(port, _) => {
                     assert!(existing.is_none());
@@ -453,8 +474,11 @@ impl OneshotReceiverCore {
 
     fn from_port<T: MeshField>(port: Port) -> Self {
         fn from_port(port: Port, decode: DecodeFn) -> OneshotReceiverCore {
-            let slot = Arc::new(Slot(Mutex::new(SlotState::SenderRemote(port, decode))));
-            OneshotReceiverCore { slot, port: None }
+            let slot = Arc::new(Slot {
+                state: Mutex::new(SlotState::SenderRemote(port, decode)),
+                receiver: Default::default(),
+            });
+            OneshotReceiverCore(slot)
         }
         from_port(port, decode_message::<T>)
     }
@@ -520,7 +544,7 @@ impl SlotHandler {
         control: &mut mesh_node::local_node::PortControl<'_, '_>,
         fail: bool,
     ) {
-        let mut state = self.slot.0.lock();
+        let mut state = self.slot.state.lock();
         match std::mem::replace(&mut *state, SlotState::Done) {
             SlotState::Waiting(waker) => {
                 if let Some(waker) = waker {
@@ -544,7 +568,7 @@ impl HandlePortEvent for SlotHandler {
         control: &mut mesh_node::local_node::PortControl<'_, '_>,
         message: Message<'_>,
     ) -> Result<(), HandleMessageError> {
-        let mut state = self.slot.0.lock();
+        let mut state = self.slot.state.lock();
         match std::mem::replace(&mut *state, SlotState::Done) {
             SlotState::Waiting(waker) => {
                 // SAFETY: the users of the slot will ensure it is not
