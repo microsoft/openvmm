@@ -167,6 +167,11 @@ impl PetriVmOpenVmm {
         pub async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()>
     );
     petri_vm_fn!(
+        /// Waits for the Hyper-V shutdown IC to be ready, returning a receiver
+        /// that will be closed when it is no longer ready.
+        pub async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<mesh::OneshotReceiver<()>>
+    );
+    petri_vm_fn!(
         /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
         pub async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()>
     );
@@ -305,13 +310,21 @@ impl PetriVmInner {
         Ok(())
     }
 
-    async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
+    async fn wait_for_enlightened_shutdown_ready(
+        &mut self,
+    ) -> anyhow::Result<mesh::OneshotReceiver<()>> {
         tracing::info!("Waiting for shutdown ic ready");
-        self.resources
+        let recv = self
+            .resources
             .shutdown_ic_send
             .call(ShutdownRpc::WaitReady, ())
             .await?;
 
+        Ok(recv)
+    }
+
+    async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
+        self.wait_for_enlightened_shutdown_ready().await?;
         if let Some(duration) = self.quirks.hyperv_shutdown_ic_sleep {
             tracing::info!("QUIRK: Waiting for {:?}", duration);
             PolledTimer::new(&self.resources.driver)

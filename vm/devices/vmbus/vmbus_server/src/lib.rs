@@ -15,10 +15,8 @@ pub type Guid = guid::Guid;
 use anyhow::Context;
 use async_trait::async_trait;
 use channel_bitmap::ChannelBitmap;
-use channels::ChannelError;
 use channels::ConnectionTarget;
 pub use channels::InitiateContactRequest;
-use channels::InterruptPageError;
 use channels::MessageTarget;
 use channels::ModifyConnectionRequest;
 pub use channels::ModifyConnectionResponse;
@@ -33,7 +31,6 @@ use futures::channel::mpsc::SendError;
 use futures::future::poll_fn;
 use futures::future::OptionFuture;
 use futures::stream::SelectAll;
-use futures::task::noop_waker_ref;
 use futures::FutureExt;
 use futures::StreamExt;
 use guestmem::GuestMemory;
@@ -447,7 +444,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
                     .map(|_| {
                         ModifyConnectionResponse::Supported(
                             protocol::ConnectionState::SUCCESSFUL,
-                            protocol::FeatureFlags::all(),
+                            protocol::FeatureFlags::from_bits(u32::MAX),
                         )
                     })
                     .boxed()
@@ -567,15 +564,6 @@ impl VmbusServer {
     pub async fn shutdown(self) {
         drop(self.task_send);
         let _ = self.task.await;
-    }
-
-    #[cfg(windows)]
-    pub async fn start_kernel_proxy(
-        &self,
-        driver: &(impl pal_async::driver::SpawnDriver + Clone),
-        handle: ProxyHandle,
-    ) -> std::io::Result<ProxyIntegration> {
-        ProxyIntegration::start(driver, handle, self.control(), Some(&self.control.mem)).await
     }
 
     /// Returns an object that can be used to offer channels.
@@ -793,7 +781,10 @@ impl ServerTask {
             protocol::STATUS_UNSUCCESSFUL
         };
         if let Err(err) = self.inner.complete_open(offer_id, result) {
-            tracelimit::error_ratelimited!(?err, "failed to complete open");
+            tracelimit::error_ratelimited!(
+                error = err.as_ref() as &dyn std::error::Error,
+                "failed to complete open"
+            );
             // If complete_open failed, the channel is now in FailedOpen state and the device needs
             // to notified to close it. Calling open_complete is postponed until the device responds
             // to the close request.
@@ -1466,7 +1457,7 @@ impl Notifier for ServerTaskInner {
         // main loop will try to send it again later.
         matches!(
             port.poll_post_message(
-                &mut std::task::Context::from_waker(noop_waker_ref()),
+                &mut std::task::Context::from_waker(std::task::Waker::noop()),
                 VMBUS_MESSAGE_TYPE,
                 message.data()
             ),
@@ -1593,7 +1584,12 @@ impl ServerTaskInner {
                             self.vtl,
                             guest_to_host_event.clone(),
                         )
-                        .map_err(ChannelError::SynicError)?;
+                        .with_context(|| {
+                            format!(
+                                "failed to create event port for VTL {:?}, connection ID {:#x}",
+                                self.vtl, open_params.connection_id
+                            )
+                        })?;
 
                     ChannelState::Open {
                         open_params,
@@ -1617,10 +1613,7 @@ impl ServerTaskInner {
 
     /// If the client specified an interrupt page, map it into host memory and
     /// set up the shared event port.
-    fn map_interrupt_page(
-        &mut self,
-        interrupt_page: Update<u64>,
-    ) -> Result<(), InterruptPageError> {
+    fn map_interrupt_page(&mut self, interrupt_page: Update<u64>) -> anyhow::Result<()> {
         let interrupt_page = match interrupt_page {
             Update::Unchanged => return Ok(()),
             Update::Reset => {
@@ -1634,7 +1627,7 @@ impl ServerTaskInner {
         assert_ne!(interrupt_page, 0);
 
         if interrupt_page % PAGE_SIZE as u64 != 0 {
-            return Err(InterruptPageError::NotPageAligned(interrupt_page));
+            anyhow::bail!("interrupt page {:#x} is not page aligned", interrupt_page);
         }
 
         let interrupt_page = self
@@ -1901,7 +1894,6 @@ impl ParentBus for VmbusServerControl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::task::noop_waker_ref;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
     use pal_async::timer::Instant;
@@ -1957,7 +1949,7 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .poll_handle_message(
-                        &mut std::task::Context::from_waker(noop_waker_ref()),
+                        &mut std::task::Context::from_waker(std::task::Waker::noop()),
                         msg.data(),
                         trusted,
                     ),

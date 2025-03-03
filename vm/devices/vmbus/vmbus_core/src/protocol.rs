@@ -175,17 +175,9 @@ pub struct FeatureFlags {
 }
 
 impl FeatureFlags {
-    pub const fn all() -> Self {
-        Self::new()
-            .with_guest_specified_signal_parameters(true)
-            .with_channel_interrupt_redirection(true)
-            .with_modify_connection(true)
-            .with_client_id(true)
-            .with_confidential_channels(true)
-    }
-
-    pub fn contains_unsupported_bits(&self) -> bool {
-        u32::from(*self) & !u32::from(Self::all()) != 0
+    /// Returns true if `other` contains only flags that are also set in `self`.
+    pub fn contains(&self, other: FeatureFlags) -> bool {
+        self.into_bits() & other.into_bits() == other.into_bits()
     }
 }
 
@@ -646,7 +638,7 @@ pub struct OpenChannel2 {
     pub event_flag: u16,
 
     // Only valid with FeatureFlags::CHANNEL_INTERRUPT_REDIRECTION
-    pub flags: u16,
+    pub flags: OpenChannelFlags,
 }
 
 impl From<OpenChannel> for OpenChannel2 {

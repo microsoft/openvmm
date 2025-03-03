@@ -1678,10 +1678,15 @@ impl InitializedVm {
             #[cfg(windows)]
             if let Some(proxy_handle) = vmbus_cfg.vmbusproxy_handle {
                 vmbus_proxy = Some(
-                    vmbus
-                        .start_kernel_proxy(&vmbus_driver, proxy_handle)
-                        .await
-                        .context("failed to start the vmbus proxy")?,
+                    vmbus_server::ProxyIntegration::start(
+                        &vmbus_driver,
+                        proxy_handle,
+                        vmbus.control(),
+                        vtl2_vmbus.as_ref().map(|server| server.control().clone()),
+                        Some(&gm),
+                    )
+                    .await
+                    .context("failed to start the vmbus proxy")?,
                 )
             }
 
