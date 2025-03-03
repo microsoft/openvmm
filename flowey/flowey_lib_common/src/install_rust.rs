@@ -295,10 +295,25 @@ impl FlowNode for Node {
                         None => {
                             let sh = xshell::Shell::new()?;
                             if let Ok(rustup) = which::which("rustup") {
+                                // Unfortunately, `rustup` still doesn't have any stable way to emit
+                                // machine-readable output. See https://github.com/rust-lang/rustup/issues/450
+                                //
+                                // As a result, this logic is written to work with multiple rustup
+                                // versions, both prior-to, and after 1.28.0.
+                                //
+                                // Prior to 1.28.0:
+                                //   $ rustup show active-toolchain
+                                //   stable-x86_64-unknown-linux-gnu (default)
+                                //
+                                // Starting from 1.28.0:
+                                //   $ rustup show active-toolchain
+                                //   stable-x86_64-unknown-linux-gnu
+                                //   active because: it's the default toolchain
                                 let output =
                                     xshell::cmd!(sh, "{rustup} show active-toolchain").output()?;
                                 let stdout = String::from_utf8(output.stdout)?;
-                                Some(stdout.split(' ').next().unwrap().into())
+                                let line = stdout.lines().next().unwrap();
+                                Some(line.split(' ').next().unwrap().into())
                             } else {
                                 None
                             }
