@@ -191,9 +191,10 @@ pub struct UhPartition {
     interrupt_targets: VtlArray<Arc<UhInterruptTarget>, 2>,
 }
 
+/// Underhill partition.
 #[derive(Inspect)]
 #[inspect(extra = "UhPartitionInner::inspect_extra")]
-struct UhPartitionInner {
+pub struct UhPartitionInner {
     #[inspect(skip)]
     hcl: Hcl,
     #[inspect(skip)] // inspected separately

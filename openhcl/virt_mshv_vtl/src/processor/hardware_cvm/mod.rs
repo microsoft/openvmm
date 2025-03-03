@@ -37,7 +37,6 @@ use hvdef::HvVtlEntryReason;
 use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
 use std::iter::zip;
-use std::sync::Arc;
 use virt::io::CpuIo;
 use virt::vp::AccessVpState;
 use virt::x86::MsrError;
@@ -1258,44 +1257,21 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::TranslateVirtualAddressX64
     }
 }
 
-/// A small struct for delaying requested TLB flushes.
-/// This is only used in the context of the `write_msr_cvm` function,
-/// in which the only MSR of relevance is the hypercall overlay MSR, which
-/// only performs a basic TLB flush.
-struct DelayedTlbFlushAccess {
-    vtl: Option<GuestVtl>,
-}
-
-impl TlbFlushLockAccess for DelayedTlbFlushAccess {
-    fn flush(&mut self, vtl: GuestVtl) {
-        assert!(self.vtl.is_none());
-        self.vtl = Some(vtl);
-    }
-
-    fn flush_entire(&mut self) {
-        unimplemented!()
-    }
-
-    fn set_wait_for_tlb_locks(&mut self, _vtl: GuestVtl) {
-        unimplemented!()
-    }
-}
-
-struct HypercallOverlayAccess {
+struct HypercallOverlayAccess<'a> {
     vtl: GuestVtl,
-    protector: Arc<dyn crate::ProtectIsolatedMemory>,
-    tlb_access: DelayedTlbFlushAccess,
+    protector: &'a dyn crate::ProtectIsolatedMemory,
+    tlb_access: &'a mut dyn TlbFlushLockAccess,
 }
 
-impl hv1_emulator::hv::VtlProtectHypercallOverlay for HypercallOverlayAccess {
+impl hv1_emulator::hv::VtlProtectHypercallOverlay for HypercallOverlayAccess<'_> {
     fn change_overlay(&mut self, gpn: u64) {
         self.protector
-            .change_hypercall_overlay(self.vtl, gpn, &mut self.tlb_access)
+            .change_hypercall_overlay(self.vtl, gpn, self.tlb_access)
     }
 
     fn disable_overlay(&mut self) {
         self.protector
-            .disable_hypercall_overlay(self.vtl, &mut self.tlb_access)
+            .disable_hypercall_overlay(self.vtl, self.tlb_access)
     }
 }
 
@@ -1306,6 +1282,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         value: u64,
         vtl: GuestVtl,
     ) -> Result<(), MsrError> {
+        let self_index = self.vp_index().index() as usize;
         let hv = &mut self.backing.cvm_state_mut().hv[vtl];
         // If updated is Synic MSR, then check if its proxy or previous was proxy
         // in either case, we need to update the `proxy_irr_blocked`
@@ -1328,13 +1305,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 .isolated_memory_protector
                 .as_ref()
                 .unwrap()
-                .clone(),
-            tlb_access: DelayedTlbFlushAccess { vtl: None },
+                .as_ref(),
+            // Don't call the helper method, break out into partial borrows so we
+            // can interact with the hv at the same time.
+            tlb_access: &mut B::tlb_flush_lock_access(self_index, self.partition, self.shared),
         };
         let r = hv.msr_write(msr, value, &mut access);
-        if let Some(vtl) = access.tlb_access.vtl {
-            self.flush(vtl);
-        }
 
         if !matches!(r, Err(MsrError::Unknown)) {
             // Check if proxy filter update was required (in case of SINT writes)
@@ -1443,7 +1419,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     }
 
     /// Returns the appropriately backed TLB flush and lock access
-    pub fn tlb_flush_lock_access(&self) -> impl TlbFlushLockAccess + '_ {
+    pub fn tlb_flush_lock_access(&self) -> impl TlbFlushLockAccess + use<'_, B> {
         B::tlb_flush_lock_access(
             self.vp_index().index() as usize,
             self.partition,
