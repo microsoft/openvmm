@@ -105,7 +105,7 @@ pub fn get_cfg_common_params(
     }
 }
 
-#[derive(clap::ValueEnum, Clone, Copy)]
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq)]
 pub enum CommonArchCli {
     X86_64,
     Aarch64,

@@ -4,6 +4,7 @@
 use crate::pipelines_shared::cfg_common_params::CommonArchCli;
 use flowey::node::prelude::ReadVar;
 use flowey::pipeline::prelude::*;
+use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
 
 /// Download and restore packages needed for building the specified architectures.
 #[derive(clap::Args)]
@@ -21,6 +22,8 @@ impl IntoPipeline for RestorePackagesCli {
         );
 
         let mut pipeline = Pipeline::new();
+        let (pub_x64, _use_x64) = pipeline.new_artifact("x64-release-2411-igvm");
+        let (pub_aarch64, _use_aarch64) = pipeline.new_artifact("aarch64-release-2411-igvm");
         let mut job = pipeline
             .new_job(
                 FlowPlatform::host(backend_hint),
@@ -46,7 +49,7 @@ impl IntoPipeline for RestorePackagesCli {
                 deny_warnings: false,
             });
 
-        let arches = {
+        let arches: Vec<CommonArchCli> = {
             if self.arch.is_empty() {
                 vec![FlowArch::host(backend_hint).try_into()?]
             } else {
@@ -54,14 +57,17 @@ impl IntoPipeline for RestorePackagesCli {
             }
         };
 
-        for arch in arches {
-            job = job.dep_on(
-                |ctx| flowey_lib_hvlite::_jobs::local_restore_packages::Request {
-                    arch: arch.into(),
-                    done: ctx.new_done_handle(),
-                },
-            );
-        }
+        let arches: Vec<CommonArch> = arches.into_iter().map(|arch| arch.into()).collect();
+
+        job = job.dep_on(
+            |ctx| flowey_lib_hvlite::_jobs::local_restore_packages::Request {
+                arches,
+                done: ctx.new_done_handle(),
+                aarch64_artifact: ctx.publish_artifact(pub_aarch64),
+                x64_artifact: ctx.publish_artifact(pub_x64),
+            },
+        );
+
         job.finish();
         Ok(pipeline)
     }
