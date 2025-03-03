@@ -140,15 +140,19 @@ impl crate::DmaClient for LockedMemorySpawner {
         anyhow::bail!("restore not supported for lockmem")
     }
 
+    fn requires_dma_mapping(&self) -> bool {
+        false
+    }
+
     fn map_dma_ranges<'a, 'b: 'a>(
         &'a self,
         _guest_memory: &'a GuestMemory,
-        _ranges: guestmem::ranges::PagedRange<'b>,
+        _range: guestmem::ranges::PagedRange<'b>,
         _options: crate::MapDmaOptions,
     ) -> std::pin::Pin<
         Box<
             dyn std::prelude::rust_2024::Future<
-                    Output = Result<crate::DmaTransaction<'a>, crate::MapDmaError>,
+                    Output = Result<Box<dyn crate::MappedDmaTransaction + 'a>, crate::MapDmaError>,
                 > + 'a,
         >,
     > {
@@ -157,7 +161,7 @@ impl crate::DmaClient for LockedMemorySpawner {
 
     fn unmap_dma_ranges(
         &self,
-        _transaction: crate::DmaTransaction<'_>,
+        _transaction: Box<dyn crate::MappedDmaTransaction + '_>,
     ) -> Result<(), crate::MapDmaError> {
         todo!()
     }

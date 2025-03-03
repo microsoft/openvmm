@@ -11,7 +11,6 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use interrupt::DeviceInterrupt;
 use memory::MemoryBlock;
-use page_allocator::ScopedPages;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -36,7 +35,7 @@ pub trait DeviceBacking: 'static + Send + Inspect {
     fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers>;
 
     /// DMA Client for the device.
-    fn dma_client(&self) -> Arc<dyn DmaClient>;
+    fn dma_client(&self) -> &DmaClientDriver;
 
     /// Returns the maximum number of interrupts that can be mapped.
     fn max_interrupt_count(&self) -> u32;
@@ -68,12 +67,14 @@ pub trait DeviceRegisterIo: Send + Sync {
 #[derive(Debug, thiserror::Error)]
 pub enum MapDmaError {
     #[error("failed to map ranges")]
-    MapFailed,
+    Map,
     #[error("no bounce buffers available")]
     NoBounceBufferAvailable,
     // UnmapFailed,
     // PinFailed,
     // BounceBufferFailed,
+    #[error("unable to unmap dma transaction")]
+    Unmap(#[source] anyhow::Error),
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -85,61 +86,34 @@ pub struct MapDmaOptions {
     // pub non_blocking: bool,
 }
 
-/// what we did to pages in a transaction
+// TODO: remove debug bounds, use inspect instead
+pub trait MappedDmaTransaction: std::fmt::Debug {
+    fn pfns(&self) -> &[u64];
+    // TODO: ugly - want consuming but cannot do that with object safe methods.
+    fn complete(&self) -> anyhow::Result<()>;
+
+    // TODO: testing only, do not commit
+    fn write_bounced(&self, buf: &[u8]) -> anyhow::Result<()>;
+}
+
 #[derive(Debug)]
-pub enum DmaOperation<'a> {
-    /// pages were already pinned/physically backed, original ranges
-    PrePinned(PagedRange<'a>),
-    /// pinned pages, must be unpinned, original ranges
-    Pinned(PagedRange<'a>),
-    /// allocated bounce buffers, original ranges
-    Bounced(ScopedPages<'a>, PagedRange<'a>),
+enum MappedDma<'a> {
+    Direct(PagedRange<'a>),
+    Mapped(Box<dyn MappedDmaTransaction + 'a>),
 }
 
-enum DmaOperationIter<A, B> {
-    PagedRange(A),
-    ScopedPages(B),
-}
-
-impl<A: Iterator, B: Iterator<Item = A::Item>> Iterator for DmaOperationIter<A, B> {
-    type Item = A::Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl MappedDma<'_> {
+    /// the mapped ranges for this transaction
+    pub fn pfns(&self) -> &[u64] {
         match self {
-            DmaOperationIter::PagedRange(iter) => iter.next(),
-            DmaOperationIter::ScopedPages(iter) => iter.next(),
+            MappedDma::Direct(range) => range.gpns(),
+            MappedDma::Mapped(mapped) => mapped.pfns(),
         }
     }
 }
 
-impl DmaOperation<'_> {
-    /// the mapped ranges for this transaction
-    pub fn gpns_iter(&self) -> impl Iterator<Item = u64> + '_ {
-        match self {
-            DmaOperation::PrePinned(r) => DmaOperationIter::PagedRange(r.gpns().iter().copied()),
-            DmaOperation::Pinned(r) => DmaOperationIter::PagedRange(r.gpns().iter().copied()),
-            DmaOperation::Bounced(pages, _) => DmaOperationIter::ScopedPages(pages.pfns()),
-        }
-    }
-}
-
-// TODO: make trait w/ associated type in dmaclient return for map to allow dma client implementer to hide details
-#[derive(Debug)]
-pub struct DmaTransaction<'a> {
-    /// guest memory object to use to bounce in/out
-    pub guest_memory: &'a GuestMemory,
-    pub operation: DmaOperation<'a>,
-    pub options: MapDmaOptions,
-}
-
-impl DmaTransaction<'_> {
-    /// the mapped ranges for this transaction
-    pub fn pfns(&self) -> impl Iterator<Item = u64> + '_ {
-        self.operation.gpns_iter()
-    }
-}
-
-/// Device interfaces for DMA.
+/// BUGBUG rename, split into separate traits for mapping vs allocation
+/// Dma platform implementation
 pub trait DmaClient: Send + Sync + Inspect {
     /// Allocate a new DMA buffer. This buffer must be zero initialized.
     ///
@@ -149,11 +123,7 @@ pub trait DmaClient: Send + Sync + Inspect {
     /// Attach to a previously allocated memory block.
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 
-    // Do these methods move? Do we have some other trait that just provides
-    // pin/unpin/query pin required, then this code moves up into common code
-    // and is not a trait method?
-    //
-    // This would remove the Box<..> for the async closure.
+    fn requires_dma_mapping(&self) -> bool;
 
     /// Map the given ranges for DMA. A caller must call `unmap_dma_ranges` to
     /// complete a dma transaction to observe the dma in the passed in ranges.
@@ -165,10 +135,70 @@ pub trait DmaClient: Send + Sync + Inspect {
         guest_memory: &'a GuestMemory,
         range: PagedRange<'b>,
         options: MapDmaOptions,
-    ) -> Pin<Box<dyn Future<Output = Result<DmaTransaction<'a>, MapDmaError>> + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn MappedDmaTransaction + 'a>, MapDmaError>> + 'a>>;
 
     /// Unmap a dma transaction to observe the dma into the requested ranges.
     ///
     /// TODO: return original ranges?
-    fn unmap_dma_ranges(&self, transaction: DmaTransaction<'_>) -> Result<(), MapDmaError>;
+    fn unmap_dma_ranges(
+        &self,
+        transaction: Box<dyn MappedDmaTransaction + '_>,
+    ) -> Result<(), MapDmaError>;
+}
+
+// BUGBUG RENAME
+#[derive(Inspect, Clone)]
+pub struct DmaClientDriver {
+    #[inspect(flatten)]
+    inner: Arc<dyn DmaClient>,
+}
+
+impl DmaClientDriver {
+    pub fn new(inner: Arc<dyn DmaClient>) -> Self {
+        Self { inner }
+    }
+
+    /// Allocate a new DMA buffer. This buffer must be zero initialized.
+    ///
+    /// TODO: string tag for allocation?
+    pub fn allocate_dma_buffer(&self, total_size: usize) -> anyhow::Result<MemoryBlock> {
+        self.inner.allocate_dma_buffer(total_size)
+    }
+
+    /// Attach to a previously allocated memory block.
+    pub fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+        self.inner.attach_dma_buffer(len, base_pfn)
+    }
+
+    /// Map the given ranges for DMA. A caller must call `unmap_dma_ranges` to
+    /// complete a dma transaction to observe the dma in the passed in ranges.
+    ///
+    /// This function may block, as if a page is required to be bounced it may
+    /// block waiting for bounce buffer space to become available.
+    pub async fn map_dma_ranges<'a, 'b: 'a>(
+        &'a self,
+        guest_memory: &'a GuestMemory,
+        range: PagedRange<'b>,
+        options: MapDmaOptions,
+    ) -> Result<MappedDma<'a>, MapDmaError> {
+        if self.inner.requires_dma_mapping() {
+            let mapped = self
+                .inner
+                .map_dma_ranges(guest_memory, range, options)
+                .await?;
+            Ok(MappedDma::Mapped(mapped))
+        } else {
+            Ok(MappedDma::Direct(range))
+        }
+    }
+
+    /// Unmap a dma transaction to observe the dma into the requested ranges.
+    ///
+    /// TODO: return original ranges?
+    pub fn unmap_dma_ranges(&self, transaction: MappedDma<'_>) -> Result<(), MapDmaError> {
+        match transaction {
+            MappedDma::Mapped(transaction) => self.inner.unmap_dma_ranges(transaction),
+            MappedDma::Direct(_) => Ok(()),
+        }
+    }
 }

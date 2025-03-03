@@ -127,7 +127,6 @@ use underhill_attestation::AttestationType;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
 use user_driver::DmaClient;
-use user_driver::DmaOperation;
 use user_driver::MapDmaOptions;
 use virt::state::HvRegisterState;
 use virt::Partition;
@@ -2974,7 +2973,7 @@ async fn new_underhill_vm(
             )
             .await?;
 
-        let bounced_pfns = transaction.pfns().collect::<Vec<_>>();
+        let bounced_pfns = transaction.pfns().to_vec();
         tracing::error!(?transaction, ?bounced_pfns, "self test transaction");
 
         let mut buffer = [9u8; hvdef::HV_PAGE_SIZE_USIZE * 5];
@@ -2982,9 +2981,7 @@ async fn new_underhill_vm(
         buffer[hvdef::HV_PAGE_SIZE_USIZE * 3 - 1] = 42;
 
         // do "dma"
-        if let DmaOperation::Bounced(bounced, _ranges) = &transaction.operation {
-            bounced.write(&buffer);
-        }
+        transaction.write_bounced(buffer.as_ref())?;
 
         client
             .unmap_dma_ranges(transaction)

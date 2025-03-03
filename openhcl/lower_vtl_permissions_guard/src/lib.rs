@@ -113,28 +113,32 @@ impl<T: DmaClient> DmaClient for LowerVtlMemorySpawner<T> {
         anyhow::bail!("restore is not supported for LowerVtlMemorySpawner")
     }
 
-    fn unmap_dma_ranges(
-        &self,
-        _transaction: user_driver::DmaTransaction<'_>,
-    ) -> std::result::Result<(), user_driver::MapDmaError> {
-        todo!()
+    fn requires_dma_mapping(&self) -> bool {
+        false
     }
 
     fn map_dma_ranges<'a, 'b: 'a>(
         &'a self,
         _guest_memory: &'a GuestMemory,
-        _ranges: PagedRange<'b>,
+        _range: PagedRange<'b>,
         _options: user_driver::MapDmaOptions,
     ) -> std::pin::Pin<
         Box<
             dyn std::prelude::rust_2024::Future<
                     Output = std::result::Result<
-                        user_driver::DmaTransaction<'a>,
+                        Box<dyn user_driver::MappedDmaTransaction + 'a>,
                         user_driver::MapDmaError,
                     >,
                 > + 'a,
         >,
     > {
+        todo!()
+    }
+
+    fn unmap_dma_ranges(
+        &self,
+        _transaction: Box<dyn user_driver::MappedDmaTransaction + '_>,
+    ) -> std::result::Result<(), user_driver::MapDmaError> {
         todo!()
     }
 }

@@ -12,6 +12,7 @@ use crate::memory::PAGE_SIZE;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
 use crate::DmaClient;
+use crate::DmaClientDriver;
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
@@ -36,6 +37,7 @@ pub struct EmulatedDevice<T> {
     controller: MsiController,
     shared_mem: DeviceSharedMemory,
     bar0_len: usize,
+    dma_client: DmaClientDriver,
 }
 
 impl<T: InspectMut> Inspect for EmulatedDevice<T> {
@@ -107,6 +109,9 @@ impl<T: PciConfigSpace + MmioIntercept> EmulatedDevice<T> {
         Self {
             device: Arc::new(Mutex::new(device)),
             controller,
+            dma_client: DmaClientDriver::new(Arc::new(EmulatedDmaAllocator {
+                shared_mem: shared_mem.clone(),
+            })),
             shared_mem,
             bar0_len,
         }
@@ -283,26 +288,30 @@ impl DmaClient for EmulatedDmaAllocator {
         anyhow::bail!("restore is not supported for emulated DMA")
     }
 
+    fn requires_dma_mapping(&self) -> bool {
+        false
+    }
+
     fn map_dma_ranges<'a, 'b: 'a>(
         &'a self,
         _guest_memory: &'a GuestMemory,
-        _ranges: guestmem::ranges::PagedRange<'b>,
+        _range: guestmem::ranges::PagedRange<'b>,
         _options: crate::MapDmaOptions,
     ) -> std::pin::Pin<
         Box<
             dyn std::prelude::rust_2024::Future<
-                    Output = Result<crate::DmaTransaction<'a>, crate::MapDmaError>,
+                    Output = Result<Box<dyn crate::MappedDmaTransaction + 'a>, crate::MapDmaError>,
                 > + 'a,
         >,
     > {
-        todo!()
+        unreachable!()
     }
 
     fn unmap_dma_ranges(
         &self,
-        _transaction: crate::DmaTransaction<'_>,
+        _transaction: Box<dyn crate::MappedDmaTransaction + '_>,
     ) -> Result<(), crate::MapDmaError> {
-        todo!()
+        unreachable!()
     }
 }
 
@@ -324,10 +333,8 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
         })
     }
 
-    fn dma_client(&self) -> Arc<dyn DmaClient> {
-        Arc::new(EmulatedDmaAllocator {
-            shared_mem: self.shared_mem.clone(),
-        }) as Arc<dyn DmaClient>
+    fn dma_client(&self) -> &DmaClientDriver {
+        &self.dma_client
     }
 
     fn max_interrupt_count(&self) -> u32 {

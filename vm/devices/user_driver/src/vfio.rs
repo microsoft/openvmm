@@ -11,6 +11,7 @@ use crate::interrupt::DeviceInterruptSource;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
 use crate::DmaClient;
+use crate::DmaClientDriver;
 use anyhow::Context;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -56,7 +57,7 @@ pub struct VfioDevice {
     interrupts: Vec<Option<InterruptState>>,
     #[inspect(skip)]
     config_space: vfio_sys::RegionInfo,
-    dma_client: Arc<dyn DmaClient>,
+    dma_client: DmaClientDriver,
 }
 
 #[derive(Inspect)]
@@ -130,7 +131,7 @@ impl VfioDevice {
             config_space,
             driver_source: driver_source.clone(),
             interrupts: Vec::new(),
-            dma_client,
+            dma_client: DmaClientDriver::new(dma_client),
         };
 
         // Ensure bus master enable and memory space enable are set, and that
@@ -231,8 +232,8 @@ impl DeviceBacking for VfioDevice {
         (*self).map_bar(n)
     }
 
-    fn dma_client(&self) -> Arc<dyn DmaClient> {
-        self.dma_client.clone()
+    fn dma_client(&self) -> &DmaClientDriver {
+        &self.dma_client
     }
 
     fn max_interrupt_count(&self) -> u32 {

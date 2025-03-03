@@ -5,7 +5,6 @@
 //! This is the primary fuzzer for the host (a.k.a device) ->
 //! openhcl attack surface. Do not sanitize any arbitrary data
 //! responses in this routine.
-use std::sync::Arc;
 
 use crate::arbitrary_data;
 
@@ -19,7 +18,7 @@ use user_driver::emulated::EmulatedDevice;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::DeviceBacking;
-use user_driver::DmaClient;
+use user_driver::DmaClientDriver;
 
 /// An EmulatedDevice fuzzer that requires a working EmulatedDevice backend.
 #[derive(Inspect)]
@@ -48,7 +47,7 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmula
         self.device.map_bar(n)
     }
 
-    fn dma_client(&self) -> Arc<dyn DmaClient> {
+    fn dma_client(&self) -> &DmaClientDriver {
         self.device.dma_client()
     }
 

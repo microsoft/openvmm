@@ -26,11 +26,11 @@ use user_driver::lockmem::LockedMemorySpawner;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::page_allocator::PageAllocator;
+use user_driver::page_allocator::ScopedPages;
 use user_driver::DmaClient;
-use user_driver::DmaOperation;
-use user_driver::DmaTransaction;
 use user_driver::MapDmaError;
 use user_driver::MapDmaOptions;
+use user_driver::MappedDmaTransaction;
 
 /// Save restore support for [`OpenhclDmaManager`].
 pub mod save_restore {
@@ -206,18 +206,34 @@ impl virt::VtlMemoryProtection for DmaManagerLowerVtl {
 
 struct PinPages {
     mshv_hvcall: hcl::ioctl::MshvHvcall,
+    requires_dma_mapping: bool,
     // TODO: have some way of looking up which ranges are pre-pinned or not.
     // prepinned_ranges: bool,
 }
 
+impl std::fmt::Debug for PinPages {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PinPages")
+            .field("requires_dma_mapping", &self.requires_dma_mapping)
+            .finish()
+    }
+}
+
 impl PinPages {
-    fn new() -> anyhow::Result<Self> {
+    fn new(requires_dma_mapping: bool) -> anyhow::Result<Self> {
         let mshv_hvcall = hcl::ioctl::MshvHvcall::new().context("failed to open mshv_hvcall")?;
         mshv_hvcall.set_allowed_hypercalls(&[
             hvdef::HypercallCode::HvCallPinGpaPageRanges,
             hvdef::HypercallCode::HvCallUnpinGpaPageRanges,
         ]);
-        Ok(Self { mshv_hvcall })
+        Ok(Self {
+            mshv_hvcall,
+            requires_dma_mapping,
+        })
+    }
+
+    fn requires_dma_mapping(&self) -> bool {
+        self.requires_dma_mapping
     }
 
     /// Check if all the pages are pinned.
@@ -433,12 +449,16 @@ impl OpenhclDmaManager {
             )
         };
 
+        // BUGBUG: set via env var
+        let requires_dma_mapping = true;
+
         Ok(OpenhclDmaManager {
             inner: Arc::new(DmaManagerInner {
                 shared_spawner: shared_pool.as_ref().map(|pool| pool.allocator_spawner()),
                 private_spawner: private_pool.as_ref().map(|pool| pool.allocator_spawner()),
                 lower_vtl: DmaManagerLowerVtl::new().context("failed to create lower vtl")?,
-                pin_pages: PinPages::new().context("failed to create pin pages")?,
+                pin_pages: PinPages::new(requires_dma_mapping)
+                    .context("failed to create pin pages")?,
             }),
             shared_pool,
             private_pool,
@@ -551,6 +571,80 @@ pub struct OpenhclDmaClient {
     bounce_pfns: Option<PageAllocator>,
 }
 
+/// what we did to pages in a transaction
+#[derive(Debug)]
+enum DmaOperation<'a> {
+    /// pages were already pinned/physically backed, original ranges
+    PrePinned(PagedRange<'a>),
+    /// pinned pages, must be unpinned, original ranges
+    Pinned(PagedRange<'a>),
+    /// allocated bounce buffers, original ranges
+    Bounced {
+        bounce: ScopedPages<'a>,
+        bounce_pfns: Vec<u64>,
+        original: PagedRange<'a>,
+    },
+}
+
+#[derive(Debug)]
+struct DmaTransaction<'a> {
+    /// guest memory object to use to bounce in/out
+    guest_memory: &'a GuestMemory,
+    operation: DmaOperation<'a>,
+    options: MapDmaOptions,
+    pin_pages: &'a PinPages,
+}
+
+impl MappedDmaTransaction for DmaTransaction<'_> {
+    fn pfns(&self) -> &[u64] {
+        match &self.operation {
+            DmaOperation::PrePinned(range) => range.gpns(),
+            DmaOperation::Pinned(range) => range.gpns(),
+            DmaOperation::Bounced { bounce_pfns, .. } => bounce_pfns,
+        }
+    }
+
+    fn complete(&self) -> anyhow::Result<()> {
+        match &self.operation {
+            DmaOperation::PrePinned(_) => {}
+            DmaOperation::Pinned(range) => {
+                self.pin_pages.unpin_pages(range.gpns());
+            }
+            DmaOperation::Bounced {
+                bounce,
+                bounce_pfns: _,
+                original,
+            } => {
+                // BUGBUG assumes no partial pages in range
+                if self.options.is_rx || self.options.always_bounce {
+                    for (index, page) in original.gpns().iter().enumerate() {
+                        let bounce_page = bounce.page_as_slice(index);
+
+                        // BUGBUG: does not handle subranges, copies whole pages.
+                        // there's not a good method for this in PagedRange, needs some
+                        // thinking.
+                        self.guest_memory
+                            .write_from_atomic(*page * PAGE_SIZE64, bounce_page)
+                            .expect("BUGBUG handle bounce copy error");
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn write_bounced(&self, buf: &[u8]) -> anyhow::Result<()> {
+        match &self.operation {
+            DmaOperation::Bounced { bounce, .. } => {
+                bounce.write(buf);
+                Ok(())
+            }
+            _ => anyhow::bail!("not a bounced transaction"),
+        }
+    }
+}
+
 impl OpenhclDmaClient {
     /// Allocate bounce pages and prepare the bounce buffers with the required
     /// data.
@@ -585,7 +679,11 @@ impl OpenhclDmaClient {
             }
         }
 
-        Ok(DmaOperation::Bounced(bounce_pages, range))
+        Ok(DmaOperation::Bounced {
+            bounce_pfns: bounce_pages.pfns().collect(),
+            bounce: bounce_pages,
+            original: range,
+        })
     }
 
     async fn map_dma_ranges_inner<'a, 'b: 'a>(
@@ -593,7 +691,7 @@ impl OpenhclDmaClient {
         guest_memory: &'a GuestMemory,
         range: PagedRange<'b>,
         options: MapDmaOptions,
-    ) -> Result<DmaTransaction<'a>, MapDmaError> {
+    ) -> Result<Box<dyn MappedDmaTransaction + 'a>, MapDmaError> {
         // BUGBUG: does not handle if the first/last page are partial pages. Do we allow this?
         assert_eq!(range.offset(), 0);
         assert_eq!(range.len() % PAGE_SIZE, 0);
@@ -613,11 +711,12 @@ impl OpenhclDmaClient {
             }
         };
 
-        Ok(DmaTransaction {
+        Ok(Box::new(DmaTransaction {
             guest_memory,
             operation,
             options,
-        })
+            pin_pages: &self.inner.pin_pages,
+        }))
     }
 }
 
@@ -637,39 +736,24 @@ impl DmaClient for OpenhclDmaClient {
         self.backing.attach_dma_buffer(len, base_pfn)
     }
 
+    fn requires_dma_mapping(&self) -> bool {
+        self.inner.pin_pages.requires_dma_mapping()
+    }
+
     fn map_dma_ranges<'a, 'b: 'a>(
         &'a self,
         guest_memory: &'a GuestMemory,
         range: PagedRange<'b>,
         options: MapDmaOptions,
-    ) -> Pin<Box<dyn Future<Output = Result<DmaTransaction<'a>, MapDmaError>> + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn MappedDmaTransaction + 'a>, MapDmaError>> + 'a>>
+    {
         Box::pin(self.map_dma_ranges_inner(guest_memory, range, options))
     }
 
-    fn unmap_dma_ranges(&self, transaction: DmaTransaction<'_>) -> Result<(), MapDmaError> {
-        match transaction.operation {
-            DmaOperation::PrePinned(_) => {}
-            DmaOperation::Pinned(range) => {
-                self.inner.pin_pages.unpin_pages(range.gpns());
-            }
-            DmaOperation::Bounced(bounce_pages, range) => {
-                // BUGBUG assumes no partial pages in range
-                if transaction.options.is_rx || transaction.options.always_bounce {
-                    for (index, page) in range.gpns().iter().enumerate() {
-                        let bounce_page = bounce_pages.page_as_slice(index);
-
-                        // BUGBUG: does not handle subranges, copies whole pages.
-                        // there's not a good method for this in PagedRange, needs some
-                        // thinking.
-                        transaction
-                            .guest_memory
-                            .write_from_atomic(*page * PAGE_SIZE64, bounce_page)
-                            .expect("BUGBUG handle bounce copy error");
-                    }
-                }
-            }
-        }
-
-        Ok(())
+    fn unmap_dma_ranges(
+        &self,
+        transaction: Box<dyn MappedDmaTransaction + '_>,
+    ) -> Result<(), MapDmaError> {
+        transaction.complete().map_err(MapDmaError::Unmap)
     }
 }
