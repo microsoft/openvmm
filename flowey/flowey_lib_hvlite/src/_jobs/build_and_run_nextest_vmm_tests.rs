@@ -196,6 +196,11 @@ impl SimpleFlowNode for Node {
             "build and run VMM tests only works locally"
         ))?;
 
+        let release_2411_igvm_files =
+            ctx.reqv(
+                |v| crate::download_release_2411_igvm_files::resolve::Request { release_output: v },
+            );
+
         let (test_log_path, get_test_log_path) = ctx.new_var();
 
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
@@ -208,6 +213,7 @@ impl SimpleFlowNode for Node {
             disk_images_dir: Some(disk_images_dir),
             register_openhcl_igvm_files: Some(register_openhcl_igvm_files),
             get_test_log_path: Some(get_test_log_path),
+            release_2411_igvm_files,
             get_env: v,
         });
 
