@@ -61,7 +61,7 @@ impl SimpleFlowNode for Node {
             let downloaded = ctx.reqv(|v| flowey_lib_common::download_gh_artifact::Request {
                 repo_owner: "microsoft".into(),
                 repo_name: "openvmm".into(),
-                file_name: format!("{arch_str}-openhcl-igvm").into(),
+                file_name: format!("{arch_str}-openhcl-igvm"),
                 path: v,
                 run_id: run_id.clone(),
             });
@@ -166,7 +166,7 @@ pub mod resolve {
                 let downloaded = ctx.reqv(|v| flowey_lib_common::download_gh_artifact::Request {
                     repo_owner: "microsoft".into(),
                     repo_name: "openvmm".into(),
-                    file_name: format!("{arch_str}-openhcl-igvm").into(),
+                    file_name: format!("{arch_str}-openhcl-igvm"),
                     path: v,
                     run_id: run_id.clone(),
                 });

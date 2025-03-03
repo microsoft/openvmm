@@ -71,7 +71,7 @@ impl SimpleFlowNode for Node {
             let downloaded = ctx.reqv(|v| flowey_lib_common::download_gh_artifact::Request {
                 repo_owner: "microsoft".into(),
                 repo_name: "openvmm".into(),
-                file_name: format!("{arch_str}-openhcl-igvm").into(),
+                file_name: format!("{arch_str}-openhcl-igvm"),
                 path: v,
                 run_id: run_id.clone(),
             });
@@ -145,17 +145,12 @@ impl SimpleFlowNode for Node {
         deps.push(ctx.emit_rust_step(
             "copy downloaded release igvm files to artifact dir",
             |ctx| {
-                let downloaded_x64 = if let Some(downloaded_x64) = downloaded_x64 {
-                    Some((downloaded_x64.claim(ctx), x64_artifact.claim(ctx)))
-                } else {
-                    None
-                };
+                let downloaded_x64 = downloaded_x64
+                    .map(|downloaded_x64| (downloaded_x64.claim(ctx), x64_artifact.claim(ctx)));
 
-                let downloaded_aarch64 = if let Some(downloaded_aarch64) = downloaded_aarch64 {
-                    Some((downloaded_aarch64.claim(ctx), aarch64_artifact.claim(ctx)))
-                } else {
-                    None
-                };
+                let downloaded_aarch64 = downloaded_aarch64.map(|downloaded_aarch64| {
+                    (downloaded_aarch64.claim(ctx), aarch64_artifact.claim(ctx))
+                });
 
                 |rt| {
                     let x64 = if let Some(downloaded_x64) = downloaded_x64 {
