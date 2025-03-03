@@ -61,31 +61,27 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
         .scan(&mut vp.vmtime, scan_irr);
 
     // An INIT/SIPI targeted at a VP with more than one guest VTL enabled is ignored.
-    // Check VTL enablement inside each block to avoid taking a lock on the hot path,
-    // INIT and SIPI are quite cold.
-    if init {
-        if !*apic_backing.vp().cvm_vp_inner().vtl1_enabled.lock() {
-            debug_assert_eq!(vtl, GuestVtl::Vtl0);
-            apic_backing.handle_init(vtl)?;
-        }
+    if init && !apic_backing.vp().backing.cvm_state().vtl1_enabled {
+        debug_assert_eq!(vtl, GuestVtl::Vtl0);
+        apic_backing.handle_init(vtl)?;
     }
 
     if let Some(vector) = sipi {
-        if apic_backing.vp().backing.cvm_state_mut().lapics[vtl].activity == MpState::WaitForSipi {
-            if !*apic_backing.vp().cvm_vp_inner().vtl1_enabled.lock() {
-                debug_assert_eq!(vtl, GuestVtl::Vtl0);
-                let base = (vector as u64) << 12;
-                let selector = (vector as u16) << 8;
-                apic_backing.handle_sipi(
-                    vtl,
-                    SegmentRegister {
-                        base,
-                        limit: 0xffff,
-                        selector,
-                        attributes: 0x9b,
-                    },
-                )?;
-            }
+        if apic_backing.vp().backing.cvm_state_mut().lapics[vtl].activity == MpState::WaitForSipi
+            && !apic_backing.vp().backing.cvm_state().vtl1_enabled
+        {
+            debug_assert_eq!(vtl, GuestVtl::Vtl0);
+            let base = (vector as u64) << 12;
+            let selector = (vector as u16) << 8;
+            apic_backing.handle_sipi(
+                vtl,
+                SegmentRegister {
+                    base,
+                    limit: 0xffff,
+                    selector,
+                    attributes: 0x9b,
+                },
+            )?;
         }
     }
 

@@ -345,8 +345,8 @@ pub struct UhCvmVpState {
     hv: VtlArray<ProcessorVtlHv, 2>,
     /// LAPIC state.
     lapics: VtlArray<LapicState, 2>,
-    /// Whether VTL 1 has been started on this VP.
-    vtl1_active: bool,
+    /// Whether VTL 1 has been enabled on this VP.
+    vtl1_enabled: bool,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -392,7 +392,7 @@ impl UhCvmVpState {
             exit_vtl: GuestVtl::Vtl0,
             hv,
             lapics,
-            vtl1_active: false,
+            vtl1_enabled: false,
         })
     }
 }
@@ -429,8 +429,8 @@ impl UhCvmPartitionState {
 pub struct UhCvmVpInner {
     /// The current status of TLB locks
     tlb_lock_info: VtlArray<TlbLockInfo, 2>,
-    /// Whether VTL 1 has been enabled on the vp
-    vtl1_enabled: Mutex<bool>,
+    /// Whether EnableVpVtl for VTL 1 has been called on this VP.
+    vtl1_enable_called: Mutex<bool>,
     /// Whether the VP has been started via the StartVp hypercall.
     started: AtomicBool,
 }
@@ -1894,7 +1894,7 @@ impl UhProtoPartition<'_> {
         let vps = (0..vp_count)
             .map(|vp_index| UhCvmVpInner {
                 tlb_lock_info: VtlArray::from_fn(|_| TlbLockInfo::new(vp_count)),
-                vtl1_enabled: Mutex::new(false),
+                vtl1_enable_called: Mutex::new(false),
                 started: AtomicBool::new(vp_index == 0),
             })
             .collect();
