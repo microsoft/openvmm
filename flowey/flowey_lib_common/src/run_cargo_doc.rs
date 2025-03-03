@@ -259,13 +259,11 @@ impl FlowNode for Node {
                         if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
                             PathBuf::from(dir)
                         } else {
-                            in_folder.join(
-                                Path::new("target")
-                                    .join(target_triple.to_string())
-                                    .join("doc"),
-                            )
+                            in_folder.join("target")
                         }
-                    };
+                    }
+                    .join(target_triple.to_string())
+                    .join("doc");
 
                     let cmd = CargoDocCommands {
                         cmds,

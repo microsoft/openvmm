@@ -163,16 +163,14 @@ impl FlowNode for Node {
                         if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
                             PathBuf::from(dir)
                         } else {
-                            in_folder.join(
-                                Path::new("target")
-                                    .join(target.to_string())
-                                    .join(match profile {
-                                        CargoBuildProfile::Debug => "debug",
-                                        _ => cargo_profile,
-                                    }),
-                            )
+                            in_folder.join("target")
                         }
-                    };
+                    }
+                    .join(target.to_string())
+                    .join(match profile {
+                        CargoBuildProfile::Debug => "debug",
+                        _ => cargo_profile,
+                    });
 
                     // FIXME: this flow is vestigial from a time when this node
                     // would return `CargoBuildCommand` back to the caller.
