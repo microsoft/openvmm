@@ -83,7 +83,7 @@ async fn nvme_relay_shared_pool(config: PetriVmConfigOpenVmm) -> Result<(), anyh
 #[openvmm_test(openhcl_uefi_x64[nvme](vhd(ubuntu_2204_server_x64)))]
 async fn nvme_relay_private_pool(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     // Number of pages to reserve as a private pool.
-    nvme_relay_test_core(config, "OPENHCL_ENABLE_VTL2_GPA_POOL=1024").await
+    nvme_relay_test_core(config, "OPENHCL_ENABLE_VTL2_GPA_POOL=512").await
 }
 
 /// Servicing test of an OpenHCL uefi VM with a NVME disk assigned to VTL2 that boots
@@ -97,7 +97,7 @@ async fn nvme_keepalive(
 ) -> Result<(), anyhow::Error> {
     nvme_relay_servicing_core(
         config,
-        "OPENHCL_ENABLE_VTL2_GPA_POOL=1024",
+        "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
         igvm_file,
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,

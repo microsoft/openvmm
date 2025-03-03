@@ -7,18 +7,20 @@ mod hvsock;
 mod saved_state;
 
 pub use self::saved_state::SavedState;
+use anyhow::Context as _;
 use anyhow::Result;
 use futures::future::OptionFuture;
 use futures::stream::SelectAll;
-use futures::task::noop_waker_ref;
 use futures::FutureExt;
 use futures::StreamExt;
 use guid::Guid;
 use inspect::Inspect;
+use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pal_event::Event;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::convert::TryInto;
@@ -48,6 +50,7 @@ use vmbus_core::MonitorPageGpas;
 use vmbus_core::OutgoingMessage;
 use vmbus_core::TaggedStream;
 use vmbus_core::VersionInfo;
+use vmcore::interrupt::Interrupt;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
@@ -55,12 +58,16 @@ use zerocopy::KnownLayout;
 const SINT: u8 = 2;
 const VTL: u8 = 0;
 const SUPPORTED_VERSIONS: &[Version] = &[Version::Iron, Version::Copper];
-const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::all();
+const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
+    .with_guest_specified_signal_parameters(true)
+    .with_channel_interrupt_redirection(true)
+    .with_modify_connection(true)
+    .with_client_id(true);
 
 /// The client interface synic events.
 pub trait SynicEventClient: Send + Sync {
     /// Maps an incoming event signal on SINT7 to `event`.
-    fn map_event(&self, event_flag: u16, event: &pal_event::Event) -> std::io::Result<()>;
+    fn map_event(&self, event_flag: u16, event: &Event) -> std::io::Result<()>;
 
     /// Unmaps an event previously mapped with `map_event`.
     fn unmap_event(&self, event_flag: u16);
@@ -131,13 +138,6 @@ impl VmbusClientBuilder {
         }
     }
 
-    /// Returns the synic event client.
-    ///
-    /// TODO: remove this when it's no longer needed outside of `VmbusClient`.
-    pub fn event_client(&self) -> &Arc<dyn SynicEventClient> {
-        &self.event_client
-    }
-
     /// Creates a new instance with a receiver for incoming synic messages.
     pub fn build(self, spawner: &impl Spawn, offer_send: mesh::Sender<OfferInfo>) -> VmbusClient {
         let (task_send, task_recv) = mesh::channel();
@@ -152,6 +152,10 @@ impl VmbusClientBuilder {
             gpadls: HashMap::new(),
             teardown_gpadls: HashMap::new(),
             channel_requests: SelectAll::new(),
+            synic: SynicState {
+                event_flag_state: Vec::new(),
+                event_client: self.event_client,
+            },
         };
 
         let mut task = ClientTask {
@@ -249,6 +253,13 @@ impl VmbusClient {
             .await
             .expect("Failed to send restore request")
     }
+
+    pub async fn post_restore(&mut self) {
+        self.task_send
+            .call(TaskRequest::PostRestore, ())
+            .await
+            .expect("Failed to send post-restore request");
+    }
 }
 
 impl Inspect for VmbusClient {
@@ -278,16 +289,34 @@ impl VmbusClientAccess {
 #[derive(Debug)]
 pub struct OpenRequest {
     pub open_data: OpenData,
-    pub flags: OpenChannelFlags,
+    pub incoming_event: Option<Event>,
+    pub use_vtl2_connection_id: bool,
+}
+
+#[derive(Debug)]
+pub struct RestoreRequest {
+    pub incoming_event: Option<Event>,
+    // FUTURE: move to saved state, don't rely on the caller.
+    pub redirected_event_flag: Option<u16>,
+    // FUTURE: ditto
+    pub connection_id: u32,
 }
 
 /// Expresses an operation requested of the client.
 pub enum ChannelRequest {
-    Open(Rpc<OpenRequest, bool>),
+    Open(FailableRpc<OpenRequest, OpenOutput>),
+    Restore(FailableRpc<RestoreRequest, OpenOutput>),
     Close,
-    Gpadl(Rpc<GpadlRequest, bool>),
+    Gpadl(FailableRpc<GpadlRequest, ()>),
     TeardownGpadl(GpadlId),
     Modify(Rpc<ModifyRequest, i32>),
+}
+
+#[derive(Debug)]
+pub struct OpenOutput {
+    // FUTURE: remove this once it's part of the saved state.
+    pub redirected_event_flag: Option<u16>,
+    pub guest_to_host_signal: Interrupt,
 }
 
 impl std::fmt::Display for ChannelRequest {
@@ -295,6 +324,7 @@ impl std::fmt::Display for ChannelRequest {
         match self {
             ChannelRequest::Open(_) => write!(fmt, "Open"),
             ChannelRequest::Close => write!(fmt, "Close"),
+            ChannelRequest::Restore(_) => write!(fmt, "Restore"),
             ChannelRequest::Gpadl(_) => write!(fmt, "Gpadl"),
             ChannelRequest::TeardownGpadl(_) => write!(fmt, "TeardownGpadl"),
             ChannelRequest::Modify(_) => write!(fmt, "Modify"),
@@ -362,6 +392,7 @@ enum TaskRequest {
     Inspect(inspect::Deferred),
     Save(Rpc<(), SavedState>),
     Restore(Rpc<SavedState, Result<(Option<VersionInfo>, Vec<RestoredChannel>), RestoreError>>),
+    PostRestore(Rpc<(), ()>),
     Start,
     Stop(Rpc<(), ()>),
 }
@@ -460,17 +491,32 @@ enum ChannelState {
     /// The channel has been offered to the client.
     Offered,
     /// The channel has requested the server to be opened.
-    Opening(#[inspect(skip)] Rpc<(), bool>),
+    Opening {
+        connection_id: u32,
+        redirected_event_flag: Option<u16>,
+        #[inspect(skip)]
+        redirected_event: Option<Event>,
+        #[inspect(skip)]
+        rpc: FailableRpc<(), OpenOutput>,
+    },
+    /// The channel has been restored but not claimed.
+    Restored,
     /// The channel has been successfully opened.
-    Opened,
+    Opened {
+        connection_id: u32,
+        redirected_event_flag: Option<u16>,
+        #[inspect(skip)]
+        redirected_event: Option<Event>,
+    },
 }
 
 impl std::fmt::Display for ChannelState {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ChannelState::Opening(..) => write!(fmt, "Opening"),
+            ChannelState::Opening { .. } => write!(fmt, "Opening"),
             ChannelState::Offered => write!(fmt, "Offered"),
-            ChannelState::Opened => write!(fmt, "Opened"),
+            ChannelState::Opened { .. } => write!(fmt, "Opened"),
+            ChannelState::Restored => write!(fmt, "Restored"),
         }
     }
 }
@@ -580,7 +626,8 @@ impl ClientTask {
     }
 
     fn handle_modify(&mut self, request: Rpc<ModifyConnectionRequest, ConnectionState>) {
-        if !matches!(self.state, ClientState::Connected { version } if version.feature_flags.modify_connection())
+        if !matches!(self.state, ClientState::Connected { version }
+            if version.feature_flags.modify_connection())
         {
             tracing::warn!("ModifyConnection not supported");
             request.complete(ConnectionState::FAILED_UNKNOWN_FAILURE);
@@ -668,7 +715,10 @@ impl ClientTask {
             }
         } else {
             self.state = old_state;
-            tracing::warn!(client_state = %self.state, "invalid client state to handle VersionResponse");
+            tracing::warn!(
+                client_state = %self.state,
+                "invalid client state to handle VersionResponse"
+            );
         }
     }
 
@@ -739,7 +789,29 @@ impl ClientTask {
     fn handle_rescind(&mut self, rescind: protocol::RescindChannelOffer) {
         tracing::info!(state = %self.state, channel_id = rescind.channel_id.0, "received rescind");
 
-        let channel = &self.inner.channels[&rescind.channel_id];
+        let channel = &mut self.inner.channels.get_mut(&rescind.channel_id).unwrap();
+
+        let event_flag = match std::mem::replace(&mut channel.state, ChannelState::Offered) {
+            ChannelState::Offered => None,
+            ChannelState::Opening {
+                connection_id: _,
+                redirected_event_flag,
+                redirected_event: _,
+                rpc,
+            } => {
+                rpc.fail(anyhow::anyhow!("channel revoked"));
+                redirected_event_flag
+            }
+            ChannelState::Restored => None,
+            ChannelState::Opened {
+                connection_id: _,
+                redirected_event_flag,
+                redirected_event: _,
+            } => redirected_event_flag,
+        };
+        if let Some(event_flag) = event_flag {
+            self.inner.synic.free_event_flag(event_flag);
+        }
 
         // Teardown all remaining gpadls for this channel. We don't care about GpadlTorndown
         // responses at this point.
@@ -797,7 +869,10 @@ impl ClientTask {
             // This will drop the sender and cause the client to know the offers are done.
             self.state = ClientState::Connected { version: *version };
         } else {
-            tracing::warn!(client_state = %self.state, "invalid client state to handle AllOffersDelivered");
+            tracing::warn!(
+                client_state = %self.state,
+                "invalid client state to handle AllOffersDelivered"
+            );
         }
     }
 
@@ -815,32 +890,36 @@ impl ClientTask {
             return;
         };
 
-        if !matches!(gpadl_state, GpadlState::Offered(..)) {
-            tracing::warn!(
-                gpadl_id = request.gpadl_id.0,
-                channel_id = request.channel_id.0,
-                ?gpadl_state,
-                "Invalid state for GpadlCreated"
-            );
+        let rpc = match std::mem::replace(gpadl_state, GpadlState::Created) {
+            GpadlState::Offered(rpc) => rpc,
+            old_state => {
+                *gpadl_state = old_state;
+                tracing::warn!(
+                    gpadl_id = request.gpadl_id.0,
+                    channel_id = request.channel_id.0,
+                    ?gpadl_state,
+                    "Invalid state for GpadlCreated"
+                );
 
-            return;
+                return;
+            }
         };
 
         let gpadl_created = request.status == protocol::STATUS_SUCCESS;
-        let old_state = if gpadl_created {
-            std::mem::replace(gpadl_state, GpadlState::Created)
-        } else {
+        if !gpadl_created {
             self.inner
                 .gpadls
                 .remove(&(request.channel_id, request.gpadl_id))
-                .unwrap()
+                .unwrap();
+
+            rpc.fail(anyhow::anyhow!(
+                "gpadl creation failed: {:#x}",
+                request.status
+            ));
+            return;
         };
 
-        let GpadlState::Offered(sender) = old_state else {
-            unreachable!("validated above");
-        };
-
-        sender.complete(gpadl_created)
+        rpc.complete(Ok(()));
     }
 
     fn handle_open_result(&mut self, result: protocol::OpenResult) {
@@ -857,20 +936,41 @@ impl ClientTask {
             .expect("channel should exist");
 
         let channel_opened = result.status == protocol::STATUS_SUCCESS as u32;
-        let new_state = if channel_opened {
-            ChannelState::Opened
-        } else {
-            ChannelState::Offered
-        };
-
-        // Even if the old state is wrong, we still update to the state the host thinks we're in.
-        let old_state = std::mem::replace(&mut channel.state, new_state);
-        let ChannelState::Opening(rpc) = old_state else {
-            tracing::warn!(?old_state, channel_opened, "invalid state for open result");
+        let old_state = std::mem::replace(&mut channel.state, ChannelState::Offered);
+        let ChannelState::Opening {
+            connection_id,
+            redirected_event_flag,
+            redirected_event,
+            rpc,
+        } = old_state
+        else {
+            tracing::warn!(
+                old_state = ?channel.state,
+                channel_opened,
+                "invalid state for open result"
+            );
+            channel.state = old_state;
             return;
         };
 
-        rpc.complete(channel_opened);
+        if !channel_opened {
+            if let Some(event_flag) = redirected_event_flag {
+                self.inner.synic.free_event_flag(event_flag);
+            }
+            rpc.fail(anyhow::anyhow!("open failed: {:#x}", result.status));
+            return;
+        }
+
+        channel.state = ChannelState::Opened {
+            connection_id,
+            redirected_event_flag,
+            redirected_event,
+        };
+
+        rpc.complete(Ok(OpenOutput {
+            redirected_event_flag,
+            guest_to_host_signal: self.inner.synic.guest_to_host_interrupt(connection_id),
+        }));
     }
 
     fn handle_gpadl_torndown(&mut self, request: protocol::GpadlTorndown) {
@@ -1027,7 +1127,11 @@ impl ClientTask {
         }
     }
 
-    fn handle_open_channel(&mut self, channel_id: ChannelId, rpc: Rpc<OpenRequest, bool>) {
+    fn handle_open_channel(
+        &mut self,
+        channel_id: ChannelId,
+        rpc: FailableRpc<OpenRequest, OpenOutput>,
+    ) {
         let channel = self
             .inner
             .channels
@@ -1035,14 +1139,28 @@ impl ClientTask {
             .expect("invalid channel");
 
         if !matches!(channel.state, ChannelState::Offered) {
-            tracing::warn!(id = %channel_id.0, channel_state = %self.inner.channel_state(channel_id).unwrap(), "invalid channel state for OpenChannel");
-            rpc.complete(false);
+            rpc.fail(anyhow::anyhow!("invalid channel state: {}", channel.state));
             return;
         }
 
         tracing::info!(channel_id = channel_id.0, "opening channel on host");
-        let request = rpc.input();
+        let (request, rpc) = rpc.split();
         let open_data = &request.open_data;
+
+        let supports_interrupt_redirection = if let ClientState::Connected { version } = self.state
+        {
+            version.feature_flags.guest_specified_signal_parameters()
+                || version.feature_flags.channel_interrupt_redirection()
+        } else {
+            false
+        };
+
+        if !supports_interrupt_redirection && open_data.event_flag != channel_id.0 as u16 {
+            rpc.fail(anyhow::anyhow!(
+                "host does not support specifying the event flag"
+            ));
+            return;
+        }
 
         let open_channel = protocol::OpenChannel {
             channel_id,
@@ -1053,32 +1171,101 @@ impl ClientTask {
             user_data: open_data.user_data,
         };
 
-        if matches!(self.state, ClientState::Connected { version } if version.feature_flags.guest_specified_signal_parameters() || version.feature_flags.channel_interrupt_redirection())
-        {
-            // N.B. The open_data will contain the server's event
-            // flag/connection ID if the VTL0 guest doesn't use alternate
-            // values (it normally won't), so we can communicate those to
-            // the host if they differ.
+        let connection_id = if request.use_vtl2_connection_id {
+            if !supports_interrupt_redirection {
+                rpc.fail(anyhow::anyhow!(
+                    "host does not support specfiying the connection ID"
+                ));
+                return;
+            }
+            protocol::ConnectionId::new(channel_id.0, 2.try_into().unwrap(), 7).0
+        } else {
+            open_data.connection_id
+        };
+
+        // No failure paths after the one for allocating the event flag, since
+        // otherwise we would need to free the event flag.
+        let mut flags = OpenChannelFlags::new();
+        let event_flag = if let Some(event) = &request.incoming_event {
+            if !supports_interrupt_redirection {
+                rpc.fail(anyhow::anyhow!(
+                    "host does not support redirecting interrupts"
+                ));
+                return;
+            }
+
+            flags.set_redirect_interrupt(true);
+            match self.inner.synic.allocate_event_flag(event) {
+                Ok(flag) => flag,
+                Err(err) => {
+                    rpc.fail(err.context("failed to allocate event flag"));
+                    return;
+                }
+            }
+        } else {
+            open_data.event_flag
+        };
+
+        if supports_interrupt_redirection {
             self.inner.messages.send(&protocol::OpenChannel2 {
                 open_channel,
-                connection_id: open_data.connection_id,
-                event_flag: open_data.event_flag,
-                flags: request.flags.into(),
+                connection_id,
+                event_flag,
+                flags,
             });
         } else {
-            assert_eq!(
-                open_data.event_flag, channel_id.0 as u16,
-                "Trying to use guest-specified event flag when the host doesn't support it."
-            );
-
             self.inner.messages.send(&open_channel);
         }
 
-        self.inner.channels.get_mut(&channel_id).unwrap().state =
-            ChannelState::Opening(rpc.split().1);
+        channel.state = ChannelState::Opening {
+            connection_id,
+            redirected_event_flag: (request.incoming_event.is_some()).then_some(event_flag),
+            redirected_event: request.incoming_event,
+            rpc,
+        }
     }
 
-    fn handle_gpadl(&mut self, channel_id: ChannelId, rpc: Rpc<GpadlRequest, bool>) {
+    fn handle_restore_channel(
+        &mut self,
+        channel_id: ChannelId,
+        request: RestoreRequest,
+    ) -> Result<OpenOutput> {
+        let channel = self
+            .inner
+            .channels
+            .get_mut(&channel_id)
+            .expect("invalid channel");
+
+        if !matches!(channel.state, ChannelState::Restored) {
+            anyhow::bail!("invalid channel state: {}", channel.state);
+        }
+
+        if request.incoming_event.is_some() != request.redirected_event_flag.is_some() {
+            anyhow::bail!("incoming event and redirected event flag must both be set or unset");
+        }
+
+        if let Some((flag, event)) = request
+            .redirected_event_flag
+            .zip(request.incoming_event.as_ref())
+        {
+            self.inner.synic.restore_event_flag(flag, event)?;
+        }
+
+        channel.state = ChannelState::Opened {
+            connection_id: request.connection_id,
+            redirected_event_flag: request.redirected_event_flag,
+            redirected_event: request.incoming_event,
+        };
+        Ok(OpenOutput {
+            redirected_event_flag: request.redirected_event_flag,
+            guest_to_host_signal: self
+                .inner
+                .synic
+                .guest_to_host_interrupt(request.connection_id),
+        })
+    }
+
+    fn handle_gpadl(&mut self, channel_id: ChannelId, rpc: FailableRpc<GpadlRequest, ()>) {
         let (request, rpc) = rpc.split();
         if self
             .inner
@@ -1170,14 +1357,25 @@ impl ClientTask {
     }
 
     fn handle_close_channel(&mut self, channel_id: ChannelId) {
-        if let ChannelState::Opened = self.inner.channel_state(channel_id).unwrap() {
+        if let ChannelState::Opened {
+            redirected_event_flag,
+            ..
+        } = *self.inner.channel_state(channel_id).unwrap()
+        {
+            if let Some(flag) = redirected_event_flag {
+                self.inner.synic.free_event_flag(flag);
+            }
             tracing::info!(channel_id = channel_id.0, "closing channel on host");
             self.inner
                 .messages
                 .send(&protocol::CloseChannel { channel_id });
             self.inner.channels.get_mut(&channel_id).unwrap().state = ChannelState::Offered;
         } else {
-            tracing::warn!(id = %channel_id.0, channel_state = %self.inner.channel_state(channel_id).unwrap(), "invalid channel state for close channel");
+            tracing::warn!(
+                id = %channel_id.0,
+                channel_state = %self.inner.channel_state(channel_id).unwrap(),
+                "invalid channel state for close channel"
+            );
         }
     }
 
@@ -1210,14 +1408,26 @@ impl ClientTask {
 
     fn handle_channel_request(&mut self, channel_id: ChannelId, request: ChannelRequest) {
         if let Some(state) = self.inner.channel_state(channel_id) {
-            tracing::trace!(id = %channel_id.0, request = %request, %state, "received client request");
+            tracing::trace!(
+                id = %channel_id.0,
+                request = %request,
+                %state,
+                "received client request"
+            );
         } else {
-            tracing::warn!(id = %channel_id.0, request = %request, "received client request for unknown channel");
+            tracing::warn!(
+                id = %channel_id.0,
+                request = %request,
+                "received client request for unknown channel"
+            );
             return;
         }
 
         match request {
             ChannelRequest::Open(rpc) => self.handle_open_channel(channel_id, rpc),
+            ChannelRequest::Restore(rpc) => {
+                rpc.handle_failable_sync(|request| self.handle_restore_channel(channel_id, request))
+            }
             ChannelRequest::Gpadl(req) => self.handle_gpadl(channel_id, req),
             ChannelRequest::TeardownGpadl(req) => self.handle_gpadl_teardown(channel_id, req),
             ChannelRequest::Close => self.handle_close_channel(channel_id),
@@ -1234,6 +1444,7 @@ impl ClientTask {
             TaskRequest::Restore(rpc) => {
                 rpc.handle_sync(|saved_state| self.handle_restore(saved_state))
             }
+            TaskRequest::PostRestore(rpc) => rpc.handle_sync(|()| self.handle_post_restore()),
             TaskRequest::Start => self.handle_start(),
             TaskRequest::Stop(rpc) => rpc.handle(|()| self.handle_stop()).await,
         }
@@ -1241,7 +1452,7 @@ impl ClientTask {
 
     /// Makes sure a channel is closed if the channel request stream was dropped.
     fn handle_device_removal(&mut self, channel_id: ChannelId) {
-        if let Some(ChannelState::Opened) = self.inner.channel_state(channel_id) {
+        if let Some(ChannelState::Opened { .. }) = self.inner.channel_state(channel_id) {
             tracing::warn!(
                 channel_id = channel_id.0,
                 "Channel dropped without closing first"
@@ -1380,7 +1591,7 @@ impl ClientTask {
 #[inspect(external_tag)]
 enum GpadlState {
     /// GpadlHeader has been sent to the host.
-    Offered(#[inspect(skip)] Rpc<(), bool>),
+    Offered(#[inspect(skip)] FailableRpc<(), ()>),
     /// Host has responded with GpadlCreated.
     Created,
     /// GpadlTeardown message has been sent to the host.
@@ -1414,7 +1625,7 @@ impl OutgoingMessages {
         let msg = OutgoingMessage::with_data(msg, data);
         if self.queued.is_empty() {
             let r = self.poster.poll_post_message(
-                &mut Context::from_waker(noop_waker_ref()),
+                &mut Context::from_waker(std::task::Waker::noop()),
                 protocol::VMBUS_MESSAGE_REDIRECT_CONNECTION_ID,
                 1,
                 msg.data(),
@@ -1458,8 +1669,17 @@ struct ClientTaskInner {
     gpadls: HashMap<(ChannelId, GpadlId), GpadlState>,
     #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|id| id.0)")]
     teardown_gpadls: HashMap<GpadlId, Option<ChannelId>>,
-    #[inspect(with = "|x| x.len()")]
+    #[inspect(skip)]
     channel_requests: SelectAll<TaggedStream<ChannelId, mesh::Receiver<ChannelRequest>>>,
+    synic: SynicState,
+}
+
+#[derive(Inspect)]
+struct SynicState {
+    #[inspect(skip)]
+    event_client: Arc<dyn SynicEventClient>,
+    #[inspect(iter_by_index)]
+    event_flag_state: Vec<bool>,
 }
 
 impl ClientTaskInner {
@@ -1468,20 +1688,91 @@ impl ClientTaskInner {
     }
 }
 
+impl SynicState {
+    fn guest_to_host_interrupt(&self, connection_id: u32) -> Interrupt {
+        Interrupt::from_fn({
+            let event_client = self.event_client.clone();
+            move || {
+                if let Err(err) = event_client.signal_event(connection_id, 0) {
+                    tracelimit::warn_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        "failed to signal event"
+                    );
+                }
+            }
+        })
+    }
+
+    const MAX_EVENT_FLAGS: u16 = 2047;
+
+    fn allocate_event_flag(&mut self, event: &Event) -> Result<u16> {
+        let i = self
+            .event_flag_state
+            .iter()
+            .position(|&used| !used)
+            .ok_or(())
+            .or_else(|()| {
+                if self.event_flag_state.len() >= Self::MAX_EVENT_FLAGS as usize {
+                    anyhow::bail!("out of event flags");
+                }
+                self.event_flag_state.push(false);
+                Ok(self.event_flag_state.len() - 1)
+            })?;
+
+        let event_flag = (i + 1) as u16;
+        self.event_client
+            .map_event(event_flag, event)
+            .context("failed to map event")?;
+        self.event_flag_state[i] = true;
+        Ok(event_flag)
+    }
+
+    fn restore_event_flag(&mut self, flag: u16, event: &Event) -> Result<()> {
+        let i = (flag as usize)
+            .checked_sub(1)
+            .context("invalid event flag")?;
+        if i >= Self::MAX_EVENT_FLAGS as usize {
+            anyhow::bail!("invalid event flag");
+        }
+        if self.event_flag_state.len() <= i {
+            self.event_flag_state.resize(i + 1, false);
+        }
+        if self.event_flag_state[i] {
+            anyhow::bail!("event flag already in use");
+        }
+        self.event_client
+            .map_event(flag, event)
+            .context("failed to map event")?;
+        self.event_flag_state[i] = true;
+        Ok(())
+    }
+
+    fn free_event_flag(&mut self, flag: u16) {
+        let i = flag as usize - 1;
+        assert!(i < self.event_flag_state.len());
+        self.event_flag_state[i] = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_concurrency::future::Join;
     use guid::Guid;
     use pal_async::async_test;
     use pal_async::timer::PolledTimer;
     use pal_async::DefaultDriver;
     use protocol::TargetInfo;
+    use std::fmt::Debug;
     use std::task::ready;
     use std::time::Duration;
     use test_with_tracing::test;
+    use vmbus_core::protocol::MessageHeader;
     use vmbus_core::protocol::MessageType;
     use vmbus_core::protocol::OfferFlags;
     use vmbus_core::protocol::UserDefinedData;
+    use vmbus_core::protocol::VmbusMessage;
+    use zerocopy::FromBytes;
     use zerocopy::FromZeros;
     use zerocopy::Immutable;
     use zerocopy::IntoBytes;
@@ -1495,6 +1786,33 @@ mod tests {
         data.extend_from_slice(&0u32.to_ne_bytes());
         data.extend_from_slice(t.as_bytes());
         data
+    }
+
+    #[track_caller]
+    fn check_message<T>(msg: OutgoingMessage, chk: T)
+    where
+        T: IntoBytes + FromBytes + Immutable + KnownLayout + Debug + VmbusMessage,
+    {
+        check_message_with_data(msg, chk, &[]);
+    }
+
+    #[track_caller]
+    fn check_message_with_data<T>(msg: OutgoingMessage, chk: T, data: &[u8])
+    where
+        T: IntoBytes + FromBytes + Immutable + KnownLayout + Debug + VmbusMessage,
+    {
+        let chk_data = OutgoingMessage::with_data(&chk, data);
+        if msg.data() != chk_data.data() {
+            let (header, rest) = MessageHeader::read_from_prefix(msg.data()).unwrap();
+            assert_eq!(header.message_type(), <T as VmbusMessage>::MESSAGE_TYPE);
+            let (msg, rest) = T::read_from_prefix(rest).expect("incorrect message size");
+            if msg.as_bytes() != chk.as_bytes() {
+                panic!("mismatched messages, expected {:#?}, got {:#?}", chk, msg);
+            }
+            if rest != data {
+                panic!("mismatched data, expected {:#?}, got {:#?}", data, rest);
+            }
+        }
     }
 
     struct TestServer {
@@ -1528,51 +1846,52 @@ mod tests {
                         padding: 0,
                         selected_version_or_connection_id: 0,
                     },
-                    supported_features: FeatureFlags::all().into(),
+                    supported_features: SUPPORTED_FEATURE_FLAGS.into(),
                 },
             ));
 
             let version = recv.await.unwrap().unwrap();
             assert_eq!(version.version, Version::Copper);
-            assert_eq!(version.feature_flags, FeatureFlags::all());
+            assert_eq!(version.feature_flags, SUPPORTED_FEATURE_FLAGS);
         }
 
         async fn get_channel(&mut self, client: &mut VmbusClient) -> OfferInfo {
+            let [channel] = self.get_channels(client, 1).await.try_into().unwrap();
+            channel
+        }
+
+        async fn get_channels(&mut self, client: &mut VmbusClient, count: usize) -> Vec<OfferInfo> {
             self.connect(client).await;
 
-            let (send, mut recv) = mesh::channel();
-            client
-                .access
-                .client_request_send
-                .send(ClientRequest::RequestOffers(send));
+            let request_offers = client.request_offers();
+            let send_offers = async {
+                check_message(self.next().await.unwrap(), protocol::RequestOffers {});
 
-            let _ = self.next().await.unwrap();
+                for i in 0..count {
+                    let offer = protocol::OfferChannel {
+                        interface_id: Guid::new_random(),
+                        instance_id: Guid::new_random(),
+                        rsvd: [0; 4],
+                        flags: OfferFlags::new(),
+                        mmio_megabytes: 0,
+                        user_defined: UserDefinedData::new_zeroed(),
+                        subchannel_index: 0,
+                        mmio_megabytes_optional: 0,
+                        channel_id: ChannelId(i as u32),
+                        monitor_id: 0,
+                        monitor_allocated: 0,
+                        is_dedicated: 0,
+                        connection_id: 0,
+                    };
 
-            let offer = protocol::OfferChannel {
-                interface_id: Guid::new_random(),
-                instance_id: Guid::new_random(),
-                rsvd: [0; 4],
-                flags: OfferFlags::new(),
-                mmio_megabytes: 0,
-                user_defined: UserDefinedData::new_zeroed(),
-                subchannel_index: 0,
-                mmio_megabytes_optional: 0,
-                channel_id: ChannelId(0),
-                monitor_id: 0,
-                monitor_allocated: 0,
-                is_dedicated: 0,
-                connection_id: 0,
+                    self.send(in_msg(MessageType::OFFER_CHANNEL, offer));
+                }
+
+                self.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
             };
 
-            self.send(in_msg(MessageType::OFFER_CHANNEL, offer));
-
-            let received_offer = recv.next().await.unwrap();
-
-            self.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
-
-            assert!(recv.next().await.is_none());
-
-            received_offer
+            let ((), offers) = (send_offers, request_offers).join().await;
+            offers
         }
     }
 
@@ -1616,13 +1935,11 @@ mod tests {
     struct NoopSynicEvents;
 
     impl SynicEventClient for NoopSynicEvents {
-        fn map_event(&self, _event_flag: u16, _event: &pal_event::Event) -> std::io::Result<()> {
-            Err(std::io::ErrorKind::Unsupported.into())
+        fn map_event(&self, _event_flag: u16, _event: &Event) -> std::io::Result<()> {
+            Ok(())
         }
 
-        fn unmap_event(&self, _event_flag: u16) {
-            unreachable!()
-        }
+        fn unmap_event(&self, _event_flag: u16) {}
 
         fn signal_event(&self, _connection_id: u32, _event_flag: u16) -> std::io::Result<()> {
             Err(std::io::ErrorKind::Unsupported.into())
@@ -1687,22 +2004,22 @@ mod tests {
             InitiateContactRequest::default(),
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact2 {
+            protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(FeatureFlags::all().into())
+                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
                 ..FromZeros::new_zeroed()
-            })
+            },
         );
     }
 
@@ -1714,22 +2031,22 @@ mod tests {
             InitiateContactRequest::default(),
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact2 {
+            protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(FeatureFlags::all().into())
+                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
                 ..FromZeros::new_zeroed()
-            })
+            },
         );
 
         server.send(in_msg(
@@ -1741,14 +2058,14 @@ mod tests {
                     padding: 0,
                     selected_version_or_connection_id: 0,
                 },
-                supported_features: FeatureFlags::all().into_bits(),
+                supported_features: SUPPORTED_FEATURE_FLAGS.into_bits(),
             },
         ));
 
         let version = recv.await.unwrap().unwrap();
 
         assert_eq!(version.version, Version::Copper);
-        assert_eq!(version.feature_flags, FeatureFlags::all());
+        assert_eq!(version.feature_flags, SUPPORTED_FEATURE_FLAGS);
     }
 
     #[async_test]
@@ -1759,26 +2076,26 @@ mod tests {
             InitiateContactRequest::default(),
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact2 {
+            protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(FeatureFlags::all().into())
+                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
                 ..FromZeros::new_zeroed()
-            })
+            },
         );
 
-        // Report the server doesn't support some of the feature flags, and make sure this is reflected in
-        // the returned version.
+        // Report the server doesn't support some of the feature flags, and make
+        // sure this is reflected in the returned version.
         server.send(in_msg(
             MessageType::VERSION_RESPONSE,
             protocol::VersionResponse2 {
@@ -1813,22 +2130,22 @@ mod tests {
             .client_request_send
             .call(ClientRequest::InitiateContact, initiate_contact);
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact2 {
+            protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(FeatureFlags::all().into())
+                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
                 client_id: VMBUS_TEST_CLIENT_ID,
-            })
+            },
         )
     }
 
@@ -1840,22 +2157,22 @@ mod tests {
             InitiateContactRequest::default(),
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact2 {
+            protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(FeatureFlags::all().into())
+                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
                 ..FromZeros::new_zeroed()
-            })
+            },
         );
 
         server.send(in_msg(
@@ -1868,9 +2185,9 @@ mod tests {
             },
         ));
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact {
+            protocol::InitiateContact {
                 version_requested: Version::Iron as u32,
                 target_message_vp: 0,
                 interrupt_page_or_target_info: TargetInfo::new()
@@ -1880,7 +2197,7 @@ mod tests {
                     .into(),
                 parent_to_child_monitor_page_gpa: 0,
                 child_to_parent_monitor_page_gpa: 0,
-            })
+            },
         );
 
         server.send(in_msg(
@@ -1911,10 +2228,7 @@ mod tests {
             .client_request_send
             .send(ClientRequest::RequestOffers(send));
 
-        assert_eq!(
-            server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::RequestOffers {})
-        );
+        check_message(server.next().await.unwrap(), protocol::RequestOffers {});
 
         let offer = protocol::OfferChannel {
             interface_id: Guid::new_random(),
@@ -1959,13 +2273,14 @@ mod tests {
                     connection_id: 0,
                     user_data: UserDefinedData::new_zeroed(),
                 },
-                flags: OpenChannelFlags::new(),
+                incoming_event: None,
+                use_vtl2_connection_id: false,
             },
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::OpenChannel2 {
+            protocol::OpenChannel2 {
                 open_channel: protocol::OpenChannel {
                     channel_id: ChannelId(0),
                     open_id: 0,
@@ -1976,8 +2291,8 @@ mod tests {
                 },
                 connection_id: 0,
                 event_flag: 0,
-                flags: 0,
-            })
+                flags: Default::default(),
+            },
         );
 
         server.send(in_msg(
@@ -1989,8 +2304,7 @@ mod tests {
             },
         ));
 
-        let opened = recv.await.unwrap();
-        assert!(opened);
+        recv.await.unwrap().unwrap();
     }
 
     #[async_test]
@@ -2009,13 +2323,14 @@ mod tests {
                     connection_id: 0,
                     user_data: UserDefinedData::new_zeroed(),
                 },
-                flags: OpenChannelFlags::new(),
+                incoming_event: None,
+                use_vtl2_connection_id: false,
             },
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::OpenChannel2 {
+            protocol::OpenChannel2 {
                 open_channel: protocol::OpenChannel {
                     channel_id: ChannelId(0),
                     open_id: 0,
@@ -2026,8 +2341,8 @@ mod tests {
                 },
                 connection_id: 0,
                 event_flag: 0,
-                flags: 0,
-            })
+                flags: Default::default(),
+            },
         );
 
         server.send(in_msg(
@@ -2039,8 +2354,7 @@ mod tests {
             },
         ));
 
-        let opened = recv.await.unwrap();
-        assert!(!opened);
+        recv.await.unwrap().unwrap_err();
     }
 
     #[async_test]
@@ -2055,12 +2369,12 @@ mod tests {
             ModifyRequest::TargetVp { target_vp: 1 },
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::ModifyChannel {
+            protocol::ModifyChannel {
                 channel_id: ChannelId(0),
                 target_vp: 1,
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2149,11 +2463,11 @@ mod tests {
             },
         ));
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::RelIdReleased {
-                channel_id: ChannelId(5)
-            })
+            protocol::RelIdReleased {
+                channel_id: ChannelId(5),
+            },
         );
 
         assert!(info.response_recv.next().await.is_none());
@@ -2172,17 +2486,15 @@ mod tests {
             },
         );
 
-        assert_eq!(
+        check_message_with_data(
             server.next().await.unwrap(),
-            OutgoingMessage::with_data(
-                &protocol::GpadlHeader {
-                    channel_id: ChannelId(0),
-                    gpadl_id: GpadlId(1),
-                    len: 8,
-                    count: 1,
-                },
-                0x5u64.as_bytes()
-            )
+            protocol::GpadlHeader {
+                channel_id: ChannelId(0),
+                gpadl_id: GpadlId(1),
+                len: 8,
+                count: 1,
+            },
+            0x5u64.as_bytes(),
         );
 
         server.send(in_msg(
@@ -2194,19 +2506,18 @@ mod tests {
             },
         ));
 
-        let created = recv.await.unwrap();
-        assert!(created);
+        recv.await.unwrap().unwrap();
 
         channel
             .request_send
             .send(ChannelRequest::TeardownGpadl(GpadlId(1)));
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::GpadlTeardown {
+            protocol::GpadlTeardown {
                 channel_id: ChannelId(0),
                 gpadl_id: GpadlId(1),
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2234,17 +2545,15 @@ mod tests {
             },
         );
 
-        assert_eq!(
+        check_message_with_data(
             server.next().await.unwrap(),
-            OutgoingMessage::with_data(
-                &protocol::GpadlHeader {
-                    channel_id: ChannelId(0),
-                    gpadl_id: GpadlId(1),
-                    len: 8,
-                    count: 1,
-                },
-                0x7u64.as_bytes()
-            )
+            protocol::GpadlHeader {
+                channel_id: ChannelId(0),
+                gpadl_id: GpadlId(1),
+                len: 8,
+                count: 1,
+            },
+            0x7u64.as_bytes(),
         );
 
         server.send(in_msg(
@@ -2256,8 +2565,7 @@ mod tests {
             },
         ));
 
-        let created = recv.await.unwrap();
-        assert!(!created);
+        recv.await.unwrap().unwrap_err();
     }
 
     #[async_test]
@@ -2275,17 +2583,15 @@ mod tests {
             },
         );
 
-        assert_eq!(
+        check_message_with_data(
             server.next().await.unwrap(),
-            OutgoingMessage::with_data(
-                &protocol::GpadlHeader {
-                    channel_id,
-                    gpadl_id,
-                    len: 8,
-                    count: 1,
-                },
-                0x3u64.as_bytes()
-            )
+            protocol::GpadlHeader {
+                channel_id,
+                gpadl_id,
+                len: 8,
+                count: 1,
+            },
+            0x3u64.as_bytes(),
         );
 
         server.send(in_msg(
@@ -2297,19 +2603,18 @@ mod tests {
             },
         ));
 
-        let created = recv.await.unwrap();
-        assert!(created);
+        recv.await.unwrap().unwrap();
 
         channel
             .request_send
             .send(ChannelRequest::TeardownGpadl(gpadl_id));
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::GpadlTeardown {
+            protocol::GpadlTeardown {
                 channel_id,
                 gpadl_id,
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2321,9 +2626,9 @@ mod tests {
 
         assert_eq!(id, gpadl_id);
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::RelIdReleased { channel_id })
+            protocol::RelIdReleased { channel_id },
         );
 
         assert!(channel.response_recv.next().await.is_none());
@@ -2343,12 +2648,12 @@ mod tests {
             },
         );
 
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::ModifyConnection {
+            protocol::ModifyConnection {
                 child_to_parent_monitor_page_gpa: 5,
                 parent_to_child_monitor_page_gpa: 6,
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2373,15 +2678,15 @@ mod tests {
         };
 
         let resp = client.access().connect_hvsock(request);
-        assert_eq!(
+        check_message(
             server.next().await.unwrap(),
-            OutgoingMessage::new(&protocol::TlConnectRequest2 {
+            protocol::TlConnectRequest2 {
                 base: protocol::TlConnectRequest {
                     service_id: request.service_id,
                     endpoint_id: request.endpoint_id,
                 },
                 silo_id: request.silo_id,
-            })
+            },
         );
 
         // Now send a failure result.
@@ -2396,5 +2701,76 @@ mod tests {
 
         let result = resp.await;
         assert!(result.is_none());
+    }
+
+    #[async_test]
+    async fn test_synic_event_flags(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
+        let channels = server.get_channels(&mut client, 5).await;
+        let event = Event::new();
+
+        for _ in 0..5 {
+            for (i, channel) in channels.iter().enumerate() {
+                let recv = channel.request_send.call(
+                    ChannelRequest::Open,
+                    OpenRequest {
+                        open_data: OpenData {
+                            target_vp: 0,
+                            ring_offset: 0,
+                            ring_gpadl_id: GpadlId(0),
+                            event_flag: 0,
+                            connection_id: 0,
+                            user_data: UserDefinedData::new_zeroed(),
+                        },
+                        incoming_event: Some(event.clone()),
+                        use_vtl2_connection_id: false,
+                    },
+                );
+
+                let expected_event_flag = i as u16 + 1;
+
+                check_message(
+                    server.next().await.unwrap(),
+                    protocol::OpenChannel2 {
+                        open_channel: protocol::OpenChannel {
+                            channel_id: channel.offer.channel_id,
+                            open_id: 0,
+                            ring_buffer_gpadl_id: GpadlId(0),
+                            target_vp: 0,
+                            downstream_ring_buffer_page_offset: 0,
+                            user_data: UserDefinedData::new_zeroed(),
+                        },
+                        connection_id: 0,
+                        event_flag: expected_event_flag,
+                        flags: OpenChannelFlags::new().with_redirect_interrupt(true),
+                    },
+                );
+
+                server.send(in_msg(
+                    MessageType::OPEN_CHANNEL_RESULT,
+                    protocol::OpenResult {
+                        channel_id: channel.offer.channel_id,
+                        open_id: 0,
+                        status: protocol::STATUS_SUCCESS as u32,
+                    },
+                ));
+
+                let output = recv.await.unwrap().unwrap();
+                assert_eq!(output.redirected_event_flag, Some(expected_event_flag));
+            }
+
+            for (i, channel) in channels.iter().enumerate() {
+                // Close the channel to prepare for the next iteration of the loop.
+                // The event flag should be the same each time.
+                channel.request_send.send(ChannelRequest::Close);
+
+                check_message(
+                    server.next().await.unwrap(),
+                    protocol::CloseChannel {
+                        channel_id: ChannelId(i as u32),
+                    },
+                );
+            }
+        }
     }
 }

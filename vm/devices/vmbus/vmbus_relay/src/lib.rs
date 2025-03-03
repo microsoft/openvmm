@@ -10,32 +10,26 @@ use anyhow::Result;
 use client::ModifyConnectionRequest;
 use futures::future::join_all;
 use futures::future::OptionFuture;
-use futures::stream::FusedStream;
 use futures::FutureExt;
-use futures::Stream;
 use futures::StreamExt;
 use guid::Guid;
 use inspect::Inspect;
+use inspect::InspectMut;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use once_cell::sync::Lazy;
-use pal_async::driver::Driver;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use pal_async::wait::PolledWait;
 use pal_event::Event;
-use parking_lot::Mutex;
 use saved_state::SavedState;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::task::Poll;
+use std::sync::OnceLock;
 use unicycle::FuturesUnordered;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
@@ -61,6 +55,8 @@ use vmbus_server::Update;
 use vmbus_server::VmbusRelayChannelHalf;
 use vmbus_server::VmbusServerControl;
 use vmcore::interrupt::Interrupt;
+use vmcore::notify::Notify;
+use vmcore::notify::PolledNotify;
 
 pub enum InterceptChannelRequest {
     Start,
@@ -98,14 +94,12 @@ impl HostVmbusTransport {
         vmbus_client: VmbusClientBuilder,
     ) -> Result<Self> {
         let (offer_send, offer_recv) = mesh::channel();
-        let synic = vmbus_client.event_client().clone();
         let vmbus_client = vmbus_client.build(&driver, offer_send);
 
         let mut relay_task = RelayTask::new(
             Arc::new(driver.clone()),
             vmbus_client,
             control,
-            synic,
             channel.response_send,
             hvsock_relay,
         );
@@ -168,130 +162,22 @@ impl Debug for HostVmbusTransport {
     }
 }
 
-/// Tracks used flag indices for registering hcl_vmbus events.
-/// FUTURE: This state is system global, hard-coded to SINT7. If the linux side
-///         is ever modified to work with multiple SINTs this needs to be
-///         refactored.
-static REGISTERED_EVENT_USED_FLAG_INDICES: Lazy<Mutex<Vec<bool>>> = Lazy::new(|| {
-    let indices = Mutex::new(Vec::with_capacity(64));
-    indices.lock().resize(64, false);
-    indices
-});
-
-/// Represents an eventfd that has been registered with /dev/hcl_vmbus to receive host interrupts.
-#[derive(Inspect)]
-pub struct RegisteredEvent {
-    flag: u16,
-    #[inspect(skip)]
-    wait: PolledWait<Event>,
-    #[inspect(skip)]
-    hcl_vmbus: Arc<dyn client::SynicEventClient>,
-}
-
-impl RegisteredEvent {
-    /// Creates a new event and registers it to receive interrupts. Only one
-    /// event can be registered for each flag index, so on creation this will
-    /// be assigned a unique index. This flag index will need to be registered
-    /// with the host, and can be retrieved via a call to get_flag_index().
-    pub fn new(
-        driver: &(impl ?Sized + Driver),
-        synic: Arc<dyn client::SynicEventClient>,
-    ) -> Result<Self> {
-        let flag = {
-            let mut used_indices = REGISTERED_EVENT_USED_FLAG_INDICES.lock();
-            if let Some(i) = used_indices.iter().position(|&used| !used) {
-                used_indices[i] = true;
-                i as u16
-            } else {
-                used_indices.push(true);
-                (used_indices.len() - 1) as u16
-            }
-        };
-        Self::new_internal(driver, synic, flag)
-    }
-
-    /// Creates a new event with a known flag. This is used to restore
-    /// connections across save/restore.
-    pub fn new_with_flag(
-        driver: &(impl ?Sized + Driver),
-        synic: Arc<dyn client::SynicEventClient>,
-        flag: u16,
-    ) -> Result<Self> {
-        {
-            let flag_index = flag as usize;
-            let mut used_indices = REGISTERED_EVENT_USED_FLAG_INDICES.lock();
-            if used_indices.len() <= flag_index {
-                used_indices.resize(flag_index + 1, false);
-            }
-            if used_indices[flag_index] {
-                tracing::warn!(flag_index, "Specified flag is already in use; overwriting")
-            }
-            used_indices[flag_index] = true;
-        }
-        Self::new_internal(driver, synic, flag)
-    }
-
-    fn new_internal(
-        driver: &(impl ?Sized + Driver),
-        synic: Arc<dyn client::SynicEventClient>,
-        flag: u16,
-    ) -> Result<Self> {
-        let event = Event::new();
-        synic.map_event(flag, &event)?;
-        Ok(Self {
-            flag,
-            wait: PolledWait::new(driver, event)?,
-            hcl_vmbus: synic,
-        })
-    }
-
-    pub fn get_flag_index(&self) -> u16 {
-        self.flag
-    }
-
-    pub fn event(&self) -> &Event {
-        self.wait.get()
-    }
-}
-
-impl Drop for RegisteredEvent {
-    fn drop(&mut self) {
-        self.hcl_vmbus.unmap_event(self.flag);
-        let mut used_indices = REGISTERED_EVENT_USED_FLAG_INDICES.lock();
-        used_indices[self.flag as usize] = false;
-    }
-}
-
-impl Stream for RegisteredEvent {
-    type Item = ();
-
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        let ready = Some(std::task::ready!(self.wait.poll_wait(cx)));
-        Poll::Ready(ready.and_then(|r| r.ok()))
-    }
-}
-
-impl FusedStream for RegisteredEvent {
-    fn is_terminated(&self) -> bool {
-        false
-    }
-}
-
 /// State needed to relay host-to-guest interrupts.
 struct InterruptRelay {
     /// Event signaled when the host sends an interrupt.
-    event: RegisteredEvent,
+    notify: PolledNotify,
     /// Interrupt used to signal the guest.
     interrupt: Interrupt,
+    /// Event flag used to signal the guest.
+    /// FUTURE: remove once this moves into `vmbus_client` saved state.
+    event_flag: u16,
 }
 
 enum RelayChannelRequest {
     Start,
     Stop(Rpc<(), ()>),
     Save(Rpc<(), saved_state::Channel>),
+    Inspect(inspect::Deferred),
 }
 
 impl Debug for RelayChannelRequest {
@@ -300,6 +186,7 @@ impl Debug for RelayChannelRequest {
             RelayChannelRequest::Start => f.pad("Start"),
             RelayChannelRequest::Stop(..) => f.pad("Stop"),
             RelayChannelRequest::Save(..) => f.pad("Save channel"),
+            RelayChannelRequest::Inspect(..) => f.pad("Inspect"),
         }
     }
 }
@@ -309,8 +196,19 @@ struct RelayChannelInfo {
     server_request_send: mesh::Sender<ChannelServerRequest>,
 }
 
+impl Inspect for RelayChannelInfo {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        self.relay_request_send
+            .send(RelayChannelRequest::Inspect(req.defer()));
+    }
+}
+
+#[derive(Inspect)]
+#[inspect(external_tag)]
 enum ChannelInfo {
+    #[inspect(transparent)]
     Relay(RelayChannelInfo),
+    #[inspect(transparent)]
     Intercept(Guid),
 }
 
@@ -331,32 +229,36 @@ impl RelayChannelInfo {
 }
 
 /// Connects a Client channel to a Server Channel.
+#[derive(Inspect)]
 struct RelayChannel {
     /// The Channel Id given to us by the client
     channel_id: ChannelId,
     /// Receives requests from the relay.
+    #[inspect(skip)]
     relay_request_recv: mesh::Receiver<RelayChannelRequest>,
     /// Receives requests from the server.
+    #[inspect(skip)]
     server_request_recv: mesh::Receiver<ChannelRequest>,
     /// Receives responses to requests sent to the client
+    #[inspect(skip)]
     response_recv: mesh::Receiver<client::ChannelResponse>,
     /// Sends requests to the client
+    #[inspect(skip)]
     request_send: mesh::Sender<client::ChannelRequest>,
     /// Indicates whether or not interrupts should be relayed. This is shared with the relay server
     /// connection, which sets this to true only if the guest uses the channel bitmap.
     use_interrupt_relay: Arc<AtomicBool>,
-    /// Synic instance used to register for relayed interrupts.
-    synic: Arc<dyn client::SynicEventClient>,
-    /// Connection ID used to forward guest-to-host interrupts. This is shared with the guest
-    /// interrupt handler lambda.
-    connection_id: Arc<AtomicU32>,
     /// State used to relay host-to-guest interrupts.
+    #[inspect(with = "Option::is_some")]
     interrupt_relay: Option<InterruptRelay>,
     /// RPCs for gpadls that are waiting for a torndown message.
+    #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|x| x.0).map_value(|_| ())")]
     gpadls_tearing_down: HashMap<GpadlId, Rpc<(), ()>>,
 }
 
+#[derive(InspectMut)]
 struct RelayChannelTask {
+    #[inspect(skip)]
     driver: Arc<dyn SpawnDriver>,
     channel: RelayChannel,
     running: bool,
@@ -364,89 +266,44 @@ struct RelayChannelTask {
 
 impl RelayChannelTask {
     /// Relay open channel request from VTL0 to Host, responding with Open Result
-    async fn handle_open_channel(
-        &mut self,
-        open_request: &OpenRequest,
-    ) -> Result<Option<OpenResult>> {
-        let mut open_data = open_request.open_data;
-
+    async fn handle_open_channel(&mut self, open_request: &OpenRequest) -> Result<OpenResult> {
         // If the guest uses the channel bitmap, the host can't send interrupts
         // directly and they must be relayed.
         let redirect_interrupt = self.channel.use_interrupt_relay.load(Ordering::SeqCst);
-        if redirect_interrupt {
-            // Register for host interrupt notification in order to forward
-            // them to the guest. Generate a unique event_flag in place of the
-            // existing one since we need a unique value and this may not be
-            // the only code requesting events (i.e. just because it is unique
-            // in the caller's context does not mean it is in ours).
-            let event =
-                RegisteredEvent::new(self.driver.as_ref(), Arc::clone(&self.channel.synic))?;
-            open_data.event_flag = event.get_flag_index();
-            self.channel.interrupt_relay = Some(InterruptRelay {
-                event,
-                interrupt: open_request.interrupt.clone(),
-            });
+        let (incoming_event, notify) = if redirect_interrupt {
+            let event = Event::new();
+            let notify = Notify::from_event(event.clone())
+                .pollable(self.driver.as_ref())
+                .context("failed to create polled notify")?;
+            Some((event, notify))
+        } else {
+            None
         }
+        .unzip();
 
-        let flags = protocol::OpenChannelFlags::new().with_redirect_interrupt(redirect_interrupt);
         let opened = self
             .channel
             .request_send
-            .call(
+            .call_failable(
                 client::ChannelRequest::Open,
-                client::OpenRequest { open_data, flags },
+                client::OpenRequest {
+                    open_data: open_request.open_data,
+                    incoming_event,
+                    use_vtl2_connection_id: false,
+                },
             )
             .await?;
 
-        if !opened {
-            return Ok(None);
+        if let Some(notify) = notify {
+            self.channel.interrupt_relay = Some(InterruptRelay {
+                notify,
+                interrupt: open_request.interrupt.clone(),
+                event_flag: opened.redirected_event_flag.unwrap(),
+            });
         }
 
-        // Always relay guest-to-host interrupts. These can be generated when:
-        //
-        // * The guest is using the channel bitmap.
-        // * The guest is using the MNF interface and this is implemented in the
-        //   paravisor instead of the hypervisor.
-        // * The guest is using HvSignalEvent and hypercall handling is emulated
-        //   in the paravisor instead of in the hypervisor. This is the case for
-        //   some confidential VM configurations.
-        //
-        // There is no cost to enabling this if it's not used.
-        self.channel
-            .connection_id
-            .store(open_data.connection_id, Ordering::SeqCst);
-
-        Ok(Some(OpenResult {
-            guest_to_host_interrupt: self.guest_to_host_event(),
-        }))
-    }
-
-    fn guest_to_host_event(&self) -> Interrupt {
-        let synic = self.channel.synic.clone();
-        let connection_id = self.channel.connection_id.clone();
-
-        Interrupt::from_fn(move || {
-            let connection_id = connection_id.load(Ordering::SeqCst);
-            // If a channel is forcibly closed by the host (during a
-            // revoke), the host interrupt can be disabled before the guest
-            // is aware the channel is closed. In this case, relaying the
-            // interrupt can fail, which is not a problem. For example, this
-            // is the case for an hvsocket channel when the VM gets paused.
-            //
-            // In cases were the channel this happened on is open and
-            // appears stuck, this could indicate a problem.
-            if connection_id != 0 {
-                if let Err(err) = synic.signal_event(connection_id, 0) {
-                    tracelimit::info_ratelimited!(
-                        error = &err as &dyn std::error::Error,
-                        "interrupt relay failure, could be normal during channel close"
-                    );
-                }
-            } else {
-                // The channel close notification reached here but has not
-                // yet made it to the guest. This is expected.
-                tracing::debug!("interrupt relay request after close");
-            }
+        Ok(OpenResult {
+            guest_to_host_interrupt: opened.guest_to_host_signal,
         })
     }
 
@@ -457,18 +314,16 @@ impl RelayChannelTask {
             .send(client::ChannelRequest::Close);
 
         self.channel.interrupt_relay = None;
-        self.channel.connection_id.store(0, Ordering::SeqCst);
     }
 
     /// Relay gpadl request from VTL0 to the Host and respond with gpadl created.
-    async fn handle_gpadl(&mut self, request: GpadlRequest) -> Result<bool> {
-        let created = self
-            .channel
+    async fn handle_gpadl(&mut self, request: GpadlRequest) -> Result<()> {
+        self.channel
             .request_send
-            .call(client::ChannelRequest::Gpadl, request)
+            .call_failable(client::ChannelRequest::Gpadl, request)
             .await?;
 
-        Ok(created)
+        Ok(())
     }
 
     fn handle_gpadl_teardown(&mut self, rpc: Rpc<GpadlId, ()>) {
@@ -518,16 +373,34 @@ impl RelayChannelTask {
                 rpc.handle(|open_request| async move {
                     self.handle_open_channel(&open_request)
                         .await
-                        .unwrap_or(None)
+                        .inspect_err(|err| {
+                            tracelimit::error_ratelimited!(
+                                err = err.as_ref() as &dyn std::error::Error,
+                                channel_id = self.channel.channel_id.0,
+                                "failed to open channel"
+                            );
+                        })
+                        .ok()
                 })
                 .await;
             }
-
             ChannelRequest::Gpadl(rpc) => {
-                rpc.handle(|gpadl| async move { self.handle_gpadl(gpadl).await.is_ok() })
-                    .await;
+                rpc.handle(|gpadl| async move {
+                    let id = gpadl.id;
+                    self.handle_gpadl(gpadl)
+                        .await
+                        .inspect_err(|err| {
+                            tracelimit::error_ratelimited!(
+                                err = err.as_ref() as &dyn std::error::Error,
+                                channel_id = self.channel.channel_id.0,
+                                gpadl_id = id.0,
+                                "failed to create gpadl"
+                            );
+                        })
+                        .is_ok()
+                })
+                .await;
             }
-
             ChannelRequest::Close(rpc) => {
                 rpc.handle(|()| async move { self.handle_close_channel() })
                     .await;
@@ -568,6 +441,7 @@ impl RelayChannelTask {
             RelayChannelRequest::Start => self.running = true,
             RelayChannelRequest::Stop(rpc) => rpc.handle_sync(|()| self.running = false),
             RelayChannelRequest::Save(rpc) => rpc.handle_sync(|_| self.handle_save()),
+            RelayChannelRequest::Inspect(deferred) => deferred.inspect(self),
         }
     }
 
@@ -578,7 +452,7 @@ impl RelayChannelTask {
                 self.channel
                     .interrupt_relay
                     .as_mut()
-                    .map(|e| e.event.select_next_some()),
+                    .map(|e| e.notify.wait().fuse()),
             );
 
             let mut server_request = OptionFuture::from(
@@ -663,10 +537,11 @@ pub enum RequestFromHandle {
     AddIntercept(Rpc<(Guid, mesh::Sender<InterceptChannelRequest>), Result<()>>),
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Inspect)]
+#[inspect(external_tag)]
 enum RelayState {
     Disconnected,
-    Connected(VersionInfo),
+    Connected(#[inspect(rename = "version")] VersionInfo),
 }
 
 impl RelayState {
@@ -684,18 +559,26 @@ impl RelayState {
 }
 
 /// Dispatches requests between Server/Client.
+#[derive(InspectMut)]
 struct RelayTask {
+    #[inspect(skip)]
     spawner: Arc<dyn SpawnDriver>,
     vmbus_client: VmbusClient,
+    #[inspect(skip)]
     vmbus_control: Arc<VmbusServerControl>,
+    #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|x| x.0)")]
     channels: HashMap<ChannelId, ChannelInfo>,
+    #[inspect(skip)]
     channel_workers: FuturesUnordered<Task<RelayChannelTask>>,
+    #[inspect(with = "|x| inspect::iter_by_key(x).map_value(|_| ())")]
     intercept_channels: HashMap<Guid, mesh::Sender<InterceptChannelRequest>>,
     relay_state: RelayState,
-    synic: Arc<dyn client::SynicEventClient>,
     use_interrupt_relay: Arc<AtomicBool>,
+    #[inspect(skip)]
     server_response_send: mesh::Sender<ModifyConnectionResponse>,
+    #[inspect(skip)]
     hvsock_relay: HvsockRelayChannelHalf,
+    #[inspect(skip)]
     hvsock_requests: FuturesUnordered<HvsockRequestFuture>,
     running: bool,
 }
@@ -708,7 +591,6 @@ impl RelayTask {
         spawner: Arc<dyn SpawnDriver>,
         vmbus_client: VmbusClient,
         vmbus_control: Arc<VmbusServerControl>,
-        synic: Arc<dyn client::SynicEventClient>,
         server_response_send: mesh::Sender<ModifyConnectionResponse>,
         hvsock_relay: HvsockRelayChannelHalf,
     ) -> Self {
@@ -720,7 +602,6 @@ impl RelayTask {
             channel_workers: FuturesUnordered::new(),
             intercept_channels: HashMap::new(),
             relay_state: RelayState::Disconnected,
-            synic,
             use_interrupt_relay: Arc::new(AtomicBool::new(false)),
             server_response_send,
             hvsock_relay,
@@ -873,7 +754,6 @@ impl RelayTask {
         };
 
         let key = params.key();
-        let connection_id = Arc::new(AtomicU32::new(0));
         let new_offer = OfferInfo {
             params,
             request_send,
@@ -900,9 +780,7 @@ impl RelayTask {
                 request_send: offer.request_send,
                 response_recv: offer.response_recv,
                 server_request_recv: request_recv,
-                connection_id,
                 use_interrupt_relay: Arc::clone(&self.use_interrupt_relay),
-                synic: Arc::clone(&self.synic),
                 interrupt_relay: None,
                 gpadls_tearing_down: HashMap::new(),
             },
@@ -911,8 +789,21 @@ impl RelayTask {
         };
 
         if restore {
+            // FUTURE: restore vmbus_client before vmbus_server to avoid this
+            // indirection. This requires vmbus_client saving/restoring the
+            // connection ID itself.
+            let restored_interrupt = Arc::new(OnceLock::<Interrupt>::new());
+            let guest_to_host_interrupt = Interrupt::from_fn({
+                let x = restored_interrupt.clone();
+                move || {
+                    if let Some(x) = x.get() {
+                        x.deliver();
+                    }
+                }
+            });
+
             let open_result = open.then(|| OpenResult {
-                guest_to_host_interrupt: channel_task.guest_to_host_event(),
+                guest_to_host_interrupt,
             });
             let result = server_request_send
                 .call(ChannelServerRequest::Restore, open_result)
@@ -924,27 +815,46 @@ impl RelayTask {
 
             if let Some(request) = result.open_request {
                 let use_interrupt_relay = self.use_interrupt_relay.load(Ordering::SeqCst);
-                if use_interrupt_relay {
+                if use_interrupt_relay && restored_event_flag.is_none() {
+                    anyhow::bail!("using an interrupt relay but no event flag was provided");
+                }
+                let (incoming_event, notify) = if use_interrupt_relay {
+                    let event = Event::new();
+                    let notify = Notify::from_event(event.clone())
+                        .pollable(self.spawner.as_ref())
+                        .context("failed to create polled notify")?;
+                    Some((event, notify))
+                } else {
+                    None
+                }
+                .unzip();
+
+                let opened = channel_task
+                    .channel
+                    .request_send
+                    .call_failable(
+                        client::ChannelRequest::Restore,
+                        client::RestoreRequest {
+                            connection_id: request.open_data.connection_id,
+                            redirected_event_flag: restored_event_flag,
+                            incoming_event,
+                        },
+                    )
+                    .await
+                    .context("client failed to restore channel")?;
+
+                if let Some(notify) = notify {
                     channel_task.channel.interrupt_relay = Some(InterruptRelay {
-                        event: RegisteredEvent::new_with_flag(
-                            self.spawner.as_ref(),
-                            Arc::clone(&self.synic),
-                            restored_event_flag.unwrap_or(request.open_data.event_flag),
-                        )?,
+                        event_flag: restored_event_flag.unwrap(),
+                        notify,
                         interrupt: request.interrupt,
                     });
                 }
 
-                // TODO: save/restore this connection ID instead of getting it
-                // back from `vmbus_server`. This is fundamentally the
-                // connection ID that was registered with `vmbus_client`--it so
-                // happens that it matches the one `vmbus_server` assigns, but
-                // this isn't necessarily always going to be true for redirected
-                // interrupts.
-                channel_task
-                    .channel
-                    .connection_id
-                    .store(request.open_data.connection_id, Ordering::SeqCst);
+                restored_interrupt
+                    .set(opened.guest_to_host_signal)
+                    .ok()
+                    .unwrap();
             }
         }
 
@@ -1142,7 +1052,7 @@ impl RelayTask {
                 }
                 r = task_recv.recv().fuse() => {
                     match r.unwrap() {
-                        TaskRequest::Inspect(req) => req.inspect(&*self),
+                        TaskRequest::Inspect(req) => req.inspect(&mut *self),
                         TaskRequest::Save(rpc) => rpc.handle(|()| {
                              self.handle_save()
                         }).await,
@@ -1163,12 +1073,5 @@ impl RelayTask {
                 }
             }
         }
-    }
-}
-
-impl Inspect for RelayTask {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        let mut resp = req.respond();
-        resp.field("vmbus_client", &self.vmbus_client);
     }
 }

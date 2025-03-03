@@ -4,6 +4,7 @@
 use crate::OfferInfo;
 use crate::RestoreError;
 use crate::RestoredChannel;
+use crate::SUPPORTED_FEATURE_FLAGS;
 use guid::Guid;
 use mesh::payload::Protobuf;
 use vmbus_channel::bus::OfferKey;
@@ -139,6 +140,49 @@ impl super::ClientTask {
         Ok((self.state.get_version(), restored_channels))
     }
 
+    pub fn handle_post_restore(&mut self) {
+        let mut closed = Vec::new();
+        // Close restored channels that have not been claimed.
+        for (&channel_id, channel) in &mut self.inner.channels {
+            if let super::ChannelState::Restored = channel.state {
+                tracing::info!(
+                    channel_id = channel_id.0,
+                    "closing unclaimed restored channel"
+                );
+                self.inner
+                    .messages
+                    .send(&protocol::CloseChannel { channel_id });
+                channel.state = super::ChannelState::Offered;
+                closed.push(channel_id);
+            }
+        }
+
+        closed.sort();
+
+        // Tear down GPADLs for unclaimed channels.
+        for (&(channel_id, gpadl_id), state) in &mut self.inner.gpadls {
+            if closed.binary_search(&channel_id).is_err() {
+                continue;
+            }
+            // FUTURE: wait for GPADL teardown so that everything is in a clean
+            // state after this.
+            match state {
+                crate::GpadlState::Offered(_) => unreachable!(),
+                crate::GpadlState::Created => {
+                    self.inner
+                        .teardown_gpadls
+                        .insert(gpadl_id, Some(channel_id));
+                    self.inner.messages.send(&protocol::GpadlTeardown {
+                        channel_id,
+                        gpadl_id,
+                    });
+                    *state = crate::GpadlState::TearingDown;
+                }
+                crate::GpadlState::TearingDown => {}
+            }
+        }
+    }
+
     fn restore_channel(&mut self, channel: Channel) -> Option<OfferInfo> {
         self.create_channel_core(channel.offer.into(), channel.state.restore())
     }
@@ -198,7 +242,7 @@ impl TryFrom<ClientState> for super::ClientState {
                     .ok_or(RestoreError::UnsupportedVersion(version))?;
 
                 let feature_flags = FeatureFlags::from(feature_flags);
-                if feature_flags.contains_unsupported_bits() {
+                if !SUPPORTED_FEATURE_FLAGS.contains(feature_flags) {
                     return Err(RestoreError::UnsupportedFeatureFlags(feature_flags.into()));
                 }
 
@@ -239,17 +283,19 @@ impl ChannelState {
     fn save(state: &super::ChannelState) -> Self {
         match state {
             super::ChannelState::Offered => Self::Offered,
-            super::ChannelState::Opening(..) => {
+            super::ChannelState::Opening { .. } => {
                 unreachable!("Cannot save channel in opening state.")
             }
-            super::ChannelState::Opened => Self::Opened,
+            super::ChannelState::Restored { .. } | super::ChannelState::Opened { .. } => {
+                Self::Opened
+            }
         }
     }
 
     fn restore(self) -> super::ChannelState {
         match self {
             ChannelState::Offered => super::ChannelState::Offered,
-            ChannelState::Opened => super::ChannelState::Opened,
+            ChannelState::Opened => super::ChannelState::Restored,
         }
     }
 }

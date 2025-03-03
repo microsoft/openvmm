@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use futures::task::noop_waker_ref;
 use hvdef::HvError;
 use hvdef::HvResult;
 use hvdef::Vtl;
@@ -55,7 +54,7 @@ impl SynicPorts {
             if vtl < minimum_vtl {
                 Err(HvError::OperationDenied)
             } else if port.poll_handle_message(
-                &mut Context::from_waker(noop_waker_ref()),
+                &mut Context::from_waker(std::task::Waker::noop()),
                 message,
                 secure,
             ) == Poll::Ready(())

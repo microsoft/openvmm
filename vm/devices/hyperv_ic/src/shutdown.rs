@@ -42,7 +42,7 @@ pub struct ShutdownIc {
     #[inspect(skip)]
     recv: mesh::Receiver<ShutdownRpc>,
     #[inspect(skip)]
-    wait_ready: Vec<Rpc<(), ()>>,
+    wait_ready: Vec<Rpc<(), mesh::OneshotReceiver<()>>>,
 }
 
 #[doc(hidden)]
@@ -66,6 +66,8 @@ enum ChannelState {
         #[inspect(display)]
         message_version: hyperv_ic_protocol::Version,
         state: ReadyState,
+        #[inspect(with = "|x| x.len()")]
+        clients: Vec<mesh::OneshotSender<()>>,
     },
 }
 
@@ -140,11 +142,16 @@ impl ShutdownChannel {
                     r?;
                 }
                 Event::Request(req) => match req {
-                    ShutdownRpc::WaitReady(rpc) => match self.state {
+                    ShutdownRpc::WaitReady(rpc) => match &mut self.state {
                         ChannelState::SendVersion | ChannelState::WaitVersion => {
                             ic.wait_ready.push(rpc)
                         }
-                        ChannelState::Ready { .. } => rpc.complete(()),
+                        ChannelState::Ready { clients, .. } => {
+                            let (send, recv) = mesh::oneshot();
+                            clients.retain(|c| !c.is_closed());
+                            clients.push(send);
+                            rpc.complete(recv);
+                        }
                     },
                     ShutdownRpc::Shutdown(rpc) => match self.state {
                         ChannelState::SendVersion | ChannelState::WaitVersion => {
@@ -168,7 +175,7 @@ impl ShutdownChannel {
 
     async fn process_state_machine(
         &mut self,
-        wait_ready: &mut Vec<Rpc<(), ()>>,
+        wait_ready: &mut Vec<Rpc<(), mesh::OneshotReceiver<()>>>,
     ) -> Result<(), Error> {
         match self.state {
             ChannelState::SendVersion => {
@@ -218,19 +225,27 @@ impl ShutdownChannel {
                         .map_err(|_| Error::TruncatedMessage)?
                         .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
+                let clients = wait_ready
+                    .drain(..)
+                    .map(|rpc| {
+                        let (send, recv) = mesh::oneshot();
+                        rpc.complete(recv);
+                        send
+                    })
+                    .collect();
+
                 self.state = ChannelState::Ready {
                     framework_version,
                     message_version,
                     state: ReadyState::Ready,
+                    clients,
                 };
-                for rpc in wait_ready.drain(..) {
-                    rpc.complete(());
-                }
             }
             ChannelState::Ready {
                 ref mut state,
                 framework_version,
                 message_version,
+                clients: _,
             } => match state {
                 ReadyState::Ready => std::future::pending().await,
                 ReadyState::SendShutdown(params) => {
@@ -473,6 +488,7 @@ mod save_restore {
                     framework_version,
                     message_version,
                     state,
+                    clients: _,
                 } = &runner.state
                 {
                     let request = if let ReadyState::SendShutdown(request) = state {
@@ -515,6 +531,7 @@ mod save_restore {
                     framework_version: framework.into(),
                     message_version: message.into(),
                     state,
+                    clients: Vec::new(),
                 }
             } else {
                 if saved_state.waiting_on_version {
