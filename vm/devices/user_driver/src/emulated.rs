@@ -31,14 +31,14 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 
 /// An emulated device.
-pub struct EmulatedDevice<T> {
+pub struct EmulatedDevice<T, U> {
     device: Arc<Mutex<T>>,
     controller: MsiController,
-    shared_mem: DeviceSharedMemory,
+    dma_client: Arc<U>,
     bar0_len: usize,
 }
 
-impl<T: InspectMut> Inspect for EmulatedDevice<T> {
+impl<T: InspectMut, U> Inspect for EmulatedDevice<T, U> {
     fn inspect(&self, req: inspect::Request<'_>) {
         self.device.lock().inspect_mut(req);
     }
@@ -71,9 +71,9 @@ impl MsiInterruptTarget for MsiController {
     }
 }
 
-impl<T: PciConfigSpace + MmioIntercept> EmulatedDevice<T> {
+impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-    pub fn new(mut device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory) -> Self {
+    pub fn new(mut device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
         // Connect an interrupt controller.
         let controller = MsiController::new(msi_set.len());
         msi_set.connect(&controller);
@@ -107,7 +107,7 @@ impl<T: PciConfigSpace + MmioIntercept> EmulatedDevice<T> {
         Self {
             device: Arc::new(Mutex::new(device)),
             controller,
-            shared_mem,
+            dma_client,
             bar0_len,
         }
     }
@@ -266,10 +266,18 @@ unsafe impl MappedDmaTarget for DmaBuffer {
     }
 }
 
-#[derive(Inspect)]
+#[derive(Inspect, InspectMut)]
 pub struct EmulatedDmaAllocator {
     #[inspect(skip)]
     shared_mem: DeviceSharedMemory,
+}
+
+impl EmulatedDmaAllocator {
+    pub fn new(shared_mem: DeviceSharedMemory) -> Self {
+        Self {
+            shared_mem
+        }
+    }
 }
 
 impl DmaClient for EmulatedDmaAllocator {
@@ -284,7 +292,7 @@ impl DmaClient for EmulatedDmaAllocator {
     }
 }
 
-impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedDevice<T> {
+impl<T: 'static + Send + InspectMut + MmioIntercept, U:'static + Send + InspectMut + DmaClient> DeviceBacking for EmulatedDevice<T, U> {
     type Registers = Mapping<T>;
 
     fn id(&self) -> &str {
@@ -303,9 +311,7 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
     }
 
     fn dma_client(&self) -> Arc<dyn DmaClient> {
-        Arc::new(EmulatedDmaAllocator {
-            shared_mem: self.shared_mem.clone(),
-        }) as Arc<dyn DmaClient>
+        self.dma_client.clone()
     }
 
     fn max_interrupt_count(&self) -> u32 {

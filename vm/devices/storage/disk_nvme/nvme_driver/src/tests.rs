@@ -23,6 +23,7 @@ use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
+use user_driver::emulated::EmulatedDmaAllocator;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
 use vmcore::vm_task::SingleDriverBackend;
@@ -308,7 +309,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 
 #[derive(Inspect)]
 pub struct NvmeTestEmulatedDevice<T: InspectMut> {
-    device: EmulatedDevice<T>,
+    device: EmulatedDevice<T, EmulatedDmaAllocator>,
     #[inspect(debug)]
     mocked_response_u32: Arc<Mutex<Option<(usize, u32)>>>,
     #[inspect(debug)]
@@ -327,8 +328,12 @@ pub struct NvmeTestMapping<T> {
 impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
     pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory) -> Self {
+        let dma_client = Arc::new(EmulatedDmaAllocator::new(
+            shared_mem.clone()
+        ));
+
         Self {
-            device: EmulatedDevice::new(device, msi_set, shared_mem),
+            device: EmulatedDevice::new(device, msi_set, dma_client),
             mocked_response_u32: Arc::new(Mutex::new(None)),
             mocked_response_u64: Arc::new(Mutex::new(None)),
         }
