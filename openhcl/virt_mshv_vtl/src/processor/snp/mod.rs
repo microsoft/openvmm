@@ -218,12 +218,12 @@ impl HardwareIsolatedBacking for SnpBacked {
     }
 
     fn tlb_flush_lock_access<'a>(
-        vp_index: usize,
+        vp_index: VpIndex,
         partition: &'a UhPartitionInner,
         shared: &'a Self::Shared,
     ) -> impl TlbFlushLockAccess + 'a {
         SnpTlbLockFlushAccess {
-            vp_index,
+            vp_index: vp_index.index() as usize,
             partition,
             shared,
         }

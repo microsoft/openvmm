@@ -528,12 +528,12 @@ impl HardwareIsolatedBacking for TdxBacked {
     }
 
     fn tlb_flush_lock_access<'a>(
-        vp_index: usize,
+        vp_index: VpIndex,
         partition: &'a UhPartitionInner,
         shared: &'a Self::Shared,
     ) -> impl TlbFlushLockAccess + 'a {
         TdxTlbLockFlushAccess {
-            vp_index,
+            vp_index: vp_index.index() as usize,
             partition,
             shared,
         }

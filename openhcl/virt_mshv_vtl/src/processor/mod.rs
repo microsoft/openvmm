@@ -289,7 +289,7 @@ pub trait HardwareIsolatedBacking: Backing {
     /// Gets a struct that can be used to interact with TLB flushing and
     /// locking.
     fn tlb_flush_lock_access<'a>(
-        vp_index: usize,
+        vp_index: VpIndex,
         partition: &'a UhPartitionInner,
         shared: &'a Self::Shared,
     ) -> impl TlbFlushLockAccess + 'a;

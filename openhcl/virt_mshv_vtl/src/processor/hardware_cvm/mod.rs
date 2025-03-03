@@ -1282,7 +1282,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         value: u64,
         vtl: GuestVtl,
     ) -> Result<(), MsrError> {
-        let self_index = self.vp_index().index() as usize;
+        let self_index = self.vp_index();
         let hv = &mut self.backing.cvm_state_mut().hv[vtl];
         // If updated is Synic MSR, then check if its proxy or previous was proxy
         // in either case, we need to update the `proxy_irr_blocked`
@@ -1420,11 +1420,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
     /// Returns the appropriately backed TLB flush and lock access
     pub fn tlb_flush_lock_access(&self) -> impl TlbFlushLockAccess + use<'_, B> {
-        B::tlb_flush_lock_access(
-            self.vp_index().index() as usize,
-            self.partition,
-            self.shared,
-        )
+        B::tlb_flush_lock_access(self.vp_index(), self.partition, self.shared)
     }
 
     /// Handle checking for cross-VTL interrupts, preempting VTL 0, and setting
