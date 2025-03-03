@@ -14,6 +14,7 @@ cfg_if::cfg_if! {
         pub mod snp;
         pub mod tdx;
 
+        use crate::TlbFlushLockAccess;
         use crate::VtlCrash;
         use hvdef::HvX64RegisterName;
         use virt::vp::AccessVpState;
@@ -36,7 +37,6 @@ use super::UhPartitionInner;
 use super::UhVpInner;
 use crate::GuestVsmState;
 use crate::GuestVtl;
-use crate::TlbFlushLockAccess;
 use crate::WakeReason;
 use hcl::ioctl;
 use hcl::ioctl::ProcessorRunner;
