@@ -61,7 +61,7 @@ impl SimpleFlowNode for Node {
             let downloaded = ctx.reqv(|v| flowey_lib_common::download_gh_artifact::Request {
                 repo_owner: "microsoft".into(),
                 repo_name: "openvmm".into(),
-                file_name: format!("{arch_str}-openhcl-igvm").into(),
+                file_name: format!("{arch_str}-openhcl-igvm"),
                 path: v,
                 run_id: run_id.clone(),
             });
@@ -166,7 +166,7 @@ pub mod resolve {
                 let downloaded = ctx.reqv(|v| flowey_lib_common::download_gh_artifact::Request {
                     repo_owner: "microsoft".into(),
                     repo_name: "openvmm".into(),
-                    file_name: format!("{arch_str}-openhcl-igvm").into(),
+                    file_name: format!("{arch_str}-openhcl-igvm"),
                     path: v,
                     run_id: run_id.clone(),
                 });
@@ -185,8 +185,9 @@ pub mod resolve {
                 let write_release_output = release_output.claim(ctx);
 
                 |rt| {
-                    let downloaded_x64 = rt.read(downloaded_x64);
-                    let downloaded_aarch64 = rt.read(downloaded_aarch64);
+                    let downloaded_x64 = rt.read(downloaded_x64).join("x64-openhcl-igvm");
+                    let downloaded_aarch64 =
+                        rt.read(downloaded_aarch64).join("aarch64-openhcl-igvm");
 
                     rt.write(
                         write_release_output,
