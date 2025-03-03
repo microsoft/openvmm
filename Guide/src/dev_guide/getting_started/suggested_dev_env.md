@@ -236,8 +236,8 @@ Note that this requires some additional dependencies, described below.
 
 ### Windows deps
 
-Visual Studio build tools must be installed, along with the Windows SDK. This is
-the same as what's required to build OpenVMM on windows.
+Visual Studio build tools must be installed, along with the Windows SDK.
+[This is the same as what's required to build OpenVMM on windows.](./windows.md#installing-rust)
 
 ### WSL deps
 
@@ -340,7 +340,7 @@ OpenVMM configures some environment variables that specify the default Linux ker
 initrd, and UEFI firmware. To make those variables available in Windows, run the following:
 
 ```bash
-export WSLENV=$WSLENV:X86_64_OPENVMM_LINUX_DIRECT_KERNEL:X86_64_OPENVMM_LINUX_DIRECT_INITRD:AARCH64_OPENVMM_LINUX_DIRECT_KERNEL:AARCH64_OPENVMM_LINUX_DIRECT_INITRD:X86_64_OPENVMM_UEFI_FIRMWARE:AARCH64_OPENVMM_UEFI_FIRMWARE
+export WSLENV=$WSLENV:X86_64_OPENVMM_LINUX_DIRECT_KERNEL:X86_64_OPENVMM_LINUX_DIRECT_INITRD:AARCH64_OPENVMM_LINUX_DIRECT_KERNEL:AARCH64_OPENVMM_LINUX_DIRECT_INITRD:X86_64_OPENVMM_UEFI_FIRMWARE:AARCH64_OPENVMM_UEFI_FIRMWARE:RUST_BACKTRACE
 ```
 
 ### Speeding up Windows OpenVMM launch
