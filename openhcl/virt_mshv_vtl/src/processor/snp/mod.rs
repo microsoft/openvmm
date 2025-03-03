@@ -216,6 +216,18 @@ impl HardwareIsolatedBacking for SnpBacked {
             ),
         }
     }
+
+    fn tlb_flush_lock_access<'a>(
+        vp_index: usize,
+        partition: &'a UhPartitionInner,
+        shared: &'a Self::Shared,
+    ) -> impl TlbFlushLockAccess + 'a {
+        SnpTlbLockFlushAccess {
+            vp_index,
+            partition,
+            shared,
+        }
+    }
 }
 
 /// Partition-wide shared data for SNP VPs.
@@ -2335,7 +2347,13 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
     }
 }
 
-impl TlbFlushLockAccess for UhProcessor<'_, SnpBacked> {
+struct SnpTlbLockFlushAccess<'a> {
+    vp_index: usize,
+    partition: &'a UhPartitionInner,
+    shared: &'a SnpBackedShared,
+}
+
+impl TlbFlushLockAccess for SnpTlbLockFlushAccess<'_> {
     fn flush(&mut self, vtl: GuestVtl) {
         // SNP provides no mechanism to flush a single VTL across multiple VPs
         // Do a flush entire, but only wait on the VTL that was asked for
@@ -2367,7 +2385,11 @@ impl TlbFlushLockAccess for UhProcessor<'_, SnpBacked> {
     }
 
     fn set_wait_for_tlb_locks(&mut self, vtl: GuestVtl) {
-        Self::set_wait_for_tlb_locks(self, vtl);
+        hardware_cvm::tlb_lock::TlbLockAccess {
+            vp_index: self.vp_index,
+            cvm_partition: &self.shared.cvm,
+        }
+        .set_wait_for_tlb_locks(vtl);
     }
 }
 

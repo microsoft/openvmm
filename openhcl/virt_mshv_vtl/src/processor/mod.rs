@@ -36,6 +36,7 @@ use super::UhPartitionInner;
 use super::UhVpInner;
 use crate::GuestVsmState;
 use crate::GuestVtl;
+use crate::TlbFlushLockAccess;
 use crate::WakeReason;
 use hcl::ioctl;
 use hcl::ioctl::ProcessorRunner;
@@ -285,6 +286,13 @@ pub trait HardwareIsolatedBacking: Backing {
     fn cvm_state_mut(&mut self) -> &mut crate::UhCvmVpState;
     /// Gets CVM specific partition state.
     fn cvm_partition_state(shared: &Self::Shared) -> &crate::UhCvmPartitionState;
+    /// Gets a struct that can be used to interact with TLB flushing and
+    /// locking.
+    fn tlb_flush_lock_access<'a>(
+        vp_index: usize,
+        partition: &'a UhPartitionInner,
+        shared: &'a Self::Shared,
+    ) -> impl TlbFlushLockAccess + 'a;
     /// Copies shared registers (per VSM TLFS spec) from the source VTL to
     /// the target VTL that will become active, and set the exit vtl
     fn switch_vtl(this: &mut UhProcessor<'_, Self>, source_vtl: GuestVtl, target_vtl: GuestVtl);

@@ -4,7 +4,7 @@
 //! Common processor support for hardware-isolated partitions.
 
 pub mod apic;
-mod tlb_lock;
+pub mod tlb_lock;
 
 use super::UhEmulationState;
 use super::UhProcessor;
@@ -370,12 +370,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             }
         }
     }
-}
 
-impl<'b, T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, 'b, T, B>
-where
-    UhProcessor<'b, B>: TlbFlushLockAccess,
-{
     fn set_vp_register(
         &mut self,
         vtl: GuestVtl,
@@ -555,10 +550,8 @@ where
     }
 }
 
-impl<'b, T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::ModifySparseGpaPageHostVisibility
-    for UhHypercallHandler<'_, 'b, T, B>
-where
-    UhProcessor<'b, B>: TlbFlushLockAccess,
+impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::ModifySparseGpaPageHostVisibility
+    for UhHypercallHandler<'_, '_, T, B>
 {
     fn modify_gpa_visibility(
         &mut self,
@@ -591,7 +584,7 @@ where
             .isolated_memory_protector
             .as_ref()
             .ok_or((HvError::AccessDenied, 0))?
-            .change_host_visibility(shared, gpa_pages, self.vp)
+            .change_host_visibility(shared, gpa_pages, &mut self.vp.tlb_flush_lock_access())
     }
 }
 
@@ -724,10 +717,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::RetargetDeviceInterrup
     }
 }
 
-impl<'b, T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
-    for UhHypercallHandler<'_, 'b, T, B>
-where
-    UhProcessor<'b, B>: TlbFlushLockAccess,
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
+    for UhHypercallHandler<'_, '_, T, B>
 {
     fn set_vp_registers(
         &mut self,
@@ -922,10 +913,8 @@ impl<T, B: HardwareIsolatedBacking>
     }
 }
 
-impl<'b, T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
-    for UhHypercallHandler<'_, 'b, T, B>
-where
-    UhProcessor<'b, B>: TlbFlushLockAccess,
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
+    for UhHypercallHandler<'_, '_, T, B>
 {
     fn modify_vtl_protection_mask(
         &mut self,
@@ -978,14 +967,17 @@ where
         // protections on the VTL itself. Therefore, for a hardware CVM,
         // given that only VTL 1 can set the protections, the default
         // permissions should be changed for VTL 0.
-        protector.change_vtl_protections(GuestVtl::Vtl0, gpa_pages, map_flags, self.vp)
+        protector.change_vtl_protections(
+            GuestVtl::Vtl0,
+            gpa_pages,
+            map_flags,
+            &mut self.vp.tlb_flush_lock_access(),
+        )
     }
 }
 
-impl<'b, T, B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
-    for UhHypercallHandler<'_, 'b, T, B>
-where
-    UhProcessor<'b, B>: TlbFlushLockAccess,
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
+    for UhHypercallHandler<'_, '_, T, B>
 {
     fn enable_partition_vtl(
         &mut self,
@@ -1045,7 +1037,7 @@ where
         protector.change_default_vtl_protections(
             GuestVtl::Vtl1,
             hvdef::HV_MAP_GPA_PERMISSIONS_ALL,
-            self.vp,
+            &mut self.vp.tlb_flush_lock_access(),
         )?;
 
         tracing::debug!("Successfully granted vtl 1 access to lower vtl memory");
@@ -1307,10 +1299,7 @@ impl hv1_emulator::hv::VtlProtectHypercallOverlay for HypercallOverlayAccess {
     }
 }
 
-impl<B: HardwareIsolatedBacking> UhProcessor<'_, B>
-where
-    Self: TlbFlushLockAccess,
-{
+impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     pub(crate) fn write_msr_cvm(
         &mut self,
         msr: u32,
@@ -1421,7 +1410,11 @@ where
             }
         }
 
-        protector.change_default_vtl_protections(targeted_vtl, protections, self)?;
+        protector.change_default_vtl_protections(
+            targeted_vtl,
+            protections,
+            &mut self.tlb_flush_lock_access(),
+        )?;
 
         // TODO GUEST VSM: actually use the enable_vtl_protection value when
         // deciding whether to check vtl access();
@@ -1447,6 +1440,15 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     pub fn cvm_vp_inner(&self) -> &'_ crate::UhCvmVpInner {
         self.cvm_partition()
             .vp_inner(self.inner.vp_info.base.vp_index.index())
+    }
+
+    /// Returns the appropriately backed TLB flush and lock access
+    pub fn tlb_flush_lock_access(&self) -> impl TlbFlushLockAccess + '_ {
+        B::tlb_flush_lock_access(
+            self.vp_index().index() as usize,
+            self.partition,
+            self.shared,
+        )
     }
 
     /// Handle checking for cross-VTL interrupts, preempting VTL 0, and setting

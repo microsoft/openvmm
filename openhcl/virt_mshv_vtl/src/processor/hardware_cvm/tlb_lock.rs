@@ -4,29 +4,34 @@
 //! TLB lock infrastructure support for hardware-isolated partitions.
 
 use crate::processor::HardwareIsolatedBacking;
+use crate::UhCvmPartitionState;
 use crate::UhProcessor;
 use hcl::GuestVtl;
 use hvdef::Vtl;
 use std::sync::atomic::Ordering;
 
-impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
-    /// Causes the specified VTL on the current VP to wait on all TLB locks.
-    /// This is typically used to synchronize VTL permission changes with
-    /// concurrent instruction emulation.
+pub struct TlbLockAccess<'a> {
+    pub vp_index: usize,
+    pub cvm_partition: &'a UhCvmPartitionState,
+}
+
+impl TlbLockAccess<'_> {
     pub fn set_wait_for_tlb_locks(&mut self, target_vtl: GuestVtl) {
         // Capture the set of VPs that are currently holding the TLB lock. Only
         // those VPs that hold the lock at this point can block progress, because
         // any VP that acquires the lock after this point is guaranteed to see
         // state that this VP has already flushed.
-        let self_index = self.vp_index().index() as usize;
-        let self_lock = &self.cvm_vp_inner().tlb_lock_info[target_vtl];
-        for vp in self.cvm_partition().tlb_locked_vps[target_vtl]
+        let self_lock = &self
+            .cvm_partition
+            .vp_inner(self.vp_index as u32)
+            .tlb_lock_info[target_vtl];
+        for vp in self.cvm_partition.tlb_locked_vps[target_vtl]
             .clone()
             .iter_ones()
         {
             // Never wait on the current VP, since the current VP will always
             // release its locks correctly when returning to the target VTL.
-            if vp == self_index {
+            if vp == self.vp_index {
                 continue;
             }
 
@@ -43,24 +48,34 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             // Because the wait by the current VP on the target VP is known to
             // be new, this bit should not already be set.
             let other_lock_blocked =
-                &self.cvm_partition().vp_inner(vp as u32).tlb_lock_info[target_vtl].blocked_vps;
-            let _was_other_lock_blocked = other_lock_blocked.set_aliased(self_index, true);
+                &self.cvm_partition.vp_inner(vp as u32).tlb_lock_info[target_vtl].blocked_vps;
+            let _was_other_lock_blocked = other_lock_blocked.set_aliased(self.vp_index, true);
             debug_assert!(!_was_other_lock_blocked);
 
             // It is possible that the target VP released the TLB lock before
             // the current VP was added to its blocked set. Check again to
             // see whether the TLB lock is still held, and if not, remove the
             // block.
-            if !self.cvm_partition().tlb_locked_vps[target_vtl][vp] {
-                other_lock_blocked.set_aliased(self_index, false);
+            if !self.cvm_partition.tlb_locked_vps[target_vtl][vp] {
+                other_lock_blocked.set_aliased(self.vp_index, false);
                 if self_lock.blocking_vps.set_aliased(vp, false) {
                     self_lock.blocking_vp_count.fetch_sub(1, Ordering::Relaxed);
                 }
             }
         }
+    }
+}
 
-        // Mark the target VTL as waiting for TLB locks.
-        self.backing.cvm_state_mut().vtls_tlb_waiting[target_vtl] = true;
+impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
+    /// Causes the specified VTL on the current VP to wait on all TLB locks.
+    /// This is typically used to synchronize VTL permission changes with
+    /// concurrent instruction emulation.
+    pub fn set_wait_for_tlb_locks(&mut self, target_vtl: GuestVtl) {
+        TlbLockAccess {
+            vp_index: self.vp_index().index() as usize,
+            cvm_partition: B::cvm_partition_state(self.shared),
+        }
+        .set_wait_for_tlb_locks(target_vtl);
     }
 
     /// Lock the TLB of the target VTL on the current VP.
@@ -154,30 +169,19 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
     /// Returns whether the VP should halt to wait for the TLB lock of the specified VTL.
     pub fn should_halt_for_tlb_unlock(&mut self, target_vtl: GuestVtl) -> bool {
-        // No wait is required if this VP is not blocked on the TLB lock.
-        if self.backing.cvm_state_mut().vtls_tlb_waiting[target_vtl] {
-            // No wait is required unless this VP is blocked on another VP that
-            // holds the TLB flush lock.
-            let self_lock = &self.cvm_vp_inner().tlb_lock_info[target_vtl];
-            if self_lock.blocking_vp_count.load(Ordering::Relaxed) != 0 {
-                self_lock.sleeping.store(true, Ordering::Relaxed);
-                // Now that this VP has been marked as sleeping, check to see
-                // whether it is still blocked. If not, no sleep should be
-                // attempted.
-                if self_lock.blocking_vp_count.load(Ordering::SeqCst) != 0 {
-                    return true;
-                }
-
-                self_lock.sleeping.store(false, Ordering::Relaxed);
+        // No wait is required unless this VP is blocked on another VP that
+        // holds the TLB flush lock.
+        let self_lock = &self.cvm_vp_inner().tlb_lock_info[target_vtl];
+        if self_lock.blocking_vp_count.load(Ordering::Relaxed) != 0 {
+            self_lock.sleeping.store(true, Ordering::Relaxed);
+            // Now that this VP has been marked as sleeping, check to see
+            // whether it is still blocked. If not, no sleep should be
+            // attempted.
+            if self_lock.blocking_vp_count.load(Ordering::SeqCst) != 0 {
+                return true;
             }
-            self.backing.cvm_state_mut().vtls_tlb_waiting[target_vtl] = false;
-        } else {
-            debug_assert_eq!(
-                self.cvm_vp_inner().tlb_lock_info[target_vtl]
-                    .blocking_vp_count
-                    .load(Ordering::Relaxed),
-                0
-            );
+
+            self_lock.sleeping.store(false, Ordering::Relaxed);
         }
 
         false

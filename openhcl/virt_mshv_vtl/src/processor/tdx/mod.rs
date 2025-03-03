@@ -526,6 +526,18 @@ impl HardwareIsolatedBacking for TdxBacked {
             ),
         }
     }
+
+    fn tlb_flush_lock_access<'a>(
+        vp_index: usize,
+        partition: &'a UhPartitionInner,
+        shared: &'a Self::Shared,
+    ) -> impl TlbFlushLockAccess + 'a {
+        TdxTlbLockFlushAccess {
+            vp_index,
+            partition,
+            shared,
+        }
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.
@@ -3345,6 +3357,22 @@ impl<T> HypercallIo for TdHypercall<'_, '_, T> {
     }
 }
 
+impl<T> hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, T, TdxBacked> {
+    fn advance_ip(&mut self) {
+        let long_mode = self.vp.long_mode(self.intercepted_vtl);
+        let mut io = hv1_hypercall::X64RegisterIo::new(self, long_mode);
+        io.advance_ip();
+    }
+
+    fn inject_invalid_opcode_fault(&mut self) {
+        self.vp.backing.vtls[self.intercepted_vtl].interruption_information =
+            InterruptionInformation::new()
+                .with_valid(true)
+                .with_interruption_type(INTERRUPT_TYPE_HARDWARE_EXCEPTION)
+                .with_vector(x86defs::Exception::INVALID_OPCODE.0);
+    }
+}
+
 impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_, '_, T, TdxBacked> {
     fn flush_virtual_address_list(
         &mut self,
@@ -3392,8 +3420,12 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
         }
 
         // Send flush IPIs to the specified VPs.
-        self.vp
-            .wake_processors_for_tlb_flush(vtl, (!flags.all_processors()).then_some(processor_set));
+        TdxTlbLockFlushAccess {
+            vp_index: self.vp.vp_index().index() as usize,
+            partition: self.vp.partition,
+            shared: self.vp.shared,
+        }
+        .wake_processors_for_tlb_flush(vtl, (!flags.all_processors()).then_some(processor_set));
 
         // Mark that this VP needs to wait for all TLB locks to be released before returning.
         self.vp.set_wait_for_tlb_locks(vtl);
@@ -3441,8 +3473,12 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
         }
 
         // Send flush IPIs to the specified VPs.
-        self.vp
-            .wake_processors_for_tlb_flush(vtl, (!flags.all_processors()).then_some(processor_set));
+        TdxTlbLockFlushAccess {
+            vp_index: self.vp.vp_index().index() as usize,
+            partition: self.vp.partition,
+            shared: self.vp.shared,
+        }
+        .wake_processors_for_tlb_flush(vtl, (!flags.all_processors()).then_some(processor_set));
 
         // Mark that this VP needs to wait for all TLB locks to be released before returning.
         self.vp.set_wait_for_tlb_locks(vtl);
@@ -3479,7 +3515,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
     }
 }
 
-impl UhProcessor<'_, TdxBacked> {
+impl TdxTlbLockFlushAccess<'_> {
     fn wake_processors_for_tlb_flush(
         &mut self,
         target_vtl: GuestVtl,
@@ -3512,7 +3548,7 @@ impl UhProcessor<'_, TdxBacked> {
         // for each VP.
         std::sync::atomic::fence(Ordering::SeqCst);
         for target_vp in processors {
-            if self.vp_index().index() as usize != target_vp
+            if self.vp_index != target_vp
                 && self.shared.active_vtl[target_vp].load(Ordering::Relaxed) == target_vtl as u8
             {
                 self.partition.vps[target_vp].wake_vtl2();
@@ -3523,23 +3559,13 @@ impl UhProcessor<'_, TdxBacked> {
     }
 }
 
-impl<T> hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, T, TdxBacked> {
-    fn advance_ip(&mut self) {
-        let long_mode = self.vp.long_mode(self.intercepted_vtl);
-        let mut io = hv1_hypercall::X64RegisterIo::new(self, long_mode);
-        io.advance_ip();
-    }
-
-    fn inject_invalid_opcode_fault(&mut self) {
-        self.vp.backing.vtls[self.intercepted_vtl].interruption_information =
-            InterruptionInformation::new()
-                .with_valid(true)
-                .with_interruption_type(INTERRUPT_TYPE_HARDWARE_EXCEPTION)
-                .with_vector(x86defs::Exception::INVALID_OPCODE.0);
-    }
+struct TdxTlbLockFlushAccess<'a> {
+    vp_index: usize,
+    partition: &'a UhPartitionInner,
+    shared: &'a TdxBackedShared,
 }
 
-impl TlbFlushLockAccess for UhProcessor<'_, TdxBacked> {
+impl TlbFlushLockAccess for TdxTlbLockFlushAccess<'_> {
     fn flush(&mut self, vtl: GuestVtl) {
         {
             self.shared.flush_state[vtl].write().s.flush_entire_counter += 1;
@@ -3559,7 +3585,11 @@ impl TlbFlushLockAccess for UhProcessor<'_, TdxBacked> {
     }
 
     fn set_wait_for_tlb_locks(&mut self, vtl: GuestVtl) {
-        Self::set_wait_for_tlb_locks(self, vtl);
+        hardware_cvm::tlb_lock::TlbLockAccess {
+            vp_index: self.vp_index,
+            cvm_partition: &self.shared.cvm,
+        }
+        .set_wait_for_tlb_locks(vtl);
     }
 }
 
