@@ -8,6 +8,7 @@ use petri::OpenHclServicingFlags;
 use petri::ResolvedArtifact;
 #[cfg(guest_arch = "x86_64")]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
+#[cfg(guest_arch = "x86_64")]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_2_4_11_LINUX_DIRECT_X64;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
