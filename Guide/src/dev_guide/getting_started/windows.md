@@ -33,18 +33,27 @@ over to it.
 
 Please follow the [official instructions](https://www.rust-lang.org/tools/install) to do so.
 
+### Visual Studio C++ Build Tools and Windows SDK
+
 If you don't already have it, you will need to install
 [Visual Studio C++ Build tools ](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
-or [Visual Studio](https://visualstudio.microsoft.com/vs/) with the component
-"Desktop Development for C++".
+or [Visual Studio](https://visualstudio.microsoft.com/vs/) with the components
+"Desktop Development for C++" and the Windows SDK. Windows 11 SDK version 26100 is the latest
+version as of this update, but you should install the newest version if there is a newer
+version.
 
-This can be installed via `Visual Studio Installer` -> `Modify` -> `Individual Components`
+The C++ build tools can be installed via `Visual Studio Installer` -> `Modify` -> `Individual Components`
 -> `MSVC v143 - VS 2022 C++ x64/x86 build tools (latest)`.
+
+The Windows SDK can be installed via `Visual Studio Installer` -> `Modify` -> `Individual Components`
+-> `Windows 11 SDK (10.0.26100.0)`.
+
+The C++ build tools and Windows SDK can be installed at the same time.
 
 Or, you can install the tool via the powershell command below.
 
 ```powershell
-PS> winget install Microsoft.VisualStudio.2022.Community --override "--quiet --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+PS> winget install Microsoft.VisualStudio.2022.Community --override "--quiet --add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows11SDK.26100"
 ```
 
 ### Aarch64 support
