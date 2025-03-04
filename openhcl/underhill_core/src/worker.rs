@@ -2661,6 +2661,8 @@ async fn new_underhill_vm(
             .delay_max_version(delay_max_version)
             .enable_mnf(enable_mnf)
             .force_confidential_external_memory(env_cfg.vmbus_force_confidential_external_memory)
+            // For saved-state compat with release/2411.
+            .send_messages_while_stopped(true)
             .build()
             .context("failed to create vmbus server")?;
 
