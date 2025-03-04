@@ -8,6 +8,7 @@ use chipset_device::pci::PciConfigSpace;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use nvme::NvmeController;
 use nvme::NvmeControllerCaps;
 use nvme_spec::nvm::DsmRange;
 use nvme_spec::Cap;
@@ -20,8 +21,11 @@ use std::sync::Arc;
 use test_with_tracing::test;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
+use user_driver::emulated::EmulatedDmaAllocator;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
+use user_driver::memory::MemoryBlock;
+use user_driver::memory::PAGE_SIZE;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
@@ -56,7 +60,7 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
-    let nvme = nvme::NvmeController::new(
+    let nvme = NvmeController::new(
         &driver_source,
         mem.guest_memory().clone(),
         &mut msi_set,
@@ -90,7 +94,7 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
-    let nvme = nvme::NvmeController::new(
+    let nvme = NvmeController::new(
         &driver_source,
         mem.guest_memory().clone(),
         &mut msi_set,
@@ -135,7 +139,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
-    let nvme = nvme::NvmeController::new(
+    let nvme = NvmeController::new(
         &driver_source,
         mem.guest_memory().clone(),
         &mut msi_set,
@@ -233,16 +237,69 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
 }
 
 async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
+    // ===== SETUP =====
+    const CPU_COUNT: u32 = 64;
+    let base_len = 64 * 1024 * 1024;
+    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+
+    // ===== FIRST DRIVER INIT, SAVE, & TEARDOWN =====
+    let (shared_mem_original, msi_x, nvme_ctrl) = create_driver_resources(base_len, 0, &driver_source);
+
+    // Add a namespace so Identify Namespace command will succeed later.
+    nvme_ctrl
+        .client()
+        .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
+        .await
+        .unwrap();
+
+    let saved_state = {
+        let device = EmulatedDevice::new(nvme_ctrl, msi_x, shared_mem_original.clone());
+        let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
+            .await
+            .unwrap();
+        let _ns1 = nvme_driver.namespace(1).await.unwrap();
+        let saved = nvme_driver.save().await.unwrap();
+
+        nvme_driver.shutdown().await;
+        saved
+    };
+    
+    // As of today we do not save namespace data to avoid possible conflict when namespace has changed during servicing.
+    assert_eq!(saved_state.namespaces.len(), 0);
+
+    // ===== SECOND DRIVER RESOURCES AND KEEPALIVE SETUP =======
+    let (shared_mem_copy, new_msi_x, mut new_nvme_ctrl) = create_driver_resources(base_len, 0, &driver_source);
+
+    // Read Register::CC -> set CC.EN -> wait CSTS.RDY
+    let mut dword = 0u32;
+    new_nvme_ctrl.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
+    dword |= 1;
+    new_nvme_ctrl.write_bar0(0x14, dword.as_bytes()).unwrap();
+    user_driver::backoff::Backoff::new(&driver).back_off().await;
+
+    // ===== COPY MEMORY =====
+    let host_allocator_original = EmulatedDmaAllocator::new(shared_mem_original.clone());
+    let mem_original= DmaClient::attach_dma_buffer(&host_allocator_original, base_len, 0).unwrap();
+    copy_mem_block(&mem_original, shared_mem_copy.clone());
+
+    // ====== SECOND DRIVER RESTORE & VERIFY =====
+    let new_device = EmulatedDevice::new(new_nvme_ctrl, new_msi_x, shared_mem_copy);
+    let mut new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, new_device, &saved_state)
+        .await
+        .unwrap();
+
+    // Verify restore functions will panic if verification failed.
+    new_nvme_driver.verify_restore(&saved_state, mem_original).await;
+}
+
+/// Creates required resources for the driver
+fn create_driver_resources(base_len: usize, payload_len: usize, driver_source: &VmTaskDriverSource) -> (DeviceSharedMemory, MsiInterruptSet, NvmeController) {
     const MSIX_COUNT: u16 = 2;
     const IO_QUEUE_COUNT: u16 = 64;
-    const CPU_COUNT: u32 = 64;
 
-    let base_len = 64 * 1024 * 1024;
-    let payload_len = 4 * 1024 * 1024;
-    let mem = DeviceSharedMemory::new(base_len, payload_len);
-    let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
+    let mem = DeviceSharedMemory::new(base_len, 0);
     let mut msi_x = MsiInterruptSet::new();
-    let nvme_ctrl = nvme::NvmeController::new(
+    let nvme_ctrl = NvmeController::new(
         &driver_source,
         mem.guest_memory().clone(),
         &mut msi_x,
@@ -254,56 +311,22 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
         },
     );
 
-    // Add a namespace so Identify Namespace command will succeed later.
-    nvme_ctrl
-        .client()
-        .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
-        .await
-        .unwrap();
+    (mem, msi_x, nvme_ctrl)
+}
 
-    let device = EmulatedDevice::new(nvme_ctrl, msi_x, mem);
-    let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
-        .await
-        .unwrap();
-    let _ns1 = nvme_driver.namespace(1).await.unwrap();
-    let saved_state = nvme_driver.save().await.unwrap();
-    // As of today we do not save namespace data to avoid possible conflict
-    // when namespace has changed during servicing.
-    // TODO: Review and re-enable in future.
-    assert_eq!(saved_state.namespaces.len(), 0);
 
-    // Create a second set of devices since the ownership has been moved.
-    let new_emu_mem = DeviceSharedMemory::new(base_len, payload_len);
-    let mut new_msi_x = MsiInterruptSet::new();
-    let mut new_nvme_ctrl = nvme::NvmeController::new(
-        &driver_source,
-        new_emu_mem.guest_memory().clone(),
-        &mut new_msi_x,
-        &mut ExternallyManagedMmioIntercepts,
-        NvmeControllerCaps {
-            msix_count: MSIX_COUNT,
-            max_io_queues: IO_QUEUE_COUNT,
-            subsystem_id: Guid::new_random(),
-        },
-    );
+/// Copies contents of mem_original to shared_mem_copy starting at pfn 0. Caller makes sure that mem_original.len() <= shared_mem_copy.capacity()
+fn copy_mem_block(mem_original: &MemoryBlock, shared_mem_copy: DeviceSharedMemory) {
+    let host_allocator_copy = EmulatedDmaAllocator::new(shared_mem_copy);
+    let mem_copy= DmaClient::attach_dma_buffer(&host_allocator_copy, mem_original.len(), 0).unwrap();
 
-    let mut backoff = user_driver::backoff::Backoff::new(&driver);
+    let mut data_transfer_buffer: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
 
-    // Enable the controller for keep-alive test.
-    let mut dword = 0u32;
-    // Read Register::CC.
-    new_nvme_ctrl.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
-    // Set CC.EN.
-    dword |= 1;
-    new_nvme_ctrl.write_bar0(0x14, dword.as_bytes()).unwrap();
-    // Wait for CSTS.RDY to set.
-    backoff.back_off().await;
-
-    let _new_device = EmulatedDevice::new(new_nvme_ctrl, new_msi_x, new_emu_mem);
-    // TODO: Memory restore is disabled for emulated DMA, uncomment once fixed.
-    // let _new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, new_device, &saved_state)
-    //     .await
-    //     .unwrap();
+    let total_pages = mem_original.len()/PAGE_SIZE;
+    for  pfn in 0..total_pages {
+        mem_original.read_at(pfn * PAGE_SIZE, &mut data_transfer_buffer);
+        mem_copy.write_at(pfn * PAGE_SIZE, &data_transfer_buffer);
+    }
 }
 
 #[derive(Inspect)]

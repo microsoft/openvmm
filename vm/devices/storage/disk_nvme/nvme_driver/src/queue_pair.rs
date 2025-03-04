@@ -163,6 +163,18 @@ impl PendingCommands {
             next_cid_high_bits: Wrapping(*next_cid_high_bits),
         })
     }
+
+    /// Given the saved state, verifies the state of the PendingCommands to match the saved state
+    #[cfg(test)]
+    pub(crate) fn verify_restore(&self, saved_state: &PendingCommandsSavedState) {
+        // TODO: [expand-verify-restore-functionality] cid_key_bits are currently unused during restore. 
+        assert_eq!(saved_state.commands.len(), self.commands.len());
+        for (index, command) in &self.commands {
+            command.verify_restore(&saved_state.commands[index]);
+        }
+
+        assert_eq!(saved_state.next_cid_high_bits, self.next_cid_high_bits.0);
+    }
 }
 
 impl QueuePair {
@@ -322,6 +334,35 @@ impl QueuePair {
             mem,
             Some(handler_data),
         )
+    }
+
+    /// Given the saved state of a queue pair, this verifies the constructed queue pair.
+    /// Input memory block should already be constructed from the offsets.
+    #[cfg(test)]
+    pub(crate) async fn verify_restore(&self, saved_state: &QueuePairSavedState, saved_mem: MemoryBlock) {
+        // `cancel` and `issuers` params are runtime parameters so we don't check underlying values.
+        let mut saved_mem_data: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
+        let mut self_mem_data: [u8; PAGE_SIZE] = [0; PAGE_SIZE];
+
+        assert_eq!(saved_mem.len(), self.mem.len());
+
+        // [expand-verify-restore-functionality] Base Pfn value can't be checked after restore.
+        // This needs to be checked in a 'save' test instead.
+        for pfn in 0..(saved_mem.len()/PAGE_SIZE) {
+            saved_mem.read_at(pfn * PAGE_SIZE, &mut saved_mem_data);
+            self.mem.read_at(pfn * PAGE_SIZE, &mut self_mem_data);
+
+            for i in 0..PAGE_SIZE {
+                assert_eq!(saved_mem_data[i], self_mem_data[i]);
+            }
+        }
+
+        // Entire memory region checked above. No need to send it along with the verify call
+        // Issue rpc call after checking memory because this will write to memory.
+        let _ = self.issuer.send.call(Req::Verify, saved_state.handler_data.clone()).await;
+        assert_eq!(saved_state.qid, self.qid);
+        assert_eq!(saved_state.sq_entries, self.sq_entries);
+        assert_eq!(saved_state.cq_entries, self.cq_entries);
     }
 }
 
@@ -582,6 +623,8 @@ enum Req {
     Command(Rpc<spec::Command, spec::Completion>),
     Inspect(inspect::Deferred),
     Save(Rpc<(), Result<QueueHandlerSavedState, anyhow::Error>>),
+    #[cfg(test)]
+    Verify(Rpc<QueueHandlerSavedState, ()>),
 }
 
 #[derive(Inspect)]
@@ -667,6 +710,14 @@ impl QueueHandler {
                         // Do not allow any more processing after save completed.
                         break;
                     }
+                    #[cfg(test)]
+                    Req::Verify(verify_state) => {
+                        let saved_state = verify_state.input();
+                        
+                        self.sq.verify_restore(&saved_state.sq_state);
+                        self.cq.verify_restore(&saved_state.cq_state);
+                        self.commands.verify_restore(&saved_state.pending_cmds);
+                    }
                 },
                 Event::Completion(completion) => {
                     assert_eq!(completion.sqid, self.sq.id());
@@ -714,6 +765,14 @@ impl QueueHandler {
             // Admin queue is expected to have pending Async Event requests.
             drain_after_restore: sq_state.sqid != 0 && !pending_cmds.commands.is_empty(),
         })
+    }
+}
+
+#[cfg(test)]
+impl PendingCommand {
+    /// Verifies the value of the pending command from a saved state
+    pub(crate) fn verify_restore(&self, saved_state: &PendingCommandSavedState) {
+        assert_eq!(saved_state.command, self.command);
     }
 }
 
