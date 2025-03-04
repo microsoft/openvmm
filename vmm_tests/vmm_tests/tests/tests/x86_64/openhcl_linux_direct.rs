@@ -115,8 +115,8 @@ async fn mana_nic_servicing(
 
 fn new_test_vtl2_nvme_device(nsid: u32, size: u64, instance_id: Guid, backing_file: Option<File>) -> VpciDeviceConfig 
 {
-    let layer = if backing_file.is_some() {
-        LayeredDiskHandle::single_layer(DiskLayerHandle(FileDiskHandle(backing_file.unwrap()).into_resource()))
+    let layer = if let Some(file) = backing_file {
+        LayeredDiskHandle::single_layer(DiskLayerHandle(FileDiskHandle(file).into_resource()))
     } else {
         LayeredDiskHandle::single_layer(RamDiskLayerHandle {
             len: Some(size),
@@ -131,7 +131,7 @@ fn new_test_vtl2_nvme_device(nsid: u32, size: u64, instance_id: Guid, backing_fi
                             max_io_queues: 64,
                             msix_count: 64,
                             namespaces: vec![NamespaceDefinition {
-                                nsid: nsid,
+                                nsid,
                                 disk: layer.into_resource(),
                                 read_only: false,
                             }],
@@ -427,7 +427,7 @@ async fn openhcl_linux_storvsp_dvd_nvme(config: PetriVmConfigOpenVmm) -> Result<
 
     let disk_len = nvme_disk_sectors * sector_size;
     let mut backing_file = tempfile::tempfile()?;
-    let mut bytes = vec![0 as u8; disk_len as usize];
+    let mut bytes = vec![0_u8; disk_len as usize];
     for i in 0..(disk_len / 0xff) { // This should always be divisible by 64
         for j in 0..0xff {
             bytes[(i * 0xff + j) as usize] = j as u8;
