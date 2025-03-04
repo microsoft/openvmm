@@ -314,7 +314,8 @@ fn rename_output(
     dry_run: bool,
 ) -> Result<CargoBuildOutput, anyhow::Error> {
     fn rename_or_copy(from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<()> {
-        let res = fs_err::rename(from.as_ref(), to.as_ref());
+        // cannot use `fs_err` here, as it won't preserve the raw_os_error() code
+        let res = std::fs::rename(from.as_ref(), to.as_ref());
 
         let needs_copy = match res {
             Ok(_) => false,
@@ -329,7 +330,14 @@ fn rename_output(
                 if cfg!(target_os = "windows") && e.raw_os_error() == Some(17) {
                     true
                 } else {
-                    return Err(e);
+                    return Err(std::io::Error::new(
+                        e.kind(),
+                        format!(
+                            "failed to rename {} to {}",
+                            from.as_ref().display(),
+                            to.as_ref().display()
+                        ),
+                    ));
                 }
             }
         };
