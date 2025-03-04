@@ -318,10 +318,20 @@ fn rename_output(
 
         let needs_copy = match res {
             Ok(_) => false,
-            Err(e) => match e.kind() {
-                std::io::ErrorKind::CrossesDevices => true,
-                _ => return Err(e),
-            },
+            Err(e) => {
+                // To unblock an issue in one of Microsoft's internal pipelines,
+                // check if the error code is 17 (ERROR_NOT_SAME_DEVICE) on
+                // Windows, and if so - fall back to copying the file.
+                //
+                // DEVNOTE: in non-release/ branches, this is a more robust
+                // check, backed by `io::ErrorKind::CrossDevices`, which was
+                // only stabilized in Rust 1.85
+                if cfg!(target_os = "windows") && e.raw_os_error() == Some(17) {
+                    true
+                } else {
+                    return Err(e);
+                }
+            }
         };
 
         if needs_copy {
