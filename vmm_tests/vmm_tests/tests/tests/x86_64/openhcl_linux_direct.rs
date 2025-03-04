@@ -3,6 +3,9 @@
 
 //! Integration tests for x86_64 Linux direct boot with OpenHCL.
 
+use std::fs::File;
+use std::io::Write;
+
 use anyhow::Context;
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
@@ -108,26 +111,35 @@ async fn mana_nic_servicing(
     Ok(())
 }
 
-fn new_test_vtl2_nvme_device(nsid: u32, size: u64, instance_id: Guid) -> VpciDeviceConfig 
-{
+fn new_test_vtl2_nvme_device(
+    nsid: u32,
+    size: u64,
+    instance_id: Guid,
+    backing_file: Option<File>,
+) -> VpciDeviceConfig {
+    let layer = if backing_file.is_some() {
+        LayeredDiskHandle::single_layer(DiskLayerHandle(
+            FileDiskHandle(backing_file.unwrap()).into_resource(),
+        ))
+    } else {
+        LayeredDiskHandle::single_layer(RamDiskLayerHandle { len: Some(size) })
+    };
+
     VpciDeviceConfig {
-                        vtl: DeviceVtl::Vtl2,
-                        instance_id,
-                        resource: NvmeControllerHandle {
-                            subsystem_id: instance_id,
-                            max_io_queues: 64,
-                            msix_count: 64,
-                            namespaces: vec![NamespaceDefinition {
-                                nsid: nsid,
-                                disk: (LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                                    len: Some(size),
-                                })
-                                .into_resource()),
-                                read_only: false,
-                            }],
-                        }
-                        .into_resource(),
-                    }
+        vtl: DeviceVtl::Vtl2,
+        instance_id,
+        resource: NvmeControllerHandle {
+            subsystem_id: instance_id,
+            max_io_queues: 64,
+            msix_count: 64,
+            namespaces: vec![NamespaceDefinition {
+                nsid,
+                disk: layer.into_resource(),
+                read_only: false,
+            }],
+        }
+        .into_resource(),
+    }
 }
 
 /// Test an OpenHCL Linux direct VM with a SCSI disk assigned to VTL2, and
@@ -174,7 +186,12 @@ async fn storvsp(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
                 }
                 .into_resource(),
             ));
-            c.vpci_devices.push(new_test_vtl2_nvme_device(vtl2_nsid, nvme_disk_sectors * sector_size, NVME_INSTANCE));
+            c.vpci_devices.push(new_test_vtl2_nvme_device(
+                vtl2_nsid,
+                nvme_disk_sectors * sector_size,
+                NVME_INSTANCE,
+                None,
+            ));
         })
         .with_custom_vtl2_settings(|v| {
             v.dynamic.as_mut().unwrap().storage_controllers.push(
@@ -415,10 +432,26 @@ async fn openhcl_linux_storvsp_dvd_nvme(config: PetriVmConfigOpenVmm) -> Result<
 
     let mut vtl2_settings = None;
 
+    let disk_len = nvme_disk_sectors * sector_size;
+    let mut backing_file = tempfile::tempfile()?;
+    let mut bytes = vec![0 as u8; disk_len as usize];
+    for i in 0..(disk_len / 0xff) {
+        // This should always be divisible by 64
+        for j in 0..0xff {
+            bytes[(i * 0xff + j) as usize] = j as u8;
+        }
+    }
+    backing_file.write_all(&bytes)?;
+
     let (vm, agent) = config
         .with_vmbus_redirect()
         .with_custom_config(|c| {
-            c.vpci_devices.extend([new_test_vtl2_nvme_device(vtl2_nsid, nvme_disk_sectors * sector_size, NVME_INSTANCE)]);
+            c.vpci_devices.extend([new_test_vtl2_nvme_device(
+                vtl2_nsid,
+                nvme_disk_sectors * sector_size,
+                NVME_INSTANCE,
+                Some(backing_file),
+            )]);
         })
         .with_custom_vtl2_settings(|v| {
             v.dynamic.as_mut().unwrap().storage_controllers.push(
@@ -457,9 +490,11 @@ async fn openhcl_linux_storvsp_dvd_nvme(config: PetriVmConfigOpenVmm) -> Result<
 
     let read_drive = || agent.read_file("/dev/sr0");
     let b = read_drive().await.context("failed to read dvd drive")?;
-    let len = nvme_disk_sectors * sector_size;
-    if b.len() as u64 != len {
-        anyhow::bail!("expected {} bytes, got {}", len, b.len());
+    if b.len() as u64 != disk_len {
+        anyhow::bail!("expected {} bytes, got {}", disk_len, b.len());
+    }
+    if !b[..].eq(&bytes[..]) {
+        anyhow::bail!("content mismatch");
     }
 
     agent.power_off().await?;
@@ -484,8 +519,18 @@ async fn openhcl_linux_stripe_storvsp(config: PetriVmConfigOpenVmm) -> Result<()
         .with_vmbus_redirect()
         .with_custom_config(|c| {
             c.vpci_devices.extend([
-                new_test_vtl2_nvme_device(vtl2_nsid, nvme_disk_sectors * sector_size, NVME_INSTANCE_1),
-                new_test_vtl2_nvme_device(vtl2_nsid, nvme_disk_sectors * sector_size, NVME_INSTANCE_2),
+                new_test_vtl2_nvme_device(
+                    vtl2_nsid,
+                    nvme_disk_sectors * sector_size,
+                    NVME_INSTANCE_1,
+                    None,
+                ),
+                new_test_vtl2_nvme_device(
+                    vtl2_nsid,
+                    nvme_disk_sectors * sector_size,
+                    NVME_INSTANCE_2,
+                    None,
+                ),
             ]);
         })
         .with_custom_vtl2_settings(|v| {
