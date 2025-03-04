@@ -1122,6 +1122,16 @@ impl PipelineJob<'_> {
             job_idx: self.job_idx,
         }
     }
+
+    /// Return the job's platform.
+    pub fn get_platform(&self) -> FlowPlatform {
+        self.pipeline.jobs[self.job_idx].platform
+    }
+
+    /// Return the job's architecture.
+    pub fn get_arch(&self) -> FlowArch {
+        self.pipeline.jobs[self.job_idx].arch
+    }
 }
 
 #[derive(Clone)]
