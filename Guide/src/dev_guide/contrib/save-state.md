@@ -18,7 +18,7 @@ Here are the principles you must maintain when adding new save & restore code:
 3. **All Save State is Protocol Buffers**: All save state is encoded as
    `ProtoBuf`, using `mesh`.
 
-## Conventions
+## Best practices
 
 1. **Put save state in it's own module**: This makes PR reviews easier, to catch
    any mistakes updating save state.
@@ -29,8 +29,9 @@ Here are the principles you must maintain when adding new save & restore code:
     * Arrays: if you need to add an array, consider a `vec` or `Option<[T; N]>`
       instead.
     * Enum: if you need to add an enum, add it as `Option<MyEnum>' instead.
+4. **Be particularly careful when updating saved state**: See below.
 
-## Updating (Extending) Saved State
+### Updating (Extending) Saved State
 
 Since saved state is just Protocol Buffers, use the [guide to updating Protocol
 Buffers messages](https://protobuf.dev/programming-guides/proto3/#updating) as a
@@ -40,8 +41,9 @@ starting point, with the following caveats:
    `i32` to `u32` is a breaking change, for example.
 2. The Protocol Buffers docs mention what happens for newly added fields, but it
    bears adding some nuance here:
-    1. `arrays` and `enums` are **not supported**. Reading new save state with
-       either will fail on an older build.
+    1. Plain `arrays` and `enums` are not supported. Reading newer save state
+       with an `array` or `enum` will fail on an older build. Instead, wrap
+       these in an `Option`.
     2. Old -> New Save State: Save state from a prior revision will not contain
        some newly added fields. Those fields will get the [default
        values](https://protobuf.dev/programming-guides/proto3/#default). This is
@@ -52,6 +54,13 @@ starting point, with the following caveats:
         * Numbers => 0
         * Strings => `""`
     3. New -> Old Save State: Unknown fields are ignored.
+3. Ensure that default values for new saved state fields make semantic sense.
+   Here is the heuristic: if you need a conditional to check if the restored
+   value is the default because it was not included in save state, you should
+   use an `Option`. If you wouldn't otherwise need a conditional, you should not
+   use an `Option`.
+4. Define your saved state so that the natural default of `bool` types is
+   `false`.
 
 ## Defining Saved State
 
