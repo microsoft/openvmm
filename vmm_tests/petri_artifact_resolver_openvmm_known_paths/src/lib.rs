@@ -11,7 +11,6 @@ use petri_artifacts_core::ErasedArtifactHandle;
 use std::env::consts::EXE_EXTENSION;
 use std::path::Path;
 use std::path::PathBuf;
-use tempfile::TempDir;
 use vmm_test_images::KnownIso;
 use vmm_test_images::KnownVhd;
 
@@ -42,7 +41,6 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == common::TEST_LOG_DIRECTORY => test_log_directory_path(self.0),
 
             _ if id == OPENVMM_NATIVE => openvmm_native_executable_path(),
-            _ if id == OPENHCL_DUMP_DIRECTORY => openhcl_dump_path(),
 
             _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64 => linux_direct_x64_test_kernel_path(),
             _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => linux_direct_arm_image_path(),
@@ -367,23 +365,6 @@ fn test_log_directory_path(test_name: &str) -> anyhow::Result<PathBuf> {
     let path = root.join(test_name.replace("::", "__"));
     fs_err::create_dir_all(&path)?;
     Ok(path)
-}
-
-/// Path to the location for OpenHCL crash dump files.
-fn openhcl_dump_path() -> anyhow::Result<PathBuf> {
-    static DUMP_PATH: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
-    Ok(
-        if let Some(path) = std::env::var_os("OPENHCL_DUMP_PATH")
-            .or_else(|| std::env::var_os("HVLITE_UNDERHILL_DUMP_PATH"))
-        {
-            PathBuf::from(path)
-        } else {
-            DUMP_PATH
-                .get_or_init(|| TempDir::new().unwrap())
-                .path()
-                .to_owned()
-        },
-    )
 }
 
 const VMM_TESTS_DIR_ENV_VAR: &str = "VMM_TESTS_CONTENT_DIR";

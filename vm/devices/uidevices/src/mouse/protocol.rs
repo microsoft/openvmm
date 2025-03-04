@@ -13,10 +13,10 @@ use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
 //cfa8b69e-5b4a-4cc0-b98b-8ba1a1f3f95a
-pub const INTERFACE_GUID: Guid = Guid::from_static_str("cfa8b69e-5b4a-4cc0-b98b-8ba1a1f3f95a");
+pub const INTERFACE_GUID: Guid = guid::guid!("cfa8b69e-5b4a-4cc0-b98b-8ba1a1f3f95a");
 
 //58f75a6d-d949-4320-99e1-a2a2576d581c
-pub const INSTANCE_GUID: Guid = Guid::from_static_str("58f75a6d-d949-4320-99e1-a2a2576d581c");
+pub const INSTANCE_GUID: Guid = guid::guid!("58f75a6d-d949-4320-99e1-a2a2576d581c");
 
 //SynthHID protocol
 const fn make_version(major: u16, minor: u16) -> u32 {

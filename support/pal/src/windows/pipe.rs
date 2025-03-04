@@ -314,19 +314,30 @@ impl PipeExt for File {
         };
         unsafe {
             let mut iosb = zeroed();
-            chk_status(NtFsControlFile(
-                self.as_raw_handle(),
-                null_mut(),
-                None,
-                null_mut(),
-                &mut iosb,
-                FSCTL_PIPE_EVENT_SELECT,
-                std::ptr::from_mut::<FILE_PIPE_EVENT_SELECT_BUFFER>(&mut input)
-                    .cast::<std::ffi::c_void>(),
-                size_of_val(&input) as u32,
-                null_mut(),
-                0,
-            ))?;
+            let mut status = !0;
+            // Newer versions of Windows support FSCTL_PIPE_EVENT_SELECT, which
+            // works on unidirectional pipes. Older versions require
+            // FSCTL_PIPE_EVENT_SELECT_OLD, which only works on bidirectional
+            // pipes.
+            for fsctl in [FSCTL_PIPE_EVENT_SELECT, FSCTL_PIPE_EVENT_SELECT_OLD] {
+                status = NtFsControlFile(
+                    self.as_raw_handle(),
+                    null_mut(),
+                    None,
+                    null_mut(),
+                    &mut iosb,
+                    fsctl,
+                    std::ptr::from_mut::<FILE_PIPE_EVENT_SELECT_BUFFER>(&mut input)
+                        .cast::<std::ffi::c_void>(),
+                    size_of_val(&input) as u32,
+                    null_mut(),
+                    0,
+                );
+                if status != winapi::shared::ntstatus::STATUS_NOT_SUPPORTED {
+                    break;
+                }
+            }
+            chk_status(status)?;
         }
         Ok(())
     }
@@ -397,6 +408,12 @@ const FSCTL_PIPE_EVENT_SELECT: u32 = ctl_code(
     winioctl::FILE_DEVICE_NAMED_PIPE,
     3071,
     winioctl::METHOD_BUFFERED,
+    winioctl::FILE_ANY_ACCESS,
+);
+const FSCTL_PIPE_EVENT_SELECT_OLD: u32 = ctl_code(
+    winioctl::FILE_DEVICE_NAMED_PIPE,
+    3071,
+    winioctl::METHOD_BUFFERED,
     winnt::FILE_WRITE_DATA,
 );
 const FSCTL_PIPE_EVENT_ENUM: u32 = ctl_code(
@@ -407,7 +424,6 @@ const FSCTL_PIPE_EVENT_ENUM: u32 = ctl_code(
 );
 
 #[repr(C)]
-#[allow(clippy::upper_case_acronyms)] // C type
 struct FILE_PIPE_EVENT_SELECT_BUFFER {
     event_types: u32,
     event_handle: u64,

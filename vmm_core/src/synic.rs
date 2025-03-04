@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use futures::task::noop_waker_ref;
 use hvdef::HvError;
 use hvdef::HvResult;
 use hvdef::Vtl;
@@ -55,7 +54,7 @@ impl SynicPorts {
             if vtl < minimum_vtl {
                 Err(HvError::OperationDenied)
             } else if port.poll_handle_message(
-                &mut Context::from_waker(noop_waker_ref()),
+                &mut Context::from_waker(std::task::Waker::noop()),
                 message,
                 secure,
             ) == Poll::Ready(())
@@ -238,9 +237,11 @@ struct DirectGuestMessagePort {
 }
 
 impl GuestMessagePort for DirectGuestMessagePort {
-    fn post_message(&mut self, typ: u32, payload: &[u8]) {
+    fn poll_post_message(&mut self, _cx: &mut Context<'_>, typ: u32, payload: &[u8]) -> Poll<()> {
         self.partition
-            .post_message(self.vtl, self.vp, self.sint, typ, payload)
+            .post_message(self.vtl, self.vp, self.sint, typ, payload);
+
+        Poll::Ready(())
     }
 
     fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {

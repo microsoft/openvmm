@@ -355,13 +355,7 @@ pub mod thread {
         ) -> Self::Driver {
             // Build a standalone thread for this device if a target VP was specified.
             if target_vp.is_some() {
-                let pool = DefaultPool::new();
-                let driver = pool.driver();
-                std::thread::Builder::new()
-                    .name(name)
-                    .spawn(move || pool.run())
-                    .unwrap();
-
+                let (_, driver) = DefaultPool::spawn_on_thread(name);
                 ThreadDriver {
                     inner: driver,
                     has_dedicated_thread: true,

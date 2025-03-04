@@ -6,7 +6,7 @@
 use super::chk_status;
 use super::IoCompletionPort;
 use super::ObjectAttributes;
-use crate::HeaderVec;
+use headervec::HeaderVec;
 use ntlpcapi::*;
 use std::cmp::min;
 use std::ffi::c_void;
@@ -173,12 +173,12 @@ impl PortConfig {
         let mut port_attr = self.port_attributes();
 
         let len: i16 = data.len().try_into().expect("message too large");
-        let mut message = HeaderVec::<PORT_MESSAGE, [u8; 32]>::new(Default::default());
-        message.u1.s.DataLength = len;
-        message.u1.s.TotalLength = len
+        let mut message = HeaderVec::<PORT_MESSAGE, u8, 32>::new(Default::default());
+        message.head.u1.s.DataLength = len;
+        message.head.u1.s.TotalLength = len
             .checked_add(size_of::<PORT_MESSAGE>() as i16)
             .expect("message too large");
-        message.extend_from_slice(data);
+        message.extend_tail_from_slice(data);
 
         // SAFETY: calling API and getting the handle result according to the NT API
         let port = unsafe {
@@ -352,7 +352,7 @@ const RECV_ATTR_SIZE: usize = (size_of::<ALPC_CONTEXT_ATTR>()
 
 /// A buffer for receiving messages into.
 pub struct RecvMessageBuffer {
-    buf: HeaderVec<PortMessageHeader, [u8; 0]>,
+    buf: HeaderVec<PortMessageHeader, u8, 0>,
     attributes: Attributes<
         {
             ALPC_MESSAGE_CONTEXT_ATTRIBUTE
@@ -373,7 +373,7 @@ impl RecvMessageBuffer {
 
     fn internal_type(&self) -> u32 {
         // SAFETY: all PORT_MESSAGE union fields are initialized
-        unsafe { self.buf.0.u2.s.Type as u32 & 0xff }
+        unsafe { self.buf.head.0.u2.s.Type as u32 & 0xff }
     }
 }
 
@@ -402,21 +402,21 @@ impl RecvMessage<'_> {
     /// If true, this message needs a reply to release kernel resources.
     pub fn needs_reply(&self) -> bool {
         // SAFETY: all PORT_MESSAGE union fields are initialized
-        unsafe { self.message.buf.0.u2.s.Type as u32 & LPC_CONTINUATION_REQUIRED != 0 }
+        unsafe { self.message.buf.head.0.u2.s.Type as u32 & LPC_CONTINUATION_REQUIRED != 0 }
     }
 
     fn reply_key(&self) -> Option<MessageKey> {
         self.needs_reply().then_some(MessageKey {
-            message_id: self.message.buf.0.MessageId,
+            message_id: self.message.buf.head.0.MessageId,
             callback_id: {
                 // SAFETY: all PORT_MESSAGE union fields are initialized
-                unsafe { self.message.buf.0.u4.CallbackId }
+                unsafe { self.message.buf.head.0.u4.CallbackId }
             },
         })
     }
 
     pub fn data(&self) -> &[u8] {
-        self.message.buf.as_slice()
+        &self.message.buf.tail
     }
 
     pub fn context(&self) -> usize {
@@ -425,7 +425,7 @@ impl RecvMessage<'_> {
 
     pub fn pid(&self) -> u32 {
         // SAFETY: all PORT_MESSAGE union fields are initialized
-        unsafe { self.message.buf.0.u3.ClientId.UniqueProcess as usize as u32 }
+        unsafe { self.message.buf.head.0.u3.ClientId.UniqueProcess as usize as u32 }
     }
 
     pub fn handles(&self, port: &Port, handles: &mut Vec<OwnedHandle>) -> io::Result<()> {
@@ -494,7 +494,7 @@ impl Drop for RecvMessage<'_> {
 }
 
 pub struct SendMessage {
-    buf: HeaderVec<PortMessageHeader, [u8; 0]>,
+    buf: HeaderVec<PortMessageHeader, u8, 0>,
 }
 
 impl SendMessage {
@@ -511,12 +511,12 @@ impl SendMessage {
     }
 
     pub fn extend(&mut self, data: &[u8]) {
-        self.buf.extend_from_slice(data);
+        self.buf.extend_tail_from_slice(data);
     }
 
     /// Returns the current message length.
     pub fn len(&self) -> usize {
-        self.buf.len()
+        self.buf.tail.len()
     }
 
     /// Returns the remaining spare capacity of the message as a slice of
@@ -525,7 +525,7 @@ impl SendMessage {
     /// The returned slice can be used to fill the message with data before
     /// marking the data as initialized using [`Self::set_len].
     pub fn spare_capacity_mut(&mut self) -> &mut [MaybeUninit<u8>] {
-        self.buf.spare_capacity_mut()
+        self.buf.spare_tail_capacity_mut()
     }
 
     /// Updates the initialized byte length of the message.
@@ -536,7 +536,7 @@ impl SendMessage {
     pub unsafe fn set_len(&mut self, len: usize) {
         // SAFETY: guaranteed by caller.
         unsafe {
-            self.buf.set_len(len);
+            self.buf.set_tail_len(len);
         }
     }
 }
@@ -611,12 +611,13 @@ impl<'a> SendOperation<'a> {
         let len: i16 = self
             .message
             .buf
+            .tail
             .len()
             .try_into()
             .expect("message too large");
-        *self.message.buf = Default::default();
-        self.message.buf.0.u1.s.DataLength = len;
-        self.message.buf.0.u1.s.TotalLength = len
+        self.message.buf.head = Default::default();
+        self.message.buf.head.0.u1.s.DataLength = len;
+        self.message.buf.head.0.u1.s.TotalLength = len
             .checked_add(size_of::<PORT_MESSAGE>() as i16)
             .expect("message too large");
 
@@ -649,8 +650,8 @@ impl<'a> SendOperation<'a> {
         let mut unmap_old_view = false;
         if let Some(mut request) = request {
             let key = request.reply_key().unwrap();
-            self.message.buf.0.MessageId = key.message_id;
-            self.message.buf.0.u4.CallbackId = key.callback_id;
+            self.message.buf.head.0.MessageId = key.message_id;
+            self.message.buf.head.0.u4.CallbackId = key.callback_id;
             unmap_old_view = request.drop_view;
             request.drop_view = false;
         }
@@ -688,7 +689,7 @@ impl<'a> SendOperation<'a> {
                 } else {
                     0
                 },
-                &mut self.message.buf.0,
+                &mut self.message.buf.head.0,
                 attributes
                     .as_mut()
                     .map(Attributes::as_mut_ptr)
@@ -711,15 +712,20 @@ impl Port {
         port_context: usize,
         message: &mut SendMessage,
     ) -> io::Result<Option<Port>> {
-        let len: i16 = message.buf.len().try_into().expect("message too large");
-        *message.buf = Default::default();
-        message.buf.0.u1.s.DataLength = len;
-        message.buf.0.u1.s.TotalLength = len
+        let len: i16 = message
+            .buf
+            .tail
+            .len()
+            .try_into()
+            .expect("message too large");
+        message.buf.head = Default::default();
+        message.buf.head.0.u1.s.DataLength = len;
+        message.buf.head.0.u1.s.TotalLength = len
             .checked_add(size_of::<PORT_MESSAGE>() as i16)
             .expect("message too large");
         let key = request.reply_key().unwrap();
-        message.buf.0.MessageId = key.message_id;
-        message.buf.0.u4.CallbackId = key.callback_id;
+        message.buf.head.0.MessageId = key.message_id;
+        message.buf.head.0.u4.CallbackId = key.callback_id;
 
         let accept = config.is_some();
         let mut port_attr = config.map(|c| c.port_attributes());
@@ -737,7 +743,7 @@ impl Port {
                     .map(std::ptr::from_mut)
                     .unwrap_or(null_mut()),
                 port_context as *mut c_void,
-                &mut message.buf.0,
+                &mut message.buf.head.0,
                 null_mut(),
                 accept.into(),
             ))?;
@@ -783,8 +789,8 @@ impl Port {
         timeout: Option<Duration>,
     ) -> io::Result<Option<RecvMessage<'a>>> {
         let mut message_len = message.buf.total_byte_capacity();
-        *message.buf = Default::default();
-        message.buf.clear();
+        message.buf.head = Default::default();
+        message.buf.clear_tail();
         message.attributes.clear();
 
         let mut timeout_100ns = timeout
@@ -798,7 +804,7 @@ impl Port {
                 0,
                 null_mut(),
                 null_mut(),
-                &mut message.buf.0,
+                &mut message.buf.head.0,
                 &mut message_len,
                 message.attributes.as_mut_ptr(),
                 if timeout.is_some() {
@@ -819,9 +825,9 @@ impl Port {
                 // The buffer is the message ID. Don't return that.
                 0
             } else {
-                message.buf.0.u1.s.DataLength as usize
+                message.buf.head.0.u1.s.DataLength as usize
             };
-            message.buf.set_len(len);
+            message.buf.set_tail_len(len);
         }
 
         Ok(Some(RecvMessage {

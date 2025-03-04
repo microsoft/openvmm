@@ -745,7 +745,7 @@ impl VpSet {
             recv,
             _done: done_send,
             cancel_recv,
-            cancel_send: Arc::new(cancel_send),
+            cancel_send,
             inner: RunnerInner {
                 vp: vp.as_ref().vp_index,
                 inner: self.inner.clone(),
@@ -1015,14 +1015,14 @@ enum DebugEvent {
 #[must_use]
 pub struct VpRunner {
     recv: mesh::Receiver<VpEvent>,
-    cancel_send: Arc<mesh::Sender<()>>,
+    cancel_send: mesh::Sender<()>,
     cancel_recv: mesh::Receiver<()>,
     _done: mesh::OneshotSender<()>,
     inner: RunnerInner,
 }
 
 /// An object that can cancel a pending call into [`VpRunner::run`].
-pub struct RunnerCanceller(Arc<mesh::Sender<()>>);
+pub struct RunnerCanceller(mesh::Sender<()>);
 
 impl RunnerCanceller {
     /// Requests that the current or next call to [`VpRunner::run`] return as

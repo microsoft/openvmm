@@ -450,7 +450,7 @@ fn collect_paths(dir_path: &Path, manifest: &Manifest) -> Vec<PathBuf> {
             if dir_entry
                 .path()
                 .extension()
-                .map_or(true, |ext| ext.to_str() != Some("rs"))
+                .is_none_or(|ext| ext.to_str() != Some("rs"))
             {
                 return None;
             }

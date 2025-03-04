@@ -21,7 +21,7 @@ use hvdef::HypercallCode;
 use hvdef::HV_PARTITION_ID_SELF;
 use hvdef::HV_VP_INDEX_SELF;
 use sidecar_client::SidecarVp;
-use std::ptr::NonNull;
+use std::cell::UnsafeCell;
 use zerocopy::FromZeros;
 
 /// Result when the translate gva hypercall returns a code indicating
@@ -46,16 +46,16 @@ pub enum RegisterPageVtlError {
 }
 
 /// Runner backing for non-hardware-isolated X64 partitions.
-pub struct MshvX64 {
-    reg_page: Option<NonNull<HvX64RegisterPage>>,
-    cpu_context: NonNull<hcl_cpu_context_x64>,
+pub struct MshvX64<'a> {
+    reg_page: Option<&'a UnsafeCell<HvX64RegisterPage>>,
+    cpu_context: &'a UnsafeCell<hcl_cpu_context_x64>,
 }
 
-impl ProcessorRunner<'_, MshvX64> {
+impl ProcessorRunner<'_, MshvX64<'_>> {
     fn reg_page(&self) -> Option<&HvX64RegisterPage> {
         // SAFETY: the register page will not be concurrently accessed by the
         // hypervisor while this VP is in VTL2.
-        let reg_page = unsafe { &*self.state.reg_page?.as_ptr() };
+        let reg_page = unsafe { &*self.state.reg_page?.get() };
         if reg_page.is_valid != 0 {
             Some(reg_page)
         } else {
@@ -66,8 +66,7 @@ impl ProcessorRunner<'_, MshvX64> {
     fn reg_page_mut(&mut self) -> Option<&mut HvX64RegisterPage> {
         // SAFETY: the register page will not be concurrently accessed by the
         // hypervisor while this VP is in VTL2.
-
-        let reg_page = unsafe { &mut *self.state.reg_page?.as_ptr() };
+        let reg_page = unsafe { &mut *self.state.reg_page?.get() };
         if reg_page.is_valid != 0 {
             Some(reg_page)
         } else {
@@ -91,14 +90,14 @@ impl ProcessorRunner<'_, MshvX64> {
     pub fn cpu_context(&self) -> &hcl_cpu_context_x64 {
         // SAFETY: the cpu context will not be concurrently accessed by the
         // kernel while this VP is in user mode.
-        unsafe { self.state.cpu_context.as_ref() }
+        unsafe { &*self.state.cpu_context.get() }
     }
 
     /// Returns a mutable reference to the current VTL's CPU context.
     pub fn cpu_context_mut(&mut self) -> &mut hcl_cpu_context_x64 {
         // SAFETY: the cpu context will not be concurrently accessed by the
         // kernel while this VP is in user mode.
-        unsafe { self.state.cpu_context.as_mut() }
+        unsafe { &mut *self.state.cpu_context.get() }
     }
 
     /// Translate the following gva to a gpa page in the context of the current
@@ -169,32 +168,32 @@ impl ProcessorRunner<'_, MshvX64> {
     }
 }
 
-impl BackingPrivate for MshvX64 {
-    fn new(vp: &HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
+impl<'a> BackingPrivate<'a> for MshvX64<'a> {
+    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>) -> Result<Self, NoRunner> {
         let BackingState::Mshv { reg_page } = &vp.backing else {
             return Err(NoRunner::MismatchedIsolation);
         };
-        let this = if let Some(sidecar) = sidecar {
-            // Sidecar always provides a register page, but it may not actually
-            // be mapped with the hypervisor. Use the sidecar's register page
-            // only if the mshv_vtl driver thinks there should be one.
-            Self {
-                reg_page: reg_page
-                    .is_some()
-                    .then(|| NonNull::new(sidecar.register_page()).unwrap()),
-                cpu_context: NonNull::new(sidecar.cpu_context().cast()).unwrap(),
-            }
-        } else {
-            Self {
-                reg_page: reg_page.as_ref().map(|p| p.0),
-                cpu_context: NonNull::new(
-                    // SAFETY: The run page is guaranteed to be mapped and valid.
-                    unsafe { std::ptr::addr_of_mut!((*vp.run.0.as_ptr()).context) }.cast(),
-                )
-                .unwrap(),
-            }
-        };
-        Ok(this)
+
+        // SAFETY: The run page and register page, whether provided locally
+        // or by sidecar, are guaranteed to be mapped and valid.
+        unsafe {
+            let this = if let Some(sidecar) = sidecar {
+                // Sidecar always provides a register page, but it may not actually
+                // be mapped with the hypervisor. Use the sidecar's register page
+                // only if the mshv_vtl driver thinks there should be one.
+                Self {
+                    reg_page: reg_page.is_some().then(|| &*sidecar.register_page().cast()),
+                    cpu_context: &*sidecar.cpu_context().cast(),
+                }
+            } else {
+                Self {
+                    reg_page: reg_page.as_ref().map(|x| x.as_ref()),
+                    cpu_context: &*(&raw mut (*vp.run.as_ptr()).context).cast(),
+                }
+            };
+
+            Ok(this)
+        }
     }
 
     fn try_set_reg(

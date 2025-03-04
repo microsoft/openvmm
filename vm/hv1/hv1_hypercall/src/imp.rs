@@ -11,6 +11,7 @@ use super::support::VariableHypercall;
 use super::support::VtlHypercall;
 use crate::support::HvRepResult;
 use crate::support::VariableRepHypercall;
+use hv1_structs::ProcessorSet;
 use hvdef::hypercall as defs;
 use hvdef::hypercall::AcceptPagesAttributes;
 use hvdef::hypercall::HostVisibilityType;
@@ -143,7 +144,7 @@ pub trait RetargetDeviceInterrupt {
         device_id: u64,
         address: u64,
         data: u32,
-        params: &HvInterruptParameters<'_>,
+        params: HvInterruptParameters<'_>,
     ) -> HvResult<()>;
 }
 
@@ -154,7 +155,7 @@ pub struct HvInterruptParameters<'a> {
     /// Whether this is a multicast interrupt.
     pub multicast: bool,
     /// A target processor list.
-    pub target_processors: &'a [u32],
+    pub target_processors: ProcessorSet<'a>,
 }
 
 /// Defines the `HvRetargetDeviceInterrupt` hypercall.
@@ -164,31 +165,6 @@ pub type HvRetargetDeviceInterrupt = VariableHypercall<
     { HypercallCode::HvCallRetargetDeviceInterrupt.0 },
 >;
 
-fn parse_processor_masks(mut valid_masks: u64, masks: &[u64]) -> Option<Vec<u32>> {
-    let mut procs = Vec::new();
-    while valid_masks != 0 {
-        let bank = valid_masks.trailing_zeros();
-        valid_masks &= !(1 << bank);
-        let mut mask = *masks.get(bank as usize)?;
-        while mask != 0 {
-            let index = mask.trailing_zeros();
-            mask &= !(1 << index);
-            procs.push(bank * 64 + index);
-        }
-    }
-    Some(procs)
-}
-
-fn parse_generic_set(format: u64, rest: &[u64]) -> Option<Vec<u32>> {
-    if format != defs::HV_GENERIC_SET_SPARSE_4K {
-        return None;
-    }
-    let &[valid_masks, ref masks @ ..] = rest else {
-        return None;
-    };
-    parse_processor_masks(valid_masks, masks)
-}
-
 impl<T: RetargetDeviceInterrupt> HypercallDispatch<HvRetargetDeviceInterrupt> for T {
     fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         HvRetargetDeviceInterrupt::run(params, |input, var_input| {
@@ -196,13 +172,13 @@ impl<T: RetargetDeviceInterrupt> HypercallDispatch<HvRetargetDeviceInterrupt> fo
                 return Err(HvError::InvalidParameter);
             }
 
-            let processors = if input.target_header.flags.processor_set() {
-                parse_generic_set(input.target_header.mask_or_format, var_input)
+            let masks = &[input.target_header.mask_or_format];
+            let target_processors = if input.target_header.flags.processor_set() {
+                ProcessorSet::from_generic_set(input.target_header.mask_or_format, var_input)
             } else {
-                parse_processor_masks(1, &[input.target_header.mask_or_format])
-            };
-
-            let processors = processors.ok_or(HvError::InvalidParameter)?;
+                ProcessorSet::from_processor_masks(1, masks)
+            }
+            .ok_or(HvError::InvalidParameter)?;
 
             if input.entry.source != defs::HvInterruptSource::MSI {
                 return Err(HvError::InvalidParameter);
@@ -212,10 +188,10 @@ impl<T: RetargetDeviceInterrupt> HypercallDispatch<HvRetargetDeviceInterrupt> fo
                 input.device_id,
                 input.entry.data[0] as u64,
                 input.entry.data[1],
-                &HvInterruptParameters {
+                HvInterruptParameters {
                     vector: input.target_header.vector,
                     multicast: input.target_header.flags.multicast(),
-                    target_processors: &processors,
+                    target_processors,
                 },
             )
         })
@@ -794,7 +770,7 @@ pub trait FlushVirtualAddressList {
     /// Invalidates portions of the virtual TLB.
     fn flush_virtual_address_list(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: defs::HvFlushFlags,
         gva_ranges: &[defs::HvGvaRange],
     ) -> HvRepResult;
@@ -811,7 +787,8 @@ pub type HvFlushVirtualAddressList = RepHypercall<
 impl<T: FlushVirtualAddressList> HypercallDispatch<HvFlushVirtualAddressList> for T {
     fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         HvFlushVirtualAddressList::run(params, |header, input, _output| {
-            let processors = parse_processor_masks(1, &[header.processor_mask])
+            let masks = &[header.processor_mask];
+            let processors = ProcessorSet::from_processor_masks(1, masks)
                 .ok_or((HvError::InvalidParameter, 0))?;
             self.flush_virtual_address_list(processors, header.flags, input)
         })
@@ -823,7 +800,7 @@ pub trait FlushVirtualAddressListEx {
     /// Invalidates portions of the virtual TLB.
     fn flush_virtual_address_list_ex(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: defs::HvFlushFlags,
         gva_ranges: &[defs::HvGvaRange],
     ) -> HvRepResult;
@@ -840,8 +817,9 @@ pub type HvFlushVirtualAddressListEx = VariableRepHypercall<
 impl<T: FlushVirtualAddressListEx> HypercallDispatch<HvFlushVirtualAddressListEx> for T {
     fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         HvFlushVirtualAddressListEx::run(params, |header, variable_input, input, _output| {
-            let processors = parse_generic_set(variable_input[0], &variable_input[1..])
-                .ok_or((HvError::InvalidParameter, 0))?;
+            let processors =
+                ProcessorSet::from_generic_set(variable_input[0], &variable_input[1..])
+                    .ok_or((HvError::InvalidParameter, 0))?;
             self.flush_virtual_address_list_ex(processors, header.flags, input)
         })
     }
@@ -852,7 +830,7 @@ pub trait FlushVirtualAddressSpace {
     /// Invalidates all virtual TLB entries.
     fn flush_virtual_address_space(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: defs::HvFlushFlags,
     ) -> HvResult<()>;
 }
@@ -867,8 +845,9 @@ pub type HvFlushVirtualAddressSpace = SimpleHypercall<
 impl<T: FlushVirtualAddressSpace> HypercallDispatch<HvFlushVirtualAddressSpace> for T {
     fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         HvFlushVirtualAddressSpace::run(params, |input| {
-            let processors = parse_processor_masks(1, &[input.processor_mask])
-                .ok_or(HvError::InvalidParameter)?;
+            let masks = &[input.processor_mask];
+            let processors =
+                ProcessorSet::from_processor_masks(1, masks).ok_or(HvError::InvalidParameter)?;
             self.flush_virtual_address_space(processors, input.flags)
         })
     }
@@ -879,7 +858,7 @@ pub trait FlushVirtualAddressSpaceEx {
     /// Invalidates all virtual TLB entries.
     fn flush_virtual_address_space_ex(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: defs::HvFlushFlags,
     ) -> HvResult<()>;
 }
@@ -894,8 +873,8 @@ pub type HvFlushVirtualAddressSpaceEx = VariableHypercall<
 impl<T: FlushVirtualAddressSpaceEx> HypercallDispatch<HvFlushVirtualAddressSpaceEx> for T {
     fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         HvFlushVirtualAddressSpaceEx::run(params, |header, input| {
-            let processors =
-                parse_generic_set(input[0], &input[1..]).ok_or(HvError::InvalidParameter)?;
+            let processors = ProcessorSet::from_generic_set(input[0], &input[1..])
+                .ok_or(HvError::InvalidParameter)?;
             self.flush_virtual_address_space_ex(processors, header.flags)
         })
     }

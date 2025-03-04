@@ -435,7 +435,7 @@ struct RangeWalkIter<I: Iterator, J: Iterator> {
 
 struct PeekableSorted<I: Iterator> {
     iter: I,
-    #[allow(clippy::option_option)] // `Some(None)` is used to remember that `iter` is empty.
+    #[expect(clippy::option_option)] // `Some(None)` is used to remember that `iter` is empty.
     item: Option<Option<I::Item>>,
 }
 

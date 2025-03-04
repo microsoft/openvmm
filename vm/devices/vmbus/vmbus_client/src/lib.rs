@@ -7,6 +7,7 @@ mod hvsock;
 mod saved_state;
 
 pub use self::saved_state::SavedState;
+use anyhow::Context as _;
 use anyhow::Result;
 use futures::future::OptionFuture;
 use futures::stream::SelectAll;
@@ -14,14 +15,22 @@ use futures::FutureExt;
 use futures::StreamExt;
 use guid::Guid;
 use inspect::Inspect;
+use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pal_event::Event;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::convert::TryInto;
+use std::future::poll_fn;
 use std::future::Future;
+use std::pin::pin;
 use std::sync::Arc;
+use std::task::ready;
+use std::task::Context;
+use std::task::Poll;
 use thiserror::Error;
 use vmbus_async::async_dgram::AsyncRecv;
 use vmbus_async::async_dgram::AsyncRecvExt;
@@ -41,6 +50,7 @@ use vmbus_core::MonitorPageGpas;
 use vmbus_core::OutgoingMessage;
 use vmbus_core::TaggedStream;
 use vmbus_core::VersionInfo;
+use vmcore::interrupt::Interrupt;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
@@ -48,15 +58,20 @@ use zerocopy::KnownLayout;
 const SINT: u8 = 2;
 const VTL: u8 = 0;
 const SUPPORTED_VERSIONS: &[Version] = &[Version::Iron, Version::Copper];
-const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::all();
+const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
+    .with_guest_specified_signal_parameters(true)
+    .with_channel_interrupt_redirection(true)
+    .with_modify_connection(true)
+    .with_client_id(true);
 
-/// The client interface to the synic.
-pub trait SynicClient: Send + Sync {
-    fn post_message(&self, connection_id: u32, typ: u32, msg: &[u8]);
+/// The client interface synic events.
+pub trait SynicEventClient: Send + Sync {
     /// Maps an incoming event signal on SINT7 to `event`.
-    fn map_event(&self, event_flag: u16, event: &pal_event::Event) -> std::io::Result<()>;
+    fn map_event(&self, event_flag: u16, event: &Event) -> std::io::Result<()>;
+
     /// Unmaps an event previously mapped with `map_event`.
     fn unmap_event(&self, event_flag: u16);
+
     /// Signals an event on the synic.
     fn signal_event(&self, connection_id: u32, event_flag: u16) -> std::io::Result<()>;
 }
@@ -69,6 +84,16 @@ pub trait VmbusMessageSource: AsyncRecv + Send {
 
     /// Resume accepting new messages from the synic.
     fn resume_message_stream(&mut self) {}
+}
+
+pub trait PollPostMessage: Send {
+    fn poll_post_message(
+        &mut self,
+        cx: &mut Context<'_>,
+        connection_id: u32,
+        typ: u32,
+        msg: &[u8],
+    ) -> Poll<()>;
 }
 
 pub struct VmbusClient {
@@ -89,26 +114,48 @@ pub enum ConnectError {
 
 #[derive(Clone)]
 pub struct VmbusClientAccess {
-    client_request_send: Arc<mesh::Sender<ClientRequest>>,
+    client_request_send: mesh::Sender<ClientRequest>,
 }
 
-impl VmbusClient {
-    /// Creates a new instance with a receiver for incoming synic messages.
+/// A builder for creating a [`VmbusClient`].
+pub struct VmbusClientBuilder {
+    event_client: Arc<dyn SynicEventClient>,
+    msg_source: Box<dyn VmbusMessageSource>,
+    msg_client: Box<dyn PollPostMessage>,
+}
+
+impl VmbusClientBuilder {
+    /// Creates a new instance of the builder with the given synic input.
     pub fn new(
-        synic: Arc<dyn SynicClient>,
-        offer_send: mesh::Sender<OfferInfo>,
+        event_client: impl SynicEventClient + 'static,
         msg_source: impl VmbusMessageSource + 'static,
-        spawner: &impl Spawn,
+        msg_client: impl PollPostMessage + 'static,
     ) -> Self {
+        Self {
+            event_client: Arc::new(event_client),
+            msg_source: Box::new(msg_source),
+            msg_client: Box::new(msg_client),
+        }
+    }
+
+    /// Creates a new instance with a receiver for incoming synic messages.
+    pub fn build(self, spawner: &impl Spawn, offer_send: mesh::Sender<OfferInfo>) -> VmbusClient {
         let (task_send, task_recv) = mesh::channel();
         let (client_request_send, client_request_recv) = mesh::channel();
 
         let inner = ClientTaskInner {
-            synic,
+            messages: OutgoingMessages {
+                poster: self.msg_client,
+                queued: VecDeque::new(),
+            },
             channels: HashMap::new(),
             gpadls: HashMap::new(),
             teardown_gpadls: HashMap::new(),
             channel_requests: SelectAll::new(),
+            synic: SynicState {
+                event_flag_state: Vec::new(),
+                event_client: self.event_client,
+            },
         };
 
         let mut task = ClientTask {
@@ -116,7 +163,7 @@ impl VmbusClient {
             task_recv,
             running: false,
             offer_send,
-            msg_source,
+            msg_source: self.msg_source,
             client_request_recv,
             state: ClientState::Disconnected,
             modify_request: None,
@@ -125,15 +172,17 @@ impl VmbusClient {
 
         let thread = spawner.spawn("vmbus client", async move { task.run().await });
 
-        Self {
+        VmbusClient {
             access: VmbusClientAccess {
-                client_request_send: Arc::new(client_request_send),
+                client_request_send,
             },
             task_send,
             _thread: thread,
         }
     }
+}
 
+impl VmbusClient {
     /// Send the InitiateContact message to the server.
     pub async fn connect(
         &mut self,
@@ -204,6 +253,13 @@ impl VmbusClient {
             .await
             .expect("Failed to send restore request")
     }
+
+    pub async fn post_restore(&mut self) {
+        self.task_send
+            .call(TaskRequest::PostRestore, ())
+            .await
+            .expect("Failed to send post-restore request");
+    }
 }
 
 impl Inspect for VmbusClient {
@@ -233,16 +289,34 @@ impl VmbusClientAccess {
 #[derive(Debug)]
 pub struct OpenRequest {
     pub open_data: OpenData,
-    pub flags: OpenChannelFlags,
+    pub incoming_event: Option<Event>,
+    pub use_vtl2_connection_id: bool,
+}
+
+#[derive(Debug)]
+pub struct RestoreRequest {
+    pub incoming_event: Option<Event>,
+    // FUTURE: move to saved state, don't rely on the caller.
+    pub redirected_event_flag: Option<u16>,
+    // FUTURE: ditto
+    pub connection_id: u32,
 }
 
 /// Expresses an operation requested of the client.
 pub enum ChannelRequest {
-    Open(Rpc<OpenRequest, bool>),
+    Open(FailableRpc<OpenRequest, OpenOutput>),
+    Restore(FailableRpc<RestoreRequest, OpenOutput>),
     Close,
-    Gpadl(Rpc<GpadlRequest, bool>),
+    Gpadl(FailableRpc<GpadlRequest, ()>),
     TeardownGpadl(GpadlId),
     Modify(Rpc<ModifyRequest, i32>),
+}
+
+#[derive(Debug)]
+pub struct OpenOutput {
+    // FUTURE: remove this once it's part of the saved state.
+    pub redirected_event_flag: Option<u16>,
+    pub guest_to_host_signal: Interrupt,
 }
 
 impl std::fmt::Display for ChannelRequest {
@@ -250,6 +324,7 @@ impl std::fmt::Display for ChannelRequest {
         match self {
             ChannelRequest::Open(_) => write!(fmt, "Open"),
             ChannelRequest::Close => write!(fmt, "Close"),
+            ChannelRequest::Restore(_) => write!(fmt, "Restore"),
             ChannelRequest::Gpadl(_) => write!(fmt, "Gpadl"),
             ChannelRequest::TeardownGpadl(_) => write!(fmt, "TeardownGpadl"),
             ChannelRequest::Modify(_) => write!(fmt, "Modify"),
@@ -276,6 +351,9 @@ pub enum RestoreError {
 
     #[error("duplicate gpadl id {0}")]
     DuplicateGpadlId(u32),
+
+    #[error("invalid pending message")]
+    InvalidPendingMessage(#[source] vmbus_core::MessageTooLarge),
 }
 
 /// Provides the offer details from the server in addition to both a channel
@@ -314,6 +392,7 @@ enum TaskRequest {
     Inspect(inspect::Deferred),
     Save(Rpc<(), SavedState>),
     Restore(Rpc<SavedState, Result<(Option<VersionInfo>, Vec<RestoredChannel>), RestoreError>>),
+    PostRestore(Rpc<(), ()>),
     Start,
     Stop(Rpc<(), ()>),
 }
@@ -330,29 +409,40 @@ pub struct RestoredChannel {
 /// The overall state machine used to drive which actions the client can legally
 /// take. This primarily pertains to overall client activity but has a
 /// side-effect of limiting whether or not channels can perform actions.
+#[derive(Inspect)]
+#[inspect(external_tag)]
 enum ClientState {
     /// The client has yet to connect to the server.
     Disconnected,
     /// The client has initiated contact with the server.
-    Connecting(
-        Version,
-        Rpc<InitiateContactRequest, Result<VersionInfo, ConnectError>>,
-    ),
+    Connecting {
+        version: Version,
+        #[inspect(skip)]
+        rpc: Rpc<InitiateContactRequest, Result<VersionInfo, ConnectError>>,
+    },
     /// The client has negotiated the protocol version with the server.
-    Connected(VersionInfo),
+    Connected { version: VersionInfo },
     /// The client has requested offers from the server.
-    RequestingOffers(VersionInfo, mesh::Sender<OfferInfo>),
+    RequestingOffers {
+        version: VersionInfo,
+        #[inspect(skip)]
+        sender: mesh::Sender<OfferInfo>,
+    },
     /// The client has initiated an unload from the server.
-    Disconnecting(VersionInfo, Rpc<(), ()>),
+    Disconnecting {
+        version: VersionInfo,
+        #[inspect(skip)]
+        rpc: Rpc<(), ()>,
+    },
 }
 
 impl ClientState {
     fn get_version(&self) -> Option<VersionInfo> {
         match self {
-            ClientState::Connected(version) => Some(*version),
-            ClientState::RequestingOffers(version, _) => Some(*version),
-            ClientState::Disconnecting(version, _) => Some(*version),
-            ClientState::Disconnected | ClientState::Connecting(..) => None,
+            ClientState::Connected { version } => Some(*version),
+            ClientState::RequestingOffers { version, sender: _ } => Some(*version),
+            ClientState::Disconnecting { version, rpc: _ } => Some(*version),
+            ClientState::Disconnected | ClientState::Connecting { .. } => None,
         }
     }
 }
@@ -361,10 +451,10 @@ impl std::fmt::Display for ClientState {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ClientState::Disconnected => write!(fmt, "Disconnected"),
-            ClientState::Connecting(..) => write!(fmt, "Connecting"),
-            ClientState::Connected(_) => write!(fmt, "Connected"),
-            ClientState::RequestingOffers(..) => write!(fmt, "RequestingOffers"),
-            ClientState::Disconnecting(..) => write!(fmt, "Disconnecting"),
+            ClientState::Connecting { .. } => write!(fmt, "Connecting"),
+            ClientState::Connected { .. } => write!(fmt, "Connected"),
+            ClientState::RequestingOffers { .. } => write!(fmt, "RequestingOffers"),
+            ClientState::Disconnecting { .. } => write!(fmt, "Disconnecting"),
         }
     }
 }
@@ -395,30 +485,49 @@ impl From<ModifyConnectionRequest> for protocol::ModifyConnection {
 /// The per-channel state which dictates which whether or not a channel can
 /// request an Open/Close. As GPADLs can happen outside this loop there is no
 /// state tied to GPADL actions.
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
+#[inspect(external_tag)]
 enum ChannelState {
     /// The channel has been offered to the client.
     Offered,
     /// The channel has requested the server to be opened.
-    Opening(Rpc<(), bool>),
+    Opening {
+        connection_id: u32,
+        redirected_event_flag: Option<u16>,
+        #[inspect(skip)]
+        redirected_event: Option<Event>,
+        #[inspect(skip)]
+        rpc: FailableRpc<(), OpenOutput>,
+    },
+    /// The channel has been restored but not claimed.
+    Restored,
     /// The channel has been successfully opened.
-    Opened,
+    Opened {
+        connection_id: u32,
+        redirected_event_flag: Option<u16>,
+        #[inspect(skip)]
+        redirected_event: Option<Event>,
+    },
 }
 
 impl std::fmt::Display for ChannelState {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ChannelState::Opening(..) => write!(fmt, "Opening"),
+            ChannelState::Opening { .. } => write!(fmt, "Opening"),
             ChannelState::Offered => write!(fmt, "Offered"),
-            ChannelState::Opened => write!(fmt, "Opened"),
+            ChannelState::Opened { .. } => write!(fmt, "Opened"),
+            ChannelState::Restored => write!(fmt, "Restored"),
         }
     }
 }
 
+#[derive(Inspect)]
 struct Channel {
     offer: protocol::OfferChannel,
+    #[inspect(skip)]
     response_send: mesh::Sender<ChannelResponse>,
     state: ChannelState,
+    #[inspect(with = "|x| x.is_some()")]
     modify_response_send: Option<Rpc<(), i32>>,
 }
 
@@ -431,72 +540,26 @@ impl std::fmt::Debug for Channel {
     }
 }
 
-impl Channel {
-    /// Convert the `interface_id` of this channel to a human readable string.
-    fn interface_id_to_string(&self) -> &str {
-        // TODO: There doesn't exist a single crate that has all these interface
-        // IDs. Today they're defined in each individual crate, but we don't
-        // want to include all those crates as dependencies here.
-        //
-        // In the future, it might make sense to have a common protocol crate
-        // that has all of these defined, but for now just redefine the most
-        // common ones here. Add more as needed.
-
-        const SHUTDOWN_IC: Guid = Guid::from_static_str("0e0b6031-5213-4934-818b-38d90ced39db");
-        const KVP_IC: Guid = Guid::from_static_str("a9a0f4e7-5a45-4d96-b827-8a841e8c03e6");
-        const VSS_IC: Guid = Guid::from_static_str("35fa2e29-ea23-4236-96ae-3a6ebacba440");
-        const TIMESYNC_IC: Guid = Guid::from_static_str("9527e630-d0ae-497b-adce-e80ab0175caf");
-        const HEARTBEAT_IC: Guid = Guid::from_static_str("57164f39-9115-4e78-ab55-382f3bd5422d");
-        const RDV_IC: Guid = Guid::from_static_str("276aacf4-ac15-426c-98dd-7521ad3f01fe");
-
-        const INHERITED_ACTIVATION: Guid =
-            Guid::from_static_str("3375baf4-9e15-4b30-b765-67acb10d607b");
-
-        const NET: Guid = Guid::from_static_str("f8615163-df3e-46c5-913f-f2d2f965ed0e");
-        const SCSI: Guid = Guid::from_static_str("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f");
-        const VPCI: Guid = Guid::from_static_str("44c4f61d-4444-4400-9d52-802e27ede19f");
-
-        match self.offer.interface_id {
-            SHUTDOWN_IC => "shutdown_ic",
-            KVP_IC => "kvp_ic",
-            VSS_IC => "vss_ic",
-            TIMESYNC_IC => "timesync_ic",
-            HEARTBEAT_IC => "heartbeat_ic",
-            RDV_IC => "rdv_ic",
-            INHERITED_ACTIVATION => "inherited_activation",
-            NET => "net",
-            SCSI => "scsi",
-            VPCI => "vpci",
-            _ => "unknown",
-        }
-    }
-
-    fn inspect(&self, resp: &mut inspect::Response<'_>) {
-        resp.display("state", &self.state)
-            .field_with("interface_name", || self.interface_id_to_string())
-            .display("instance_id", &self.offer.instance_id)
-            .display("interface_id", &self.offer.interface_id)
-            .field("mmio_megabytes", self.offer.mmio_megabytes)
-            .field("monitor_allocated", self.offer.monitor_allocated != 0)
-            .field("monitor_id", self.offer.monitor_id)
-            .field("connection_id", self.offer.connection_id)
-            .field("is_dedicated", self.offer.is_dedicated != 0);
-    }
-}
-
-struct ClientTask<T: VmbusMessageSource> {
+#[derive(Inspect)]
+struct ClientTask {
+    #[inspect(flatten)]
     inner: ClientTaskInner,
     state: ClientState,
     hvsock_tracker: hvsock::HvsockRequestTracker,
     running: bool,
+    #[inspect(with = "|x| x.is_some()")]
     modify_request: Option<Rpc<ModifyConnectionRequest, ConnectionState>>,
-    msg_source: T,
+    #[inspect(skip)]
+    msg_source: Box<dyn VmbusMessageSource>,
+    #[inspect(skip)]
     offer_send: mesh::Sender<OfferInfo>,
+    #[inspect(skip)]
     task_recv: mesh::Receiver<TaskRequest>,
+    #[inspect(skip)]
     client_request_recv: mesh::Receiver<ClientRequest>,
 }
 
-impl<T: VmbusMessageSource> ClientTask<T> {
+impl ClientTask {
     fn handle_initiate_contact(
         &mut self,
         rpc: Rpc<InitiateContactRequest, Result<VersionInfo, ConnectError>>,
@@ -528,11 +591,11 @@ impl<T: VmbusMessageSource> ClientTask<T> {
                 client_id: request.client_id,
             };
 
-            self.state = ClientState::Connecting(version, rpc);
+            self.state = ClientState::Connecting { version, rpc };
             if version < Version::Copper {
-                self.inner.send(&msg.initiate_contact)
+                self.inner.messages.send(&msg.initiate_contact)
             } else {
-                self.inner.send(&msg);
+                self.inner.messages.send(&msg);
             }
         } else {
             tracing::warn!(client_state = %self.state, "invalid client state for InitiateContact");
@@ -541,9 +604,12 @@ impl<T: VmbusMessageSource> ClientTask<T> {
     }
 
     fn handle_request_offers(&mut self, send: mesh::Sender<OfferInfo>) {
-        if let ClientState::Connected(version) = self.state {
-            self.state = ClientState::RequestingOffers(version, send);
-            self.inner.send(&protocol::RequestOffers {});
+        if let ClientState::Connected { version } = self.state {
+            self.state = ClientState::RequestingOffers {
+                version,
+                sender: send,
+            };
+            self.inner.messages.send(&protocol::RequestOffers {});
         } else {
             tracing::warn!(client_state = %self.state, "invalid client state for RequestOffers");
         }
@@ -551,16 +617,17 @@ impl<T: VmbusMessageSource> ClientTask<T> {
 
     fn handle_unload(&mut self, rpc: Rpc<(), ()>) {
         tracing::debug!(%self.state, "VmBus client disconnecting");
-        self.state = ClientState::Disconnecting(
-            self.state.get_version().expect("invalid state for unload"),
+        self.state = ClientState::Disconnecting {
+            version: self.state.get_version().expect("invalid state for unload"),
             rpc,
-        );
+        };
 
-        self.inner.send(&protocol::Unload {});
+        self.inner.messages.send(&protocol::Unload {});
     }
 
     fn handle_modify(&mut self, request: Rpc<ModifyConnectionRequest, ConnectionState>) {
-        if !matches!(self.state, ClientState::Connected(version) if version.feature_flags.modify_connection())
+        if !matches!(self.state, ClientState::Connected { version }
+            if version.feature_flags.modify_connection())
         {
             tracing::warn!("ModifyConnection not supported");
             request.complete(ConnectionState::FAILED_UNKNOWN_FAILURE);
@@ -575,7 +642,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
 
         let message = protocol::ModifyConnection::from(*request.input());
         self.modify_request = Some(request);
-        self.inner.send(&message);
+        self.inner.messages.send(&message);
     }
 
     fn handle_tl_connect(&mut self, rpc: Rpc<HvsockConnectRequest, Option<OfferInfo>>) {
@@ -584,7 +651,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
         // message is not guaranteed.
         let message = protocol::TlConnectRequest2::from(*rpc.input());
         self.hvsock_tracker.add_request(rpc);
-        self.inner.send(&message);
+        self.inner.messages.send(&message);
     }
 
     fn handle_client_request(&mut self, request: ClientRequest) {
@@ -605,7 +672,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
 
     fn handle_version_response(&mut self, msg: protocol::VersionResponse2) {
         let old_state = std::mem::replace(&mut self.state, ClientState::Disconnected);
-        if let ClientState::Connecting(version, rpc) = old_state {
+        if let ClientState::Connecting { version, rpc } = old_state {
             if msg.version_response.version_supported > 0 {
                 if msg.version_response.connection_state != ConnectionState::SUCCESSFUL {
                     rpc.complete(Err(ConnectError::FailedToConnect(
@@ -625,7 +692,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
                     feature_flags,
                 };
 
-                self.state = ClientState::Connected(version);
+                self.state = ClientState::Connected { version };
                 tracing::info!(?version, "VmBus client connected");
                 rpc.complete(Ok(version));
             } else {
@@ -648,7 +715,10 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             }
         } else {
             self.state = old_state;
-            tracing::warn!(client_state = %self.state, "invalid client state to handle VersionResponse");
+            tracing::warn!(
+                client_state = %self.state,
+                "invalid client state to handle VersionResponse"
+            );
         }
     }
 
@@ -703,7 +773,11 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             if let Some(offer) = self.hvsock_tracker.check_offer(&offer_info.offer) {
                 offer.complete(Some(offer_info));
             } else {
-                if let ClientState::RequestingOffers(_, send) = &self.state {
+                if let ClientState::RequestingOffers {
+                    version: _,
+                    sender: send,
+                } = &self.state
+                {
                     send.send(offer_info);
                 } else {
                     self.offer_send.send(offer_info);
@@ -715,7 +789,29 @@ impl<T: VmbusMessageSource> ClientTask<T> {
     fn handle_rescind(&mut self, rescind: protocol::RescindChannelOffer) {
         tracing::info!(state = %self.state, channel_id = rescind.channel_id.0, "received rescind");
 
-        let channel = &self.inner.channels[&rescind.channel_id];
+        let channel = &mut self.inner.channels.get_mut(&rescind.channel_id).unwrap();
+
+        let event_flag = match std::mem::replace(&mut channel.state, ChannelState::Offered) {
+            ChannelState::Offered => None,
+            ChannelState::Opening {
+                connection_id: _,
+                redirected_event_flag,
+                redirected_event: _,
+                rpc,
+            } => {
+                rpc.fail(anyhow::anyhow!("channel revoked"));
+                redirected_event_flag
+            }
+            ChannelState::Restored => None,
+            ChannelState::Opened {
+                connection_id: _,
+                redirected_event_flag,
+                redirected_event: _,
+            } => redirected_event_flag,
+        };
+        if let Some(event_flag) = event_flag {
+            self.inner.synic.free_event_flag(event_flag);
+        }
 
         // Teardown all remaining gpadls for this channel. We don't care about GpadlTorndown
         // responses at this point.
@@ -734,8 +830,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
                 } else {
                     // TODO: is this really necessary? The host should have
                     // already unmapped all GPADLs. Remove if possible.
-                    send_message(
-                        self.inner.synic.as_ref(),
+                    self.inner.messages.send_with_data(
                         &protocol::GpadlTeardown {
                             channel_id,
                             gpadl_id,
@@ -760,17 +855,24 @@ impl<T: VmbusMessageSource> ClientTask<T> {
         self.inner.channels.remove(&rescind.channel_id);
 
         // Tell the host we're not referencing the client ID anymore.
-        self.inner.send(&protocol::RelIdReleased {
+        self.inner.messages.send(&protocol::RelIdReleased {
             channel_id: rescind.channel_id,
         });
     }
 
     fn handle_offers_delivered(&mut self) {
-        if let ClientState::RequestingOffers(version, _send) = &self.state {
+        if let ClientState::RequestingOffers {
+            version,
+            sender: _send,
+        } = &self.state
+        {
             // This will drop the sender and cause the client to know the offers are done.
-            self.state = ClientState::Connected(*version);
+            self.state = ClientState::Connected { version: *version };
         } else {
-            tracing::warn!(client_state = %self.state, "invalid client state to handle AllOffersDelivered");
+            tracing::warn!(
+                client_state = %self.state,
+                "invalid client state to handle AllOffersDelivered"
+            );
         }
     }
 
@@ -788,32 +890,36 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             return;
         };
 
-        if !matches!(gpadl_state, GpadlState::Offered(..)) {
-            tracing::warn!(
-                gpadl_id = request.gpadl_id.0,
-                channel_id = request.channel_id.0,
-                ?gpadl_state,
-                "Invalid state for GpadlCreated"
-            );
+        let rpc = match std::mem::replace(gpadl_state, GpadlState::Created) {
+            GpadlState::Offered(rpc) => rpc,
+            old_state => {
+                *gpadl_state = old_state;
+                tracing::warn!(
+                    gpadl_id = request.gpadl_id.0,
+                    channel_id = request.channel_id.0,
+                    ?gpadl_state,
+                    "Invalid state for GpadlCreated"
+                );
 
-            return;
+                return;
+            }
         };
 
         let gpadl_created = request.status == protocol::STATUS_SUCCESS;
-        let old_state = if gpadl_created {
-            std::mem::replace(gpadl_state, GpadlState::Created)
-        } else {
+        if !gpadl_created {
             self.inner
                 .gpadls
                 .remove(&(request.channel_id, request.gpadl_id))
-                .unwrap()
+                .unwrap();
+
+            rpc.fail(anyhow::anyhow!(
+                "gpadl creation failed: {:#x}",
+                request.status
+            ));
+            return;
         };
 
-        let GpadlState::Offered(sender) = old_state else {
-            unreachable!("validated above");
-        };
-
-        sender.complete(gpadl_created)
+        rpc.complete(Ok(()));
     }
 
     fn handle_open_result(&mut self, result: protocol::OpenResult) {
@@ -830,20 +936,41 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             .expect("channel should exist");
 
         let channel_opened = result.status == protocol::STATUS_SUCCESS as u32;
-        let new_state = if channel_opened {
-            ChannelState::Opened
-        } else {
-            ChannelState::Offered
-        };
-
-        // Even if the old state is wrong, we still update to the state the host thinks we're in.
-        let old_state = std::mem::replace(&mut channel.state, new_state);
-        let ChannelState::Opening(rpc) = old_state else {
-            tracing::warn!(?old_state, channel_opened, "invalid state for open result");
+        let old_state = std::mem::replace(&mut channel.state, ChannelState::Offered);
+        let ChannelState::Opening {
+            connection_id,
+            redirected_event_flag,
+            redirected_event,
+            rpc,
+        } = old_state
+        else {
+            tracing::warn!(
+                old_state = ?channel.state,
+                channel_opened,
+                "invalid state for open result"
+            );
+            channel.state = old_state;
             return;
         };
 
-        rpc.complete(channel_opened);
+        if !channel_opened {
+            if let Some(event_flag) = redirected_event_flag {
+                self.inner.synic.free_event_flag(event_flag);
+            }
+            rpc.fail(anyhow::anyhow!("open failed: {:#x}", result.status));
+            return;
+        }
+
+        channel.state = ChannelState::Opened {
+            connection_id,
+            redirected_event_flag,
+            redirected_event,
+        };
+
+        rpc.complete(Ok(OpenOutput {
+            redirected_event_flag,
+            guest_to_host_signal: self.inner.synic.guest_to_host_interrupt(connection_id),
+        }));
     }
 
     fn handle_gpadl_torndown(&mut self, request: protocol::GpadlTorndown) {
@@ -891,7 +1018,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
 
     fn handle_unload_complete(&mut self) {
         match std::mem::replace(&mut self.state, ClientState::Disconnected) {
-            ClientState::Disconnecting(_, rpc) => {
+            ClientState::Disconnecting { version: _, rpc } => {
                 tracing::info!("VmBus client disconnected");
                 rpc.complete(());
             }
@@ -1000,7 +1127,11 @@ impl<T: VmbusMessageSource> ClientTask<T> {
         }
     }
 
-    fn handle_open_channel(&mut self, channel_id: ChannelId, rpc: Rpc<OpenRequest, bool>) {
+    fn handle_open_channel(
+        &mut self,
+        channel_id: ChannelId,
+        rpc: FailableRpc<OpenRequest, OpenOutput>,
+    ) {
         let channel = self
             .inner
             .channels
@@ -1008,14 +1139,28 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             .expect("invalid channel");
 
         if !matches!(channel.state, ChannelState::Offered) {
-            tracing::warn!(id = %channel_id.0, channel_state = %self.inner.channel_state(channel_id).unwrap(), "invalid channel state for OpenChannel");
-            rpc.complete(false);
+            rpc.fail(anyhow::anyhow!("invalid channel state: {}", channel.state));
             return;
         }
 
         tracing::info!(channel_id = channel_id.0, "opening channel on host");
-        let request = rpc.input();
+        let (request, rpc) = rpc.split();
         let open_data = &request.open_data;
+
+        let supports_interrupt_redirection = if let ClientState::Connected { version } = self.state
+        {
+            version.feature_flags.guest_specified_signal_parameters()
+                || version.feature_flags.channel_interrupt_redirection()
+        } else {
+            false
+        };
+
+        if !supports_interrupt_redirection && open_data.event_flag != channel_id.0 as u16 {
+            rpc.fail(anyhow::anyhow!(
+                "host does not support specifying the event flag"
+            ));
+            return;
+        }
 
         let open_channel = protocol::OpenChannel {
             channel_id,
@@ -1026,32 +1171,101 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             user_data: open_data.user_data,
         };
 
-        if matches!(self.state, ClientState::Connected(version) if version.feature_flags.guest_specified_signal_parameters() || version.feature_flags.channel_interrupt_redirection())
-        {
-            // N.B. The open_data will contain the server's event
-            // flag/connection ID if the VTL0 guest doesn't use alternate
-            // values (it normally won't), so we can communicate those to
-            // the host if they differ.
-            self.inner.send(&protocol::OpenChannel2 {
+        let connection_id = if request.use_vtl2_connection_id {
+            if !supports_interrupt_redirection {
+                rpc.fail(anyhow::anyhow!(
+                    "host does not support specfiying the connection ID"
+                ));
+                return;
+            }
+            protocol::ConnectionId::new(channel_id.0, 2.try_into().unwrap(), 7).0
+        } else {
+            open_data.connection_id
+        };
+
+        // No failure paths after the one for allocating the event flag, since
+        // otherwise we would need to free the event flag.
+        let mut flags = OpenChannelFlags::new();
+        let event_flag = if let Some(event) = &request.incoming_event {
+            if !supports_interrupt_redirection {
+                rpc.fail(anyhow::anyhow!(
+                    "host does not support redirecting interrupts"
+                ));
+                return;
+            }
+
+            flags.set_redirect_interrupt(true);
+            match self.inner.synic.allocate_event_flag(event) {
+                Ok(flag) => flag,
+                Err(err) => {
+                    rpc.fail(err.context("failed to allocate event flag"));
+                    return;
+                }
+            }
+        } else {
+            open_data.event_flag
+        };
+
+        if supports_interrupt_redirection {
+            self.inner.messages.send(&protocol::OpenChannel2 {
                 open_channel,
-                connection_id: open_data.connection_id,
-                event_flag: open_data.event_flag,
-                flags: request.flags.into(),
+                connection_id,
+                event_flag,
+                flags,
             });
         } else {
-            assert_eq!(
-                open_data.event_flag, channel_id.0 as u16,
-                "Trying to use guest-specified event flag when the host doesn't support it."
-            );
-
-            self.inner.send(&open_channel);
+            self.inner.messages.send(&open_channel);
         }
 
-        self.inner.channels.get_mut(&channel_id).unwrap().state =
-            ChannelState::Opening(rpc.split().1);
+        channel.state = ChannelState::Opening {
+            connection_id,
+            redirected_event_flag: (request.incoming_event.is_some()).then_some(event_flag),
+            redirected_event: request.incoming_event,
+            rpc,
+        }
     }
 
-    fn handle_gpadl(&mut self, channel_id: ChannelId, rpc: Rpc<GpadlRequest, bool>) {
+    fn handle_restore_channel(
+        &mut self,
+        channel_id: ChannelId,
+        request: RestoreRequest,
+    ) -> Result<OpenOutput> {
+        let channel = self
+            .inner
+            .channels
+            .get_mut(&channel_id)
+            .expect("invalid channel");
+
+        if !matches!(channel.state, ChannelState::Restored) {
+            anyhow::bail!("invalid channel state: {}", channel.state);
+        }
+
+        if request.incoming_event.is_some() != request.redirected_event_flag.is_some() {
+            anyhow::bail!("incoming event and redirected event flag must both be set or unset");
+        }
+
+        if let Some((flag, event)) = request
+            .redirected_event_flag
+            .zip(request.incoming_event.as_ref())
+        {
+            self.inner.synic.restore_event_flag(flag, event)?;
+        }
+
+        channel.state = ChannelState::Opened {
+            connection_id: request.connection_id,
+            redirected_event_flag: request.redirected_event_flag,
+            redirected_event: request.incoming_event,
+        };
+        Ok(OpenOutput {
+            redirected_event_flag: request.redirected_event_flag,
+            guest_to_host_signal: self
+                .inner
+                .synic
+                .guest_to_host_interrupt(request.connection_id),
+        })
+    }
+
+    fn handle_gpadl(&mut self, channel_id: ChannelId, rpc: FailableRpc<GpadlRequest, ()>) {
         let (request, rpc) = rpc.split();
         if self
             .inner
@@ -1089,7 +1303,9 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             count: request.count,
         };
 
-        self.inner.send_with_data(&message, first.as_bytes());
+        self.inner
+            .messages
+            .send_with_data(&message, first.as_bytes());
 
         // Send GpadlBody messages for the remaining values.
         let message = protocol::GpadlBody {
@@ -1097,7 +1313,9 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             gpadl_id: request.id,
         };
         for chunk in remaining.chunks(protocol::GpadlBody::MAX_DATA_VALUES) {
-            self.inner.send_with_data(&message, chunk.as_bytes());
+            self.inner
+                .messages
+                .send_with_data(&message, chunk.as_bytes());
         }
     }
 
@@ -1132,19 +1350,32 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             "Gpadl state validated above"
         );
 
-        self.inner.send(&protocol::GpadlTeardown {
+        self.inner.messages.send(&protocol::GpadlTeardown {
             channel_id,
             gpadl_id,
         });
     }
 
     fn handle_close_channel(&mut self, channel_id: ChannelId) {
-        if let ChannelState::Opened = self.inner.channel_state(channel_id).unwrap() {
+        if let ChannelState::Opened {
+            redirected_event_flag,
+            ..
+        } = *self.inner.channel_state(channel_id).unwrap()
+        {
+            if let Some(flag) = redirected_event_flag {
+                self.inner.synic.free_event_flag(flag);
+            }
             tracing::info!(channel_id = channel_id.0, "closing channel on host");
-            self.inner.send(&protocol::CloseChannel { channel_id });
+            self.inner
+                .messages
+                .send(&protocol::CloseChannel { channel_id });
             self.inner.channels.get_mut(&channel_id).unwrap().state = ChannelState::Offered;
         } else {
-            tracing::warn!(id = %channel_id.0, channel_state = %self.inner.channel_state(channel_id).unwrap(), "invalid channel state for close channel");
+            tracing::warn!(
+                id = %channel_id.0,
+                channel_state = %self.inner.channel_state(channel_id).unwrap(),
+                "invalid channel state for close channel"
+            );
         }
     }
 
@@ -1172,19 +1403,31 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             },
         };
 
-        self.inner.send(&payload);
+        self.inner.messages.send(&payload);
     }
 
     fn handle_channel_request(&mut self, channel_id: ChannelId, request: ChannelRequest) {
         if let Some(state) = self.inner.channel_state(channel_id) {
-            tracing::trace!(id = %channel_id.0, request = %request, %state, "received client request");
+            tracing::trace!(
+                id = %channel_id.0,
+                request = %request,
+                %state,
+                "received client request"
+            );
         } else {
-            tracing::warn!(id = %channel_id.0, request = %request, "received client request for unknown channel");
+            tracing::warn!(
+                id = %channel_id.0,
+                request = %request,
+                "received client request for unknown channel"
+            );
             return;
         }
 
         match request {
             ChannelRequest::Open(rpc) => self.handle_open_channel(channel_id, rpc),
+            ChannelRequest::Restore(rpc) => {
+                rpc.handle_failable_sync(|request| self.handle_restore_channel(channel_id, request))
+            }
             ChannelRequest::Gpadl(req) => self.handle_gpadl(channel_id, req),
             ChannelRequest::TeardownGpadl(req) => self.handle_gpadl_teardown(channel_id, req),
             ChannelRequest::Close => self.handle_close_channel(channel_id),
@@ -1201,6 +1444,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             TaskRequest::Restore(rpc) => {
                 rpc.handle_sync(|saved_state| self.handle_restore(saved_state))
             }
+            TaskRequest::PostRestore(rpc) => rpc.handle_sync(|()| self.handle_post_restore()),
             TaskRequest::Start => self.handle_start(),
             TaskRequest::Stop(rpc) => rpc.handle(|()| self.handle_stop()).await,
         }
@@ -1208,7 +1452,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
 
     /// Makes sure a channel is closed if the channel request stream was dropped.
     fn handle_device_removal(&mut self, channel_id: ChannelId) {
-        if let Some(ChannelState::Opened) = self.inner.channel_state(channel_id) {
+        if let Some(ChannelState::Opened { .. }) = self.inner.channel_state(channel_id) {
             tracing::warn!(
                 channel_id = channel_id.0,
                 "Channel dropped without closing first"
@@ -1220,7 +1464,7 @@ impl<T: VmbusMessageSource> ClientTask<T> {
 
     /// Determines if the client is connected with at least the specified version.
     fn check_version(&self, version: Version) -> bool {
-        matches!(self.state, ClientState::Connected(v) if v.version >= version)
+        matches!(self.state, ClientState::Connected { version: v } if v.version >= version)
     }
 
     fn handle_start(&mut self) {
@@ -1231,23 +1475,39 @@ impl<T: VmbusMessageSource> ClientTask<T> {
 
     async fn handle_stop(&mut self) {
         assert!(self.running);
-        self.msg_source.pause_message_stream();
-
-        // Process messages until we hit EOF.
-        tracing::debug!("draining messages");
-        let mut buf = [0; protocol::MAX_MESSAGE_SIZE];
         loop {
-            let size = self
-                .msg_source
-                .recv(&mut buf)
-                .await
-                .expect("Fatal error reading messages from synic");
+            self.msg_source.pause_message_stream();
 
-            if size == 0 {
-                break;
+            // Process messages until we hit EOF.
+            tracing::debug!("draining messages");
+            let mut buf = [0; protocol::MAX_MESSAGE_SIZE];
+            loop {
+                let size = self
+                    .msg_source
+                    .recv(&mut buf)
+                    .await
+                    .expect("Fatal error reading messages from synic");
+
+                if size == 0 {
+                    break;
+                }
+
+                self.handle_synic_message(&buf[..size]);
             }
 
-            self.handle_synic_message(&buf[..size]);
+            // Flush any pending outgoing messages. This needs to be done with
+            // the incoming message stream active; otherwise, the host may stop
+            // reading our sent messages.
+            //
+            // FUTURE: We can save these pending messages instead, but older
+            // versions of OpenHCL cannot restore them. Remove this code once
+            // those older versions are no longer supported (e.g. late 2025).
+            if self.inner.messages.is_empty() {
+                break;
+            }
+            tracing::info!("flushing outgoing messages");
+            self.msg_source.resume_message_stream();
+            self.inner.messages.flush_messages().await;
         }
 
         tracing::debug!("messages drained");
@@ -1261,15 +1521,32 @@ impl<T: VmbusMessageSource> ClientTask<T> {
             let mut message_recv =
                 OptionFuture::from(self.running.then(|| self.msg_source.recv(&mut buf).fuse()));
 
-            let mut client_request_recv =
-                OptionFuture::from(self.running.then(|| self.client_request_recv.next()));
+            // If there are pending outgoing messages, the host is backed up.
+            // Try to flush the queue, and in the meantime, stop generating new
+            // messages by stopping processing client requests, so as to avoid
+            // the outgoing message queue growing without bound.
+            //
+            // We still need to process incoming messages when in this state,
+            // even though they may generate additional outgoing messages, to
+            // avoid a deadlock with the host. The host can always DoS the
+            // guest, so this is not an attack vector.
+            let host_backed_up = !self.inner.messages.is_empty();
+            let mut flush_messages = OptionFuture::from(
+                (self.running && host_backed_up)
+                    .then(|| self.inner.messages.flush_messages().fuse()),
+            );
+
+            let mut client_request_recv = OptionFuture::from(
+                (self.running && !host_backed_up).then(|| self.client_request_recv.next()),
+            );
 
             let mut channel_requests = OptionFuture::from(
-                self.running
+                (self.running && !host_backed_up)
                     .then(|| self.inner.channel_requests.select_next_some()),
             );
 
             futures::select! { // merge semantics
+                _r = pin!(flush_messages) => {}
                 r = self.task_recv.next() => {
                     if let Some(task) = r {
                         self.handle_task(task).await;
@@ -1310,114 +1587,198 @@ impl<T: VmbusMessageSource> ClientTask<T> {
     }
 }
 
-impl<T: VmbusMessageSource> Inspect for ClientTask<T> {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        let mut resp = req.respond();
-        resp.display("state", &self.state);
-        let version = match self.state {
-            ClientState::Connected(version) => Some(version),
-            ClientState::RequestingOffers(version, ..) => Some(version),
-            _ => None,
-        };
-
-        if let Some(version) = version {
-            resp.field(
-                "protocol",
-                format!(
-                    "{}.{}",
-                    version.version as u32 >> 16,
-                    version.version as u32 & 0xffff
-                ),
-            );
-            resp.binary("feature_flags", u32::from(version.feature_flags));
-        }
-
-        for (id, channel) in self.inner.channels.iter() {
-            resp.child(&channel.offer.instance_id.to_string(), |req| {
-                let mut resp = req.respond();
-                resp.field("id", id.0);
-                channel.inspect(&mut resp);
-            });
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
+#[inspect(external_tag)]
 enum GpadlState {
     /// GpadlHeader has been sent to the host.
-    Offered(Rpc<(), bool>),
+    Offered(#[inspect(skip)] FailableRpc<(), ()>),
     /// Host has responded with GpadlCreated.
     Created,
     /// GpadlTeardown message has been sent to the host.
     TearingDown,
 }
 
-struct ClientTaskInner {
-    synic: Arc<dyn SynicClient>,
-    channels: HashMap<ChannelId, Channel>,
-    gpadls: HashMap<(ChannelId, GpadlId), GpadlState>,
-    teardown_gpadls: HashMap<GpadlId, Option<ChannelId>>,
-    channel_requests: SelectAll<TaggedStream<ChannelId, mesh::Receiver<ChannelRequest>>>,
+#[derive(Inspect)]
+struct OutgoingMessages {
+    #[inspect(skip)]
+    poster: Box<dyn PollPostMessage>,
+    #[inspect(with = "|x| x.len()")]
+    queued: VecDeque<OutgoingMessage>,
 }
 
-impl ClientTaskInner {
+impl OutgoingMessages {
     fn send<T: IntoBytes + protocol::VmbusMessage + std::fmt::Debug + Immutable + KnownLayout>(
-        &self,
+        &mut self,
         msg: &T,
     ) {
-        send_message(self.synic.as_ref(), msg, &[])
+        self.send_with_data(msg, &[])
     }
 
     fn send_with_data<
         T: IntoBytes + protocol::VmbusMessage + std::fmt::Debug + Immutable + KnownLayout,
     >(
-        &self,
+        &mut self,
         msg: &T,
         data: &[u8],
     ) {
-        send_message(self.synic.as_ref(), msg, data)
+        tracing::trace!(typ = ?T::MESSAGE_TYPE, "Sending message to host");
+        let msg = OutgoingMessage::with_data(msg, data);
+        if self.queued.is_empty() {
+            let r = self.poster.poll_post_message(
+                &mut Context::from_waker(std::task::Waker::noop()),
+                protocol::VMBUS_MESSAGE_REDIRECT_CONNECTION_ID,
+                1,
+                msg.data(),
+            );
+            if let Poll::Ready(()) = r {
+                return;
+            }
+        }
+        tracing::trace!("queueing message");
+        self.queued.push_back(msg);
     }
 
+    async fn flush_messages(&mut self) {
+        poll_fn(|cx| {
+            while let Some(msg) = self.queued.front() {
+                ready!(self.poster.poll_post_message(
+                    cx,
+                    protocol::VMBUS_MESSAGE_REDIRECT_CONNECTION_ID,
+                    1,
+                    msg.data(),
+                ));
+                tracing::trace!("sent queued message");
+                self.queued.pop_front();
+            }
+            Poll::Ready(())
+        })
+        .await
+    }
+
+    fn is_empty(&self) -> bool {
+        self.queued.is_empty()
+    }
+}
+
+#[derive(Inspect)]
+struct ClientTaskInner {
+    messages: OutgoingMessages,
+    #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|id| id.0)")]
+    channels: HashMap<ChannelId, Channel>,
+    #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|id| id.1.0)")]
+    gpadls: HashMap<(ChannelId, GpadlId), GpadlState>,
+    #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|id| id.0)")]
+    teardown_gpadls: HashMap<GpadlId, Option<ChannelId>>,
+    #[inspect(skip)]
+    channel_requests: SelectAll<TaggedStream<ChannelId, mesh::Receiver<ChannelRequest>>>,
+    synic: SynicState,
+}
+
+#[derive(Inspect)]
+struct SynicState {
+    #[inspect(skip)]
+    event_client: Arc<dyn SynicEventClient>,
+    #[inspect(iter_by_index)]
+    event_flag_state: Vec<bool>,
+}
+
+impl ClientTaskInner {
     fn channel_state(&self, channel_id: ChannelId) -> Option<&ChannelState> {
         self.channels.get(&channel_id).map(|c| &c.state)
     }
 }
 
-fn send_message<
-    T: IntoBytes + protocol::VmbusMessage + std::fmt::Debug + Immutable + KnownLayout,
->(
-    synic: &dyn SynicClient,
-    msg: &T,
-    data: &[u8],
-) {
-    tracing::trace!(typ = ?T::MESSAGE_TYPE, "Sending message to host");
-    synic.post_message(
-        protocol::VMBUS_MESSAGE_REDIRECT_CONNECTION_ID,
-        1,
-        OutgoingMessage::with_data(msg, data).data(),
-    );
+impl SynicState {
+    fn guest_to_host_interrupt(&self, connection_id: u32) -> Interrupt {
+        Interrupt::from_fn({
+            let event_client = self.event_client.clone();
+            move || {
+                if let Err(err) = event_client.signal_event(connection_id, 0) {
+                    tracelimit::warn_ratelimited!(
+                        error = &err as &dyn std::error::Error,
+                        "failed to signal event"
+                    );
+                }
+            }
+        })
+    }
+
+    const MAX_EVENT_FLAGS: u16 = 2047;
+
+    fn allocate_event_flag(&mut self, event: &Event) -> Result<u16> {
+        let i = self
+            .event_flag_state
+            .iter()
+            .position(|&used| !used)
+            .ok_or(())
+            .or_else(|()| {
+                if self.event_flag_state.len() >= Self::MAX_EVENT_FLAGS as usize {
+                    anyhow::bail!("out of event flags");
+                }
+                self.event_flag_state.push(false);
+                Ok(self.event_flag_state.len() - 1)
+            })?;
+
+        let event_flag = (i + 1) as u16;
+        self.event_client
+            .map_event(event_flag, event)
+            .context("failed to map event")?;
+        self.event_flag_state[i] = true;
+        Ok(event_flag)
+    }
+
+    fn restore_event_flag(&mut self, flag: u16, event: &Event) -> Result<()> {
+        let i = (flag as usize)
+            .checked_sub(1)
+            .context("invalid event flag")?;
+        if i >= Self::MAX_EVENT_FLAGS as usize {
+            anyhow::bail!("invalid event flag");
+        }
+        if self.event_flag_state.len() <= i {
+            self.event_flag_state.resize(i + 1, false);
+        }
+        if self.event_flag_state[i] {
+            anyhow::bail!("event flag already in use");
+        }
+        self.event_client
+            .map_event(flag, event)
+            .context("failed to map event")?;
+        self.event_flag_state[i] = true;
+        Ok(())
+    }
+
+    fn free_event_flag(&mut self, flag: u16) {
+        let i = flag as usize - 1;
+        assert!(i < self.event_flag_state.len());
+        self.event_flag_state[i] = false;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_concurrency::future::Join;
     use guid::Guid;
     use pal_async::async_test;
-    use pal_async::DefaultPool;
-    use parking_lot::Mutex;
+    use pal_async::timer::PolledTimer;
+    use pal_async::DefaultDriver;
     use protocol::TargetInfo;
-    use std::sync::Arc;
+    use std::fmt::Debug;
     use std::task::ready;
+    use std::time::Duration;
+    use test_with_tracing::test;
+    use vmbus_core::protocol::MessageHeader;
     use vmbus_core::protocol::MessageType;
     use vmbus_core::protocol::OfferFlags;
     use vmbus_core::protocol::UserDefinedData;
+    use vmbus_core::protocol::VmbusMessage;
+    use zerocopy::FromBytes;
     use zerocopy::FromZeros;
     use zerocopy::Immutable;
     use zerocopy::IntoBytes;
     use zerocopy::KnownLayout;
 
-    const VMBUS_TEST_CLIENT_ID: Guid =
-        Guid::from_static_str("e6e6e6e6-e6e6-e6e6-e6e6-e6e6e6e6e6e6");
+    const VMBUS_TEST_CLIENT_ID: Guid = guid::guid!("e6e6e6e6-e6e6-e6e6-e6e6-e6e6e6e6e6e6");
 
     fn in_msg<T: IntoBytes + Immutable + KnownLayout>(message_type: MessageType, t: T) -> Vec<u8> {
         let mut data = Vec::new();
@@ -1427,37 +1788,54 @@ mod tests {
         data
     }
 
+    #[track_caller]
+    fn check_message<T>(msg: OutgoingMessage, chk: T)
+    where
+        T: IntoBytes + FromBytes + Immutable + KnownLayout + Debug + VmbusMessage,
+    {
+        check_message_with_data(msg, chk, &[]);
+    }
+
+    #[track_caller]
+    fn check_message_with_data<T>(msg: OutgoingMessage, chk: T, data: &[u8])
+    where
+        T: IntoBytes + FromBytes + Immutable + KnownLayout + Debug + VmbusMessage,
+    {
+        let chk_data = OutgoingMessage::with_data(&chk, data);
+        if msg.data() != chk_data.data() {
+            let (header, rest) = MessageHeader::read_from_prefix(msg.data()).unwrap();
+            assert_eq!(header.message_type(), <T as VmbusMessage>::MESSAGE_TYPE);
+            let (msg, rest) = T::read_from_prefix(rest).expect("incorrect message size");
+            if msg.as_bytes() != chk.as_bytes() {
+                panic!("mismatched messages, expected {:#?}, got {:#?}", chk, msg);
+            }
+            if rest != data {
+                panic!("mismatched data, expected {:#?}, got {:#?}", data, rest);
+            }
+        }
+    }
+
     struct TestServer {
-        messages: Mutex<Vec<OutgoingMessage>>,
+        messages: mesh::Receiver<OutgoingMessage>,
         send: mesh::Sender<Vec<u8>>,
     }
 
     impl TestServer {
-        fn next(&self) -> Option<OutgoingMessage> {
-            let mut tries = 0;
-            loop {
-                if let Some(msg) = self.messages.lock().pop() {
-                    return Some(msg);
-                }
-                if tries > 50 {
-                    return None;
-                }
-                tries += 1;
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+        async fn next(&mut self) -> Option<OutgoingMessage> {
+            self.messages.next().await
         }
 
         fn send(&self, msg: Vec<u8>) {
             self.send.send(msg);
         }
 
-        async fn connect(&self, client: &mut VmbusClient) {
+        async fn connect(&mut self, client: &mut VmbusClient) {
             let recv = client.access.client_request_send.call(
                 ClientRequest::InitiateContact,
                 InitiateContactRequest::default(),
             );
 
-            let _ = self.next().unwrap();
+            let _ = self.next().await.unwrap();
 
             self.send(in_msg(
                 MessageType::VERSION_RESPONSE,
@@ -1468,68 +1846,100 @@ mod tests {
                         padding: 0,
                         selected_version_or_connection_id: 0,
                     },
-                    supported_features: FeatureFlags::all().into(),
+                    supported_features: SUPPORTED_FEATURE_FLAGS.into(),
                 },
             ));
 
             let version = recv.await.unwrap().unwrap();
             assert_eq!(version.version, Version::Copper);
-            assert_eq!(version.feature_flags, FeatureFlags::all());
+            assert_eq!(version.feature_flags, SUPPORTED_FEATURE_FLAGS);
         }
 
-        async fn get_channel(&self, client: &mut VmbusClient) -> OfferInfo {
+        async fn get_channel(&mut self, client: &mut VmbusClient) -> OfferInfo {
+            let [channel] = self.get_channels(client, 1).await.try_into().unwrap();
+            channel
+        }
+
+        async fn get_channels(&mut self, client: &mut VmbusClient, count: usize) -> Vec<OfferInfo> {
             self.connect(client).await;
 
-            let (send, mut recv) = mesh::channel();
-            client
-                .access
-                .client_request_send
-                .send(ClientRequest::RequestOffers(send));
+            let request_offers = client.request_offers();
+            let send_offers = async {
+                check_message(self.next().await.unwrap(), protocol::RequestOffers {});
 
-            let _ = self.next().unwrap();
+                for i in 0..count {
+                    let offer = protocol::OfferChannel {
+                        interface_id: Guid::new_random(),
+                        instance_id: Guid::new_random(),
+                        rsvd: [0; 4],
+                        flags: OfferFlags::new(),
+                        mmio_megabytes: 0,
+                        user_defined: UserDefinedData::new_zeroed(),
+                        subchannel_index: 0,
+                        mmio_megabytes_optional: 0,
+                        channel_id: ChannelId(i as u32),
+                        monitor_id: 0,
+                        monitor_allocated: 0,
+                        is_dedicated: 0,
+                        connection_id: 0,
+                    };
 
-            let offer = protocol::OfferChannel {
-                interface_id: Guid::new_random(),
-                instance_id: Guid::new_random(),
-                rsvd: [0; 4],
-                flags: OfferFlags::new(),
-                mmio_megabytes: 0,
-                user_defined: UserDefinedData::new_zeroed(),
-                subchannel_index: 0,
-                mmio_megabytes_optional: 0,
-                channel_id: ChannelId(0),
-                monitor_id: 0,
-                monitor_allocated: 0,
-                is_dedicated: 0,
-                connection_id: 0,
+                    self.send(in_msg(MessageType::OFFER_CHANNEL, offer));
+                }
+
+                self.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
             };
 
-            self.send(in_msg(MessageType::OFFER_CHANNEL, offer));
-
-            let received_offer = recv.next().await.unwrap();
-
-            self.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
-
-            assert!(recv.next().await.is_none());
-
-            received_offer
+            let ((), offers) = (send_offers, request_offers).join().await;
+            offers
         }
     }
 
-    impl SynicClient for Arc<TestServer> {
-        fn post_message(&self, _channel: u32, _typ: u32, msg: &[u8]) {
-            self.messages
-                .lock()
-                .push(OutgoingMessage::from_message(msg));
+    struct TestServerClient {
+        sender: mesh::Sender<OutgoingMessage>,
+        timer: PolledTimer,
+        deadline: Option<pal_async::timer::Instant>,
+    }
+
+    impl PollPostMessage for TestServerClient {
+        fn poll_post_message(
+            &mut self,
+            cx: &mut Context<'_>,
+            _connection_id: u32,
+            _typ: u32,
+            msg: &[u8],
+        ) -> Poll<()> {
+            loop {
+                if let Some(deadline) = self.deadline {
+                    ready!(self.timer.poll_until(cx, deadline));
+                    self.deadline = None;
+                }
+                // Randomly choose whether to delay the message.
+                //
+                // FUTURE: use some kind of deterministic test framework for this to
+                // allow for reproducible tests.
+                let mut b = [0];
+                getrandom::getrandom(&mut b).unwrap();
+                if b[0] % 4 == 0 {
+                    self.deadline =
+                        Some(pal_async::timer::Instant::now() + Duration::from_millis(10));
+                } else {
+                    self.sender
+                        .send(OutgoingMessage::from_message(msg).unwrap());
+                    break Poll::Ready(());
+                }
+            }
+        }
+    }
+
+    struct NoopSynicEvents;
+
+    impl SynicEventClient for NoopSynicEvents {
+        fn map_event(&self, _event_flag: u16, _event: &Event) -> std::io::Result<()> {
+            Ok(())
         }
 
-        fn map_event(&self, _event_flag: u16, _event: &pal_event::Event) -> std::io::Result<()> {
-            Err(std::io::ErrorKind::Unsupported.into())
-        }
-
-        fn unmap_event(&self, _event_flag: u16) {
-            unreachable!()
-        }
+        fn unmap_event(&self, _event_flag: u16) {}
 
         fn signal_event(&self, _connection_id: u32, _event_flag: u16) -> std::io::Result<()> {
             Err(std::io::ErrorKind::Unsupported.into())
@@ -1543,9 +1953,9 @@ mod tests {
     impl AsyncRecv for TestMessageSource {
         fn poll_recv(
             &mut self,
-            cx: &mut std::task::Context<'_>,
+            cx: &mut Context<'_>,
             mut bufs: &mut [std::io::IoSliceMut<'_>],
-        ) -> std::task::Poll<std::io::Result<usize>> {
+        ) -> Poll<std::io::Result<usize>> {
             let value = ready!(self.msg_recv.poll_recv(cx)).unwrap();
             let mut remaining = value.as_slice();
             let mut total_size = 0;
@@ -1563,81 +1973,80 @@ mod tests {
 
     impl VmbusMessageSource for TestMessageSource {}
 
-    fn test_init() -> (Arc<TestServer>, VmbusClient, mesh::Receiver<OfferInfo>) {
-        let pool = DefaultPool::new();
-        let driver = pool.driver();
+    fn test_init(driver: &DefaultDriver) -> (TestServer, VmbusClient, mesh::Receiver<OfferInfo>) {
         let (msg_send, msg_recv) = mesh::channel();
-        let server = Arc::new(TestServer {
-            messages: Mutex::new(Vec::new()),
+        let (synic_send, synic_recv) = mesh::channel();
+        let server = TestServer {
+            messages: synic_recv,
             send: msg_send,
-        });
+        };
         let (offer_send, offer_recv) = mesh::channel();
 
-        let mut client = VmbusClient::new(
-            Arc::new(server.clone()),
-            offer_send,
+        let mut client = VmbusClientBuilder::new(
+            NoopSynicEvents,
             TestMessageSource { msg_recv },
-            &driver,
-        );
+            TestServerClient {
+                sender: synic_send,
+                deadline: None,
+                timer: PolledTimer::new(driver),
+            },
+        )
+        .build(driver, offer_send);
         client.start();
-        let _ = std::thread::Builder::new()
-            .spawn(move || pool.run())
-            .unwrap();
-
         (server, client, offer_recv)
     }
 
     #[async_test]
-    async fn test_initiate_contact_success() {
-        let (server, client, _) = test_init();
+    async fn test_initiate_contact_success(driver: DefaultDriver) {
+        let (mut server, client, _) = test_init(&driver);
         let _recv = client.access.client_request_send.call(
             ClientRequest::InitiateContact,
             InitiateContactRequest::default(),
         );
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact2 {
+        check_message(
+            server.next().await.unwrap(),
+            protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(FeatureFlags::all().into())
+                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
                 ..FromZeros::new_zeroed()
-            })
+            },
         );
     }
 
     #[async_test]
-    async fn test_connect_success() {
-        let (server, client, _) = test_init();
+    async fn test_connect_success(driver: DefaultDriver) {
+        let (mut server, client, _) = test_init(&driver);
         let recv = client.access.client_request_send.call(
             ClientRequest::InitiateContact,
             InitiateContactRequest::default(),
         );
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact2 {
+        check_message(
+            server.next().await.unwrap(),
+            protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(FeatureFlags::all().into())
+                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
                 ..FromZeros::new_zeroed()
-            })
+            },
         );
 
         server.send(in_msg(
@@ -1649,44 +2058,44 @@ mod tests {
                     padding: 0,
                     selected_version_or_connection_id: 0,
                 },
-                supported_features: FeatureFlags::all().into_bits(),
+                supported_features: SUPPORTED_FEATURE_FLAGS.into_bits(),
             },
         ));
 
         let version = recv.await.unwrap().unwrap();
 
         assert_eq!(version.version, Version::Copper);
-        assert_eq!(version.feature_flags, FeatureFlags::all());
+        assert_eq!(version.feature_flags, SUPPORTED_FEATURE_FLAGS);
     }
 
     #[async_test]
-    async fn test_feature_flags() {
-        let (server, client, _) = test_init();
+    async fn test_feature_flags(driver: DefaultDriver) {
+        let (mut server, client, _) = test_init(&driver);
         let recv = client.access.client_request_send.call(
             ClientRequest::InitiateContact,
             InitiateContactRequest::default(),
         );
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact2 {
+        check_message(
+            server.next().await.unwrap(),
+            protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(FeatureFlags::all().into())
+                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
                 ..FromZeros::new_zeroed()
-            })
+            },
         );
 
-        // Report the server doesn't support some of the feature flags, and make sure this is reflected in
-        // the returned version.
+        // Report the server doesn't support some of the feature flags, and make
+        // sure this is reflected in the returned version.
         server.send(in_msg(
             MessageType::VERSION_RESPONSE,
             protocol::VersionResponse2 {
@@ -1709,9 +2118,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_client_id() {
-        let (server, client, _) = test_init();
+    #[async_test]
+    async fn test_client_id(driver: DefaultDriver) {
+        let (mut server, client, _) = test_init(&driver);
         let initiate_contact = InitiateContactRequest {
             client_id: VMBUS_TEST_CLIENT_ID,
             ..Default::default()
@@ -1721,49 +2130,49 @@ mod tests {
             .client_request_send
             .call(ClientRequest::InitiateContact, initiate_contact);
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact2 {
+        check_message(
+            server.next().await.unwrap(),
+            protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(FeatureFlags::all().into())
+                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
                 client_id: VMBUS_TEST_CLIENT_ID,
-            })
+            },
         )
     }
 
     #[async_test]
-    async fn test_version_negotiation() {
-        let (server, client, _) = test_init();
+    async fn test_version_negotiation(driver: DefaultDriver) {
+        let (mut server, client, _) = test_init(&driver);
         let recv = client.access.client_request_send.call(
             ClientRequest::InitiateContact,
             InitiateContactRequest::default(),
         );
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact2 {
+        check_message(
+            server.next().await.unwrap(),
+            protocol::InitiateContact2 {
                 initiate_contact: protocol::InitiateContact {
                     version_requested: Version::Copper as u32,
                     target_message_vp: 0,
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(FeatureFlags::all().into())
+                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
                 ..FromZeros::new_zeroed()
-            })
+            },
         );
 
         server.send(in_msg(
@@ -1776,9 +2185,9 @@ mod tests {
             },
         ));
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::InitiateContact {
+        check_message(
+            server.next().await.unwrap(),
+            protocol::InitiateContact {
                 version_requested: Version::Iron as u32,
                 target_message_vp: 0,
                 interrupt_page_or_target_info: TargetInfo::new()
@@ -1788,7 +2197,7 @@ mod tests {
                     .into(),
                 parent_to_child_monitor_page_gpa: 0,
                 child_to_parent_monitor_page_gpa: 0,
-            })
+            },
         );
 
         server.send(in_msg(
@@ -1808,8 +2217,8 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_request_offers_success() {
-        let (server, mut client, _) = test_init();
+    async fn test_request_offers_success(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
 
         server.connect(&mut client).await;
 
@@ -1819,10 +2228,7 @@ mod tests {
             .client_request_send
             .send(ClientRequest::RequestOffers(send));
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::RequestOffers {})
-        );
+        check_message(server.next().await.unwrap(), protocol::RequestOffers {});
 
         let offer = protocol::OfferChannel {
             interface_id: Guid::new_random(),
@@ -1852,8 +2258,8 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_open_channel_success() {
-        let (server, mut client, _) = test_init();
+    async fn test_open_channel_success(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
 
         let recv = channel.request_send.call(
@@ -1867,13 +2273,14 @@ mod tests {
                     connection_id: 0,
                     user_data: UserDefinedData::new_zeroed(),
                 },
-                flags: OpenChannelFlags::new(),
+                incoming_event: None,
+                use_vtl2_connection_id: false,
             },
         );
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::OpenChannel2 {
+        check_message(
+            server.next().await.unwrap(),
+            protocol::OpenChannel2 {
                 open_channel: protocol::OpenChannel {
                     channel_id: ChannelId(0),
                     open_id: 0,
@@ -1884,8 +2291,8 @@ mod tests {
                 },
                 connection_id: 0,
                 event_flag: 0,
-                flags: 0,
-            })
+                flags: Default::default(),
+            },
         );
 
         server.send(in_msg(
@@ -1897,13 +2304,12 @@ mod tests {
             },
         ));
 
-        let opened = recv.await.unwrap();
-        assert!(opened);
+        recv.await.unwrap().unwrap();
     }
 
     #[async_test]
-    async fn test_open_channel_fail() {
-        let (server, mut client, _) = test_init();
+    async fn test_open_channel_fail(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
 
         let recv = channel.request_send.call(
@@ -1917,13 +2323,14 @@ mod tests {
                     connection_id: 0,
                     user_data: UserDefinedData::new_zeroed(),
                 },
-                flags: OpenChannelFlags::new(),
+                incoming_event: None,
+                use_vtl2_connection_id: false,
             },
         );
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::OpenChannel2 {
+        check_message(
+            server.next().await.unwrap(),
+            protocol::OpenChannel2 {
                 open_channel: protocol::OpenChannel {
                     channel_id: ChannelId(0),
                     open_id: 0,
@@ -1934,8 +2341,8 @@ mod tests {
                 },
                 connection_id: 0,
                 event_flag: 0,
-                flags: 0,
-            })
+                flags: Default::default(),
+            },
         );
 
         server.send(in_msg(
@@ -1947,13 +2354,12 @@ mod tests {
             },
         ));
 
-        let opened = recv.await.unwrap();
-        assert!(!opened);
+        recv.await.unwrap().unwrap_err();
     }
 
     #[async_test]
-    async fn test_modify_channel() {
-        let (server, mut client, _) = test_init();
+    async fn test_modify_channel(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
 
         // N.B. A real server requires the channel to be open before sending this, but the test
@@ -1963,12 +2369,12 @@ mod tests {
             ModifyRequest::TargetVp { target_vp: 1 },
         );
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::ModifyChannel {
+        check_message(
+            server.next().await.unwrap(),
+            protocol::ModifyChannel {
                 channel_id: ChannelId(0),
                 target_vp: 1,
-            })
+            },
         );
 
         server.send(in_msg(
@@ -1984,14 +2390,14 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_save_restore_connected() {
+    async fn test_save_restore_connected(driver: DefaultDriver) {
         let s0;
         {
-            let (server, mut client, _) = test_init();
+            let (mut server, mut client, _) = test_init(&driver);
             server.connect(&mut client).await;
             s0 = client.save().await;
         }
-        let (_, mut client, _) = test_init();
+        let (_server, mut client, _) = test_init(&driver);
         client.restore(s0.clone()).await.unwrap();
 
         let s1 = client.save().await;
@@ -2000,15 +2406,15 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_save_restore_connected_with_channel() {
+    async fn test_save_restore_connected_with_channel(driver: DefaultDriver) {
         let s0;
         let c0;
         {
-            let (server, mut client, _) = test_init();
+            let (mut server, mut client, _) = test_init(&driver);
             c0 = server.get_channel(&mut client).await;
             s0 = client.save().await;
         }
-        let (_, mut client, _) = test_init();
+        let (_server, mut client, _) = test_init(&driver);
         let (_, channels) = client.restore(s0.clone()).await.unwrap();
 
         let s1 = client.save().await;
@@ -2017,16 +2423,16 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_connect_fails_on_incorrect_state() {
-        let (server, mut client, _) = test_init();
+    async fn test_connect_fails_on_incorrect_state(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
         server.connect(&mut client).await;
         let err = client.connect(0, None, Guid::ZERO).await.unwrap_err();
         assert!(matches!(err, ConnectError::InvalidState), "{:?}", err);
     }
 
     #[async_test]
-    async fn test_hot_add_remove() {
-        let (server, mut client, mut offer_recv) = test_init();
+    async fn test_hot_add_remove(driver: DefaultDriver) {
+        let (mut server, mut client, mut offer_recv) = test_init(&driver);
 
         server.connect(&mut client).await;
         let offer = protocol::OfferChannel {
@@ -2057,19 +2463,19 @@ mod tests {
             },
         ));
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::RelIdReleased {
-                channel_id: ChannelId(5)
-            })
+        check_message(
+            server.next().await.unwrap(),
+            protocol::RelIdReleased {
+                channel_id: ChannelId(5),
+            },
         );
 
         assert!(info.response_recv.next().await.is_none());
     }
 
     #[async_test]
-    async fn test_gpadl_success() {
-        let (server, mut client, _) = test_init();
+    async fn test_gpadl_success(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
         let mut channel = server.get_channel(&mut client).await;
         let recv = channel.request_send.call(
             ChannelRequest::Gpadl,
@@ -2080,17 +2486,15 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::with_data(
-                &protocol::GpadlHeader {
-                    channel_id: ChannelId(0),
-                    gpadl_id: GpadlId(1),
-                    len: 8,
-                    count: 1,
-                },
-                0x5u64.as_bytes()
-            )
+        check_message_with_data(
+            server.next().await.unwrap(),
+            protocol::GpadlHeader {
+                channel_id: ChannelId(0),
+                gpadl_id: GpadlId(1),
+                len: 8,
+                count: 1,
+            },
+            0x5u64.as_bytes(),
         );
 
         server.send(in_msg(
@@ -2102,19 +2506,18 @@ mod tests {
             },
         ));
 
-        let created = recv.await.unwrap();
-        assert!(created);
+        recv.await.unwrap().unwrap();
 
         channel
             .request_send
             .send(ChannelRequest::TeardownGpadl(GpadlId(1)));
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::GpadlTeardown {
+        check_message(
+            server.next().await.unwrap(),
+            protocol::GpadlTeardown {
                 channel_id: ChannelId(0),
                 gpadl_id: GpadlId(1),
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2130,8 +2533,8 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_gpadl_fail() {
-        let (server, mut client, _) = test_init();
+    async fn test_gpadl_fail(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
         let recv = channel.request_send.call(
             ChannelRequest::Gpadl,
@@ -2142,17 +2545,15 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::with_data(
-                &protocol::GpadlHeader {
-                    channel_id: ChannelId(0),
-                    gpadl_id: GpadlId(1),
-                    len: 8,
-                    count: 1,
-                },
-                0x7u64.as_bytes()
-            )
+        check_message_with_data(
+            server.next().await.unwrap(),
+            protocol::GpadlHeader {
+                channel_id: ChannelId(0),
+                gpadl_id: GpadlId(1),
+                len: 8,
+                count: 1,
+            },
+            0x7u64.as_bytes(),
         );
 
         server.send(in_msg(
@@ -2164,13 +2565,12 @@ mod tests {
             },
         ));
 
-        let created = recv.await.unwrap();
-        assert!(!created);
+        recv.await.unwrap().unwrap_err();
     }
 
     #[async_test]
-    async fn test_gpadl_with_revoke() {
-        let (server, mut client, _offer_recv) = test_init();
+    async fn test_gpadl_with_revoke(driver: DefaultDriver) {
+        let (mut server, mut client, _offer_recv) = test_init(&driver);
         let mut channel = server.get_channel(&mut client).await;
         let channel_id = ChannelId(0);
         let gpadl_id = GpadlId(1);
@@ -2183,17 +2583,15 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::with_data(
-                &protocol::GpadlHeader {
-                    channel_id,
-                    gpadl_id,
-                    len: 8,
-                    count: 1,
-                },
-                0x3u64.as_bytes()
-            )
+        check_message_with_data(
+            server.next().await.unwrap(),
+            protocol::GpadlHeader {
+                channel_id,
+                gpadl_id,
+                len: 8,
+                count: 1,
+            },
+            0x3u64.as_bytes(),
         );
 
         server.send(in_msg(
@@ -2205,19 +2603,18 @@ mod tests {
             },
         ));
 
-        let created = recv.await.unwrap();
-        assert!(created);
+        recv.await.unwrap().unwrap();
 
         channel
             .request_send
             .send(ChannelRequest::TeardownGpadl(gpadl_id));
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::GpadlTeardown {
+        check_message(
+            server.next().await.unwrap(),
+            protocol::GpadlTeardown {
                 channel_id,
                 gpadl_id,
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2229,17 +2626,17 @@ mod tests {
 
         assert_eq!(id, gpadl_id);
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::RelIdReleased { channel_id })
+        check_message(
+            server.next().await.unwrap(),
+            protocol::RelIdReleased { channel_id },
         );
 
         assert!(channel.response_recv.next().await.is_none());
     }
 
     #[async_test]
-    async fn test_modify_connection() {
-        let (server, mut client, _) = test_init();
+    async fn test_modify_connection(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
         server.connect(&mut client).await;
         let call = client.access.client_request_send.call(
             ClientRequest::Modify,
@@ -2251,12 +2648,12 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::ModifyConnection {
+        check_message(
+            server.next().await.unwrap(),
+            protocol::ModifyConnection {
                 child_to_parent_monitor_page_gpa: 5,
                 parent_to_child_monitor_page_gpa: 6,
-            })
+            },
         );
 
         server.send(in_msg(
@@ -2271,8 +2668,8 @@ mod tests {
     }
 
     #[async_test]
-    async fn test_hvsock() {
-        let (server, mut client, _offer_recv) = test_init();
+    async fn test_hvsock(driver: DefaultDriver) {
+        let (mut server, mut client, _offer_recv) = test_init(&driver);
         server.connect(&mut client).await;
         let request = HvsockConnectRequest {
             service_id: Guid::new_random(),
@@ -2281,15 +2678,15 @@ mod tests {
         };
 
         let resp = client.access().connect_hvsock(request);
-        assert_eq!(
-            server.next().unwrap(),
-            OutgoingMessage::new(&protocol::TlConnectRequest2 {
+        check_message(
+            server.next().await.unwrap(),
+            protocol::TlConnectRequest2 {
                 base: protocol::TlConnectRequest {
                     service_id: request.service_id,
                     endpoint_id: request.endpoint_id,
                 },
                 silo_id: request.silo_id,
-            })
+            },
         );
 
         // Now send a failure result.
@@ -2304,5 +2701,76 @@ mod tests {
 
         let result = resp.await;
         assert!(result.is_none());
+    }
+
+    #[async_test]
+    async fn test_synic_event_flags(driver: DefaultDriver) {
+        let (mut server, mut client, _) = test_init(&driver);
+        let channels = server.get_channels(&mut client, 5).await;
+        let event = Event::new();
+
+        for _ in 0..5 {
+            for (i, channel) in channels.iter().enumerate() {
+                let recv = channel.request_send.call(
+                    ChannelRequest::Open,
+                    OpenRequest {
+                        open_data: OpenData {
+                            target_vp: 0,
+                            ring_offset: 0,
+                            ring_gpadl_id: GpadlId(0),
+                            event_flag: 0,
+                            connection_id: 0,
+                            user_data: UserDefinedData::new_zeroed(),
+                        },
+                        incoming_event: Some(event.clone()),
+                        use_vtl2_connection_id: false,
+                    },
+                );
+
+                let expected_event_flag = i as u16 + 1;
+
+                check_message(
+                    server.next().await.unwrap(),
+                    protocol::OpenChannel2 {
+                        open_channel: protocol::OpenChannel {
+                            channel_id: channel.offer.channel_id,
+                            open_id: 0,
+                            ring_buffer_gpadl_id: GpadlId(0),
+                            target_vp: 0,
+                            downstream_ring_buffer_page_offset: 0,
+                            user_data: UserDefinedData::new_zeroed(),
+                        },
+                        connection_id: 0,
+                        event_flag: expected_event_flag,
+                        flags: OpenChannelFlags::new().with_redirect_interrupt(true),
+                    },
+                );
+
+                server.send(in_msg(
+                    MessageType::OPEN_CHANNEL_RESULT,
+                    protocol::OpenResult {
+                        channel_id: channel.offer.channel_id,
+                        open_id: 0,
+                        status: protocol::STATUS_SUCCESS as u32,
+                    },
+                ));
+
+                let output = recv.await.unwrap().unwrap();
+                assert_eq!(output.redirected_event_flag, Some(expected_event_flag));
+            }
+
+            for (i, channel) in channels.iter().enumerate() {
+                // Close the channel to prepare for the next iteration of the loop.
+                // The event flag should be the same each time.
+                channel.request_send.send(ChannelRequest::Close);
+
+                check_message(
+                    server.next().await.unwrap(),
+                    protocol::CloseChannel {
+                        channel_id: ChannelId(i as u32),
+                    },
+                );
+            }
+        }
     }
 }

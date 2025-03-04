@@ -219,7 +219,7 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
     }
 }
 
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 enum WorkerState {
     Init(Option<InitState>),
     Ready(ReadyState),
@@ -348,7 +348,7 @@ struct RxBufferRanges {
 impl RxBufferRanges {
     fn new(buffer_count: u32, queue_count: u32) -> (Self, Vec<mpsc::UnboundedReceiver<u32>>) {
         let buffers_per_queue = (buffer_count - RX_RESERVED_CONTROL_BUFFERS) / queue_count;
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods)] // TODO
         let (send, recv): (Vec<_>, Vec<_>) = (0..queue_count).map(|_| mpsc::unbounded()).unzip();
         (
             Self {
@@ -1366,7 +1366,7 @@ impl Nic {
         // processor.
         driver_builder.run_on_target(!self.adapter.tx_fast_completions);
 
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods)] // TODO
         let (send, recv) = mpsc::channel(1);
         self.coordinator_send = Some(send);
         self.coordinator.insert(

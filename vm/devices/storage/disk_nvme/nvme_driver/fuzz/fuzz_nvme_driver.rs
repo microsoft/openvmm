@@ -125,9 +125,11 @@ impl FuzzNvmeDriver {
                 let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // TODO: [use-arbitrary-input]
                 self.namespace
                     .read(
-                        target_cpu % self.cpu_count, // TODO: [panic-or-bail-on-fuzz]
+                        // TODO: [panic-or-bail-on-fuzz]
+                        target_cpu % self.cpu_count,
                         lba,
-                        block_count  // TODO: [panic-or-bail-on-fuzz]
+                        // TODO: [panic-or-bail-on-fuzz]
+                        block_count
                             % (u32::try_from(buf_range.len()).unwrap()
                                 >> self.namespace.block_size().trailing_zeros())
                             % self.namespace.max_transfer_block_count(),
@@ -145,9 +147,11 @@ impl FuzzNvmeDriver {
                 let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // TODO: [use-arbitrary-input]
                 self.namespace
                     .write(
-                        target_cpu % self.cpu_count, // TODO: [panic-or-bail-on-fuzz]
+                        // TODO: [panic-or-bail-on-fuzz]
+                        target_cpu % self.cpu_count,
                         lba,
-                        block_count // TODO: [panic-or-bail-on-fuzz]
+                        // TODO: [panic-or-bail-on-fuzz]
+                        block_count
                             % (u32::try_from(buf_range.len()).unwrap()
                                 >> self.namespace.block_size().trailing_zeros())
                             % self.namespace.max_transfer_block_count(),

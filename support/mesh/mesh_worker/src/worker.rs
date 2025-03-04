@@ -106,7 +106,7 @@ enum LaunchType {
 ///
 /// This may be sent across processes via mesh.
 #[derive(Debug, MeshPayload)]
-pub struct WorkerHostRunner(mesh::MpscReceiver<WorkerHostLaunchRequest>);
+pub struct WorkerHostRunner(mesh::Receiver<WorkerHostLaunchRequest>);
 
 impl WorkerHostRunner {
     /// Runs the worker host until all corresponding [`WorkerHost`] instances
@@ -244,7 +244,7 @@ impl WorkerHandle {
 ///
 /// This may be sent across processes via mesh.
 #[derive(Debug, MeshPayload, Clone)]
-pub struct WorkerHost(mesh::MpscSender<WorkerHostLaunchRequest>);
+pub struct WorkerHost(mesh::Sender<WorkerHostLaunchRequest>);
 
 /// Returns a new [`WorkerHost`], [`WorkerHostRunner`] pair.
 ///

@@ -62,6 +62,7 @@ impl TdgMemPageLevel {
 
 /// Attributes for a single VM.
 #[bitfield(u16)]
+#[derive(PartialEq, Eq)]
 pub struct GpaVmAttributes {
     pub read: bool,
     pub write: bool,
@@ -85,28 +86,28 @@ impl GpaVmAttributes {
         .with_valid(true);
 }
 
-impl GpaVmAttributes {
-    /// Convert to the corresponding attributes mask. Note that `inv_ept` must
-    /// be set manually after the conversion, if desired.
-    pub fn to_mask(self) -> GpaVmAttributesMask {
-        GpaVmAttributesMask::from(u16::from(self)).with_inv_ept(false)
-    }
-}
-
 /// Attributes mask used to set which bits are updated in TDG.MEM.PAGE.ATTR.WR.
 #[bitfield(u16)]
 pub struct GpaVmAttributesMask {
-    read: bool,
-    write: bool,
-    kernel_execute: bool,
-    user_execute: bool,
+    pub read: bool,
+    pub write: bool,
+    pub kernel_execute: bool,
+    pub user_execute: bool,
     #[bits(3)]
     reserved: u8,
-    suppress_ve: bool,
+    pub suppress_ve: bool,
     #[bits(7)]
     reserved2: u8,
     /// invalidate ept for this vm
-    inv_ept: bool,
+    pub inv_ept: bool,
+}
+
+impl GpaVmAttributesMask {
+    pub const ALL_CHANGED: Self = Self::new()
+        .with_read(true)
+        .with_write(true)
+        .with_kernel_execute(true)
+        .with_user_execute(true);
 }
 
 /// Corresponds to GPA_ATTR, which is used as input to TDG.MEM.PAGE.ATTR.WR and

@@ -15,6 +15,7 @@ use inspect::Inspect;
 use thiserror::Error;
 
 pub mod ioctl;
+mod mapped_page;
 pub mod protocol;
 pub mod stats;
 pub mod vmbus;

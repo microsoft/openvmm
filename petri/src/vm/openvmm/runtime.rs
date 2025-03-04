@@ -104,7 +104,11 @@ impl PetriVmOpenVmm {
 
     /// Get the path to the VTL 2 vsock socket, if the VM is configured with OpenHCL.
     pub fn vtl2_vsock_path(&self) -> anyhow::Result<&Path> {
-        self.inner.openhcl_diag().map(|x| &*x.vtl2_vsock_path)
+        self.inner
+            .resources
+            .vtl2_vsock_path
+            .as_deref()
+            .context("VM is not configured with OpenHCL")
     }
 
     /// Wait for the VM to halt, returning the reason for the halt.
@@ -137,7 +141,7 @@ impl PetriVmOpenVmm {
         self.inner.mesh.shutdown().await;
 
         tracing::info!("Mesh shutdown, waiting for logging tasks");
-        for t in self.inner.resources.serial_tasks {
+        for t in self.inner.resources.log_stream_tasks {
             t.await?;
         }
 
@@ -161,6 +165,11 @@ impl PetriVmOpenVmm {
         /// * PCAT guests may not emit an event depending on the PCAT version, this
         /// method is best effort for them.
         pub async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Waits for the Hyper-V shutdown IC to be ready, returning a receiver
+        /// that will be closed when it is no longer ready.
+        pub async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<mesh::OneshotReceiver<()>>
     );
     petri_vm_fn!(
         /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
@@ -301,13 +310,21 @@ impl PetriVmInner {
         Ok(())
     }
 
-    async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
+    async fn wait_for_enlightened_shutdown_ready(
+        &mut self,
+    ) -> anyhow::Result<mesh::OneshotReceiver<()>> {
         tracing::info!("Waiting for shutdown ic ready");
-        self.resources
+        let recv = self
+            .resources
             .shutdown_ic_send
             .call(ShutdownRpc::WaitReady, ())
             .await?;
 
+        Ok(recv)
+    }
+
+    async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
+        self.wait_for_enlightened_shutdown_ready().await?;
         if let Some(duration) = self.quirks.hyperv_shutdown_ic_sleep {
             tracing::info!("QUIRK: Waiting for {:?}", duration);
             PolledTimer::new(&self.resources.driver)

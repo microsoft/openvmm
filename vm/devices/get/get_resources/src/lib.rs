@@ -80,7 +80,7 @@ pub mod ged {
         /// Access to VTL2 functionality.
         pub guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         /// Notification of firmware events.
-        pub firmware_event_send: Option<mesh::MpscSender<FirmwareEvent>>,
+        pub firmware_event_send: Option<mesh::Sender<FirmwareEvent>>,
         /// Enable secure boot.
         pub secure_boot_enabled: bool,
         /// The secure boot template type.

@@ -80,7 +80,7 @@ impl DeviceInterruptSlot {
                 self.signaled.store(false, Release);
                 return Poll::Ready(());
             }
-            if waker.as_ref().map_or(true, |w| !w.will_wake(cx.waker())) {
+            if waker.as_ref().is_none_or(|w| !w.will_wake(cx.waker())) {
                 _old_waker = waker.replace(cx.waker().clone());
             }
             Poll::Pending

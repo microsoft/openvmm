@@ -183,7 +183,7 @@ pub struct GuestEmulationDevice {
     #[inspect(skip)]
     power_client: PowerRequestClient,
     #[inspect(skip)]
-    firmware_event_send: Option<mesh::MpscSender<FirmwareEvent>>,
+    firmware_event_send: Option<mesh::Sender<FirmwareEvent>>,
     #[inspect(skip)]
     framebuffer_control: Option<Box<dyn FramebufferControl>>,
     #[inspect(skip)]
@@ -211,7 +211,7 @@ impl GuestEmulationDevice {
     pub fn new(
         config: GuestConfig,
         power_client: PowerRequestClient,
-        firmware_event_send: Option<mesh::MpscSender<FirmwareEvent>>,
+        firmware_event_send: Option<mesh::Sender<FirmwareEvent>>,
         guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         framebuffer_control: Option<Box<dyn FramebufferControl>>,
         vmgs_disk: Option<Disk>,

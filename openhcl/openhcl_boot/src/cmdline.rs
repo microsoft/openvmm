@@ -161,11 +161,11 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_boot_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=1024"),
+            parse_boot_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512"),
             BootCommandLineOptions {
                 logger: None,
                 confidential_debug: false,
-                enable_vtl2_gpa_pool: Some(1024),
+                enable_vtl2_gpa_pool: Some(512),
             }
         );
     }

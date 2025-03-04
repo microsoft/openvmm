@@ -7,19 +7,17 @@ function Get-MsvmComputerSystem
 {
     [CmdletBinding()]
     Param (
-        [Parameter(Mandatory = $true)]
-        [string] $VMName
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm
     )
-    
-    $msvm_ComputerSystem = Get-CimInstance -namespace $ROOT_HYPER_V_NAMESPACE -query "select * from Msvm_ComputerSystem where ElementName = '$VMName'"
+
+    $vmid = $Vm.Id
+    $msvm_ComputerSystem = Get-CimInstance -namespace $ROOT_HYPER_V_NAMESPACE -query "select * from Msvm_ComputerSystem where Name = '$vmid'"
 
     if (-not $msvm_ComputerSystem)
     {
-        throw "Unable to find a virtual machine with name $VMName."
-    }
-
-    if ($msvm_ComputerSystem.Length -gt 1) {
-        throw "More than one VM with name '$VMName' exists!"
+        throw "Unable to find a virtual machine with id $vmid."
     }
 
     $msvm_ComputerSystem
@@ -29,11 +27,12 @@ function Get-Vssd
 {
     [CmdletBinding()]
     Param (
-        [Parameter(Mandatory = $true)]
-        [string] $VMName
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm
     )
 
-    Get-MsvmComputerSystem $VMName | Get-CimAssociatedInstance -ResultClass "Msvm_VirtualSystemSettingData" -Association "Msvm_SettingsDefineState"
+    Get-MsvmComputerSystem $Vm | Get-CimAssociatedInstance -ResultClass "Msvm_VirtualSystemSettingData" -Association "Msvm_SettingsDefineState"
 }
 
 function Get-Vmms
@@ -63,13 +62,15 @@ function Set-InitialMachineConfiguration
 {
     [CmdletBinding()]
     Param (
-        [Parameter(Mandatory = $true)]
-        [string] $VMName,
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm,
+
         [Parameter(Mandatory = $true)]
         [string] $ImcHive
     )
 
-    $msvm_ComputerSystem = Get-MsvmComputerSystem $VMName
+    $msvm_ComputerSystem = Get-MsvmComputerSystem $Vm
 
     $imcHiveData = Get-Content -Encoding Byte $ImcHive
     $length = [System.BitConverter]::GetBytes([int32]$imcHiveData.Length + 4)
@@ -90,14 +91,17 @@ function Set-OpenHCLFirmware
 {
     [CmdletBinding()]
     Param (
-        [Parameter(Mandatory = $true)]
-        [string] $VMName,
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm,
+
         [Parameter(Mandatory = $true)]
         [string] $IgvmFile,
+
         [switch] $IncreaseVtl2Memory
     )
 
-    $vssd = Get-Vssd $VMName
+    $vssd = Get-Vssd $Vm
     # Enable OpenHCL by feature
     $vssd.GuestFeatureSet = 0x00000201
     # Set the OpenHCL image file path 

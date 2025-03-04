@@ -4,7 +4,7 @@
 #![no_std]
 // UNSAFETY: Manual pointer manipulation and transmutes to/from atomic types.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 use core::mem;
 use core::sync::atomic;

@@ -159,12 +159,13 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                 match response {
                     Event::Response(response) => {
                         use get_protocol::test_utilities::TEST_VMGS_SECTOR_SIZE;
+                        // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                        // Check if response needs special handling. Otherwise, send
+                        // response directly back to the guest.
                         let response_header =
                             get_protocol::HeaderRaw::read_from_prefix(&response[..4])
                                 .unwrap()
-                                .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-                                    // Check if response needs special handling. Otherwise, send
-                                    // response directly back to the guest.
+                                .0;
                         match response_header.message_type {
                             get_protocol::MessageTypes::HOST_RESPONSE => {
                                 let header: get_protocol::HeaderHostRequest =
@@ -179,7 +180,8 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                                             )
                                             .unwrap()
                                             .0;
-                                        let offset = request.sector_offset as usize // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                                        // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                                        let offset = request.sector_offset as usize
                                             * TEST_VMGS_SECTOR_SIZE as usize;
                                         let length = request.sector_count as usize
                                             * TEST_VMGS_SECTOR_SIZE as usize;
@@ -194,7 +196,8 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                                             )
                                             .unwrap()
                                             .0;
-                                        let buf = &message_buf[request_size..]; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                                        // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                                        let buf = &message_buf[request_size..];
                                         let offset = request.sector_offset as usize
                                             * TEST_VMGS_SECTOR_SIZE as usize;
                                         let length = request.sector_count as usize

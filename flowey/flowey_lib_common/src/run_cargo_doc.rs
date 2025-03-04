@@ -245,14 +245,30 @@ impl FlowNode for Node {
                         cmds.push(v)
                     }
 
+                    let cargo_out_dir = {
+                        // DEVNOTE: this is a _pragmatic_ implementation of this
+                        // logic, and is written with the undersatnding that
+                        // there are undoubtedly many "edge-cases" that may
+                        // result in the final target directory changing.
+                        //
+                        // One possible way to make this handling more robust
+                        // would be to start using `--message-format=json` when
+                        // invoking `cargo`, and then parsing the machine
+                        // readable output in order to obtain the output
+                        // artifact path _after_ the compilation has succeeded.
+                        if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
+                            PathBuf::from(dir)
+                        } else {
+                            in_folder.join("target")
+                        }
+                    }
+                    .join(target_triple.to_string())
+                    .join("doc");
+
                     let cmd = CargoDocCommands {
                         cmds,
                         cargo_work_dir: in_folder.clone(),
-                        cargo_out_dir: in_folder.join(
-                            Path::new("target")
-                                .join(target_triple.to_string())
-                                .join("doc"),
-                        ),
+                        cargo_out_dir,
                     };
 
                     rt.write(write_doc_cmd, &cmd);

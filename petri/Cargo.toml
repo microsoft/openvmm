@@ -49,6 +49,7 @@ vmsocket.workspace = true
 
 guid.workspace = true
 inspect = { workspace = true, features = ["initiate"] }
+kmsg.workspace = true
 mesh_process.workspace = true
 mesh_worker.workspace = true
 mesh.workspace = true

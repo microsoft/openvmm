@@ -345,15 +345,8 @@ impl VirtioQueueWorker {
         queue_resources: QueueResources,
         exit_event: event_listener::EventListener,
     ) -> TaskControl<VirtioQueueWorker, VirtioQueueState> {
-        let pool = DefaultPool::new();
-        let driver = pool.driver();
-        let name: String = name.into();
-        std::thread::Builder::new()
-            .name(name.clone())
-            .spawn(|| {
-                pool.run();
-            })
-            .unwrap();
+        let name = name.into();
+        let (_, driver) = DefaultPool::spawn_on_thread(&name);
 
         let mut task = TaskControl::new(self);
         task.insert(
@@ -649,7 +642,7 @@ mod tests {
     use vmcore::vm_task::VmTaskDriverSource;
 
     async fn must_recv_in_timeout<T: 'static + Send>(
-        recv: &mut mesh::MpscReceiver<T>,
+        recv: &mut mesh::Receiver<T>,
         timeout: Duration,
     ) -> T {
         mesh::CancelContext::new()

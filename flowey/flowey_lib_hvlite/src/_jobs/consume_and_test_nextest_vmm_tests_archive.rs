@@ -182,7 +182,6 @@ impl SimpleFlowNode for Node {
         ];
 
         let (test_log_path, get_test_log_path) = ctx.new_var();
-        let (openhcl_dump_path, get_openhcl_dump_path) = ctx.new_var();
 
         let extra_env = ctx.reqv(|v| crate::init_vmm_tests_env::Request {
             test_content_dir,
@@ -194,7 +193,6 @@ impl SimpleFlowNode for Node {
             disk_images_dir,
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
-            get_openhcl_dump_path: Some(get_openhcl_dump_path),
             get_env: v,
         });
 
@@ -219,7 +217,6 @@ impl SimpleFlowNode for Node {
             test_label: junit_test_label,
             attachments: BTreeMap::from([
                 ("logs".to_string(), (test_log_path, false)),
-                ("openhcl-dumps".to_string(), (openhcl_dump_path, false)),
                 ("crash-dumps".to_string(), (crash_dumps_path, true)),
             ]),
             output_dir: artifact_dir,

@@ -101,6 +101,11 @@ impl<T> OneshotSender<T> {
         // SAFETY: the slot is of type `T`.
         unsafe { self.0.send(value) }
     }
+
+    /// Returns true if the matching receiver is closed.
+    pub fn is_closed(&self) -> bool {
+        self.0.is_closed()
+    }
 }
 
 impl<T: MeshField> DefaultEncoding for OneshotSender<T> {
@@ -168,6 +173,16 @@ impl OneshotSenderCore {
             SlotState::ReceiverRemote(port, _) => {
                 drop(port);
             }
+            SlotState::SenderRemote { .. } => unreachable!(),
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        match &*self.0 .0.lock() {
+            SlotState::Done => true,
+            SlotState::Sent(_) => true,
+            SlotState::Waiting(_) => false,
+            SlotState::ReceiverRemote(port, _) => port.is_closed().unwrap_or(false),
             SlotState::SenderRemote { .. } => unreachable!(),
         }
     }

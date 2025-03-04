@@ -115,11 +115,9 @@ pub trait GuestEventPort: Send + Sync {
 pub trait GuestMessagePort: Send + Sync + Inspect {
     /// Posts a message to the guest.
     ///
-    /// It is the caller's responsibility to not queue too many messages. There
-    /// is no backpressure mechanism at the transport layer.
-    ///
-    /// FUTURE: add backpressure.
-    fn post_message(&mut self, typ: u32, payload: &[u8]);
+    /// It is the caller's responsibility to not queue too many messages. Not all transport layers
+    /// are guaranteed to support backpressure.
+    fn poll_post_message(&mut self, cx: &mut Context<'_>, typ: u32, payload: &[u8]) -> Poll<()>;
 
     /// Changes the virtual processor to which messages are sent.
     fn set_target_vp(&mut self, vp: u32) -> Result<(), HypervisorError>;

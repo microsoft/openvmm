@@ -360,7 +360,7 @@ impl SimpleScsiDisk {
         allocation_length: usize,
     ) -> Result<usize, ScsiError> {
         const VPD_MSFT_VIRTUAL_DEVICE_PROPERTIES_PAGE_SIGNATURE: Guid =
-            Guid::from_static_str("89a98f15-c928-4d8b-94cd-ef51faa99d33");
+            guid::guid!("89a98f15-c928-4d8b-94cd-ef51faa99d33");
 
         let page = scsi::VpdMsftVirtualDevicePropertiesPage {
             version: 1, // Version, leave at 1 to maintain back-compatibility with downlevel guest OSes

@@ -18,6 +18,7 @@ use crate::processor::UhProcessor;
 use crate::BackingShared;
 use crate::Error;
 use crate::GuestVtl;
+use crate::TlbFlushLockAccess;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
 use crate::UhPartitionInner;
@@ -27,6 +28,7 @@ use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::HvRepResult;
 use hv1_hypercall::HypercallIo;
+use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
 use hvdef::hypercall::Control;
 use hvdef::hypercall::HvFlushFlags;
@@ -42,7 +44,6 @@ use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
-use std::num::NonZeroU64;
 use virt::io::CpuIo;
 use virt::state::StateElement;
 use virt::vp;
@@ -79,13 +80,6 @@ use zerocopy::IntoBytes;
 /// A backing for SNP partitions.
 #[derive(InspectMut)]
 pub struct SnpBacked {
-    // TODO CVM GUEST VSM Do we need two sets of any other fields in here?
-    /// PFNs used for overlays.
-    #[inspect(iter_by_index)]
-    direct_overlays_pfns: [u64; UhDirectOverlay::Count as usize],
-    #[inspect(skip)]
-    #[allow(dead_code)] // Allocation handle for direct overlays held until drop
-    direct_overlay_pfns_handle: page_pool_alloc::PagePoolHandle,
     #[inspect(hex)]
     hv_sint_notifications: u16,
     general_stats: VtlArray<GeneralStats, 2>,
@@ -122,11 +116,6 @@ pub struct ExitStats {
     pub excp_db: Counter,
 }
 
-/// The number of shared pages required per cpu.
-pub const fn shared_pages_required_per_cpu() -> u64 {
-    UhDirectOverlay::Count as u64
-}
-
 enum UhDirectOverlay {
     Sipp,
     Sifp,
@@ -147,6 +136,10 @@ impl SnpBacked {
 }
 
 impl HardwareIsolatedBacking for SnpBacked {
+    fn shared_pages_required_per_cpu() -> u64 {
+        UhDirectOverlay::Count as u64
+    }
+
     fn cvm_state_mut(&mut self) -> &mut UhCvmVpState {
         &mut self.cvm
     }
@@ -155,11 +148,7 @@ impl HardwareIsolatedBacking for SnpBacked {
         &shared.cvm
     }
 
-    fn switch_vtl_state(
-        this: &mut UhProcessor<'_, Self>,
-        source_vtl: GuestVtl,
-        target_vtl: GuestVtl,
-    ) {
+    fn switch_vtl(this: &mut UhProcessor<'_, Self>, source_vtl: GuestVtl, target_vtl: GuestVtl) {
         let [vmsa0, vmsa1] = this.runner.vmsas_mut();
         let (current_vmsa, mut target_vmsa) = match (source_vtl, target_vtl) {
             (GuestVtl::Vtl0, GuestVtl::Vtl1) => (vmsa0, vmsa1),
@@ -205,6 +194,8 @@ impl HardwareIsolatedBacking for SnpBacked {
             target_vmsa.set_xmm_registers(i, current_vmsa.xmm_registers(i));
             target_vmsa.set_ymm_registers(i, current_vmsa.ymm_registers(i));
         }
+
+        this.backing.cvm_state_mut().exit_vtl = target_vtl;
     }
 
     fn translation_registers(
@@ -230,7 +221,7 @@ impl HardwareIsolatedBacking for SnpBacked {
 /// Partition-wide shared data for SNP VPs.
 #[derive(Inspect)]
 pub struct SnpBackedShared {
-    cvm: UhCvmPartitionState,
+    pub(crate) cvm: UhCvmPartitionState,
     invlpgb_count_max: u16,
     tsc_aux_virtualized: bool,
 }
@@ -260,7 +251,7 @@ impl SnpBackedShared {
 }
 
 impl BackingPrivate for SnpBacked {
-    type HclBacking = hcl::ioctl::snp::Snp;
+    type HclBacking<'snp> = hcl::ioctl::snp::Snp<'snp>;
     type Shared = SnpBackedShared;
     type EmulationCache = ();
 
@@ -271,28 +262,17 @@ impl BackingPrivate for SnpBacked {
         shared
     }
 
-    fn new(params: BackingParams<'_, '_, Self>, _shared: &SnpBackedShared) -> Result<Self, Error> {
-        let pfns_handle = params
-            .partition
-            .shared_vis_pages_pool
-            .as_ref()
-            .expect("must have shared vis pool when using SNP")
-            .alloc(
-                NonZeroU64::new(shared_pages_required_per_cpu()).expect("is nonzero"),
-                format!("direct overlay vp {}", params.vp_info.base.vp_index.index()),
-            )
-            .map_err(Error::AllocateSharedVisOverlay)?;
-        let pfns = pfns_handle.base_pfn()..pfns_handle.base_pfn() + pfns_handle.size_pages();
-
-        let overlays: Vec<_> = pfns.collect();
-
+    fn new(params: BackingParams<'_, '_, Self>, shared: &SnpBackedShared) -> Result<Self, Error> {
         Ok(Self {
-            direct_overlays_pfns: overlays.try_into().unwrap(),
-            direct_overlay_pfns_handle: pfns_handle,
             hv_sint_notifications: 0,
             general_stats: VtlArray::from_fn(|_| Default::default()),
             exit_stats: VtlArray::from_fn(|_| Default::default()),
-            cvm: UhCvmVpState::new(params.hv.unwrap(), params.lapics.unwrap()),
+            cvm: UhCvmVpState::new(
+                &shared.cvm,
+                params.partition,
+                params.vp_info,
+                UhDirectOverlay::Count as usize,
+            )?,
         })
     }
 
@@ -339,7 +319,7 @@ impl BackingPrivate for SnpBacked {
 
         // So far, only VTL 0 is using these (for VMBus). Initialize the direct
         // overlays for VTL 0.
-        let pfns = &this.backing.direct_overlays_pfns;
+        let pfns = &this.backing.cvm.direct_overlay_handle.pfns();
         let values: &[(HvX64RegisterName, u64); 3] = &[
             (
                 HvX64RegisterName::Sipp,
@@ -460,7 +440,7 @@ impl BackingPrivate for SnpBacked {
 
     fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>) {
         let vtl0_vmsa = this.runner.vmsa(GuestVtl::Vtl0);
-        let vtl1_vmsa = if *this.inner.hcvm_vtl1_enabled.lock() {
+        let vtl1_vmsa = if *this.cvm_vp_inner().vtl1_enabled.lock() {
             Some(this.runner.vmsa(GuestVtl::Vtl1))
         } else {
             None
@@ -509,6 +489,10 @@ impl BackingPrivate for SnpBacked {
         vtl: GuestVtl,
     ) -> Result<(), UhRunVpError> {
         this.hcvm_handle_vp_start_enable_vtl(vtl)
+    }
+
+    fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool {
+        this.hcvm_vtl1_inspectable()
     }
 }
 
@@ -768,6 +752,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpB
                 .with_vector(2)
                 .with_valid(true),
         );
+        self.backing.cvm.lapics[vtl].nmi_pending = false;
         self.backing.cvm.lapics[vtl].activity = MpState::Running;
         Ok(())
     }
@@ -821,7 +806,7 @@ impl UhProcessor<'_, SnpBacked> {
                 let ghcb_pfn = ghcb_msr.pfn();
 
                 let ghcb_overlay =
-                    self.backing.direct_overlays_pfns[UhDirectOverlay::Ghcb as usize];
+                    self.backing.cvm.direct_overlay_handle.pfns()[UhDirectOverlay::Ghcb as usize];
 
                 // TODO SNP: Should allow arbitrary page to be used for GHCB
                 if ghcb_pfn != ghcb_overlay {
@@ -1036,9 +1021,10 @@ impl UhProcessor<'_, SnpBacked> {
                             vtl: entered_from_vtl,
                         })
                         .msr_write(msr, value)
+                        .or_else_if_unknown(|| self.write_msr_cvm(msr, value, entered_from_vtl))
                         .or_else_if_unknown(|| self.write_msr(msr, value, entered_from_vtl))
                         .or_else_if_unknown(|| {
-                            self.write_msr_cvm(dev, msr, value, entered_from_vtl)
+                            self.write_msr_snp(dev, msr, value, entered_from_vtl)
                         });
 
                     match r {
@@ -2100,7 +2086,7 @@ impl UhProcessor<'_, SnpBacked> {
         Ok(value)
     }
 
-    fn write_msr_cvm(
+    fn write_msr_snp(
         &mut self,
         _dev: &impl CpuIo,
         msr: u32,
@@ -2181,31 +2167,6 @@ impl UhProcessor<'_, SnpBacked> {
     }
 }
 
-impl<T: CpuIo> hv1_hypercall::EnablePartitionVtl for UhHypercallHandler<'_, '_, T, SnpBacked> {
-    fn enable_partition_vtl(
-        &mut self,
-        partition_id: u64,
-        target_vtl: Vtl,
-        flags: hvdef::hypercall::EnablePartitionVtlFlags,
-    ) -> hvdef::HvResult<()> {
-        self.hcvm_enable_partition_vtl(partition_id, target_vtl, flags)
-    }
-}
-
-impl<T: CpuIo> hv1_hypercall::EnableVpVtl<hvdef::hypercall::InitialVpContextX64>
-    for UhHypercallHandler<'_, '_, T, SnpBacked>
-{
-    fn enable_vp_vtl(
-        &mut self,
-        partition_id: u64,
-        vp_index: u32,
-        vtl: Vtl,
-        vp_context: &hvdef::hypercall::InitialVpContextX64,
-    ) -> hvdef::HvResult<()> {
-        self.hcvm_enable_vp_vtl(partition_id, vp_index, vtl, vp_context)
-    }
-}
-
 impl<T: CpuIo> hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, T, SnpBacked> {
     fn advance_ip(&mut self) {
         let is_64bit = self.vp.long_mode(self.intercepted_vtl);
@@ -2229,7 +2190,7 @@ impl<T: CpuIo> hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, T, Snp
 impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_, '_, T, SnpBacked> {
     fn flush_virtual_address_list(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
         gva_ranges: &[HvGvaRange],
     ) -> HvRepResult {
@@ -2247,17 +2208,17 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
 {
     fn flush_virtual_address_list_ex(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
         gva_ranges: &[HvGvaRange],
     ) -> HvRepResult {
-        self.hcvm_validate_flush_inputs(&processor_set, flags, true)
+        self.hcvm_validate_flush_inputs(processor_set, flags, true)
             .map_err(|e| (e, 0))?;
 
         // As a performance optimization if we are asked to do too large an amount of work
         // just do a flush entire instead.
         if gva_ranges.len() > 16 || gva_ranges.iter().any(|range| if flags.use_extended_range_format() { range.as_extended().additional_pages() } else { range.as_simple().additional_pages() } > 16) {
-            self.do_flush_virtual_address_space(&processor_set, flags);
+            self.do_flush_virtual_address_space(processor_set, flags);
         } else {
             self.do_flush_virtual_address_list(flags, gva_ranges);
         }
@@ -2273,7 +2234,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpace
 {
     fn flush_virtual_address_space(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
     ) -> hvdef::HvResult<()> {
         hv1_hypercall::FlushVirtualAddressSpaceEx::flush_virtual_address_space_ex(
@@ -2289,12 +2250,12 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
 {
     fn flush_virtual_address_space_ex(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
     ) -> hvdef::HvResult<()> {
-        self.hcvm_validate_flush_inputs(&processor_set, flags, false)?;
+        self.hcvm_validate_flush_inputs(processor_set, flags, false)?;
 
-        self.do_flush_virtual_address_space(&processor_set, flags);
+        self.do_flush_virtual_address_space(processor_set, flags);
 
         // Mark that this VP needs to wait for all TLB locks to be released before returning.
         self.vp.set_wait_for_tlb_locks(self.intercepted_vtl);
@@ -2352,22 +2313,61 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
         self.vp.partition.hcl.tlbsync();
     }
 
-    fn do_flush_virtual_address_space(&mut self, processor_set: &[u32], flags: HvFlushFlags) {
-        let only_self = processor_set.len() == 1 && processor_set[0] == self.vp.vp_index().index();
+    fn do_flush_virtual_address_space(
+        &mut self,
+        processor_set: ProcessorSet<'_>,
+        flags: HvFlushFlags,
+    ) {
+        let only_self = [self.vp.vp_index().index()].into_iter().eq(processor_set);
         if only_self && flags.non_global_mappings_only() {
             self.vp.runner.vmsa_mut(self.intercepted_vtl).set_pcpu_id(0);
         } else {
-            let rax = SevInvlpgbRax::new()
-                .with_asid_valid(true)
-                .with_global(!flags.non_global_mappings_only());
-            let ecx = SevInvlpgbEcx::new();
-            let edx = SevInvlpgbEdx::new();
-            self.vp
-                .partition
-                .hcl
-                .invlpgb(rax.into(), edx.into(), ecx.into());
+            self.vp.partition.hcl.invlpgb(
+                SevInvlpgbRax::new()
+                    .with_asid_valid(true)
+                    .with_global(!flags.non_global_mappings_only())
+                    .into(),
+                SevInvlpgbEdx::new().into(),
+                SevInvlpgbEcx::new().into(),
+            );
             self.vp.partition.hcl.tlbsync();
         }
+    }
+}
+
+impl TlbFlushLockAccess for UhProcessor<'_, SnpBacked> {
+    fn flush(&mut self, vtl: GuestVtl) {
+        // SNP provides no mechanism to flush a single VTL across multiple VPs
+        // Do a flush entire, but only wait on the VTL that was asked for
+        self.partition.hcl.invlpgb(
+            SevInvlpgbRax::new()
+                .with_asid_valid(true)
+                .with_global(true)
+                .into(),
+            SevInvlpgbEdx::new().into(),
+            SevInvlpgbEcx::new().into(),
+        );
+        self.partition.hcl.tlbsync();
+        self.set_wait_for_tlb_locks(vtl);
+    }
+
+    fn flush_entire(&mut self) {
+        self.partition.hcl.invlpgb(
+            SevInvlpgbRax::new()
+                .with_asid_valid(true)
+                .with_global(true)
+                .into(),
+            SevInvlpgbEdx::new().into(),
+            SevInvlpgbEcx::new().into(),
+        );
+        self.partition.hcl.tlbsync();
+        for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
+            self.set_wait_for_tlb_locks(vtl);
+        }
+    }
+
+    fn set_wait_for_tlb_locks(&mut self, vtl: GuestVtl) {
+        Self::set_wait_for_tlb_locks(self, vtl);
     }
 }
 

@@ -15,6 +15,7 @@ virt.workspace = true
 aarch64emu.workspace = true
 
 thiserror.workspace = true
+tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 [dev-dependencies]

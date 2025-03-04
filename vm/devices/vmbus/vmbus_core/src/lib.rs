@@ -8,6 +8,7 @@ pub mod protocol;
 use futures::FutureExt;
 use futures::StreamExt;
 use guid::Guid;
+use inspect::Inspect;
 use protocol::MessageHeader;
 use protocol::VmbusMessage;
 use protocol::HEADER_SIZE;
@@ -15,6 +16,7 @@ use protocol::MAX_MESSAGE_SIZE;
 use std::future::Future;
 use std::str::FromStr;
 use std::task::Poll;
+use thiserror::Error;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
@@ -75,7 +77,7 @@ where
 }
 
 /// Represents information about a negotiated version.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Inspect)]
 pub struct VersionInfo {
     pub version: protocol::Version,
     pub feature_flags: protocol::FeatureFlags,
@@ -155,17 +157,18 @@ impl OutgoingMessage {
         message
     }
 
-    /// Converts an existing binary message to an `OutgoingMessage`. The slice is assumed to contain
-    /// a valid message.
-    ///
-    /// Panics if the slice is too large.
-    pub fn from_message(message: &[u8]) -> Self {
+    /// Converts an existing binary message to an `OutgoingMessage`. The slice
+    /// is assumed to contain a valid message.
+    pub fn from_message(message: &[u8]) -> Result<Self, MessageTooLarge> {
+        if message.len() > MAX_MESSAGE_SIZE {
+            return Err(MessageTooLarge);
+        }
         let mut data = [0; MAX_MESSAGE_SIZE];
         data[0..message.len()].copy_from_slice(message);
-        Self {
+        Ok(Self {
             data,
             len: message.len() as u8,
-        }
+        })
     }
 
     /// Gets the binary representation of the message.
@@ -180,14 +183,20 @@ impl PartialEq for OutgoingMessage {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Debug, Error)]
+#[error("a synic message exceeds the maximum length")]
+pub struct MessageTooLarge;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Inspect)]
 pub struct MonitorPageGpas {
+    #[inspect(hex)]
     pub parent_to_child: u64,
+    #[inspect(hex)]
     pub child_to_parent: u64,
 }
 
 /// A request from the guest to connect to the specified hvsocket endpoint.
-#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Inspect)]
 pub struct HvsockConnectRequest {
     pub service_id: Guid,
     pub endpoint_id: Guid,

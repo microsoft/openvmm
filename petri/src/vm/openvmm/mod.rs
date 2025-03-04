@@ -29,7 +29,7 @@ use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use hvlite_defs::config::Config;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
-use mesh::MpscReceiver;
+use mesh::Receiver;
 use mesh::Sender;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
@@ -40,21 +40,18 @@ use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tempfile::TempPath;
 use unix_socket::UnixListener;
 use vtl2_settings_proto::Vtl2Settings;
 
 /// The instance guid used for all of our SCSI drives.
-pub(crate) const SCSI_INSTANCE: Guid =
-    Guid::from_static_str("27b553e8-8b39-411b-a55f-839971a7884f");
+pub(crate) const SCSI_INSTANCE: Guid = guid::guid!("27b553e8-8b39-411b-a55f-839971a7884f");
 
 /// The instance guid for the NVMe controller automatically added for boot media.
-pub(crate) const BOOT_NVME_INSTANCE: Guid =
-    Guid::from_static_str("92bc8346-718b-449a-8751-edbf3dcd27e4");
+pub(crate) const BOOT_NVME_INSTANCE: Guid = guid::guid!("92bc8346-718b-449a-8751-edbf3dcd27e4");
 
 /// The instance guid for the MANA nic automatically added when specifying `PetriVmConfigOpenVmm::with_nic`
-const MANA_INSTANCE: Guid = Guid::from_static_str("f9641cf4-d915-4743-a7d8-efa75db7b85a");
+const MANA_INSTANCE: Guid = guid::guid!("f9641cf4-d915-4743-a7d8-efa75db7b85a");
 
 /// The namespace ID for the NVMe controller automatically added for boot media.
 pub(crate) const BOOT_NVME_NSID: u32 = 37;
@@ -70,7 +67,6 @@ pub struct PetriVmArtifactsOpenVmm {
     agent_image: AgentImage,
     openhcl_agent_image: Option<AgentImage>,
     openvmm_path: ResolvedArtifact,
-    openhcl_dump_directory: ResolvedArtifact,
 }
 
 impl PetriVmArtifactsOpenVmm {
@@ -89,9 +85,6 @@ impl PetriVmArtifactsOpenVmm {
             openhcl_agent_image,
             openvmm_path: resolver
                 .require(petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE)
-                .erase(),
-            openhcl_dump_directory: resolver
-                .require(petri_artifacts_vmm_test::artifacts::OPENHCL_DUMP_DIRECTORY)
                 .erase(),
         }
     }
@@ -134,11 +127,11 @@ impl PetriVmConfig for PetriVmConfigOpenVmm {
 
 /// Various channels and resources used to interact with the VM while it is running.
 struct PetriVmResourcesOpenVmm {
-    serial_tasks: Vec<Task<anyhow::Result<()>>>,
-    firmware_event_recv: MpscReceiver<FirmwareEvent>,
+    log_stream_tasks: Vec<Task<anyhow::Result<()>>>,
+    firmware_event_recv: Receiver<FirmwareEvent>,
     shutdown_ic_send: Sender<ShutdownRpc>,
     expected_boot_event: Option<FirmwareEvent>,
-    ged_send: Option<Arc<Sender<get_resources::ged::GuestEmulationRequest>>>,
+    ged_send: Option<Sender<get_resources::ged::GuestEmulationRequest>>,
     pipette_listener: PolledSocket<UnixListener>,
     vtl2_pipette_listener: Option<PolledSocket<UnixListener>>,
     openhcl_diag_handler: Option<OpenHclDiagHandler>,
@@ -152,8 +145,9 @@ struct PetriVmResourcesOpenVmm {
     output_dir: PathBuf,
     log_source: PetriLogSource,
 
-    // Resources that are only kept so they can be dropped at the end.
-    _vsock_temp_paths: Vec<TempPath>,
+    // TempPaths that cannot be dropped until the end.
+    vtl2_vsock_path: Option<TempPath>,
+    _vmbus_vsock_path: TempPath,
 }
 
 impl PetriVmConfigOpenVmm {

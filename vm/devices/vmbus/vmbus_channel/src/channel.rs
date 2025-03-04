@@ -139,7 +139,7 @@ pub struct ChannelResources {
 /// Control object for enabling subchannels.
 #[derive(Debug, Default, Clone)]
 pub struct ChannelControl {
-    send: Option<Arc<mesh::Sender<u16>>>,
+    send: Option<mesh::Sender<u16>>,
     max: u16,
 }
 
@@ -370,7 +370,7 @@ async fn offer_generic(
         gpadl_map: gpadl_map.clone().view(),
         channels: resources,
         channel_control: ChannelControl {
-            send: Some(Arc::new(subchannel_enable_send)),
+            send: Some(subchannel_enable_send),
             max: max_subchannels,
         },
     });

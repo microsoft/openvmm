@@ -74,7 +74,7 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-const VMNIC_CHANNEL_TYPE_GUID: Guid = Guid::from_static_str("f8615163-df3e-46c5-913f-f2d2f965ed0e");
+const VMNIC_CHANNEL_TYPE_GUID: Guid = guid::guid!("f8615163-df3e-46c5-913f-f2d2f965ed0e");
 
 enum ChannelResponse {
     Open(Option<OpenResult>),

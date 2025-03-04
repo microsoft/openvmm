@@ -34,6 +34,7 @@ zerocopy.workspace = true
 libc = { workspace = true, features = ["extra_traits"] }
 
 [target.'cfg(windows)'.dependencies]
+headervec.workspace = true
 windows-sys = { workspace = true, features = ["Win32_System_WindowsProgramming"] }
 
 # TODO: move all these uses to windows-sys.

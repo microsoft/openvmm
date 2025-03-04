@@ -21,7 +21,6 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use state_unit::StateRequest;
 use state_unit::StateUnit;
-use std::sync::Arc;
 use thiserror::Error;
 use vm_resource::kind::KeyboardInputHandleKind;
 use vm_resource::kind::MouseInputHandleKind;
@@ -33,7 +32,7 @@ use vmcore::save_restore::SavedStateBlob;
 
 /// Distributes keyboard and mouse input to the appropriate devices.
 pub struct InputDistributor {
-    recv: mesh::MpscReceiver<InputData>,
+    recv: mesh::Receiver<InputData>,
     client_recv: mesh::Receiver<DistributorRequest>,
     client: InputDistributorClient,
     inner: Inner,
@@ -41,7 +40,7 @@ pub struct InputDistributor {
 
 #[derive(Clone)]
 pub struct InputDistributorClient {
-    send: Arc<mesh::Sender<DistributorRequest>>,
+    send: mesh::Sender<DistributorRequest>,
 }
 
 enum DistributorRequest {
@@ -51,7 +50,7 @@ enum DistributorRequest {
 
 impl InputDistributor {
     /// Returns a new distributor for the provided input channel.
-    pub fn new(input: mesh::MpscReceiver<InputData>) -> Self {
+    pub fn new(input: mesh::Receiver<InputData>) -> Self {
         let (client_send, client_recv) = mesh::channel();
         Self {
             inner: Inner {
@@ -60,9 +59,7 @@ impl InputDistributor {
                 mouse: Forwarder::new(),
             },
             recv: input,
-            client: InputDistributorClient {
-                send: Arc::new(client_send),
-            },
+            client: InputDistributorClient { send: client_send },
             client_recv,
         }
     }
@@ -72,7 +69,7 @@ impl InputDistributor {
     }
 
     /// Returns the input channel.
-    pub fn into_inner(self) -> mesh::MpscReceiver<InputData> {
+    pub fn into_inner(self) -> mesh::Receiver<InputData> {
         self.recv
     }
 

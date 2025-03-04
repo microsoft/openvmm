@@ -35,7 +35,7 @@ struct DirectoryEnumeratorFlags {
 }
 
 // Some of these FileInformationClasses are missing from windows-rs.
-#[allow(clippy::enum_variant_names)]
+#[expect(clippy::enum_variant_names)]
 #[derive(PartialEq)]
 enum DirectoryEnumeratorFileInformationClass {
     FileId64ExtdDirectoryInformation,

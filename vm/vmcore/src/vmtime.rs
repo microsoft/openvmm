@@ -241,7 +241,7 @@ impl TimerState {
         }
         if self
             .next
-            .map_or(true, |current_next| next.is_before(current_next))
+            .is_none_or(|current_next| next.is_before(current_next))
         {
             let deadline = self.timestamp(next).unwrap().os_time();
             tracing::trace!(?deadline, "updating deadline");
@@ -257,7 +257,7 @@ impl TimerState {
         for (_, state) in &mut self.waiters {
             if let Some(this_next) = state.next {
                 if this_next.is_after(now.vmtime) {
-                    if next.map_or(true, |next| this_next.is_before(next)) {
+                    if next.is_none_or(|next| this_next.is_before(next)) {
                         next = Some(this_next);
                     }
                 } else if let Some(waker) = state.waker.take() {
@@ -536,7 +536,7 @@ impl VmTimeKeeper {
 /// in sync with each other.
 #[derive(MeshPayload, Clone, Debug)]
 pub struct VmTimeSourceBuilder {
-    new_send: mesh::MpscSender<NewKeeperRequest>,
+    new_send: mesh::Sender<NewKeeperRequest>,
 }
 
 /// Error returned by [`VmTimeSourceBuilder::build`] when the time keeper has
@@ -590,7 +590,7 @@ struct PrimaryKeeper {
     #[inspect(skip)]
     req_recv: mesh::Receiver<KeeperRequest>,
     #[inspect(skip)]
-    new_recv: mesh::MpscReceiver<NewKeeperRequest>,
+    new_recv: mesh::Receiver<NewKeeperRequest>,
     #[inspect(skip)]
     keepers: Vec<(u64, mesh::Sender<KeeperRequest>)>,
     #[inspect(skip)]
@@ -851,7 +851,7 @@ impl VmTimeAccess {
     /// Sets the timeout for [`poll_timeout`](Self::poll_timeout) will return ready,
     /// but only if `time` is earlier than the current timeout.
     pub fn set_timeout_if_before(&mut self, time: VmTime) {
-        if self.timeout.map_or(true, |timeout| time.is_before(timeout)) {
+        if self.timeout.is_none_or(|timeout| time.is_before(timeout)) {
             self.set_timeout(time);
         }
     }

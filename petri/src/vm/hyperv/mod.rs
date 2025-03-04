@@ -11,12 +11,16 @@ use crate::disk_image::AgentImage;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::Firmware;
 use crate::IsolationType;
+use crate::PetriLogSource;
 use crate::PetriTestParams;
 use crate::PetriVm;
 use crate::PetriVmConfig;
 use anyhow::Context;
 use async_trait::async_trait;
+use pal_async::pipe::PolledPipe;
 use pal_async::socket::PolledSocket;
+use pal_async::task::Spawn;
+use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
 use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::MachineArch;
@@ -55,16 +59,18 @@ pub struct PetriVmConfigHyperV {
 
     // Folder to store temporary data for this test
     temp_dir: tempfile::TempDir,
+
+    log_source: PetriLogSource,
 }
 
 #[async_trait]
 impl PetriVmConfig for PetriVmConfigHyperV {
     async fn run_without_agent(self: Box<Self>) -> anyhow::Result<Box<dyn PetriVm>> {
-        Ok(Box::new(Self::run_without_agent(*self)?))
+        Ok(Box::new(Self::run_without_agent(*self).await?))
     }
 
     async fn run_with_lazy_pipette(mut self: Box<Self>) -> anyhow::Result<Box<dyn PetriVm>> {
-        Ok(Box::new(Self::run_with_lazy_pipette(*self)?))
+        Ok(Box::new(Self::run_with_lazy_pipette(*self).await?))
     }
 
     async fn run(self: Box<Self>) -> anyhow::Result<(Box<dyn PetriVm>, PipetteClient)> {
@@ -78,16 +84,17 @@ pub struct PetriVmHyperV {
     config: PetriVmConfigHyperV,
     vm: HyperVVM,
     openhcl_diag_handler: Option<OpenHclDiagHandler>,
+    log_tasks: Vec<Task<anyhow::Result<()>>>,
 }
 
 #[async_trait]
 impl PetriVm for PetriVmHyperV {
     async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
-        Self::wait_for_halt(self)
+        Self::wait_for_halt(self).await
     }
 
     async fn wait_for_teardown(self: Box<Self>) -> anyhow::Result<HaltReason> {
-        Self::wait_for_teardown(*self)
+        Self::wait_for_teardown(*self).await
     }
 
     async fn test_inspect_openhcl(&mut self) -> anyhow::Result<()> {
@@ -192,36 +199,38 @@ impl PetriVmConfigHyperV {
             driver: driver.clone(),
             os_flavor: firmware.os_flavor(),
             temp_dir,
+            log_source: params.logger.clone(),
         })
     }
 
     /// Build and boot the requested VM. Does not configure and start pipette.
     /// Should only be used for testing platforms that pipette does not support.
-    pub fn run_without_agent(self) -> anyhow::Result<PetriVmHyperV> {
-        self.run_core(false)
+    pub async fn run_without_agent(self) -> anyhow::Result<PetriVmHyperV> {
+        self.run_core(false).await
     }
 
     /// Run the VM, configuring pipette to automatically start, but do not wait
     /// for it to connect. This is useful for tests where the first boot attempt
     /// is expected to not succeed, but pipette functionality is still desired.
-    pub fn run_with_lazy_pipette(self) -> anyhow::Result<PetriVmHyperV> {
-        self.run_core(true)
+    pub async fn run_with_lazy_pipette(self) -> anyhow::Result<PetriVmHyperV> {
+        self.run_core(true).await
     }
 
     /// Run the VM, launching pipette and returning a client to it.
     pub async fn run(self) -> anyhow::Result<(PetriVmHyperV, PipetteClient)> {
-        let mut vm = self.run_core(true)?;
+        let mut vm = self.run_core(true).await?;
         let client = vm.wait_for_agent().await?;
         Ok((vm, client))
     }
 
     /// Build and boot the requested VM
-    fn run_core(self, with_agent: bool) -> anyhow::Result<PetriVmHyperV> {
+    async fn run_core(self, with_agent: bool) -> anyhow::Result<PetriVmHyperV> {
         let mut vm = HyperVVM::new(
             &self.name,
             self.generation,
             self.guest_state_isolation_type,
             self.memory,
+            self.log_source.log_file("hyperv")?,
         )?;
 
         if let Some(igvm_file) = &self.openhcl_igvm {
@@ -286,11 +295,43 @@ impl PetriVmConfigHyperV {
             vm.add_vhd(&agent_disk_path, Some(0), Some(self.vhd_paths.len() as u32))?;
         }
 
+        let mut log_tasks = Vec::new();
+
+        let serial_pipe_path = vm.set_vm_com_port(1)?;
+        let serial_log_file = self.log_source.log_file("guest")?;
+        log_tasks.push(self.driver.spawn("guest-log", {
+            let driver = self.driver.clone();
+            async move {
+                let serial = diag_client::hyperv::open_serial_port(
+                    &driver,
+                    diag_client::hyperv::ComPortAccessInfo::PortPipePath(&serial_pipe_path),
+                )
+                .await?;
+                crate::log_stream(serial_log_file, PolledPipe::new(&driver, serial)?).await
+            }
+        }));
+
         let openhcl_diag_handler = if self.openhcl_igvm.is_some() {
-            Some(OpenHclDiagHandler {
-                client: diag_client::DiagClient::from_hyperv_name(self.driver.clone(), &self.name)?,
-                vtl2_vsock_path: PathBuf::from("TODO get rid of this"),
-            })
+            let openhcl_log_file = self.log_source.log_file("openhcl")?;
+            log_tasks.push(self.driver.spawn("openhcl-log", {
+                let driver = self.driver.clone();
+                let name = self.name.clone();
+                async move {
+                    let diag_client =
+                        diag_client::DiagClient::from_hyperv_name(driver.clone(), &name)?;
+                    loop {
+                        diag_client.wait_for_server().await?;
+                        crate::kmsg_log_task(
+                            openhcl_log_file.clone(),
+                            diag_client.kmsg(true).await?,
+                        )
+                        .await?
+                    }
+                }
+            }));
+            Some(OpenHclDiagHandler::new(
+                diag_client::DiagClient::from_hyperv_name(self.driver.clone(), &self.name)?,
+            ))
         } else {
             None
         };
@@ -301,21 +342,25 @@ impl PetriVmConfigHyperV {
             config: self,
             vm,
             openhcl_diag_handler,
+            log_tasks,
         })
     }
 }
 
 impl PetriVmHyperV {
     /// Wait for the VM to halt, returning the reason for the halt.
-    pub fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
-        self.vm.wait_for_power_off()?;
+    pub async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
+        self.vm.wait_for_power_off(&self.config.driver).await?;
         Ok(HaltReason::PowerOff) // TODO: Get actual halt reason
     }
 
     /// Wait for the VM to halt, returning the reason for the halt,
     /// and cleanly tear down the VM.
-    pub fn wait_for_teardown(mut self) -> anyhow::Result<HaltReason> {
-        let halt_reason = self.wait_for_halt()?;
+    pub async fn wait_for_teardown(mut self) -> anyhow::Result<HaltReason> {
+        let halt_reason = self.wait_for_halt().await?;
+        for t in self.log_tasks {
+            _ = t.cancel();
+        }
         self.vm.remove()?;
         Ok(halt_reason)
     }

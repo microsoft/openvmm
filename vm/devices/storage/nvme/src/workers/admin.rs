@@ -92,7 +92,7 @@ pub struct AdminState {
     #[inspect(with = "|x| inspect::iter_by_index(x).map_key(|x| x + 1)")]
     io_cqs: Vec<Option<IoCq>>,
     #[inspect(skip)]
-    sq_delete_response: mesh::MpscReceiver<u16>,
+    sq_delete_response: mesh::Receiver<u16>,
     #[inspect(with = "Option::is_some")]
     shadow_db_evt_gpa_base: Option<ShadowDoorbell>,
     #[inspect(iter_by_index)]
@@ -141,7 +141,7 @@ impl AdminState {
     pub fn new(handler: &AdminHandler, asq: u64, asqs: u16, acq: u64, acqs: u16) -> Self {
         // Start polling for namespace changes. Use a bounded channel to avoid
         // unbounded memory allocation when the queue is stuck.
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods)] // TODO
         let (send_changed_namespace, recv_changed_namespace) = futures::channel::mpsc::channel(256);
         let poll_namespace_change = handler
             .namespaces

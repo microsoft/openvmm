@@ -3,8 +3,6 @@
 
 //! A very incomplete implementation of ARM GICv3.
 
-// TODO: Remove when all the matches actually handle things.
-#![allow(clippy::match_single_binding)]
 #![forbid(unsafe_code)]
 
 pub use gicd::Distributor;

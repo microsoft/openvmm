@@ -23,12 +23,12 @@ pub struct Uefi {
 
     /// File to set as `bootx64.efi`. Builds `guest_test_uefi` for x64 if no file is provided (default).
     #[clap(long)]
-    #[allow(clippy::option_option)]
+    #[expect(clippy::option_option)]
     bootx64: Option<Option<PathBuf>>,
 
     /// File to set as `bootaa64.efi`. Builds `guest_test_uefi` for ARM64 if no file is provided.
     #[clap(long)]
-    #[allow(clippy::option_option)]
+    #[expect(clippy::option_option)]
     bootaa64: Option<Option<PathBuf>>,
 }
 

@@ -11,8 +11,8 @@ use ::windows::Win32::Storage::FileSystem as W32Fs;
 use ::windows::Win32::System::Ioctl;
 use ::windows::Win32::System::SystemServices as W32Ss;
 use bitfield_struct::bitfield;
+use headervec::HeaderVec;
 use pal::windows::UnicodeString;
-use pal::HeaderVec;
 use std::marker::PhantomData;
 use std::mem::offset_of;
 use std::os::windows::io::AsRawHandle;
@@ -112,7 +112,7 @@ impl FsContext {
     ) -> lx::Result<Self> {
         // Get the filesystem attributes
         let mut iosb = Default::default();
-        let mut fs_attributes: HeaderVec<FileSystem::FILE_FS_ATTRIBUTE_INFORMATION, [u16; 1]> =
+        let mut fs_attributes: HeaderVec<FileSystem::FILE_FS_ATTRIBUTE_INFORMATION, u16, 1> =
             HeaderVec::with_capacity(Default::default(), LX_UTIL_FS_NAME_LENGTH);
         let mut device_info = SystemServices::FILE_FS_DEVICE_INFORMATION::default();
 
@@ -138,7 +138,7 @@ impl FsContext {
         };
 
         let is_remote = device_info.Characteristics & SystemServices::FILE_REMOTE_DEVICE != 0;
-        let attr = fs_attributes.FileSystemAttributes;
+        let attr = fs_attributes.head.FileSystemAttributes;
 
         // SMB does not properly support POSIX unlink/rename.
         let supports_posix_rename =
@@ -731,11 +731,11 @@ fn query_reparse_data(
     file_handle: &OwnedHandle,
 ) -> lx::Result<(
     System::IO::IO_STATUS_BLOCK,
-    HeaderVec<SymlinkReparse, [u8; 1]>,
+    HeaderVec<SymlinkReparse, u8, 1>,
 )> {
     let tail_size = W32Fs::MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize - size_of::<SymlinkReparse>();
     let mut reparse_buffer =
-        HeaderVec::<SymlinkReparse, [u8; 1]>::with_capacity(SymlinkReparse::default(), tail_size);
+        HeaderVec::<SymlinkReparse, u8, 1>::with_capacity(SymlinkReparse::default(), tail_size);
     let mut iosb = Default::default();
 
     // SAFETY: calling Win32 API as documented.
@@ -752,7 +752,7 @@ fn query_reparse_data(
             Some(reparse_buffer.as_mut_ptr().cast()),
             reparse_buffer.total_byte_capacity() as u32,
         ))?;
-        reparse_buffer.set_len(tail_size);
+        reparse_buffer.set_tail_len(tail_size);
     };
 
     if iosb.Information < REPARSE_DATA_BUFFER_HEADER_SIZE {
@@ -768,17 +768,17 @@ pub fn read_link_length(file_handle: &OwnedHandle, state: &VolumeState) -> lx::R
     let (_, reparse_buffer) = query_reparse_data(file_handle)?;
 
     // SAFETY: Accessing union field of type returned from Win32 API
-    let reparse_tag = unsafe { reparse_buffer.header.ReparseTag };
+    let reparse_tag = unsafe { reparse_buffer.head.header.ReparseTag };
     const IO_REPARSE_TAG_LX_SYMLINK: u32 = FileSystem::IO_REPARSE_TAG_LX_SYMLINK as u32;
 
     match reparse_tag {
         IO_REPARSE_TAG_LX_SYMLINK => {
             // SAFETY: Accessing union field of type returned from Win32 API
-            let version = unsafe { reparse_buffer.data.symlink.version };
+            let version = unsafe { reparse_buffer.head.data.symlink.version };
             match version {
                 LX_UTIL_SYMLINK_DATA_VERSION_2 => {
                     // SAFETY: Accessing union field of type returned from Win32 API
-                    let data_length = unsafe { reparse_buffer.header.ReparseDataLength };
+                    let data_length = unsafe { reparse_buffer.head.header.ReparseDataLength };
                     Ok(data_length as u32 - LX_UTIL_SYMLINK_TARGET_OFFSET)
                 }
                 _ => Err(lx::Error::EIO),
@@ -788,7 +788,7 @@ pub fn read_link_length(file_handle: &OwnedHandle, state: &VolumeState) -> lx::R
             // SAFETY: Accessing union field of type returned from Win32 API).
             // The reparse buffer is well-formed as returned from Win32.
             unsafe {
-                let header = &(reparse_buffer.header);
+                let header = &(reparse_buffer.head.header);
                 symlink::read_nt_symlink_length(header, state)
             }
         }
@@ -805,13 +805,13 @@ pub fn read_reparse_link(
     let (iosb, reparse_buffer) = query_reparse_data(file_handle)?;
 
     // SAFETY: Accessing union field of type returned from Win32 API
-    let reparse_tag = unsafe { reparse_buffer.header.ReparseTag };
+    let reparse_tag = unsafe { reparse_buffer.head.header.ReparseTag };
     const IO_REPARSE_TAG_LX_SYMLINK: u32 = FileSystem::IO_REPARSE_TAG_LX_SYMLINK as u32;
 
     match reparse_tag {
         IO_REPARSE_TAG_LX_SYMLINK => {
             // SAFETY: Accessing union field of type returned from Win32 API
-            let version = unsafe { (*reparse_buffer).data.symlink.version };
+            let version = unsafe { reparse_buffer.head.data.symlink.version };
             match version {
                 LX_UTIL_SYMLINK_DATA_VERSION_1 => {
                     if iosb.Information != LX_UTIL_SYMLINK_REPARSE_BASE_SIZE as usize {
@@ -822,7 +822,7 @@ pub fn read_reparse_link(
                 }
                 LX_UTIL_SYMLINK_DATA_VERSION_2 => {
                     // SAFETY: Accessing union field of type returned from Win32 API
-                    let data_length = unsafe { reparse_buffer.header.ReparseDataLength };
+                    let data_length = unsafe { reparse_buffer.head.header.ReparseDataLength };
                     let path_length = data_length - LX_UTIL_SYMLINK_TARGET_OFFSET as u16;
                     if iosb.Information < LX_UTIL_SYMLINK_REPARSE_BASE_SIZE as usize
                         || iosb.Information
@@ -837,7 +837,7 @@ pub fn read_reparse_link(
                             // be valid by the Win32 API due to the previous checks
                             let str = std::str::from_utf8(unsafe {
                                 std::slice::from_raw_parts(
-                                    reparse_buffer.data.symlink.target.as_ptr(),
+                                    reparse_buffer.head.data.symlink.target.as_ptr(),
                                     path_length as usize,
                                 )
                             })
@@ -854,7 +854,7 @@ pub fn read_reparse_link(
             // SAFETY: Accessing union field of type returned from Win32 API).
             // The reparse buffer is well-formed as returned from Win32.
             unsafe {
-                let header = &(reparse_buffer.header);
+                let header = &reparse_buffer.head.header;
                 symlink::read_nt_symlink(header, state).map(Some)
             }
         }

@@ -121,8 +121,6 @@ impl<'a> WhpProcessor<'a> {
         if old_vtl != new_vtl {
             tracing::trace!(?old_vtl, ?new_vtl, "switching vtl");
 
-            // TODO: This allow shouldn't be necessary once VTL2 emulation is supported on ARM
-            #[cfg_attr(guest_arch = "aarch64", allow(clippy::zero_repeat_side_effects))]
             let mut regs =
                 [whp::abi::WHV_REGISTER_VALUE::default(); Self::VTL_SHARED_REGISTERS.len()];
             self.vp
@@ -1326,7 +1324,7 @@ mod x86 {
                     }
                     0x40000000..=0x4fffffff => {
                         if let Some(hv) = &mut self.state.vtls[self.state.active_vtl].hv {
-                            hv.msr_write(msr, v)
+                            hv.msr_write(msr, v, &mut crate::WhpNoVtlProtections)
                         } else {
                             match msr {
                                 hvdef::HV_X64_MSR_VP_ASSIST_PAGE

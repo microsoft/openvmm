@@ -49,7 +49,7 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.84"
+rust-version = "1.85"
 edition = "2021"
 
 [workspace.dependencies]
@@ -95,6 +95,7 @@ debug_ptr = { path = "support/debug_ptr" }
 fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }
+headervec = { path = "support/headervec" }
 inspect = { path = "support/inspect", default-features = false, features = ["derive"] }
 inspect_counters = { path = "support/inspect_counters" }
 inspect_derive = { path = "support/inspect_derive" }
@@ -150,7 +151,6 @@ build_info = { path = "openhcl/build_info" }
 diag_client = { path = "openhcl/diag_client" }
 diag_proto = { path = "openhcl/diag_proto" }
 diag_server = { path = "openhcl/diag_server" }
-get_lower_vtl = { path = "openhcl/get_lower_vtl" }
 hcl = { path = "openhcl/hcl" }
 hcl_mapper = { path = "openhcl/hcl_mapper" }
 host_fdt_parser = { path = "openhcl/host_fdt_parser" }
@@ -158,6 +158,7 @@ kmsg_defs = { path = "openhcl/kmsg_defs" }
 lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
+openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
 underhill_attestation = { path = "openhcl/underhill_attestation" }
@@ -407,7 +408,7 @@ filepath = "0.1"
 fs-err = "2.9"
 fscommon = "0.1.1"
 futures = "0.3.31"
-futures-concurrency = "7.2.1"
+futures-concurrency = "7.6.3"
 futures-executor = "0.3"
 futures-core = "0.3"
 futures-channel = "0.3"
@@ -467,7 +468,7 @@ pbjson = "0.5"
 pbjson-build = "0.5"
 pbjson-types = "0.5"
 pcap-file = "2.0.0"
-petgraph = "0.6.4"
+petgraph = "0.7.1"
 proc-macro2 = "1.0"
 prost = "0.11"
 prost-build = "0.11"
@@ -625,6 +626,9 @@ string_to_string = "warn"
 suboptimal_flops = "warn"
 undocumented_unsafe_blocks = "warn"
 unnecessary_box_returns = "warn"
+
+# TODO: Remove this allow in Rust 1.86. See https://github.com/rust-lang/rust-clippy/pull/14115.
+precedence = "allow"
 
 # Possible future additions:
 #

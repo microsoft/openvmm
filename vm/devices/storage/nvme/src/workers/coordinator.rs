@@ -32,7 +32,7 @@ use vmcore::vm_task::VmTaskDriverSource;
 
 pub struct NvmeWorkers {
     _task: Task<()>,
-    send: mesh::MpscSender<CoordinatorRequest>,
+    send: mesh::Sender<CoordinatorRequest>,
     doorbells: Vec<Arc<DoorbellRegister>>,
     state: EnableState,
 }
@@ -184,7 +184,7 @@ impl NvmeWorkers {
 /// Client for modifying the NVMe controller state at runtime.
 #[derive(Debug)]
 pub struct NvmeControllerClient {
-    send: mesh::MpscSender<CoordinatorRequest>,
+    send: mesh::Sender<CoordinatorRequest>,
 }
 
 impl NvmeControllerClient {
@@ -230,7 +230,7 @@ struct EnableAdminParams {
 }
 
 impl Coordinator {
-    async fn run(mut self, mut recv: mesh::MpscReceiver<CoordinatorRequest>) {
+    async fn run(mut self, mut recv: mesh::Receiver<CoordinatorRequest>) {
         loop {
             enum Event {
                 Request(Option<CoordinatorRequest>),

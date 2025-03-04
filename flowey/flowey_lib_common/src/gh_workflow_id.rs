@@ -62,8 +62,8 @@ impl SimpleFlowNode for Node {
                 sh.change_dir(repo_path);
 
                 // Fetches the CI build workflow id for a given commit hash
-                let get_action_id = |commit: String| {
-                    xshell::cmd!(
+                let get_action_id = |commit: String| -> Option<String> {
+                    let output = xshell::cmd!(
                         sh,
                         "{gh_cli} run list
                         --commit {commit}
@@ -73,7 +73,16 @@ impl SimpleFlowNode for Node {
                         --json databaseId
                         --jq .[].databaseId"
                     )
-                    .read()
+                    .read();
+
+                    match output {
+                        Ok(output) if output.trim().is_empty() => None,
+                        Ok(output) => Some(output),
+                        Err(e) => {
+                            println!("Failed to get action id for commit {}: {}", commit, e);
+                            None
+                        }
+                    }
                 };
 
                 let mut github_commit_hash = github_commit_hash.clone();
@@ -82,17 +91,24 @@ impl SimpleFlowNode for Node {
 
                 // CI may not have finished the build for the merge base, so loop through commits
                 // until we find a finished build or fail after 5 attempts
-                while let Err(ref e) = action_id {
+                while action_id.is_none() {
+                    println!(
+                        "Unable to get action id for commit {}, trying again",
+                        github_commit_hash
+                    );
+
                     if loop_count > 4 {
-                        anyhow::bail!("Failed to get action id after 5 attempts: {}", e);
+                        anyhow::bail!("Failed to get action id after 5 attempts");
                     }
 
                     github_commit_hash =
                         xshell::cmd!(sh, "git rev-parse {github_commit_hash}^").read()?;
                     action_id = get_action_id(github_commit_hash.clone());
+
                     loop_count += 1;
                 }
 
+                // We have an action id or we would've bailed in the loop above
                 let id = action_id.context("failed to get action id")?;
 
                 println!("Got action id {id}, commit {github_commit_hash}");

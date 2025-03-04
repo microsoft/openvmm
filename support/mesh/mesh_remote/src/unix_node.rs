@@ -506,7 +506,7 @@ fn start_connection(
     handle: RemoteNodeHandle,
     socket: UnixSocket,
 ) {
-    #[allow(clippy::disallowed_methods)] // TODO
+    #[expect(clippy::disallowed_methods)] // TODO
     let (send, recv) = mpsc::unbounded();
     let socket = Arc::new(socket);
     let sender = PacketSender {

@@ -29,8 +29,6 @@ pub use mesh_channel::pipe;
 pub use mesh_channel::rpc;
 pub use mesh_channel::ChannelError;
 pub use mesh_channel::ChannelErrorKind;
-pub use mesh_channel::MpscReceiver;
-pub use mesh_channel::MpscSender;
 pub use mesh_channel::OneshotReceiver;
 pub use mesh_channel::OneshotSender;
 pub use mesh_channel::Receiver;

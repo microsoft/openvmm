@@ -10,10 +10,10 @@ use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
 // f912ad6d-2b17-48ea-bd65-f927a61c7684
-pub const INTERFACE_GUID: Guid = Guid::from_static_str("f912ad6d-2b17-48ea-bd65-f927a61c7684");
+pub const INTERFACE_GUID: Guid = guid::guid!("f912ad6d-2b17-48ea-bd65-f927a61c7684");
 
 // d34b2567-b9b6-42b9-8778-0a4ec0b955bf
-pub const INSTANCE_GUID: Guid = Guid::from_static_str("d34b2567-b9b6-42b9-8778-0a4ec0b955bf");
+pub const INSTANCE_GUID: Guid = guid::guid!("d34b2567-b9b6-42b9-8778-0a4ec0b955bf");
 
 const fn make_version(major: u16, minor: u16) -> u32 {
     (major as u32) << 16 | minor as u32

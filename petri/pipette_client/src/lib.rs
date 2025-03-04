@@ -228,8 +228,10 @@ async fn recv_diag_files(output_dir: PathBuf, mut diag_file_recv: mesh::Receiver
             .expect("failed to write diagnostic file");
         tracing::debug!(name, "diagnostic file transfer complete");
 
-        // ATTACHMENT is most reliable when using true canonicalized paths
-        #[allow(clippy::disallowed_methods)]
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ATTACHMENT is most reliable when using true canonicalized paths"
+        )]
         let canonical_path = path
             .canonicalize()
             .expect("failed to canonicalize attachment path");

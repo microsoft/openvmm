@@ -228,7 +228,7 @@ impl Parse for Args {
             .collect();
 
         for config in &configs {
-            #[allow(clippy::single_match)] // more patterns coming later
+            #[expect(clippy::single_match)] // more patterns coming later
             match config.firmware {
                 Firmware::Uefi(UefiGuest::Vhd(ImageInfo { arch, .. })) => {
                     if config.arch != arch {

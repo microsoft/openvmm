@@ -18,10 +18,10 @@ use std::os::raw::c_int;
 #[allow(non_camel_case_types)]
 #[allow(dead_code)]
 #[allow(non_upper_case_globals)]
-#[allow(clippy::missing_safety_doc)]
-#[allow(clippy::undocumented_unsafe_blocks)]
-#[allow(clippy::ref_as_ptr)]
-#[allow(clippy::ptr_as_ptr)]
+#[expect(clippy::missing_safety_doc)]
+#[expect(clippy::undocumented_unsafe_blocks)]
+#[expect(clippy::ref_as_ptr)]
+#[expect(clippy::ptr_as_ptr)]
 pub mod gen_if;
 
 // Generated using:
@@ -30,10 +30,10 @@ pub mod gen_if;
 #[allow(non_camel_case_types)]
 #[allow(dead_code)]
 #[allow(non_upper_case_globals)]
-#[allow(clippy::missing_safety_doc)]
-#[allow(clippy::undocumented_unsafe_blocks)]
-#[allow(clippy::ref_as_ptr)]
-#[allow(clippy::ptr_as_ptr)]
+#[expect(clippy::missing_safety_doc)]
+#[expect(clippy::undocumented_unsafe_blocks)]
+#[expect(clippy::ref_as_ptr)]
+#[expect(clippy::ptr_as_ptr)]
 pub mod gen_if_tun;
 
 // #define TUNSETIFF     _IOW('T', 202, int)

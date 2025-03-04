@@ -68,7 +68,7 @@ impl MappingManager {
 /// Provides access to the mapping manager.
 #[derive(Debug, MeshPayload, Clone)]
 pub struct MappingManagerClient {
-    req_send: mesh::MpscSender<MappingRequest>,
+    req_send: mesh::Sender<MappingRequest>,
     id: ObjectId,
     max_addr: u64,
 }
@@ -224,7 +224,7 @@ impl MappingManagerTask {
         }
     }
 
-    async fn run(&mut self, req_recv: &mut mesh::MpscReceiver<MappingRequest>) {
+    async fn run(&mut self, req_recv: &mut mesh::Receiver<MappingRequest>) {
         while let Some(req) = req_recv.next().await {
             match req {
                 MappingRequest::AddMapper(rpc) => rpc.handle_sync(|send| self.add_mapper(send)),

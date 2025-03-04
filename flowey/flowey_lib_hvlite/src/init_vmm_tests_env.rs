@@ -43,9 +43,6 @@ flowey_request! {
 
         /// Get the path to the folder containing various logs emitted VMM tests.
         pub get_test_log_path: Option<WriteVar<PathBuf>>,
-        /// Get the path to the folder containing any openhcl dumps that may have
-        /// been generated during test execution.
-        pub get_openhcl_dump_path: Option<WriteVar<PathBuf>>,
         /// Get a map of env vars required to be set when running VMM tests
         pub get_env: WriteVar<BTreeMap<String, String>>,
     }
@@ -72,7 +69,6 @@ impl SimpleFlowNode for Node {
             disk_images_dir,
             register_openhcl_igvm_files,
             get_test_log_path,
-            get_openhcl_dump_path,
             get_env,
         } = request;
 
@@ -95,7 +91,6 @@ impl SimpleFlowNode for Node {
             let test_content_dir = test_content_dir.claim(ctx);
             let get_env = get_env.claim(ctx);
             let get_test_log_path = get_test_log_path.claim(ctx);
-            let get_openhcl_dump_path = get_openhcl_dump_path.claim(ctx);
             let openvmm = register_openvmm.claim(ctx);
             let pipette_win = register_pipette_windows.claim(ctx);
             let pipette_linux = register_pipette_linux_musl.claim(ctx);
@@ -149,17 +144,6 @@ impl SimpleFlowNode for Node {
                     fs_err::create_dir(&test_log_dir)?
                 };
                 env.insert("TEST_OUTPUT_PATH".into(), path_as_string(&test_log_dir)?);
-
-                // use a subdir for openhcl dumps
-                let openhcl_dumps_dir = test_content_dir.join("uh_dumps");
-                if !openhcl_dumps_dir.exists() {
-                    fs_err::create_dir(&openhcl_dumps_dir)?
-                };
-                // TODO OSS: update env vars to use OPENVMM naming (requires petri updates)
-                env.insert(
-                    "OPENHCL_DUMP_PATH".into(),
-                    path_as_string(&openhcl_dumps_dir)?,
-                );
 
                 if let Some(disk_image_dir) = disk_image_dir {
                     env.insert(
@@ -267,10 +251,6 @@ impl SimpleFlowNode for Node {
 
                 if let Some(var) = get_test_log_path {
                     rt.write(var, &test_log_dir)
-                }
-
-                if let Some(var) = get_openhcl_dump_path {
-                    rt.write(var, &openhcl_dumps_dir)
                 }
 
                 Ok(())

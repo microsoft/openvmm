@@ -7,8 +7,6 @@ mod pci_shutdown;
 pub mod vtl2_settings_worker;
 
 use self::vtl2_settings_worker::DeviceInterfaces;
-use crate::dma_manager::DmaClientSpawner;
-use crate::dma_manager::GlobalDmaManager;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::emuplat::EmuplatServicing;
 use crate::nvme_manager::NvmeManager;
@@ -43,7 +41,8 @@ use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
-use page_pool_alloc::PagePool;
+use openhcl_dma_manager::DmaClientSpawner;
+use openhcl_dma_manager::OpenhclDmaManager;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
@@ -111,6 +110,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
+        is_isolated: bool,
     ) -> anyhow::Result<RuntimeSavedState>;
 
     /// Callback when network is removed externally.
@@ -179,11 +179,9 @@ pub(crate) struct LoadedVm {
 
     pub _periodic_telemetry_task: Task<()>,
 
-    pub shared_vis_pool: Option<PagePool>,
-    pub private_pool: Option<PagePool>,
     pub nvme_keep_alive: bool,
     pub test_configuration: Option<TestScenarioConfig>,
-    pub dma_manager: GlobalDmaManager,
+    pub dma_manager: OpenhclDmaManager,
 }
 
 pub struct LoadedVmState<T> {
@@ -308,9 +306,8 @@ impl LoadedVm {
                             "vtl0_memory_map",
                             inspect_helpers::vtl0_memory_map(&self.vtl0_memory_map),
                         );
-                        resp.field("shared_vis_pool", &self.shared_vis_pool);
-                        resp.field("private_pool", &self.private_pool);
                         resp.field("memory", &self.memory);
+                        resp.field("dma_manager", &self.dma_manager);
                     }),
                 },
                 Event::Vtl2ConfigNicRpc(message) => {
@@ -662,22 +659,13 @@ impl LoadedVm {
             .save()
             .await
             .context("vmgs save failed")?;
-        let shared_vis_pool = self
-            .shared_vis_pool
-            .as_mut()
-            .map(vmcore::save_restore::SaveRestore::save)
-            .transpose()
-            .context("shared_vis_pool save failed")?;
 
-        // Only save private pool state if we are expected to keep VF devices
+        // Only save dma manager state if we are expected to keep VF devices
         // alive across save. Otherwise, don't persist the state at all, as
         // there should be no live DMA across save.
-        let private_pool = if vf_keepalive_flag {
-            self.private_pool
-                .as_mut()
-                .map(vmcore::save_restore::SaveRestore::save)
-                .transpose()
-                .context("private_pool save failed")?
+        let dma_manager_state = if vf_keepalive_flag {
+            use vmcore::save_restore::SaveRestore;
+            Some(self.dma_manager.save().context("dma_manager save failed")?)
         } else {
             None
         };
@@ -692,8 +680,7 @@ impl LoadedVm {
                 vmgs: (vmgs, self.vmgs_disk_metadata.clone()),
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
                 nvme_state,
-                shared_pool_state: shared_vis_pool,
-                private_pool_state: private_pool,
+                dma_manager_state,
             },
             units,
         })
@@ -753,7 +740,8 @@ impl LoadedVm {
                 self.partition.clone(),
                 &self.state_units,
                 &self.vmbus_server,
-                self.dma_manager.get_client_spawner().clone(),
+                self.dma_manager.client_spawner(),
+                self.isolation.is_isolated(),
             )
             .await?;
 

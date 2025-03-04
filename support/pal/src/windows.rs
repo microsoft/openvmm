@@ -5,7 +5,7 @@
 // UNSAFETY: Calls to Win32 functions to handle delay loading, interacting
 // with low level primitives, and memory management.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 pub mod afd;
 pub mod alpc;
@@ -316,7 +316,7 @@ impl IoCompletionPort {
 
     // Per MSDN, overlapped values are not dereferenced by PostQueuedCompletionStatus,
     // they are passed as-is to the caller of GetQueuedCompletionStatus.
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[expect(clippy::not_unsafe_ptr_arg_deref)]
     pub fn post(&self, bytes: u32, key: usize, overlapped: *mut OVERLAPPED) {
         unsafe {
             if PostQueuedCompletionStatus(self.0.as_raw_handle(), bytes, key, overlapped) == 0 {

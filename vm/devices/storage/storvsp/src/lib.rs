@@ -719,7 +719,7 @@ impl<T: RingMem + 'static> Worker<T> {
         force_path_id: Option<u8>,
     ) -> anyhow::Result<Self> {
         let queue = Queue::new(channel)?;
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods)] // TODO
         let (source, target) = futures::channel::mpsc::channel(1);
         controller.add_rescan_notification_source(source);
 

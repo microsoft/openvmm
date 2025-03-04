@@ -4,7 +4,7 @@
 use crate::OfferInfo;
 use crate::RestoreError;
 use crate::RestoredChannel;
-use crate::VmbusMessageSource;
+use crate::SUPPORTED_FEATURE_FLAGS;
 use guid::Guid;
 use mesh::payload::Protobuf;
 use vmbus_channel::bus::OfferKey;
@@ -12,26 +12,27 @@ use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::FeatureFlags;
 use vmbus_core::protocol::GpadlId;
+use vmbus_core::OutgoingMessage;
 use vmbus_core::VersionInfo;
 
-impl<T: VmbusMessageSource> super::ClientTask<T> {
+impl super::ClientTask {
     pub fn handle_save(&mut self) -> SavedState {
         // It's the responsibility of the caller to ensure the client is in a state where it's
         // possible to save.
         SavedState {
             client_state: match &self.state {
                 super::ClientState::Disconnected => ClientState::Disconnected,
-                super::ClientState::Connecting(..) => {
+                super::ClientState::Connecting { .. } => {
                     unreachable!("Cannot save in Connecting state.")
                 }
-                super::ClientState::Connected(info) => ClientState::Connected {
+                super::ClientState::Connected { version: info } => ClientState::Connected {
                     version: info.version as u32,
                     feature_flags: info.feature_flags.into(),
                 },
-                super::ClientState::RequestingOffers(..) => {
+                super::ClientState::RequestingOffers { .. } => {
                     unreachable!("Cannot save in RequestingOffers state.")
                 }
-                super::ClientState::Disconnecting(..) => {
+                super::ClientState::Disconnecting { .. } => {
                     unreachable!("Cannot save in Disconnecting state.")
                 }
             },
@@ -64,6 +65,15 @@ impl<T: VmbusMessageSource> super::ClientTask<T> {
                     state: GpadlState::save(gpadl_state),
                 })
                 .collect(),
+            pending_messages: self
+                .inner
+                .messages
+                .queued
+                .iter()
+                .map(|msg| PendingMessage {
+                    data: msg.data().to_vec(),
+                })
+                .collect(),
         }
     }
 
@@ -71,9 +81,16 @@ impl<T: VmbusMessageSource> super::ClientTask<T> {
         &mut self,
         saved_state: SavedState,
     ) -> Result<(Option<VersionInfo>, Vec<RestoredChannel>), RestoreError> {
+        let SavedState {
+            client_state,
+            channels,
+            gpadls,
+            pending_messages,
+        } = saved_state;
+
         let mut restored_channels = Vec::new();
-        self.state = saved_state.client_state.try_into()?;
-        for saved_channel in saved_state.channels {
+        self.state = client_state.try_into()?;
+        for saved_channel in channels {
             if let Some(offer_info) = self.restore_channel(saved_channel) {
                 let key = offer_key(&offer_info.offer);
                 tracing::info!(%key, state = %saved_channel.state, "channel restored");
@@ -87,7 +104,7 @@ impl<T: VmbusMessageSource> super::ClientTask<T> {
             }
         }
 
-        for gpadl in saved_state.gpadls {
+        for gpadl in gpadls {
             let channel_id = ChannelId(gpadl.channel_id);
             let gpadl_id = GpadlId(gpadl.gpadl_id);
             let gpadl_state = gpadl.state.restore();
@@ -113,7 +130,57 @@ impl<T: VmbusMessageSource> super::ClientTask<T> {
             }
         }
 
+        for message in pending_messages {
+            self.inner.messages.queued.push_back(
+                OutgoingMessage::from_message(&message.data)
+                    .map_err(RestoreError::InvalidPendingMessage)?,
+            );
+        }
+
         Ok((self.state.get_version(), restored_channels))
+    }
+
+    pub fn handle_post_restore(&mut self) {
+        let mut closed = Vec::new();
+        // Close restored channels that have not been claimed.
+        for (&channel_id, channel) in &mut self.inner.channels {
+            if let super::ChannelState::Restored = channel.state {
+                tracing::info!(
+                    channel_id = channel_id.0,
+                    "closing unclaimed restored channel"
+                );
+                self.inner
+                    .messages
+                    .send(&protocol::CloseChannel { channel_id });
+                channel.state = super::ChannelState::Offered;
+                closed.push(channel_id);
+            }
+        }
+
+        closed.sort();
+
+        // Tear down GPADLs for unclaimed channels.
+        for (&(channel_id, gpadl_id), state) in &mut self.inner.gpadls {
+            if closed.binary_search(&channel_id).is_err() {
+                continue;
+            }
+            // FUTURE: wait for GPADL teardown so that everything is in a clean
+            // state after this.
+            match state {
+                crate::GpadlState::Offered(_) => unreachable!(),
+                crate::GpadlState::Created => {
+                    self.inner
+                        .teardown_gpadls
+                        .insert(gpadl_id, Some(channel_id));
+                    self.inner.messages.send(&protocol::GpadlTeardown {
+                        channel_id,
+                        gpadl_id,
+                    });
+                    *state = crate::GpadlState::TearingDown;
+                }
+                crate::GpadlState::TearingDown => {}
+            }
+        }
     }
 
     fn restore_channel(&mut self, channel: Channel) -> Option<OfferInfo> {
@@ -130,6 +197,18 @@ pub struct SavedState {
     pub channels: Vec<Channel>,
     #[mesh(3)]
     pub gpadls: Vec<Gpadl>,
+    /// Added in Feb 2025, but not yet used in practice (we flush pending
+    /// messages during stop) since we need to support restoring on older
+    /// versions.
+    #[mesh(4)]
+    pub pending_messages: Vec<PendingMessage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
+#[mesh(package = "vmbus.client")]
+pub struct PendingMessage {
+    #[mesh(1)]
+    pub data: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
@@ -163,14 +242,16 @@ impl TryFrom<ClientState> for super::ClientState {
                     .ok_or(RestoreError::UnsupportedVersion(version))?;
 
                 let feature_flags = FeatureFlags::from(feature_flags);
-                if feature_flags.contains_unsupported_bits() {
+                if !SUPPORTED_FEATURE_FLAGS.contains(feature_flags) {
                     return Err(RestoreError::UnsupportedFeatureFlags(feature_flags.into()));
                 }
 
-                Self::Connected(VersionInfo {
-                    version,
-                    feature_flags,
-                })
+                Self::Connected {
+                    version: VersionInfo {
+                        version,
+                        feature_flags,
+                    },
+                }
             }
         };
 
@@ -202,17 +283,19 @@ impl ChannelState {
     fn save(state: &super::ChannelState) -> Self {
         match state {
             super::ChannelState::Offered => Self::Offered,
-            super::ChannelState::Opening(..) => {
+            super::ChannelState::Opening { .. } => {
                 unreachable!("Cannot save channel in opening state.")
             }
-            super::ChannelState::Opened => Self::Opened,
+            super::ChannelState::Restored { .. } | super::ChannelState::Opened { .. } => {
+                Self::Opened
+            }
         }
     }
 
     fn restore(self) -> super::ChannelState {
         match self {
             ChannelState::Offered => super::ChannelState::Offered,
-            ChannelState::Opened => super::ChannelState::Opened,
+            ChannelState::Opened => super::ChannelState::Restored,
         }
     }
 }

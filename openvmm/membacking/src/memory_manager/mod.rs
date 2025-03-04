@@ -181,12 +181,7 @@ impl GuestMemoryBuilder {
         // Spawn a thread to handle memory requests.
         //
         // FUTURE: move this to a task once the GuestMemory deadlocks are resolved.
-        let pool = DefaultPool::new();
-        let spawner = pool.driver();
-        let thread = std::thread::Builder::new()
-            .name("memory_manager".to_owned())
-            .spawn(move || pool.run())
-            .unwrap();
+        let (thread, spawner) = DefaultPool::spawn_on_thread("memory_manager");
 
         let max_addr =
             (mem_layout.end_of_ram_or_mmio()).max(mem_layout.vtl2_range().map_or(0, |r| r.end()));

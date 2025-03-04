@@ -9,14 +9,14 @@ use firmware_uefi::platform::logger::UefiEvent;
 use firmware_uefi::platform::logger::UefiLogger;
 use get_resources::ged::FirmwareEvent;
 
-/// Forwards UEFI and PCAT events to via the provided [`mesh::MpscSender`].
+/// Forwards UEFI and PCAT events to via the provided [`mesh::Sender`].
 #[derive(Debug)]
 pub struct MeshLogger {
-    sender: Option<mesh::MpscSender<FirmwareEvent>>,
+    sender: Option<mesh::Sender<FirmwareEvent>>,
 }
 
 impl MeshLogger {
-    pub fn new(sender: Option<mesh::MpscSender<FirmwareEvent>>) -> Self {
+    pub fn new(sender: Option<mesh::Sender<FirmwareEvent>>) -> Self {
         Self { sender }
     }
 

@@ -6,7 +6,7 @@
 #![cfg(all(windows, guest_is_native))]
 // UNSAFETY: Calling WHP APIs and manually managing memory.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 mod apic;
 pub mod device;
@@ -1349,7 +1349,6 @@ impl VtlPartition {
                     vendor,
                     tsc_frequency,
                     ref_time,
-                    hypercall_page_protectors: hv1_structs::VtlArray::from_fn(|_| None),
                 }))
             }
         } else {
@@ -1435,10 +1434,23 @@ impl VtlPartition {
     }
 }
 
+struct WhpNoVtlProtections;
+impl hv1_emulator::hv::VtlProtectHypercallOverlay for WhpNoVtlProtections {
+    fn change_overlay(&mut self, _gpn: u64) {}
+    fn disable_overlay(&mut self) {}
+}
+
 impl Hv1State {
     fn reset(&self) {
         match self {
-            Hv1State::Emulated(hv) => hv.reset(),
+            Hv1State::Emulated(hv) => hv.reset(
+                [
+                    &mut WhpNoVtlProtections
+                        as &mut dyn hv1_emulator::hv::VtlProtectHypercallOverlay,
+                    &mut WhpNoVtlProtections,
+                ]
+                .into(),
+            ),
             Hv1State::Offloaded => {}
             Hv1State::Disabled => {}
         }

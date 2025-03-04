@@ -36,7 +36,6 @@ impl X87FpuInternalRegId {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[allow(clippy::upper_case_acronyms)]
 pub enum X86SegmentRegId {
     CS,
     SS,

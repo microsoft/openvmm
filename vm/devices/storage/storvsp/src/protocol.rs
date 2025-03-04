@@ -13,10 +13,9 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-pub const SCSI_INTERFACE_ID: Guid = Guid::from_static_str("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f");
+pub const SCSI_INTERFACE_ID: Guid = guid::guid!("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f");
 
-pub const IDE_ACCELERATOR_INTERFACE_ID: Guid =
-    Guid::from_static_str("32412632-86cb-44a2-9b5c-50d1417354f5");
+pub const IDE_ACCELERATOR_INTERFACE_ID: Guid = guid::guid!("32412632-86cb-44a2-9b5c-50d1417354f5");
 
 /// Sent as part of the channel offer. Old versions of Windows drivers look at
 /// this to determine the IDE device the channel is for. Newer drivers and Linux

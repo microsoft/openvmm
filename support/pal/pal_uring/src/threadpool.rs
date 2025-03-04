@@ -16,7 +16,6 @@
 use super::ioring::IoCompletionRing;
 use super::ioring::IoMemory;
 use super::ioring::IoRing;
-use futures::task::noop_waker;
 use futures::FutureExt;
 use inspect::Inspect;
 use io_uring::opcode;
@@ -540,7 +539,7 @@ impl<T: 'static + Send + Sync + Unpin, Init: Borrow<IoInitiator> + Unpin> Io<T, 
         let idx = unsafe {
             self.initiator
                 .borrow()
-                .submit_io(sqe, IoMemory::new(()), noop_waker())
+                .submit_io(sqe, IoMemory::new(()), Waker::noop().clone())
         };
         self.initiator.borrow().drop_io(idx);
     }

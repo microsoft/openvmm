@@ -4,7 +4,7 @@
 #![cfg(windows)]
 // UNSAFETY: Calling WHP APIs.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 pub mod abi;
 mod api;
@@ -513,7 +513,7 @@ impl Partition {
         }
     }
 
-    #[allow(clippy::missing_safety_doc)]
+    #[expect(clippy::missing_safety_doc)]
     pub unsafe fn map_range(
         &self,
         process: Option<BorrowedHandle<'_>>,
@@ -697,7 +697,7 @@ impl Partition {
         self.get_property(partition_prop::PhysicalAddressWidth)
     }
 
-    #[allow(clippy::missing_safety_doc)]
+    #[expect(clippy::missing_safety_doc)]
     pub unsafe fn register_doorbell(&self, m: &DoorbellMatch, event: RawHandle) -> Result<()> {
         unsafe {
             check_hresult(api::WHvRegisterPartitionDoorbellEvent(

@@ -499,7 +499,6 @@ impl<
                             error,
                         })?;
 
-                        #[allow(clippy::single_match)]
                         match openhcl_child.name {
                             "entropy" => {
                                 let host_entropy = openhcl_child

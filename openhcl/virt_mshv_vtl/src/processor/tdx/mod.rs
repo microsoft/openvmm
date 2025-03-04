@@ -16,6 +16,7 @@ use super::UhHypercallHandler;
 use super::UhRunVpError;
 use crate::BackingShared;
 use crate::GuestVtl;
+use crate::TlbFlushLockAccess;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
 use crate::UhPartitionInner;
@@ -31,6 +32,7 @@ use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::AsHandler;
 use hv1_hypercall::HvRepResult;
 use hv1_hypercall::HypercallIo;
+use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
 use hvdef::hypercall::HvFlushFlags;
 use hvdef::hypercall::HvGvaRange;
@@ -44,7 +46,6 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
 use parking_lot::RwLock;
-use std::num::NonZeroU64;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use thiserror::Error;
@@ -269,10 +270,10 @@ impl VirtualRegister {
     /// Write a new value to the virtual register. This updates host owned bits
     /// in the shadowed value, and updates guest owned bits in the physical
     /// register in the vmcs.
-    fn write(
+    fn write<'a>(
         &mut self,
         value: u64,
-        runner: &mut ProcessorRunner<'_, Tdx>,
+        runner: &mut ProcessorRunner<'a, Tdx<'a>>,
     ) -> Result<(), VirtualRegisterError> {
         tracing::trace!(?self.register, value, "write virtual register");
 
@@ -309,7 +310,7 @@ impl VirtualRegister {
         Ok(())
     }
 
-    fn read(&self, runner: &ProcessorRunner<'_, Tdx>) -> u64 {
+    fn read(&self, runner: &ProcessorRunner<'_, Tdx<'_>>) -> u64 {
         let physical_reg = runner.read_vmcs64(self.vtl, self.register.physical_vmcs_field());
 
         // Get the bits owned by the host from the shadow and the bits owned by the
@@ -396,20 +397,13 @@ pub struct TdxBacked {
     #[inspect(mut)]
     vtls: VtlArray<TdxVtl, 2>,
 
-    /// PFNs used for overlays.
-    #[inspect(iter_by_index)]
-    direct_overlays_pfns: [u64; UhDirectOverlay::Count as usize],
-    #[inspect(skip)]
-    #[allow(dead_code)] // Allocation handle for direct overlays held until drop
-    direct_overlay_pfns_handle: page_pool_alloc::PagePoolHandle,
-
     untrusted_synic: Option<ProcessorSynic>,
     #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
     eoi_exit_bitmap: [u64; 4],
 
     /// A mapped page used for issuing INVGLA hypercalls.
     #[inspect(skip)]
-    flush_page: page_pool_alloc::PagePoolHandle,
+    flush_page: user_driver::memory::MemoryBlock,
 
     cvm: UhCvmVpState,
 }
@@ -481,11 +475,6 @@ pub struct ExitStats {
     pub exception: Counter,
 }
 
-/// The number of shared pages required per cpu.
-pub const fn shared_pages_required_per_cpu() -> u64 {
-    UhDirectOverlay::Count as u64
-}
-
 enum UhDirectOverlay {
     Sipp,
     Sifp,
@@ -493,6 +482,10 @@ enum UhDirectOverlay {
 }
 
 impl HardwareIsolatedBacking for TdxBacked {
+    fn shared_pages_required_per_cpu() -> u64 {
+        UhDirectOverlay::Count as u64
+    }
+
     fn cvm_state_mut(&mut self) -> &mut UhCvmVpState {
         &mut self.cvm
     }
@@ -501,13 +494,11 @@ impl HardwareIsolatedBacking for TdxBacked {
         &shared.cvm
     }
 
-    fn switch_vtl_state(
-        _this: &mut UhProcessor<'_, Self>,
-        _source_vtl: GuestVtl,
-        _target_vtl: GuestVtl,
-    ) {
-        // TODO TDX GUEST VSM
-        todo!()
+    fn switch_vtl(this: &mut UhProcessor<'_, Self>, _source_vtl: GuestVtl, target_vtl: GuestVtl) {
+        // The GPs, Fxsave, and CR2 are saved in the shared kernel state. No copying needed.
+        // Debug registers and XFEM are shared architecturally. No copying needed.
+
+        this.backing.cvm_state_mut().exit_vtl = target_vtl;
     }
 
     fn translation_registers(
@@ -540,7 +531,7 @@ impl HardwareIsolatedBacking for TdxBacked {
 /// Partition-wide shared data for TDX VPs.
 #[derive(Inspect)]
 pub struct TdxBackedShared {
-    cvm: UhCvmPartitionState,
+    pub(crate) cvm: UhCvmPartitionState,
     flush_state: VtlArray<RwLock<TdxPartitionFlushState>, 2>,
     #[inspect(iter_by_index)]
     active_vtl: Vec<AtomicU8>,
@@ -560,7 +551,7 @@ impl TdxBackedShared {
 }
 
 impl BackingPrivate for TdxBacked {
-    type HclBacking = Tdx;
+    type HclBacking<'tdx> = Tdx<'tdx>;
     type Shared = TdxBackedShared;
     type EmulationCache = TdxEmulationCache;
 
@@ -573,7 +564,7 @@ impl BackingPrivate for TdxBacked {
 
     fn new(
         params: super::private::BackingParams<'_, '_, Self>,
-        _shared: &TdxBackedShared,
+        shared: &TdxBackedShared,
     ) -> Result<Self, crate::Error> {
         // TODO TDX: TDX shares the vp context page for xmm registers only. It
         // should probably move to its own page.
@@ -676,27 +667,13 @@ impl BackingPrivate for TdxBacked {
             }
         }
 
-        // Allocate PFNs for direct overlays
-        let pfns_handle = params
-            .partition
-            .shared_vis_pages_pool
-            .as_ref()
-            .expect("must have shared vis pool when using SNP")
-            .alloc(
-                NonZeroU64::new(shared_pages_required_per_cpu()).expect("is nonzero"),
-                format!("direct overlay vp {}", params.vp_info.base.vp_index.index()),
-            )
-            .map_err(super::Error::AllocateSharedVisOverlay)?;
-        let pfns = pfns_handle.base_pfn()..pfns_handle.base_pfn() + pfns_handle.size_pages();
-        let overlays: Vec<_> = pfns.collect();
-
         let flush_page = params
             .partition
-            .private_vis_pages_pool
+            .private_dma_client
             .as_ref()
-            .expect("private pool exists for cvm")
-            .alloc_with_mapping(1.try_into().unwrap(), "tdx_tlb_flush".into())
-            .expect("not out of memory");
+            .ok_or(crate::Error::MissingPrivateMemory)?
+            .allocate_dma_buffer(HV_PAGE_SIZE as usize)
+            .map_err(crate::Error::AllocateTlbFlushPage)?;
 
         let untrusted_synic = params
             .partition
@@ -755,12 +732,15 @@ impl BackingPrivate for TdxBacked {
                     exit_stats: Default::default(),
                 }
             }),
-            direct_overlays_pfns: overlays.try_into().unwrap(),
-            direct_overlay_pfns_handle: pfns_handle,
             untrusted_synic,
             eoi_exit_bitmap: [0; 4],
             flush_page,
-            cvm: UhCvmVpState::new(params.hv.unwrap(), params.lapics.unwrap()),
+            cvm: UhCvmVpState::new(
+                &shared.cvm,
+                params.partition,
+                params.vp_info,
+                UhDirectOverlay::Count as usize,
+            )?,
         })
     }
 
@@ -782,7 +762,7 @@ impl BackingPrivate for TdxBacked {
         // when VTL 1 is enabled.
 
         // Configure the synic overlays.
-        let pfns = &this.backing.direct_overlays_pfns;
+        let pfns = &this.backing.cvm.direct_overlay_handle.pfns();
         let reg = |gpn| {
             u64::from(
                 HvSynicSimpSiefp::new()
@@ -847,7 +827,7 @@ impl BackingPrivate for TdxBacked {
             // We only offload VTL 0 today.
             assert_eq!(vtl, GuestVtl::Vtl0);
             tracing::info!("disabling APIC offload due to auto EOI");
-            let page = zerocopy::transmute_mut!(this.runner.tdx_apic_page_mut());
+            let page = this.runner.tdx_apic_page_mut(GuestVtl::Vtl0);
             let (irr, isr) = pull_apic_offload(page);
 
             this.backing.cvm.lapics[vtl]
@@ -901,6 +881,10 @@ impl BackingPrivate for TdxBacked {
         vtl: GuestVtl,
     ) -> Result<(), UhRunVpError> {
         this.hcvm_handle_vp_start_enable_vtl(vtl)
+    }
+
+    fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool {
+        this.hcvm_vtl1_inspectable()
     }
 }
 
@@ -957,8 +941,7 @@ impl UhProcessor<'_, TdxBacked> {
             let r: Result<(), OffloadNotSupported> = self.backing.cvm.lapics[vtl]
                 .lapic
                 .push_to_offload(|irr, isr, tmr| {
-                    let apic_page: &mut ApicPage =
-                        zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut());
+                    let apic_page = self.runner.tdx_apic_page_mut(GuestVtl::Vtl0);
 
                     for (((irr, page_irr), isr), page_isr) in irr
                         .iter()
@@ -996,8 +979,8 @@ impl UhProcessor<'_, TdxBacked> {
                             // must know if that interrupt was previously level-triggered. Otherwise,
                             // the EOI will be incorrectly treated as level-triggered. We keep a copy
                             // of the tmr in the kernel so it knows when this scenario occurs.
-                            self.runner.proxy_irr_exit_mut()[i * 2] = tmr as u32;
-                            self.runner.proxy_irr_exit_mut()[i * 2 + 1] = (tmr >> 32) as u32;
+                            self.runner.proxy_irr_exit_mut_vtl0()[i * 2] = tmr as u32;
+                            self.runner.proxy_irr_exit_mut_vtl0()[i * 2 + 1] = (tmr >> 32) as u32;
                         }
                     }
                 });
@@ -1009,7 +992,7 @@ impl UhProcessor<'_, TdxBacked> {
             }
 
             if update_rvi {
-                let page: &mut ApicPage = zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut());
+                let page = self.runner.tdx_apic_page_mut(GuestVtl::Vtl0);
                 let rvi = top_vector(&page.irr);
                 self.backing.vtls[vtl].private_regs.rvi = rvi;
             }
@@ -1045,8 +1028,8 @@ impl UhProcessor<'_, TdxBacked> {
     ) -> R {
         let offloaded = self.backing.cvm.lapics[vtl].lapic.is_offloaded();
         if offloaded {
-            let (irr, isr) =
-                pull_apic_offload(zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut()));
+            assert_eq!(vtl, GuestVtl::Vtl0);
+            let (irr, isr) = pull_apic_offload(self.runner.tdx_apic_page_mut(GuestVtl::Vtl0));
             self.backing.cvm.lapics[vtl]
                 .lapic
                 .disable_offload(&irr, &isr);
@@ -1150,7 +1133,7 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, TdxBacked> for TdxApicScanner<'_, '
         }
 
         let priority = vector >> 4;
-        let apic: &ApicPage = zerocopy::transmute_ref!(self.vp.runner.tdx_apic_page());
+        let apic = self.vp.runner.tdx_apic_page(vtl);
         if (apic.tpr.value as u8 >> 4) >= priority {
             self.tpr_threshold = priority;
             return Ok(());
@@ -1542,7 +1525,7 @@ impl UhProcessor<'_, TdxBacked> {
                     .access(&mut TdxApicClient {
                         partition: self.partition,
                         vmtime: &self.vmtime,
-                        apic_page: zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut()),
+                        apic_page: self.runner.tdx_apic_page_mut(intercepted_vtl),
                         dev,
                         vtl: intercepted_vtl,
                     })
@@ -1562,7 +1545,7 @@ impl UhProcessor<'_, TdxBacked> {
                 let value = match result {
                     Ok(v) => Some(v),
                     Err(MsrError::Unknown) => {
-                        tracelimit::error_ratelimited!(msr, "unknown tdx cvm msr read");
+                        tracelimit::warn_ratelimited!(msr, "unknown tdx vm msr read");
                         Some(0)
                     }
                     Err(MsrError::InvalidAccess) => None,
@@ -1595,18 +1578,19 @@ impl UhProcessor<'_, TdxBacked> {
                     .access(&mut TdxApicClient {
                         partition: self.partition,
                         vmtime: &self.vmtime,
-                        apic_page: zerocopy::transmute_mut!(self.runner.tdx_apic_page_mut()),
+                        apic_page: self.runner.tdx_apic_page_mut(intercepted_vtl),
                         dev,
                         vtl: intercepted_vtl,
                     })
                     .msr_write(msr, value)
+                    .or_else_if_unknown(|| self.write_msr_cvm(msr, value, intercepted_vtl))
                     .or_else_if_unknown(|| self.write_msr(msr, value, intercepted_vtl))
-                    .or_else_if_unknown(|| self.write_msr_cvm(msr, value, intercepted_vtl));
+                    .or_else_if_unknown(|| self.write_msr_tdx(msr, value, intercepted_vtl));
 
                 let inject_gp = match result {
                     Ok(()) => false,
                     Err(MsrError::Unknown) => {
-                        tracelimit::error_ratelimited!(msr, value, "unknown tdx cvm msr write");
+                        tracelimit::warn_ratelimited!(msr, value, "unknown tdx vm msr write");
                         false
                     }
                     Err(MsrError::InvalidAccess) => true,
@@ -1682,10 +1666,6 @@ impl UhProcessor<'_, TdxBacked> {
             }
             VmxExit::HLT_INSTRUCTION => {
                 self.backing.cvm.lapics[intercepted_vtl].activity = MpState::Halted;
-
-                // TODO TDX: see lots of these exits while waiting at frontpage.
-                // Probably expected, given we will still get L1 timer
-                // interrupts?
                 self.clear_interrupt_shadow(intercepted_vtl);
                 self.advance_to_next_instruction(intercepted_vtl);
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.hlt
@@ -2010,8 +1990,8 @@ impl UhProcessor<'_, TdxBacked> {
         intercepted_vtl: GuestVtl,
     ) -> Result<(), MsrError> {
         match msr {
-            msr @ hvdef::HV_X64_MSR_GUEST_OS_ID => {
-                self.backing.cvm.hv[intercepted_vtl].msr_write(msr, value)?
+            hvdef::HV_X64_MSR_GUEST_OS_ID => {
+                self.backing.cvm.hv[intercepted_vtl].msr_write_guest_os_id(value)
             }
             _ => {
                 // If we get here we must have an untrusted synic, as otherwise
@@ -2108,7 +2088,7 @@ impl UhProcessor<'_, TdxBacked> {
         }
     }
 
-    fn write_msr_cvm(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
+    fn write_msr_tdx(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
         let state = &mut self.backing.vtls[vtl].private_regs;
 
         match msr {
@@ -2208,8 +2188,6 @@ impl UhProcessor<'_, TdxBacked> {
 
         self.runner
             .write_vmcs32(vtl, seg.attributes(), !0, attributes.into());
-
-        // TODO TDX: cache CS into last exit because last exit contains CS optionally?
 
         Ok(())
     }
@@ -2412,7 +2390,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
                 partition: self.vp.partition,
                 dev: self.devices,
                 vmtime: &self.vp.vmtime,
-                apic_page: zerocopy::transmute_mut!(self.vp.runner.tdx_apic_page_mut()),
+                apic_page: self.vp.runner.tdx_apic_page_mut(self.vtl),
                 vtl: self.vtl,
             })
             .mmio_read(address, data);
@@ -2425,7 +2403,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
                 partition: self.vp.partition,
                 dev: self.devices,
                 vmtime: &self.vp.vmtime,
-                apic_page: zerocopy::transmute_mut!(self.vp.runner.tdx_apic_page_mut()),
+                apic_page: self.vp.runner.tdx_apic_page_mut(self.vtl),
                 vtl: self.vtl,
             })
             .mmio_write(address, data);
@@ -2661,6 +2639,7 @@ impl<T: CpuIo> ApicClient for TdxApicClient<'_, T> {
     }
 
     fn pull_offload(&mut self) -> ([u32; 8], [u32; 8]) {
+        assert_eq!(self.vtl, GuestVtl::Vtl0);
         pull_apic_offload(self.apic_page)
     }
 }
@@ -2741,15 +2720,14 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
             hv1_hypercall::HvPostMessage,
             hv1_hypercall::HvSignalEvent,
             hv1_hypercall::HvExtQueryCapabilities,
-            // TODO TDX: copied from SNP, enable individually as needed.
-            // hv1_hypercall::HvGetVpRegisters,
-            // hv1_hypercall::HvSetVpRegisters,
-            // hv1_hypercall::HvEnablePartitionVtl,
-            // hv1_hypercall::HvX64EnableVpVtl,
+            hv1_hypercall::HvGetVpRegisters,
+            hv1_hypercall::HvSetVpRegisters,
+            hv1_hypercall::HvEnablePartitionVtl,
+            hv1_hypercall::HvX64EnableVpVtl,
             // hv1_hypercall::HvVtlCall,
             // hv1_hypercall::HvVtlReturn,
-            // hv1_hypercall::HvModifyVtlProtectionMask,
-            // hv1_hypercall::HvX64TranslateVirtualAddress,
+            hv1_hypercall::HvModifyVtlProtectionMask,
+            hv1_hypercall::HvX64TranslateVirtualAddress,
         ]
     );
 
@@ -3028,8 +3006,9 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         })
     }
 
-    fn set_xss(&mut self, _value: &vp::Xss) -> Result<(), Self::Error> {
-        Err(vp_state::Error::Unimplemented("xss"))
+    fn set_xss(&mut self, value: &vp::Xss) -> Result<(), Self::Error> {
+        self.vp.backing.vtls[self.vtl].private_regs.msr_xss = value.value;
+        Ok(())
     }
 
     fn mtrrs(&mut self) -> Result<vp::Mtrrs, Self::Error> {
@@ -3200,11 +3179,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
     }
 
     fn tsc_aux(&mut self) -> Result<vp::TscAux, Self::Error> {
-        Err(vp_state::Error::Unimplemented("tsc_aux"))
+        Ok(vp::TscAux {
+            value: self.vp.backing.vtls[self.vtl].private_regs.msr_tsc_aux,
+        })
     }
 
-    fn set_tsc_aux(&mut self, _value: &vp::TscAux) -> Result<(), Self::Error> {
-        Err(vp_state::Error::Unimplemented("tsc_aux"))
+    fn set_tsc_aux(&mut self, value: &vp::TscAux) -> Result<(), Self::Error> {
+        self.vp.backing.vtls[self.vtl].private_regs.msr_tsc_aux = value.value;
+        Ok(())
     }
 
     fn cet(&mut self) -> Result<vp::Cet, Self::Error> {
@@ -3364,7 +3346,7 @@ impl<T> HypercallIo for TdHypercall<'_, '_, T> {
 impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressList for UhHypercallHandler<'_, '_, T, TdxBacked> {
     fn flush_virtual_address_list(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
         gva_ranges: &[HvGvaRange],
     ) -> HvRepResult {
@@ -3382,11 +3364,11 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
 {
     fn flush_virtual_address_list_ex(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
         gva_ranges: &[HvGvaRange],
     ) -> HvRepResult {
-        self.hcvm_validate_flush_inputs(&processor_set, flags, true)
+        self.hcvm_validate_flush_inputs(processor_set, flags, true)
             .map_err(|e| (e, 0))?;
 
         let vtl = self.intercepted_vtl;
@@ -3408,7 +3390,8 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
         }
 
         // Send flush IPIs to the specified VPs.
-        self.wake_processors_for_tlb_flush(vtl, (!flags.all_processors()).then_some(processor_set));
+        self.vp
+            .wake_processors_for_tlb_flush(vtl, (!flags.all_processors()).then_some(processor_set));
 
         // Mark that this VP needs to wait for all TLB locks to be released before returning.
         self.vp.set_wait_for_tlb_locks(vtl);
@@ -3422,7 +3405,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpace
 {
     fn flush_virtual_address_space(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
     ) -> hvdef::HvResult<()> {
         hv1_hypercall::FlushVirtualAddressSpaceEx::flush_virtual_address_space_ex(
@@ -3438,10 +3421,10 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
 {
     fn flush_virtual_address_space_ex(
         &mut self,
-        processor_set: Vec<u32>,
+        processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
     ) -> hvdef::HvResult<()> {
-        self.hcvm_validate_flush_inputs(&processor_set, flags, false)?;
+        self.hcvm_validate_flush_inputs(processor_set, flags, false)?;
         let vtl = self.intercepted_vtl;
 
         {
@@ -3456,7 +3439,8 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
         }
 
         // Send flush IPIs to the specified VPs.
-        self.wake_processors_for_tlb_flush(vtl, (!flags.all_processors()).then_some(processor_set));
+        self.vp
+            .wake_processors_for_tlb_flush(vtl, (!flags.all_processors()).then_some(processor_set));
 
         // Mark that this VP needs to wait for all TLB locks to be released before returning.
         self.vp.set_wait_for_tlb_locks(vtl);
@@ -3491,21 +3475,23 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
 
         Ok(())
     }
+}
 
+impl UhProcessor<'_, TdxBacked> {
     fn wake_processors_for_tlb_flush(
         &mut self,
         target_vtl: GuestVtl,
-        processor_set: Option<Vec<u32>>,
+        processor_set: Option<ProcessorSet<'_>>,
     ) {
         match processor_set {
             Some(processors) => {
                 self.wake_processors_for_tlb_flush_inner(
                     target_vtl,
-                    processors.into_iter().map(|x| x as usize),
+                    processors.iter().map(|x| x as usize),
                 );
             }
             None => {
-                self.wake_processors_for_tlb_flush_inner(target_vtl, 0..self.vp.partition.vps.len())
+                self.wake_processors_for_tlb_flush_inner(target_vtl, 0..self.partition.vps.len())
             }
         }
     }
@@ -3524,14 +3510,38 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
         // for each VP.
         std::sync::atomic::fence(Ordering::SeqCst);
         for target_vp in processors {
-            if self.vp.vp_index().index() as usize != target_vp
-                && self.vp.shared.active_vtl[target_vp].load(Ordering::Relaxed) == target_vtl as u8
+            if self.vp_index().index() as usize != target_vp
+                && self.shared.active_vtl[target_vp].load(Ordering::Relaxed) == target_vtl as u8
             {
-                self.vp.partition.vps[target_vp].wake_vtl2();
+                self.partition.vps[target_vp].wake_vtl2();
             }
         }
 
         // TODO TDX GUEST VSM: We need to wait here until all woken VPs actually enter VTL 2.
+    }
+}
+
+impl TlbFlushLockAccess for UhProcessor<'_, TdxBacked> {
+    fn flush(&mut self, vtl: GuestVtl) {
+        {
+            self.shared.flush_state[vtl].write().s.flush_entire_counter += 1;
+        }
+        self.wake_processors_for_tlb_flush(vtl, None);
+        self.set_wait_for_tlb_locks(vtl);
+    }
+
+    fn flush_entire(&mut self) {
+        for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
+            self.shared.flush_state[vtl].write().s.flush_entire_counter += 1;
+        }
+        for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
+            self.wake_processors_for_tlb_flush(vtl, None);
+            self.set_wait_for_tlb_locks(vtl);
+        }
+    }
+
+    fn set_wait_for_tlb_locks(&mut self, vtl: GuestVtl) {
+        Self::set_wait_for_tlb_locks(self, vtl);
     }
 }
 

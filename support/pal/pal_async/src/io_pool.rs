@@ -78,12 +78,26 @@ impl<T: IoBackend + Default> IoPool<T> {
             .inner
             .run(async { futures::future::join(fut, pool.tasks.run()).await.0 })
     }
+
+    /// Creates a new pool and runs it on a newly spawned thread with the given
+    /// name. Returns the thread handle and the pool's driver.
+    pub fn spawn_on_thread(name: impl Into<String>) -> (std::thread::JoinHandle<()>, IoDriver<T>)
+    where
+        T: 'static,
+    {
+        let pool = Self::new();
+        let driver = pool.driver.clone();
+        let thread = std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || pool.run())
+            .unwrap();
+        (thread, driver)
+    }
 }
 
 impl<T: IoBackend> IoPool<T> {
     /// Returns the IO driver.
     pub fn driver(&self) -> IoDriver<T> {
-        // TODO: return by reference?
         self.driver.clone()
     }
 

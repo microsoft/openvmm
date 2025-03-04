@@ -2,12 +2,15 @@
 // Licensed under the MIT License.
 
 use crate::OfferInfo;
+use inspect::Inspect;
 use mesh::rpc::Rpc;
 use vmbus_core::protocol;
 use vmbus_core::HvsockConnectRequest;
 
 /// Tracks guest-to-host hvsocket requests that the host has not responded to yet.
+#[derive(Inspect)]
 pub(crate) struct HvsockRequestTracker {
+    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(|x| x.input())")]
     pending_requests: Vec<Request>,
 }
 

@@ -60,7 +60,7 @@ impl std::fmt::Debug for VaMapper {
 struct MapperInner {
     mapping: SparseMapping,
     waiters: Mutex<Option<Vec<MapWaiter>>>,
-    req_send: mesh::MpscSender<MappingRequest>,
+    req_send: mesh::Sender<MappingRequest>,
     id: MapperId,
 }
 
@@ -191,7 +191,7 @@ impl MapperInner {
 
 impl VaMapper {
     pub(crate) async fn new(
-        req_send: mesh::MpscSender<MappingRequest>,
+        req_send: mesh::Sender<MappingRequest>,
         len: u64,
         remote_process: Option<RemoteProcess>,
     ) -> Result<Self, VaMapperError> {

@@ -439,7 +439,7 @@ mod tests {
         sender: &mesh::Sender<HostBatteryUpdate>,
     ) {
         sender.send(update);
-        battery.poll_device(&mut Context::from_waker(futures::task::noop_waker_ref()));
+        battery.poll_device(&mut Context::from_waker(std::task::Waker::noop()));
     }
 
     /// Test basic battery mmio behavior

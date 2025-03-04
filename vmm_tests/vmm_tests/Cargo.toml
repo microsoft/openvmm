@@ -29,6 +29,7 @@ vmm_core_defs.workspace = true
 
 guid.workspace = true
 mesh.workspace = true
+pal.workspace = true
 pal_async.workspace = true
 unix_socket.workspace = true
 

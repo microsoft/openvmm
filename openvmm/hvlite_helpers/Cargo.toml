@@ -14,14 +14,9 @@ hvlite_defs.workspace = true
 vm_resource.workspace = true
 
 mesh.workspace = true
-pal_async.workspace = true
 
 anyhow.workspace = true
-futures.workspace = true
-futures-concurrency.workspace = true
-tempfile.workspace = true
 tracing.workspace = true
-unicycle.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 disk_vhdmp.workspace = true

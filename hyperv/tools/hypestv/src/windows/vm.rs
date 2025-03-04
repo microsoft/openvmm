@@ -371,8 +371,7 @@ impl VmInner {
                 } else {
                     let new_serial = diag_client::hyperv::open_serial_port(
                         &self.driver,
-                        &self.name,
-                        diag_client::hyperv::ComPortAccessInfo::PortNumber(port),
+                        diag_client::hyperv::ComPortAccessInfo::NameAndPortNumber(&self.name, port),
                     )
                     .await
                     .context("failed to open serial port")?;

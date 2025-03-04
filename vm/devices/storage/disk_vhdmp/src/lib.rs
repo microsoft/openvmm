@@ -4,7 +4,7 @@
 #![cfg(windows)]
 // UNSAFETY: Calling Win32 VirtualDisk APIs and accessing the unions they return.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;

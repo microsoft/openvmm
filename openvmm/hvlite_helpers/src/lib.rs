@@ -6,6 +6,5 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-pub mod crash_dump;
 pub mod disk;
 pub mod underhill;

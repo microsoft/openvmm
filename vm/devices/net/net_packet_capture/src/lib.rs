@@ -136,7 +136,7 @@ enum PacketCaptureEndpointCommand {
 }
 
 pub struct PacketCaptureEndpointControl {
-    control_tx: Arc<mesh::Sender<PacketCaptureEndpointCommand>>,
+    control_tx: mesh::Sender<PacketCaptureEndpointCommand>,
 }
 
 impl PacketCaptureEndpointControl {
@@ -198,7 +198,6 @@ impl InspectMut for PacketCaptureEndpoint {
 impl PacketCaptureEndpoint {
     pub fn new(endpoint: Box<dyn Endpoint>, id: String) -> (Self, PacketCaptureEndpointControl) {
         let (control_tx, control_rx) = mesh::channel();
-        let control_tx = Arc::new(control_tx);
         let control = PacketCaptureEndpointControl {
             control_tx: control_tx.clone(),
         };
@@ -363,11 +362,11 @@ struct Pcap {
     interface_descriptor_written: AtomicBool,
     enabled: AtomicBool,
     snaplen: AtomicUsize,
-    endpoint_control: Arc<mesh::Sender<PacketCaptureEndpointCommand>>,
+    endpoint_control: mesh::Sender<PacketCaptureEndpointCommand>,
 }
 
 impl Pcap {
-    fn new(endpoint_control: Arc<mesh::Sender<PacketCaptureEndpointCommand>>) -> Self {
+    fn new(endpoint_control: mesh::Sender<PacketCaptureEndpointCommand>) -> Self {
         Self {
             enabled: AtomicBool::new(false),
             snaplen: AtomicUsize::new(65535),

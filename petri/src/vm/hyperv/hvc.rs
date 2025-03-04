@@ -3,15 +3,25 @@
 
 //! Functions for interacting with Hyper-V VMs.
 
-use anyhow::Context as _;
+use anyhow::Context;
 use anyhow::Ok;
+use guid::Guid;
+use pal_async::timer::PolledTimer;
+use pal_async::DefaultDriver;
+use std::ffi::OsStr;
+use std::process::Stdio;
+use std::time::Duration;
 
-pub fn hvc_start(vm: &str) -> anyhow::Result<()> {
-    run_hvc(|cmd| cmd.arg("start").arg(vm))
+pub fn hvc_start(vmid: &Guid) -> anyhow::Result<()> {
+    hvc_output(|cmd| cmd.arg("start").arg(vmid.to_string()))
+        .map(|_| ())
+        .context("hvc_start")
 }
 
-pub fn hvc_kill(vm: &str) -> anyhow::Result<()> {
-    run_hvc(|cmd| cmd.arg("kill").arg(vm))
+pub fn hvc_kill(vmid: &Guid) -> anyhow::Result<()> {
+    hvc_output(|cmd| cmd.arg("kill").arg(vmid.to_string()))
+        .map(|_| ())
+        .context("hvc_kill")
 }
 
 /// HyperV VM state as reported by hvc
@@ -40,10 +50,9 @@ pub enum VmState {
     Unknown,
 }
 
-pub fn hvc_state(vm: &str) -> VmState {
-    hvc_output(|cmd| cmd.arg("state").arg(vm)).map_or_else(
-        |_| VmState::Unknown,
-        |s| match s.trim_end() {
+pub fn hvc_state(vmid: &Guid) -> anyhow::Result<VmState> {
+    hvc_output(|cmd| cmd.arg("state").arg(vmid.to_string()))
+        .map(|s| match s.trim_end() {
             "off" => VmState::Off,
             "on" => VmState::On,
             "starting" => VmState::Starting,
@@ -55,41 +64,29 @@ pub fn hvc_state(vm: &str) -> VmState {
             "pausing" => VmState::Pausing,
             "resuming" => VmState::Resuming,
             _ => VmState::Unknown,
-        },
-    )
+        })
+        .context("hvc_state")
 }
 
-pub fn hvc_list() -> anyhow::Result<Vec<String>> {
-    let output = hvc_output(|cmd| cmd.arg("list").arg("-q"))?;
-    Ok(output.lines().map(|l| l.to_owned()).collect())
-}
-
-pub fn hvc_wait_for_power_off(vm: &str) -> anyhow::Result<()> {
-    while !matches!(hvc_state(vm), VmState::Off) {
-        std::thread::sleep(std::time::Duration::from_secs(1));
+pub async fn hvc_wait_for_power_off(driver: &DefaultDriver, vmid: &Guid) -> anyhow::Result<()> {
+    const SHUTDOWN_TIMEOUT: usize = 20;
+    let mut attempts = 0;
+    while !matches!(hvc_state(vmid)?, VmState::Off) {
+        if attempts >= SHUTDOWN_TIMEOUT {
+            anyhow::bail!("VM shutdown timed out")
+        }
+        attempts += 1;
+        PolledTimer::new(driver).sleep(Duration::from_secs(1)).await;
     }
 
     Ok(())
 }
 
-pub fn hvc_ensure_off(vm: &str) -> anyhow::Result<()> {
-    if !matches!(hvc_state(vm), VmState::Off) {
-        hvc_kill(vm)?;
+pub fn hvc_ensure_off(vmid: &Guid) -> anyhow::Result<()> {
+    if !matches!(hvc_state(vmid)?, VmState::Off) {
+        hvc_kill(vmid)?;
     }
 
-    Ok(())
-}
-
-/// Runs hvc with the given arguments.
-fn run_hvc(
-    f: impl FnOnce(&mut std::process::Command) -> &mut std::process::Command,
-) -> anyhow::Result<()> {
-    let mut cmd = std::process::Command::new("hvc.exe");
-    f(&mut cmd);
-    let status = cmd.status().context("failed to launch hvc")?;
-    if !status.success() {
-        anyhow::bail!("hvc failed with exit code: {}", status);
-    }
     Ok(())
 }
 
@@ -98,8 +95,23 @@ fn hvc_output(
     f: impl FnOnce(&mut std::process::Command) -> &mut std::process::Command,
 ) -> anyhow::Result<String> {
     let mut cmd = std::process::Command::new("hvc.exe");
+    cmd.stderr(Stdio::piped()).stdin(Stdio::null());
     f(&mut cmd);
+
     let output = cmd.output().expect("failed to launch hvc");
+
+    let hvc_cmd = format!(
+        "{} {}",
+        cmd.get_program().to_string_lossy(),
+        cmd.get_args()
+            .collect::<Vec<_>>()
+            .join(OsStr::new(" "))
+            .to_string_lossy()
+    );
+    let hvc_stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let hvc_stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    tracing::debug!(hvc_cmd, hvc_stdout, hvc_stderr);
     if !output.status.success() {
         anyhow::bail!("hvc failed with exit code: {}", output.status);
     }

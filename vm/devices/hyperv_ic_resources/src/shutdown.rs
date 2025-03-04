@@ -23,7 +23,13 @@ impl ResourceId<VmbusDeviceHandleKind> for ShutdownIcHandle {
 #[derive(MeshPayload)]
 pub enum ShutdownRpc {
     /// Wait for the shutdown IC to be ready.
-    WaitReady(Rpc<(), ()>),
+    ///
+    /// Returns a receiver that closes when the IC is no longer ready.
+    ///
+    /// FUTURE: this should instead be a `Sender` that is used to send the
+    /// shutdown request. Do this once `Sender` has a mechanism to wait on the
+    /// receiver to be closed.
+    WaitReady(Rpc<(), mesh::OneshotReceiver<()>>),
     /// Send a shutdown request to the guest.
     Shutdown(Rpc<ShutdownParams, ShutdownResult>),
 }

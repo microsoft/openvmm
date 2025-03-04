@@ -75,8 +75,11 @@ impl Drop for PagesAccessibleToLowerVtl {
 
 /// A [`DmaClient`] wrapper that will lower the VTL permissions of the page
 /// on the allocated memory block.
+#[derive(Inspect)]
 pub struct LowerVtlMemorySpawner<T: DmaClient> {
+    #[inspect(skip)]
     spawner: T,
+    #[inspect(skip)]
     vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
 }
 
