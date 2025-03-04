@@ -22,8 +22,9 @@ impl IntoPipeline for RestorePackagesCli {
         );
 
         let mut pipeline = Pipeline::new();
-        let (pub_x64, _use_x64) = pipeline.new_artifact("x64-release-2411-igvm");
-        let (pub_aarch64, _use_aarch64) = pipeline.new_artifact("aarch64-release-2411-igvm");
+        let (pub_release_2411_igvm_files, _use_release_2411_igvm_files) =
+            pipeline.new_artifact("release-2411-igvm-files");
+
         let mut job = pipeline
             .new_job(
                 FlowPlatform::host(backend_hint),
@@ -63,8 +64,7 @@ impl IntoPipeline for RestorePackagesCli {
             |ctx| flowey_lib_hvlite::_jobs::local_restore_packages::Request {
                 arches,
                 done: ctx.new_done_handle(),
-                aarch64_artifact: ctx.publish_artifact(pub_aarch64),
-                x64_artifact: ctx.publish_artifact(pub_x64),
+                release_2411_artifact: ctx.publish_artifact(pub_release_2411_igvm_files),
             },
         );
 

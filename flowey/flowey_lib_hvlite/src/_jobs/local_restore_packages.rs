@@ -12,8 +12,7 @@ flowey_request! {
     pub struct Request{
         pub arches: Vec<CommonArch>,
         pub done: WriteVar<SideEffect>,
-        pub x64_artifact: ReadVar<PathBuf>,
-        pub aarch64_artifact: ReadVar<PathBuf>,
+        pub release_2411_artifact: ReadVar<PathBuf>,
     }
 }
 
@@ -29,6 +28,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_openvmm_magicpath_protoc::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
+        ctx.import::<crate::download_release_igvm_files::resolve::Node>();
         ctx.import::<flowey_lib_common::download_gh_artifact::Node>();
         ctx.import::<flowey_lib_common::gh_workflow_id::Node>();
         ctx.import::<flowey_lib_common::git_latest_commit::Node>();
@@ -38,50 +38,11 @@ impl SimpleFlowNode for Node {
         let Request {
             arches,
             done,
-            x64_artifact,
-            aarch64_artifact,
+            release_2411_artifact,
         } = request;
 
-        // Download 2411 release IGVM files for running servicing tests
-        let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
-        let latest_commit = ctx.reqv(|v| flowey_lib_common::git_latest_commit::Request {
-            repo_path: openvmm_repo_path.clone(),
-            branch: "release/2411".into(),
-            commit: v,
-        });
-
-        let run = ctx.reqv(|v| flowey_lib_common::gh_workflow_id::Request {
-            github_commit_hash: latest_commit,
-            repo_path: openvmm_repo_path,
-            pipeline_name: "[flowey] OpenVMM CI".into(),
-            gh_workflow: v,
-        });
-
-        let run_id = run.map(ctx, |r| r.id);
-
-        let mut downloaded_aarch64 = None;
-        let mut downloaded_x64 = None;
-
-        for arch in arches.clone() {
-            let arch_str = match arch {
-                CommonArch::X86_64 => "x64",
-                CommonArch::Aarch64 => "aarch64",
-            };
-
-            let downloaded = ctx.reqv(|v| flowey_lib_common::download_gh_artifact::Request {
-                repo_owner: "microsoft".into(),
-                repo_name: "openvmm".into(),
-                file_name: format!("{arch_str}-openhcl-igvm"),
-                path: v,
-                run_id: run_id.clone(),
-            });
-
-            if arch == CommonArch::X86_64 {
-                downloaded_x64 = Some(downloaded);
-            } else {
-                downloaded_aarch64 = Some(downloaded);
-            }
-        }
+        let release_2411_igvm_files =
+            ctx.reqv(crate::download_release_igvm_files::resolve::Request::Release2411);
 
         let mut deps = vec![ctx.reqv(crate::init_openvmm_magicpath_protoc::Request)];
 
@@ -145,48 +106,36 @@ impl SimpleFlowNode for Node {
         deps.push(ctx.emit_rust_step(
             "copy downloaded release igvm files to artifact dir",
             |ctx| {
-                let downloaded_x64 = downloaded_x64
-                    .map(|downloaded_x64| (downloaded_x64.claim(ctx), x64_artifact.claim(ctx)));
-
-                let downloaded_aarch64 = downloaded_aarch64.map(|downloaded_aarch64| {
-                    (downloaded_aarch64.claim(ctx), aarch64_artifact.claim(ctx))
-                });
+                let release_2411_igvm_files = release_2411_igvm_files.claim(ctx);
+                let release_2411_artifact = release_2411_artifact.claim(ctx);
 
                 |rt| {
-                    let x64 = if let Some(downloaded_x64) = downloaded_x64 {
-                        Some((rt.read(downloaded_x64.0), rt.read(downloaded_x64.1)))
-                    } else {
-                        None
-                    };
+                    let release_2411_igvm_files = rt.read(release_2411_igvm_files);
+                    let release_2411_artifact = rt.read(release_2411_artifact);
 
-                    let aarch64 = if let Some(downloaded_aarch64) = downloaded_aarch64 {
-                        Some((rt.read(downloaded_aarch64.0), rt.read(downloaded_aarch64.1)))
-                    } else {
-                        None
-                    };
+                    fs_err::create_dir(release_2411_artifact.join("aarch64"))?;
+                    fs_err::create_dir(release_2411_artifact.join("x64"))?;
 
-                    if let Some(x64) = x64 {
-                        let mut path = x64.0.clone();
-                        path.push("x64-openhcl-igvm");
-                        fs_err::copy(path.join("openhcl.bin"), x64.1.clone().join("openhcl.bin"))?;
-                        fs_err::copy(
-                            path.join("openhcl-direct.bin"),
-                            x64.1.join("openhcl-direct.bin"),
-                        )?;
-                    }
+                    fs_err::copy(
+                        release_2411_igvm_files.aarch64_bin,
+                        release_2411_artifact
+                            .join("aarch64")
+                            .join("release-2411-aarch64-openhcl.bin"),
+                    )?;
 
-                    if let Some(aarch64) = aarch64 {
-                        let mut path = aarch64.0.clone();
-                        path.push("aarch64-openhcl-igvm");
-                        fs_err::copy(
-                            path.join("openhcl.bin"),
-                            aarch64.1.clone().join("openhcl.bin"),
-                        )?;
-                        fs_err::copy(
-                            path.join("openhcl-direct.bin"),
-                            aarch64.1.join("openhcl-direct.bin"),
-                        )?;
-                    }
+                    fs_err::copy(
+                        release_2411_igvm_files.x64_bin,
+                        release_2411_artifact
+                            .join("x64")
+                            .join("release-2411-x64-openhcl.bin"),
+                    )?;
+
+                    fs_err::copy(
+                        release_2411_igvm_files.x64_direct_bin,
+                        release_2411_artifact
+                            .join("x64")
+                            .join("release-2411-x64-openhcl-direct.bin"),
+                    )?;
 
                     Ok(())
                 }

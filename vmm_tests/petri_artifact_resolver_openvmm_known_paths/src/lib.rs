@@ -322,32 +322,24 @@ fn openhcl_bin_path(
             },
         ),
         (MachineArch::X86_64, OpenhclVersion::Release2411, OpenhclFlavor::LinuxDirect) => (
-            "flowey-out/artifacts/x64-release-2411-igvm",
-            "openhcl-direct.bin",
+            "flowey-out/artifacts/release-2411-igvm-files/x64",
+            "release-2411-x64-openhcl-direct.bin",
             MissingCommand::XFlowey {
                 description: "Previous OpenHCL release IGVM file",
                 xflowey_args: &["restore-packages"],
             },
         ),
         (MachineArch::X86_64, OpenhclVersion::Release2411, OpenhclFlavor::Standard) => (
-            "flowey-out/artifacts/x64-release-2411-igvm",
-            "openhcl.bin",
-            MissingCommand::XFlowey {
-                description: "Previous OpenHCL release IGVM file",
-                xflowey_args: &["restore-packages"],
-            },
-        ),
-        (MachineArch::Aarch64, OpenhclVersion::Release2411, OpenhclFlavor::LinuxDirect) => (
-            "flowey-out/artifacts/aarch64-release-2411-igvm",
-            "openhcl-direct.bin",
+            "flowey-out/artifacts/release-2411-igvm-files/x64",
+            "release-2411-x64-openhcl.bin",
             MissingCommand::XFlowey {
                 description: "Previous OpenHCL release IGVM file",
                 xflowey_args: &["restore-packages"],
             },
         ),
         (MachineArch::Aarch64, OpenhclVersion::Release2411, OpenhclFlavor::Standard) => (
-            "flowey-out/artifacts/aarch64-release-2411-igvm",
-            "openhcl.bin",
+            "flowey-out/artifacts/release-2411-igvm-files/aarch64",
+            "release-2411-aarch64-openhcl.bin",
             MissingCommand::XFlowey {
                 description: "Previous OpenHCL release IGVM file",
                 xflowey_args: &["restore-packages"],

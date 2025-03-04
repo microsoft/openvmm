@@ -3704,7 +3704,7 @@ jobs:
       run: flowey.exe e 18 flowey_lib_common::gh_workflow_id 0
       shell: bash
     - name: 🌼 write_into Var
-      run: flowey.exe e 18 flowey_lib_hvlite::download_release_2411_igvm_files::resolve 0
+      run: flowey.exe e 18 flowey_lib_hvlite::download_release_igvm_files::resolve 0
       shell: bash
     - name: download artifacts from github actions run
       run: flowey.exe e 18 flowey_lib_common::download_gh_artifact 1
@@ -3713,7 +3713,7 @@ jobs:
       run: flowey.exe e 18 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: write to directory variables
-      run: flowey.exe e 18 flowey_lib_hvlite::download_release_2411_igvm_files::resolve 1
+      run: flowey.exe e 18 flowey_lib_hvlite::download_release_igvm_files::resolve 1
       shell: bash
     - name: create azcopy cache dir
       run: flowey.exe e 18 flowey_lib_common::download_azcopy 0
@@ -4100,7 +4100,7 @@ jobs:
       run: flowey.exe e 19 flowey_lib_common::gh_workflow_id 0
       shell: bash
     - name: 🌼 write_into Var
-      run: flowey.exe e 19 flowey_lib_hvlite::download_release_2411_igvm_files::resolve 0
+      run: flowey.exe e 19 flowey_lib_hvlite::download_release_igvm_files::resolve 0
       shell: bash
     - name: download artifacts from github actions run
       run: flowey.exe e 19 flowey_lib_common::download_gh_artifact 1
@@ -4109,7 +4109,7 @@ jobs:
       run: flowey.exe e 19 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: write to directory variables
-      run: flowey.exe e 19 flowey_lib_hvlite::download_release_2411_igvm_files::resolve 1
+      run: flowey.exe e 19 flowey_lib_hvlite::download_release_igvm_files::resolve 1
       shell: bash
     - name: create azcopy cache dir
       run: flowey.exe e 19 flowey_lib_common::download_azcopy 0
@@ -4701,7 +4701,7 @@ jobs:
       run: flowey e 20 flowey_lib_common::gh_workflow_id 0
       shell: bash
     - name: 🌼 write_into Var
-      run: flowey e 20 flowey_lib_hvlite::download_release_2411_igvm_files::resolve 0
+      run: flowey e 20 flowey_lib_hvlite::download_release_igvm_files::resolve 0
       shell: bash
     - name: download artifacts from github actions run
       run: flowey e 20 flowey_lib_common::download_gh_artifact 1
@@ -4710,7 +4710,7 @@ jobs:
       run: flowey e 20 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: write to directory variables
-      run: flowey e 20 flowey_lib_hvlite::download_release_2411_igvm_files::resolve 1
+      run: flowey e 20 flowey_lib_hvlite::download_release_igvm_files::resolve 1
       shell: bash
     - name: create azcopy cache dir
       run: flowey e 20 flowey_lib_common::download_azcopy 0
@@ -5157,7 +5157,7 @@ jobs:
       run: flowey.exe e 21 flowey_lib_common::gh_workflow_id 0
       shell: bash
     - name: 🌼 write_into Var
-      run: flowey.exe e 21 flowey_lib_hvlite::download_release_2411_igvm_files::resolve 0
+      run: flowey.exe e 21 flowey_lib_hvlite::download_release_igvm_files::resolve 0
       shell: bash
     - name: download artifacts from github actions run
       run: flowey.exe e 21 flowey_lib_common::download_gh_artifact 1
@@ -5166,7 +5166,7 @@ jobs:
       run: flowey.exe e 21 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: write to directory variables
-      run: flowey.exe e 21 flowey_lib_hvlite::download_release_2411_igvm_files::resolve 1
+      run: flowey.exe e 21 flowey_lib_hvlite::download_release_igvm_files::resolve 1
       shell: bash
     - name: create azcopy cache dir
       run: flowey.exe e 21 flowey_lib_common::download_azcopy 0

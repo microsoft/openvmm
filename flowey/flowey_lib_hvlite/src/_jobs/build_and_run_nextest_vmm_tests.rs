@@ -197,9 +197,7 @@ impl SimpleFlowNode for Node {
         ))?;
 
         let release_2411_igvm_files =
-            ctx.reqv(
-                |v| crate::download_release_2411_igvm_files::resolve::Request { release_output: v },
-            );
+            ctx.reqv(crate::download_release_igvm_files::resolve::Request::Release2411);
 
         let (test_log_path, get_test_log_path) = ctx.new_var();
 

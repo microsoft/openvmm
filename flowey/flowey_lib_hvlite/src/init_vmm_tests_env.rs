@@ -6,7 +6,7 @@
 
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::download_openvmm_deps::OpenvmmDepsArch;
-use crate::download_release_2411_igvm_files::Release2411Output;
+use crate::download_release_igvm_files::Release2411Output;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -233,15 +233,15 @@ impl SimpleFlowNode for Node {
                 let release_2411_igvm_files = rt.read(release_2411_igvm_files);
                 fs_err::copy(
                     release_2411_igvm_files.x64_bin,
-                    test_content_dir.join("openhcl.bin"),
+                    test_content_dir.join("release-2411-x64-openhcl.bin"),
                 )?;
                 fs_err::copy(
                     release_2411_igvm_files.x64_direct_bin,
-                    test_content_dir.join("openhcl-direct.bin"),
+                    test_content_dir.join("release-2411-x64-openhcl-direct.bin"),
                 )?;
                 fs_err::copy(
                     release_2411_igvm_files.aarch64_bin,
-                    test_content_dir.join("openhcl-aarch64.bin"),
+                    test_content_dir.join("release-2411-aarch64-openhcl.bin"),
                 )?;
 
                 let (arch_dir, kernel_file_name) = match openvmm_deps_arch {
