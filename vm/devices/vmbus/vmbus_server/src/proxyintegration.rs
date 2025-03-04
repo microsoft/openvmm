@@ -49,12 +49,14 @@ use windows::core::HRESULT;
 use windows::Win32::Foundation::ERROR_CANCELLED;
 use zerocopy::IntoBytes;
 
+/// Provides access to a vmbus server, and its optional hvsocket relay.
 pub struct ProxyServerInfo {
     control: Arc<VmbusServerControl>,
     hvsock_relay: Option<HvsockRelayChannelHalf>,
 }
 
 impl ProxyServerInfo {
+    /// Creates a new `ProxyServerInfo` instance.
     pub fn new(
         control: Arc<VmbusServerControl>,
         hvsock_relay: Option<HvsockRelayChannelHalf>,
@@ -366,15 +368,16 @@ impl ProxyTask {
 
     fn handle_tl_connect_result(&self, result: HvsockConnectResult, vtl: u8) {
         let send = match vtl {
-            0 => self.hvsock_response_send.as_ref().unwrap(),
-            2 => self.vtl2_hvsock_response_send.as_ref().unwrap(),
-            _ => panic!("unsupported VTL {vtl}"),
+            0 => self.hvsock_response_send.as_ref(),
+            2 => self.vtl2_hvsock_response_send.as_ref(),
+            _ => panic!("hvsocket response with unsupported VTL {vtl}"),
         };
 
-        send.send(result);
+        send.expect("got hvsocket response without having sent a request")
+            .send(result);
     }
 
-    async fn run_offers(
+    async fn run_proxy_actions(
         &self,
         send: mesh::Sender<TaggedStream<u64, mesh::Receiver<ChannelRequest>>>,
     ) {
@@ -481,7 +484,7 @@ impl ProxyTask {
             .detach();
     }
 
-    async fn run_channel_requests(
+    async fn run_server_requests(
         self: &Arc<Self>,
         spawner: impl Spawn,
         mut recv: mesh::Receiver<TaggedStream<u64, mesh::Receiver<ChannelRequest>>>,
@@ -538,11 +541,13 @@ async fn proxy_thread(
     vtl2_server: Option<ProxyServerInfo>,
     mut cancel: CancelContext,
 ) {
+    // Separate the hvsocket relay channels.
     let (hvsock_request_recv, hvsock_response_send) = server
         .hvsock_relay
         .map(|relay| (relay.request_receive, relay.response_send))
         .unzip();
 
+    // Separate the hvsocket relay channels and the server for VTL2.
     let (vtl2_control, vtl2_hvsock_request_recv, vtl2_hvsock_response_send) =
         if let Some(server) = vtl2_server {
             let (vtl2_hvsock_request_recv, vtl2_hvsock_response_send) = server
@@ -567,9 +572,9 @@ async fn proxy_thread(
         vtl2_hvsock_response_send,
         Arc::clone(&proxy),
     ));
-    let offers = task.run_offers(send);
+    let offers = task.run_proxy_actions(send);
     let requests =
-        task.run_channel_requests(spawner, recv, hvsock_request_recv, vtl2_hvsock_request_recv);
+        task.run_server_requests(spawner, recv, hvsock_request_recv, vtl2_hvsock_request_recv);
     let cancellation = async {
         cancel.cancelled().await;
         tracing::debug!("proxy thread cancelling");
