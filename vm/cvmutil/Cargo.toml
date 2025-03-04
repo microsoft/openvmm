@@ -17,9 +17,11 @@ tracing_helpers.workspace = true
 tracing-subscriber.workspace = true
 tpm = { workspace = true, features = ["tpm"] }
 tpm_resources.workspace = true
+zerocopy.workspace = true
 clap = { workspace = true, features = ["derive"] }
 sha2.workspace = true
 base64.workspace = true
+openssl.workspace = true
 
 [lints]
 workspace = true

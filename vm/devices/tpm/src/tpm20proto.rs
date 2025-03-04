@@ -1290,7 +1290,7 @@ pub mod protocol {
     pub struct TpmsRsaParams {
         symmetric: TpmtSymDefObject,
         scheme: TpmtRsaScheme,
-        key_bits: u16_be,
+        pub key_bits: u16_be,
         pub exponent: u32_be,
     }
 
@@ -1373,7 +1373,7 @@ pub mod protocol {
     #[repr(C)]
     #[derive(Debug, Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
     pub struct TpmtPublic {
-        my_type: AlgId,
+        pub my_type: AlgId,
         pub name_alg: AlgId,
         pub object_attributes: TpmaObject,
         auth_policy: Tpm2bBuffer,
