@@ -3022,24 +3022,31 @@ async fn new_underhill_vm(
         gm.vtl0()
             .fill_at(hvdef::HV_PAGE_SIZE, 123, hvdef::HV_PAGE_SIZE as usize * 3)?;
 
-        let pages = PagedRange::new(123, hvdef::HV_PAGE_SIZE_USIZE * 3 - 123, &[1, 2, 3]).unwrap();
+        tracing::error!("3 page partial first, full last");
+        let len = hvdef::HV_PAGE_SIZE_USIZE * 3 - 123;
+
+        let pages = PagedRange::new(123, len, &[1, 2, 3]).unwrap();
         let transaction = client
             .map_dma_ranges(
                 gm.vtl0(),
                 pages,
                 MapDmaOptions {
-                    always_bounce: false,
+                    always_bounce: true,
                     is_rx: true,
                     is_tx: true,
                 },
             )
             .await?;
 
+        tracing::error!("write bounced");
+
         let mut buffer = [9u8; hvdef::HV_PAGE_SIZE_USIZE * 3];
         buffer[0] = 42;
         buffer[123] = 240;
         buffer[hvdef::HV_PAGE_SIZE_USIZE * 3 - 1] = 47;
         transaction.write_bounced(buffer.as_ref())?;
+
+        tracing::error!("unmap");
 
         client
             .unmap_dma_ranges(transaction)
@@ -3048,6 +3055,11 @@ async fn new_underhill_vm(
         let mut expected_buf = [0; hvdef::HV_PAGE_SIZE_USIZE * 3];
         expected_buf[0..123].copy_from_slice(&[123; 123]);
         expected_buf[123..].copy_from_slice(&buffer[123..]);
+
+        tracing::error!("read gm");
+
+        // create a new paged range that spans all 3 pages
+        let pages = PagedRange::new(0, hvdef::HV_PAGE_SIZE_USIZE * 3, &[1, 2, 3]).unwrap();
 
         let read_buf: Vec<u8> = pages
             .reader(gm.vtl0())
@@ -3058,13 +3070,15 @@ async fn new_underhill_vm(
         gm.vtl0()
             .fill_at(hvdef::HV_PAGE_SIZE, 123, hvdef::HV_PAGE_SIZE as usize * 3)?;
 
+        tracing::error!("full first, partial last");
+
         let pages = PagedRange::new(0, hvdef::HV_PAGE_SIZE_USIZE * 3 - 123, &[1, 2, 3]).unwrap();
         let transaction = client
             .map_dma_ranges(
                 gm.vtl0(),
                 pages,
                 MapDmaOptions {
-                    always_bounce: false,
+                    always_bounce: true,
                     is_rx: true,
                     is_tx: true,
                 },
@@ -3073,7 +3087,10 @@ async fn new_underhill_vm(
         let mut buffer = [9u8; hvdef::HV_PAGE_SIZE_USIZE * 3];
         buffer[0] = 42;
         buffer[hvdef::HV_PAGE_SIZE_USIZE * 3 - 123] = 47;
+        tracing::error!("write bounched");
         transaction.write_bounced(buffer.as_ref())?;
+
+        tracing::error!("unmap");
 
         client
             .unmap_dma_ranges(transaction)
@@ -3084,6 +3101,11 @@ async fn new_underhill_vm(
             .copy_from_slice(&buffer[..hvdef::HV_PAGE_SIZE_USIZE * 3 - 123]);
         expected_buf[hvdef::HV_PAGE_SIZE_USIZE * 3 - 123..].copy_from_slice(&[123; 123]);
 
+        tracing::error!("read gm");
+
+        // create a new paged range that spans all 3 pages
+        let pages = PagedRange::new(0, hvdef::HV_PAGE_SIZE_USIZE * 3, &[1, 2, 3]).unwrap();
+
         let read_buf: Vec<u8> = pages
             .reader(gm.vtl0())
             .read_n(hvdef::HV_PAGE_SIZE_USIZE * 3)?;
@@ -3093,13 +3115,15 @@ async fn new_underhill_vm(
         gm.vtl0()
             .fill_at(hvdef::HV_PAGE_SIZE, 123, hvdef::HV_PAGE_SIZE as usize)?;
 
+        tracing::error!("1 page");
+
         let pages = PagedRange::new(123, 123, &[1]).unwrap();
         let transaction = client
             .map_dma_ranges(
                 gm.vtl0(),
                 pages,
                 MapDmaOptions {
-                    always_bounce: false,
+                    always_bounce: true,
                     is_rx: true,
                     is_tx: true,
                 },
@@ -3119,6 +3143,7 @@ async fn new_underhill_vm(
         expected_buf[123..246].copy_from_slice(&buffer[123..246]);
         expected_buf[246..].copy_from_slice(&[123; hvdef::HV_PAGE_SIZE_USIZE - 246]);
 
+        let pages = PagedRange::new(0, hvdef::HV_PAGE_SIZE_USIZE, &[1]).unwrap();
         let read_buf: Vec<u8> = pages.reader(gm.vtl0()).read_n(hvdef::HV_PAGE_SIZE_USIZE)?;
 
         assert_eq!(read_buf, expected_buf);

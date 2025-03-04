@@ -612,28 +612,32 @@ fn copy_page_ranges(
         let range = range.context("invalid gpn")?;
 
         let mut len = range.len();
+        let mut range_offset = 0;
         while len != 0 {
             let bounce_page = bounce_range.page_as_slice(index);
-            let offset = (range.start % PAGE_SIZE64) as usize;
+            let page_offset = ((range.start + range_offset) % PAGE_SIZE64) as usize;
 
-            let copy_len = std::cmp::min(len as usize, PAGE_SIZE - offset);
-            let bounce_page = &bounce_page[offset..offset + copy_len];
+            let copy_len = std::cmp::min(len as usize, PAGE_SIZE - page_offset);
+            let bounce_page = &bounce_page[page_offset..page_offset + copy_len];
+
+            tracing::error!(index, len, copy_len, page_offset, ?range, "copying");
 
             match direction {
                 CopyDirection::ToBounce => {
                     guest_memory
-                        .read_to_atomic(range.start, bounce_page)
+                        .read_to_atomic(range.start + range_offset, bounce_page)
                         .context("BUGBUG handle bounce copy error")?;
                 }
                 CopyDirection::FromBounce => {
                     guest_memory
-                        .write_from_atomic(range.start, bounce_page)
+                        .write_from_atomic(range.start + range_offset, bounce_page)
                         .context("BUGBUG handle bounce copy error")?;
                 }
             }
 
             index += 1;
             len -= copy_len as u64;
+            range_offset += copy_len as u64;
         }
     }
 
@@ -845,7 +849,7 @@ mod tests {
         // Fill memory with a pattern, and see that the allocated pages have the
         // same pattern.
         let buf = (0..PAGE_SIZE * 10)
-            .map(|i| (i * i) as u8)
+            .map(|i| (i + (i / PAGE_SIZE)) as u8)
             .collect::<Vec<_>>();
         range.writer(&mem).write(&buf).unwrap();
 
@@ -894,7 +898,7 @@ mod tests {
 
         // Fill bounce buffer with a pattern
         let buf = (0..PAGE_SIZE * 10)
-            .map(|i| (i * i) as u8)
+            .map(|i| (i + (i / PAGE_SIZE)) as u8)
             .collect::<Vec<_>>();
         bounce_range.write(&buf);
 
@@ -907,10 +911,126 @@ mod tests {
     }
 
     // Test copying to a bounce buffer with a partial starting page
+    #[async_test]
+    async fn test_copy_partial_page_start() {
+        let (mem, _pool, pages) = create_pools();
+
+        // Create transaction with 3
+        let offset = 123;
+        let range = PagedRange::new(offset, PAGE_SIZE * 2 - 123, &[0, 3]).unwrap();
+        let bounce_range = pages.alloc_pages(2).await.unwrap();
+
+        // Fill memory with a pattern, and see that the allocated pages have the
+        // same pattern.
+        let buf = (0..range.len()).map(|i| (i * i) as u8).collect::<Vec<_>>();
+        range.writer(&mem).write(&buf).unwrap();
+
+        copy_page_ranges(&range, &mem, &bounce_range, CopyDirection::ToBounce).unwrap();
+
+        // Check that the bounce buffer has the same pattern. Read the whole
+        // pages, then remove the offset bytes.
+        let mut bounce_buf = vec![0; PAGE_SIZE * 2];
+        bounce_range.read(&mut bounce_buf);
+        let bounce_data = &bounce_buf[offset..];
+        assert_eq!(buf, bounce_data);
+    }
+
+    // Test copying to a bounce buffer with a partial starting page, contiguious range
+    #[async_test]
+    async fn test_copy_partial_page_start_contiguous() {
+        let (mem, _pool, pages) = create_pools();
+
+        // Create transaction with 3
+        let offset = 123;
+        let range = PagedRange::new(offset, PAGE_SIZE * 2 - 123, &[0, 1]).unwrap();
+        let bounce_range = pages.alloc_pages(2).await.unwrap();
+
+        // Fill memory with a pattern, and see that the allocated pages have the
+        // same pattern.
+        let buf = (0..range.len()).map(|i| (i * i) as u8).collect::<Vec<_>>();
+        range.writer(&mem).write(&buf).unwrap();
+
+        copy_page_ranges(&range, &mem, &bounce_range, CopyDirection::ToBounce).unwrap();
+
+        // Check that the bounce buffer has the same pattern. Read the whole
+        // pages, then remove the offset bytes.
+        let mut bounce_buf = vec![0; PAGE_SIZE * 2];
+        bounce_range.read(&mut bounce_buf);
+        let bounce_data = &bounce_buf[offset..];
+        assert_eq!(buf, bounce_data);
+    }
 
     // Test copying to a bounce buffer with a partial ending page
+    #[async_test]
+    async fn test_copy_partial_page_end() {
+        let (mem, _pool, pages) = create_pools();
+
+        // Create transaction with 2 pages
+        let range = PagedRange::new(0, PAGE_SIZE * 2 - 123, &[0, 3]).unwrap();
+        let bounce_range = pages.alloc_pages(2).await.unwrap();
+
+        // Fill memory with a pattern, and see that the allocated pages have the
+        // same pattern.
+        let buf = (0..range.len()).map(|i| (i * i) as u8).collect::<Vec<_>>();
+        range.writer(&mem).write(&buf).unwrap();
+
+        copy_page_ranges(&range, &mem, &bounce_range, CopyDirection::ToBounce).unwrap();
+
+        // Check that the bounce buffer has the same pattern. Read the whole
+        // pages, then remove the offset bytes.
+        let mut bounce_buf = vec![0; PAGE_SIZE * 2];
+        bounce_range.read(&mut bounce_buf);
+        let bounce_data = &bounce_buf[..range.len()];
+        assert_eq!(buf, bounce_data);
+    }
 
     // Test copying to a bounce buffer with a partial start and end page
+    #[async_test]
+    async fn test_copy_partial_page_start_end() {
+        let (mem, _pool, pages) = create_pools();
+
+        // Create transaction with 2 pages
+        let offset = 123;
+        let range = PagedRange::new(offset, PAGE_SIZE * 2 - 256, &[0, 3]).unwrap();
+        let bounce_range = pages.alloc_pages(2).await.unwrap();
+
+        // Fill memory with a pattern, and see that the allocated pages have the
+        // same pattern.
+        let buf = (0..range.len()).map(|i| (i * i) as u8).collect::<Vec<_>>();
+        range.writer(&mem).write(&buf).unwrap();
+
+        copy_page_ranges(&range, &mem, &bounce_range, CopyDirection::ToBounce).unwrap();
+
+        // Check that the bounce buffer has the same pattern. Read the whole
+        // pages, then remove the offset bytes.
+        let mut bounce_buf = vec![0; PAGE_SIZE * 2];
+        bounce_range.read(&mut bounce_buf);
+        let bounce_data = &bounce_buf[offset..(offset + range.len())];
+        assert_eq!(buf, bounce_data);
+    }
 
     // Test copying to a bounce buffer with a single partial page
+    #[async_test]
+    async fn test_partial_single_page() {
+        let (mem, _pool, pages) = create_pools();
+
+        // Create transaction with 1 page
+        let offset = 123;
+        let range = PagedRange::new(offset, PAGE_SIZE - 2943, &[12]).unwrap();
+        let bounce_range = pages.alloc_pages(1).await.unwrap();
+
+        // Fill memory with a pattern, and see that the allocated pages have the
+        // same pattern.
+        let buf = (0..range.len()).map(|i| (i * i) as u8).collect::<Vec<_>>();
+        range.writer(&mem).write(&buf).unwrap();
+
+        copy_page_ranges(&range, &mem, &bounce_range, CopyDirection::ToBounce).unwrap();
+
+        // Check that the bounce buffer has the same pattern. Read the whole
+        // pages, then remove the offset bytes.
+        let mut bounce_buf = vec![0; PAGE_SIZE];
+        bounce_range.read(&mut bounce_buf);
+        let bounce_data = &bounce_buf[offset..(offset + range.len())];
+        assert_eq!(buf, bounce_data);
+    }
 }
