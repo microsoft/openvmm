@@ -266,7 +266,7 @@ unsafe impl MappedDmaTarget for DmaBuffer {
     }
 }
 
-#[derive(Inspect, InspectMut)]
+#[derive(Inspect)]
 pub struct EmulatedDmaAllocator {
     #[inspect(skip)]
     shared_mem: DeviceSharedMemory,
@@ -292,7 +292,7 @@ impl DmaClient for EmulatedDmaAllocator {
     }
 }
 
-impl<T: 'static + Send + InspectMut + MmioIntercept, U:'static + Send + InspectMut + DmaClient> DeviceBacking for EmulatedDevice<T, U> {
+impl<T: 'static + Send + InspectMut + MmioIntercept, U:'static + Send + DmaClient> DeviceBacking for EmulatedDevice<T, U> {
     type Registers = Mapping<T>;
 
     fn id(&self) -> &str {
