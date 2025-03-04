@@ -67,7 +67,7 @@ pub trait DeviceRegisterIo: Send + Sync {
 #[derive(Debug, thiserror::Error)]
 pub enum MapDmaError {
     #[error("failed to map ranges")]
-    Map,
+    Map(#[source] anyhow::Error),
     #[error("no bounce buffers available")]
     NoBounceBufferAvailable,
     // UnmapFailed,

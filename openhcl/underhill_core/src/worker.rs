@@ -3017,6 +3017,111 @@ async fn new_underhill_vm(
             .read_n(hvdef::HV_PAGE_SIZE_USIZE * 5)?;
 
         assert_eq!(read_buf, expected_buf);
+
+        // test with 3 pages, partial first, full last
+        gm.vtl0()
+            .fill_at(hvdef::HV_PAGE_SIZE, 123, hvdef::HV_PAGE_SIZE as usize * 3)?;
+
+        let pages = PagedRange::new(123, hvdef::HV_PAGE_SIZE_USIZE * 3 - 123, &[1, 2, 3]).unwrap();
+        let transaction = client
+            .map_dma_ranges(
+                gm.vtl0(),
+                pages,
+                MapDmaOptions {
+                    always_bounce: false,
+                    is_rx: true,
+                    is_tx: true,
+                },
+            )
+            .await?;
+
+        let mut buffer = [9u8; hvdef::HV_PAGE_SIZE_USIZE * 3];
+        buffer[0] = 42;
+        buffer[123] = 240;
+        buffer[hvdef::HV_PAGE_SIZE_USIZE * 3 - 1] = 47;
+        transaction.write_bounced(buffer.as_ref())?;
+
+        client
+            .unmap_dma_ranges(transaction)
+            .context("self test unmap dma")?;
+
+        let mut expected_buf = [0; hvdef::HV_PAGE_SIZE_USIZE * 3];
+        expected_buf[0..123].copy_from_slice(&[123; 123]);
+        expected_buf[123..].copy_from_slice(&buffer[123..]);
+
+        let read_buf: Vec<u8> = pages
+            .reader(gm.vtl0())
+            .read_n(hvdef::HV_PAGE_SIZE_USIZE * 3)?;
+        assert_eq!(read_buf, expected_buf);
+
+        // test with 3 pages, full first, partial last
+        gm.vtl0()
+            .fill_at(hvdef::HV_PAGE_SIZE, 123, hvdef::HV_PAGE_SIZE as usize * 3)?;
+
+        let pages = PagedRange::new(0, hvdef::HV_PAGE_SIZE_USIZE * 3 - 123, &[1, 2, 3]).unwrap();
+        let transaction = client
+            .map_dma_ranges(
+                gm.vtl0(),
+                pages,
+                MapDmaOptions {
+                    always_bounce: false,
+                    is_rx: true,
+                    is_tx: true,
+                },
+            )
+            .await?;
+        let mut buffer = [9u8; hvdef::HV_PAGE_SIZE_USIZE * 3];
+        buffer[0] = 42;
+        buffer[hvdef::HV_PAGE_SIZE_USIZE * 3 - 123] = 47;
+        transaction.write_bounced(buffer.as_ref())?;
+
+        client
+            .unmap_dma_ranges(transaction)
+            .context("self test unmap dma")?;
+
+        let mut expected_buf = [0; hvdef::HV_PAGE_SIZE_USIZE * 3];
+        expected_buf[0..hvdef::HV_PAGE_SIZE_USIZE * 3 - 123]
+            .copy_from_slice(&buffer[..hvdef::HV_PAGE_SIZE_USIZE * 3 - 123]);
+        expected_buf[hvdef::HV_PAGE_SIZE_USIZE * 3 - 123..].copy_from_slice(&[123; 123]);
+
+        let read_buf: Vec<u8> = pages
+            .reader(gm.vtl0())
+            .read_n(hvdef::HV_PAGE_SIZE_USIZE * 3)?;
+        assert_eq!(read_buf, expected_buf);
+
+        // test with 1 page, small byte range in page
+        gm.vtl0()
+            .fill_at(hvdef::HV_PAGE_SIZE, 123, hvdef::HV_PAGE_SIZE as usize)?;
+
+        let pages = PagedRange::new(123, 123, &[1]).unwrap();
+        let transaction = client
+            .map_dma_ranges(
+                gm.vtl0(),
+                pages,
+                MapDmaOptions {
+                    always_bounce: false,
+                    is_rx: true,
+                    is_tx: true,
+                },
+            )
+            .await?;
+        let mut buffer = [9u8; hvdef::HV_PAGE_SIZE_USIZE];
+        buffer[0] = 42;
+        buffer[123] = 240;
+        buffer[hvdef::HV_PAGE_SIZE_USIZE - 1] = 47;
+        transaction.write_bounced(buffer.as_ref())?;
+
+        client
+            .unmap_dma_ranges(transaction)
+            .context("self test unmap dma")?;
+        let mut expected_buf = [0; hvdef::HV_PAGE_SIZE_USIZE];
+        expected_buf[0..123].copy_from_slice(&[123; 123]);
+        expected_buf[123..246].copy_from_slice(&buffer[123..246]);
+        expected_buf[246..].copy_from_slice(&[123; hvdef::HV_PAGE_SIZE_USIZE - 246]);
+
+        let read_buf: Vec<u8> = pages.reader(gm.vtl0()).read_n(hvdef::HV_PAGE_SIZE_USIZE)?;
+
+        assert_eq!(read_buf, expected_buf);
     }
 
     // Start the VP tasks on the thread pool.

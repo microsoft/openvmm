@@ -4698,6 +4698,8 @@ dependencies = [
  "memory_range",
  "mesh",
  "page_pool_alloc",
+ "pal_async",
+ "pal_async_test",
  "tracing",
  "user_driver",
  "virt",

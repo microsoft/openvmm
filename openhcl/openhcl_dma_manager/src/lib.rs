@@ -12,6 +12,7 @@
 use anyhow::Context;
 use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
+use guestmem::PAGE_SIZE;
 use hcl_mapper::HclMapper;
 use inspect::Inspect;
 use lower_vtl_permissions_guard::LowerVtlMemorySpawner;
@@ -23,7 +24,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use user_driver::lockmem::LockedMemorySpawner;
-use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::page_allocator::PageAllocator;
 use user_driver::page_allocator::ScopedPages;
@@ -593,6 +593,53 @@ enum DmaOperation<'a> {
     },
 }
 
+enum CopyDirection {
+    /// Copy from guest memory to bounce buffer
+    ToBounce,
+    /// Copy from bounce buffer to guest memory
+    FromBounce,
+}
+
+fn copy_page_ranges(
+    range: &PagedRange<'_>,
+    guest_memory: &GuestMemory,
+    bounce_range: &ScopedPages<'_>,
+    direction: CopyDirection,
+) -> anyhow::Result<()> {
+    let mut index = 0;
+
+    for range in range.ranges() {
+        let range = range.context("invalid gpn")?;
+
+        let mut len = range.len();
+        while len != 0 {
+            let bounce_page = bounce_range.page_as_slice(index);
+            let offset = (range.start % PAGE_SIZE64) as usize;
+
+            let copy_len = std::cmp::min(len as usize, PAGE_SIZE - offset);
+            let bounce_page = &bounce_page[offset..offset + copy_len];
+
+            match direction {
+                CopyDirection::ToBounce => {
+                    guest_memory
+                        .read_to_atomic(range.start, bounce_page)
+                        .context("BUGBUG handle bounce copy error")?;
+                }
+                CopyDirection::FromBounce => {
+                    guest_memory
+                        .write_from_atomic(range.start, bounce_page)
+                        .context("BUGBUG handle bounce copy error")?;
+                }
+            }
+
+            index += 1;
+            len -= copy_len as u64;
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Debug)]
 struct DmaTransaction<'a> {
     /// guest memory object to use to bounce in/out
@@ -622,18 +669,15 @@ impl MappedDmaTransaction for DmaTransaction<'_> {
                 bounce_pfns: _,
                 original,
             } => {
-                // BUGBUG assumes no partial pages in range
                 if self.options.is_rx || self.options.always_bounce {
-                    for (index, page) in original.gpns().iter().enumerate() {
-                        let bounce_page = bounce.page_as_slice(index);
-
-                        // BUGBUG: does not handle subranges, copies whole pages.
-                        // there's not a good method for this in PagedRange, needs some
-                        // thinking.
-                        self.guest_memory
-                            .write_from_atomic(*page * PAGE_SIZE64, bounce_page)
-                            .expect("BUGBUG handle bounce copy error");
-                    }
+                    // copy from bounce buffer to guest memory
+                    copy_page_ranges(
+                        original,
+                        self.guest_memory,
+                        bounce,
+                        CopyDirection::FromBounce,
+                    )
+                    .context("failed to copy from bounce buffer")?;
                 }
             }
         }
@@ -674,16 +718,9 @@ impl OpenhclDmaClient {
 
         // copy to bounced pages
         if options.is_tx {
-            for (index, page) in range.gpns().iter().enumerate() {
-                let bounce_page = bounce_pages.page_as_slice(index);
-
-                // BUGBUG: does not handle subranges, copies whole pages.
-                // there's not a good method for this in PagedRange, needs some
-                // thinking.
-                guest_memory
-                    .read_to_atomic(*page * PAGE_SIZE64, bounce_page)
-                    .expect("BUGBUG handle bounce copy error");
-            }
+            copy_page_ranges(&range, guest_memory, &bounce_pages, CopyDirection::ToBounce)
+                .context("failed to copy to bounce buffer")
+                .map_err(MapDmaError::Map)?;
         }
 
         Ok(DmaOperation::Bounced {
@@ -699,10 +736,6 @@ impl OpenhclDmaClient {
         range: PagedRange<'b>,
         options: MapDmaOptions,
     ) -> Result<Box<dyn MappedDmaTransaction + 'a>, MapDmaError> {
-        // BUGBUG: does not handle if the first/last page are partial pages. Do we allow this?
-        assert_eq!(range.offset(), 0);
-        assert_eq!(range.len() % PAGE_SIZE, 0);
-
         let pin_pages = self
             .inner
             .pin_pages
@@ -767,4 +800,117 @@ impl DmaMap for OpenhclDmaClient {
     ) -> Result<(), MapDmaError> {
         transaction.complete().map_err(MapDmaError::Unmap)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::copy_page_ranges;
+    use crate::CopyDirection;
+    use guestmem::ranges::PagedRange;
+    use guestmem::GuestMemory;
+    use guestmem::MemoryRead;
+    use guestmem::MemoryWrite;
+    use guestmem::PAGE_SIZE;
+    use memory_range::MemoryRange;
+    use page_pool_alloc::PagePool;
+    use page_pool_alloc::TestMapper;
+    use pal_async_test::async_test;
+    use user_driver::page_allocator::PageAllocator;
+    use user_driver::DmaAlloc;
+
+    /// Create pools of 100 pages. Guest memory valid at page 0.
+    fn create_pools() -> (GuestMemory, PagePool, PageAllocator) {
+        let mem = GuestMemory::allocate(100 * PAGE_SIZE);
+        let pool = PagePool::new(
+            &[MemoryRange::from_4k_gpn_range(0..100)],
+            TestMapper::new(100).unwrap(),
+        )
+        .unwrap();
+        let alloc = pool.allocator("test-pool".into()).unwrap();
+        let block = alloc.allocate_dma_buffer(100 * PAGE_SIZE).unwrap();
+        let pages = PageAllocator::new(block);
+
+        (mem, pool, pages)
+    }
+
+    // Test copying to a bounce buffer with full pages
+    #[async_test]
+    async fn test_copy_to_bounce_full() {
+        let (mem, _pool, pages) = create_pools();
+
+        // Create transaction with 10 pages
+        let range = PagedRange::new(0, PAGE_SIZE * 10, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap();
+        let bounce_range = pages.alloc_pages(10).await.unwrap();
+
+        // Fill memory with a pattern, and see that the allocated pages have the
+        // same pattern.
+        let buf = (0..PAGE_SIZE * 10)
+            .map(|i| (i * i) as u8)
+            .collect::<Vec<_>>();
+        range.writer(&mem).write(&buf).unwrap();
+
+        copy_page_ranges(&range, &mem, &bounce_range, CopyDirection::ToBounce).unwrap();
+
+        // Check that the bounce buffer has the same pattern.
+        let mut bounce_buf = vec![0; PAGE_SIZE * 10];
+        bounce_range.read(&mut bounce_buf);
+        assert_eq!(buf, bounce_buf);
+    }
+
+    // Test copying to a bounce buffer with full pages, but the pages are not
+    // all contiguous
+    #[async_test]
+    async fn test_copy_to_bounce_noncontiguous() {
+        let (mem, _pool, pages) = create_pools();
+
+        // Create transaction with 10 pages
+        let range =
+            PagedRange::new(0, PAGE_SIZE * 10, &[0, 1, 2, 12, 24, 58, 32, 7, 8, 9]).unwrap();
+        let bounce_range = pages.alloc_pages(10).await.unwrap();
+
+        // Fill memory with a pattern, and see that the allocated pages have the
+        // same pattern.
+        let buf = (0..PAGE_SIZE * 10)
+            .map(|i| (i * i) as u8)
+            .collect::<Vec<_>>();
+        range.writer(&mem).write(&buf).unwrap();
+
+        copy_page_ranges(&range, &mem, &bounce_range, CopyDirection::ToBounce).unwrap();
+
+        // Check that the bounce buffer has the same pattern.
+        let mut bounce_buf = vec![0; PAGE_SIZE * 10];
+        bounce_range.read(&mut bounce_buf);
+        assert_eq!(buf, bounce_buf);
+    }
+
+    // Test copying from a bounce buffer with full pages
+    #[async_test]
+    async fn test_copy_from_bounce_full() {
+        let (mem, _pool, pages) = create_pools();
+
+        // Create transaction with 10 pages
+        let range = PagedRange::new(0, PAGE_SIZE * 10, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap();
+        let bounce_range = pages.alloc_pages(10).await.unwrap();
+
+        // Fill bounce buffer with a pattern
+        let buf = (0..PAGE_SIZE * 10)
+            .map(|i| (i * i) as u8)
+            .collect::<Vec<_>>();
+        bounce_range.write(&buf);
+
+        copy_page_ranges(&range, &mem, &bounce_range, CopyDirection::FromBounce).unwrap();
+
+        // Check that the original range has the same pattern.
+        let mut gm_buf = vec![0; PAGE_SIZE * 10];
+        range.reader(&mem).read(&mut gm_buf).unwrap();
+        assert_eq!(buf, gm_buf);
+    }
+
+    // Test copying to a bounce buffer with a partial starting page
+
+    // Test copying to a bounce buffer with a partial ending page
+
+    // Test copying to a bounce buffer with a partial start and end page
+
+    // Test copying to a bounce buffer with a single partial page
 }
