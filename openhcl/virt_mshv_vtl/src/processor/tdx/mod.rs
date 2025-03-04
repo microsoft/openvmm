@@ -1475,6 +1475,7 @@ impl UhProcessor<'_, TdxBacked> {
             }
         }
 
+        #[cfg(feature = "gdb")]
         let mut breakpoint_debug_exception = false;
         let stat = match exit_info.code().vmx_exit() {
             VmxExit::IO_INSTRUCTION => {
@@ -1813,13 +1814,13 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.nmi_window
             }
             VmxExit::HW_INTERRUPT => {
-                // Check if the interrupt was triggered by a hardware breakpoint.
-                if cfg!(feature = "gdb") {
+                #[cfg(feature = "gdb")]
+                {
+                    // Check if the interrupt was triggered by a hardware breakpoint.
                     let debug_regs = self
                         .access_state(intercepted_vtl.into())
                         .debug_regs()
                         .expect("register query should not fail");
-
                     // The lowest four bits of DR6 indicate which of the
                     // four breakpoints triggered.
                     breakpoint_debug_exception = debug_regs.dr6.trailing_zeros() < 4;
@@ -1845,11 +1846,12 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.tdcall
             }
             VmxExit::EXCEPTION => {
-                tracing::trace!(
-                    "Caught Exception: {:?}",
-                    exit_info._exit_interruption_info()
+                #[cfg(feature = "gdb")]
+                {
+                    tracing::trace!(
+                        "Caught Exception: {:?}",
+                        exit_info._exit_interruption_info()
                 );
-                if cfg!(feature = "gdb"){
                 breakpoint_debug_exception = true;
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.exception
@@ -1869,7 +1871,8 @@ impl UhProcessor<'_, TdxBacked> {
 
         // Breakpoint exceptions may return a non-fatal error.
         // We dispatch here to correctly increment the counter.
-        if cfg!(feature = "gdb") && breakpoint_debug_exception {
+        #[cfg(feature = "gdb")]
+        if breakpoint_debug_exception {
             self.handle_debug_exception(intercepted_vtl)?;
         }
 
