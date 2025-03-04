@@ -135,7 +135,8 @@ fn new_test_vtl2_nvme_device(
                 disk: layer.into_resource(),
                 read_only: false,
             }],
-        },
+        }
+        .into_resource(),
     }
 }
 
