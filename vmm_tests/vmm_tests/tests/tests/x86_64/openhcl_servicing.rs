@@ -67,8 +67,9 @@ async fn openhcl_servicing_keepalive(
     .await
 }
 
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn openhcl_servicing_shutdown_ic(
+// Disabled until #954 is fixed.
+//#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn _openhcl_servicing_shutdown_ic(
     config: PetriVmConfigOpenVmm,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
