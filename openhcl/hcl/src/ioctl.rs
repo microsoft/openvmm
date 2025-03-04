@@ -381,6 +381,7 @@ mod ioctls {
     const MSHV_VTL_RMPQUERY: u16 = 0x35;
     const MSHV_INVLPGB: u16 = 0x36;
     const MSHV_TLBSYNC: u16 = 0x37;
+    const MSHV_MAP_REDIRECTED_DEVICE_INTERRUPT: u16 = 0x38;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -446,6 +447,13 @@ mod ioctls {
         pub r9: u64,
         pub r10_out: u64, // only supported as output
         pub r11_out: u64, // only supported as output
+    }
+
+    #[repr(C, packed)]
+    #[derive(Copy, Clone)]
+    pub struct mshv_map_device_int {
+        pub vector: u32,
+        pub create_mapping: bool,
     }
 
     ioctl_none!(
@@ -594,6 +602,14 @@ mod ioctls {
         hcl_tlbsync,
         MSHV_IOCTL,
         MSHV_TLBSYNC
+    );
+
+    ioctl_readwrite!(
+        /// Map VTL0 device interrupt in VTL2.
+        hcl_map_redirected_device_interrupt,
+        MSHV_IOCTL,
+        MSHV_MAP_REDIRECTED_DEVICE_INTERRUPT,
+        mshv_map_device_int
     );
 }
 
@@ -3134,12 +3150,15 @@ impl Hcl {
         vector: u32,
         multicast: bool,
         target_processors: ProcessorSet<'_>,
+        posted_redirect: bool,
     ) -> Result<(), HvError> {
         let header = hvdef::hypercall::RetargetDeviceInterrupt {
             partition_id: HV_PARTITION_ID_SELF,
             device_id,
             entry,
-            rsvd: 0,
+            flags: hvdef::hypercall::RetargetDeviceInterruptFlags::default()
+                .with_posted_redirect(posted_redirect)
+                .with_rsvd(0),
             target_header: hvdef::hypercall::InterruptTarget {
                 vector,
                 flags: hvdef::hypercall::HvInterruptTargetFlags::default()
@@ -3226,6 +3245,21 @@ impl Hcl {
         // SAFETY: ioctl has no prerequisites.
         unsafe {
             hcl_tlbsync(self.mshv_vtl.file.as_raw_fd()).expect("should always succeed");
+        }
+    }
+
+    /// Map guest device interrupt vector in VTL2 kernel
+    pub fn map_redirected_device_interrupt(&self, vector: u32, create_mapping: bool) -> Option<u32> {
+        let mut param = mshv_map_device_int {
+            vector,
+            create_mapping,
+        };
+
+        match unsafe { 
+            hcl_map_redirected_device_interrupt(self.mshv_vtl.file.as_raw_fd(), &mut param) 
+        } {
+            Ok(_) => Some(param.vector),
+            Err(_) => None,
         }
     }
 }

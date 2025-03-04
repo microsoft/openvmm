@@ -1019,8 +1019,16 @@ pub mod hypercall {
         pub partition_id: u64,
         pub device_id: u64,
         pub entry: InterruptEntry,
-        pub rsvd: u64,
+        pub flags: RetargetDeviceInterruptFlags,
         pub target_header: InterruptTarget,
+    }
+
+    #[bitfield(u64)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct RetargetDeviceInterruptFlags {
+        pub posted_redirect: bool,
+        #[bits(63)]
+        pub rsvd: u64,
     }
 
     #[bitfield(u8)]

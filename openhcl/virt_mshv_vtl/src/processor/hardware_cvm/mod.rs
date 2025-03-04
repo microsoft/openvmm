@@ -605,6 +605,12 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         multicast: bool,
         target_processors: ProcessorSet<'_>,
     ) -> HvResult<()> {
+        let entry = hvdef::hypercall::InterruptEntry {
+            source: hvdef::hypercall::HvInterruptSource::MSI,
+            rsvd: 0,
+            data: [address as u32, data],
+        };
+
         // Before dispatching retarget_device_interrupt, add the device vector
         // to partition global device vector table and issue `proxy_irr_blocked`
         // filter wake request to other VPs
@@ -617,16 +623,35 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         // Update `proxy_irr_blocked` for this VP itself
         self.vp.update_proxy_irr_filter(self.intercepted_vtl);
 
+        // Request a remapping in vtl2 for the guest device interrupt vector
+        if self.vp.partition.isolation == virt::IsolationType::Tdx {
+            if let Some(redirected_vector) = self.vp.partition.hcl.map_redirected_device_interrupt(vector, true) {
+                let result = self.vp.partition.hcl.retarget_device_interrupt(
+                    device_id,
+                    entry,
+                    redirected_vector,
+                    multicast,
+                    target_processors,
+                    true,
+                );
+
+                match result {
+                    Err(HvError::InvalidVtlState) => {
+                        // If interrupt cannot be posted to current VTL, retry with proxy interrupt delivery
+                        self.vp.partition.hcl.map_redirected_device_interrupt(vector, false);
+                    }
+                    _ => return result,
+                }
+            }
+        }
+
         self.vp.partition.hcl.retarget_device_interrupt(
             device_id,
-            hvdef::hypercall::InterruptEntry {
-                source: hvdef::hypercall::HvInterruptSource::MSI,
-                rsvd: 0,
-                data: [address as u32, data],
-            },
+            entry,
             vector,
             multicast,
             target_processors,
+            false,
         )
     }
 
