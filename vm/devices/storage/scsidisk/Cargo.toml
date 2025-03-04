@@ -43,7 +43,6 @@ disklayer_ram.workspace = true
 nvme_driver.workspace = true
 pci_core.workspace = true
 nvme.workspace = true
-test_with_tracing.workspace = true
 user_driver.workspace = true
 
 [lints]

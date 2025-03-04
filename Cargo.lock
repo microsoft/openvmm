@@ -5946,7 +5946,6 @@ dependencies = [
  "scsi_defs",
  "scsidisk_resources",
  "stackfuture",
- "test_with_tracing",
  "thiserror 2.0.0",
  "tracelimit",
  "tracing",

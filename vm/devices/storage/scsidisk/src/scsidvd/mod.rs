@@ -405,11 +405,9 @@ impl SimpleScsiDvd {
             }
 
             if let Some(disk) = media {
-                tracing::info!("#### called disk.read_vectored");
                 disk.read_vectored(&external_data.subrange(0, p.tx), p.offset)
                     .await
                     .map_err(ScsiDvdError::IoError)?;
-                tracing::info!("#### after disk.read_vectored");
             }
         }
 
@@ -2396,7 +2394,6 @@ mod tests {
     use scsi_core::save_restore::ScsiDvdSavedState;
     use scsi_core::AsyncScsiDisk;
     use scsi_core::Request;
-    use test_with_tracing::test;
     use zerocopy::IntoBytes;
 
     #[derive(Debug)]
