@@ -117,10 +117,8 @@ fn new_test_vtl2_nvme_device(
     instance_id: Guid,
     backing_file: Option<File>,
 ) -> VpciDeviceConfig {
-    let layer = if backing_file.is_some() {
-        LayeredDiskHandle::single_layer(DiskLayerHandle(
-            FileDiskHandle(backing_file.unwrap()).into_resource(),
-        ))
+    let layer = if let Some(file) = backing_file {
+        LayeredDiskHandle::single_layer(DiskLayerHandle(FileDiskHandle(file).into_resource()))
     } else {
         LayeredDiskHandle::single_layer(RamDiskLayerHandle { len: Some(size) })
     };
@@ -137,8 +135,7 @@ fn new_test_vtl2_nvme_device(
                 disk: layer.into_resource(),
                 read_only: false,
             }],
-        }
-        .into_resource(),
+        },
     }
 }
 
@@ -152,7 +149,6 @@ async fn storvsp(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     let vtl0_nvme_lun = 1;
     let vtl2_nsid = 37;
     let scsi_instance = Guid::new_random();
-
     let scsi_disk_sectors = 0x2000;
     let nvme_disk_sectors: u64 = 0x3000;
     let sector_size = 512;
@@ -434,7 +430,7 @@ async fn openhcl_linux_storvsp_dvd_nvme(config: PetriVmConfigOpenVmm) -> Result<
 
     let disk_len = nvme_disk_sectors * sector_size;
     let mut backing_file = tempfile::tempfile()?;
-    let mut bytes = vec![0 as u8; disk_len as usize];
+    let mut bytes = vec![0_u8; disk_len as usize];
     for i in 0..(disk_len / 0xff) {
         // This should always be divisible by 64
         for j in 0..0xff {
