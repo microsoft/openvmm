@@ -113,31 +113,33 @@ async fn mana_nic_servicing(
     Ok(())
 }
 
-fn new_test_vtl2_nvme_device(nsid: u32, size: u64, instance_id: Guid, backing_file: Option<File>) -> VpciDeviceConfig 
-{
+fn new_test_vtl2_nvme_device(
+    nsid: u32,
+    size: u64,
+    instance_id: Guid,
+    backing_file: Option<File>,
+) -> VpciDeviceConfig {
     let layer = if let Some(file) = backing_file {
         LayeredDiskHandle::single_layer(DiskLayerHandle(FileDiskHandle(file).into_resource()))
     } else {
-        LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-            len: Some(size),
-        })
+        LayeredDiskHandle::single_layer(RamDiskLayerHandle { len: Some(size) })
     };
 
     VpciDeviceConfig {
-                        vtl: DeviceVtl::Vtl2,
-                        instance_id,
-                        resource: NvmeControllerHandle {
-                            subsystem_id: instance_id,
-                            max_io_queues: 64,
-                            msix_count: 64,
-                            namespaces: vec![NamespaceDefinition {
-                                nsid,
-                                disk: layer.into_resource(),
-                                read_only: false,
-                            }],
-                        }
-                        .into_resource(),
-                    }
+        vtl: DeviceVtl::Vtl2,
+        instance_id,
+        resource: NvmeControllerHandle {
+            subsystem_id: instance_id,
+            max_io_queues: 64,
+            msix_count: 64,
+            namespaces: vec![NamespaceDefinition {
+                nsid,
+                disk: layer.into_resource(),
+                read_only: false,
+            }],
+        }
+        .into_resource(),
+    }
 }
 
 /// Test an OpenHCL Linux direct VM with a SCSI disk assigned to VTL2, and
@@ -184,7 +186,12 @@ async fn storvsp(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
                 }
                 .into_resource(),
             ));
-            c.vpci_devices.push(new_test_vtl2_nvme_device(vtl2_nsid, nvme_disk_sectors * sector_size, NVME_INSTANCE, None));
+            c.vpci_devices.push(new_test_vtl2_nvme_device(
+                vtl2_nsid,
+                nvme_disk_sectors * sector_size,
+                NVME_INSTANCE,
+                None,
+            ));
         })
         .with_custom_vtl2_settings(|v| {
             v.dynamic.as_mut().unwrap().storage_controllers.push(
@@ -428,7 +435,8 @@ async fn openhcl_linux_storvsp_dvd_nvme(config: PetriVmConfigOpenVmm) -> Result<
     let disk_len = nvme_disk_sectors * sector_size;
     let mut backing_file = tempfile::tempfile()?;
     let mut bytes = vec![0_u8; disk_len as usize];
-    for i in 0..(disk_len / 0xff) { // This should always be divisible by 64
+    for i in 0..(disk_len / 0xff) {
+        // This should always be divisible by 64
         for j in 0..0xff {
             bytes[(i * 0xff + j) as usize] = j as u8;
         }
@@ -438,7 +446,12 @@ async fn openhcl_linux_storvsp_dvd_nvme(config: PetriVmConfigOpenVmm) -> Result<
     let (vm, agent) = config
         .with_vmbus_redirect()
         .with_custom_config(|c| {
-            c.vpci_devices.extend([new_test_vtl2_nvme_device(vtl2_nsid, nvme_disk_sectors * sector_size, NVME_INSTANCE, Some(backing_file))]);
+            c.vpci_devices.extend([new_test_vtl2_nvme_device(
+                vtl2_nsid,
+                nvme_disk_sectors * sector_size,
+                NVME_INSTANCE,
+                Some(backing_file),
+            )]);
         })
         .with_custom_vtl2_settings(|v| {
             v.dynamic.as_mut().unwrap().storage_controllers.push(
@@ -506,8 +519,18 @@ async fn openhcl_linux_stripe_storvsp(config: PetriVmConfigOpenVmm) -> Result<()
         .with_vmbus_redirect()
         .with_custom_config(|c| {
             c.vpci_devices.extend([
-                new_test_vtl2_nvme_device(vtl2_nsid, nvme_disk_sectors * sector_size, NVME_INSTANCE_1, None),
-                new_test_vtl2_nvme_device(vtl2_nsid, nvme_disk_sectors * sector_size, NVME_INSTANCE_2, None),
+                new_test_vtl2_nvme_device(
+                    vtl2_nsid,
+                    nvme_disk_sectors * sector_size,
+                    NVME_INSTANCE_1,
+                    None,
+                ),
+                new_test_vtl2_nvme_device(
+                    vtl2_nsid,
+                    nvme_disk_sectors * sector_size,
+                    NVME_INSTANCE_2,
+                    None,
+                ),
             ]);
         })
         .with_custom_vtl2_settings(|v| {
