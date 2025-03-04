@@ -27,7 +27,9 @@ use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::page_allocator::PageAllocator;
 use user_driver::page_allocator::ScopedPages;
+use user_driver::DmaAlloc;
 use user_driver::DmaClient;
+use user_driver::DmaMap;
 use user_driver::MapDmaError;
 use user_driver::MapDmaOptions;
 use user_driver::MappedDmaTransaction;
@@ -170,7 +172,7 @@ struct DmaManagerInner {
     shared_spawner: Option<PagePoolAllocatorSpawner>,
     private_spawner: Option<PagePoolAllocatorSpawner>,
     lower_vtl: Arc<DmaManagerLowerVtl>,
-    pin_pages: PinPages,
+    pin_pages: Option<PinPages>,
     // TODO: must track existing mapped dma ranges for save/restore
 }
 
@@ -206,34 +208,24 @@ impl virt::VtlMemoryProtection for DmaManagerLowerVtl {
 
 struct PinPages {
     mshv_hvcall: hcl::ioctl::MshvHvcall,
-    requires_dma_mapping: bool,
     // TODO: have some way of looking up which ranges are pre-pinned or not.
     // prepinned_ranges: bool,
 }
 
 impl std::fmt::Debug for PinPages {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PinPages")
-            .field("requires_dma_mapping", &self.requires_dma_mapping)
-            .finish()
+        f.debug_struct("PinPages").finish()
     }
 }
 
 impl PinPages {
-    fn new(requires_dma_mapping: bool) -> anyhow::Result<Self> {
+    fn new() -> anyhow::Result<Self> {
         let mshv_hvcall = hcl::ioctl::MshvHvcall::new().context("failed to open mshv_hvcall")?;
         mshv_hvcall.set_allowed_hypercalls(&[
             hvdef::HypercallCode::HvCallPinGpaPageRanges,
             hvdef::HypercallCode::HvCallUnpinGpaPageRanges,
         ]);
-        Ok(Self {
-            mshv_hvcall,
-            requires_dma_mapping,
-        })
-    }
-
-    fn requires_dma_mapping(&self) -> bool {
-        self.requires_dma_mapping
+        Ok(Self { mshv_hvcall })
     }
 
     /// Check if all the pages are pinned.
@@ -276,10 +268,7 @@ impl PinPages {
 }
 
 impl DmaManagerInner {
-    fn new_dma_client(
-        self: &Arc<Self>,
-        params: DmaClientParameters,
-    ) -> anyhow::Result<Arc<OpenhclDmaClient>> {
+    fn new_dma_client(self: &Arc<Self>, params: DmaClientParameters) -> anyhow::Result<DmaClient> {
         // Allocate the inner client that actually performs the allocations.
         let backing = {
             let DmaClientParameters {
@@ -388,17 +377,20 @@ impl DmaManagerInner {
             }
         };
 
-        // Allocate the bounce buffer from the backing for the client.
-        //
-        // TODO: req to use persistent pools?
+        // Allocate the bounce buffer from the backing for the client. Today, is
+        // only supported if pinning is required.
         let bounce_pfns = if let Some(pages) = params.bounce_buffer_pages {
+            let pin_pages = self.pin_pages.as_ref().ok_or(anyhow::anyhow!(
+                "bounce buffer pages only supported if dma manager supports pinning"
+            ))?;
+
             let pages = backing
                 .allocate_dma_buffer((pages * PAGE_SIZE64) as usize)
                 .context(format!("unable to allocate bounce buffer {pages} pages"))?;
 
             // Pin the bounce buffer pages, if required.
-            if !self.pin_pages.is_pinned(pages.pfns()) {
-                if !self.pin_pages.pin_pages(pages.pfns()) {
+            if !pin_pages.is_pinned(pages.pfns()) {
+                if !pin_pages.pin_pages(pages.pfns()) {
                     anyhow::bail!("unable to pin bounce buffer pages");
                 }
             }
@@ -408,22 +400,35 @@ impl DmaManagerInner {
             None
         };
 
-        Ok(Arc::new(OpenhclDmaClient {
+        // Create the client. The client only supports mapping if pinning is
+        // required.
+        let dma_client = Arc::new(OpenhclDmaClient {
             inner: self.clone(),
             backing,
             params,
             bounce_pfns,
-        }))
+        });
+
+        let dma_map: Option<Arc<dyn DmaMap>> = if self.pin_pages.is_some() {
+            Some(dma_client.clone())
+        } else {
+            None
+        };
+
+        Ok(DmaClient::new(dma_client, dma_map))
     }
 }
 
 impl OpenhclDmaManager {
     /// Creates a new [`OpenhclDmaManager`] with the given ranges to use for the
     /// shared and private gpa pools.
+    ///
+    /// `pin_ranges` determines if ranges must be mapped and pinned before dma.
     pub fn new(
         shared_ranges: &[MemoryRange],
         private_ranges: &[MemoryRange],
         vtom: u64,
+        pin_ranges: bool,
     ) -> anyhow::Result<Self> {
         let shared_pool = if shared_ranges.is_empty() {
             None
@@ -449,16 +454,18 @@ impl OpenhclDmaManager {
             )
         };
 
-        // BUGBUG: set via env var
-        let requires_dma_mapping = true;
+        let pin_pages = if pin_ranges {
+            Some(PinPages::new().context("failed to create pin pages")?)
+        } else {
+            None
+        };
 
         Ok(OpenhclDmaManager {
             inner: Arc::new(DmaManagerInner {
                 shared_spawner: shared_pool.as_ref().map(|pool| pool.allocator_spawner()),
                 private_spawner: private_pool.as_ref().map(|pool| pool.allocator_spawner()),
                 lower_vtl: DmaManagerLowerVtl::new().context("failed to create lower vtl")?,
-                pin_pages: PinPages::new(requires_dma_mapping)
-                    .context("failed to create pin pages")?,
+                pin_pages,
             }),
             shared_pool,
             private_pool,
@@ -467,7 +474,7 @@ impl OpenhclDmaManager {
 
     /// Creates a new DMA client with the given device name and lower VTL
     /// policy.
-    pub fn new_client(&self, params: DmaClientParameters) -> anyhow::Result<Arc<OpenhclDmaClient>> {
+    pub fn new_client(&self, params: DmaClientParameters) -> anyhow::Result<DmaClient> {
         self.inner.new_dma_client(params)
     }
 
@@ -506,7 +513,7 @@ pub struct DmaClientSpawner {
 
 impl DmaClientSpawner {
     /// Creates a new DMA client with the given parameters.
-    pub fn new_client(&self, params: DmaClientParameters) -> anyhow::Result<Arc<OpenhclDmaClient>> {
+    pub fn new_client(&self, params: DmaClientParameters) -> anyhow::Result<DmaClient> {
         self.inner.new_dma_client(params)
     }
 }
@@ -696,14 +703,20 @@ impl OpenhclDmaClient {
         assert_eq!(range.offset(), 0);
         assert_eq!(range.len() % PAGE_SIZE, 0);
 
+        let pin_pages = self
+            .inner
+            .pin_pages
+            .as_ref()
+            .expect("map should not be called if pinning is not supported");
+
         // the transaction is either all bounced, or all pinned.
         let operation = if options.always_bounce {
             self.allocate_bounce_pages(guest_memory, range, options)
                 .await?
-        } else if self.inner.pin_pages.is_pinned(range.gpns()) {
+        } else if pin_pages.is_pinned(range.gpns()) {
             DmaOperation::PrePinned(range)
         } else {
-            if self.inner.pin_pages.pin_pages(range.gpns()) {
+            if pin_pages.pin_pages(range.gpns()) {
                 DmaOperation::Pinned(range)
             } else {
                 self.allocate_bounce_pages(guest_memory, range, options)
@@ -715,12 +728,12 @@ impl OpenhclDmaClient {
             guest_memory,
             operation,
             options,
-            pin_pages: &self.inner.pin_pages,
+            pin_pages,
         }))
     }
 }
 
-impl DmaClient for OpenhclDmaClient {
+impl DmaAlloc for OpenhclDmaClient {
     fn allocate_dma_buffer(
         &self,
         total_size: usize,
@@ -735,11 +748,9 @@ impl DmaClient for OpenhclDmaClient {
     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
         self.backing.attach_dma_buffer(len, base_pfn)
     }
+}
 
-    fn requires_dma_mapping(&self) -> bool {
-        self.inner.pin_pages.requires_dma_mapping()
-    }
-
+impl DmaMap for OpenhclDmaClient {
     fn map_dma_ranges<'a, 'b: 'a>(
         &'a self,
         guest_memory: &'a GuestMemory,

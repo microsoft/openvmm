@@ -61,7 +61,7 @@ use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE32;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
-use user_driver::DmaClientDriver;
+use user_driver::DmaClient;
 use vmcore::slim_event::SlimEvent;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
@@ -1221,7 +1221,7 @@ struct ContiguousBufferManager {
 struct OutOfMemory;
 
 impl ContiguousBufferManager {
-    pub fn new(dma_client: DmaClientDriver, page_limit: u32) -> anyhow::Result<Self> {
+    pub fn new(dma_client: DmaClient, page_limit: u32) -> anyhow::Result<Self> {
         let len = PAGE_SIZE32 * page_limit;
         let mem = dma_client.allocate_dma_buffer(len as usize)?;
         Ok(Self {

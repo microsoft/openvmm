@@ -18,7 +18,7 @@ use user_driver::emulated::EmulatedDevice;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::DeviceBacking;
-use user_driver::DmaClientDriver;
+use user_driver::DmaClient;
 
 /// An EmulatedDevice fuzzer that requires a working EmulatedDevice backend.
 #[derive(Inspect)]
@@ -47,7 +47,7 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmula
         self.device.map_bar(n)
     }
 
-    fn dma_client(&self) -> &DmaClientDriver {
+    fn dma_client(&self) -> &DmaClient {
         self.device.dma_client()
     }
 

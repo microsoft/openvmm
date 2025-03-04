@@ -74,7 +74,6 @@ use std::os::unix::prelude::*;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::sync::Once;
 use thiserror::Error;
 use user_driver::memory::MemoryBlock;
@@ -1728,7 +1727,7 @@ impl HclVp {
         vp: u32,
         map_reg_page: bool,
         isolation_type: IsolationType,
-        private_dma_client: Option<&Arc<dyn DmaClient>>,
+        private_dma_client: Option<&DmaClient>,
     ) -> Result<Self, Error> {
         let fd = &hcl.mshv_vtl.file;
         let run: MappedPage<hcl_run> =
@@ -2392,7 +2391,7 @@ impl Hcl {
     pub fn add_vps(
         &mut self,
         vp_count: u32,
-        private_pool: Option<&Arc<dyn DmaClient>>,
+        private_pool: Option<&DmaClient>,
     ) -> Result<(), Error> {
         self.vps = (0..vp_count)
             .map(|vp| {

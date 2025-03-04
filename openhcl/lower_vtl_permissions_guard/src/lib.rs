@@ -14,12 +14,10 @@ pub use device_dma::LowerVtlDmaBuffer;
 
 use anyhow::Context;
 use anyhow::Result;
-use guestmem::ranges::PagedRange;
-use guestmem::GuestMemory;
 use inspect::Inspect;
 use std::sync::Arc;
 use user_driver::memory::MemoryBlock;
-use user_driver::DmaClient;
+use user_driver::DmaAlloc;
 use virt::VtlMemoryProtection;
 
 /// A guard that will restore [`hvdef::HV_MAP_GPA_PERMISSIONS_NONE`] permissions
@@ -78,14 +76,14 @@ impl Drop for PagesAccessibleToLowerVtl {
 /// A [`DmaClient`] wrapper that will lower the VTL permissions of the page
 /// on the allocated memory block.
 #[derive(Inspect)]
-pub struct LowerVtlMemorySpawner<T: DmaClient> {
+pub struct LowerVtlMemorySpawner<T: DmaAlloc> {
     #[inspect(skip)]
     spawner: T,
     #[inspect(skip)]
     vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
 }
 
-impl<T: DmaClient> LowerVtlMemorySpawner<T> {
+impl<T: DmaAlloc> LowerVtlMemorySpawner<T> {
     /// Create a new wrapped [`DmaClient`] spawner that will lower the VTL
     /// permissions of the returned [`MemoryBlock`].
     pub fn new(spawner: T, vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>) -> Self {
@@ -96,7 +94,7 @@ impl<T: DmaClient> LowerVtlMemorySpawner<T> {
     }
 }
 
-impl<T: DmaClient> DmaClient for LowerVtlMemorySpawner<T> {
+impl<T: DmaAlloc> DmaAlloc for LowerVtlMemorySpawner<T> {
     fn allocate_dma_buffer(&self, len: usize) -> Result<MemoryBlock> {
         let mem = self.spawner.allocate_dma_buffer(len)?;
         let vtl_guard =
@@ -111,34 +109,5 @@ impl<T: DmaClient> DmaClient for LowerVtlMemorySpawner<T> {
 
     fn attach_dma_buffer(&self, _len: usize, _base_pfn: u64) -> Result<MemoryBlock> {
         anyhow::bail!("restore is not supported for LowerVtlMemorySpawner")
-    }
-
-    fn requires_dma_mapping(&self) -> bool {
-        false
-    }
-
-    fn map_dma_ranges<'a, 'b: 'a>(
-        &'a self,
-        _guest_memory: &'a GuestMemory,
-        _range: PagedRange<'b>,
-        _options: user_driver::MapDmaOptions,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::prelude::rust_2024::Future<
-                    Output = std::result::Result<
-                        Box<dyn user_driver::MappedDmaTransaction + 'a>,
-                        user_driver::MapDmaError,
-                    >,
-                > + 'a,
-        >,
-    > {
-        todo!()
-    }
-
-    fn unmap_dma_ranges(
-        &self,
-        _transaction: Box<dyn user_driver::MappedDmaTransaction + '_>,
-    ) -> std::result::Result<(), user_driver::MapDmaError> {
-        todo!()
     }
 }

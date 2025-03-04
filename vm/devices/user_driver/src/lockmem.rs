@@ -5,7 +5,6 @@
 
 use crate::memory::MappedDmaTarget;
 use anyhow::Context;
-use guestmem::GuestMemory;
 use inspect::Inspect;
 use std::ffi::c_void;
 use std::fs::File;
@@ -127,7 +126,7 @@ unsafe impl MappedDmaTarget for LockedMemory {
 #[derive(Clone, Inspect)]
 pub struct LockedMemorySpawner;
 
-impl crate::DmaClient for LockedMemorySpawner {
+impl crate::DmaAlloc for LockedMemorySpawner {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<crate::memory::MemoryBlock> {
         Ok(crate::memory::MemoryBlock::new(LockedMemory::new(len)?))
     }
@@ -138,31 +137,5 @@ impl crate::DmaClient for LockedMemorySpawner {
         _base_pfn: u64,
     ) -> anyhow::Result<crate::memory::MemoryBlock> {
         anyhow::bail!("restore not supported for lockmem")
-    }
-
-    fn requires_dma_mapping(&self) -> bool {
-        false
-    }
-
-    fn map_dma_ranges<'a, 'b: 'a>(
-        &'a self,
-        _guest_memory: &'a GuestMemory,
-        _range: guestmem::ranges::PagedRange<'b>,
-        _options: crate::MapDmaOptions,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::prelude::rust_2024::Future<
-                    Output = Result<Box<dyn crate::MappedDmaTransaction + 'a>, crate::MapDmaError>,
-                > + 'a,
-        >,
-    > {
-        todo!()
-    }
-
-    fn unmap_dma_ranges(
-        &self,
-        _transaction: Box<dyn crate::MappedDmaTransaction + '_>,
-    ) -> Result<(), crate::MapDmaError> {
-        todo!()
     }
 }

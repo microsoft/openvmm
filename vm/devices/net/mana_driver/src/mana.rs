@@ -34,7 +34,7 @@ use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::DeviceBacking;
-use user_driver::DmaClientDriver;
+use user_driver::DmaClient;
 use vmcore::vm_task::VmTaskDriverSource;
 
 enum LinkStatus {
@@ -535,7 +535,7 @@ impl<T: DeviceBacking> Vport<T> {
     }
 
     /// Returns an object that can allocate dma memory to be shared with the device.
-    pub async fn dma_client(&self) -> DmaClientDriver {
+    pub async fn dma_client(&self) -> DmaClient {
         self.inner.gdma.lock().await.device().dma_client().clone()
     }
 }

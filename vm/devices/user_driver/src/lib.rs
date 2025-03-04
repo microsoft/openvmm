@@ -35,7 +35,7 @@ pub trait DeviceBacking: 'static + Send + Inspect {
     fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers>;
 
     /// DMA Client for the device.
-    fn dma_client(&self) -> &DmaClientDriver;
+    fn dma_client(&self) -> &DmaClient;
 
     /// Returns the maximum number of interrupts that can be mapped.
     fn max_interrupt_count(&self) -> u32;
@@ -92,12 +92,18 @@ pub trait MappedDmaTransaction: std::fmt::Debug {
     // TODO: ugly - want consuming but cannot do that with object safe methods.
     fn complete(&self) -> anyhow::Result<()>;
 
-    // TODO: testing only, do not commit
+    // BUGBUG: testing only, do not commit
     fn write_bounced(&self, buf: &[u8]) -> anyhow::Result<()>;
 }
 
+/// A mapped DMA transaction. The caller must call
+/// [`DmaClientDriver::unmap_dma_ranges`] to observe the dma.
 #[derive(Debug)]
-enum MappedDma<'a> {
+pub struct MappedDma<'a>(MappedDmaInner<'a>);
+
+/// The inner enum type that hides implementation details to callers.
+#[derive(Debug)]
+enum MappedDmaInner<'a> {
     Direct(PagedRange<'a>),
     Mapped(Box<dyn MappedDmaTransaction + 'a>),
 }
@@ -105,16 +111,24 @@ enum MappedDma<'a> {
 impl MappedDma<'_> {
     /// the mapped ranges for this transaction
     pub fn pfns(&self) -> &[u64] {
-        match self {
-            MappedDma::Direct(range) => range.gpns(),
-            MappedDma::Mapped(mapped) => mapped.pfns(),
+        match &self.0 {
+            MappedDmaInner::Direct(range) => range.gpns(),
+            MappedDmaInner::Mapped(mapped) => mapped.pfns(),
+        }
+    }
+
+    /// BUGBUG: test only remove
+    pub fn write_bounced(&self, buf: &[u8]) -> anyhow::Result<()> {
+        match &self.0 {
+            MappedDmaInner::Direct(_) => anyhow::bail!("not a bounce buffer"),
+            MappedDmaInner::Mapped(mapped) => mapped.write_bounced(buf),
         }
     }
 }
 
 /// BUGBUG rename, split into separate traits for mapping vs allocation
 /// Dma platform implementation
-pub trait DmaClient: Send + Sync + Inspect {
+pub trait DmaAlloc: Send + Sync + Inspect {
     /// Allocate a new DMA buffer. This buffer must be zero initialized.
     ///
     /// TODO: string tag for allocation?
@@ -122,9 +136,9 @@ pub trait DmaClient: Send + Sync + Inspect {
 
     /// Attach to a previously allocated memory block.
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
+}
 
-    fn requires_dma_mapping(&self) -> bool;
-
+pub trait DmaMap: Send + Sync + Inspect {
     /// Map the given ranges for DMA. A caller must call `unmap_dma_ranges` to
     /// complete a dma transaction to observe the dma in the passed in ranges.
     ///
@@ -138,36 +152,33 @@ pub trait DmaClient: Send + Sync + Inspect {
     ) -> Pin<Box<dyn Future<Output = Result<Box<dyn MappedDmaTransaction + 'a>, MapDmaError>> + 'a>>;
 
     /// Unmap a dma transaction to observe the dma into the requested ranges.
-    ///
-    /// TODO: return original ranges?
     fn unmap_dma_ranges(
         &self,
         transaction: Box<dyn MappedDmaTransaction + '_>,
     ) -> Result<(), MapDmaError>;
 }
 
-// BUGBUG RENAME
 #[derive(Inspect, Clone)]
-pub struct DmaClientDriver {
-    #[inspect(flatten)]
-    inner: Arc<dyn DmaClient>,
+pub struct DmaClient {
+    alloc: Arc<dyn DmaAlloc>,
+    map: Option<Arc<dyn DmaMap>>,
 }
 
-impl DmaClientDriver {
-    pub fn new(inner: Arc<dyn DmaClient>) -> Self {
-        Self { inner }
+impl DmaClient {
+    pub fn new(alloc: Arc<dyn DmaAlloc>, map: Option<Arc<dyn DmaMap>>) -> Self {
+        Self { alloc, map }
     }
 
     /// Allocate a new DMA buffer. This buffer must be zero initialized.
     ///
     /// TODO: string tag for allocation?
     pub fn allocate_dma_buffer(&self, total_size: usize) -> anyhow::Result<MemoryBlock> {
-        self.inner.allocate_dma_buffer(total_size)
+        self.alloc.allocate_dma_buffer(total_size)
     }
 
     /// Attach to a previously allocated memory block.
     pub fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock> {
-        self.inner.attach_dma_buffer(len, base_pfn)
+        self.alloc.attach_dma_buffer(len, base_pfn)
     }
 
     /// Map the given ranges for DMA. A caller must call `unmap_dma_ranges` to
@@ -181,24 +192,23 @@ impl DmaClientDriver {
         range: PagedRange<'b>,
         options: MapDmaOptions,
     ) -> Result<MappedDma<'a>, MapDmaError> {
-        if self.inner.requires_dma_mapping() {
-            let mapped = self
-                .inner
-                .map_dma_ranges(guest_memory, range, options)
-                .await?;
-            Ok(MappedDma::Mapped(mapped))
+        if let Some(map) = &self.map {
+            let mapped = map.map_dma_ranges(guest_memory, range, options).await?;
+            Ok(MappedDma(MappedDmaInner::Mapped(mapped)))
         } else {
-            Ok(MappedDma::Direct(range))
+            Ok(MappedDma(MappedDmaInner::Direct(range)))
         }
     }
 
     /// Unmap a dma transaction to observe the dma into the requested ranges.
-    ///
-    /// TODO: return original ranges?
     pub fn unmap_dma_ranges(&self, transaction: MappedDma<'_>) -> Result<(), MapDmaError> {
-        match transaction {
-            MappedDma::Mapped(transaction) => self.inner.unmap_dma_ranges(transaction),
-            MappedDma::Direct(_) => Ok(()),
+        match transaction.0 {
+            MappedDmaInner::Mapped(transaction) => self
+                .map
+                .as_ref()
+                .expect("should not have transaction without mapper")
+                .unmap_dma_ranges(transaction),
+            MappedDmaInner::Direct(_) => Ok(()),
         }
     }
 }

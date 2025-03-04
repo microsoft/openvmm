@@ -126,7 +126,6 @@ use uevent::UeventListener;
 use underhill_attestation::AttestationType;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
-use user_driver::DmaClient;
 use user_driver::MapDmaOptions;
 use virt::state::HvRegisterState;
 use virt::Partition;
@@ -298,6 +297,9 @@ pub struct UnderhillEnvCfg {
 
     /// test configuration
     pub test_configuration: Option<TestScenarioConfig>,
+
+    /// Enable pinning of DMA ranges.
+    pub pin_dma_ranges: bool,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -1523,6 +1525,7 @@ async fn new_underhill_vm(
             .vtom_offset_bit
             .map(|bit| 1 << bit)
             .unwrap_or(0),
+        env_cfg.pin_dma_ranges,
     )
     .context("failed to create global dma manager")?;
 
@@ -1754,11 +1757,7 @@ async fn new_underhill_vm(
                 persistent_allocations: false,
                 bounce_buffer_pages: None,
             })
-            .ok()
-            .map(|client| {
-                let client: Arc<dyn DmaClient> = client;
-                client
-            }),
+            .ok(),
         private_dma_client: dma_manager
             .new_client(DmaClientParameters {
                 device_name: "partition-private".into(),
@@ -1767,11 +1766,7 @@ async fn new_underhill_vm(
                 persistent_allocations: false,
                 bounce_buffer_pages: None,
             })
-            .ok()
-            .map(|client| {
-                let client: Arc<dyn DmaClient> = client;
-                client
-            }),
+            .ok(),
     };
 
     let (partition, vps) = proto_partition

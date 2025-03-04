@@ -227,8 +227,8 @@ struct UhPartitionInner {
     guest_vsm: RwLock<GuestVsmState>,
     #[inspect(skip)]
     isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
-    shared_dma_client: Option<Arc<dyn DmaClient>>,
-    private_dma_client: Option<Arc<dyn DmaClient>>,
+    shared_dma_client: Option<DmaClient>,
+    private_dma_client: Option<DmaClient>,
     #[inspect(with = "inspect::AtomicMut")]
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
@@ -1312,9 +1312,9 @@ pub struct UhLateParams<'a> {
     /// An object to call to change host visibility on guest memory.
     pub isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     /// Dma client for shared visibility pages.
-    pub shared_dma_client: Option<Arc<dyn DmaClient>>,
+    pub shared_dma_client: Option<DmaClient>,
     /// Allocator for private visibility pages.
-    pub private_dma_client: Option<Arc<dyn DmaClient>>,
+    pub private_dma_client: Option<DmaClient>,
 }
 
 /// Trait for CVM-related protections on guest memory.

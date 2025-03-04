@@ -11,7 +11,6 @@ use crate::interrupt::DeviceInterruptSource;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
 use crate::DmaClient;
-use crate::DmaClientDriver;
 use anyhow::Context;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -57,7 +56,7 @@ pub struct VfioDevice {
     interrupts: Vec<Option<InterruptState>>,
     #[inspect(skip)]
     config_space: vfio_sys::RegionInfo,
-    dma_client: DmaClientDriver,
+    dma_client: DmaClient,
 }
 
 #[derive(Inspect)]
@@ -74,7 +73,7 @@ impl VfioDevice {
     pub async fn new(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
-        dma_client: Arc<dyn DmaClient>,
+        dma_client: DmaClient,
     ) -> anyhow::Result<Self> {
         Self::restore(driver_source, pci_id, false, dma_client).await
     }
@@ -85,7 +84,7 @@ impl VfioDevice {
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
         keepalive: bool,
-        dma_client: Arc<dyn DmaClient>,
+        dma_client: DmaClient,
     ) -> anyhow::Result<Self> {
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
@@ -131,7 +130,7 @@ impl VfioDevice {
             config_space,
             driver_source: driver_source.clone(),
             interrupts: Vec::new(),
-            dma_client: DmaClientDriver::new(dma_client),
+            dma_client,
         };
 
         // Ensure bus master enable and memory space enable are set, and that
@@ -232,7 +231,7 @@ impl DeviceBacking for VfioDevice {
         (*self).map_bar(n)
     }
 
-    fn dma_client(&self) -> &DmaClientDriver {
+    fn dma_client(&self) -> &DmaClient {
         &self.dma_client
     }
 

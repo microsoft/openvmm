@@ -11,8 +11,8 @@ use crate::memory::MemoryBlock;
 use crate::memory::PAGE_SIZE;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
+use crate::DmaAlloc;
 use crate::DmaClient;
-use crate::DmaClientDriver;
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
@@ -35,9 +35,8 @@ use std::sync::Arc;
 pub struct EmulatedDevice<T> {
     device: Arc<Mutex<T>>,
     controller: MsiController,
-    shared_mem: DeviceSharedMemory,
     bar0_len: usize,
-    dma_client: DmaClientDriver,
+    dma_client: DmaClient,
 }
 
 impl<T: InspectMut> Inspect for EmulatedDevice<T> {
@@ -109,10 +108,7 @@ impl<T: PciConfigSpace + MmioIntercept> EmulatedDevice<T> {
         Self {
             device: Arc::new(Mutex::new(device)),
             controller,
-            dma_client: DmaClientDriver::new(Arc::new(EmulatedDmaAllocator {
-                shared_mem: shared_mem.clone(),
-            })),
-            shared_mem,
+            dma_client: DmaClient::new(Arc::new(EmulatedDmaAllocator { shared_mem }), None),
             bar0_len,
         }
     }
@@ -277,7 +273,7 @@ pub struct EmulatedDmaAllocator {
     shared_mem: DeviceSharedMemory,
 }
 
-impl DmaClient for EmulatedDmaAllocator {
+impl DmaAlloc for EmulatedDmaAllocator {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
         let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);
         memory.as_slice().atomic_fill(0);
@@ -286,32 +282,6 @@ impl DmaClient for EmulatedDmaAllocator {
 
     fn attach_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
         anyhow::bail!("restore is not supported for emulated DMA")
-    }
-
-    fn requires_dma_mapping(&self) -> bool {
-        false
-    }
-
-    fn map_dma_ranges<'a, 'b: 'a>(
-        &'a self,
-        _guest_memory: &'a GuestMemory,
-        _range: guestmem::ranges::PagedRange<'b>,
-        _options: crate::MapDmaOptions,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::prelude::rust_2024::Future<
-                    Output = Result<Box<dyn crate::MappedDmaTransaction + 'a>, crate::MapDmaError>,
-                > + 'a,
-        >,
-    > {
-        unreachable!()
-    }
-
-    fn unmap_dma_ranges(
-        &self,
-        _transaction: Box<dyn crate::MappedDmaTransaction + '_>,
-    ) -> Result<(), crate::MapDmaError> {
-        unreachable!()
     }
 }
 
@@ -333,7 +303,7 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
         })
     }
 
-    fn dma_client(&self) -> &DmaClientDriver {
+    fn dma_client(&self) -> &DmaClient {
         &self.dma_client
     }
 

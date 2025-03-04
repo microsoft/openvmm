@@ -25,7 +25,6 @@ use user_driver::interrupt::DeviceInterrupt;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
-use user_driver::DmaClientDriver;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::IntoBytes;
@@ -358,7 +357,7 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for NvmeTestE
         })
     }
 
-    fn dma_client(&self) -> &DmaClientDriver {
+    fn dma_client(&self) -> &DmaClient {
         self.device.dma_client()
     }
 
