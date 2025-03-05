@@ -327,11 +327,12 @@ impl RxBufferRange {
     }
 
     fn send_if_remote(&self, id: u32) -> bool {
-        if self.id_range.contains(&id) {
+        // Only queue 0 should get reserved buffer IDs. Otherwise check if the
+        // ID is owned by the current range.
+        if id < RX_RESERVED_CONTROL_BUFFERS || self.id_range.contains(&id) {
             false
         } else {
-            let i = id.saturating_sub(RX_RESERVED_CONTROL_BUFFERS)
-                / self.remote_ranges.buffers_per_queue;
+            let i = (id - RX_RESERVED_CONTROL_BUFFERS) / self.remote_ranges.buffers_per_queue;
             let _ = self.remote_ranges.buffer_id_send[i as usize].unbounded_send(id);
             true
         }
@@ -3320,6 +3321,7 @@ impl Adapter {
         reader
             .skip(params.indirection_table_offset as usize)?
             .read(indirection_table[..indirection_table_size].as_bytes_mut())?;
+        tracelimit::info_ratelimited!(?indirection_table, "OID_GEN_RECEIVE_SCALE_PARAMETERS");
         if indirection_table
             .iter()
             .any(|&x| x >= self.max_queues as u32)
@@ -4107,7 +4109,12 @@ impl Coordinator {
                     .into_iter()
                     .filter(|&index| index < num_queues)
                     .collect::<Vec<_>>();
-                active_queues.len() as u16
+                if !active_queues.is_empty() {
+                    active_queues.len() as u16
+                } else {
+                    tracelimit::warn_ratelimited!("Invalid RSS indirection table");
+                    num_queues
+                }
             } else {
                 num_queues
             };
@@ -4154,14 +4161,37 @@ impl Coordinator {
 
                 let mut initial_rx = initial_rx.as_slice();
                 let mut range_start = 0;
-                let mut active_count = 0;
-                for queue_index in 0..num_queues {
-                    let queue_active =
-                        active_queues.is_empty() || active_queues.contains(&queue_index);
+                let primary_queue_excluded = !active_queues.is_empty() && active_queues[0] != 0;
+                let first_queue = if !primary_queue_excluded {
+                    0
+                } else {
+                    // If the primary queue is excluded from the guest supplied
+                    // indirection table, it is assigned just the reserved
+                    // buffers.
+                    queue_config.push(QueueConfig {
+                        pool: Box::new(BufferPool::new(guest_buffers.clone())),
+                        initial_rx: &[RxId(0)],
+                        driver: Box::new(drivers[0].clone()),
+                    });
+                    rx_buffers.push(RxBufferRange::new(
+                        ranges.clone(),
+                        0..RX_RESERVED_CONTROL_BUFFERS,
+                        None,
+                    ));
+                    range_start = RX_RESERVED_CONTROL_BUFFERS;
+                    1
+                };
+                for queue_index in first_queue..num_queues {
+                    let queue_active = active_queues.is_empty()
+                        || active_queues.binary_search(&queue_index).is_ok();
                     let (range_end, end, buffer_id_recv) = if queue_active {
-                        active_count += 1;
-                        let range_end =
-                            RX_RESERVED_CONTROL_BUFFERS + active_count * ranges.buffers_per_queue;
+                        let range_end = range_start
+                            + ranges.buffers_per_queue
+                            + if queue_index == 0 {
+                                RX_RESERVED_CONTROL_BUFFERS
+                            } else {
+                                0
+                            };
                         (
                             range_end,
                             initial_rx.partition_point(|id| id.0 < range_end),
@@ -5252,8 +5282,7 @@ impl ActiveState {
                     done.push(RxId(id));
                 } else {
                     self.primary
-                        .as_mut()
-                        .unwrap()
+                        .as_mut()?
                         .free_control_buffers
                         .push(ControlMessageId(id));
                 }

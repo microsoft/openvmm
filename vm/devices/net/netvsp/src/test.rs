@@ -31,6 +31,7 @@ use net_backend::EndpointAction;
 use net_backend::QueueConfig;
 use pal_async::async_test;
 use pal_async::DefaultDriver;
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::atomic::AtomicBool;
 use std::task::Poll;
@@ -84,16 +85,22 @@ enum ChannelResponse {
 #[derive(Clone)]
 struct MockVmbus {
     pub memory: GuestMemory,
-    pub child_info: Arc<futures::lock::Mutex<Option<OfferInput>>>,
+    pub child_info: Arc<futures::lock::Mutex<Vec<OfferInput>>>,
 }
 
 impl MockVmbus {
-    pub const AVAILABLE_GUEST_PAGES: usize = 16;
+    const MAX_SUPPORTED_CHANNELS: usize = 2;
+    // The receive buffer will always need to be at least
+    // RX_RESERVED_CONTROL_BUFFERS packets big (eight pages). Then each channel
+    // needs four pages for the vmbus send/receive rings, plus at least
+    // one packet of receive buffer (rounded up to another page), which is five
+    // pages per channel.
+    pub const AVAILABLE_GUEST_PAGES: usize = 8 + 5 * Self::MAX_SUPPORTED_CHANNELS;
 
     pub fn new() -> Self {
         Self {
             memory: GuestMemory::allocate(Self::AVAILABLE_GUEST_PAGES * PAGE_SIZE),
-            child_info: Arc::new(futures::lock::Mutex::new(None)),
+            child_info: Arc::new(futures::lock::Mutex::new(Vec::with_capacity(1))),
         }
     }
 }
@@ -101,7 +108,7 @@ impl MockVmbus {
 #[async_trait]
 impl ParentBus for MockVmbus {
     async fn add_child(&self, request: OfferInput) -> anyhow::Result<OfferResources> {
-        *(self.child_info.lock().await) = Some(request);
+        self.child_info.lock().await.push(request);
         Ok(OfferResources::new(self.memory.clone(), None))
     }
     fn clone_bus(&self) -> Box<dyn ParentBus> {
@@ -311,7 +318,7 @@ impl TestNicDevice {
             .await
             .expect("successful init");
 
-        let offer_input = mock_vmbus.child_info.lock().await.take().unwrap();
+        let offer_input = mock_vmbus.child_info.lock().await.pop().unwrap();
 
         Self {
             driver: driver.clone(),
@@ -324,7 +331,18 @@ impl TestNicDevice {
     }
 
     pub async fn revoke_and_new(self) -> Self {
-        self.send_to_channel(ChannelRequest::Close, (), |_| ChannelResponse::Close)
+        let mut subchannels = self.mock_vmbus.child_info.lock().await;
+        for idx in 1..subchannels.len() + 1 {
+            self.send_to_channel(idx as u32, ChannelRequest::Close, (), |_| {
+                ChannelResponse::Close
+            })
+            .await
+            .expect("Close request successful");
+        }
+        subchannels.clear();
+        drop(subchannels);
+
+        self.send_to_channel(0, ChannelRequest::Close, (), |_| ChannelResponse::Close)
             .await
             .expect("Close request successful");
 
@@ -340,7 +358,7 @@ impl TestNicDevice {
     }
 
     pub fn reserve_guest_pages(&mut self, page_count: usize) -> (GpadlId, Vec<u64>) {
-        if page_count >= MockVmbus::AVAILABLE_GUEST_PAGES - self.next_avail_guest_page {
+        if page_count > MockVmbus::AVAILABLE_GUEST_PAGES - self.next_avail_guest_page {
             panic!(
                 "Not enough guest pages available -- need to increase the count to at least {}",
                 self.next_avail_guest_page + page_count
@@ -368,6 +386,7 @@ impl TestNicDevice {
         let (id, page_array) = self.reserve_guest_pages(page_count);
         let gpadl_response = self
             .send_to_channel(
+                0,
                 ChannelRequest::Gpadl,
                 GpadlRequest {
                     id,
@@ -390,14 +409,23 @@ impl TestNicDevice {
 
     async fn send_to_channel<I: 'static + Send, R: 'static + Send>(
         &self,
+        idx: u32,
         req: impl FnOnce(Rpc<I, R>) -> ChannelRequest,
         input: I,
         f: impl 'static + Send + FnOnce(R) -> ChannelResponse,
     ) -> Result<ChannelResponse, RecvError> {
         let (response, recv) = mesh::oneshot();
-        self.offer_input
-            .request_send
-            .send((req)(Rpc(input, response)));
+        if idx == 0 {
+            self.offer_input
+                .request_send
+                .send((req)(Rpc(input, response)));
+        } else {
+            let idx = idx as usize - 1;
+            let child_info = self.mock_vmbus.child_info.lock().await;
+            (*child_info)[idx]
+                .request_send
+                .send((req)(Rpc(input, response)));
+        }
         recv.await.map(f)
     }
 
@@ -432,7 +460,7 @@ impl TestNicDevice {
         };
 
         let open_response = self
-            .send_to_channel(ChannelRequest::Open, open_request, ChannelResponse::Open)
+            .send_to_channel(0, ChannelRequest::Open, open_request, ChannelResponse::Open)
             .await
             .expect("open successful");
 
@@ -447,6 +475,67 @@ impl TestNicDevice {
         TestNicChannel::new(
             self,
             &mem,
+            gpadl_map,
+            ring_gpadl_id,
+            host_to_guest_event,
+            guest_to_host_interrupt,
+        )
+    }
+
+    async fn connect_vmbus_subchannel(&mut self, idx: u32) -> TestNicSubchannel {
+        let gpadl_map = GpadlMap::new();
+        let (ring_gpadl_id, page_array) = self.add_guest_pages(4).await;
+        gpadl_map.add(
+            ring_gpadl_id,
+            MultiPagedRangeBuf::new(1, page_array).unwrap(),
+        );
+
+        let host_to_guest_event = Arc::new(SlimEvent::new());
+        let host_to_guest_interrupt = {
+            let event = host_to_guest_event.clone();
+            Interrupt::from_fn(move || event.signal())
+        };
+
+        let open_request = OpenRequest {
+            // Channel open-specific data.
+            open_data: OpenData {
+                target_vp: idx,
+                ring_offset: 2,
+                ring_gpadl_id,
+                event_flag: 1,
+                connection_id: 1,
+                user_data: UserDefinedData::new_zeroed(),
+            },
+            // The interrupt used to signal the guest.
+            interrupt: host_to_guest_interrupt,
+            use_confidential_ring: false,
+            use_confidential_external_memory: false,
+        };
+
+        let open_response = self
+            .send_to_channel(
+                idx,
+                ChannelRequest::Open,
+                open_request,
+                ChannelResponse::Open,
+            )
+            .await
+            .expect("open successful");
+
+        if let ChannelResponse::Open(response) = open_response {
+            assert_eq!(response, true);
+        } else {
+            panic!("Unexpected return value");
+        }
+
+        let guest_to_host_interrupt = {
+            let idx = idx as usize - 1;
+            let child_info = self.mock_vmbus.child_info.lock().await;
+            (*child_info)[idx].event.clone()
+        };
+
+        TestNicSubchannel::new(
+            &self.mock_vmbus.memory,
             gpadl_map,
             ring_gpadl_id,
             host_to_guest_event,
@@ -553,6 +642,49 @@ impl TestNicDevice {
     }
 }
 
+struct TestNicSubchannel {
+    _queue: Queue<GpadlRingMem>,
+    _transaction_id: u64,
+    _gpadl_map: Arc<GpadlMap>,
+    _recv_buf_id: GpadlId,
+    _send_buf_id: GpadlId,
+    _channel_id: GpadlId,
+    _host_to_guest_event: Arc<SlimEvent>,
+    _guest_done: Arc<AtomicBool>,
+}
+
+impl TestNicSubchannel {
+    pub fn new(
+        mem: &GuestMemory,
+        gpadl_map: Arc<GpadlMap>,
+        channel_id: GpadlId,
+        host_to_guest_event: Arc<SlimEvent>,
+        guest_to_host_interrupt: Interrupt,
+    ) -> Self {
+        let guest_done = Arc::new(AtomicBool::new(false));
+        let channel = gpadl_test_guest_channel(
+            mem,
+            &gpadl_map.clone().view(),
+            channel_id,
+            2,
+            host_to_guest_event.clone(),
+            guest_to_host_interrupt,
+            guest_done.clone(),
+        );
+        let queue = Queue::new(channel).unwrap();
+        Self {
+            _queue: queue,
+            _transaction_id: 1,
+            _gpadl_map: gpadl_map,
+            _recv_buf_id: GpadlId(0),
+            _send_buf_id: GpadlId(0),
+            _channel_id: channel_id,
+            _host_to_guest_event: host_to_guest_event,
+            _guest_done: guest_done,
+        }
+    }
+}
+
 struct TestNicChannel<'a> {
     pub mtu: u32,
     nic: &'a mut TestNicDevice,
@@ -563,6 +695,7 @@ struct TestNicChannel<'a> {
     send_buf_id: GpadlId,
     channel_id: GpadlId,
     host_to_guest_event: Arc<SlimEvent>,
+    subchannels: HashMap<u32, TestNicSubchannel>,
     _guest_done: Arc<AtomicBool>,
 }
 
@@ -596,6 +729,7 @@ impl<'a> TestNicChannel<'a> {
             send_buf_id: GpadlId(0),
             channel_id,
             host_to_guest_event,
+            subchannels: HashMap::new(),
             _guest_done: guest_done,
         }
     }
@@ -619,6 +753,14 @@ impl<'a> TestNicChannel<'a> {
         F: FnOnce(&IncomingPacket<'_, GpadlRingMem>) -> R,
     {
         self.read_with_timeout(Duration::from_millis(333), f).await
+    }
+
+    pub fn rndis_control_message_parser(&self) -> RndisControlMessageParser {
+        RndisControlMessageParser::new(
+            self.nic.mock_vmbus.memory.clone(),
+            self.gpadl_map.clone(),
+            self.recv_buf_id,
+        )
     }
 
     pub async fn read_rndis_control_message_with_timeout<T>(
@@ -801,12 +943,12 @@ impl<'a> TestNicChannel<'a> {
         .expect("completion message");
     }
 
-    pub async fn send_receive_buffer_message(&mut self) {
-        // Need reserved control channel buffers and one queue buffer (more if subchannels are requested).
-        let min_buffer_pages = ((RX_RESERVED_CONTROL_BUFFERS as usize + 1)
-            * sub_allocation_size_for_mtu(DEFAULT_MTU) as usize
-            + (PAGE_SIZE - 1))
-            / PAGE_SIZE;
+    pub async fn send_receive_buffer_message(&mut self, max_subchannels: usize) {
+        // Need room for reserved control channel packets and at least one
+        // additional packet per channel.
+        let min_buffer_pages = ((RX_RESERVED_CONTROL_BUFFERS as usize + 1 + max_subchannels)
+            * sub_allocation_size_for_mtu(DEFAULT_MTU) as usize)
+            .div_ceil(PAGE_SIZE);
         let (gpadl_handle, page_array) = self.nic.add_guest_pages(min_buffer_pages).await;
         let recv_range = MultiPagedRangeBuf::new(1, page_array).unwrap();
         self.gpadl_map.add(gpadl_handle, recv_range);
@@ -891,11 +1033,15 @@ impl<'a> TestNicChannel<'a> {
         .expect("completion message");
     }
 
-    pub async fn initialize(&mut self, capabilities: protocol::NdisConfigCapabilities) {
+    pub async fn initialize(
+        &mut self,
+        max_subchannels: usize,
+        capabilities: protocol::NdisConfigCapabilities,
+    ) {
         self.send_initialize_message().await;
         self.send_ndis_config_message(capabilities).await;
         self.send_ndis_version_message().await;
-        self.send_receive_buffer_message().await;
+        self.send_receive_buffer_message(max_subchannels).await;
         self.send_send_buffer_message().await;
     }
 
@@ -963,6 +1109,11 @@ impl<'a> TestNicChannel<'a> {
         .expect("completion message");
     }
 
+    pub async fn connect_subchannel(&mut self, idx: u32) {
+        self.subchannels
+            .insert(idx, self.nic.connect_vmbus_subchannel(idx).await);
+    }
+
     pub fn start(&mut self) {
         self.nic.start_vmbus_channel();
     }
@@ -1012,6 +1163,58 @@ impl<'a> TestNicChannel<'a> {
             )
             .await?;
         Ok(restored_channel)
+    }
+}
+
+struct RndisControlMessageParser {
+    mem: GuestMemory,
+    buf: GpadlView,
+}
+
+impl RndisControlMessageParser {
+    pub fn new(mem: GuestMemory, gpadl_map: Arc<GpadlMap>, buf_id: GpadlId) -> Self {
+        Self {
+            mem,
+            buf: gpadl_map.clone().view().map(buf_id).unwrap(),
+        }
+    }
+
+    pub fn parse(
+        &self,
+        data: &queue::DataPacket<'_, GpadlRingMem>,
+    ) -> (rndisprot::MessageHeader, MultiPagedRangeBuf<GpnList>) {
+        // Check for RNDIS packet
+        let mut reader = data.reader();
+        let header: protocol::MessageHeader = reader.read_plain().unwrap();
+        assert_eq!(
+            header.message_type,
+            protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET
+        );
+        // Verify it is a control channel message
+        let rndis_data: protocol::Message1SendRndisPacket = reader.read_plain().unwrap();
+        assert_eq!(rndis_data.channel_type, protocol::CONTROL_CHANNEL_TYPE);
+
+        // Fetch RNDIS packet from external memory
+        let external_ranges = if let Some(id) = data.transfer_buffer_id() {
+            assert_eq!(id, 0);
+
+            data.read_transfer_ranges(self.buf.iter()).unwrap()
+        } else {
+            data.read_external_ranges().unwrap()
+        };
+        let mut direct_reader = PagedRanges::new(external_ranges.iter()).reader(&self.mem);
+
+        let rndis_header: rndisprot::MessageHeader = direct_reader.read_plain().unwrap();
+        (rndis_header, external_ranges)
+    }
+
+    pub fn get<T>(&self, external_ranges: &MultiPagedRangeBuf<GpnList>) -> T
+    where
+        T: AsBytes + FromBytes,
+    {
+        let mut reader = PagedRanges::new(external_ranges.iter()).reader(&self.mem);
+        assert!(reader.skip(size_of::<rndisprot::MessageHeader>()).is_ok());
+        reader.read_plain::<T>().unwrap()
     }
 }
 
@@ -1238,7 +1441,7 @@ async fn initialize_nic(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel
-        .initialize(protocol::NdisConfigCapabilities::new())
+        .initialize(0, protocol::NdisConfigCapabilities::new())
         .await;
 }
 
@@ -1259,7 +1462,7 @@ async fn initialize_rndis(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel
-        .initialize(protocol::NdisConfigCapabilities::new())
+        .initialize(0, protocol::NdisConfigCapabilities::new())
         .await;
     channel
         .send_rndis_control_message(
@@ -1314,7 +1517,7 @@ async fn initialize_rndis_no_sendbuffer(driver: DefaultDriver) {
         .send_ndis_config_message(protocol::NdisConfigCapabilities::new())
         .await;
     channel.send_ndis_version_message().await;
-    channel.send_receive_buffer_message().await;
+    channel.send_receive_buffer_message(1).await;
     // Note: send_send_buffer_message() not called
     // Creating a Gpadl for the Rndis Init Message
     let (gpadl_handle, page_array) = channel.nic.add_guest_pages(1).await;
@@ -1415,7 +1618,7 @@ async fn initialize_rndis_with_vf(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel
-        .initialize(protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
     channel
         .send_rndis_control_message(
@@ -1560,7 +1763,7 @@ async fn initialize_rndis_with_vf_alternate_id(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel
-        .initialize(protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
     channel
         .send_rndis_control_message(
@@ -1668,7 +1871,7 @@ async fn initialize_rndis_with_vf_multi_open(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel
-        .initialize(protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
     channel
         .send_rndis_control_message(
@@ -1719,7 +1922,7 @@ async fn initialize_rndis_with_vf_multi_open(driver: DefaultDriver) {
     let mut channel = nic.connect_vmbus_channel().await;
 
     channel
-        .initialize(protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
     channel
         .send_rndis_control_message(
@@ -1848,7 +2051,7 @@ async fn initialize_rndis_with_prev_vf_switch_data_path(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel
-        .initialize(protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
     channel
         .send_rndis_control_message(
@@ -1934,7 +2137,7 @@ async fn stop_start_with_vf(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel
-        .initialize(protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
     channel
         .send_rndis_control_message(
@@ -2059,7 +2262,7 @@ async fn save_restore_with_vf(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel
-        .initialize(protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
     channel
         .send_rndis_control_message(
@@ -2250,7 +2453,7 @@ async fn save_restore_with_vf_multi_open(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel
-        .initialize(protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
     channel
         .send_rndis_control_message(
@@ -2318,7 +2521,7 @@ async fn save_restore_with_vf_multi_open(driver: DefaultDriver) {
         .is_ok());
 
     channel
-        .initialize(protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
     channel
         .send_rndis_control_message(
@@ -2439,7 +2642,7 @@ async fn save_restore_with_vf_multi_open(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel
-        .initialize(protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
     channel
         .send_rndis_control_message(
@@ -2611,7 +2814,7 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel
-        .initialize(protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
     channel
         .send_rndis_control_message(
@@ -2905,7 +3108,7 @@ async fn link_status_update(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel
-        .initialize(protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
     channel
         .send_rndis_control_message(
@@ -3112,7 +3315,7 @@ async fn send_rndis_reset_message(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel
-        .initialize(protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
 
     // Test Reset message. Will result in RndisMessageTypeNotImplemented, but not panic due to unimplemented!().
@@ -3144,7 +3347,7 @@ async fn send_rndis_indicate_status_message(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel
-        .initialize(protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
 
     // Test Indicate Status message. Will result in RndisMessageTypeNotImplemented, but not panic due to unimplemented!().
@@ -3179,7 +3382,7 @@ async fn send_rndis_set_ex_message(driver: DefaultDriver) {
     nic.start_vmbus_channel();
     let mut channel = nic.connect_vmbus_channel().await;
     channel
-        .initialize(protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
         .await;
 
     // Test Set Ex message. Will result in RndisMessageTypeNotImplemented, but not panic due to unimplemented!().
@@ -3195,5 +3398,400 @@ async fn send_rndis_set_ex_message(driver: DefaultDriver) {
             },
             &[],
         )
+        .await;
+}
+
+#[async_test]
+async fn set_rss_parameter(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let builder = Nic::builder();
+    let nic = builder.virtual_function(test_vf).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .await;
+
+    #[repr(C)]
+    #[derive(AsBytes, FromBytes, FromZeroes)]
+    struct RssParams {
+        params: rndisprot::NdisReceiveScaleParameters,
+        hash_secret_key: [u8; 40],
+        indirection_table: [u32; 1],
+    }
+
+    let rss_params = RssParams {
+        params: rndisprot::NdisReceiveScaleParameters {
+            header: rndisprot::NdisObjectHeader {
+                object_type: rndisprot::NdisObjectType::RSS_PARAMETERS,
+                revision: 1,
+                size: size_of::<RssParams>() as u16,
+            },
+            flags: 0,
+            base_cpu_number: 0,
+            hash_information: rndisprot::NDIS_HASH_FUNCTION_TOEPLITZ,
+            indirection_table_size: 4,
+            pad0: 0,
+            indirection_table_offset: offset_of!(RssParams, indirection_table) as u32,
+            hash_secret_key_size: 40,
+            pad1: 0,
+            hash_secret_key_offset: offset_of!(RssParams, hash_secret_key) as u32,
+            processor_masks_offset: 0,
+            number_of_processor_masks: 0,
+            processor_masks_entry_size: 0,
+            default_processor_number: 0,
+        },
+        hash_secret_key: [0; 40],
+        indirection_table: [0],
+    };
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: 0,
+                oid: rndisprot::Oid::OID_GEN_RECEIVE_SCALE_PARAMETERS,
+                information_buffer_length: size_of::<RssParams>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            rss_params.as_bytes(),
+        )
+        .await;
+    let rndis_parser = channel.rndis_control_message_parser();
+    let transaction_id = channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(packet) => {
+                let (header, external_ranges) = rndis_parser.parse(packet);
+                assert_eq!(header.message_type, rndisprot::MESSAGE_TYPE_SET_CMPLT);
+                let set_complete: rndisprot::SetComplete = rndis_parser.get(&external_ranges);
+                assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+                packet.transaction_id().unwrap()
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("RSS completion message");
+    channel
+        .write(OutgoingPacket {
+            transaction_id,
+            packet_type: OutgoingPacketType::Completion,
+            payload: &NvspMessage {
+                header: protocol::MessageHeader {
+                    message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                },
+                data: protocol::Message1SendRndisPacketComplete {
+                    status: protocol::Status::SUCCESS,
+                },
+                padding: &[],
+            }
+            .payload(),
+        })
+        .await;
+}
+
+#[async_test]
+async fn set_rss_parameter_no_valid_queues(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let builder = Nic::builder();
+    let nic = builder.virtual_function(test_vf).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .await;
+
+    #[repr(C)]
+    #[derive(AsBytes, FromBytes, FromZeroes)]
+    struct RssParams {
+        params: rndisprot::NdisReceiveScaleParameters,
+        hash_secret_key: [u8; 40],
+        indirection_table: [u32; 1],
+    }
+
+    let rss_params = RssParams {
+        params: rndisprot::NdisReceiveScaleParameters {
+            header: rndisprot::NdisObjectHeader {
+                object_type: rndisprot::NdisObjectType::RSS_PARAMETERS,
+                revision: 1,
+                size: size_of::<RssParams>() as u16,
+            },
+            flags: 0,
+            base_cpu_number: 0,
+            hash_information: rndisprot::NDIS_HASH_FUNCTION_TOEPLITZ,
+            indirection_table_size: 4,
+            pad0: 0,
+            indirection_table_offset: offset_of!(RssParams, indirection_table) as u32,
+            hash_secret_key_size: 40,
+            pad1: 0,
+            hash_secret_key_offset: offset_of!(RssParams, hash_secret_key) as u32,
+            processor_masks_offset: 0,
+            number_of_processor_masks: 0,
+            processor_masks_entry_size: 0,
+            default_processor_number: 0,
+        },
+        hash_secret_key: [0; 40],
+        // There is no queue '1' as there are no subchannels.
+        indirection_table: [1],
+    };
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: 0,
+                oid: rndisprot::Oid::OID_GEN_RECEIVE_SCALE_PARAMETERS,
+                information_buffer_length: size_of::<RssParams>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            rss_params.as_bytes(),
+        )
+        .await;
+    let rndis_parser = channel.rndis_control_message_parser();
+    let transaction_id = channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(packet) => {
+                let (header, external_ranges) = rndis_parser.parse(packet);
+                assert_eq!(header.message_type, rndisprot::MESSAGE_TYPE_SET_CMPLT);
+                let set_complete: rndisprot::SetComplete = rndis_parser.get(&external_ranges);
+                assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+                packet.transaction_id().unwrap()
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("RSS completion message");
+    channel
+        .write(OutgoingPacket {
+            transaction_id,
+            packet_type: OutgoingPacketType::Completion,
+            payload: &NvspMessage {
+                header: protocol::MessageHeader {
+                    message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                },
+                data: protocol::Message1SendRndisPacketComplete {
+                    status: protocol::Status::SUCCESS,
+                },
+                padding: &[],
+            }
+            .payload(),
+        })
+        .await;
+}
+
+// Don't include queue zero in the indirection table. Worker[0] is supposed to
+// own the reserved IDs, meaning it is always expected to have an operable
+// queue.
+#[async_test]
+async fn set_rss_parameter_unused_first_queue(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf_state = test_vf.state();
+    let builder = Nic::builder();
+    let nic = builder.virtual_function(test_vf).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(1, protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .await;
+
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(_) => (),
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("association packet");
+
+    assert!(test_vf_state
+        .await_ready(true, Duration::from_millis(333))
+        .await
+        .is_ok());
+
+    let message = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE5_TYPE_SUB_CHANNEL,
+        },
+        data: protocol::Message5SubchannelRequest {
+            operation: protocol::SubchannelOperation::ALLOCATE,
+            num_sub_channels: 1,
+        },
+        padding: &[],
+    };
+    channel
+        .write(OutgoingPacket {
+            transaction_id: 123,
+            packet_type: OutgoingPacketType::InBandWithCompletion,
+            payload: &message.payload(),
+        })
+        .await;
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Completion(completion) => {
+                let mut reader = completion.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(header.message_type, protocol::MESSAGE5_TYPE_SUB_CHANNEL);
+                let completion_data: protocol::Message5SubchannelComplete =
+                    reader.read_plain().unwrap();
+                assert_eq!(completion_data.status, protocol::Status::SUCCESS);
+                assert_eq!(completion_data.num_sub_channels, 1);
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("completion message");
+
+    #[repr(C)]
+    #[derive(AsBytes, FromBytes, FromZeroes)]
+    struct RssParams {
+        params: rndisprot::NdisReceiveScaleParameters,
+        hash_secret_key: [u8; 40],
+        indirection_table: [u32; 1],
+    }
+
+    let rss_params = RssParams {
+        params: rndisprot::NdisReceiveScaleParameters {
+            header: rndisprot::NdisObjectHeader {
+                object_type: rndisprot::NdisObjectType::RSS_PARAMETERS,
+                revision: 1,
+                size: size_of::<RssParams>() as u16,
+            },
+            flags: 0,
+            base_cpu_number: 0,
+            hash_information: rndisprot::NDIS_HASH_FUNCTION_TOEPLITZ,
+            indirection_table_size: 4,
+            pad0: 0,
+            indirection_table_offset: offset_of!(RssParams, indirection_table) as u32,
+            hash_secret_key_size: 40,
+            pad1: 0,
+            hash_secret_key_offset: offset_of!(RssParams, hash_secret_key) as u32,
+            processor_masks_offset: 0,
+            number_of_processor_masks: 0,
+            processor_masks_entry_size: 0,
+            default_processor_number: 0,
+        },
+        hash_secret_key: [0; 40],
+        indirection_table: [1],
+    };
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: 0,
+                oid: rndisprot::Oid::OID_GEN_RECEIVE_SCALE_PARAMETERS,
+                information_buffer_length: size_of::<RssParams>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            rss_params.as_bytes(),
+        )
+        .await;
+    let rndis_parser = channel.rndis_control_message_parser();
+    let transaction_id = channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(packet) => {
+                let (header, external_ranges) = rndis_parser.parse(packet);
+                assert_eq!(header.message_type, rndisprot::MESSAGE_TYPE_SET_CMPLT);
+                let set_complete: rndisprot::SetComplete = rndis_parser.get(&external_ranges);
+                assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+                packet.transaction_id().unwrap()
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("RSS completion message");
+
+    channel.connect_subchannel(1).await;
+
+    channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(packet) => {
+                let mut reader = packet.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE5_TYPE_SEND_INDIRECTION_TABLE
+                );
+                let indirection_table_desc: protocol::Message5SendIndirectionTable =
+                    reader.read_plain().unwrap();
+                let skip_bytes = indirection_table_desc.table_offset as usize
+                    - (size_of::<protocol::MessageHeader>()
+                        + size_of::<protocol::Message5SendIndirectionTable>());
+                assert!(reader.skip(skip_bytes).is_ok());
+                let indirection_table: Vec<u32> = reader
+                    .read_n(indirection_table_desc.table_entry_count as usize)
+                    .unwrap();
+                // TODO: Is this supposed to reflect the table we sent?
+                for (idx, queue_idx) in indirection_table.iter().enumerate() {
+                    assert_eq!(*queue_idx, idx as u32 % 2);
+                }
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("indirection table message after all channels connected");
+
+    // Complete the MESSAGE_TYPE_SET_CMPLT packet from earlier.
+    channel
+        .write(OutgoingPacket {
+            transaction_id,
+            packet_type: OutgoingPacketType::Completion,
+            payload: &NvspMessage {
+                header: protocol::MessageHeader {
+                    message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                },
+                data: protocol::Message1SendRndisPacketComplete {
+                    status: protocol::Status::SUCCESS,
+                },
+                padding: &[],
+            }
+            .payload(),
+        })
         .await;
 }
