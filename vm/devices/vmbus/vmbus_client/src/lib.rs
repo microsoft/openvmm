@@ -183,14 +183,15 @@ impl VmbusClientBuilder {
 }
 
 impl VmbusClient {
-    /// Send the InitiateContact message to the server.
+    /// Connects to the server, negotiating the protocol version and retrieving
+    /// the initial list of channel offers.
     pub async fn connect(
         &mut self,
         target_message_vp: u32,
         monitor_page: Option<MonitorPageGpas>,
         client_id: Guid,
     ) -> Result<ConnectResult, ConnectError> {
-        let request = InitiateContactRequest {
+        let request = ConnectRequest {
             target_message_vp,
             monitor_page,
             client_id,
@@ -198,7 +199,7 @@ impl VmbusClient {
 
         self.access
             .client_request_send
-            .call(ClientRequest::InitiateContact, request)
+            .call(ClientRequest::Connect, request)
             .await
             .unwrap()
     }
@@ -365,7 +366,7 @@ pub struct OfferInfo {
 
 #[derive(Debug)]
 enum ClientRequest {
-    InitiateContact(Rpc<InitiateContactRequest, Result<ConnectResult, ConnectError>>),
+    Connect(Rpc<ConnectRequest, Result<ConnectResult, ConnectError>>),
     Unload(Rpc<(), ()>),
     Modify(Rpc<ModifyConnectionRequest, ConnectionState>),
     HvsockConnect(Rpc<HvsockConnectRequest, Option<OfferInfo>>),
@@ -374,7 +375,7 @@ enum ClientRequest {
 impl std::fmt::Display for ClientRequest {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ClientRequest::InitiateContact(..) => write!(fmt, "InitiateContact"),
+            ClientRequest::Connect(..) => write!(fmt, "Connect"),
             ClientRequest::Unload { .. } => write!(fmt, "Unload"),
             ClientRequest::Modify(..) => write!(fmt, "Modify"),
             ClientRequest::HvsockConnect(..) => write!(fmt, "HvsockConnect"),
@@ -412,7 +413,7 @@ enum ClientState {
     Connecting {
         version: Version,
         #[inspect(skip)]
-        rpc: Rpc<InitiateContactRequest, Result<ConnectResult, ConnectError>>,
+        rpc: Rpc<ConnectRequest, Result<ConnectResult, ConnectError>>,
     },
     /// The client has negotiated the protocol version with the server.
     Connected { version: VersionInfo },
@@ -456,10 +457,10 @@ impl std::fmt::Display for ClientState {
 }
 
 #[derive(Copy, Clone, Debug, Default)]
-pub struct InitiateContactRequest {
-    pub target_message_vp: u32,
-    pub monitor_page: Option<MonitorPageGpas>,
-    pub client_id: Guid,
+struct ConnectRequest {
+    target_message_vp: u32,
+    monitor_page: Option<MonitorPageGpas>,
+    client_id: Guid,
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -558,7 +559,7 @@ struct ClientTask {
 impl ClientTask {
     fn handle_initiate_contact(
         &mut self,
-        rpc: Rpc<InitiateContactRequest, Result<ConnectResult, ConnectError>>,
+        rpc: Rpc<ConnectRequest, Result<ConnectResult, ConnectError>>,
         version: Version,
     ) {
         let ClientState::Disconnected = self.state else {
@@ -640,7 +641,7 @@ impl ClientTask {
 
     fn handle_client_request(&mut self, request: ClientRequest) {
         match request {
-            ClientRequest::InitiateContact(rpc) => {
+            ClientRequest::Connect(rpc) => {
                 self.handle_initiate_contact(rpc, *SUPPORTED_VERSIONS.last().unwrap());
             }
             ClientRequest::Unload(rpc) => {
@@ -1988,10 +1989,10 @@ mod tests {
     #[async_test]
     async fn test_initiate_contact_success(driver: DefaultDriver) {
         let (mut server, client, _) = test_init(&driver);
-        let _recv = client.access.client_request_send.call(
-            ClientRequest::InitiateContact,
-            InitiateContactRequest::default(),
-        );
+        let _recv = client
+            .access
+            .client_request_send
+            .call(ClientRequest::Connect, ConnectRequest::default());
 
         check_message(
             server.next().await.unwrap(),
@@ -2116,14 +2117,14 @@ mod tests {
     #[async_test]
     async fn test_client_id(driver: DefaultDriver) {
         let (mut server, client, _) = test_init(&driver);
-        let initiate_contact = InitiateContactRequest {
+        let initiate_contact = ConnectRequest {
             client_id: VMBUS_TEST_CLIENT_ID,
             ..Default::default()
         };
         let _recv = client
             .access
             .client_request_send
-            .call(ClientRequest::InitiateContact, initiate_contact);
+            .call(ClientRequest::Connect, initiate_contact);
 
         check_message(
             server.next().await.unwrap(),
