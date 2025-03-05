@@ -331,14 +331,8 @@ impl RxBufferRange {
     fn send_if_remote(&self, id: u32) -> bool {
         if self.id_range.contains(&id) {
             false
-        } else if id < RX_RESERVED_CONTROL_BUFFERS
-            && self.remote_ranges.excluded_primary_send.is_some()
-        {
-            self.remote_ranges
-                .excluded_primary_send
-                .as_ref()
-                .unwrap()
-                .send(id);
+        } else if id < RX_RESERVED_CONTROL_BUFFERS {
+            self.remote_ranges.control_buffer_send.send(id);
             true
         } else {
             let i = id.saturating_sub(RX_RESERVED_CONTROL_BUFFERS)
@@ -352,7 +346,7 @@ impl RxBufferRange {
 struct RxBufferRanges {
     buffers_per_queue: u32,
     buffer_id_send: Vec<mesh::Sender<u32>>,
-    excluded_primary_send: Option<mesh::Sender<u32>>,
+    control_buffer_send: mesh::Sender<u32>,
 }
 
 impl RxBufferRanges {
@@ -365,16 +359,16 @@ impl RxBufferRanges {
         let remote_queue_count = queue_count + if primary_queue_excluded { 1 } else { 0 };
         let (mut send, recv): (Vec<_>, Vec<_>) =
             (0..remote_queue_count).map(|_| mesh::channel()).unzip();
-        let excluded_primary_send = if primary_queue_excluded {
-            Some(send.pop().unwrap())
+        let control_buffer_send = if primary_queue_excluded {
+            send.pop().unwrap()
         } else {
-            None
+            send[0].clone()
         };
         (
             Self {
                 buffers_per_queue,
                 buffer_id_send: send,
-                excluded_primary_send,
+                control_buffer_send,
             },
             recv,
         )
@@ -3344,7 +3338,7 @@ impl Adapter {
         reader
             .skip(params.indirection_table_offset as usize)?
             .read(indirection_table[..indirection_table_size].as_mut_bytes())?;
-        tracing::info!(?indirection_table, "OID_GEN_RECEIVE_SCALE_PARAMETERS");
+        tracelimit::info_ratelimited!(?indirection_table, "OID_GEN_RECEIVE_SCALE_PARAMETERS");
         if indirection_table
             .iter()
             .any(|&x| x >= self.max_queues as u32)
@@ -4215,7 +4209,7 @@ impl Coordinator {
                     let (range_end, end, buffer_id_recv) = if queue_active {
                         let range_end = range_start
                             + ranges.buffers_per_queue
-                            + if range_start == 0 {
+                            + if queue_index == 0 {
                                 RX_RESERVED_CONTROL_BUFFERS
                             } else {
                                 0
