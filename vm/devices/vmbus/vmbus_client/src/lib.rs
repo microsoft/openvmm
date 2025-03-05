@@ -1477,9 +1477,7 @@ impl ClientTask {
 
     fn handle_start(&mut self) {
         assert!(!self.running);
-        if !self.can_pause_resume() {
-            self.msg_source.resume_message_stream();
-        }
+        self.msg_source.resume_message_stream();
         self.running = true;
     }
 
