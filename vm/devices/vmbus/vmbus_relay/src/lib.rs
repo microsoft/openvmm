@@ -240,9 +240,9 @@ struct RelayChannel {
     /// Receives requests from the server.
     #[inspect(skip)]
     server_request_recv: mesh::Receiver<ChannelRequest>,
-    /// Receives responses to requests sent to the client
+    /// Closed when the channel has been revoked.
     #[inspect(skip)]
-    response_recv: mesh::Receiver<client::ChannelResponse>,
+    revoke_recv: mesh::OneshotReceiver<()>,
     /// Sends requests to the client
     #[inspect(skip)]
     request_send: mesh::Sender<client::ChannelRequest>,
@@ -416,11 +416,6 @@ impl RelayChannelTask {
         Ok(())
     }
 
-    /// Handle responses.
-    fn handle_response(&mut self, response: client::ChannelResponse) {
-        match response {}
-    }
-
     fn handle_relay_request(&mut self, request: RelayChannelRequest) {
         tracing::trace!(
             channel_id = self.channel.channel_id.0,
@@ -479,19 +474,8 @@ impl RelayChannelTask {
                         }
                     }
                 }
-                r = self.channel.response_recv.next() => {
-                    match r {
-                        Some(response) => {
-                            // Needed to avoid conflicting &mut self borrow.
-                            drop(relay_event);
-
-                            // Handle responses that can arrive at any time.
-                            self.handle_response(response);
-                        }
-                        None => {
-                            break;
-                        }
-                    }
+                _r = (&mut self.channel.revoke_recv).fuse() => {
+                    break;
                 }
                 () = self.channel.gpadls_tearing_down.select_next_some() => {}
                 _r = relay_event => {
@@ -763,7 +747,7 @@ impl RelayTask {
                 channel_id: ChannelId(channel_id),
                 relay_request_recv,
                 request_send: offer.request_send,
-                response_recv: offer.response_recv,
+                revoke_recv: offer.revoke_recv,
                 server_request_recv: request_recv,
                 use_interrupt_relay: Arc::clone(&self.use_interrupt_relay),
                 interrupt_relay: None,

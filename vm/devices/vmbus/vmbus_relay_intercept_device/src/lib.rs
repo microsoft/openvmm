@@ -546,8 +546,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             }
             let revoke = pin!(async {
                 if let Some(offer) = &mut state.offer {
-                    let r = offer.response_recv.next().await;
-                    assert!(r.is_none(), "unexpected channel response");
+                    (&mut offer.revoke_recv).await.ok();
                 } else {
                     pending().await
                 }

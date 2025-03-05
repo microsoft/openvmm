@@ -331,10 +331,6 @@ impl std::fmt::Display for ChannelRequest {
     }
 }
 
-/// Expresses a response sent from the server.
-#[derive(Debug)]
-pub enum ChannelResponse {}
-
 #[derive(Debug, Error)]
 pub enum RestoreError {
     #[error("unsupported protocol version {0:#x}")]
@@ -364,7 +360,7 @@ pub struct OfferInfo {
     #[inspect(skip)]
     pub request_send: mesh::Sender<ChannelRequest>,
     #[inspect(skip)]
-    pub response_recv: mesh::Receiver<ChannelResponse>,
+    pub revoke_recv: mesh::OneshotReceiver<()>,
 }
 
 #[derive(Debug)]
@@ -526,7 +522,7 @@ struct Channel {
     offer: protocol::OfferChannel,
     // When dropped, notifies the caller the channel has been revoked.
     #[inspect(skip)]
-    _response_send: mesh::Sender<ChannelResponse>,
+    revoke_send: mesh::OneshotSender<()>,
     state: ChannelState,
     #[inspect(with = "|x| x.is_some()")]
     modify_response_send: Option<Rpc<(), i32>>,
@@ -740,12 +736,12 @@ impl ClientTask {
             return None;
         }
         let (request_send, request_recv) = mesh::channel();
-        let (response_send, response_recv) = mesh::channel();
+        let (revoke_send, revoke_recv) = mesh::oneshot();
 
         self.inner.channels.insert(
             offer.channel_id,
             Channel {
-                _response_send: response_send,
+                revoke_send,
                 offer,
                 state,
                 modify_response_send: None,
@@ -759,7 +755,7 @@ impl ClientTask {
 
         Some(OfferInfo {
             offer,
-            response_recv,
+            revoke_recv,
             request_send,
         })
     }
@@ -834,15 +830,17 @@ impl ClientTask {
             }
         }
 
-        // Drop the channel, which will close the response channel, which will
-        // cause the client to know the channel has been revoked.
+        // Drop the channel and send the revoked message to the client.
         //
         // TODO: this is wrong--client requests can still come in after this,
         // and they will fail to find the channel by channel ID and panic (or
         // worse, the channel ID will get reused). Either find and drop the
         // associated incoming request channel here, or keep this channel object
         // around until the client is done with it.
-        self.inner.channels.remove(&rescind.channel_id);
+        {
+            let channel = self.inner.channels.remove(&rescind.channel_id).unwrap();
+            channel.revoke_send.send(());
+        }
 
         // Tell the host we're not referencing the client ID anymore.
         self.inner.messages.send(&protocol::RelIdReleased {
@@ -2443,7 +2441,7 @@ mod tests {
         };
 
         server.send(in_msg(MessageType::OFFER_CHANNEL, offer));
-        let mut info = offer_recv.next().await.unwrap();
+        let info = offer_recv.next().await.unwrap();
 
         assert_eq!(offer, info.offer);
 
@@ -2461,7 +2459,7 @@ mod tests {
             },
         );
 
-        assert!(info.response_recv.next().await.is_none());
+        info.revoke_recv.await.unwrap();
     }
 
     #[async_test]
@@ -2560,7 +2558,7 @@ mod tests {
     #[async_test]
     async fn test_gpadl_with_revoke(driver: DefaultDriver) {
         let (mut server, mut client, _offer_recv) = test_init(&driver);
-        let mut channel = server.get_channel(&mut client).await;
+        let channel = server.get_channel(&mut client).await;
         let channel_id = ChannelId(0);
         let gpadl_id = GpadlId(1);
         let recv = channel.request_send.call(
@@ -2618,7 +2616,7 @@ mod tests {
             protocol::RelIdReleased { channel_id },
         );
 
-        assert!(channel.response_recv.next().await.is_none());
+        channel.revoke_recv.await.unwrap();
     }
 
     #[async_test]
