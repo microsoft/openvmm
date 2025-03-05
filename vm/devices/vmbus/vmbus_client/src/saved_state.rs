@@ -12,6 +12,7 @@ use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::FeatureFlags;
 use vmbus_core::protocol::GpadlId;
+use vmbus_core::OutgoingMessage;
 use vmbus_core::VersionInfo;
 
 impl<T: VmbusMessageSource> super::ClientTask<T> {
@@ -47,6 +48,15 @@ impl<T: VmbusMessageSource> super::ClientTask<T> {
                     gpadl_id: gpadl_id.0,
                     channel_id: channel_id.0,
                     state: GpadlState::save(gpadl_state),
+                })
+                .collect(),
+            pending_messages: self
+                .inner
+                .messages
+                .queued
+                .iter()
+                .map(|msg| PendingMessage {
+                    data: msg.data().to_vec(),
                 })
                 .collect(),
         }
@@ -103,6 +113,16 @@ impl<T: VmbusMessageSource> super::ClientTask<T> {
             }
         }
 
+        for message in saved_state.pending_messages {
+            if message.data.len() > protocol::MAX_MESSAGE_SIZE {
+                return Err(RestoreError::InvalidPendingMessage);
+            }
+            self.inner
+                .messages
+                .queued
+                .push_back(OutgoingMessage::from_message(&message.data));
+        }
+
         Ok((self.state.get_version(), restored_channels))
     }
 
@@ -120,6 +140,18 @@ pub struct SavedState {
     pub channels: Vec<Channel>,
     #[mesh(3)]
     pub gpadls: Vec<Gpadl>,
+    /// Added in Feb 2025, but not yet used in practice (we flush pending
+    /// messages during stop) since we need to support restoring on older
+    /// versions.
+    #[mesh(4)]
+    pub pending_messages: Vec<PendingMessage>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Protobuf)]
+#[mesh(package = "vmbus.client")]
+pub struct PendingMessage {
+    #[mesh(1)]
+    pub data: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Protobuf)]

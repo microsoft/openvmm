@@ -35,6 +35,8 @@ use pal_async::driver::SpawnDriver;
 use pal_async::pipe::PolledPipe;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pal_async::timer::Instant;
+use pal_async::timer::PolledTimer;
 use pal_async::wait::PolledWait;
 use pal_event::Event;
 use parking_lot::Mutex;
@@ -51,6 +53,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::task::ready;
 use std::task::Poll;
+use std::time::Duration;
 use vmbus_async::async_dgram::AsyncRecv;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
@@ -113,6 +116,9 @@ impl HostVmbusTransport {
         let hcl_vmbus = Arc::new(HclVmbus::new().context("failed to open hcl_vmbus")?);
         let synic = HclSynic {
             hcl_vmbus: Arc::clone(&hcl_vmbus),
+            timer: PolledTimer::new(&driver),
+            deadline: None,
+            next_wait: INITIAL_WAIT,
         };
 
         // Open another one for polling for messages.
@@ -198,25 +204,42 @@ impl Debug for HostVmbusTransport {
 
 struct HclSynic {
     hcl_vmbus: Arc<HclVmbus>,
+    timer: PolledTimer,
+    deadline: Option<Instant>,
+    next_wait: Duration,
 }
 
+const INITIAL_WAIT: Duration = Duration::from_millis(1);
+
 impl client::SynicClient for HclSynic {
-    fn post_message(&self, connection_id: u32, typ: u32, msg: &[u8]) {
-        let mut tries = 0;
-        let mut wait = 1;
-        // If we receive HV_STATUS_INSUFFICIENT_BUFFERS block till the call is
-        // successful with a delay.
+    fn poll_post_message(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+        connection_id: u32,
+        typ: u32,
+        msg: &[u8],
+    ) -> Poll<()> {
         loop {
+            if let Some(deadline) = self.deadline {
+                ready!(self.timer.poll_until(cx, deadline));
+                self.deadline = None;
+            }
+            // If we receive HV_STATUS_INSUFFICIENT_BUFFERS, the host is backed
+            // up in handling these messages. Wait for a while before trying
+            // again.
             let ret = self.hcl_vmbus.post_message(connection_id, typ.into(), msg);
             match ret {
-                Ok(()) => break,
+                Ok(()) => {
+                    self.next_wait = INITIAL_WAIT;
+                    break Poll::Ready(());
+                }
                 Err(HypercallError::Hypervisor(HvError::InsufficientBuffers)) => {
                     tracing::debug!("received HV_STATUS_INSUFFICIENT_BUFFERS, retrying");
-                    if tries < 22 {
-                        wait *= 2;
-                        tries += 1;
+                    self.deadline = Some(Instant::now() + self.next_wait);
+                    // Wait longer each time.
+                    if self.next_wait < Duration::from_secs(1) {
+                        self.next_wait *= 2;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(wait / 1000));
                 }
                 Err(err) => {
                     panic!("received error code from post message call {}", err);
