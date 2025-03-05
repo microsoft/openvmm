@@ -1210,7 +1210,8 @@ const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
     .with_guest_specified_signal_parameters(true)
     .with_channel_interrupt_redirection(true)
     .with_modify_connection(true)
-    .with_client_id(true);
+    .with_client_id(true)
+    .with_pause_resume(true);
 
 /// Trait for sending requests to devices and the guest.
 pub trait Notifier: Send {
