@@ -24,7 +24,6 @@ use async_trait::async_trait;
 use buffers::sub_allocation_size_for_mtu;
 pub use buffers::BufferPool;
 use futures::channel::mpsc;
-use futures::Future;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures_concurrency::future::Race;
@@ -66,7 +65,6 @@ use std::fmt::Debug;
 use std::future::pending;
 use std::mem::offset_of;
 use std::ops::Range;
-use std::pin::Pin;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -3770,36 +3768,14 @@ impl Coordinator {
                     }
                 };
 
-                struct StartWorkerIfNoMessage<'a, T: Future<Output = Message>> {
-                    next_message: Pin<&'a mut T>,
-                    workers: &'a mut Vec<TaskControl<NetQueue, Worker<GpadlRingMem>>>,
-                    started: bool,
-                }
-
-                impl<T: Future<Output = Message>> Future for StartWorkerIfNoMessage<'_, T> {
-                    type Output = Message;
-
-                    fn poll(
-                        mut self: Pin<&mut Self>,
-                        cx: &mut std::task::Context<'_>,
-                    ) -> Poll<Self::Output> {
-                        if !self.started {
-                            if let Poll::Ready(message) = self.next_message.as_mut().poll(cx) {
-                                return Poll::Ready(message);
-                            }
-                            self.workers[0].start();
-                            self.started = true;
-                        }
-                        Poll::Ready(std::task::ready!(self.next_message.as_mut().poll(cx)))
+                let mut wait_for_message = std::pin::pin!(wait_for_message);
+                match (&mut wait_for_message).now_or_never() {
+                    Some(message) => message,
+                    None => {
+                        self.workers[0].start();
+                        stop.until_stopped(wait_for_message).await?
                     }
                 }
-
-                let wait_message = StartWorkerIfNoMessage {
-                    next_message: std::pin::pin!(wait_for_message),
-                    workers: &mut self.workers,
-                    started: false,
-                };
-                stop.until_stopped(wait_message).await?
             };
             match message {
                 Message::UpdateFromVf(rpc) => {
