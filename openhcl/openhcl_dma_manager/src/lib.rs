@@ -30,7 +30,7 @@ use user_driver::page_allocator::ScopedPages;
 use user_driver::DmaAlloc;
 use user_driver::DmaClient;
 use user_driver::DmaMap;
-use user_driver::MapDmaError;
+use user_driver::DmaMapError;
 use user_driver::MapDmaOptions;
 use user_driver::MappedDmaTransaction;
 
@@ -57,6 +57,12 @@ pub mod save_restore {
         type SavedState = OpenhclDmaManagerState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            if self.inner.pin_pages.is_some() {
+                // Save is not supported when pinning and mapping ranges is
+                // enabled.
+                return Err(SaveError::NotSupported);
+            }
+
             let shared_pool = self
                 .shared_pool
                 .as_mut()
@@ -233,7 +239,8 @@ impl PinPages {
         false
     }
 
-    /// returns true if successful pin, false otherwise
+    /// Attempt to pin pages. Returns true if all pages were pinned, false if
+    /// the pages were unable to be pinned.
     #[must_use]
     fn pin_pages(&self, pfns: &[u64]) -> bool {
         // TODO: What happens if some pages are already physically backed and
@@ -617,12 +624,12 @@ fn copy_page_ranges(
                 CopyDirection::ToBounce => {
                     guest_memory
                         .read_to_atomic(range.start + range_offset, bounce_page)
-                        .context("BUGBUG handle bounce copy error")?;
+                        .context("unable to copy to bounce buffer")?;
                 }
                 CopyDirection::FromBounce => {
                     guest_memory
                         .write_from_atomic(range.start + range_offset, bounce_page)
-                        .context("BUGBUG handle bounce copy error")?;
+                        .context("unable to copy from bounce buffer")?;
                 }
             }
 
@@ -665,7 +672,6 @@ impl MappedDmaTransaction for DmaTransaction<'_> {
                 original,
             } => {
                 if self.options.is_rx || self.options.always_bounce {
-                    // copy from bounce buffer to guest memory
                     copy_page_ranges(
                         original,
                         self.guest_memory,
@@ -699,25 +705,21 @@ impl OpenhclDmaClient {
         guest_memory: &'a GuestMemory,
         range: PagedRange<'b>,
         options: MapDmaOptions,
-    ) -> Result<DmaOperation<'a>, MapDmaError> {
-        // TODO: nonblocking mode return immediately on allocation failure
-
-        // allocate bounce buffer
+    ) -> Result<DmaOperation<'a>, DmaMapError> {
         let bounce_pages = self
             .bounce_pfns
             .as_ref()
-            .ok_or(MapDmaError::NoBounceBufferAvailable)?
+            .ok_or(DmaMapError::NoBounceBufferAvailable)?
             .alloc_pages(range.gpns().len())
             .await
-            .ok_or(MapDmaError::NotEnoughBounceBufferSpace {
+            .ok_or(DmaMapError::NotEnoughBounceBufferSpace {
                 range_bytes: range.len(),
             })?;
 
-        // copy to bounced pages
         if options.is_tx {
             copy_page_ranges(&range, guest_memory, &bounce_pages, CopyDirection::ToBounce)
                 .context("failed to copy to bounce buffer")
-                .map_err(MapDmaError::Map)?;
+                .map_err(DmaMapError::Map)?;
         }
 
         Ok(DmaOperation::Bounced {
@@ -732,14 +734,15 @@ impl OpenhclDmaClient {
         guest_memory: &'a GuestMemory,
         range: PagedRange<'b>,
         options: MapDmaOptions,
-    ) -> Result<Box<dyn MappedDmaTransaction + 'a>, MapDmaError> {
+    ) -> Result<Box<dyn MappedDmaTransaction + 'a>, DmaMapError> {
         let pin_pages = self
             .inner
             .pin_pages
             .as_ref()
             .expect("map should not be called if pinning is not supported");
 
-        // the transaction is either all bounced, or all pinned.
+        // A transaction is always all bounced, or all pinned. If pinning fails,
+        // attempt to bounce.
         let operation = if options.always_bounce {
             self.allocate_bounce_pages(guest_memory, range, options)
                 .await?
@@ -786,7 +789,7 @@ impl DmaMap for OpenhclDmaClient {
         guest_memory: &'a GuestMemory,
         range: PagedRange<'b>,
         options: MapDmaOptions,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn MappedDmaTransaction + 'a>, MapDmaError>> + 'a>>
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn MappedDmaTransaction + 'a>, DmaMapError>> + 'a>>
     {
         Box::pin(self.map_dma_ranges_inner(guest_memory, range, options))
     }
@@ -794,8 +797,8 @@ impl DmaMap for OpenhclDmaClient {
     fn unmap_dma_ranges(
         &self,
         transaction: Box<dyn MappedDmaTransaction + '_>,
-    ) -> Result<(), MapDmaError> {
-        transaction.complete().map_err(MapDmaError::Unmap)
+    ) -> Result<(), DmaMapError> {
+        transaction.complete().map_err(DmaMapError::Unmap)
     }
 }
 

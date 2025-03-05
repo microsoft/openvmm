@@ -685,9 +685,9 @@ impl<T: CpuIo> hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercall
 
 impl<T: CpuIo> hv1_hypercall::PinGpaRangePages for WhpHypercallExit<'_, '_, T> {
     fn pin_gpa_range_pages(&mut self, gpa_page_ranges: &[HvGpaRange]) -> HvRepResult {
-        tracing::error!(?gpa_page_ranges, "pin ranges");
+        tracing::trace!(?gpa_page_ranges, "pin ranges");
 
-        // DMATEST: Fill each page number with the page it is
+        // BUGBUG DMATEST: Fill each page number with the page it is
         for range in gpa_page_ranges {
             let range = range.as_simple();
             let gpa = range.gpa_page_number() * HV_PAGE_SIZE;
@@ -710,7 +710,7 @@ impl<T: CpuIo> hv1_hypercall::PinGpaRangePages for WhpHypercallExit<'_, '_, T> {
 
 impl<T: CpuIo> hv1_hypercall::UnpinGpaRangePages for WhpHypercallExit<'_, '_, T> {
     fn unpin_gpa_range_pages(&mut self, gpa_page_ranges: &[HvGpaRange]) -> HvRepResult {
-        tracing::error!(?gpa_page_ranges, "unpin ranges");
+        tracing::trace!(?gpa_page_ranges, "unpin ranges");
 
         Ok(())
     }

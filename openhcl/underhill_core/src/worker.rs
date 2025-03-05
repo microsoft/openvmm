@@ -2936,6 +2936,7 @@ async fn new_underhill_vm(
         .validate_restore()
         .context("failed to validate restore for dma manager")?;
 
+    // BUGBUG: remove, only for testing dma mapping
     {
         use guestmem::MemoryRead;
 

@@ -64,34 +64,55 @@ pub trait DeviceRegisterIo: Send + Sync {
     fn write_u64(&self, offset: usize, data: u64);
 }
 
+/// Errors for [`DmaMap`].
 #[derive(Debug, thiserror::Error)]
-pub enum MapDmaError {
+pub enum DmaMapError {
     #[error("failed to map ranges")]
     Map(#[source] anyhow::Error),
     #[error("no bounce buffers available")]
     NoBounceBufferAvailable,
     #[error("mapped range {range_bytes} is larger than available total bounce buffer space")]
     NotEnoughBounceBufferSpace { range_bytes: usize },
-    // UnmapFailed,
-    // PinFailed,
-    // BounceBufferFailed,
     #[error("unable to unmap dma transaction")]
     Unmap(#[source] anyhow::Error),
 }
 
+/// Options for [`DmaClient::map_dma_ranges`].
 #[derive(Debug, Copy, Clone)]
 pub struct MapDmaOptions {
+    /// Always bounce this range, even if pinning would be possible.
     pub always_bounce: bool,
+    /// This range is a recieve, aka an external entity is expected to write
+    /// into this mapped range. The range's initial contents will not be copied to the
+    /// transaction returned.
     pub is_rx: bool,
+    /// This range is a transmit, aka a driver wants to allow an external entity
+    /// to read the data in the range. The range's initial contents will be
+    /// copied to the mapped transaction.
     pub is_tx: bool,
-    // todo?
-    // pub non_blocking: bool,
 }
 
-// TODO: remove debug bounds, use inspect instead
+// BUGBUG: remove debug bounds for testing only
+// TODO: inspect bound?
+/// Trait implemented by mapped DMA transations, returned by
+/// [`DmaMap::map_dma_ranges`].
 pub trait MappedDmaTransaction: std::fmt::Debug {
+    /// The PFNs for the mapped dma transaction. This may be different from the
+    /// original submitted PFNs to map, if the transaction was bounced.
     fn pfns(&self) -> &[u64];
-    // TODO: ugly - want consuming but cannot do that with object safe methods.
+    /// To be used to complete a transaction, by the implementer of [`DmaMap`].
+    ///
+    /// TODO: Ugly, but the standard drop implementation would not allow
+    /// returning errors. Drivers are never given access to this trait as the
+    /// public [`DmaClient`] hides this detail, and [`DmaClient`] does not call
+    /// this function.
+    ///
+    /// This is required because downcasting would not be supported if the
+    /// caller returns an object with an associated lifetime, and for now avoid
+    /// using generics to avoid polluting all drivers with the need to specify a
+    /// concrete type.
+    ///
+    /// Potentially revisit this in the future.
     fn complete(&self) -> anyhow::Result<()>;
 
     // BUGBUG: testing only, do not commit
@@ -99,7 +120,8 @@ pub trait MappedDmaTransaction: std::fmt::Debug {
 }
 
 /// A mapped DMA transaction. The caller must call
-/// [`DmaClientDriver::unmap_dma_ranges`] to observe the dma.
+/// [`DmaClient::unmap_dma_ranges`] to observe the dma.
+// BUGBUG remove debug derive, testing only
 #[derive(Debug)]
 pub struct MappedDma<'a>(MappedDmaInner<'a>);
 
@@ -111,7 +133,7 @@ enum MappedDmaInner<'a> {
 }
 
 impl MappedDma<'_> {
-    /// the mapped ranges for this transaction
+    /// The pfns for this transaction.
     pub fn pfns(&self) -> &[u64] {
         match &self.0 {
             MappedDmaInner::Direct(range) => range.gpns(),
@@ -151,13 +173,13 @@ pub trait DmaMap: Send + Sync + Inspect {
         guest_memory: &'a GuestMemory,
         range: PagedRange<'b>,
         options: MapDmaOptions,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn MappedDmaTransaction + 'a>, MapDmaError>> + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn MappedDmaTransaction + 'a>, DmaMapError>> + 'a>>;
 
     /// Unmap a dma transaction to observe the dma into the requested ranges.
     fn unmap_dma_ranges(
         &self,
         transaction: Box<dyn MappedDmaTransaction + '_>,
-    ) -> Result<(), MapDmaError>;
+    ) -> Result<(), DmaMapError>;
 }
 
 /// DMA client used by drivers.
@@ -197,7 +219,7 @@ impl DmaClient {
         guest_memory: &'a GuestMemory,
         range: PagedRange<'b>,
         options: MapDmaOptions,
-    ) -> Result<MappedDma<'a>, MapDmaError> {
+    ) -> Result<MappedDma<'a>, DmaMapError> {
         if let Some(map) = &self.map {
             let mapped = map.map_dma_ranges(guest_memory, range, options).await?;
             Ok(MappedDma(MappedDmaInner::Mapped(mapped)))
@@ -207,7 +229,7 @@ impl DmaClient {
     }
 
     /// Unmap a dma transaction to observe the dma into the requested ranges.
-    pub fn unmap_dma_ranges(&self, transaction: MappedDma<'_>) -> Result<(), MapDmaError> {
+    pub fn unmap_dma_ranges(&self, transaction: MappedDma<'_>) -> Result<(), DmaMapError> {
         match transaction.0 {
             MappedDmaInner::Mapped(transaction) => self
                 .map
