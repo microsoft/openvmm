@@ -98,8 +98,8 @@ pub(crate) enum FatalError {
         response_size: usize,
         maximum_size: usize,
     },
-    #[error("received an `IGVM_ATTEST` response with no pending `IGVM_ATTEST` request")]
-    NoPendingIgvmAttestRequest,
+    #[error("received an async host request response {0:?} with no pending async host request")]
+    NoPendingAsyncHostRequest(HostRequests),
 }
 
 /// Validates the response packet received from the host. This function is only
@@ -141,6 +141,11 @@ fn read_guest_notification<T: FromBytes + Immutable + KnownLayout>(
         len: buf.len(),
         notification,
     })
+}
+
+/// Defines which host requests should be sent through the async queue.
+fn is_async_host_request(request: HostRequests) -> bool {
+   request == HostRequests::IGVM_ATTEST || request == HostRequests::VPCI_DEVICE_CONTROL
 }
 
 pub(crate) mod msg {
@@ -479,9 +484,9 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     #[inspect(skip)]
     write_recv: mesh::Receiver<WriteRequest>,
     #[inspect(skip)]
-    igvm_attest_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
+    async_host_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
     #[inspect(skip)]
-    igvm_attest_read_send: mesh::Sender<Vec<u8>>,
+    async_host_requests_read_send: mesh::Sender<Vec<u8>>,
     #[inspect(skip)]
     gpa_allocator: Option<Arc<dyn DmaClient>>,
     stats: Stats,
@@ -559,10 +564,10 @@ impl Drop for HostRequestPipeAccess {
 }
 
 struct PipeChannels {
-    // This is None when a `HostRequestPipeAccess` has ownership for non-IgvmAttest requests.
+    // This is None when a `HostRequestPipeAccess` has ownership for a serial host request.
     response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
-    // This is None when a `HostRequestPipeAccess` has ownership for an IgvmAttest request.
-    igvm_attest_response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
+    // This is None when a `HostRequestPipeAccess` has ownership for an async host request.
+    async_host_request_response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
     message_send: mesh::Sender<WriteRequest>,
 }
 
@@ -657,7 +662,7 @@ impl HostRequestPipeAccess {
 impl<T: RingMem> ProcessLoop<T> {
     pub(crate) fn new(pipe: MessagePipe<T>) -> Self {
         let (read_send, read_recv) = mesh::channel();
-        let (igvm_attest_read_send, igvm_attest_read_recv) = mesh::channel();
+        let (async_host_requests_read_send, async_host_requests_read_recv) = mesh::channel();
         let (write_send, write_recv) = mesh::channel();
 
         Self {
@@ -666,17 +671,17 @@ impl<T: RingMem> ProcessLoop<T> {
             guest_notification_responses: Default::default(),
             vtl2_settings_buf: None,
             host_requests: Default::default(),
-            igvm_attest_requests: Default::default(),
+            async_host_requests: Default::default(),
             pipe_channels: PipeChannels {
                 response_message_recv: Arc::new(Mutex::new(Some(read_recv))),
-                igvm_attest_response_message_recv: Arc::new(Mutex::new(Some(
-                    igvm_attest_read_recv,
+                async_host_request_response_message_recv: Arc::new(Mutex::new(Some(
+                    async_host_requests_read_recv,
                 ))),
                 message_send: write_send,
             },
             read_send,
             write_recv,
-            igvm_attest_read_send,
+            async_host_requests_read_send,
             guest_notification_listeners: GuestNotificationListeners {
                 generation_id: GuestNotificationSender::new(),
                 vtl2_settings: GuestNotificationSender::new(),
@@ -823,7 +828,7 @@ impl<T: RingMem> ProcessLoop<T> {
                 }
                 .map(Event::Failure);
 
-                // Run the next host request.
+                // Run the next serial host request.
                 let run_next = async {
                     while let Some(request) = self.host_requests.front_mut() {
                         if let Err(e) = request.as_mut().await {
@@ -849,24 +854,24 @@ impl<T: RingMem> ProcessLoop<T> {
                 }
                 .map(Event::Failure);
 
-                // Run the next IgvmAttest request.
+                // Run the next async host request.
                 //
-                // DEVNOTE: IgvmAttest requests are always sent asynchronously by the host and only one
-                // request can be outstanding at a time. Therefore, we use a dedicated queue to handle
-                // the IgvmAttest requests without blocking or being blocked by other request types
-                // handled by the `host_requests` queue.
-                let run_next_igvm_attest = async {
-                    while let Some(request) = self.igvm_attest_requests.front_mut() {
+                // DEVNOTE: There may only be one outstanding async host request at a time, which means
+                // that these aren't entirely async. They can interleave with host requests sent serially,
+                // but a host request sent asynchronously will block other host requests sent asynchronously.
+                // This is a limitation of the GET protocol but may be relaxed in future revisions.
+                let run_next_async_host_request = async {
+                    while let Some(request) = self.async_host_requests.front_mut() {
                         if let Err(e) = request.as_mut().await {
                             return e;
                         }
 
-                        self.igvm_attest_requests.pop_front();
+                        self.async_host_requests.pop_front();
 
                         // Ensure there are no extra response messages that this request failed to pick up.
                         if self
                             .pipe_channels
-                            .igvm_attest_response_message_recv
+                            .async_host_request_response_message_recv
                             .lock()
                             .as_mut()
                             .unwrap()
@@ -895,7 +900,7 @@ impl<T: RingMem> ProcessLoop<T> {
                     recv_msg,
                     send_next,
                     run_next,
-                    run_next_igvm_attest,
+                    run_next_async_host_request,
                     recv_response,
                 )
                     .race()
@@ -970,21 +975,21 @@ impl<T: RingMem> ProcessLoop<T> {
         self.host_requests.push_back(Box::pin(fut));
     }
 
-    /// Spawn an IgvmAttest host request.
+    /// Spawn an async host request.
     ///
     /// `f` will receive a [`PipeAccess`] to send messages to the host and
     /// receive host responses.
     ///
     /// The result of `f().await` will be sent as a response to the RPC in `req`.
-    fn push_igvm_attest_request_handler<F, Fut>(&mut self, f: F)
+    fn push_async_host_request_handler<F, Fut>(&mut self, f: F)
     where
         F: 'static + Send + FnOnce(HostRequestPipeAccess) -> Fut,
         Fut: 'static + Future<Output = Result<(), FatalError>> + Send,
     {
-        let message_recv_mutex = self.pipe_channels.igvm_attest_response_message_recv.clone();
+        let message_recv_mutex = self.pipe_channels.async_host_request_response_message_recv.clone();
         let message_send = self.pipe_channels.message_send.clone();
         let fut = async { f(HostRequestPipeAccess::new(message_recv_mutex, message_send)).await };
-        self.igvm_attest_requests.push_back(Box::pin(fut));
+        self.async_host_requests.push_back(Box::pin(fut));
     }
 
     /// Pushes a host request handler that sends a single host request and waits
@@ -1102,7 +1107,7 @@ impl<T: RingMem> ProcessLoop<T> {
             Msg::IgvmAttest(req) => {
                 let shared_pool_allocator = self.gpa_allocator.clone();
 
-                self.push_igvm_attest_request_handler(|access| {
+                self.push_async_host_request_handler(|access| {
                     req.handle_must_succeed(|request| {
                         request_igvm_attest(access, *request, shared_pool_allocator)
                     })
@@ -1119,8 +1124,8 @@ impl<T: RingMem> ProcessLoop<T> {
                 });
             }
             Msg::VpciDeviceControl(req) => {
-                self.push_basic_host_request_handler(req, |input| {
-                    get_protocol::VpciDeviceControlRequest::new(input.code, input.bus_instance_id)
+                self.push_async_host_request_handler(|access| {
+                    req.handle_must_succeed(|input| request_vpci_device_control(access, input))
                 });
             }
             Msg::VpciDeviceBindingChange(req) => {
@@ -1292,17 +1297,17 @@ impl<T: RingMem> ProcessLoop<T> {
         header: get_protocol::HeaderHostResponse,
         buf: &[u8],
     ) -> Result<(), FatalError> {
-        if self.host_requests.is_empty() && self.igvm_attest_requests.is_empty() {
+        if self.host_requests.is_empty() && self.async_host_requests.is_empty() {
             return Err(FatalError::NoPendingRequest);
         }
         validate_response(header)?;
 
-        if header.message_id == HostRequests::IGVM_ATTEST {
-            if !self.igvm_attest_requests.is_empty() {
-                self.igvm_attest_read_send.send(buf.to_vec());
+        if is_async_host_request(header.message_id) {
+            if !self.async_host_requests.is_empty() {
+                self.async_host_requests_read_send.send(buf.to_vec());
                 return Ok(());
             }
-            return Err(FatalError::NoPendingIgvmAttestRequest);
+            return Err(FatalError::NoPendingAsyncHostRequest(header.message_id));
         }
 
         self.read_send.send(buf.to_vec());
@@ -1815,6 +1820,19 @@ async fn request_saved_state(
     }
 
     Ok(Ok(saved_state_buf))
+}
+
+/// Send a VPCI device control request to the host and wait for the result asynchronously.
+async fn request_vpci_device_control(
+    mut access: HostRequestPipeAccess,
+    input: msg::VpciDeviceControlInput,
+) -> Result<get_protocol::VpciDeviceControlResponse, FatalError> {
+    let response: get_protocol::VpciDeviceControlResponse =
+        access.send_request_fixed_size(
+            &get_protocol::VpciDeviceControlRequest::new(input.code, input.bus_instance_id)
+        ).await?;
+
+    Ok(response)
 }
 
 /// Send the attestation request to the IGVm agent on the host and wait for the result asynchronously.
