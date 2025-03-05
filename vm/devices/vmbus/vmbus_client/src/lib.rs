@@ -627,7 +627,7 @@ impl ClientTask {
     }
 
     fn handle_modify(&mut self, request: Rpc<ModifyConnectionRequest, ConnectionState>) {
-        if !matches!(self.state, ClientState::Connected { version,.. }
+        if !matches!(self.state, ClientState::Connected { version }
             if version.feature_flags.modify_connection())
         {
             tracing::warn!("ModifyConnection not supported");
