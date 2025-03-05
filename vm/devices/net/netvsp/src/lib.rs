@@ -311,7 +311,7 @@ struct QueueState {
 
 struct RxBufferRange {
     id_range: Range<u32>,
-    remote_buffer_id_recv: Option<mesh::Receiver<u32>>,
+    remote_buffer_id_recv: Option<mpsc::UnboundedReceiver<u32>>,
     remote_ranges: Arc<RxBufferRanges>,
 }
 
@@ -319,7 +319,7 @@ impl RxBufferRange {
     fn new(
         ranges: Arc<RxBufferRanges>,
         id_range: Range<u32>,
-        remote_buffer_id_recv: Option<mesh::Receiver<u32>>,
+        remote_buffer_id_recv: Option<mpsc::UnboundedReceiver<u32>>,
     ) -> Self {
         Self {
             id_range,
@@ -331,13 +331,10 @@ impl RxBufferRange {
     fn send_if_remote(&self, id: u32) -> bool {
         if self.id_range.contains(&id) {
             false
-        } else if id < RX_RESERVED_CONTROL_BUFFERS {
-            self.remote_ranges.control_buffer_send.send(id);
-            true
         } else {
             let i = id.saturating_sub(RX_RESERVED_CONTROL_BUFFERS)
                 / self.remote_ranges.buffers_per_queue;
-            self.remote_ranges.buffer_id_send[i as usize].send(id);
+            let _ = self.remote_ranges.buffer_id_send[i as usize].unbounded_send(id);
             true
         }
     }
@@ -345,30 +342,18 @@ impl RxBufferRange {
 
 struct RxBufferRanges {
     buffers_per_queue: u32,
-    buffer_id_send: Vec<mesh::Sender<u32>>,
-    control_buffer_send: mesh::Sender<u32>,
+    buffer_id_send: Vec<mpsc::UnboundedSender<u32>>,
 }
 
 impl RxBufferRanges {
-    fn new(
-        buffer_count: u32,
-        queue_count: u32,
-        primary_queue_excluded: bool,
-    ) -> (Self, Vec<mesh::Receiver<u32>>) {
+    fn new(buffer_count: u32, queue_count: u32) -> (Self, Vec<mpsc::UnboundedReceiver<u32>>) {
         let buffers_per_queue = (buffer_count - RX_RESERVED_CONTROL_BUFFERS) / queue_count;
-        let remote_queue_count = queue_count + if primary_queue_excluded { 1 } else { 0 };
-        let (mut send, recv): (Vec<_>, Vec<_>) =
-            (0..remote_queue_count).map(|_| mesh::channel()).unzip();
-        let control_buffer_send = if primary_queue_excluded {
-            send.pop().unwrap()
-        } else {
-            send[0].clone()
-        };
+        #[expect(clippy::disallowed_methods)] // TODO
+        let (send, recv): (Vec<_>, Vec<_>) = (0..queue_count).map(|_| mpsc::unbounded()).unzip();
         (
             Self {
                 buffers_per_queue,
                 buffer_id_send: send,
-                control_buffer_send,
             },
             recv,
         )
@@ -1268,6 +1253,9 @@ impl VmbusDevice for Nic {
 
     fn start(&mut self) {
         if !self.coordinator.is_running() {
+            if let Some(coordinator) = self.coordinator.state_mut() {
+                coordinator.start_workers();
+            }
             self.coordinator.start();
         }
     }
@@ -4138,13 +4126,9 @@ impl Coordinator {
                 num_queues
             };
 
-        let primary_queue_excluded = !active_queues.is_empty() && active_queues[0] != 0;
         // Distribute the rx buffers to only the active queues.
-        let (ranges, mut remote_buffer_id_recvs) = RxBufferRanges::new(
-            state.buffers.recv_buffer.count,
-            active_queue_count.into(),
-            primary_queue_excluded,
-        );
+        let (ranges, mut remote_buffer_id_recvs) =
+            RxBufferRanges::new(state.buffers.recv_buffer.count, active_queue_count.into());
         let ranges = Arc::new(ranges);
 
         let mut queues = Vec::new();
@@ -4184,6 +4168,7 @@ impl Coordinator {
 
                 let mut initial_rx = initial_rx.as_slice();
                 let mut range_start = 0;
+                let primary_queue_excluded = !active_queues.is_empty() && active_queues[0] != 0;
                 let first_queue = if !primary_queue_excluded {
                     0
                 } else {
@@ -4198,7 +4183,7 @@ impl Coordinator {
                     rx_buffers.push(RxBufferRange::new(
                         ranges.clone(),
                         0..RX_RESERVED_CONTROL_BUFFERS,
-                        Some(remote_buffer_id_recvs.remove(0)),
+                        None,
                     ));
                     range_start = RX_RESERVED_CONTROL_BUFFERS;
                     1
