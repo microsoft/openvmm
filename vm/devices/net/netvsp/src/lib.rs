@@ -329,11 +329,12 @@ impl RxBufferRange {
     }
 
     fn send_if_remote(&self, id: u32) -> bool {
-        if self.id_range.contains(&id) {
+        // Only queue 0 should get reserved buffer IDs. Otherwise check if the
+        // ID is owned by the current range.
+        if id < RX_RESERVED_CONTROL_BUFFERS || self.id_range.contains(&id) {
             false
         } else {
-            let i = id.saturating_sub(RX_RESERVED_CONTROL_BUFFERS)
-                / self.remote_ranges.buffers_per_queue;
+            let i = (id - RX_RESERVED_CONTROL_BUFFERS) / self.remote_ranges.buffers_per_queue;
             let _ = self.remote_ranges.buffer_id_send[i as usize].unbounded_send(id);
             true
         }
@@ -4119,7 +4120,7 @@ impl Coordinator {
                 if !active_queues.is_empty() {
                     active_queues.len() as u16
                 } else {
-                    tracing::warn!("Invalid RSS indirection table");
+                    tracelimit::warn_ratelimited!("Invalid RSS indirection table");
                     num_queues
                 }
             } else {
@@ -5289,8 +5290,7 @@ impl ActiveState {
                     done.push(RxId(id));
                 } else {
                     self.primary
-                        .as_mut()
-                        .unwrap()
+                        .as_mut()?
                         .free_control_buffers
                         .push(ControlMessageId(id));
                 }
