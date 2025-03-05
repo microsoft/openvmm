@@ -3,7 +3,6 @@
 
 #![cfg(target_os = "linux")]
 
-use crate::scsidvd::SimpleScsiDvd;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use disk_backend::Disk;
 use disk_nvme::NvmeDisk;
@@ -21,6 +20,8 @@ use scsi_core::AsyncScsiDisk;
 use scsi_core::Request;
 use scsi_defs::ScsiOp;
 use scsi_defs::ISO_SECTOR_SIZE;
+use scsidisk::scsidvd::SimpleScsiDvd;
+use test_with_tracing::test;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
 use vmcore::vm_task::SingleDriverBackend;
