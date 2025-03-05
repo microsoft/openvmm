@@ -25,9 +25,9 @@ impl super::ClientTask {
                 super::ClientState::Connecting { .. } => {
                     unreachable!("Cannot save in Connecting state.")
                 }
-                super::ClientState::Connected { version } => ClientState::Connected {
-                    version: version.version as u32,
-                    feature_flags: version.feature_flags.into(),
+                super::ClientState::Connected { version: info } => ClientState::Connected {
+                    version: info.version as u32,
+                    feature_flags: info.feature_flags.into(),
                 },
                 super::ClientState::RequestingOffers { .. } => {
                     unreachable!("Cannot save in RequestingOffers state.")

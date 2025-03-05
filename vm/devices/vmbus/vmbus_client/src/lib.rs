@@ -440,7 +440,7 @@ enum ClientState {
 impl ClientState {
     fn get_version(&self) -> Option<VersionInfo> {
         match self {
-            ClientState::Connected { version, .. } => Some(*version),
+            ClientState::Connected { version } => Some(*version),
             ClientState::RequestingOffers { version, sender: _ } => Some(*version),
             ClientState::Disconnecting { version, rpc: _ } => Some(*version),
             ClientState::Disconnected | ClientState::Connecting { .. } => None,
@@ -605,7 +605,7 @@ impl ClientTask {
     }
 
     fn handle_request_offers(&mut self, send: mesh::Sender<OfferInfo>) {
-        if let ClientState::Connected { version, .. } = self.state {
+        if let ClientState::Connected { version } = self.state {
             self.state = ClientState::RequestingOffers {
                 version,
                 sender: send,
@@ -1155,13 +1155,13 @@ impl ClientTask {
         let (request, rpc) = rpc.split();
         let open_data = &request.open_data;
 
-        let supports_interrupt_redirection =
-            if let ClientState::Connected { version, .. } = self.state {
-                version.feature_flags.guest_specified_signal_parameters()
-                    || version.feature_flags.channel_interrupt_redirection()
-            } else {
-                false
-            };
+        let supports_interrupt_redirection = if let ClientState::Connected { version } = self.state
+        {
+            version.feature_flags.guest_specified_signal_parameters()
+                || version.feature_flags.channel_interrupt_redirection()
+        } else {
+            false
+        };
 
         if !supports_interrupt_redirection && open_data.event_flag != channel_id.0 as u16 {
             rpc.fail(anyhow::anyhow!(
@@ -1522,6 +1522,8 @@ impl ClientTask {
                 }
 
                 if !self.handle_synic_message(&buf[..size]) {
+                    // Received a pause response message. We won't receive
+                    // any more messages until we send a resume message.
                     break;
                 }
             }
@@ -1552,7 +1554,7 @@ impl ClientTask {
     }
 
     fn can_pause_resume(&self) -> bool {
-        if let ClientState::Connected { version, .. } = self.state {
+        if let ClientState::Connected { version } = self.state {
             version.feature_flags.pause_resume()
         } else {
             false
