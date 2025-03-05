@@ -8185,7 +8185,6 @@ dependencies = [
  "bitfield-struct",
  "futures",
  "guestmem",
- "guid",
  "mesh",
  "pal",
  "pal_async",
