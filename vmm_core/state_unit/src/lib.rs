@@ -357,10 +357,12 @@ impl Inspect for Inner {
 #[derive(Protobuf)]
 #[mesh(package = "state_unit")]
 pub struct SavedStateUnit {
+    /// The name of the state unit.
     #[mesh(1)]
-    name: String,
+    pub name: String,
+    /// The opaque saved state blob.
     #[mesh(2)]
-    state: SavedStateBlob,
+    pub state: SavedStateBlob,
 }
 
 /// An error from a state transition.

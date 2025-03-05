@@ -143,6 +143,7 @@ pub(crate) struct LoadedVm {
     pub nvme_manager: Option<NvmeManager>,
     pub emuplat_servicing: EmuplatServicing,
     pub device_interfaces: Option<DeviceInterfaces>,
+    pub vmbus_client: Option<vmbus_client::VmbusClient>,
     /// Memory map with IGVM types for each range.
     pub vtl0_memory_map: Vec<(MemoryRangeWithNode, MemoryMapEntryType)>,
 
@@ -495,7 +496,7 @@ impl LoadedVm {
         let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
 
         // Do everything before the log flush under a span.
-        let mut state = async {
+        let r = async {
             if !self.stop().await {
                 // This should only occur if you tried to initiate a
                 // servicing operation after manually pausing underhill
@@ -544,7 +545,16 @@ impl LoadedVm {
             Ok(state)
         }
         .instrument(tracing::info_span!("servicing_save_vtl2", %correlation_id))
-        .await?;
+        .await;
+
+        let mut state = match r {
+            Ok(state) => state,
+            Err(err) => {
+                self.resume_drivers();
+                return Err(err);
+            }
+        };
+
         // Tell the initial process to flush all logs. Any logs
         // emitted after this point may be lost.
         state.init_state.flush_logs_result = Some({
@@ -633,6 +643,19 @@ impl LoadedVm {
         }
     }
 
+    /// Called after a failed servicing operation.
+    ///
+    /// FUTURE: model the drivers as "driver" state units (as opposed to guest
+    /// VM state units) so that we have a consistent way to model their state
+    /// transitions.
+    fn resume_drivers(&mut self) {
+        if let Some(client) = &mut self.vmbus_client {
+            client.start();
+        }
+
+        // TODO: resume the other drivers.
+    }
+
     async fn save(
         &mut self,
         _deadline: Option<std::time::Instant>,
@@ -670,7 +693,14 @@ impl LoadedVm {
             None
         };
 
-        Ok(ServicingState {
+        let vmbus_client = if let Some(vmbus_client) = &mut self.vmbus_client {
+            vmbus_client.stop().await;
+            Some(vmbus_client.save().await)
+        } else {
+            None
+        };
+
+        let mut state = ServicingState {
             init_state: servicing::ServicingInitState {
                 firmware_type: self.firmware_type.into(),
                 vm_stop_reference_time: self.last_state_unit_stop.unwrap().as_100ns(),
@@ -681,9 +711,15 @@ impl LoadedVm {
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
                 nvme_state,
                 dma_manager_state,
+                vmbus_client,
             },
             units,
-        })
+        };
+
+        state
+            .fix_pre_save()
+            .context("failed to fix up servicing state before save")?;
+        Ok(state)
     }
 
     #[instrument(skip(self))]

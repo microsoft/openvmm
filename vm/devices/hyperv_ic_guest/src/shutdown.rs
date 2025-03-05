@@ -6,6 +6,9 @@
 #![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
 
+pub use hyperv_ic_protocol::shutdown::INSTANCE_ID;
+pub use hyperv_ic_protocol::shutdown::INTERFACE_ID;
+
 use guid::Guid;
 use hyperv_ic_resources::shutdown::ShutdownParams;
 use hyperv_ic_resources::shutdown::ShutdownResult;
@@ -321,7 +324,7 @@ impl SimpleVmbusClientDevice for ShutdownGuestIc {
     type Runner = ShutdownGuestChannel;
 
     fn instance_id(&self) -> Guid {
-        hyperv_ic_protocol::shutdown::INSTANCE_ID
+        INSTANCE_ID
     }
 
     fn offer(&self, _offer: &vmbus_core::protocol::OfferChannel) -> OfferResponse {

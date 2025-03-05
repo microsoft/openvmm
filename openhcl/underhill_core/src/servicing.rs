@@ -6,6 +6,8 @@
 pub use state::*;
 
 use crate::worker::FirmwareType;
+use anyhow::Context as _;
+use vmcore::save_restore::SavedStateBlob;
 
 mod state {
     use mesh::payload::Protobuf;
@@ -80,6 +82,8 @@ mod state {
         /// Dma manager state
         #[mesh(10001)]
         pub dma_manager_state: Option<OpenhclDmaManagerState>,
+        #[mesh(10002)]
+        pub vmbus_client: Option<vmbus_client::SavedState>,
     }
 
     #[derive(Protobuf)]
@@ -101,6 +105,58 @@ mod state {
         Pcat,
         #[mesh(3)]
         None,
+    }
+}
+
+impl ServicingState {
+    /// Update the state with extra data to ensure it can be restored by older
+    /// versions of the paravisor.
+    pub fn fix_pre_save(&mut self) -> anyhow::Result<()> {
+        // Needed to save to release/2411:
+        if let Some(client) = &self.init_state.vmbus_client {
+            let vmbus_relay = self.units.iter_mut().find(|x| x.name == "vmbus_relay");
+            if let Some(relay_unit) = vmbus_relay {
+                let relay = relay_unit
+                    .state
+                    .parse::<vmbus_relay::SavedState>()
+                    .context("failed to parse vmbus relay state")?;
+
+                // Append the legacy saved state to the relay unit state so that
+                // older versions of the paravisor can see the old fields and
+                // restore from them.
+                let legacy_relay =
+                    vmbus_relay::legacy_saved_state::SavedState::from_relay_and_client(
+                        &relay, client,
+                    );
+                // TODO: extend the blob instead of replacing it so that both
+                // the old and new relay state fields are available, for cross
+                // compatibility.
+                relay_unit.state = SavedStateBlob::new(legacy_relay);
+                // TODO: once the new vmbus client state has stabilized and the
+                // TODO above has been addressed, remove this.
+                self.init_state.vmbus_client = None;
+            }
+        }
+        Ok(())
+    }
+
+    /// Update state that may be coming from older versions of the paravisor to
+    /// ensure it can be restored by the current version.
+    pub fn fix_post_restore(&mut self) -> anyhow::Result<()> {
+        // Needed to restore from release/2411.
+        if self.init_state.vmbus_client.is_none() {
+            let vmbus_relay = self.units.iter_mut().find(|x| x.name == "vmbus_relay");
+            if let Some(relay_unit) = vmbus_relay {
+                // Compute the new relay and client saved states from the legacy
+                // saved state.
+                let mut relay = relay_unit
+                    .state
+                    .parse::<vmbus_relay::legacy_saved_state::SavedState>()?;
+                relay_unit.state = SavedStateBlob::new(relay.relay_saved_state());
+                self.init_state.vmbus_client = Some(relay.client_saved_state());
+            }
+        }
+        Ok(())
     }
 }
 
@@ -145,6 +201,7 @@ pub mod transposed {
         pub overlay_shutdown_device: Option<bool>,
         pub nvme_state: Option<Option<NvmeSavedState>>,
         pub dma_manager_state: Option<Option<OpenhclDmaManagerState>>,
+        pub vmbus_client: Option<Option<vmbus_client::SavedState>>,
     }
 
     /// A transposed `Option<EmuplatSavedState>`, where each field of
@@ -174,6 +231,7 @@ pub mod transposed {
                     overlay_shutdown_device,
                     nvme_state,
                     dma_manager_state,
+                    vmbus_client,
                 } = state;
 
                 OptionServicingInitState {
@@ -189,6 +247,7 @@ pub mod transposed {
                     overlay_shutdown_device: Some(overlay_shutdown_device),
                     nvme_state: Some(nvme_state),
                     dma_manager_state: Some(dma_manager_state),
+                    vmbus_client: Some(vmbus_client),
                 }
             } else {
                 OptionServicingInitState::default()

@@ -219,18 +219,6 @@ async fn construct_get(
     ))
 }
 
-async fn attach_simple_intercept_channel<
-    T: vmbus_relay_intercept_device::SimpleVmbusClientDeviceAsync,
->(
-    driver_source: &VmTaskDriverSource,
-    relay: &VmbusRelayHandle,
-    device: SimpleVmbusClientDeviceWrapper<T>,
-) -> anyhow::Result<mesh::OneshotSender<()>> {
-    let (send, recv) = mesh::channel();
-    relay.intercept_channel(device.instance_id(), send).await?;
-    device.detach(driver_source.simple(), recv)
-}
-
 // Used for locating VM information in a debugger
 // Do not use during program execution
 static LOADED_VM: DebugPtr<LoadedVm> = DebugPtr::new();
@@ -513,6 +501,12 @@ impl UnderhillVmWorker {
                 saved_state_len = saved_state_buf.len(),
                 "received servicing state from host"
             );
+        }
+
+        if let Some(state) = &mut servicing_state {
+            state
+                .fix_post_restore()
+                .context("failed to fix up servicing state on restore")?;
         }
 
         let is_post_servicing = servicing_state.is_some();
@@ -2602,7 +2596,17 @@ async fn new_underhill_vm(
         )),
     );
 
+    // TODO: Enable for isolated VMs.
+    // Intercept shutdown device from VTL0 when the vmbus relay is active.
+    // N.B. Skip enabling if restoring from a previous version that did not use
+    //      a shutdown relay, otherwise would have to rescind the host shutdown
+    //      channel from the lower-VTL guest before taking control.
+    let intercept_shutdown_ic = !hardware_isolated
+        && (!is_restoring || servicing_state.overlay_shutdown_device.unwrap_or(false));
+    let mut intercepted_shutdown_ic = None;
+
     let mut vmbus_server = None;
+    let mut vmbus_client = None;
     let mut host_vmbus_relay = None;
 
     // VMBus
@@ -2672,13 +2676,41 @@ async fn new_underhill_vm(
             let builder = vmbus_client_hcl::vmbus_client_builder(relay_driver)
                 .context("failed to create synic client and message source")?;
 
+            let mut client = builder.build(tp);
+            let connection = if let Some(state) = servicing_state.vmbus_client.flatten() {
+                client.restore(state).await?
+            } else {
+                None
+            };
+            client.start();
+            let connection = if let Some(c) = connection {
+                c
+            } else {
+                const VMBUS_RELAY_CLIENT_ID: Guid =
+                    guid::guid!("ceb1cd55-6a3b-41c5-9473-4dd30624c3d8");
+                client
+                    .connect(0, None, VMBUS_RELAY_CLIENT_ID)
+                    .await
+                    .context("failed to connect to vmbus")?
+            };
+
+            let mut intercept_list = Vec::new();
+            if intercept_shutdown_ic {
+                let (send, recv) = mesh::channel();
+                intercept_list.push((hyperv_ic_guest::shutdown::INSTANCE_ID, send));
+                intercepted_shutdown_ic = Some(recv);
+            }
+
             let vmbus_relay = vmbus_relay::HostVmbusTransport::new(
                 relay_driver.clone(),
                 Arc::clone(vmbus.control()),
                 relay_channel,
                 hvsock_relay,
-                builder,
+                client.access().clone(),
+                connection,
+                intercept_list,
             )
+            .await
             .context("failed to create host vmbus transport")?;
 
             host_vmbus_relay = Some(VmbusRelayHandle::new(
@@ -2688,6 +2720,8 @@ async fn new_underhill_vm(
                     .depends_on(vmbus.unit_handle()),
                 vmbus_relay,
             )?);
+
+            vmbus_client = Some(client);
         };
 
         vmbus_server = Some(vmbus);
@@ -2832,16 +2866,7 @@ async fn new_underhill_vm(
 
     let mut vmbus_intercept_devices = Vec::new();
 
-    // TODO: Enable for isolated VMs.
-    // Intercept shutdown device from VTL0 when the vmbus relay is active.
-    // N.B. Skip enabling if restoring from a previous version that did not use
-    //      a shutdown relay, otherwise would have to rescind the host shutdown
-    //      channel from the lower-VTL guest before taking control.
-    let shutdown_relay = if host_vmbus_relay.is_some()
-        && !hardware_isolated
-        && (!is_restoring || servicing_state.overlay_shutdown_device.unwrap_or(false))
-    {
-        let relay = host_vmbus_relay.as_ref().unwrap();
+    let shutdown_relay = if let Some(recv) = intercepted_shutdown_ic {
         let mut shutdown_guest = ShutdownGuestIc::new();
         let recv_host_shutdown = shutdown_guest.get_shutdown_notifier();
         let (send_guest_shutdown, recv_guest_shutdown) = mesh::channel();
@@ -2866,8 +2891,7 @@ async fn new_underhill_vm(
                 .context("shutdown relay dma client")?,
             shutdown_guest,
         )?;
-        vmbus_intercept_devices
-            .push(attach_simple_intercept_channel(&driver_source, relay, shutdown_guest).await?);
+        vmbus_intercept_devices.push(shutdown_guest.detach(&driver_source, recv).await?);
 
         Some((recv_host_shutdown, send_guest_shutdown))
     } else {
@@ -2979,6 +3003,7 @@ async fn new_underhill_vm(
             netvsp_state,
         },
         device_interfaces: Some(controllers.device_interfaces),
+        vmbus_client,
         vtl0_memory_map,
 
         vmbus_server,

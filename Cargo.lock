@@ -7270,6 +7270,7 @@ dependencies = [
  "vm_topology",
  "vmbus_async",
  "vmbus_channel",
+ "vmbus_client",
  "vmbus_client_hcl",
  "vmbus_core",
  "vmbus_relay",

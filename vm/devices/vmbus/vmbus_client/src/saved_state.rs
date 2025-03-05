@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::ConnectResult;
 use crate::OfferInfo;
 use crate::RestoreError;
-use crate::RestoredChannel;
 use crate::SUPPORTED_FEATURE_FLAGS;
 use guid::Guid;
 use mesh::payload::Protobuf;
@@ -25,9 +25,9 @@ impl super::ClientTask {
                 super::ClientState::Connecting { .. } => {
                     unreachable!("Cannot save in Connecting state.")
                 }
-                super::ClientState::Connected { version: info } => ClientState::Connected {
-                    version: info.version as u32,
-                    feature_flags: info.feature_flags.into(),
+                super::ClientState::Connected { version, .. } => ClientState::Connected {
+                    version: version.version as u32,
+                    feature_flags: version.feature_flags.into(),
                 },
                 super::ClientState::RequestingOffers { .. } => {
                     unreachable!("Cannot save in RequestingOffers state.")
@@ -82,7 +82,7 @@ impl super::ClientTask {
     pub fn handle_restore(
         &mut self,
         saved_state: SavedState,
-    ) -> Result<(Option<VersionInfo>, Vec<RestoredChannel>), RestoreError> {
+    ) -> Result<Option<ConnectResult>, RestoreError> {
         let SavedState {
             client_state,
             channels,
@@ -90,16 +90,42 @@ impl super::ClientTask {
             pending_messages,
         } = saved_state;
 
+        let (version, feature_flags) = match client_state {
+            ClientState::Disconnected => return Ok(None),
+            ClientState::Connected {
+                version,
+                feature_flags,
+            } => (version, feature_flags),
+        };
+
+        let version = super::SUPPORTED_VERSIONS
+            .iter()
+            .find(|v| version == **v as u32)
+            .copied()
+            .ok_or(RestoreError::UnsupportedVersion(version))?;
+
+        let feature_flags = FeatureFlags::from(feature_flags);
+        if !SUPPORTED_FEATURE_FLAGS.contains(feature_flags) {
+            return Err(RestoreError::UnsupportedFeatureFlags(feature_flags.into()));
+        }
+
+        let version = VersionInfo {
+            version,
+            feature_flags,
+        };
+
+        let (offer_send, offer_recv) = mesh::channel();
+        self.state = super::ClientState::Connected {
+            version,
+            offer_send,
+        };
+
         let mut restored_channels = Vec::new();
-        self.state = client_state.try_into()?;
         for saved_channel in channels {
             if let Some(offer_info) = self.restore_channel(saved_channel) {
                 let key = offer_key(&offer_info.offer);
                 tracing::info!(%key, state = %saved_channel.state, "channel restored");
-                restored_channels.push(RestoredChannel {
-                    offer: offer_info,
-                    open: saved_channel.state == ChannelState::Opened,
-                });
+                restored_channels.push(offer_info);
             }
             if let Some(channel) = self.inner.channels.get_mut(&ChannelId(saved_channel.id)) {
                 channel.state = saved_channel.state.restore()
@@ -140,7 +166,11 @@ impl super::ClientTask {
             );
         }
 
-        Ok((self.state.get_version(), restored_channels))
+        Ok(Some(ConnectResult {
+            version,
+            offers: restored_channels,
+            offer_recv,
+        }))
     }
 
     pub fn handle_post_restore(&mut self) {
@@ -216,40 +246,6 @@ pub enum ClientState {
         #[mesh(2)]
         feature_flags: u32,
     },
-}
-
-impl TryFrom<ClientState> for super::ClientState {
-    type Error = RestoreError;
-
-    fn try_from(state: ClientState) -> Result<Self, Self::Error> {
-        let result = match state {
-            ClientState::Disconnected => Self::Disconnected,
-            ClientState::Connected {
-                version,
-                feature_flags,
-            } => {
-                let version = super::SUPPORTED_VERSIONS
-                    .iter()
-                    .find(|v| version == **v as u32)
-                    .copied()
-                    .ok_or(RestoreError::UnsupportedVersion(version))?;
-
-                let feature_flags = FeatureFlags::from(feature_flags);
-                if !SUPPORTED_FEATURE_FLAGS.contains(feature_flags) {
-                    return Err(RestoreError::UnsupportedFeatureFlags(feature_flags.into()));
-                }
-
-                Self::Connected {
-                    version: VersionInfo {
-                        version,
-                        feature_flags,
-                    },
-                }
-            }
-        };
-
-        Ok(result)
-    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Protobuf)]
