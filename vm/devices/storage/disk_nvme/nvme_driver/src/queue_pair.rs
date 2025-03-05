@@ -239,13 +239,20 @@ impl QueuePair {
             }
         });
 
-        // Page allocator uses remaining part of the buffer for dynamic allocation.
+        // Page allocator uses remaining part of the buffer for dynamic
+        // allocation. Configure the maximum allocation size to be one less than
+        // the overall size, to allow allocating the PRP list after other
+        // allocations.
+        const ALLOC_LEN: usize = QueuePair::PER_QUEUE_PAGES * PAGE_SIZE;
         const _: () = assert!(
-            QueuePair::PER_QUEUE_PAGES * PAGE_SIZE >= 128 * 1024 + PAGE_SIZE,
+            ALLOC_LEN >= 128 * 1024 + PAGE_SIZE,
             "not enough room for an ATAPI IO plus a PRP list"
         );
-        let alloc: PageAllocator =
-            PageAllocator::new(mem.subblock(data_offset, QueuePair::PER_QUEUE_PAGES * PAGE_SIZE));
+        let alloc: PageAllocator = PageAllocator::new(
+            mem.subblock(data_offset, QueuePair::PER_QUEUE_PAGES * PAGE_SIZE),
+            (ALLOC_LEN / PAGE_SIZE) - 1,
+        )
+        .context("failed to create page allocator")?;
 
         Ok(Self {
             task,

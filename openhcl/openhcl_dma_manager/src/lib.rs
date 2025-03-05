@@ -209,7 +209,7 @@ impl virt::VtlMemoryProtection for DmaManagerLowerVtl {
 struct PinPages {
     mshv_hvcall: hcl::ioctl::MshvHvcall,
     // TODO: have some way of looking up which ranges are pre-pinned or not.
-    // prepinned_ranges: bool,
+    // Today, it's assumed that all pages need pinning.
 }
 
 impl std::fmt::Debug for PinPages {
@@ -229,22 +229,17 @@ impl PinPages {
     }
 
     /// Check if all the pages are pinned.
-    fn is_pinned(&self, pfns: &[u64]) -> bool {
-        pfns[0] > 100
+    fn is_pinned(&self, _pfns: &[u64]) -> bool {
+        false
     }
 
     /// returns true if successful pin, false otherwise
     #[must_use]
     fn pin_pages(&self, pfns: &[u64]) -> bool {
-        // TODO: impl
-
-        tracing::error!(?pfns, "pinning pfns");
-
         // TODO: What happens if some pages are already physically backed and
         // some are VA backed? is that valid?
+        tracing::trace!(?pfns, "pinning pfns");
 
-        // TODO: change mshvcall methods to not require memory ranges?
-        // TODO: allocates...
         let ranges = pfns
             .iter()
             .map(|pfn| MemoryRange::from_4k_gpn_range(*pfn..*pfn + 1))
@@ -253,10 +248,8 @@ impl PinPages {
     }
 
     fn unpin_pages(&self, pfns: &[u64]) {
-        tracing::error!(?pfns, "unpinning pfns");
+        tracing::trace!(?pfns, "unpinning pfns");
 
-        // TODO: change mshvcall methods to not require memory ranges?
-        // TODO: allocates...
         let ranges = pfns
             .iter()
             .map(|pfn| MemoryRange::from_4k_gpn_range(*pfn..*pfn + 1))
@@ -384,18 +377,18 @@ impl DmaManagerInner {
                 "bounce buffer pages only supported if dma manager supports pinning"
             ))?;
 
-            let pages = backing
+            let block = backing
                 .allocate_dma_buffer((pages * PAGE_SIZE64) as usize)
                 .context(format!("unable to allocate bounce buffer {pages} pages"))?;
 
             // Pin the bounce buffer pages, if required.
-            if !pin_pages.is_pinned(pages.pfns()) {
-                if !pin_pages.pin_pages(pages.pfns()) {
+            if !pin_pages.is_pinned(block.pfns()) {
+                if !pin_pages.pin_pages(block.pfns()) {
                     anyhow::bail!("unable to pin bounce buffer pages");
                 }
             }
 
-            Some(PageAllocator::new(pages))
+            Some(PageAllocator::new(block, pages as usize).context("page allocator")?)
         } else {
             None
         };
@@ -620,8 +613,6 @@ fn copy_page_ranges(
             let copy_len = std::cmp::min(len as usize, PAGE_SIZE - page_offset);
             let bounce_page = &bounce_page[page_offset..page_offset + copy_len];
 
-            tracing::error!(index, len, copy_len, page_offset, ?range, "copying");
-
             match direction {
                 CopyDirection::ToBounce => {
                     guest_memory
@@ -824,15 +815,16 @@ mod tests {
 
     /// Create pools of 100 pages. Guest memory valid at page 0.
     fn create_pools() -> (GuestMemory, PagePool, PageAllocator) {
-        let mem = GuestMemory::allocate(100 * PAGE_SIZE);
+        let page_count = 100;
+        let mem = GuestMemory::allocate(page_count * PAGE_SIZE);
         let pool = PagePool::new(
-            &[MemoryRange::from_4k_gpn_range(0..100)],
-            TestMapper::new(100).unwrap(),
+            &[MemoryRange::from_4k_gpn_range(0..page_count as u64)],
+            TestMapper::new(page_count as u64).unwrap(),
         )
         .unwrap();
         let alloc = pool.allocator("test-pool".into()).unwrap();
-        let block = alloc.allocate_dma_buffer(100 * PAGE_SIZE).unwrap();
-        let pages = PageAllocator::new(block);
+        let block = alloc.allocate_dma_buffer(page_count * PAGE_SIZE).unwrap();
+        let pages = PageAllocator::new(block, page_count).unwrap();
 
         (mem, pool, pages)
     }

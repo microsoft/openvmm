@@ -70,6 +70,11 @@ pub enum MapDmaError {
     Map(#[source] anyhow::Error),
     #[error("no bounce buffers available")]
     NoBounceBufferAvailable,
+    #[error("mapped range {range_bytes} is larger than available total bounce buffer space {bounce_buffer_bytes}")]
+    NotEnoughBounceBufferSpace {
+        range_bytes: usize,
+        bounce_buffer_bytes: usize,
+    },
     // UnmapFailed,
     // PinFailed,
     // BounceBufferFailed,

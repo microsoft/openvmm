@@ -34,23 +34,34 @@ impl std::fmt::Debug for PageAllocator {
 }
 
 impl PageAllocator {
-    pub fn new(mem: MemoryBlock) -> Self {
-        assert_eq!(mem.offset_in_page(), 0);
-        assert_eq!(mem.len() % PAGE_SIZE, 0);
-        let count = mem.len() / PAGE_SIZE;
-        Self {
-            core: Mutex::new(PageAllocatorCore::new(count)),
+    /// Create a new page allocator. `mem` must be page-aligned in both size and
+    /// offset. `max_allocation_size_pages` specifies the maximum allocation
+    /// size in terms of number of pages, it must be less than or equal to
+    /// `mem`'s size.
+    pub fn new(mem: MemoryBlock, max_allocation_size_pages: usize) -> anyhow::Result<Self> {
+        if mem.offset_in_page() != 0 || mem.len() % PAGE_SIZE != 0 {
+            anyhow::bail!("memory must be page-aligned");
+        }
+
+        let page_count = mem.len() / PAGE_SIZE;
+        if max_allocation_size_pages > page_count {
+            anyhow::bail!("max allocation size must be less than or equal to memory size");
+        }
+
+        Ok(Self {
+            core: Mutex::new(PageAllocatorCore::new(page_count)),
             mem,
             event: Default::default(),
-            max: count,
-        }
+            max: max_allocation_size_pages,
+        })
     }
 
-    // BUGBUG remove the single page restriction - the nvme code should instead allocate the PRP list first, and not have this restriction?
+    /// Allocate `n` pages. This may block until enough pages are available.
+    ///
+    /// Returns `None` if the allocation is unable to succeed, due to being
+    /// larger than the pool or the configured maximum allocation size.
     pub async fn alloc_pages(&self, n: usize) -> Option<ScopedPages<'_>> {
-        // A single page must be left over for the PRP list, so one request may
-        // not use all pages.
-        if self.max < n + 1 {
+        if self.max < n {
             return None;
         }
         let mut core = loop {
@@ -80,6 +91,10 @@ impl PageAllocator {
         Some(ScopedPages { alloc: self, pages })
     }
 
+    /// Allocate `n` bytes, which may block until enough bytes are available.
+    ///
+    /// Returns `None` if the allocation is unable to succeed, due to being
+    /// larger than the pool or the configured maximum allocation size.
     pub async fn alloc_bytes(&self, n: usize) -> Option<ScopedPages<'_>> {
         self.alloc_pages(n.div_ceil(PAGE_SIZE)).await
     }
@@ -209,5 +224,61 @@ impl Drop for ScopedPages<'_> {
             }
         }
         self.alloc.event.notify_additional(n);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PageAllocator;
+    use crate::emulated::DeviceSharedMemory;
+    use crate::memory::MemoryBlock;
+    use crate::memory::PAGE_SIZE;
+    use pal_async::async_test;
+    use pal_async::task::Spawn;
+    use pal_async::DefaultDriver;
+    use std::sync::Arc;
+
+    #[async_test]
+    async fn test_alloc(driver: DefaultDriver) {
+        let size = PAGE_SIZE * 10;
+        let mem = DeviceSharedMemory::new(size, 0);
+        let block = MemoryBlock::new(mem.alloc(size).unwrap());
+        let alloc = Arc::new(PageAllocator::new(block, 10).unwrap());
+        let pages = alloc.alloc_pages(10).await.unwrap();
+        assert_eq!(pages.page_count(), 10);
+        let alloc2 = alloc.clone();
+        let other_allocs = driver.spawn("test-allocs", async move {
+            let _a = alloc2.alloc_pages(4).await;
+            let _b = alloc2.alloc_pages(4).await;
+            let _c = alloc2.alloc_pages(2).await;
+        });
+        drop(pages);
+        other_allocs.await;
+    }
+
+    #[async_test]
+    async fn test_alloc_size() {
+        let pages = 10;
+        let size = PAGE_SIZE * pages;
+        let mem = DeviceSharedMemory::new(size, 0);
+        let block = MemoryBlock::new(mem.alloc(size).unwrap());
+        let alloc = PageAllocator::new(block, pages - 1).unwrap();
+
+        let buf = alloc.alloc_pages(pages).await;
+        assert!(buf.is_none());
+        let buf = alloc.alloc_pages(pages + 10).await;
+        assert!(buf.is_none());
+        let buf = alloc.alloc_pages(pages - 1).await;
+        assert!(buf.is_some());
+        drop(buf);
+        let buf = alloc.alloc_bytes(size).await;
+        assert!(buf.is_none());
+        let buf = alloc.alloc_bytes(size - 1).await;
+        assert!(buf.is_none());
+        let buf = alloc.alloc_bytes(size - PAGE_SIZE).await;
+        assert!(buf.is_some());
+        drop(buf);
+        let buf = alloc.alloc_bytes(size * 2).await;
+        assert!(buf.is_none());
     }
 }

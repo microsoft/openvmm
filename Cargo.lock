@@ -7473,6 +7473,7 @@ dependencies = [
  "libc",
  "mesh",
  "pal_async",
+ "pal_async_test",
  "pal_event",
  "parking_lot",
  "pci_core",

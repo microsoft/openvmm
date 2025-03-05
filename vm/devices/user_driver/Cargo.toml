@@ -40,5 +40,8 @@ pal_event.workspace = true
 sparse_mmap = { workspace = true, optional = true }
 vfio_sys = { workspace = true, optional = true }
 
+[dev-dependencies]
+pal_async_test.workspace = true
+
 [lints]
 workspace = true
