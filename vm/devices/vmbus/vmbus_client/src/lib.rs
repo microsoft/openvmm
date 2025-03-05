@@ -62,7 +62,8 @@ const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
     .with_guest_specified_signal_parameters(true)
     .with_channel_interrupt_redirection(true)
     .with_modify_connection(true)
-    .with_client_id(true);
+    .with_client_id(true)
+    .with_pause_resume(true);
 
 /// The client interface synic events.
 pub trait SynicEventClient: Send + Sync {
@@ -439,7 +440,7 @@ enum ClientState {
 impl ClientState {
     fn get_version(&self) -> Option<VersionInfo> {
         match self {
-            ClientState::Connected { version } => Some(*version),
+            ClientState::Connected { version, .. } => Some(*version),
             ClientState::RequestingOffers { version, sender: _ } => Some(*version),
             ClientState::Disconnecting { version, rpc: _ } => Some(*version),
             ClientState::Disconnected | ClientState::Connecting { .. } => None,
@@ -604,7 +605,7 @@ impl ClientTask {
     }
 
     fn handle_request_offers(&mut self, send: mesh::Sender<OfferInfo>) {
-        if let ClientState::Connected { version } = self.state {
+        if let ClientState::Connected { version, .. } = self.state {
             self.state = ClientState::RequestingOffers {
                 version,
                 sender: send,
@@ -626,7 +627,7 @@ impl ClientTask {
     }
 
     fn handle_modify(&mut self, request: Rpc<ModifyConnectionRequest, ConnectionState>) {
-        if !matches!(self.state, ClientState::Connected { version }
+        if !matches!(self.state, ClientState::Connected { version,.. }
             if version.feature_flags.modify_connection())
         {
             tracing::warn!("ModifyConnection not supported");
@@ -1061,7 +1062,8 @@ impl ClientTask {
         }
     }
 
-    fn handle_synic_message(&mut self, data: &[u8]) {
+    /// Returns false if the message was a pause complete message.
+    fn handle_synic_message(&mut self, data: &[u8]) -> bool {
         let msg = Message::parse(data, self.state.get_version()).unwrap();
         tracing::trace!(?msg, "received client message from synic");
 
@@ -1104,6 +1106,9 @@ impl ClientTask {
             Message::CloseReservedChannelResponse(..) => {
                 todo!("Unsupported message {msg:?}")
             }
+            Message::PauseResponse(..) => {
+                return false;
+            }
             // Messages that should only be received by a vmbus server.
             Message::RequestOffers(..)
             | Message::OpenChannel2(..)
@@ -1121,10 +1126,13 @@ impl ClientTask {
             | Message::TlConnectRequest2(..)
             | Message::TlConnectRequest(..)
             | Message::ModifyChannel(..)
-            | Message::ModifyConnection(..) => {
+            | Message::ModifyConnection(..)
+            | Message::Pause(..)
+            | Message::Resume(..) => {
                 unreachable!("Client received server message {msg:?}");
             }
         }
+        true
     }
 
     fn handle_open_channel(
@@ -1147,13 +1155,13 @@ impl ClientTask {
         let (request, rpc) = rpc.split();
         let open_data = &request.open_data;
 
-        let supports_interrupt_redirection = if let ClientState::Connected { version } = self.state
-        {
-            version.feature_flags.guest_specified_signal_parameters()
-                || version.feature_flags.channel_interrupt_redirection()
-        } else {
-            false
-        };
+        let supports_interrupt_redirection =
+            if let ClientState::Connected { version, .. } = self.state {
+                version.feature_flags.guest_specified_signal_parameters()
+                    || version.feature_flags.channel_interrupt_redirection()
+            } else {
+                false
+            };
 
         if !supports_interrupt_redirection && open_data.event_flag != channel_id.0 as u16 {
             rpc.fail(anyhow::anyhow!(
@@ -1464,19 +1472,40 @@ impl ClientTask {
 
     /// Determines if the client is connected with at least the specified version.
     fn check_version(&self, version: Version) -> bool {
-        matches!(self.state, ClientState::Connected { version: v } if v.version >= version)
+        matches!(self.state, ClientState::Connected { version: v, .. } if v.version >= version)
     }
 
     fn handle_start(&mut self) {
         assert!(!self.running);
-        self.msg_source.resume_message_stream();
+        if !self.can_pause_resume() {
+            self.msg_source.resume_message_stream();
+        }
         self.running = true;
     }
 
     async fn handle_stop(&mut self) {
         assert!(self.running);
+
         loop {
-            self.msg_source.pause_message_stream();
+            if self.can_pause_resume() {
+                // Send a pause and flush any queued messages to ensure the host
+                // sees it.
+                self.inner.messages.send(&protocol::Pause {});
+                self.inner.messages.flush_messages().await;
+                // Push the resume message onto the queue now. This ensures the
+                // resume message is sent before any other messages, that new
+                // messages sent during processing below will be queued rather
+                // than sent immediately, and it means we don't need to save the
+                // paused state in the saved state.
+                self.inner
+                    .messages
+                    .queued
+                    .push_back(OutgoingMessage::new(&protocol::Resume));
+            } else {
+                // Mask the sint to pause the message stream. The host will
+                // retry any queued messages after the sint is unmasked.
+                self.msg_source.pause_message_stream();
+            }
 
             // Process messages until we hit EOF.
             tracing::debug!("draining messages");
@@ -1492,7 +1521,9 @@ impl ClientTask {
                     break;
                 }
 
-                self.handle_synic_message(&buf[..size]);
+                if !self.handle_synic_message(&buf[..size]) {
+                    break;
+                }
             }
 
             // Flush any pending outgoing messages. This needs to be done with
@@ -1502,7 +1533,12 @@ impl ClientTask {
             // FUTURE: We can save these pending messages instead, but older
             // versions of OpenHCL cannot restore them. Remove this code once
             // those older versions are no longer supported (e.g. late 2025).
-            if self.inner.messages.is_empty() {
+            //
+            // When pause/resume is supported, we assume that we can save
+            // pending messages safely, though, since a rollback to a version
+            // that doesn't support pause/resume will not be able to restore the
+            // paused state anyway.
+            if self.inner.messages.is_empty() || self.can_pause_resume() {
                 break;
             }
             tracing::info!("flushing outgoing messages");
@@ -1513,6 +1549,14 @@ impl ClientTask {
         tracing::debug!("messages drained");
         // Because the run loop awaits all async operations, there is no need for rundown.
         self.running = false;
+    }
+
+    fn can_pause_resume(&self) -> bool {
+        if let ClientState::Connected { version, .. } = self.state {
+            version.feature_flags.pause_resume()
+        } else {
+            false
+        }
     }
 
     async fn run(&mut self) {

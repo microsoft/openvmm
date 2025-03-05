@@ -20,14 +20,14 @@ impl super::ClientTask {
         // It's the responsibility of the caller to ensure the client is in a state where it's
         // possible to save.
         SavedState {
-            client_state: match &self.state {
+            client_state: match self.state {
                 super::ClientState::Disconnected => ClientState::Disconnected,
                 super::ClientState::Connecting { .. } => {
                     unreachable!("Cannot save in Connecting state.")
                 }
-                super::ClientState::Connected { version: info } => ClientState::Connected {
-                    version: info.version as u32,
-                    feature_flags: info.feature_flags.into(),
+                super::ClientState::Connected { version } => ClientState::Connected {
+                    version: version.version as u32,
+                    feature_flags: version.feature_flags.into(),
                 },
                 super::ClientState::RequestingOffers { .. } => {
                     unreachable!("Cannot save in RequestingOffers state.")
