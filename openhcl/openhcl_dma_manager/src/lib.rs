@@ -709,7 +709,9 @@ impl OpenhclDmaClient {
             .ok_or(MapDmaError::NoBounceBufferAvailable)?
             .alloc_pages(range.gpns().len())
             .await
-            .expect("BUGBUG more bouncing required than pages available");
+            .ok_or(MapDmaError::NotEnoughBounceBufferSpace {
+                range_bytes: range.len(),
+            })?;
 
         // copy to bounced pages
         if options.is_tx {

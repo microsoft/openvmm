@@ -70,11 +70,8 @@ pub enum MapDmaError {
     Map(#[source] anyhow::Error),
     #[error("no bounce buffers available")]
     NoBounceBufferAvailable,
-    #[error("mapped range {range_bytes} is larger than available total bounce buffer space {bounce_buffer_bytes}")]
-    NotEnoughBounceBufferSpace {
-        range_bytes: usize,
-        bounce_buffer_bytes: usize,
-    },
+    #[error("mapped range {range_bytes} is larger than available total bounce buffer space")]
+    NotEnoughBounceBufferSpace { range_bytes: usize },
     // UnmapFailed,
     // PinFailed,
     // BounceBufferFailed,
@@ -131,8 +128,7 @@ impl MappedDma<'_> {
     }
 }
 
-/// BUGBUG rename, split into separate traits for mapping vs allocation
-/// Dma platform implementation
+/// Trait for allocating DMA buffers and attaching to existing allocations.
 pub trait DmaAlloc: Send + Sync + Inspect {
     /// Allocate a new DMA buffer. This buffer must be zero initialized.
     ///
@@ -143,6 +139,7 @@ pub trait DmaAlloc: Send + Sync + Inspect {
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 }
 
+/// Trait for mapping DMA ranges.
 pub trait DmaMap: Send + Sync + Inspect {
     /// Map the given ranges for DMA. A caller must call `unmap_dma_ranges` to
     /// complete a dma transaction to observe the dma in the passed in ranges.
@@ -163,6 +160,7 @@ pub trait DmaMap: Send + Sync + Inspect {
     ) -> Result<(), MapDmaError>;
 }
 
+/// DMA client used by drivers.
 #[derive(Inspect, Clone)]
 pub struct DmaClient {
     alloc: Arc<dyn DmaAlloc>,
@@ -170,6 +168,8 @@ pub struct DmaClient {
 }
 
 impl DmaClient {
+    /// Create a new DMA client. If `map` is `None`, [`Self::map_dma_ranges`]
+    /// and [`Self::unmap_dma_ranges`] will be no-ops.
     pub fn new(alloc: Arc<dyn DmaAlloc>, map: Option<Arc<dyn DmaMap>>) -> Self {
         Self { alloc, map }
     }
@@ -186,8 +186,9 @@ impl DmaClient {
         self.alloc.attach_dma_buffer(len, base_pfn)
     }
 
-    /// Map the given ranges for DMA. A caller must call `unmap_dma_ranges` to
-    /// complete a dma transaction to observe the dma in the passed in ranges.
+    /// Map the given ranges for DMA. A caller must call
+    /// [`Self::unmap_dma_ranges`] to complete a dma transaction to observe the
+    /// dma in the passed in ranges.
     ///
     /// This function may block, as if a page is required to be bounced it may
     /// block waiting for bounce buffer space to become available.
