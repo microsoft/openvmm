@@ -196,7 +196,7 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
                 return;
             }
             std::hint::spin_loop();
-        };
+        }
 
         let hdr = SmcProtoHdr::new()
             .with_msg_type(SmcMessageType::SMC_MSG_TYPE_DESTROY_HWC.0)
@@ -330,7 +330,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 ctx.until_cancelled(backoff.back_off()).await,
                 Err(mesh::CancelReason::DeadlineExceeded)
             );
-        };
+        }
 
         // Write the shared memory.
         fn low(n: u64) -> [u8; 6] {
