@@ -2891,7 +2891,7 @@ async fn new_underhill_vm(
                 .context("shutdown relay dma client")?,
             shutdown_guest,
         )?;
-        vmbus_intercept_devices.push(shutdown_guest.detach(&driver_source, recv).await?);
+        vmbus_intercept_devices.push(shutdown_guest.detach(driver_source.simple(), recv)?);
 
         Some((recv_host_shutdown, send_guest_shutdown))
     } else {
