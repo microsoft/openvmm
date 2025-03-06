@@ -56,15 +56,17 @@ impl TestWorker {
     }
 
     pub fn start<T: ring::RingMem + 'static + Sync>(
-        controller: ScsiController,
+        controller: &ScsiController,
         spawner: impl Spawn,
         mem: GuestMemory,
         channel: RawAsyncChannel<T>,
         io_queue_depth: Option<u32>,
     ) -> Self {
+        let controller_state = controller.state.clone();
+
         let task = spawner.spawn("test", async move {
             let mut worker = Worker::new(
-                controller.state.clone(),
+                controller_state,
                 channel,
                 0,
                 mem,
