@@ -7,10 +7,12 @@ edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+guestmem.workspace = true
 hvdef.workspace = true
 inspect.workspace = true
 user_driver.workspace = true
 virt.workspace = true
+
 
 anyhow.workspace = true
 

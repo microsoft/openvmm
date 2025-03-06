@@ -924,3 +924,47 @@ impl<T: ExtendedQueryCapabilities> HypercallDispatch<HvExtQueryCapabilities> for
         HvExtQueryCapabilities::run(params, |()| self.query_extended_capabilities())
     }
 }
+
+/// Implements the `HvPinGpaPageRanges` hypercall.
+pub trait PinGpaRangePages {
+    /// Pins the specified GPA pages.
+    fn pin_gpa_range_pages(&mut self, gpa_page_ranges: &[defs::HvGpaRange]) -> HvRepResult;
+}
+
+/// Defines the `HvPinGpaPageRanges` hypercall.
+pub type HvPinGpaPageRanges = RepHypercall<
+    defs::PinUnpinGpaPageRangesHeader,
+    defs::HvGpaRange,
+    (),
+    { HypercallCode::HvCallPinGpaPageRanges.0 },
+>;
+
+impl<T: PinGpaRangePages> HypercallDispatch<HvPinGpaPageRanges> for T {
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        HvPinGpaPageRanges::run(params, |_header, input, _output| {
+            self.pin_gpa_range_pages(input)
+        })
+    }
+}
+
+/// Implements the `HvUnpinGpaPageRanges` hypercall.
+pub trait UnpinGpaRangePages {
+    /// Unpins the specified GPA pages.
+    fn unpin_gpa_range_pages(&mut self, gpa_page_ranges: &[defs::HvGpaRange]) -> HvRepResult;
+}
+
+/// Defines the `HvUnpinGpaPageRanges` hypercall.
+pub type HvUnpinGpaPageRanges = RepHypercall<
+    defs::PinUnpinGpaPageRangesHeader,
+    defs::HvGpaRange,
+    (),
+    { HypercallCode::HvCallUnpinGpaPageRanges.0 },
+>;
+
+impl<T: UnpinGpaRangePages> HypercallDispatch<HvUnpinGpaPageRanges> for T {
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        HvUnpinGpaPageRanges::run(params, |_header, input, _output| {
+            self.unpin_gpa_range_pages(input)
+        })
+    }
+}

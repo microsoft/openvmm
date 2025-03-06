@@ -357,7 +357,7 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for NvmeTestE
         })
     }
 
-    fn dma_client(&self) -> Arc<dyn DmaClient> {
+    fn dma_client(&self) -> &DmaClient {
         self.device.dma_client()
     }
 

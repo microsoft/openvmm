@@ -373,7 +373,7 @@ impl GuestEmulationTransportClient {
     /// TODO: This isn't a VfioDevice, but the VfioDmaBuffer is a convienent
     /// trait to use for wrapping the PFN allocations. Refactor this in the
     /// future once a central DMA API is made.
-    pub fn set_gpa_allocator(&mut self, gpa_allocator: Arc<dyn DmaClient>) {
+    pub fn set_gpa_allocator(&mut self, gpa_allocator: DmaClient) {
         self.control
             .notify(msg::Msg::SetGpaAllocator(gpa_allocator));
     }

@@ -140,6 +140,9 @@ pub struct Options {
     /// Test configurations are designed to replicate specific behaviors and
     /// conditions in order to simulate various test scenarios.
     pub test_configuration: Option<TestScenarioConfig>,
+
+    /// (OPENHCL_PIN_DMA_RANGES=1) Enable pinning of DMA ranges.
+    pub pin_dma_ranges: bool,
 }
 
 impl Options {
@@ -238,6 +241,7 @@ impl Options {
                 })
                 .ok()
         });
+        let pin_dma_ranges = parse_env_bool("OPENHCL_PIN_DMA_RANGES");
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -292,6 +296,7 @@ impl Options {
             no_sidecar_hotplug,
             nvme_keep_alive,
             test_configuration,
+            pin_dma_ranges,
         })
     }
 
