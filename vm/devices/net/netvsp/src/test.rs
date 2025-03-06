@@ -42,6 +42,7 @@ use vmbus_async::queue::OutgoingPacket;
 use vmbus_async::queue::Queue;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::GpadlRequest;
+use vmbus_channel::bus::ModifyRequest;
 use vmbus_channel::bus::OfferInput;
 use vmbus_channel::bus::OfferResources;
 use vmbus_channel::bus::OpenData;
@@ -66,6 +67,7 @@ use vmbus_ring::PAGE_SIZE;
 use vmcore::interrupt::Interrupt;
 use vmcore::save_restore::SavedStateBlob;
 use vmcore::slim_event::SlimEvent;
+use vmcore::vm_task::thread::ThreadDriverBackend;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::AsBytes;
@@ -79,7 +81,7 @@ enum ChannelResponse {
     Close,
     Gpadl(bool),
     // TeardownGpadl(GpadlId),
-    // Modify(i32),
+    Modify(i32),
 }
 
 #[derive(Clone)]
@@ -555,6 +557,21 @@ impl TestNicDevice {
             .unwrap();
     }
 
+    pub async fn retarget_vp(&self, vp: u32) {
+        let modify_request = ModifyRequest::TargetVp { target_vp: vp };
+        let modify_response = self
+            .send_to_channel(
+                0,
+                ChannelRequest::Modify,
+                modify_request,
+                ChannelResponse::Modify,
+            )
+            .await
+            .expect("modify successful");
+
+        assert!(matches!(modify_response, ChannelResponse::Modify(0)));
+    }
+
     pub async fn save(&mut self) -> anyhow::Result<Option<SavedStateBlob>> {
         mesh::CancelContext::new()
             .with_timeout(Duration::from_millis(333))
@@ -771,44 +788,18 @@ impl<'a> TestNicChannel<'a> {
     where
         T: AsBytes + FromBytes,
     {
-        let mem = self.nic.mock_vmbus.memory.clone();
-        let gpadl_map_view = self.gpadl_map.clone().view();
-        let recv_buf = gpadl_map_view.map(self.recv_buf_id).unwrap();
+        let parser = self.rndis_control_message_parser();
         let mut transaction_id = None;
         let message = self
             .read_with_timeout(timeout, |packet| {
                 match packet {
                     IncomingPacket::Data(data) => {
-                        // Check for RNDIS packet
-                        let mut reader = data.reader();
-                        let header: protocol::MessageHeader = reader.read_plain().unwrap();
-                        assert_eq!(
-                            header.message_type,
-                            protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET
-                        );
-                        // Verify it is a control channel message
-                        let rndis_data: protocol::Message1SendRndisPacket =
-                            reader.read_plain().unwrap();
-                        assert_eq!(rndis_data.channel_type, protocol::CONTROL_CHANNEL_TYPE);
-
-                        // Fetch RNDIS packet from external memory
-                        let external_ranges = if let Some(id) = data.transfer_buffer_id() {
-                            assert_eq!(id, 0);
-
-                            data.read_transfer_ranges(recv_buf.iter()).unwrap()
-                        } else {
-                            data.read_external_ranges().unwrap()
-                        };
-                        let mut direct_reader =
-                            PagedRanges::new(external_ranges.iter()).reader(&mem);
-
+                        let (rndis_header, external_ranges) = parser.parse(data);
                         // Verify message_type matches caller expectations
-                        let rndis_header: rndisprot::MessageHeader =
-                            direct_reader.read_plain().unwrap();
                         assert_eq!(rndis_header.message_type, message_type);
 
                         transaction_id = data.transaction_id();
-                        Some(direct_reader.read_plain::<T>().unwrap())
+                        Some(parser.get(&external_ranges))
                     }
                     _ => panic!("Unexpected packet!"),
                 }
@@ -1120,6 +1111,10 @@ impl<'a> TestNicChannel<'a> {
 
     pub async fn stop(&mut self) {
         self.nic.stop_vmbus_channel().await;
+    }
+
+    pub async fn retarget_vp(&self, vp: u32) {
+        self.nic.retarget_vp(vp).await;
     }
 
     pub async fn save(&mut self) -> anyhow::Result<Option<SavedStateBlob>> {
@@ -3794,4 +3789,175 @@ async fn set_rss_parameter_unused_first_queue(driver: DefaultDriver) {
             .payload(),
         })
         .await;
+}
+
+// The netvsp task coordinator can be interrupted for various reasons:
+//     1. A notification from the main worker task.
+//     2. A notification from the endpoint or VF control.
+//     3. A vmbus operation, like retarget VP.
+//
+// Each of these will cause processing of the main worker loop and/or
+// coordinator processing to restart, while there may be oustanding work in
+// flight. Stress some of these restart mechanisms to make sure work is not
+// lost and state is maintained properly during these transitions.
+#[async_test]
+async fn race_coordinator_and_worker_stop_events(driver: DefaultDriver) {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let test_vf_state = test_vf.state();
+    let builder = Nic::builder();
+    let nic = builder.virtual_function(test_vf).build(
+        &VmTaskDriverSource::new(ThreadDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .await;
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_INITIALIZE_MSG,
+            rndisprot::InitializeRequest {
+                request_id: 123,
+                major_version: rndisprot::MAJOR_VERSION,
+                minor_version: rndisprot::MINOR_VERSION,
+                max_transfer_size: 0,
+            },
+            &[],
+        )
+        .await;
+
+    let _: rndisprot::InitializeComplete = channel
+        .read_rndis_control_message(rndisprot::MESSAGE_TYPE_INITIALIZE_CMPLT)
+        .await
+        .unwrap();
+
+    let _ = channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(data) => {
+                let mut reader = data.reader();
+                let header: protocol::MessageHeader = reader.read_plain().unwrap();
+                assert_eq!(
+                    header.message_type,
+                    protocol::MESSAGE4_TYPE_SEND_VF_ASSOCIATION,
+                );
+                let association_data: protocol::Message4SendVfAssociation =
+                    reader.read_plain().unwrap();
+                assert_eq!(association_data.vf_allocated, 1);
+                assert_eq!(association_data.serial_number, test_vf_state.id().unwrap());
+                data.transaction_id().expect("should request completion")
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("association packet");
+
+    assert!(test_vf_state
+        .await_ready(true, Duration::from_millis(333))
+        .await
+        .is_ok());
+
+    let link_update_completion_message = NvspMessage {
+        header: protocol::MessageHeader {
+            message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+        },
+        data: protocol::Message1SendRndisPacketComplete {
+            status: protocol::Status::SUCCESS,
+        },
+        padding: &[],
+    };
+
+    let rndis_parser = channel.rndis_control_message_parser();
+    endpoint_state.lock().poll_iterations_required = 1;
+    for i in 0..25 {
+        // Trigger a link update 2/3 of the time. This also will queue a timer,
+        // which is another event, as true->true is considered a toggle.
+        let link_update = if (i % 3) < 2 {
+            TestNicEndpointState::update_link_status(&endpoint_state, [true].as_slice());
+            true
+        } else {
+            false
+        };
+        // send switch data path message
+        channel
+            .write(OutgoingPacket {
+                transaction_id: 123,
+                packet_type: OutgoingPacketType::InBandWithCompletion,
+                payload: &NvspMessage {
+                    header: protocol::MessageHeader {
+                        message_type: protocol::MESSAGE4_TYPE_SWITCH_DATA_PATH,
+                    },
+                    data: protocol::Message4SwitchDataPath {
+                        active_data_path: if i % 2 == 0 {
+                            protocol::DataPath::VF.0
+                        } else {
+                            protocol::DataPath::SYNTHETIC.0
+                        },
+                    },
+                    padding: &[],
+                }
+                .payload(),
+            })
+            .await;
+
+        let mut extra_packets = i;
+        for _ in 0..extra_packets {
+            channel
+                .send_rndis_control_message_no_completion(
+                    rndisprot::MESSAGE_TYPE_KEEPALIVE_MSG,
+                    rndisprot::KeepaliveRequest { request_id: i },
+                    &[],
+                )
+                .await;
+        }
+        // Trigger a retarget VP 2/3 of the time offset with the link update,
+        // such that 1/3 times only link update or retarget VP will be
+        // triggered.
+        if (i % 3) != 1 {
+            channel.retarget_vp(i).await;
+        }
+
+        if link_update {
+            extra_packets += 1;
+        }
+        loop {
+            if extra_packets == 0 {
+                break;
+            }
+            let link_update_id = channel
+                .read_with(|packet| match packet {
+                    IncomingPacket::Completion(_) => None,
+                    IncomingPacket::Data(data) => {
+                        let (rndis_header, _) = rndis_parser.parse(data);
+                        if rndis_header.message_type == rndisprot::MESSAGE_TYPE_KEEPALIVE_CMPLT {
+                            tracing::info!("Got keepalive completion");
+                            Some(data.transaction_id().expect("should request completion"))
+                        } else {
+                            tracing::info!(rndis_header.message_type, "Got link status update");
+                            Some(data.transaction_id().expect("should request completion"))
+                        }
+                    }
+                })
+                .await
+                .expect("completion message");
+            if let Some(transaction_id) = link_update_id {
+                channel
+                    .write(OutgoingPacket {
+                        transaction_id,
+                        packet_type: OutgoingPacketType::Completion,
+                        payload: &link_update_completion_message.payload(),
+                    })
+                    .await;
+            } else {
+                extra_packets -= 1;
+            }
+        }
+    }
 }
