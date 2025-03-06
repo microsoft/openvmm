@@ -67,6 +67,24 @@ async fn openhcl_servicing_keepalive(
     .await
 }
 
+// Disabled while we investigate intermittent failures
+// #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, RELEASE_24_11_LINUX_DIRECT_X64])]
+async fn _openhcl_servicing_x64_linux_direct_2411_to_latest(
+    config: PetriVmConfigOpenVmm,
+    (latest_igvm, release_igvm): (
+        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+        ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+    ),
+) -> Result<(), anyhow::Error> {
+    openhcl_servicing_core(
+        config.with_custom_openhcl(release_igvm),
+        "",
+        latest_igvm,
+        OpenHclServicingFlags::default(),
+    )
+    .await
+}
+
 // Disabled until #954 is fixed.
 //#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
 async fn _openhcl_servicing_shutdown_ic(
@@ -89,4 +107,3 @@ async fn _openhcl_servicing_shutdown_ic(
 }
 
 // TODO: add tests with guest workloads while doing servicing.
-// TODO: add tests from previous release branch to current.
