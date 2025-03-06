@@ -42,7 +42,7 @@ impl SimpleFlowNode for Node {
                 let sh = xshell::Shell::new()?;
                 let gh_cli = rt.read(gh_cli);
 
-                let id = xshell::cmd!(sh, "{gh_cli} run list -R {repo} -b {branch} -w {pipeline_name} -s completed --limit 1 --json databaseId -q \".[0].databaseId\"").read()?;
+                let id = xshell::cmd!(sh, "{gh_cli} run list -R {repo} -b {branch} -w {pipeline_name} -s completed --limit 1 --json databaseId -q .[0].databaseId").read()?;
 
                 println!("Got action id {id}");
                 rt.write(gh_workflow_id, &id);
