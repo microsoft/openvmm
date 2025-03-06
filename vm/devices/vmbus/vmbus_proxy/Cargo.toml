@@ -9,12 +9,12 @@ rust-version.workspace = true
 [target.'cfg(windows)'.dependencies]
 guestmem.workspace = true
 vmbus_core.workspace = true
-
 mesh.workspace = true
 pal.workspace = true
 pal_event.workspace = true
 pal_async.workspace = true
 
+bitfield-struct.workspace = true
 futures.workspace = true
 tracing.workspace = true
 widestring.workspace = true

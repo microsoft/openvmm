@@ -9,6 +9,7 @@ use anyhow::Context;
 use anyhow::Result;
 use client::ModifyConnectionRequest;
 use futures::future::join_all;
+use futures::future::BoxFuture;
 use futures::future::OptionFuture;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -239,9 +240,9 @@ struct RelayChannel {
     /// Receives requests from the server.
     #[inspect(skip)]
     server_request_recv: mesh::Receiver<ChannelRequest>,
-    /// Receives responses to requests sent to the client
+    /// Closed when the channel has been revoked.
     #[inspect(skip)]
-    response_recv: mesh::Receiver<client::ChannelResponse>,
+    revoke_recv: mesh::OneshotReceiver<()>,
     /// Sends requests to the client
     #[inspect(skip)]
     request_send: mesh::Sender<client::ChannelRequest>,
@@ -251,9 +252,10 @@ struct RelayChannel {
     /// State used to relay host-to-guest interrupts.
     #[inspect(with = "Option::is_some")]
     interrupt_relay: Option<InterruptRelay>,
-    /// RPCs for gpadls that are waiting for a torndown message.
-    #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|x| x.0).map_value(|_| ())")]
-    gpadls_tearing_down: HashMap<GpadlId, Rpc<(), ()>>,
+    /// Futures waiting for GPADL teardown to complete before responding to
+    /// `vmbus_server`.
+    #[inspect(skip)]
+    gpadls_tearing_down: FuturesUnordered<BoxFuture<'static, ()>>,
 }
 
 #[derive(InspectMut)]
@@ -330,29 +332,24 @@ impl RelayChannelTask {
         let (gpadl_id, rpc) = rpc.split();
         tracing::trace!(gpadl_id = gpadl_id.0, "Tearing down GPADL");
 
-        let _ = &self
+        let call = self
             .channel
             .request_send
-            .send(client::ChannelRequest::TeardownGpadl(gpadl_id));
+            .call(client::ChannelRequest::TeardownGpadl, gpadl_id);
 
         // We cannot wait for GpadlTorndown here, because the host may not send the GpadlTorndown
         // message immediately, for example if the channel is still open and the host device still
         // has the gpadl mapped. We should not block further requests while waiting for the
         // response.
-        let old_value = self.channel.gpadls_tearing_down.insert(gpadl_id, rpc);
-        assert!(old_value.is_none(), "duplicate gpadl teardown");
-    }
-
-    fn handle_gpadl_torndown(&mut self, gpadl_id: GpadlId) {
-        tracing::trace!(gpadl_id = gpadl_id.0, "Torn down GPADL");
-        let rpc = self
-            .channel
-            .gpadls_tearing_down
-            .remove(&gpadl_id)
-            .expect("gpadl not tearing down.");
-
-        // Notify the vmbus server of completion.
-        rpc.complete(());
+        self.channel.gpadls_tearing_down.push(Box::pin(async move {
+            if let Err(err) = call.await {
+                tracing::warn!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to send gpadl teardown"
+                );
+            }
+            rpc.complete(());
+        }));
     }
 
     async fn handle_modify_channel(&mut self, modify_request: ModifyRequest) -> Result<i32> {
@@ -419,17 +416,6 @@ impl RelayChannelTask {
         Ok(())
     }
 
-    /// Handle responses.
-    fn handle_response(&mut self, response: &client::ChannelResponse) {
-        match response {
-            client::ChannelResponse::TeardownGpadl(gpadl_id) => {
-                // GpadlTorndown messages aren't always sent immediately in response to a
-                // GpadlTeardown message, so they can arrive at any time and must be handled here.
-                self.handle_gpadl_torndown(*gpadl_id);
-            }
-        }
-    }
-
     fn handle_relay_request(&mut self, request: RelayChannelRequest) {
         tracing::trace!(
             channel_id = self.channel.channel_id.0,
@@ -488,20 +474,10 @@ impl RelayChannelTask {
                         }
                     }
                 }
-                r = self.channel.response_recv.next() => {
-                    match r {
-                        Some(response) => {
-                            // Needed to avoid conflicting &mut self borrow.
-                            drop(relay_event);
-
-                            // Handle responses that can arrive at any time.
-                            self.handle_response(&response);
-                        }
-                        None => {
-                            break;
-                        }
-                    }
+                _r = (&mut self.channel.revoke_recv).fuse() => {
+                    break;
                 }
+                () = self.channel.gpadls_tearing_down.select_next_some() => {}
                 _r = relay_event => {
                     // Needed to avoid conflicting interrupt_relay borrow.
                     drop(relay_event);
@@ -510,16 +486,9 @@ impl RelayChannelTask {
             }
         }
 
-        // The remaining teardown requests are those that never made it to the
-        // client before the channel was revoked, but will have been torndown
-        // anyways as part of the revoke. The RPCs might get dropped here before
-        // the server is notified, so we still need to complete any outstanding
-        // requests back to the server to avoid inconsistent state. The server
-        // will ignore the completions if the channel is already released.
-        self.channel
-            .gpadls_tearing_down
-            .drain()
-            .for_each(|(_, rpc)| rpc.complete(()));
+        // Drain GPADL teardown requests cleanly; these will all complete now
+        // that the channel has been revoked.
+        while let Some(()) = self.channel.gpadls_tearing_down.next().await {}
 
         tracing::debug!(channel_id = %self.channel.channel_id.0, "dropped channel");
     }
@@ -778,11 +747,11 @@ impl RelayTask {
                 channel_id: ChannelId(channel_id),
                 relay_request_recv,
                 request_send: offer.request_send,
-                response_recv: offer.response_recv,
+                revoke_recv: offer.revoke_recv,
                 server_request_recv: request_recv,
                 use_interrupt_relay: Arc::clone(&self.use_interrupt_relay),
                 interrupt_relay: None,
-                gpadls_tearing_down: HashMap::new(),
+                gpadls_tearing_down: FuturesUnordered::new(),
             },
             // New channels start out running.
             running: true,
@@ -911,17 +880,21 @@ impl RelayTask {
         // Always use VP0 for messages from the host, regardless of what the guest requested, since
         // the relay cannot receive messages on other VPs. This does not affect messages sent to
         // VTL0 by the vmbus server.
-        let version = self
+        let connection = self
             .vmbus_client
             .connect(0, None, VMBUS_RELAY_CLIENT_ID)
             .await
             .expect("Client was in an incorrect state for initiate contact.");
 
-        if version.feature_flags & REQUIRED_FEATURE_FLAGS != REQUIRED_FEATURE_FLAGS {
-            panic!("Underhill host must support required feature flags. Required: {REQUIRED_FEATURE_FLAGS:?}, actual: {:?}.", version.feature_flags)
+        if connection.version.feature_flags & REQUIRED_FEATURE_FLAGS != REQUIRED_FEATURE_FLAGS {
+            panic!(
+                "Underhill host must support required feature flags. \
+                 Required: {REQUIRED_FEATURE_FLAGS:?}, actual: {:?}.",
+                connection.version.feature_flags
+            )
         }
 
-        for offer in self.vmbus_client.request_offers().await {
+        for offer in connection.offers {
             if let Err(err) = self.handle_offer(offer, None).await {
                 tracing::error!(
                     error = err.as_ref() as &dyn std::error::Error,
@@ -930,7 +903,7 @@ impl RelayTask {
             }
         }
 
-        self.relay_state = RelayState::Connected(version);
+        self.relay_state = RelayState::Connected(connection.version);
         tracing::debug!("vmbus relay connected");
     }
 

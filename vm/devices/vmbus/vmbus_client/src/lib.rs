@@ -149,7 +149,6 @@ impl VmbusClientBuilder {
                 queued: VecDeque::new(),
             },
             channels: HashMap::new(),
-            gpadls: HashMap::new(),
             teardown_gpadls: HashMap::new(),
             channel_requests: SelectAll::new(),
             synic: SynicState {
@@ -183,14 +182,15 @@ impl VmbusClientBuilder {
 }
 
 impl VmbusClient {
-    /// Send the InitiateContact message to the server.
+    /// Connects to the server, negotiating the protocol version and retrieving
+    /// the initial list of channel offers.
     pub async fn connect(
         &mut self,
         target_message_vp: u32,
         monitor_page: Option<MonitorPageGpas>,
         client_id: Guid,
-    ) -> Result<VersionInfo, ConnectError> {
-        let request = InitiateContactRequest {
+    ) -> Result<ConnectResult, ConnectError> {
+        let request = ConnectRequest {
             target_message_vp,
             monitor_page,
             client_id,
@@ -198,19 +198,9 @@ impl VmbusClient {
 
         self.access
             .client_request_send
-            .call(ClientRequest::InitiateContact, request)
+            .call(ClientRequest::Connect, request)
             .await
             .unwrap()
-    }
-
-    /// Send the RequestOffers message to the server, providing a sender to
-    /// which the client can forward received offers to.
-    pub async fn request_offers(&mut self) -> Vec<OfferInfo> {
-        let (send, recv) = mesh::channel();
-        self.access
-            .client_request_send
-            .send(ClientRequest::RequestOffers(send));
-        recv.collect().await
     }
 
     /// Send the Unload message to the server.
@@ -268,6 +258,12 @@ impl Inspect for VmbusClient {
     }
 }
 
+#[derive(Debug)]
+pub struct ConnectResult {
+    pub version: VersionInfo,
+    pub offers: Vec<OfferInfo>,
+}
+
 impl VmbusClientAccess {
     pub async fn modify(&self, request: ModifyConnectionRequest) -> ConnectionState {
         self.client_request_send
@@ -308,7 +304,7 @@ pub enum ChannelRequest {
     Restore(FailableRpc<RestoreRequest, OpenOutput>),
     Close,
     Gpadl(FailableRpc<GpadlRequest, ()>),
-    TeardownGpadl(GpadlId),
+    TeardownGpadl(Rpc<GpadlId, ()>),
     Modify(Rpc<ModifyRequest, i32>),
 }
 
@@ -332,12 +328,6 @@ impl std::fmt::Display for ChannelRequest {
     }
 }
 
-/// Expresses a response sent from the server.
-#[derive(Debug)]
-pub enum ChannelResponse {
-    TeardownGpadl(GpadlId),
-}
-
 #[derive(Debug, Error)]
 pub enum RestoreError {
     #[error("unsupported protocol version {0:#x}")]
@@ -352,6 +342,9 @@ pub enum RestoreError {
     #[error("duplicate gpadl id {0}")]
     DuplicateGpadlId(u32),
 
+    #[error("gpadl for unknown channel id {0}")]
+    GpadlForUnknownChannelId(u32),
+
     #[error("invalid pending message")]
     InvalidPendingMessage(#[source] vmbus_core::MessageTooLarge),
 }
@@ -364,13 +357,12 @@ pub struct OfferInfo {
     #[inspect(skip)]
     pub request_send: mesh::Sender<ChannelRequest>,
     #[inspect(skip)]
-    pub response_recv: mesh::Receiver<ChannelResponse>,
+    pub revoke_recv: mesh::OneshotReceiver<()>,
 }
 
 #[derive(Debug)]
 enum ClientRequest {
-    InitiateContact(Rpc<InitiateContactRequest, Result<VersionInfo, ConnectError>>),
-    RequestOffers(mesh::Sender<OfferInfo>),
+    Connect(Rpc<ConnectRequest, Result<ConnectResult, ConnectError>>),
     Unload(Rpc<(), ()>),
     Modify(Rpc<ModifyConnectionRequest, ConnectionState>),
     HvsockConnect(Rpc<HvsockConnectRequest, Option<OfferInfo>>),
@@ -379,8 +371,7 @@ enum ClientRequest {
 impl std::fmt::Display for ClientRequest {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ClientRequest::InitiateContact(..) => write!(fmt, "InitiateContact"),
-            ClientRequest::RequestOffers { .. } => write!(fmt, "RequestOffers"),
+            ClientRequest::Connect(..) => write!(fmt, "Connect"),
             ClientRequest::Unload { .. } => write!(fmt, "Unload"),
             ClientRequest::Modify(..) => write!(fmt, "Modify"),
             ClientRequest::HvsockConnect(..) => write!(fmt, "HvsockConnect"),
@@ -418,7 +409,7 @@ enum ClientState {
     Connecting {
         version: Version,
         #[inspect(skip)]
-        rpc: Rpc<InitiateContactRequest, Result<VersionInfo, ConnectError>>,
+        rpc: Rpc<ConnectRequest, Result<ConnectResult, ConnectError>>,
     },
     /// The client has negotiated the protocol version with the server.
     Connected { version: VersionInfo },
@@ -426,7 +417,9 @@ enum ClientState {
     RequestingOffers {
         version: VersionInfo,
         #[inspect(skip)]
-        sender: mesh::Sender<OfferInfo>,
+        rpc: Rpc<(), Result<ConnectResult, ConnectError>>,
+        #[inspect(skip)]
+        offers: Vec<OfferInfo>,
     },
     /// The client has initiated an unload from the server.
     Disconnecting {
@@ -440,8 +433,8 @@ impl ClientState {
     fn get_version(&self) -> Option<VersionInfo> {
         match self {
             ClientState::Connected { version } => Some(*version),
-            ClientState::RequestingOffers { version, sender: _ } => Some(*version),
-            ClientState::Disconnecting { version, rpc: _ } => Some(*version),
+            ClientState::RequestingOffers { version, .. } => Some(*version),
+            ClientState::Disconnecting { version, .. } => Some(*version),
             ClientState::Disconnected | ClientState::Connecting { .. } => None,
         }
     }
@@ -460,10 +453,10 @@ impl std::fmt::Display for ClientState {
 }
 
 #[derive(Copy, Clone, Debug, Default)]
-pub struct InitiateContactRequest {
-    pub target_message_vp: u32,
-    pub monitor_page: Option<MonitorPageGpas>,
-    pub client_id: Guid,
+struct ConnectRequest {
+    target_message_vp: u32,
+    monitor_page: Option<MonitorPageGpas>,
+    client_id: Guid,
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -524,11 +517,14 @@ impl std::fmt::Display for ChannelState {
 #[derive(Inspect)]
 struct Channel {
     offer: protocol::OfferChannel,
+    // When dropped, notifies the caller the channel has been revoked.
     #[inspect(skip)]
-    response_send: mesh::Sender<ChannelResponse>,
+    revoke_send: mesh::OneshotSender<()>,
     state: ChannelState,
     #[inspect(with = "|x| x.is_some()")]
     modify_response_send: Option<Rpc<(), i32>>,
+    #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|x| x.0)")]
+    gpadls: HashMap<GpadlId, GpadlState>,
 }
 
 impl std::fmt::Debug for Channel {
@@ -562,56 +558,44 @@ struct ClientTask {
 impl ClientTask {
     fn handle_initiate_contact(
         &mut self,
-        rpc: Rpc<InitiateContactRequest, Result<VersionInfo, ConnectError>>,
+        rpc: Rpc<ConnectRequest, Result<ConnectResult, ConnectError>>,
         version: Version,
     ) {
-        if let ClientState::Disconnected = self.state {
-            let feature_flags = if version >= Version::Copper {
-                SUPPORTED_FEATURE_FLAGS
-            } else {
-                FeatureFlags::new()
-            };
-
-            let request = rpc.input();
-
-            tracing::debug!(version = ?version, ?feature_flags, "VmBus client connecting");
-            let target_info = protocol::TargetInfo::new()
-                .with_sint(SINT)
-                .with_vtl(VTL)
-                .with_feature_flags(feature_flags.into());
-            let monitor_page = request.monitor_page.unwrap_or_default();
-            let msg = protocol::InitiateContact2 {
-                initiate_contact: protocol::InitiateContact {
-                    version_requested: version as u32,
-                    target_message_vp: request.target_message_vp,
-                    interrupt_page_or_target_info: target_info.into(),
-                    parent_to_child_monitor_page_gpa: monitor_page.parent_to_child,
-                    child_to_parent_monitor_page_gpa: monitor_page.child_to_parent,
-                },
-                client_id: request.client_id,
-            };
-
-            self.state = ClientState::Connecting { version, rpc };
-            if version < Version::Copper {
-                self.inner.messages.send(&msg.initiate_contact)
-            } else {
-                self.inner.messages.send(&msg);
-            }
-        } else {
+        let ClientState::Disconnected = self.state else {
             tracing::warn!(client_state = %self.state, "invalid client state for InitiateContact");
             rpc.complete(Err(ConnectError::InvalidState));
-        }
-    }
-
-    fn handle_request_offers(&mut self, send: mesh::Sender<OfferInfo>) {
-        if let ClientState::Connected { version } = self.state {
-            self.state = ClientState::RequestingOffers {
-                version,
-                sender: send,
-            };
-            self.inner.messages.send(&protocol::RequestOffers {});
+            return;
+        };
+        let feature_flags = if version >= Version::Copper {
+            SUPPORTED_FEATURE_FLAGS
         } else {
-            tracing::warn!(client_state = %self.state, "invalid client state for RequestOffers");
+            FeatureFlags::new()
+        };
+
+        let request = rpc.input();
+
+        tracing::debug!(version = ?version, ?feature_flags, "VmBus client connecting");
+        let target_info = protocol::TargetInfo::new()
+            .with_sint(SINT)
+            .with_vtl(VTL)
+            .with_feature_flags(feature_flags.into());
+        let monitor_page = request.monitor_page.unwrap_or_default();
+        let msg = protocol::InitiateContact2 {
+            initiate_contact: protocol::InitiateContact {
+                version_requested: version as u32,
+                target_message_vp: request.target_message_vp,
+                interrupt_page_or_target_info: target_info.into(),
+                parent_to_child_monitor_page_gpa: monitor_page.parent_to_child,
+                child_to_parent_monitor_page_gpa: monitor_page.child_to_parent,
+            },
+            client_id: request.client_id,
+        };
+
+        self.state = ClientState::Connecting { version, rpc };
+        if version < Version::Copper {
+            self.inner.messages.send(&msg.initiate_contact)
+        } else {
+            self.inner.messages.send(&msg);
         }
     }
 
@@ -656,11 +640,8 @@ impl ClientTask {
 
     fn handle_client_request(&mut self, request: ClientRequest) {
         match request {
-            ClientRequest::InitiateContact(rpc) => {
+            ClientRequest::Connect(rpc) => {
                 self.handle_initiate_contact(rpc, *SUPPORTED_VERSIONS.last().unwrap());
-            }
-            ClientRequest::RequestOffers(send) => {
-                self.handle_request_offers(send);
             }
             ClientRequest::Unload(rpc) => {
                 self.handle_unload(rpc);
@@ -672,53 +653,57 @@ impl ClientTask {
 
     fn handle_version_response(&mut self, msg: protocol::VersionResponse2) {
         let old_state = std::mem::replace(&mut self.state, ClientState::Disconnected);
-        if let ClientState::Connecting { version, rpc } = old_state {
-            if msg.version_response.version_supported > 0 {
-                if msg.version_response.connection_state != ConnectionState::SUCCESSFUL {
-                    rpc.complete(Err(ConnectError::FailedToConnect(
-                        msg.version_response.connection_state,
-                    )));
-                    return;
-                }
-
-                let feature_flags = if version >= Version::Copper {
-                    FeatureFlags::from(msg.supported_features)
-                } else {
-                    FeatureFlags::new()
-                };
-
-                let version = VersionInfo {
-                    version,
-                    feature_flags,
-                };
-
-                self.state = ClientState::Connected { version };
-                tracing::info!(?version, "VmBus client connected");
-                rpc.complete(Ok(version));
-            } else {
-                let index = SUPPORTED_VERSIONS
-                    .iter()
-                    .position(|v| *v == version)
-                    .unwrap();
-
-                if index == 0 {
-                    rpc.complete(Err(ConnectError::NoSupportedVersions));
-                    return;
-                }
-                let next_version = SUPPORTED_VERSIONS[index - 1];
-                tracing::debug!(
-                    version = version as u32,
-                    next_version = next_version as u32,
-                    "Unsupported version, retrying"
-                );
-                self.handle_initiate_contact(rpc, next_version);
-            }
-        } else {
+        let ClientState::Connecting { version, rpc } = old_state else {
             self.state = old_state;
             tracing::warn!(
                 client_state = %self.state,
                 "invalid client state to handle VersionResponse"
             );
+            return;
+        };
+        if msg.version_response.version_supported > 0 {
+            if msg.version_response.connection_state != ConnectionState::SUCCESSFUL {
+                rpc.complete(Err(ConnectError::FailedToConnect(
+                    msg.version_response.connection_state,
+                )));
+                return;
+            }
+
+            let feature_flags = if version >= Version::Copper {
+                FeatureFlags::from(msg.supported_features)
+            } else {
+                FeatureFlags::new()
+            };
+
+            let version = VersionInfo {
+                version,
+                feature_flags,
+            };
+
+            self.inner.messages.send(&protocol::RequestOffers {});
+            self.state = ClientState::RequestingOffers {
+                version,
+                rpc: rpc.split().1,
+                offers: Vec::new(),
+            };
+            tracing::info!(?version, "VmBus client connected, requesting offers");
+        } else {
+            let index = SUPPORTED_VERSIONS
+                .iter()
+                .position(|v| *v == version)
+                .unwrap();
+
+            if index == 0 {
+                rpc.complete(Err(ConnectError::NoSupportedVersions));
+                return;
+            }
+            let next_version = SUPPORTED_VERSIONS[index - 1];
+            tracing::debug!(
+                version = version as u32,
+                next_version = next_version as u32,
+                "Unsupported version, retrying"
+            );
+            self.handle_initiate_contact(rpc, next_version);
         }
     }
 
@@ -737,15 +722,16 @@ impl ClientTask {
             return None;
         }
         let (request_send, request_recv) = mesh::channel();
-        let (response_send, response_recv) = mesh::channel();
+        let (revoke_send, revoke_recv) = mesh::oneshot();
 
         self.inner.channels.insert(
             offer.channel_id,
             Channel {
-                response_send,
+                revoke_send,
                 offer,
                 state,
                 modify_response_send: None,
+                gpadls: HashMap::new(),
             },
         );
 
@@ -755,7 +741,7 @@ impl ClientTask {
 
         Some(OfferInfo {
             offer,
-            response_recv,
+            revoke_recv,
             request_send,
         })
     }
@@ -773,12 +759,8 @@ impl ClientTask {
             if let Some(offer) = self.hvsock_tracker.check_offer(&offer_info.offer) {
                 offer.complete(Some(offer_info));
             } else {
-                if let ClientState::RequestingOffers {
-                    version: _,
-                    sender: send,
-                } = &self.state
-                {
-                    send.send(offer_info);
+                if let ClientState::RequestingOffers { offers, .. } = &mut self.state {
+                    offers.push(offer_info);
                 } else {
                     self.offer_send.send(offer_info);
                 }
@@ -815,44 +797,32 @@ impl ClientTask {
 
         // Teardown all remaining gpadls for this channel. We don't care about GpadlTorndown
         // responses at this point.
-        self.inner
-            .gpadls
-            .retain(|&(channel_id, gpadl_id), gpadl_state| {
-                if channel_id != rescind.channel_id {
-                    return true;
+        for (gpadl_id, gpadl_state) in channel.gpadls.drain() {
+            match gpadl_state {
+                GpadlState::Offered(rpc) => {
+                    rpc.fail(anyhow::anyhow!("channel revoked"));
                 }
-
-                // If the gpadl was already tearing down, send a response now.
-                if matches!(gpadl_state, GpadlState::TearingDown) {
-                    channel
-                        .response_send
-                        .send(ChannelResponse::TeardownGpadl(gpadl_id));
-                } else {
-                    // TODO: is this really necessary? The host should have
-                    // already unmapped all GPADLs. Remove if possible.
-                    self.inner.messages.send_with_data(
-                        &protocol::GpadlTeardown {
-                            channel_id,
-                            gpadl_id,
-                        },
-                        &[],
-                    );
+                GpadlState::Created => {}
+                GpadlState::TearingDown { rpcs } => {
+                    self.inner.teardown_gpadls.remove(&gpadl_id).unwrap();
+                    for rpc in rpcs {
+                        rpc.complete(());
+                    }
                 }
+            }
+        }
 
-                self.inner.teardown_gpadls.insert(gpadl_id, None);
-
-                false
-            });
-
-        // Drop the channel, which will close the response channel, which will
-        // cause the client to know the channel has been revoked.
+        // Drop the channel and send the revoked message to the client.
         //
         // TODO: this is wrong--client requests can still come in after this,
         // and they will fail to find the channel by channel ID and panic (or
         // worse, the channel ID will get reused). Either find and drop the
         // associated incoming request channel here, or keep this channel object
         // around until the client is done with it.
-        self.inner.channels.remove(&rescind.channel_id);
+        {
+            let channel = self.inner.channels.remove(&rescind.channel_id).unwrap();
+            channel.revoke_send.send(());
+        }
 
         // Tell the host we're not referencing the client ID anymore.
         self.inner.messages.send(&protocol::RelIdReleased {
@@ -861,26 +831,28 @@ impl ClientTask {
     }
 
     fn handle_offers_delivered(&mut self) {
-        if let ClientState::RequestingOffers {
-            version,
-            sender: _send,
-        } = &self.state
-        {
-            // This will drop the sender and cause the client to know the offers are done.
-            self.state = ClientState::Connected { version: *version };
-        } else {
-            tracing::warn!(
-                client_state = %self.state,
-                "invalid client state to handle AllOffersDelivered"
-            );
+        match std::mem::replace(&mut self.state, ClientState::Disconnected) {
+            ClientState::RequestingOffers {
+                version,
+                rpc,
+                offers,
+            } => {
+                tracing::info!(version = ?version, "VmBus client connected, offers delivered");
+                self.state = ClientState::Connected { version };
+                rpc.complete(Ok(ConnectResult { version, offers }));
+            }
+            state => {
+                tracing::warn!(client_state = %state, "invalid client state for OffersDelivered");
+                self.state = state;
+            }
         }
     }
 
     fn handle_gpadl_created(&mut self, request: protocol::GpadlCreated) {
-        let Some(gpadl_state) = self
-            .inner
-            .gpadls
-            .get_mut(&(request.channel_id, request.gpadl_id))
+        let mut channel = self.inner.channels.get_mut(&request.channel_id);
+        let Some(gpadl_state) = channel
+            .as_mut()
+            .and_then(|channel| channel.gpadls.get_mut(&request.gpadl_id))
         else {
             tracing::warn!(
                 gpadl_id = request.gpadl_id.0,
@@ -907,11 +879,7 @@ impl ClientTask {
 
         let gpadl_created = request.status == protocol::STATUS_SUCCESS;
         if !gpadl_created {
-            self.inner
-                .gpadls
-                .remove(&(request.channel_id, request.gpadl_id))
-                .unwrap();
-
+            channel.unwrap().gpadls.remove(&request.gpadl_id).unwrap();
             rpc.fail(anyhow::anyhow!(
                 "gpadl creation failed: {:#x}",
                 request.status
@@ -974,22 +942,12 @@ impl ClientTask {
     }
 
     fn handle_gpadl_torndown(&mut self, request: protocol::GpadlTorndown) {
-        let channel_id = match self.inner.teardown_gpadls.remove(&request.gpadl_id) {
-            Some(Some(channel_id)) => channel_id,
-            Some(None) => {
-                tracing::debug!(
-                    gpadl_id = request.gpadl_id.0,
-                    "GpadlTorndown for gpadl torn down by rescind"
-                );
-                return;
-            }
-            None => {
-                tracing::warn!(
-                    gpadl_id = request.gpadl_id.0,
-                    "Unknown ID or invalid state for GpadlTorndown"
-                );
-                return;
-            }
+        let Some(channel_id) = self.inner.teardown_gpadls.remove(&request.gpadl_id) else {
+            tracing::warn!(
+                gpadl_id = request.gpadl_id.0,
+                "Unknown ID or invalid state for GpadlTorndown"
+            );
+            return;
         };
 
         tracing::debug!(
@@ -998,22 +956,19 @@ impl ClientTask {
             "Received GpadlTorndown"
         );
 
-        let gpadl_state = self
-            .inner
+        let channel = self.inner.channels.get_mut(&channel_id).unwrap();
+        let gpadl_state = channel
             .gpadls
-            .remove(&(channel_id, request.gpadl_id))
+            .remove(&request.gpadl_id)
             .expect("gpadl validated above");
 
-        assert!(
-            matches!(gpadl_state, GpadlState::TearingDown),
-            "gpadl should be tearing down if in teardown list, state = {gpadl_state:?}"
-        );
+        let GpadlState::TearingDown { rpcs } = gpadl_state else {
+            panic!("gpadl should be tearing down if in teardown list, state = {gpadl_state:?}");
+        };
 
-        let channel = &self.inner.channels[&channel_id];
-
-        channel
-            .response_send
-            .send(ChannelResponse::TeardownGpadl(request.gpadl_id));
+        for rpc in rpcs {
+            rpc.complete(());
+        }
     }
 
     fn handle_unload_complete(&mut self) {
@@ -1267,10 +1222,15 @@ impl ClientTask {
 
     fn handle_gpadl(&mut self, channel_id: ChannelId, rpc: FailableRpc<GpadlRequest, ()>) {
         let (request, rpc) = rpc.split();
-        if self
+        let channel = self
             .inner
+            .channels
+            .get_mut(&channel_id)
+            .expect("invalid channel");
+
+        if channel
             .gpadls
-            .insert((channel_id, request.id), GpadlState::Offered(rpc))
+            .insert(request.id, GpadlState::Offered(rpc))
             .is_some()
         {
             panic!(
@@ -1319,8 +1279,15 @@ impl ClientTask {
         }
     }
 
-    fn handle_gpadl_teardown(&mut self, channel_id: ChannelId, gpadl_id: GpadlId) {
-        let Some(gpadl_state) = self.inner.gpadls.get_mut(&(channel_id, gpadl_id)) else {
+    fn handle_gpadl_teardown(&mut self, channel_id: ChannelId, rpc: Rpc<GpadlId, ()>) {
+        let (gpadl_id, rpc) = rpc.split();
+        let channel = self
+            .inner
+            .channels
+            .get_mut(&channel_id)
+            .expect("invalid channel");
+
+        let Some(gpadl_state) = channel.gpadls.get_mut(&gpadl_id) else {
             tracing::warn!(
                 gpadl_id = gpadl_id.0,
                 channel_id = channel_id.0,
@@ -1329,31 +1296,36 @@ impl ClientTask {
             return;
         };
 
-        if matches!(gpadl_state, GpadlState::TearingDown) {
-            tracing::warn!(
-                gpadl_id = gpadl_id.0,
-                channel_id = channel_id.0,
-                "Gpadl already tearing down"
-            );
-            return;
+        match gpadl_state {
+            GpadlState::Offered(_) => {
+                tracing::warn!(
+                    gpadl_id = gpadl_id.0,
+                    channel_id = channel_id.0,
+                    "gpadl teardown for offered gpadl"
+                );
+            }
+            GpadlState::Created => {
+                *gpadl_state = GpadlState::TearingDown { rpcs: vec![rpc] };
+                // The caller must guarantee that GPADL teardown requests are only made
+                // for unique GPADL IDs. This is currently enforced in vmbus_server by
+                // blocking GPADL teardown messages for reserved channels.
+                assert!(
+                    self.inner
+                        .teardown_gpadls
+                        .insert(gpadl_id, channel_id)
+                        .is_none(),
+                    "Gpadl state validated above"
+                );
+
+                self.inner.messages.send(&protocol::GpadlTeardown {
+                    channel_id,
+                    gpadl_id,
+                });
+            }
+            GpadlState::TearingDown { rpcs } => {
+                rpcs.push(rpc);
+            }
         }
-
-        *gpadl_state = GpadlState::TearingDown;
-        // The caller must guarantee that GPADL teardown requests are only made
-        // for unique GPADL IDs. This is currently enforced in vmbus_server by
-        // blocking GPADL teardown messages for reserved channels.
-        assert!(
-            self.inner
-                .teardown_gpadls
-                .insert(gpadl_id, Some(channel_id))
-                .is_none(),
-            "Gpadl state validated above"
-        );
-
-        self.inner.messages.send(&protocol::GpadlTeardown {
-            channel_id,
-            gpadl_id,
-        });
     }
 
     fn handle_close_channel(&mut self, channel_id: ChannelId) {
@@ -1595,7 +1567,10 @@ enum GpadlState {
     /// Host has responded with GpadlCreated.
     Created,
     /// GpadlTeardown message has been sent to the host.
-    TearingDown,
+    TearingDown {
+        #[inspect(skip)]
+        rpcs: Vec<Rpc<(), ()>>,
+    },
 }
 
 #[derive(Inspect)]
@@ -1665,10 +1640,8 @@ struct ClientTaskInner {
     messages: OutgoingMessages,
     #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|id| id.0)")]
     channels: HashMap<ChannelId, Channel>,
-    #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|id| id.1.0)")]
-    gpadls: HashMap<(ChannelId, GpadlId), GpadlState>,
     #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|id| id.0)")]
-    teardown_gpadls: HashMap<GpadlId, Option<ChannelId>>,
+    teardown_gpadls: HashMap<GpadlId, ChannelId>,
     #[inspect(skip)]
     channel_requests: SelectAll<TaggedStream<ChannelId, mesh::Receiver<ChannelRequest>>>,
     synic: SynicState,
@@ -1830,29 +1803,44 @@ mod tests {
         }
 
         async fn connect(&mut self, client: &mut VmbusClient) {
-            let recv = client.access.client_request_send.call(
-                ClientRequest::InitiateContact,
-                InitiateContactRequest::default(),
-            );
+            self.connect_with_channels(client, |_| {}).await;
+        }
 
-            let _ = self.next().await.unwrap();
+        async fn connect_with_channels(
+            &mut self,
+            client: &mut VmbusClient,
+            send_offers: impl FnOnce(&mut Self),
+        ) -> Vec<OfferInfo> {
+            let client_connect = client.connect(0, None, Guid::ZERO);
 
-            self.send(in_msg(
-                MessageType::VERSION_RESPONSE,
-                protocol::VersionResponse2 {
-                    version_response: protocol::VersionResponse {
-                        version_supported: 1,
-                        connection_state: ConnectionState::SUCCESSFUL,
-                        padding: 0,
-                        selected_version_or_connection_id: 0,
+            let server_connect = async {
+                let _ = self.next().await.unwrap();
+
+                self.send(in_msg(
+                    MessageType::VERSION_RESPONSE,
+                    protocol::VersionResponse2 {
+                        version_response: protocol::VersionResponse {
+                            version_supported: 1,
+                            connection_state: ConnectionState::SUCCESSFUL,
+                            padding: 0,
+                            selected_version_or_connection_id: 0,
+                        },
+                        supported_features: SUPPORTED_FEATURE_FLAGS.into(),
                     },
-                    supported_features: SUPPORTED_FEATURE_FLAGS.into(),
-                },
-            ));
+                ));
 
-            let version = recv.await.unwrap().unwrap();
-            assert_eq!(version.version, Version::Copper);
-            assert_eq!(version.feature_flags, SUPPORTED_FEATURE_FLAGS);
+                check_message(self.next().await.unwrap(), protocol::RequestOffers {});
+
+                send_offers(self);
+                self.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
+            };
+
+            let (connection, ()) = (client_connect, server_connect).join().await;
+
+            let connection = connection.unwrap();
+            assert_eq!(connection.version.version, Version::Copper);
+            assert_eq!(connection.version.feature_flags, SUPPORTED_FEATURE_FLAGS);
+            connection.offers
         }
 
         async fn get_channel(&mut self, client: &mut VmbusClient) -> OfferInfo {
@@ -1861,12 +1849,7 @@ mod tests {
         }
 
         async fn get_channels(&mut self, client: &mut VmbusClient, count: usize) -> Vec<OfferInfo> {
-            self.connect(client).await;
-
-            let request_offers = client.request_offers();
-            let send_offers = async {
-                check_message(self.next().await.unwrap(), protocol::RequestOffers {});
-
+            self.connect_with_channels(client, |this| {
                 for i in 0..count {
                     let offer = protocol::OfferChannel {
                         interface_id: Guid::new_random(),
@@ -1884,14 +1867,10 @@ mod tests {
                         connection_id: 0,
                     };
 
-                    self.send(in_msg(MessageType::OFFER_CHANNEL, offer));
+                    this.send(in_msg(MessageType::OFFER_CHANNEL, offer));
                 }
-
-                self.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
-            };
-
-            let ((), offers) = (send_offers, request_offers).join().await;
-            offers
+            })
+            .await
         }
     }
 
@@ -1999,10 +1978,10 @@ mod tests {
     #[async_test]
     async fn test_initiate_contact_success(driver: DefaultDriver) {
         let (mut server, client, _) = test_init(&driver);
-        let _recv = client.access.client_request_send.call(
-            ClientRequest::InitiateContact,
-            InitiateContactRequest::default(),
-        );
+        let _recv = client
+            .access
+            .client_request_send
+            .call(ClientRequest::Connect, ConnectRequest::default());
 
         check_message(
             server.next().await.unwrap(),
@@ -2025,95 +2004,101 @@ mod tests {
 
     #[async_test]
     async fn test_connect_success(driver: DefaultDriver) {
-        let (mut server, client, _) = test_init(&driver);
-        let recv = client.access.client_request_send.call(
-            ClientRequest::InitiateContact,
-            InitiateContactRequest::default(),
-        );
+        let (mut server, mut client, _) = test_init(&driver);
+        let client_connect = client.connect(0, None, Guid::ZERO);
 
-        check_message(
-            server.next().await.unwrap(),
-            protocol::InitiateContact2 {
-                initiate_contact: protocol::InitiateContact {
-                    version_requested: Version::Copper as u32,
-                    target_message_vp: 0,
-                    interrupt_page_or_target_info: TargetInfo::new()
-                        .with_sint(2)
-                        .with_vtl(0)
-                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
-                        .into(),
-                    parent_to_child_monitor_page_gpa: 0,
-                    child_to_parent_monitor_page_gpa: 0,
+        let server_connect = async {
+            check_message(
+                server.next().await.unwrap(),
+                protocol::InitiateContact2 {
+                    initiate_contact: protocol::InitiateContact {
+                        version_requested: Version::Copper as u32,
+                        target_message_vp: 0,
+                        interrupt_page_or_target_info: TargetInfo::new()
+                            .with_sint(2)
+                            .with_vtl(0)
+                            .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
+                            .into(),
+                        parent_to_child_monitor_page_gpa: 0,
+                        child_to_parent_monitor_page_gpa: 0,
+                    },
+                    ..FromZeros::new_zeroed()
                 },
-                ..FromZeros::new_zeroed()
-            },
-        );
+            );
 
-        server.send(in_msg(
-            MessageType::VERSION_RESPONSE,
-            protocol::VersionResponse2 {
-                version_response: protocol::VersionResponse {
-                    version_supported: 1,
-                    connection_state: ConnectionState::SUCCESSFUL,
-                    padding: 0,
-                    selected_version_or_connection_id: 0,
+            server.send(in_msg(
+                MessageType::VERSION_RESPONSE,
+                protocol::VersionResponse2 {
+                    version_response: protocol::VersionResponse {
+                        version_supported: 1,
+                        connection_state: ConnectionState::SUCCESSFUL,
+                        padding: 0,
+                        selected_version_or_connection_id: 0,
+                    },
+                    supported_features: SUPPORTED_FEATURE_FLAGS.into_bits(),
                 },
-                supported_features: SUPPORTED_FEATURE_FLAGS.into_bits(),
-            },
-        ));
+            ));
 
-        let version = recv.await.unwrap().unwrap();
+            check_message(server.next().await.unwrap(), protocol::RequestOffers {});
+            server.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
+        };
 
-        assert_eq!(version.version, Version::Copper);
-        assert_eq!(version.feature_flags, SUPPORTED_FEATURE_FLAGS);
+        let (connection, ()) = (client_connect, server_connect).join().await;
+        let connection = connection.unwrap();
+
+        assert_eq!(connection.version.version, Version::Copper);
+        assert_eq!(connection.version.feature_flags, SUPPORTED_FEATURE_FLAGS);
     }
 
     #[async_test]
     async fn test_feature_flags(driver: DefaultDriver) {
-        let (mut server, client, _) = test_init(&driver);
-        let recv = client.access.client_request_send.call(
-            ClientRequest::InitiateContact,
-            InitiateContactRequest::default(),
-        );
+        let (mut server, mut client, _) = test_init(&driver);
+        let client_connect = client.connect(0, None, Guid::ZERO);
 
-        check_message(
-            server.next().await.unwrap(),
-            protocol::InitiateContact2 {
-                initiate_contact: protocol::InitiateContact {
-                    version_requested: Version::Copper as u32,
-                    target_message_vp: 0,
-                    interrupt_page_or_target_info: TargetInfo::new()
-                        .with_sint(2)
-                        .with_vtl(0)
-                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
-                        .into(),
-                    parent_to_child_monitor_page_gpa: 0,
-                    child_to_parent_monitor_page_gpa: 0,
+        let server_connect = async {
+            check_message(
+                server.next().await.unwrap(),
+                protocol::InitiateContact2 {
+                    initiate_contact: protocol::InitiateContact {
+                        version_requested: Version::Copper as u32,
+                        target_message_vp: 0,
+                        interrupt_page_or_target_info: TargetInfo::new()
+                            .with_sint(2)
+                            .with_vtl(0)
+                            .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
+                            .into(),
+                        parent_to_child_monitor_page_gpa: 0,
+                        child_to_parent_monitor_page_gpa: 0,
+                    },
+                    ..FromZeros::new_zeroed()
                 },
-                ..FromZeros::new_zeroed()
-            },
-        );
+            );
 
-        // Report the server doesn't support some of the feature flags, and make
-        // sure this is reflected in the returned version.
-        server.send(in_msg(
-            MessageType::VERSION_RESPONSE,
-            protocol::VersionResponse2 {
-                version_response: protocol::VersionResponse {
-                    version_supported: 1,
-                    connection_state: ConnectionState::SUCCESSFUL,
-                    padding: 0,
-                    selected_version_or_connection_id: 0,
+            // Report the server doesn't support some of the feature flags, and make
+            // sure this is reflected in the returned version.
+            server.send(in_msg(
+                MessageType::VERSION_RESPONSE,
+                protocol::VersionResponse2 {
+                    version_response: protocol::VersionResponse {
+                        version_supported: 1,
+                        connection_state: ConnectionState::SUCCESSFUL,
+                        padding: 0,
+                        selected_version_or_connection_id: 0,
+                    },
+                    supported_features: 2,
                 },
-                supported_features: 2,
-            },
-        ));
+            ));
 
-        let version = recv.await.unwrap().unwrap();
+            check_message(server.next().await.unwrap(), protocol::RequestOffers {});
+            server.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
+        };
 
-        assert_eq!(version.version, Version::Copper);
+        let (connection, ()) = (client_connect, server_connect).join().await;
+        let connection = connection.unwrap();
+
+        assert_eq!(connection.version.version, Version::Copper);
         assert_eq!(
-            version.feature_flags,
+            connection.version.feature_flags,
             FeatureFlags::new().with_channel_interrupt_redirection(true)
         );
     }
@@ -2121,14 +2106,14 @@ mod tests {
     #[async_test]
     async fn test_client_id(driver: DefaultDriver) {
         let (mut server, client, _) = test_init(&driver);
-        let initiate_contact = InitiateContactRequest {
+        let initiate_contact = ConnectRequest {
             client_id: VMBUS_TEST_CLIENT_ID,
             ..Default::default()
         };
         let _recv = client
             .access
             .client_request_send
-            .call(ClientRequest::InitiateContact, initiate_contact);
+            .call(ClientRequest::Connect, initiate_contact);
 
         check_message(
             server.next().await.unwrap(),
@@ -2151,110 +2136,72 @@ mod tests {
 
     #[async_test]
     async fn test_version_negotiation(driver: DefaultDriver) {
-        let (mut server, client, _) = test_init(&driver);
-        let recv = client.access.client_request_send.call(
-            ClientRequest::InitiateContact,
-            InitiateContactRequest::default(),
-        );
+        let (mut server, mut client, _) = test_init(&driver);
+        let client_connect = client.connect(0, None, Guid::ZERO);
 
-        check_message(
-            server.next().await.unwrap(),
-            protocol::InitiateContact2 {
-                initiate_contact: protocol::InitiateContact {
-                    version_requested: Version::Copper as u32,
+        let server_connect = async {
+            check_message(
+                server.next().await.unwrap(),
+                protocol::InitiateContact2 {
+                    initiate_contact: protocol::InitiateContact {
+                        version_requested: Version::Copper as u32,
+                        target_message_vp: 0,
+                        interrupt_page_or_target_info: TargetInfo::new()
+                            .with_sint(2)
+                            .with_vtl(0)
+                            .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
+                            .into(),
+                        parent_to_child_monitor_page_gpa: 0,
+                        child_to_parent_monitor_page_gpa: 0,
+                    },
+                    ..FromZeros::new_zeroed()
+                },
+            );
+
+            server.send(in_msg(
+                MessageType::VERSION_RESPONSE,
+                protocol::VersionResponse {
+                    version_supported: 0,
+                    connection_state: ConnectionState::SUCCESSFUL,
+                    padding: 0,
+                    selected_version_or_connection_id: 0,
+                },
+            ));
+
+            check_message(
+                server.next().await.unwrap(),
+                protocol::InitiateContact {
+                    version_requested: Version::Iron as u32,
                     target_message_vp: 0,
                     interrupt_page_or_target_info: TargetInfo::new()
                         .with_sint(2)
                         .with_vtl(0)
-                        .with_feature_flags(SUPPORTED_FEATURE_FLAGS.into())
+                        .with_feature_flags(FeatureFlags::new().into())
                         .into(),
                     parent_to_child_monitor_page_gpa: 0,
                     child_to_parent_monitor_page_gpa: 0,
                 },
-                ..FromZeros::new_zeroed()
-            },
-        );
+            );
 
-        server.send(in_msg(
-            MessageType::VERSION_RESPONSE,
-            protocol::VersionResponse {
-                version_supported: 0,
-                connection_state: ConnectionState::SUCCESSFUL,
-                padding: 0,
-                selected_version_or_connection_id: 0,
-            },
-        ));
+            server.send(in_msg(
+                MessageType::VERSION_RESPONSE,
+                protocol::VersionResponse {
+                    version_supported: 1,
+                    connection_state: ConnectionState::SUCCESSFUL,
+                    padding: 0,
+                    selected_version_or_connection_id: 0,
+                },
+            ));
 
-        check_message(
-            server.next().await.unwrap(),
-            protocol::InitiateContact {
-                version_requested: Version::Iron as u32,
-                target_message_vp: 0,
-                interrupt_page_or_target_info: TargetInfo::new()
-                    .with_sint(2)
-                    .with_vtl(0)
-                    .with_feature_flags(FeatureFlags::new().into())
-                    .into(),
-                parent_to_child_monitor_page_gpa: 0,
-                child_to_parent_monitor_page_gpa: 0,
-            },
-        );
-
-        server.send(in_msg(
-            MessageType::VERSION_RESPONSE,
-            protocol::VersionResponse {
-                version_supported: 1,
-                connection_state: ConnectionState::SUCCESSFUL,
-                padding: 0,
-                selected_version_or_connection_id: 0,
-            },
-        ));
-
-        let version = recv.await.unwrap().unwrap();
-
-        assert_eq!(version.version, Version::Iron);
-        assert_eq!(version.feature_flags, FeatureFlags::new());
-    }
-
-    #[async_test]
-    async fn test_request_offers_success(driver: DefaultDriver) {
-        let (mut server, mut client, _) = test_init(&driver);
-
-        server.connect(&mut client).await;
-
-        let (send, mut recv) = mesh::channel();
-        client
-            .access
-            .client_request_send
-            .send(ClientRequest::RequestOffers(send));
-
-        check_message(server.next().await.unwrap(), protocol::RequestOffers {});
-
-        let offer = protocol::OfferChannel {
-            interface_id: Guid::new_random(),
-            instance_id: Guid::new_random(),
-            rsvd: [0; 4],
-            flags: OfferFlags::new(),
-            mmio_megabytes: 0,
-            user_defined: UserDefinedData::new_zeroed(),
-            subchannel_index: 0,
-            mmio_megabytes_optional: 0,
-            channel_id: ChannelId(0),
-            monitor_id: 0,
-            monitor_allocated: 0,
-            is_dedicated: 0,
-            connection_id: 0,
+            check_message(server.next().await.unwrap(), protocol::RequestOffers {});
+            server.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
         };
 
-        server.send(in_msg(MessageType::OFFER_CHANNEL, offer));
+        let (connection, ()) = (client_connect, server_connect).join().await;
+        let connection = connection.unwrap();
 
-        let received_offer = recv.next().await.unwrap();
-
-        assert_eq!(received_offer.offer, offer);
-
-        server.send(in_msg(MessageType::ALL_OFFERS_DELIVERED, [0x00]));
-
-        assert!(recv.next().await.is_none());
+        assert_eq!(connection.version.version, Version::Iron);
+        assert_eq!(connection.version.feature_flags, FeatureFlags::new());
     }
 
     #[async_test]
@@ -2452,7 +2399,7 @@ mod tests {
         };
 
         server.send(in_msg(MessageType::OFFER_CHANNEL, offer));
-        let mut info = offer_recv.next().await.unwrap();
+        let info = offer_recv.next().await.unwrap();
 
         assert_eq!(offer, info.offer);
 
@@ -2470,13 +2417,13 @@ mod tests {
             },
         );
 
-        assert!(info.response_recv.next().await.is_none());
+        info.revoke_recv.await.unwrap();
     }
 
     #[async_test]
     async fn test_gpadl_success(driver: DefaultDriver) {
         let (mut server, mut client, _) = test_init(&driver);
-        let mut channel = server.get_channel(&mut client).await;
+        let channel = server.get_channel(&mut client).await;
         let recv = channel.request_send.call(
             ChannelRequest::Gpadl,
             GpadlRequest {
@@ -2508,9 +2455,9 @@ mod tests {
 
         recv.await.unwrap().unwrap();
 
-        channel
+        let rpc = channel
             .request_send
-            .send(ChannelRequest::TeardownGpadl(GpadlId(1)));
+            .call(ChannelRequest::TeardownGpadl, GpadlId(1));
 
         check_message(
             server.next().await.unwrap(),
@@ -2527,9 +2474,7 @@ mod tests {
             },
         ));
 
-        let ChannelResponse::TeardownGpadl(gpadl_id) = channel.response_recv.next().await.unwrap();
-
-        assert_eq!(gpadl_id, GpadlId(1));
+        rpc.await.unwrap();
     }
 
     #[async_test]
@@ -2571,7 +2516,7 @@ mod tests {
     #[async_test]
     async fn test_gpadl_with_revoke(driver: DefaultDriver) {
         let (mut server, mut client, _offer_recv) = test_init(&driver);
-        let mut channel = server.get_channel(&mut client).await;
+        let channel = server.get_channel(&mut client).await;
         let channel_id = ChannelId(0);
         let gpadl_id = GpadlId(1);
         let recv = channel.request_send.call(
@@ -2605,9 +2550,9 @@ mod tests {
 
         recv.await.unwrap().unwrap();
 
-        channel
+        let rpc = channel
             .request_send
-            .send(ChannelRequest::TeardownGpadl(gpadl_id));
+            .call(ChannelRequest::TeardownGpadl, gpadl_id);
 
         check_message(
             server.next().await.unwrap(),
@@ -2622,16 +2567,14 @@ mod tests {
             protocol::RescindChannelOffer { channel_id },
         ));
 
-        let ChannelResponse::TeardownGpadl(id) = channel.response_recv.next().await.unwrap();
-
-        assert_eq!(id, gpadl_id);
+        rpc.await.unwrap();
 
         check_message(
             server.next().await.unwrap(),
             protocol::RelIdReleased { channel_id },
         );
 
-        assert!(channel.response_recv.next().await.is_none());
+        channel.revoke_recv.await.unwrap();
     }
 
     #[async_test]
@@ -2675,6 +2618,7 @@ mod tests {
             service_id: Guid::new_random(),
             endpoint_id: Guid::new_random(),
             silo_id: Guid::new_random(),
+            hosted_silo_unaware: false,
         };
 
         let resp = client.access().connect_hvsock(request);

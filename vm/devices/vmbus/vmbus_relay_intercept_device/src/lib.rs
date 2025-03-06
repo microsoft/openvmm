@@ -39,7 +39,6 @@ use vmbus_channel::ChannelClosed;
 use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::SignalVmbusChannel;
 use vmbus_client::ChannelRequest;
-use vmbus_client::ChannelResponse;
 use vmbus_client::OfferInfo;
 use vmbus_client::OpenOutput;
 use vmbus_client::OpenRequest;
@@ -353,16 +352,18 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
         };
 
         if state.vtl_pages.is_some() {
-            offer
+            if let Err(err) = offer
                 .request_send
-                .send(ChannelRequest::TeardownGpadl(GpadlId(
-                    state.vtl_pages.as_ref().unwrap().pfns()[1] as u32,
-                )));
-            match offer.response_recv.next().await {
-                Some(ChannelResponse::TeardownGpadl(_)) => {}
-                None => {
-                    tracing::error!("vmbus channel handle closed waiting for GPADL teardown");
-                }
+                .call(
+                    ChannelRequest::TeardownGpadl,
+                    GpadlId(state.vtl_pages.as_ref().unwrap().pfns()[1] as u32),
+                )
+                .await
+            {
+                tracing::error!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to teardown gpadl"
+                );
             }
 
             state.vtl_pages = None;
@@ -545,8 +546,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
             }
             let revoke = pin!(async {
                 if let Some(offer) = &mut state.offer {
-                    let r = offer.response_recv.next().await;
-                    assert!(r.is_none(), "unexpected channel response");
+                    (&mut offer.revoke_recv).await.ok();
                 } else {
                     pending().await
                 }

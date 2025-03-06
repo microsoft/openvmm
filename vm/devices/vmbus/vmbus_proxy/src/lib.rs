@@ -20,6 +20,8 @@ use std::mem::zeroed;
 use std::os::windows::prelude::*;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use vmbus_core::HvsockConnectRequest;
+use vmbus_core::HvsockConnectResult;
 use vmbusioctl::VMBUS_CHANNEL_OFFER;
 use vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use widestring::utf16str;
@@ -95,6 +97,10 @@ pub enum ProxyAction {
         id: u64,
     },
     InterruptPolicy {},
+    TlConnectResult {
+        result: HvsockConnectResult,
+        vtl: u8,
+    },
 }
 
 struct StaticIoctlBuffer<T>(T);
@@ -228,6 +234,16 @@ impl VmbusProxy {
                 id: output.ChannelId,
             }),
             proxyioctl::VmbusProxyActionTypeInterruptPolicy => Ok(ProxyAction::InterruptPolicy {}),
+            proxyioctl::VmbusProxyActionTypeTlConnectResult => unsafe {
+                Ok(ProxyAction::TlConnectResult {
+                    result: HvsockConnectResult {
+                        endpoint_id: output.u.TlConnectResult.EndpointId.into(),
+                        service_id: output.u.TlConnectResult.ServiceId.into(),
+                        success: output.u.TlConnectResult.Status.is_ok(),
+                    },
+                    vtl: output.u.TlConnectResult.Vtl,
+                })
+            },
             n => panic!("unexpected action: {}", n),
         }
     }
@@ -307,6 +323,24 @@ impl VmbusProxy {
                 StaticIoctlBuffer(proxyioctl::VMBUS_PROXY_DELETE_GPADL_INPUT {
                     ChannelId: id,
                     GpadlId: gpadl_id,
+                }),
+                (),
+            )
+            .await
+        }
+    }
+
+    pub async fn tl_connect_request(&self, request: &HvsockConnectRequest, vtl: u8) -> Result<()> {
+        unsafe {
+            self.ioctl(
+                proxyioctl::IOCTL_VMBUS_PROXY_TL_CONNECT_REQUEST,
+                StaticIoctlBuffer(proxyioctl::VMBUS_PROXY_TL_CONNECT_REQUEST_INPUT {
+                    EndpoindId: request.endpoint_id.into(),
+                    ServiceId: request.service_id.into(),
+                    SiloId: request.silo_id.into(),
+                    Flags: proxyioctl::VMBUS_PROXY_TL_CONNECT_REQUEST_FLAGS::new()
+                        .with_hosted_silo_unaware(request.hosted_silo_unaware),
+                    Vtl: vtl,
                 }),
                 (),
             )

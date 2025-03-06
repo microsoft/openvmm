@@ -329,11 +329,12 @@ impl RxBufferRange {
     }
 
     fn send_if_remote(&self, id: u32) -> bool {
-        if self.id_range.contains(&id) {
+        // Only queue 0 should get reserved buffer IDs. Otherwise check if the
+        // ID is owned by the current range.
+        if id < RX_RESERVED_CONTROL_BUFFERS || self.id_range.contains(&id) {
             false
         } else {
-            let i = id.saturating_sub(RX_RESERVED_CONTROL_BUFFERS)
-                / self.remote_ranges.buffers_per_queue;
+            let i = (id - RX_RESERVED_CONTROL_BUFFERS) / self.remote_ranges.buffers_per_queue;
             let _ = self.remote_ranges.buffer_id_send[i as usize].unbounded_send(id);
             true
         }
@@ -1164,12 +1165,12 @@ impl VmbusDevice for Nic {
         {
             let coordinator = &mut self.coordinator.state_mut().unwrap();
             coordinator.workers[0].stop().await;
-            coordinator.workers[0].start();
         }
 
         if r.is_err() && channel_idx == 0 {
             self.coordinator.remove();
         } else {
+            // The coordinator will restart any stopped workers.
             self.coordinator.start();
         }
         r?;
@@ -1227,7 +1228,7 @@ impl VmbusDevice for Nic {
         // Stop the coordinator and worker associated with this channel.
         let coordinator_running = self.coordinator.stop().await;
         let worker = &mut self.coordinator.state_mut().unwrap().workers[channel_idx as usize];
-        let worker_running = worker.stop().await;
+        worker.stop().await;
         let (net_queue, worker_state) = worker.get_mut();
 
         // Update the target VP on the driver.
@@ -1242,10 +1243,7 @@ impl VmbusDevice for Nic {
             }
         }
 
-        if worker_running {
-            worker.start();
-        }
-
+        // The coordinator will restart any stopped workers.
         if coordinator_running {
             self.coordinator.start();
         }
@@ -1253,9 +1251,6 @@ impl VmbusDevice for Nic {
 
     fn start(&mut self) {
         if !self.coordinator.is_running() {
-            if let Some(coordinator) = self.coordinator.state_mut() {
-                coordinator.start_workers();
-            }
             self.coordinator.start();
         }
     }
@@ -3326,6 +3321,7 @@ impl Adapter {
         reader
             .skip(params.indirection_table_offset as usize)?
             .read(indirection_table[..indirection_table_size].as_mut_bytes())?;
+        tracelimit::info_ratelimited!(?indirection_table, "OID_GEN_RECEIVE_SCALE_PARAMETERS");
         if indirection_table
             .iter()
             .any(|&x| x >= self.max_queues as u32)
@@ -3690,6 +3686,13 @@ impl Coordinator {
                 self.restore_guest_vf_state(state).await;
                 self.restart = false;
             }
+
+            // Ensure that all workers except the primary are started. The
+            // primary is started below if there are no outstanding messages.
+            for worker in &mut self.workers[1..] {
+                worker.start();
+            }
+
             enum Message {
                 Internal(CoordinatorMessage),
                 ChannelDisconnected,
@@ -3699,7 +3702,6 @@ impl Coordinator {
                 PendingVfStateComplete,
                 TimerExpired,
             }
-            self.start_workers();
             let timer_sleep = async {
                 if let Some(sleep_duration) = sleep_duration {
                     let mut timer = PolledTimer::new(&state.adapter.driver);
@@ -3765,7 +3767,15 @@ impl Coordinator {
                         (internal_msg, endpoint_restart, timer_sleep).race().await
                     }
                 };
-                stop.until_stopped(wait_for_message).await?
+
+                let mut wait_for_message = std::pin::pin!(wait_for_message);
+                match (&mut wait_for_message).now_or_never() {
+                    Some(message) => message,
+                    None => {
+                        self.workers[0].start();
+                        stop.until_stopped(wait_for_message).await?
+                    }
+                }
             };
             match message {
                 Message::UpdateFromVf(rpc) => {
@@ -3775,12 +3785,7 @@ impl Coordinator {
                     .await;
                 }
                 Message::OfferVfDevice => {
-                    let stopped = if self.workers[0].is_running() {
-                        self.workers[0].stop().await;
-                        true
-                    } else {
-                        false
-                    };
+                    self.workers[0].stop().await;
                     if let Some(primary) = self.primary_mut() {
                         if matches!(
                             primary.guest_vf_state,
@@ -3788,9 +3793,6 @@ impl Coordinator {
                         ) {
                             primary.guest_vf_state = PrimaryChannelGuestVfState::Ready;
                         }
-                    }
-                    if stopped {
-                        self.workers[0].start();
                     }
 
                     state.pending_vf_state = CoordinatorStatePendingVfState::Pending;
@@ -3807,7 +3809,6 @@ impl Coordinator {
                                 primary.pending_link_action = PendingLinkAction::Active(up);
                             }
                         }
-                        self.workers[0].start();
                     }
                     sleep_duration = None;
                 }
@@ -3816,12 +3817,7 @@ impl Coordinator {
                 }
                 Message::UpdateFromEndpoint(EndpointAction::RestartRequired) => self.restart = true,
                 Message::UpdateFromEndpoint(EndpointAction::LinkStatusNotify(connect)) => {
-                    let stopped = if self.workers[0].is_running() {
-                        self.workers[0].stop().await;
-                        true
-                    } else {
-                        false
-                    };
+                    self.workers[0].stop().await;
 
                     // These are the only link state transitions that are tracked.
                     // 1. up -> down or down -> up
@@ -3836,18 +3832,12 @@ impl Coordinator {
 
                     // If there is any existing sleep timer running, cancel it out.
                     sleep_duration = None;
-                    if stopped {
-                        self.workers[0].start();
-                    }
                 }
                 Message::Internal(CoordinatorMessage::Restart) => self.restart = true,
                 Message::Internal(CoordinatorMessage::StartTimer(duration)) => {
                     sleep_duration = Some(duration);
                     // Restart primary task.
-                    if self.workers[0].is_running() {
-                        self.workers[0].stop().await;
-                        self.workers[0].start();
-                    }
+                    self.workers[0].stop().await;
                 }
                 Message::ChannelDisconnected => {
                     break;
@@ -4115,7 +4105,12 @@ impl Coordinator {
                     .into_iter()
                     .filter(|&index| index < num_queues)
                     .collect::<Vec<_>>();
-                active_queues.len() as u16
+                if !active_queues.is_empty() {
+                    active_queues.len() as u16
+                } else {
+                    tracelimit::warn_ratelimited!("Invalid RSS indirection table");
+                    num_queues
+                }
             } else {
                 num_queues
             };
@@ -4162,14 +4157,37 @@ impl Coordinator {
 
                 let mut initial_rx = initial_rx.as_slice();
                 let mut range_start = 0;
-                let mut active_count = 0;
-                for queue_index in 0..num_queues {
-                    let queue_active =
-                        active_queues.is_empty() || active_queues.contains(&queue_index);
+                let primary_queue_excluded = !active_queues.is_empty() && active_queues[0] != 0;
+                let first_queue = if !primary_queue_excluded {
+                    0
+                } else {
+                    // If the primary queue is excluded from the guest supplied
+                    // indirection table, it is assigned just the reserved
+                    // buffers.
+                    queue_config.push(QueueConfig {
+                        pool: Box::new(BufferPool::new(guest_buffers.clone())),
+                        initial_rx: &[RxId(0)],
+                        driver: Box::new(drivers[0].clone()),
+                    });
+                    rx_buffers.push(RxBufferRange::new(
+                        ranges.clone(),
+                        0..RX_RESERVED_CONTROL_BUFFERS,
+                        None,
+                    ));
+                    range_start = RX_RESERVED_CONTROL_BUFFERS;
+                    1
+                };
+                for queue_index in first_queue..num_queues {
+                    let queue_active = active_queues.is_empty()
+                        || active_queues.binary_search(&queue_index).is_ok();
                     let (range_end, end, buffer_id_recv) = if queue_active {
-                        active_count += 1;
-                        let range_end =
-                            RX_RESERVED_CONTROL_BUFFERS + active_count * ranges.buffers_per_queue;
+                        let range_end = range_start
+                            + ranges.buffers_per_queue
+                            + if queue_index == 0 {
+                                RX_RESERVED_CONTROL_BUFFERS
+                            } else {
+                                0
+                            };
                         (
                             range_end,
                             initial_rx.partition_point(|id| id.0 < range_end),
@@ -4236,12 +4254,6 @@ impl Coordinator {
         Ok(())
     }
 
-    fn start_workers(&mut self) {
-        for worker in &mut self.workers {
-            worker.start();
-        }
-    }
-
     fn primary_mut(&mut self) -> Option<&mut PrimaryChannelState> {
         self.workers[0]
             .state_mut()
@@ -4254,12 +4266,8 @@ impl Coordinator {
     }
 
     async fn update_guest_vf_state(&mut self, c_state: &mut CoordinatorState) {
-        if !self.workers[0].is_running() {
-            return;
-        }
         self.workers[0].stop().await;
         self.restore_guest_vf_state(c_state).await;
-        self.workers[0].start();
     }
 }
 
@@ -5260,8 +5268,7 @@ impl ActiveState {
                     done.push(RxId(id));
                 } else {
                     self.primary
-                        .as_mut()
-                        .unwrap()
+                        .as_mut()?
                         .free_control_buffers
                         .push(ControlMessageId(id));
                 }

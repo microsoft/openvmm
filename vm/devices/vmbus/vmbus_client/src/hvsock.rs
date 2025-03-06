@@ -94,6 +94,7 @@ mod tests {
             service_id: Guid::new_random(),
             endpoint_id: Guid::new_random(),
             silo_id: Guid::new_random(),
+            hosted_silo_unaware: false,
         };
 
         tracker.add_request(Rpc::detached(request));
@@ -136,6 +137,7 @@ mod tests {
             service_id: Guid::new_random(),
             endpoint_id: Guid::new_random(),
             silo_id: Guid::new_random(),
+            hosted_silo_unaware: false,
         };
 
         tracker.add_request(Rpc::detached(request));

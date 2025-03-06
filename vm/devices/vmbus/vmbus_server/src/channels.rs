@@ -3033,7 +3033,19 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     /// Handles MessageType::TL_CONNECT_REQUEST, which requests for an hvsocket
     /// connection.
     fn handle_tl_connect_request(&mut self, request: protocol::TlConnectRequest2) {
-        self.notifier.notify_hvsock(&request.into());
+        let version = self
+            .inner
+            .state
+            .get_version()
+            .expect("must be connected")
+            .version;
+
+        let hosted_silo_unaware = version < Version::Win10Rs5;
+        self.notifier
+            .notify_hvsock(&HvsockConnectRequest::from_message(
+                request,
+                hosted_silo_unaware,
+            ));
     }
 
     /// Sends a message to the guest if an hvsocket connect request failed.
@@ -3510,10 +3522,12 @@ impl<N: Notifier> MessageSender<'_, N> {
     ) {
         let message = OutgoingMessage::new(msg);
 
+        tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "sending message");
         // Don't try to send the message if there are already pending messages.
         if !self.pending_messages.0.is_empty()
             || !self.notifier.send_message(&message, MessageTarget::Default)
         {
+            tracing::trace!("message queued");
             // Queue the message for retry later.
             self.pending_messages.0.push_back(message);
         }
@@ -3527,11 +3541,11 @@ impl<N: Notifier> MessageSender<'_, N> {
         msg: &T,
         target: MessageTarget,
     ) {
-        tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "sending message");
         if target == MessageTarget::Default {
             self.send_message(msg);
         } else {
             // Messages for other targets are not queued.
+            tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "sending message");
             let message = OutgoingMessage::new(msg);
             if !self.notifier.send_message(&message, target) {
                 tracelimit::warn_ratelimited!(?target, "failed to send message");
