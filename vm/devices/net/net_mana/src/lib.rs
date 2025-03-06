@@ -1096,6 +1096,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     (self.guest_memory.iova(head.gpa).unwrap(), 0)
                 };
 
+            // 31 comes from a hardware limit. Max WQE size is 512 bytes.
             let mut sgl = [Sge::new_zeroed(); 31];
             sgl[0] = Sge {
                 address: head_iova,
@@ -1119,6 +1120,14 @@ impl<T: DeviceBacking> ManaQueue<T> {
             };
 
             let segment_count = tail_sgl_offset + meta.segment_count - header_segment_count;
+            // Verbose logging for testing. TODO: Remove before checkin
+            tracing::error!(
+                "ERIK segment_count {:?} tail_sgl_offset {:?} meta.segment_count {:?} header_segment_count {:?}",
+                segment_count,
+                tail_sgl_offset,
+                meta.segment_count,
+                header_segment_count
+            );
             let sgl = &mut sgl[..segment_count];
             for (tail, sge) in segments[header_segment_count..]
                 .iter()

@@ -4570,11 +4570,16 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     PacketData::Init(init) => {
                         let requested_version = init.protocol_version;
                         let version = check_version(requested_version);
+                        // Normally the maximum MDL chain length is 34, which comes from the following formula:
+                        //    RNDIS Max Simulataneous Packets (8) * 3 + 10 = 34
+                        // However net_mana has a hardcoded limit of 31 transmit segments, based on a hardware limitation.
+                        // Reducing the maximum chain length forces Netvsc to bounce packets which exceed the hardware limit.
+                        let max_mdl_chain_len = 31;
                         let mut message = self.message(
                             protocol::MESSAGE_TYPE_INIT_COMPLETE,
                             protocol::MessageInitComplete {
                                 deprecated: protocol::INVALID_PROTOCOL_VERSION,
-                                maximum_mdl_chain_length: 34,
+                                maximum_mdl_chain_length: max_mdl_chain_len,
                                 status: protocol::Status::NONE,
                             },
                         );
