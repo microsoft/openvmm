@@ -8,8 +8,6 @@ use petri::OpenHclServicingFlags;
 use petri::ResolvedArtifact;
 #[cfg(guest_arch = "x86_64")]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
-#[cfg(guest_arch = "x86_64")]
-use petri_artifacts_vmm_test::artifacts::openhcl_igvm::RELEASE_2_4_11_LINUX_DIRECT_X64;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
 
@@ -70,7 +68,7 @@ async fn openhcl_servicing_keepalive(
 }
 
 // Disabled while we investigate intermittent failures
-// #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, RELEASE_2_4_11_LINUX_DIRECT_X64])]
+// #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, RELEASE_24_11_LINUX_DIRECT_X64])]
 async fn _openhcl_servicing_x64_linux_direct_2411_to_latest(
     config: PetriVmConfigOpenVmm,
     (latest_igvm, release_igvm): (

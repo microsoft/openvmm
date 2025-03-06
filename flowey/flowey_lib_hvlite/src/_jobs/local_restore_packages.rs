@@ -27,11 +27,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::init_openvmm_magicpath_openhcl_sysroot::Node>();
         ctx.import::<crate::init_openvmm_magicpath_protoc::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
-        ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<crate::download_release_igvm_files::resolve::Node>();
-        ctx.import::<flowey_lib_common::download_gh_artifact::Node>();
-        ctx.import::<flowey_lib_common::gh_workflow_id::Node>();
-        ctx.import::<flowey_lib_common::git_latest_commit::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {

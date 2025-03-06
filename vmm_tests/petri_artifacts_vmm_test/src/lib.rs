@@ -111,17 +111,17 @@ pub mod artifacts {
             /// OpenHCL IGVM (standard)
             LATEST_STANDARD_X64,
             /// OpenHCL IGVM release 2411 (standard)
-            RELEASE_2_4_11_STANDARD_X64,
+            RELEASE_24_11_STANDARD_X64,
             /// OpenHCL IGVM (for CVM)
             LATEST_CVM_X64,
             /// OpenHCL IGVM (using a linux direct-boot test image instead of UEFI)
             LATEST_LINUX_DIRECT_TEST_X64,
             /// OpenHCL IGVM release 2411 (using a linux direct-boot test image instead of UEFI)
-            RELEASE_2_4_11_LINUX_DIRECT_X64,
+            RELEASE_24_11_LINUX_DIRECT_X64,
             /// OpenHCL IGVM (standard AARCH64)
             LATEST_STANDARD_AARCH64,
             /// OpenHCL IGVM release 2411 (standard AARCH64)
-            RELEASE_2_4_11_STANDARD_AARCH64,
+            RELEASE_24_11_STANDARD_AARCH64,
         }
 
         impl IsLoadable for LATEST_STANDARD_X64 {
@@ -129,10 +129,10 @@ pub mod artifacts {
         }
         impl IsOpenhclIgvm for LATEST_STANDARD_X64 {}
 
-        impl IsLoadable for RELEASE_2_4_11_STANDARD_X64 {
+        impl IsLoadable for RELEASE_24_11_STANDARD_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
         }
-        impl IsOpenhclIgvm for RELEASE_2_4_11_STANDARD_X64 {}
+        impl IsOpenhclIgvm for RELEASE_24_11_STANDARD_X64 {}
 
         impl IsLoadable for LATEST_CVM_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
@@ -144,20 +144,20 @@ pub mod artifacts {
         }
         impl IsOpenhclIgvm for LATEST_LINUX_DIRECT_TEST_X64 {}
 
-        impl IsLoadable for RELEASE_2_4_11_LINUX_DIRECT_X64 {
+        impl IsLoadable for RELEASE_24_11_LINUX_DIRECT_X64 {
             const ARCH: MachineArch = MachineArch::X86_64;
         }
-        impl IsOpenhclIgvm for RELEASE_2_4_11_LINUX_DIRECT_X64 {}
+        impl IsOpenhclIgvm for RELEASE_24_11_LINUX_DIRECT_X64 {}
 
         impl IsLoadable for LATEST_STANDARD_AARCH64 {
             const ARCH: MachineArch = MachineArch::Aarch64;
         }
         impl IsOpenhclIgvm for LATEST_STANDARD_AARCH64 {}
 
-        impl IsLoadable for RELEASE_2_4_11_STANDARD_AARCH64 {
+        impl IsLoadable for RELEASE_24_11_STANDARD_AARCH64 {
             const ARCH: MachineArch = MachineArch::Aarch64;
         }
-        impl IsOpenhclIgvm for RELEASE_2_4_11_STANDARD_AARCH64 {}
+        impl IsOpenhclIgvm for RELEASE_24_11_STANDARD_AARCH64 {}
 
         /// OpenHCL usermode binary
         pub mod um_bin {

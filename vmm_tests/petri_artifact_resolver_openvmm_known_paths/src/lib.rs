@@ -57,9 +57,9 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::LinuxDirect),
             _ if id == openhcl_igvm::LATEST_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::Standard),
 
-            _ if id == openhcl_igvm::RELEASE_2_4_11_STANDARD_X64=> openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2411, OpenhclFlavor::Standard),
-            _ if id == openhcl_igvm::RELEASE_2_4_11_LINUX_DIRECT_X64=> openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2411, OpenhclFlavor::LinuxDirect),
-            _ if id == openhcl_igvm::RELEASE_2_4_11_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Release2411, OpenhclFlavor::Standard),
+            _ if id == openhcl_igvm::RELEASE_24_11_STANDARD_X64=> openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2411, OpenhclFlavor::Standard),
+            _ if id == openhcl_igvm::RELEASE_24_11_LINUX_DIRECT_X64=> openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Release2411, OpenhclFlavor::LinuxDirect),
+            _ if id == openhcl_igvm::RELEASE_24_11_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Release2411, OpenhclFlavor::Standard),
 
             _ if id == openhcl_igvm::um_bin::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_extras_path(OpenhclVersion::Latest,OpenhclFlavor::LinuxDirect,OpenhclExtras::UmBin),
             _ if id == openhcl_igvm::um_dbg::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_extras_path(OpenhclVersion::Latest,OpenhclFlavor::LinuxDirect,OpenhclExtras::UmDbg),
