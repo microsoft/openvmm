@@ -37,6 +37,7 @@ pub mod resolve {
                     let run_id =
                         ctx.reqv(
                             |v| flowey_lib_common::gh_latest_completed_workflow_id::Request {
+                                repo: "microsoft/openvmm".into(),
                                 branch: "release/2411".into(),
                                 pipeline_name: "openvmm-ci.yaml".into(),
                                 gh_workflow_id: v,

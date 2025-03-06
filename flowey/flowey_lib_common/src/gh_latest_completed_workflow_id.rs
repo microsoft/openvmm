@@ -7,6 +7,7 @@ use flowey::node::prelude::*;
 
 flowey_request! {
     pub struct Request {
+        pub repo: String,
         pub pipeline_name: String,
         pub branch: String,
         pub gh_workflow_id: WriteVar<String>,
@@ -23,6 +24,7 @@ impl SimpleFlowNode for Node {
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Request {
+            repo,
             gh_workflow_id,
             pipeline_name,
             branch,
@@ -40,7 +42,7 @@ impl SimpleFlowNode for Node {
                 let sh = xshell::Shell::new()?;
                 let gh_cli = rt.read(gh_cli);
 
-                let id = xshell::cmd!(sh, "{gh_cli} run list -b {branch} -w {pipeline_name} -s completed --limit 1 --json databaseId -q \".[0].databaseId\"").read()?;
+                let id = xshell::cmd!(sh, "{gh_cli} run list -R {repo} -b {branch} -w {pipeline_name} -s completed --limit 1 --json databaseId -q \".[0].databaseId\"").read()?;
 
                 println!("Got action id {id}");
                 rt.write(gh_workflow_id, &id);
