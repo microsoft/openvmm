@@ -32,8 +32,8 @@
             },
             "image": {
                 "openhcl": {
-                    "command_line": "",
-                    "memory_page_count": 16384,
+                    "command_line": "console=ttynull earlyprintk=mshvdbg_tdx,keep  OPENHCL_BOOT_LOG=1",
+                    "memory_page_count": 32768,
                     "memory_page_base": 32768,
                     "uefi": true
                 }

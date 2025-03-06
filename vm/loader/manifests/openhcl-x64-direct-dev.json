@@ -15,6 +15,28 @@
                     }
                 }
             }
+        },
+        {
+            "guest_svn": 1,
+            "max_vtl": 2,
+            "isolation_type": {
+                "tdx": {
+                    "enable_debug": true,
+                    "sept_ve_disable": true
+                }
+            },
+            "vtl0": {
+                "uefi": {
+                    "config_type": "none"
+                }
+            },
+            "vtl2": {
+                "underhill": {
+                    "command_line": "console=ttynull earlyprintk=mshvdbg_tdx,keep  OPENHCL_BOOT_LOG=1",
+                    "memory_page_count": 163840,
+                    "memory_page_base": 32768
+                }
+            }
         }
     ]
 }

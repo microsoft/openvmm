@@ -4,9 +4,9 @@
 //! Module used to write the device tree used by the OpenHCL kernel and
 //! usermode.
 
-use crate::host_params::shim_params::IsolationType;
 use crate::host_params::PartitionInfo;
 use crate::host_params::COMMAND_LINE_SIZE;
+use crate::host_params::shim_params::IsolationType;
 use crate::sidecar::SidecarConfig;
 use crate::single_threaded::off_stack;
 use crate::ReservedMemoryType;
@@ -26,6 +26,8 @@ use loader_defs::shim::MemoryVtlType;
 use memory_range::walk_ranges;
 use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
+#[cfg(target_arch = "x86_64")]
+use x86defs::tdx::RESET_VECTOR_PAGE;
 
 /// AArch64 defines
 mod aarch64 {
@@ -158,6 +160,7 @@ pub fn write_dt(
     cmdline: &ArrayString<COMMAND_LINE_SIZE>,
     sidecar: Option<&SidecarConfig<'_>>,
     boot_times: Option<BootTimes>,
+    isolation_type: IsolationType,
 ) -> Result<(), DtError> {
     // First, the reservation map is built. That keyes off of the x86 E820 memory map.
     // The `/memreserve/` is used to tell the kernel that the reserved memory is RAM
@@ -248,6 +251,16 @@ pub fn write_dt(
         let pa_bits = crate::arch::physical_address_bits(partition_info.isolation);
         let p_pa_bits = cpu_builder.add_string("pa_bits")?;
         cpu_builder = cpu_builder.add_u32(p_pa_bits, pa_bits.into())?;
+        // TODO: This is to avoid unused variable warning. Check if we can remove cfg(target_arch) for isolation types
+        let _ = isolation_type;
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    if isolation_type == IsolationType::Tdx {
+        let p_enable_method = cpu_builder.add_string("enable-method")?;
+        let p_mailbox_addr = cpu_builder.add_string("wakeup-mailbox-addr")?;
+        cpu_builder = cpu_builder.add_str(p_enable_method, "acpi-wakeup-mailbox")?;
+        cpu_builder = cpu_builder.add_u64(p_mailbox_addr, RESET_VECTOR_PAGE)?;
     }
 
     // Add a CPU node for each cpu.

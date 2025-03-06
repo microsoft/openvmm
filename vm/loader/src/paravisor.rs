@@ -467,6 +467,8 @@ where
         used_end: calculate_shim_offset(offset),
         bounce_buffer_start: bounce_buffer.map_or(0, |r| calculate_shim_offset(r.start())),
         bounce_buffer_size: bounce_buffer.map_or(0, |r| r.len()),
+        page_tables_start: calculate_shim_offset(page_table_region_start),
+        page_tables_size: page_table_region_size,
     };
 
     tracing::debug!(boot_params_base, "shim gpa");
@@ -1043,6 +1045,8 @@ where
         used_end: calculate_shim_offset(next_addr),
         bounce_buffer_start: 0,
         bounce_buffer_size: 0,
+        page_tables_start: 0,
+        page_tables_size: 0,
     };
 
     importer
