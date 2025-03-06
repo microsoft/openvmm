@@ -3833,14 +3833,8 @@ jobs:
     - name: setup gh cli
       run: flowey.exe e 18 flowey_lib_common::use_gh_cli 0
       shell: bash
-    - name: get latest commit
-      run: flowey.exe e 18 flowey_lib_common::git_latest_commit 0
-      shell: bash
-    - name: get action id
-      run: flowey.exe e 18 flowey_lib_common::gh_workflow_id 0
-      shell: bash
-    - name: 🌼 write_into Var
-      run: flowey.exe e 18 flowey_lib_hvlite::download_release_igvm_files::resolve 0
+    - name: get latest completed action id
+      run: flowey.exe e 18 flowey_lib_common::gh_latest_completed_workflow_id 0
       shell: bash
     - name: download artifacts from github actions run
       run: flowey.exe e 18 flowey_lib_common::download_gh_artifact 1
@@ -3849,7 +3843,7 @@ jobs:
       run: flowey.exe e 18 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: write to directory variables
-      run: flowey.exe e 18 flowey_lib_hvlite::download_release_igvm_files::resolve 1
+      run: flowey.exe e 18 flowey_lib_hvlite::download_release_igvm_files::resolve 0
       shell: bash
     - name: create azcopy cache dir
       run: flowey.exe e 18 flowey_lib_common::download_azcopy 0
@@ -4229,14 +4223,8 @@ jobs:
     - name: setup gh cli
       run: flowey.exe e 19 flowey_lib_common::use_gh_cli 0
       shell: bash
-    - name: get latest commit
-      run: flowey.exe e 19 flowey_lib_common::git_latest_commit 0
-      shell: bash
-    - name: get action id
-      run: flowey.exe e 19 flowey_lib_common::gh_workflow_id 0
-      shell: bash
-    - name: 🌼 write_into Var
-      run: flowey.exe e 19 flowey_lib_hvlite::download_release_igvm_files::resolve 0
+    - name: get latest completed action id
+      run: flowey.exe e 19 flowey_lib_common::gh_latest_completed_workflow_id 0
       shell: bash
     - name: download artifacts from github actions run
       run: flowey.exe e 19 flowey_lib_common::download_gh_artifact 1
@@ -4245,7 +4233,7 @@ jobs:
       run: flowey.exe e 19 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: write to directory variables
-      run: flowey.exe e 19 flowey_lib_hvlite::download_release_igvm_files::resolve 1
+      run: flowey.exe e 19 flowey_lib_hvlite::download_release_igvm_files::resolve 0
       shell: bash
     - name: create azcopy cache dir
       run: flowey.exe e 19 flowey_lib_common::download_azcopy 0
@@ -4838,14 +4826,8 @@ jobs:
     - name: setup gh cli
       run: flowey e 20 flowey_lib_common::use_gh_cli 0
       shell: bash
-    - name: get latest commit
-      run: flowey e 20 flowey_lib_common::git_latest_commit 0
-      shell: bash
-    - name: get action id
-      run: flowey e 20 flowey_lib_common::gh_workflow_id 0
-      shell: bash
-    - name: 🌼 write_into Var
-      run: flowey e 20 flowey_lib_hvlite::download_release_igvm_files::resolve 0
+    - name: get latest completed action id
+      run: flowey e 20 flowey_lib_common::gh_latest_completed_workflow_id 0
       shell: bash
     - name: download artifacts from github actions run
       run: flowey e 20 flowey_lib_common::download_gh_artifact 1
@@ -4854,7 +4836,7 @@ jobs:
       run: flowey e 20 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: write to directory variables
-      run: flowey e 20 flowey_lib_hvlite::download_release_igvm_files::resolve 1
+      run: flowey e 20 flowey_lib_hvlite::download_release_igvm_files::resolve 0
       shell: bash
     - name: create azcopy cache dir
       run: flowey e 20 flowey_lib_common::download_azcopy 0
@@ -5294,14 +5276,8 @@ jobs:
     - name: setup gh cli
       run: flowey.exe e 21 flowey_lib_common::use_gh_cli 0
       shell: bash
-    - name: get latest commit
-      run: flowey.exe e 21 flowey_lib_common::git_latest_commit 0
-      shell: bash
-    - name: get action id
-      run: flowey.exe e 21 flowey_lib_common::gh_workflow_id 0
-      shell: bash
-    - name: 🌼 write_into Var
-      run: flowey.exe e 21 flowey_lib_hvlite::download_release_igvm_files::resolve 0
+    - name: get latest completed action id
+      run: flowey.exe e 21 flowey_lib_common::gh_latest_completed_workflow_id 0
       shell: bash
     - name: download artifacts from github actions run
       run: flowey.exe e 21 flowey_lib_common::download_gh_artifact 1
@@ -5310,7 +5286,7 @@ jobs:
       run: flowey.exe e 21 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: write to directory variables
-      run: flowey.exe e 21 flowey_lib_hvlite::download_release_igvm_files::resolve 1
+      run: flowey.exe e 21 flowey_lib_hvlite::download_release_igvm_files::resolve 0
       shell: bash
     - name: create azcopy cache dir
       run: flowey.exe e 21 flowey_lib_common::download_azcopy 0

@@ -27,33 +27,21 @@ pub mod resolve {
         type Request = Request;
 
         fn imports(ctx: &mut ImportCtx<'_>) {
-            ctx.import::<crate::git_checkout_openvmm_repo::Node>();
-            ctx.import::<flowey_lib_common::git_latest_commit::Node>();
-            ctx.import::<flowey_lib_common::gh_workflow_id::Node>();
             ctx.import::<flowey_lib_common::download_gh_artifact::Node>();
+            ctx.import::<flowey_lib_common::gh_latest_completed_workflow_id::Node>();
         }
 
         fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
             match request {
                 Request::Release2411(output) => {
-                    // Download 2411 release IGVM files for running servicing tests
-                    let openvmm_repo_path =
-                        ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
-                    let latest_commit =
-                        ctx.reqv(|v| flowey_lib_common::git_latest_commit::Request {
-                            repo_path: openvmm_repo_path.clone(),
-                            branch: "release/2411".into(),
-                            commit: v,
-                        });
-
-                    let run = ctx.reqv(|v| flowey_lib_common::gh_workflow_id::Request {
-                        github_commit_hash: latest_commit,
-                        repo_path: openvmm_repo_path,
-                        pipeline_name: "[flowey] OpenVMM CI".into(),
-                        gh_workflow: v,
-                    });
-
-                    let run_id = run.map(ctx, |r| r.id);
+                    let run_id =
+                        ctx.reqv(
+                            |v| flowey_lib_common::gh_latest_completed_workflow_id::Request {
+                                branch: "release/2411".into(),
+                                pipeline_name: "openvmm-ci.yaml".into(),
+                                gh_workflow_id: v,
+                            },
+                        );
 
                     let mut downloaded_aarch64 = None;
                     let mut downloaded_x64 = None;
