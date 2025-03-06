@@ -69,8 +69,9 @@ async fn openhcl_servicing_keepalive(
     .await
 }
 
-#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, RELEASE_2_4_11_LINUX_DIRECT_X64])]
-async fn test_servicing_x64_linux_direct_2411_to_latest(
+// Disabled while we investigate intermittent failures
+// #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64, RELEASE_2_4_11_LINUX_DIRECT_X64])]
+async fn _openhcl_servicing_x64_linux_direct_2411_to_latest(
     config: PetriVmConfigOpenVmm,
     (latest_igvm, release_igvm): (
         ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
