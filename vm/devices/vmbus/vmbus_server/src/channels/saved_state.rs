@@ -379,6 +379,8 @@ enum Connection {
         client_id: Option<Guid>,
         #[mesh(8)]
         trusted: bool,
+        #[mesh(9)]
+        paused: bool,
     },
 }
 
@@ -409,6 +411,7 @@ impl Connection {
                 modifying: info.modifying,
                 client_id: Some(info.client_id),
                 trusted: info.trusted,
+                paused: info.paused,
             }),
             super::ConnectionState::Disconnecting {
                 next_action,
@@ -439,6 +442,7 @@ impl Connection {
                     offers_sent: false,
                     modifying: false,
                     client_id: client_id.unwrap_or(Guid::ZERO),
+                    paused: false,
                 },
                 next_action: next_action.restore(),
             },
@@ -451,6 +455,7 @@ impl Connection {
                 modifying,
                 client_id,
                 trusted,
+                paused,
             } => super::ConnectionState::Connected(super::ConnectionInfo {
                 version: version.restore(trusted)?,
                 trusted,
@@ -460,6 +465,7 @@ impl Connection {
                 target_message_vp,
                 modifying,
                 client_id: client_id.unwrap_or(Guid::ZERO),
+                paused,
             }),
             Connection::Disconnecting { next_action } => super::ConnectionState::Disconnecting {
                 next_action: next_action.restore(),
