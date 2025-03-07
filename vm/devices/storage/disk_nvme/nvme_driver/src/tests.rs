@@ -5,6 +5,7 @@ use crate::NvmeDriver;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
+use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -14,6 +15,7 @@ use nvme_spec::Cap;
 use nvme_spec::nvm::DsmRange;
 use page_pool_alloc::PagePool;
 use page_pool_alloc::PagePoolAllocator;
+use page_pool_alloc::PoolSource;
 use page_pool_alloc::TestMapper;
 use pal_async::async_test;
 use pal_async::DefaultDriver;
@@ -21,6 +23,7 @@ use pal_async::async_test;
 use parking_lot::Mutex;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
+use sparse_mmap::SparseMapping;
 use std::sync::Arc;
 use test_with_tracing::test;
 use user_driver::DeviceBacking;
@@ -57,14 +60,24 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
     const CPU_COUNT: u32 = 64;
 
     let base_len = 64 << 20;
-    let payload_len = 4 << 20;
-    let mem = DeviceSharedMemory::new(base_len, payload_len);
+
+    let test_mapper = TestMapper::new(base_len).unwrap();
+    let guest_mem = test_mapper.create_guest_memory();
+    
+    let pool = PagePool::new(
+        &[MemoryRange::from_4k_gpn_range(20000..base_len)],
+        test_mapper
+    )
+    .unwrap();
+
+    let alloc = pool.allocator("test".into()).unwrap();
+    let dma_client = Arc::new(alloc);
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
     let nvme = nvme::NvmeController::new(
         &driver_source,
-        mem.guest_memory().clone(),
+        guest_mem,
         &mut msi_set,
         &mut ExternallyManagedMmioIntercepts,
         NvmeControllerCaps {
@@ -74,11 +87,11 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
         },
     );
 
-    let mut device = NvmeTestEmulatedDevice::new(nvme, msi_set, mem);
+    let mut device = EmulatedDevice::new(nvme, msi_set, dma_client.clone());
     // Setup mock response at offset 0
-    let max_u16: u16 = 65535;
-    let cap: Cap = Cap::new().with_mqes_z(max_u16);
-    device.set_mock_response_u64(Some((0, cap.into())));
+    // let max_u16: u16 = 65535;
+    // let cap: Cap = Cap::new().with_mqes_z(max_u16);
+    // device.set_mock_response_u64(Some((0, cap.into())));
     let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device).await;
 
     assert!(driver.is_ok());
@@ -94,6 +107,14 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
     let payload_len = 4 << 20;
     let mem = DeviceSharedMemory::new(base_len, payload_len);
 
+    let pool = PagePool::new(
+        &[MemoryRange::from_4k_gpn_range(0..3000)],
+        TestMapper::new(300).unwrap()
+    )
+    .unwrap();
+    let alloc = pool.allocator("test".into()).unwrap();
+    let dma_client = Arc::new(alloc);
+
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
     let nvme = nvme::NvmeController::new(
@@ -108,7 +129,7 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
         },
     );
 
-    let mut device = NvmeTestEmulatedDevice::new(nvme, msi_set, mem);
+    let mut device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
     // Setup mock response at offset 0
     let cap: Cap = Cap::new().with_mqes_z(0);
     device.set_mock_response_u64(Some((0, cap.into())));
@@ -139,6 +160,14 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
 
     let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
 
+    let pool = PagePool::new(
+        &[MemoryRange::from_4k_gpn_range(0..3000)],
+        TestMapper::new(300).unwrap()
+    )
+    .unwrap();
+    let alloc = pool.allocator("test".into()).unwrap();
+    let dma_client = Arc::new(alloc);
+
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
     let nvme = nvme::NvmeController::new(
@@ -157,7 +186,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
         .await
         .unwrap();
 
-    let device = NvmeTestEmulatedDevice::new(nvme, msi_set, mem);
+    let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
 
     let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
         .await
@@ -260,6 +289,14 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
         },
     );
 
+    let pool = PagePool::new(
+        &[MemoryRange::from_4k_gpn_range(0..3000)],
+        TestMapper::new(300).unwrap()
+    )
+    .unwrap();
+    let alloc = pool.allocator("test".into()).unwrap();
+    let dma_client = Arc::new(alloc);
+
     // Add a namespace so Identify Namespace command will succeed later.
     nvme_ctrl
         .client()
@@ -267,7 +304,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
         .await
         .unwrap();
 
-    let device = NvmeTestEmulatedDevice::new(nvme_ctrl, msi_x, mem);
+    let device = NvmeTestEmulatedDevice::new(nvme_ctrl, msi_x, dma_client.clone());
     let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
         .await
         .unwrap();
@@ -305,7 +342,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     // Wait for CSTS.RDY to set.
     backoff.back_off().await;
 
-    let _new_device = NvmeTestEmulatedDevice::new(new_nvme_ctrl, new_msi_x, new_emu_mem);
+    let _new_device = NvmeTestEmulatedDevice::new(new_nvme_ctrl, new_msi_x, dma_client.clone());
     // TODO: Memory restore is disabled for emulated DMA, uncomment once fixed.
     // let _new_nvme_driver = NvmeDriver::restore(&driver_source, CPU_COUNT, new_device, &saved_state)
     //     .await
@@ -332,15 +369,7 @@ pub struct NvmeTestMapping<T> {
 
 impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-    pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory) -> Self {
-        let pool = PagePool::new(
-            &[MemoryRange::from_4k_gpn_range(0..3000)],
-            TestMapper::new(300).unwrap()
-        )
-        .unwrap();
-        let alloc = pool.allocator("test".into()).unwrap();
-        let dma_client = Arc::new(alloc);
-
+    pub fn new(device: T, msi_set: MsiInterruptSet, dma_client: Arc<PagePoolAllocator>) -> Self {
         Self {
             device: EmulatedDevice::new(device, msi_set, dma_client.clone()),
             mocked_response_u32: Arc::new(Mutex::new(None)),
