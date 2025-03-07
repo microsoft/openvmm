@@ -46,7 +46,7 @@ impl ScsiDvdNvmeTest {
 
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
         let base_len = 64 << 20;
-        let payload_len = 4 << 30;
+        let payload_len = 4 << 20;
         let mem = DeviceSharedMemory::new(base_len, payload_len);
         let mut msi_set = MsiInterruptSet::new();
         let nvme = NvmeController::new(
@@ -204,7 +204,7 @@ async fn validate_read16_nvme(driver: DefaultDriver) {
     let lba_count = 2;
     let request = make_cdb16_request(ScsiOp::READ16, start_lba, lba_count);
 
-    println!("read disk to guest_mem2 ...");
+    tracing::info!("read disk to guest_mem2 ...");
     check_execute_scsi(
         &mut test.scsi_dvd,
         &external_data.buffer(&guest_mem),
@@ -213,7 +213,7 @@ async fn validate_read16_nvme(driver: DefaultDriver) {
     )
     .await;
 
-    println!("validate guest_mem2 ...");
+    tracing::info!("validate guest_mem2 ...");
     let data = make_repeat_data_buffer(sector_count as usize, sector_size as usize);
     assert_eq!(
         check_guest_memory(

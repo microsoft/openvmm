@@ -22,6 +22,7 @@ scsi_core.workspace = true
 scsi_defs.workspace = true
 scsidisk.workspace = true
 test_with_tracing.workspace = true
+tracing.workspace = true
 user_driver.workspace = true
 vmcore.workspace = true
 zerocopy.workspace = true
