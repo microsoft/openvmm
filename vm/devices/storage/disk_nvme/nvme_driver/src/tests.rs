@@ -15,7 +15,6 @@ use nvme_spec::Cap;
 use nvme_spec::nvm::DsmRange;
 use page_pool_alloc::PagePool;
 use page_pool_alloc::PagePoolAllocator;
-use page_pool_alloc::PoolSource;
 use page_pool_alloc::TestMapper;
 use pal_async::async_test;
 use pal_async::DefaultDriver;
@@ -23,7 +22,6 @@ use pal_async::async_test;
 use parking_lot::Mutex;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
-use sparse_mmap::SparseMapping;
 use std::sync::Arc;
 use test_with_tracing::test;
 use user_driver::DeviceBacking;
@@ -31,7 +29,6 @@ use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
-use user_driver::emulated::EmulatedDmaAllocator;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
 use vmcore::vm_task::SingleDriverBackend;
@@ -53,26 +50,19 @@ async fn test_nvme_save_restore(driver: DefaultDriver) {
     test_nvme_save_restore_inner(driver).await;
 }
 
+
+
 #[async_test]
 async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
     const MSIX_COUNT: u16 = 2;
     const IO_QUEUE_COUNT: u16 = 64;
     const CPU_COUNT: u32 = 64;
 
-    let base_len = 64 << 20;
+    // Memory setup
+    let pages = 1000;
+    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages);
 
-    let test_mapper = TestMapper::new(base_len).unwrap();
-    let guest_mem = test_mapper.create_guest_memory();
-    
-    let pool = PagePool::new(
-        &[MemoryRange::from_4k_gpn_range(20000..base_len)],
-        test_mapper
-    )
-    .unwrap();
-
-    let alloc = pool.allocator("test".into()).unwrap();
-    let dma_client = Arc::new(alloc);
-
+    // Controller Driver Setup
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
     let nvme = nvme::NvmeController::new(
@@ -87,13 +77,14 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
         },
     );
 
-    let mut device = EmulatedDevice::new(nvme, msi_set, dma_client.clone());
-    // Setup mock response at offset 0
-    // let max_u16: u16 = 65535;
-    // let cap: Cap = Cap::new().with_mqes_z(max_u16);
-    // device.set_mock_response_u64(Some((0, cap.into())));
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device).await;
+    let mut device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
 
+    // Mock response at offset 0 since that is where Cap will be accessed
+    let max_u16: u16 = 65535;
+    let cap: Cap = Cap::new().with_mqes_z(max_u16);
+    device.set_mock_response_u64(Some((0, cap.into())));
+
+    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device).await;
     assert!(driver.is_ok());
 }
 
@@ -451,4 +442,20 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
     fn write_u64(&self, offset: usize, data: u64) {
         self.mapping.write_u64(offset, data);
     }
+}
+
+/// Creates test memory that leverages the TestMapper. Returned GuestMemory references the entire range
+/// and the page pool references only the second half
+fn create_test_memory(num_pages: u64) -> (GuestMemory, PagePool, Arc<PagePoolAllocator>){
+    let test_mapper = TestMapper::new(num_pages).unwrap();
+    let guest_mem = test_mapper.create_guest_memory();
+    let pool = PagePool::new(
+        &[MemoryRange::from_4k_gpn_range(num_pages/2..num_pages)],
+        test_mapper
+    )
+    .unwrap();
+
+    // Return page pool so that it is not dropped.
+    let allocator = pool.allocator("nvme_test_page_pool".into()).unwrap();
+    (guest_mem, pool, Arc::new(allocator))
 }
