@@ -302,7 +302,7 @@ pub struct RestoreRequest {
 pub enum ChannelRequest {
     Open(FailableRpc<OpenRequest, OpenOutput>),
     Restore(FailableRpc<RestoreRequest, OpenOutput>),
-    Close,
+    Close(Rpc<(), ()>),
     Gpadl(FailableRpc<GpadlRequest, ()>),
     TeardownGpadl(Rpc<GpadlId, ()>),
     Modify(Rpc<ModifyRequest, i32>),
@@ -319,7 +319,7 @@ impl std::fmt::Display for ChannelRequest {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ChannelRequest::Open(_) => write!(fmt, "Open"),
-            ChannelRequest::Close => write!(fmt, "Close"),
+            ChannelRequest::Close(_) => write!(fmt, "Close"),
             ChannelRequest::Restore(_) => write!(fmt, "Restore"),
             ChannelRequest::Gpadl(_) => write!(fmt, "Gpadl"),
             ChannelRequest::TeardownGpadl(_) => write!(fmt, "TeardownGpadl"),
@@ -1402,7 +1402,9 @@ impl ClientTask {
             }
             ChannelRequest::Gpadl(req) => self.handle_gpadl(channel_id, req),
             ChannelRequest::TeardownGpadl(req) => self.handle_gpadl_teardown(channel_id, req),
-            ChannelRequest::Close => self.handle_close_channel(channel_id),
+            ChannelRequest::Close(req) => {
+                req.handle_sync(|()| self.handle_close_channel(channel_id))
+            }
             ChannelRequest::Modify(req) => self.handle_modify_channel(channel_id, req),
         }
     }
@@ -2706,7 +2708,11 @@ mod tests {
             for (i, channel) in channels.iter().enumerate() {
                 // Close the channel to prepare for the next iteration of the loop.
                 // The event flag should be the same each time.
-                channel.request_send.send(ChannelRequest::Close);
+                channel
+                    .request_send
+                    .call(ChannelRequest::Close, ())
+                    .await
+                    .unwrap();
 
                 check_message(
                     server.next().await.unwrap(),

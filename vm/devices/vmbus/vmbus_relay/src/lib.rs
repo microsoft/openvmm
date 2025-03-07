@@ -309,11 +309,12 @@ impl RelayChannelTask {
         })
     }
 
-    fn handle_close_channel(&mut self) {
-        let _ = &self
-            .channel
+    async fn handle_close_channel(&mut self) {
+        self.channel
             .request_send
-            .send(client::ChannelRequest::Close);
+            .call(client::ChannelRequest::Close, ())
+            .await
+            .ok();
 
         self.channel.interrupt_relay = None;
     }
@@ -399,7 +400,7 @@ impl RelayChannelTask {
                 .await;
             }
             ChannelRequest::Close(rpc) => {
-                rpc.handle(|()| async move { self.handle_close_channel() })
+                rpc.handle(|()| async move { self.handle_close_channel().await })
                     .await;
             }
             ChannelRequest::TeardownGpadl(rpc) => {

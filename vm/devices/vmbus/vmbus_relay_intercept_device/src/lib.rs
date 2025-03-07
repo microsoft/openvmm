@@ -387,7 +387,11 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
         // available everywhere.
         {
             let offer = state.offer.as_ref().expect("device opened");
-            offer.request_send.send(ChannelRequest::Close);
+            offer
+                .request_send
+                .call(ChannelRequest::Close, ())
+                .await
+                .ok();
         }
         // N.B. This will wait for a TeardownGpadl response which can be used
         // as a signal that the channel is closed and the ring buffers are no

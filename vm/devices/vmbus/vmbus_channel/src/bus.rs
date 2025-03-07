@@ -80,6 +80,10 @@ pub enum ChannelRequest {
     /// Open the channel.
     Open(Rpc<OpenRequest, Option<OpenResult>>),
     /// Close the channel.
+    ///
+    /// Although there is no response from the host, this is still modeled as an
+    /// RPC so that the caller can know that the vmbus client's state has been
+    /// updated.
     Close(Rpc<(), ()>),
     /// Create a new GPADL.
     Gpadl(Rpc<GpadlRequest, bool>),
