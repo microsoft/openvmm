@@ -1,6 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Implements a vmbus channel relay, which consumes channels from the host
+//! vmbus control plane (via [`vmbus_client`]) and relays them as channels to
+//! the guest OS (via [`vmbus_server`]).
+//!
+//! This is used to allow the paravisor to implement the vmbus control plane
+//! while still passing through channels from the host, without any paravisor
+//! presence in the data plane.
+
 #![forbid(unsafe_code)]
 
 pub mod legacy_saved_state;

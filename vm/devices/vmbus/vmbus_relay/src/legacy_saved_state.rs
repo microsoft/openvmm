@@ -1,6 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Provides saved state structures for compatibility with the 2411 release,
+//! where the relay and `vmbus_client` were saved together as a single state
+//! unit.
+
 pub use relay::SavedState;
 
 use crate::saved_state;
@@ -9,6 +13,7 @@ mod relay {
     use mesh::payload::Protobuf;
     use vmcore::save_restore::SavedStateRoot;
 
+    /// The legacy, 2411 saved state for the relay.
     #[derive(Clone, Protobuf, SavedStateRoot)]
     #[mesh(package = "vmbus.relay")]
     pub struct SavedState {
@@ -46,6 +51,8 @@ mod relay {
 }
 
 impl SavedState {
+    /// Constructs a legacy saved state from the current relay and client saved
+    /// states.
     pub fn from_relay_and_client(
         relay: &saved_state::SavedState,
         client: &vmbus_client::SavedState,
@@ -67,6 +74,7 @@ impl SavedState {
         }
     }
 
+    /// Produces a current relay saved state from the legacy saved state.
     pub fn relay_saved_state(&mut self) -> saved_state::SavedState {
         self.client_saved_state
             .channels
@@ -99,6 +107,7 @@ impl SavedState {
         }
     }
 
+    /// Produces a current client saved state from the legacy saved state.
     pub fn client_saved_state(&self) -> vmbus_client::SavedState {
         self.client_saved_state.clone()
     }
