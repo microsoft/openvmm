@@ -459,10 +459,7 @@ impl TestMapper {
         Ok(Self { mem: fd, len })
     }
 
-    fn inspect_extra(&self, resp: &mut Response<'_>) {
-        resp.field("type", "test");
-    }
-
+    /// Creates guest memory over the entirity of the TestMapper object
     pub fn create_guest_memory(&self) -> GuestMemory {
         let mappable = self.mappable();
         let mapping = SparseMapping::new(self.len).unwrap();
@@ -470,6 +467,10 @@ impl TestMapper {
             .map_file(0, self.len, mappable, 0, true)
             .unwrap();
         GuestMemory::new("test mapper guest memory", mapping)
+    }
+
+    fn inspect_extra(&self, resp: &mut Response<'_>) {
+        resp.field("type", "test");
     }
 }
 
