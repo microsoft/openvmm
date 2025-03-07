@@ -1551,6 +1551,14 @@ impl ClientTask {
         self.running = false;
     }
 
+    /// Returns whether the server supports in-band messages to pause/resume the
+    /// message stream.
+    ///
+    /// For hosts where this is not supported, we mask the sint to pause new
+    /// messages being queued to the sint, then drain the messages. This does
+    /// not work with some host implementations, which cannot support draining
+    /// the message queue while the sint is masked (due to the use of
+    /// HvPostMessageDirect).
     fn can_pause_resume(&self) -> bool {
         if let ClientState::Connected { version } = self.state {
             version.feature_flags.pause_resume()
