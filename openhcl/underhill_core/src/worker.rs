@@ -2686,10 +2686,11 @@ async fn new_underhill_vm(
             let connection = if let Some(c) = connection {
                 c
             } else {
-                const VMBUS_RELAY_CLIENT_ID: Guid =
-                    guid::guid!("ceb1cd55-6a3b-41c5-9473-4dd30624c3d8");
+                // Unique ID used so that the host knows which client this is,
+                // for diagnosing failures.
+                const OPENHCL_CLIENT_ID: Guid = guid::guid!("ceb1cd55-6a3b-41c5-9473-4dd30624c3d8");
                 client
-                    .connect(0, None, VMBUS_RELAY_CLIENT_ID)
+                    .connect(0, None, OPENHCL_CLIENT_ID)
                     .await
                     .context("failed to connect to vmbus")?
             };

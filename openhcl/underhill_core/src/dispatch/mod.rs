@@ -653,7 +653,9 @@ impl LoadedVm {
             client.start();
         }
 
-        // TODO: resume the other drivers.
+        // BUGBUG: resume the other drivers. This only becomes a problem once
+        // nvme keepalive is enabled, since otherwise no other drivers have been
+        // stopped.
     }
 
     async fn save(
