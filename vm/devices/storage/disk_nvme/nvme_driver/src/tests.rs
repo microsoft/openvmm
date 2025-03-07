@@ -94,23 +94,15 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
     const IO_QUEUE_COUNT: u16 = 64;
     const CPU_COUNT: u32 = 64;
 
-    let base_len = 64 << 20;
-    let payload_len = 4 << 20;
-    let mem = DeviceSharedMemory::new(base_len, payload_len);
-
-    let pool = PagePool::new(
-        &[MemoryRange::from_4k_gpn_range(0..3000)],
-        TestMapper::new(300).unwrap()
-    )
-    .unwrap();
-    let alloc = pool.allocator("test".into()).unwrap();
-    let dma_client = Arc::new(alloc);
+    // Memory setup
+    let pages = 1000;
+    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages);
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
     let nvme = nvme::NvmeController::new(
         &driver_source,
-        mem.guest_memory().clone(),
+        guest_mem,
         &mut msi_set,
         &mut ExternallyManagedMmioIntercepts,
         NvmeControllerCaps {
@@ -121,6 +113,7 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
     );
 
     let mut device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
+
     // Setup mock response at offset 0
     let cap: Cap = Cap::new().with_mqes_z(0);
     device.set_mock_response_u64(Some((0, cap.into())));
@@ -263,14 +256,15 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     const IO_QUEUE_COUNT: u16 = 64;
     const CPU_COUNT: u32 = 64;
 
-    let base_len = 64 * 1024 * 1024;
-    let payload_len = 4 * 1024 * 1024;
-    let mem = DeviceSharedMemory::new(base_len, payload_len);
+    // Memory setup
+    let pages = 1000;
+    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages);
+
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
     let mut msi_x = MsiInterruptSet::new();
     let nvme_ctrl = nvme::NvmeController::new(
         &driver_source,
-        mem.guest_memory().clone(),
+        guest_mem.clone(),
         &mut msi_x,
         &mut ExternallyManagedMmioIntercepts,
         NvmeControllerCaps {
@@ -279,14 +273,6 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
             subsystem_id: Guid::new_random(),
         },
     );
-
-    let pool = PagePool::new(
-        &[MemoryRange::from_4k_gpn_range(0..3000)],
-        TestMapper::new(300).unwrap()
-    )
-    .unwrap();
-    let alloc = pool.allocator("test".into()).unwrap();
-    let dma_client = Arc::new(alloc);
 
     // Add a namespace so Identify Namespace command will succeed later.
     nvme_ctrl
@@ -307,11 +293,10 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
     assert_eq!(saved_state.namespaces.len(), 0);
 
     // Create a second set of devices since the ownership has been moved.
-    let new_emu_mem = DeviceSharedMemory::new(base_len, payload_len);
     let mut new_msi_x = MsiInterruptSet::new();
     let mut new_nvme_ctrl = nvme::NvmeController::new(
         &driver_source,
-        new_emu_mem.guest_memory().clone(),
+        guest_mem.clone(),
         &mut new_msi_x,
         &mut ExternallyManagedMmioIntercepts,
         NvmeControllerCaps {
