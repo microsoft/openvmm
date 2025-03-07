@@ -1096,6 +1096,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     (self.guest_memory.iova(head.gpa).unwrap(), 0)
                 };
 
+            // 31 is a hardware limit. Max WQE size is 512 bytes.
             let mut sgl = [Sge::new_zeroed(); 31];
             sgl[0] = Sge {
                 address: head_iova,
@@ -1119,17 +1120,60 @@ impl<T: DeviceBacking> ManaQueue<T> {
             };
 
             let segment_count = tail_sgl_offset + meta.segment_count - header_segment_count;
-            let sgl = &mut sgl[..segment_count];
-            for (tail, sge) in segments[header_segment_count..]
-                .iter()
-                .zip(&mut sgl[tail_sgl_offset..])
-            {
-                *sge = Sge {
-                    address: self.guest_memory.iova(tail.gpa).unwrap(),
+            // Verbose logging for testing. TODO: Remove before checkin
+            tracing::error!(
+                "ERIK segment_count {:?} tail_sgl_offset {:?} meta.segment_count {:?} header_segment_count {:?}",
+                segment_count,
+                tail_sgl_offset,
+                meta.segment_count,
+                header_segment_count
+            );
+            let sgl = if segment_count < 31 {
+                let sgl = &mut sgl[..segment_count];
+                for (tail, sge) in segments[header_segment_count..]
+                    .iter()
+                    .zip(&mut sgl[tail_sgl_offset..])
+                {
+                    *sge = Sge {
+                        address: self.guest_memory.iova(tail.gpa).unwrap(),
+                        mem_key: self.mem_key,
+                        size: tail.len,
+                    };
+                }
+                sgl
+            } else {
+                // Tx segment count exceeds the limit. Coalescing using a bounce buffer.
+                // Verbose logging for testing. TODO: Remove before checkin
+                tracing::error!("ERIK allocating {:?}", meta.len);
+                let sgl = &mut sgl[..1];
+                let mut buf: ContiguousBuffer<'_> =
+                    // NOTE: allocate will panic if size is larger than PAGE_SIZE32 (4096)
+                    match self.tx_bounce_buffer.allocate(meta.len as u32) {
+                        Ok(buf) => buf,
+                        Err(err) => {
+                            tracelimit::error_ratelimited!(
+                                err = &err as &dyn std::error::Error,
+                                meta.len,
+                                "failed to bounce buffer"
+                            );
+                            // Drop the packet
+                            return Ok(None);
+                        }
+                    };
+                let mut next = buf.as_slice();
+                for seg in segments {
+                    let len = seg.len as usize;
+                    self.guest_memory.read_to_atomic(seg.gpa, &next[..len])?;
+                    next = &next[len..];
+                }
+                let buf = buf.commit();
+                sgl[0] = Sge {
+                    address: buf.gpa,
                     mem_key: self.mem_key,
-                    size: tail.len,
+                    size: meta.len as u32,
                 };
-            }
+                sgl
+            };
 
             let wqe_len = if short_format {
                 self.tx_wq
