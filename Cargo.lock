@@ -4535,9 +4535,11 @@ dependencies = [
  "guid",
  "inspect",
  "inspect_counters",
+ "memory_range",
  "mesh",
  "nvme",
  "nvme_spec",
+ "page_pool_alloc",
  "pal_async",
  "parking_lot",
  "pci_core",
@@ -4545,6 +4547,7 @@ dependencies = [
  "safeatomic",
  "scsi_buffers",
  "slab",
+ "sparse_mmap",
  "task_control",
  "test_with_tracing",
  "thiserror 2.0.0",
@@ -4979,6 +4982,7 @@ name = "page_pool_alloc"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "guestmem",
  "inspect",
  "memory_range",
  "mesh",

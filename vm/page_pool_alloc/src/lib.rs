@@ -9,6 +9,7 @@ mod device_dma;
 pub use device_dma::PagePoolDmaBuffer;
 
 use anyhow::Context;
+use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::Response;
 use memory_range::MemoryRange;
@@ -446,6 +447,7 @@ pub trait PoolSource: Inspect + Send + Sync {
 pub struct TestMapper {
     #[inspect(skip)]
     mem: Mappable,
+    len: usize,
 }
 
 impl TestMapper {
@@ -454,11 +456,20 @@ impl TestMapper {
         let len = (size_pages * PAGE_SIZE) as usize;
         let fd = alloc_shared_memory(len).context("creating shared mem")?;
 
-        Ok(Self { mem: fd })
+        Ok(Self { mem: fd, len })
     }
 
     fn inspect_extra(&self, resp: &mut Response<'_>) {
         resp.field("type", "test");
+    }
+
+    pub fn create_guest_memory(&self) -> GuestMemory {
+        let mappable = self.mappable();
+        let mapping = SparseMapping::new(self.len).unwrap();
+        mapping
+            .map_file(0, self.len, mappable, 0, true)
+            .unwrap();
+        GuestMemory::new("test mapper guest memory", mapping)
     }
 }
 
