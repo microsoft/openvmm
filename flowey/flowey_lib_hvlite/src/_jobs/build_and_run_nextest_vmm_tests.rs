@@ -177,6 +177,7 @@ impl SimpleFlowNode for Node {
                         vmm_test_images::KnownVhd::Gen1WindowsDataCenterCore2022,
                         vmm_test_images::KnownVhd::Gen2WindowsDataCenterCore2022,
                         vmm_test_images::KnownVhd::Ubuntu2204Server,
+                        vmm_test_images::KnownVhd::Ubuntu2404ServerX64,
                     ]),
                 ]);
 
