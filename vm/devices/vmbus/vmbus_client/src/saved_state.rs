@@ -17,6 +17,18 @@ use vmbus_core::VersionInfo;
 
 impl super::ClientTask {
     pub fn handle_save(&mut self) -> SavedState {
+        assert!(!self.running);
+
+        let mut pending_messages = self
+            .inner
+            .messages
+            .queued
+            .iter()
+            .map(|msg| PendingMessage {
+                data: msg.data().to_vec(),
+            })
+            .collect::<Vec<_>>();
+
         // It's the responsibility of the caller to ensure the client is in a state where it's
         // possible to save.
         SavedState {
@@ -39,43 +51,50 @@ impl super::ClientTask {
             channels: self
                 .inner
                 .channels
+                .0
                 .iter()
-                .map(|(id, v)| {
+                .filter_map(|(&id, v)| {
+                    let Some(v) = v else {
+                        // The channel has been revoked, but the user is not
+                        // done with it. The channel won't be available for use
+                        // when we restore, so don't save but, but do save a pending
+                        // message to the server to release the channel ID.
+                        pending_messages.push(PendingMessage {
+                            data: OutgoingMessage::new(&protocol::RelIdReleased { channel_id: id })
+                                .data()
+                                .to_vec(),
+                        });
+                        return None;
+                    };
                     assert!(
                         v.modify_response_send.is_none(),
                         "Cannot save a channel that is being modified."
                     );
                     let key = offer_key(&v.offer);
                     tracing::info!(%key, %v.state, "channel saved");
-
-                    Channel {
+                    Some(Channel {
                         id: id.0,
                         state: ChannelState::save(&v.state),
                         offer: v.offer.into(),
-                    }
+                    })
                 })
                 .collect(),
             gpadls: self
                 .inner
                 .channels
+                .0
                 .iter()
                 .flat_map(|(channel_id, channel)| {
-                    channel.gpadls.iter().map(|(gpadl_id, gpadl_state)| Gpadl {
-                        gpadl_id: gpadl_id.0,
-                        channel_id: channel_id.0,
-                        state: GpadlState::save(gpadl_state),
+                    channel.iter().flat_map(|c| {
+                        c.gpadls.iter().map(|(gpadl_id, gpadl_state)| Gpadl {
+                            gpadl_id: gpadl_id.0,
+                            channel_id: channel_id.0,
+                            state: GpadlState::save(gpadl_state),
+                        })
                     })
                 })
                 .collect(),
-            pending_messages: self
-                .inner
-                .messages
-                .queued
-                .iter()
-                .map(|msg| PendingMessage {
-                    data: msg.data().to_vec(),
-                })
-                .collect(),
+            pending_messages,
         }
     }
 
@@ -83,6 +102,8 @@ impl super::ClientTask {
         &mut self,
         saved_state: SavedState,
     ) -> Result<Option<ConnectResult>, RestoreError> {
+        assert!(!self.running);
+
         let SavedState {
             client_state,
             channels,
@@ -122,14 +143,10 @@ impl super::ClientTask {
 
         let mut restored_channels = Vec::new();
         for saved_channel in channels {
-            if let Some(offer_info) = self.restore_channel(saved_channel) {
-                let key = offer_key(&offer_info.offer);
-                tracing::info!(%key, state = %saved_channel.state, "channel restored");
-                restored_channels.push(offer_info);
-            }
-            if let Some(channel) = self.inner.channels.get_mut(&ChannelId(saved_channel.id)) {
-                channel.state = saved_channel.state.restore()
-            }
+            let offer_info = self.restore_channel(saved_channel)?;
+            let key = offer_key(&offer_info.offer);
+            tracing::info!(%key, state = %saved_channel.state, "channel restored");
+            restored_channels.push(offer_info);
         }
 
         for gpadl in gpadls {
@@ -141,7 +158,9 @@ impl super::ClientTask {
             let channel = self
                 .inner
                 .channels
+                .0
                 .get_mut(&channel_id)
+                .and_then(|v| v.as_mut())
                 .ok_or(RestoreError::GpadlForUnknownChannelId(channel_id.0))?;
 
             if channel.gpadls.insert(gpadl_id, gpadl_state).is_some() {
@@ -174,8 +193,11 @@ impl super::ClientTask {
     }
 
     pub fn handle_post_restore(&mut self) {
+        assert!(!self.running);
+
         // Close restored channels that have not been claimed.
-        for (&channel_id, channel) in &mut self.inner.channels {
+        for (&channel_id, channel) in &mut self.inner.channels.0 {
+            let Some(channel) = channel else { continue };
             if let super::ChannelState::Restored = channel.state {
                 tracing::info!(
                     channel_id = channel_id.0,
@@ -206,8 +228,9 @@ impl super::ClientTask {
         }
     }
 
-    fn restore_channel(&mut self, channel: Channel) -> Option<OfferInfo> {
+    fn restore_channel(&mut self, channel: Channel) -> Result<OfferInfo, RestoreError> {
         self.create_channel_core(channel.offer.into(), channel.state.restore())
+            .map_err(RestoreError::OfferFailed)
     }
 }
 
