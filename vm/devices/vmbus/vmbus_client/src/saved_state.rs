@@ -57,8 +57,9 @@ impl super::ClientTask {
                     let Some(v) = v else {
                         // The channel has been revoked, but the user is not
                         // done with it. The channel won't be available for use
-                        // when we restore, so don't save but, but do save a pending
-                        // message to the server to release the channel ID.
+                        // when we restore, so don't save it, but do save a
+                        // pending message to the server to release the channel
+                        // ID.
                         pending_messages.push(PendingMessage {
                             data: OutgoingMessage::new(&protocol::RelIdReleased { channel_id: id })
                                 .data()
