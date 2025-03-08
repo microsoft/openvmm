@@ -596,6 +596,7 @@ tail-expr-drop-order = "allow"
 if-let-rescope = "allow"
 
 unused_qualifications = "warn"
+missing_docs = "warn"
 
 # Code that needs unsafe should opt-in via a module-scoped allow.
 unsafe_code = "deny"

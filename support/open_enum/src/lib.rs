@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![warn(missing_docs)]
 #![no_std]
 
 //! Provides the [`open_enum`] macro.

@@ -3,6 +3,7 @@
 
 //! Client definitions for the gdbstub debug worker.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 use mesh::payload::Protobuf;

@@ -4,6 +4,7 @@
 //! Definitions relating to the x86 architecture, including the core CPU and
 //! its interrupt controller (APIC).
 
+#![expect(missing_docs)]
 #![no_std]
 #![forbid(unsafe_code)]
 

@@ -3,6 +3,7 @@
 
 //! A VHD1 disk implementation. Currently only supports fixed VHD1.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 use disk_backend::resolve::ResolveDiskParameters;

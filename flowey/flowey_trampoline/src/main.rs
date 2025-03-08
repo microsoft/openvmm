@@ -20,6 +20,8 @@
 //! This crate can be removed when the `linkme` bug is fixed or when cargo gains
 //! enough support to do this kind of thing natively.
 
+#![warn(missing_docs)]
+
 use std::process::Command;
 
 fn main() {

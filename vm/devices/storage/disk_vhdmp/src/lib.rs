@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(windows)]
 // UNSAFETY: Calling Win32 VirtualDisk APIs and accessing the unions they return.
 #![expect(unsafe_code)]

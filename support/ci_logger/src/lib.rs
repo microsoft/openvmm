@@ -3,6 +3,7 @@
 
 //! A [`log::Log`] implementation translates log-levels to ADO logging commands.
 
+#![warn(missing_docs)]
 use env_logger::filter::Filter;
 use log::Level;
 use log::Metadata;

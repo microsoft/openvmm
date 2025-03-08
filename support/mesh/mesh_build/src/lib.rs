@@ -5,6 +5,7 @@
 //!
 //! Used with the prost protobuf code generator.
 
+#![warn(missing_docs)]
 use heck::ToUpperCamelCase;
 use proc_macro2::Span;
 use syn::Ident;

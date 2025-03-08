@@ -5,6 +5,7 @@
 
 #![forbid(unsafe_code)]
 #![cfg(target_os = "linux")]
+#![warn(missing_docs)]
 
 // Use mimalloc instead of the system malloc for performance.
 #[global_allocator]

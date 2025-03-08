@@ -3,6 +3,7 @@
 
 //! Microsoft hypervisor definitions.
 
+#![expect(missing_docs)]
 #![no_std]
 
 use bitfield_struct::bitfield;

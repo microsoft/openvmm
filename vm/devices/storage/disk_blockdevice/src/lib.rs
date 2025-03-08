@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(target_os = "linux")]
 
 //! Implements the [`DiskIo`] trait for virtual disks backed by a raw block

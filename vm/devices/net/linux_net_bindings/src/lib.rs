@@ -4,6 +4,7 @@
 // C API bingings based on /usr/include/linux/if.h and
 // /usr/include/linux/if_tun.h.
 
+#![expect(missing_docs)]
 #![cfg(unix)]
 // UNSAFETY: bindgen generated code.
 #![expect(unsafe_code)]

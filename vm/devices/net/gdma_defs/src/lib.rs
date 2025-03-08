@@ -4,6 +4,7 @@
 //! Hardware definitions for the GDMA/MANA device, which is the NIC exposed by
 //! new Azure hardware SKUs.
 
+#![expect(missing_docs)]
 pub mod access;
 pub mod bnic;
 

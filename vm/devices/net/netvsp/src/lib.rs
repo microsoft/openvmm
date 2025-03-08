@@ -3,6 +3,7 @@
 
 //! The user-mode netvsp VMBus device implementation.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod buffers;

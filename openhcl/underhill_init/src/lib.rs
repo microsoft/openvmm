@@ -4,6 +4,7 @@
 //! This module implements the the Underhill initial process.
 
 #![cfg(target_os = "linux")]
+#![expect(missing_docs)]
 // UNSAFETY: Calling libc functions to set up global system state.
 #![expect(unsafe_code)]
 

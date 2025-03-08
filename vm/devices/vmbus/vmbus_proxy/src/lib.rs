@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(windows)]
 // UNSAFETY: Calling vmbus proxy ioctls.
 #![expect(unsafe_code)]

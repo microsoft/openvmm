@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 fn main() {
     // TODO: loader shouldn't have any `cfg`s (or typedefs for that matter)!
     //

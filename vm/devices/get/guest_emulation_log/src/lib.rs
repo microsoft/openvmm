@@ -7,6 +7,7 @@
 //! send logs from the guest to the host. This is an implementation to support
 //! better integration testing within the HvLite CI.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod resolver;

@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 use aarch64emu::AccessCpuState;
 use aarch64emu::Cpu;
 use aarch64emu::Emulator;

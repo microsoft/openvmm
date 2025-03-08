@@ -5,6 +5,7 @@
 //!
 //! DEVNOTE: this organization isn't great, and should be reconsidered...
 
+#![expect(missing_docs)]
 use anyhow::Context;
 use guestmem::GuestMemory;
 use hvdef::Vtl;

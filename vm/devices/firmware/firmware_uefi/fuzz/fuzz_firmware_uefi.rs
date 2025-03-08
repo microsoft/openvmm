@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![no_main]
+#![expect(missing_docs)]
 #![cfg(all(target_os = "linux", target_env = "gnu"))]
 
 use arbitrary::Arbitrary;

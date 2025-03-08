@@ -9,6 +9,7 @@
 //! reference new functionality via `Resource`s when you can to minimize build
 //! time.
 
+#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod emuplat;

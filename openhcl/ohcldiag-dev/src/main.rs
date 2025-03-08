@@ -4,6 +4,7 @@
 //! A "move fast, break things" tool, that provides no long-term CLI stability
 //! guarantees.
 
+#![expect(missing_docs)]
 mod completions;
 
 use anyhow::Context;

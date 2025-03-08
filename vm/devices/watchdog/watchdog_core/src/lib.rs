@@ -8,6 +8,7 @@
 //! This implementation is used by both the Hyper-V UEFI helper device, and the
 //! Guest Watchdog device.
 
+#![expect(missing_docs)]
 pub mod platform;
 use inspect::Inspect;
 use std::task::Context;

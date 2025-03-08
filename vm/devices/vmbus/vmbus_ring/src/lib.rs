@@ -12,6 +12,7 @@
 //! In practice, ring buffers always come in pairs so that packets can be both
 //! sent and received. However, this module's interfaces operate on them singly.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod gparange;

@@ -8,6 +8,7 @@
 // flowey CLI and shared configuration logic (making it easier to have a
 // consistent UX across open and closed-source).
 
+#![expect(missing_docs)]
 pub mod pipelines;
 pub mod pipelines_shared;
 

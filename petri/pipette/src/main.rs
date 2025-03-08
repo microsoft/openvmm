@@ -4,6 +4,8 @@
 //! This is the petri pipette agent, which runs on the guest and executes
 //! commands and other requests from the host.
 
+#![warn(missing_docs)]
+
 mod agent;
 mod execute;
 mod shutdown;

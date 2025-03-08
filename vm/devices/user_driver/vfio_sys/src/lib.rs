@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(unix)]
 // UNSAFETY: Manual memory management with mmap and vfio ioctls.
 #![expect(unsafe_code)]

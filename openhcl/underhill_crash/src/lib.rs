@@ -4,6 +4,7 @@
 //! This module implements sending crash dump files to the host.
 
 #![cfg(target_os = "linux")]
+#![expect(missing_docs)]
 // UNSAFETY: Calling libc functions to gather system information, and manipulating
 // stdout & stderr.
 #![expect(unsafe_code)]

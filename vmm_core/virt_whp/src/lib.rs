@@ -4,6 +4,7 @@
 //! WHP implementation of the virt::generic interfaces.
 
 #![cfg(all(windows, guest_is_native))]
+#![expect(missing_docs)]
 // UNSAFETY: Calling WHP APIs and manually managing memory.
 #![expect(unsafe_code)]
 #![expect(clippy::undocumented_unsafe_blocks)]

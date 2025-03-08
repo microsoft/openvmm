@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg_attr(all(target_os = "linux", target_env = "gnu"), no_main)]
 
 use futures::AsyncReadExt;

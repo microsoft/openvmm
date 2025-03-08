@@ -4,6 +4,7 @@
 //! Linux /dev/mshv implementation of the virt::generic interfaces.
 
 #![cfg(all(target_os = "linux", guest_is_native, guest_arch = "x86_64"))]
+#![expect(missing_docs)]
 // UNSAFETY: Calling HV APIs and manually managing memory.
 #![expect(unsafe_code)]
 

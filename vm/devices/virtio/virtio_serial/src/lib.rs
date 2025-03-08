@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 use async_trait::async_trait;
 use guestmem::GuestMemory;
 use parking_lot::Condvar;

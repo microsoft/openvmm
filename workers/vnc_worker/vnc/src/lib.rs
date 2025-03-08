@@ -3,6 +3,7 @@
 
 //! A VNC server implementation.
 
+#![expect(missing_docs)]
 mod rfb;
 mod scancode;
 use futures::channel::mpsc;

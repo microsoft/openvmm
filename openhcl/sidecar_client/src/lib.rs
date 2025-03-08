@@ -1,10 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg(target_os = "linux")]
-
 //! The client interface to the sidecar kernel driver.
 
+#![cfg(target_os = "linux")]
 // UNSAFETY: Manually mapping memory for the sidecar kernel and calling ioctls.
 #![expect(unsafe_code)]
 #![warn(missing_docs)]

@@ -5,6 +5,7 @@
 //! within it.
 
 // UNSAFETY: Needed to accept a raw Fd/Handle from our spawning process.
+#![warn(missing_docs)]
 #![expect(unsafe_code)]
 
 use anyhow::Context;

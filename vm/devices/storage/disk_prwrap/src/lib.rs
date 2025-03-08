@@ -7,6 +7,7 @@
 //! Since these reservations are stored locally in memory, this is not useful
 //! for actually sharing a disk between VMs. This is just useful for testing.
 
+#![expect(missing_docs)]
 use async_trait::async_trait;
 use disk_backend::pr;
 use disk_backend::pr::ReservationType;

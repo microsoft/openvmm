@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(target_os = "linux")]
 // UNSAFETY: Calling KVM APIs and IOCTLs and dealing with the raw pointers
 // necessary for doing so.

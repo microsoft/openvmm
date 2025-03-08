@@ -5,6 +5,7 @@
 
 // UNSAFETY: testing unsafe interfaces
 #![expect(unsafe_code)]
+#![expect(missing_docs)]
 
 use sparse_mmap::initialize_try_copy;
 use std::hint::black_box;

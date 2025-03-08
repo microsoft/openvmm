@@ -9,6 +9,7 @@
 //! configuring MMIO request/response regions.
 
 #![cfg(feature = "tpm")]
+#![expect(missing_docs)]
 
 pub mod ak_cert;
 pub mod resolver;

@@ -9,6 +9,7 @@
 //! [`CustomVars`](firmware_uefi_custom_vars::CustomVars) or a
 //! [`CustomVarsDelta`](firmware_uefi_custom_vars::delta::CustomVarsDelta).
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 use thiserror::Error;

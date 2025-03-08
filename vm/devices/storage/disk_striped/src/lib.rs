@@ -4,6 +4,7 @@
 //! Implements the [`DiskIo`] trait for virtual disks backed by multiple raw
 //! block devices.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 use async_trait::async_trait;

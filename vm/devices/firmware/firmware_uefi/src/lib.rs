@@ -47,6 +47,7 @@
 //! VMM specific infrastructure (via some kind of compile-time feature flag
 //! infrastructure).
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod platform;

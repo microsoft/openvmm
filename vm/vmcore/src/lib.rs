@@ -7,6 +7,7 @@
 //! HvLite-specific infrastructure (such as WHP).
 
 // UNSAFETY: linkme uses link_section which is unsafe.
+#![expect(missing_docs)]
 #![expect(unsafe_code)]
 
 // Needed for `save_restore_derive`.

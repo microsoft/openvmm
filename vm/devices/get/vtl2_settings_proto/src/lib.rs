@@ -4,6 +4,7 @@
 //! Protobuf definitions for OpenHCL VTL2 settings documents that are provided
 //! by the host via the GET device.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 #![allow(unused_qualifications)] // pbjson-build doesn't use ::fully::qualified::paths.
 #![expect(clippy::needless_lifetimes)] // pbjson-build generates needless lifetimes for `impl` blocks.

@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 use heck::ToSnakeCase;
 use proc_macro2::Ident;
 use proc_macro2::Span;

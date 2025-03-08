@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 use flowey_core::pipeline::IntoPipeline;
 use std::path::Path;
 

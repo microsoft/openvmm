@@ -4,6 +4,7 @@
 //! Memory-related abstractions.
 
 // UNSAFETY: Manual pointer manipulation, dealing with mmap, and a signal handler.
+#![expect(missing_docs)]
 #![expect(unsafe_code)]
 #![expect(clippy::undocumented_unsafe_blocks)]
 

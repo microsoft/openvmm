@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(target_os = "linux")]
 #![allow(
     clippy::field_reassign_with_default, // protocol code benefits from imperative field assignment

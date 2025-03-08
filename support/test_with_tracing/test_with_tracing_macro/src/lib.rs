@@ -3,6 +3,8 @@
 
 //! Test attribute macro for `test_with_tracing` crate.
 
+#![warn(missing_docs)]
+
 use quote::quote;
 use syn::parse_macro_input;
 use syn::spanned::Spanned;

@@ -8,6 +8,7 @@
 //! SimpleVmbusClientDeviceWrapper instance.
 
 #![cfg(target_os = "linux")]
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod ring_buffer;

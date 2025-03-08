@@ -5,6 +5,7 @@
 //!
 //! This crate provides cross-process message-based communication over channels.
 
+#![expect(missing_docs)]
 #[allow(unused_extern_crates)]
 extern crate self as mesh;
 

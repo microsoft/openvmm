@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))] // xtask-fmt allow-target-arch sys-crate
 
 //! A hypervisor backend using macos's Hypervisor framework.

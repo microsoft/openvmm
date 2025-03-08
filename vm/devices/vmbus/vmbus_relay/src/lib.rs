@@ -9,6 +9,7 @@
 //! while still passing through channels from the host, without any paravisor
 //! presence in the data plane.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod legacy_saved_state;

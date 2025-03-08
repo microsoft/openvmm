@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![cfg_attr(minimal_rt, no_std, no_main)]
+#![warn(missing_docs)]
 
 //! This crate implements the OpenHCL sidecar kernel. This is a kernel that runs
 //! along side the OpenHCL Linux kernel, operating on a subset of the virtual

@@ -1,10 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Underhill VM memory management.
+
 #![cfg(target_os = "linux")]
 #![warn(missing_docs)]
-
-//! Underhill VM memory management.
 
 mod init;
 mod mapping;

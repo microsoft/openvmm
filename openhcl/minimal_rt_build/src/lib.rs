@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 /// Initializes compiler flags for building a minimal kernel using the
 /// `minimal_rt` crate.
 ///

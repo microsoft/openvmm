@@ -4,6 +4,7 @@
 #![cfg_attr(all(target_os = "linux", target_env = "gnu"), no_main)]
 // UNSAFETY: Contains an impl of GuestMemoryAccess for a test mapping.
 #![expect(unsafe_code)]
+#![expect(missing_docs)]
 
 use arbitrary::Arbitrary;
 use guestmem::ranges::PagedRange;

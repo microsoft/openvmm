@@ -3,6 +3,8 @@
 
 //! Root binary crate for builds of OpenVMM-HCL.
 
+#![warn(missing_docs)]
+
 // Link resources.
 #[cfg(target_os = "linux")]
 use openvmm_hcl_resources as _;

@@ -15,6 +15,7 @@
 //!    tracing stop notifications.
 
 #![cfg(target_os = "linux")]
+#![expect(missing_docs)]
 
 use anyhow::Context;
 use std::fs::File;

@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 mod storage_backend;
 mod uefi_nvram;
 mod vmgs_json;

@@ -3,6 +3,7 @@
 
 //!  UEFI NVRAM structures.
 
+#![expect(missing_docs)]
 use thiserror::Error;
 
 pub mod boot_order;

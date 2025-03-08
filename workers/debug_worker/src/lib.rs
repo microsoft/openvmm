@@ -7,6 +7,7 @@
 //! Remote Serial Protocol. This is used to debug the VM's execution when a
 //! guest debugger is not available or practical.
 
+#![expect(missing_docs)]
 mod gdb;
 
 use anyhow::Context;

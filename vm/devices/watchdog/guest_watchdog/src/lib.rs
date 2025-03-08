@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pio::ControlPortIoIntercept;

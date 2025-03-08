@@ -3,6 +3,7 @@
 
 //! A very incomplete implementation of ARM GICv3.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub use gicd::Distributor;

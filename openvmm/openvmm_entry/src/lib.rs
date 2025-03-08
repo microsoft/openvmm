@@ -4,6 +4,7 @@
 //! This module implements the interactive control process and the entry point
 //! for the worker process.
 
+#![expect(missing_docs)]
 mod cli_args;
 mod crash_dump;
 mod meshworker;

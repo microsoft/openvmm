@@ -39,6 +39,7 @@
 //! [Resource-only DLL]:
 //!     https://learn.microsoft.com/en-us/cpp/build/creating-a-resource-only-dll?view=msvc-170
 
+#![warn(missing_docs)]
 fn main() {
     if cfg!(feature = "ci") {
         return;

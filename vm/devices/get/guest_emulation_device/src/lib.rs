@@ -8,6 +8,7 @@
 //! better integration testing within the OpenVMM CI, and is not at
 //! feature-parity with the implementation in Hyper-V.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod resolver;

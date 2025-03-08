@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 use anyhow::Context;
 use futures::executor::block_on;
 use futures::StreamExt;

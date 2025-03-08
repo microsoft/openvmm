@@ -13,6 +13,7 @@
     clippy::field_reassign_with_default, // protocol code benefits from imperative field assignment
 )]
 #![cfg(any(windows, target_os = "linux"))]
+#![warn(missing_docs)]
 
 mod path;
 #[cfg(unix)]
