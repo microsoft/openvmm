@@ -5,8 +5,8 @@
 
 // UNSAFETY: Exporting no_mangle extern C functions and dealing with the raw
 // pointers necessary to do so.
-#![expect(missing_docs)]
 #![expect(unsafe_code)]
+#![expect(missing_docs)]
 
 use core::slice;
 use disk_backend::Disk;
