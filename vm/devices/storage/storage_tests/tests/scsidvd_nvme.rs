@@ -65,7 +65,6 @@ impl ScsiDvdNvmeTest {
             .guest_memory()
             .subrange(base_len as u64, payload_len as u64, false)
             .unwrap();
-        let driver_dma_mem = payload_mem.clone();
         let mut buf = vec![0u8; sector_count as usize * sector_size as usize];
         let mut temp = vec![0u8; sector_size as usize];
         assert!(sector_size > 2);
@@ -99,7 +98,7 @@ impl ScsiDvdNvmeTest {
                     i * 8,
                     8,
                     false,
-                    &driver_dma_mem,
+                    &payload_mem,
                     buf_range.buffer(&payload_mem).range(),
                 )
                 .await
