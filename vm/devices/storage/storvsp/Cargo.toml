@@ -10,7 +10,7 @@ rust-version.workspace = true
 ioperf = ["dep:disklayer_ram"]
 
 # Enable generating arbitrary values of types useful for fuzzing.
-arbitrary = ["dep:arbitrary"]
+arbitrary = ["dep:arbitrary", "scsi_defs/arbitrary"]
 
 # Expose some implementation details publicly, used for fuzzing.
 fuzz_helpers = []

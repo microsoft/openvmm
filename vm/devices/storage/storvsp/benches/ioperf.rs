@@ -3,6 +3,8 @@
 
 //! StorVSP IO loop performance testing.
 
+#![expect(missing_docs)]
+
 use criterion::async_executor::AsyncExecutor;
 use criterion::criterion_group;
 use criterion::criterion_main;
@@ -20,7 +22,7 @@ impl AsyncExecutor for &'_ WrappedExecutor {
     }
 }
 
-pub fn criterion_benchmark(c: &mut Criterion) {
+fn criterion_benchmark(c: &mut Criterion) {
     let mut pool = DefaultPool::new();
     let driver = pool.driver();
     let tester = Cell::new(Some(
