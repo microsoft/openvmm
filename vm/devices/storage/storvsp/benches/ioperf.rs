@@ -32,7 +32,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
         group
             .throughput(criterion::Throughput::Elements(count))
             .bench_with_input(BenchmarkId::from_parameter(count), &count, |b, &count| {
-                b.to_async(&runner).iter(|| async {
+                b.to_async(&runner).iter(async || {
                     let mut x = tester.take().unwrap();
                     x.read(count as usize).await;
                     tester.set(Some(x));

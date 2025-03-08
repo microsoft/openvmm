@@ -95,8 +95,8 @@ impl VfioDevice {
         let instance_path = Path::new("/sys").join(vmbus_device.strip_prefix("../../..")?);
         let vfio_arrived_path = instance_path.join("vfio-dev");
         let uevent_listener = UeventListener::new(&driver_source.simple())?;
-        let wait_for_vfio_device = uevent_listener
-            .wait_for_matching_child(&vfio_arrived_path, move |_, _| async move { Some(()) });
+        let wait_for_vfio_device =
+            uevent_listener.wait_for_matching_child(&vfio_arrived_path, async |_, _| Some(()));
         let mut ctx = mesh::CancelContext::new().with_timeout(Duration::from_secs(1));
         // Ignore any errors and always attempt to open.
         let _ = ctx.until_cancelled(wait_for_vfio_device).await;

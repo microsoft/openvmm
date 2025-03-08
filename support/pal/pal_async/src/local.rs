@@ -24,11 +24,18 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
-/// Polls a future that needs to issue IO until it completes.
-pub fn block_with_io<F, Fut, R>(f: F) -> R
+/// Blocks the current thread until the given future completes.
+pub fn block_on<Fut>(fut: Fut) -> Fut::Output
 where
-    F: FnOnce(LocalDriver) -> Fut,
-    Fut: Future<Output = R>,
+    Fut: Future,
+{
+    block_with_io(|_| fut)
+}
+
+/// Polls a future that needs to issue IO until it completes.
+pub fn block_with_io<F, R>(f: F) -> R
+where
+    F: AsyncFnOnce(LocalDriver) -> R,
 {
     let mut executor = LocalExecutor::new();
     let fut = f(executor.driver());

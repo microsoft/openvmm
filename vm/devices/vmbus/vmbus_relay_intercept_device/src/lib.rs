@@ -586,7 +586,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
                     self.handle_start(state).await;
                 }
                 Event::Request(InterceptChannelRequest::Stop(rpc)) => {
-                    rpc.handle(|()| self.handle_stop(state)).await;
+                    rpc.handle(async |()| self.handle_stop(state).await).await;
                 }
                 Event::Request(InterceptChannelRequest::Save(rpc)) => {
                     rpc.handle_sync(|()| self.handle_save());

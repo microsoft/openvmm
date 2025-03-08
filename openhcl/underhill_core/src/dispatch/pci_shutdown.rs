@@ -28,7 +28,7 @@ pub enum ShutdownError {
 /// vfio from them won't help.
 pub async fn shutdown_pci_devices() -> Result<(), ShutdownError> {
     let dir = fs_err::read_dir("/sys/bus/pci/devices").map_err(ShutdownError::SysFs)?;
-    let ops = try_join_all(dir.map(|entry| async {
+    let ops = try_join_all(dir.map(async |entry| {
         let entry = entry.map_err(ShutdownError::SysFs)?;
         let driver_link = entry.path().join("driver");
         match driver_link.fs_err_read_link() {

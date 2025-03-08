@@ -331,7 +331,7 @@ fn parse_legacy_args() -> Vec<String> {
 }
 
 fn main() {
-    DefaultPool::run_with(|_| async move {
+    DefaultPool::run_with(async |_| {
         if let Err(e) = do_main().await {
             let exit_code = match e {
                 Error::NotEncrypted => ExitCode::ErrorNotEncrypted,

@@ -240,15 +240,16 @@ impl NvmeManagerWorker {
                     }
                 }
                 Request::GetNamespace(rpc) => {
-                    rpc.handle(|(pci_id, nsid)| {
+                    rpc.handle(async |(pci_id, nsid)| {
                         self.get_namespace(pci_id.clone(), nsid)
                             .map_err(|source| NamespaceError { pci_id, source })
+                            .await
                     })
                     .await
                 }
                 // Request to save worker data for servicing.
                 Request::Save(rpc) => {
-                    rpc.handle(|_| self.save())
+                    rpc.handle(async |_| self.save().await)
                         .instrument(tracing::info_span!("nvme_save_state"))
                         .await
                 }

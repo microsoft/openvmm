@@ -576,7 +576,7 @@ impl Endpoint for DisconnectableEndpoint {
             ) => {
                 let old_endpoint = self.endpoint.take();
                 self.endpoint = None;
-                rpc.handle(|_| async { old_endpoint }).await;
+                rpc.handle(async |_| old_endpoint).await;
                 EndpointAction::RestartRequired
             }
             Message::UpdateFromEndpoint(update) => update,

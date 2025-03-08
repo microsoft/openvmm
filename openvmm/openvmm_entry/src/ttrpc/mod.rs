@@ -123,7 +123,7 @@ impl Worker for TtrpcWorker {
     }
 
     fn run(self, recv: mesh::Receiver<WorkerRpc<Self::State>>) -> anyhow::Result<()> {
-        DefaultPool::run_with(|driver| async move {
+        DefaultPool::run_with(async |driver| {
             let mut service = VmService {
                 driver,
                 vm: None,

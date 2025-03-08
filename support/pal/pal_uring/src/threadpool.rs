@@ -95,10 +95,9 @@ impl PoolClient {
     /// then by polling on the IO ring while the task blocks.
     //
     // TODO: move this functionality into underhill_threadpool.
-    pub fn set_idle_task<F, Fut>(&self, f: F)
+    pub fn set_idle_task<F>(&self, f: F)
     where
-        F: 'static + Send + FnOnce(IdleControl) -> Fut,
-        Fut: Future<Output = ()>,
+        F: 'static + Send + AsyncFnOnce(IdleControl),
     {
         let f =
             Box::new(|fd| Box::pin(async move { f(fd).await }) as Pin<Box<dyn Future<Output = _>>>)

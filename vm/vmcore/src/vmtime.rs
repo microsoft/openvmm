@@ -648,21 +648,18 @@ impl PrimaryKeeper {
                 Event::Request(req) => {
                     match req {
                         KeeperRequest::Start(rpc) => {
-                            rpc.handle(|start_time| {
-                                let this = &mut *self;
-                                async move {
-                                    assert!(!this.time.is_started());
-                                    this.time = TimeState::Started(start_time);
-                                    join_all(this.keepers.iter().map(|(_, sender)| {
-                                        sender.call(KeeperRequest::Start, start_time)
-                                    }))
-                                    .await;
-                                }
+                            rpc.handle(async |start_time| {
+                                assert!(!self.time.is_started());
+                                self.time = TimeState::Started(start_time);
+                                join_all(self.keepers.iter().map(|(_, sender)| {
+                                    sender.call(KeeperRequest::Start, start_time)
+                                }))
+                                .await;
                             })
                             .await
                         }
                         KeeperRequest::Stop(rpc) => {
-                            rpc.handle(|()| async {
+                            rpc.handle(async |()| {
                                 let results = join_all(
                                     self.keepers
                                         .iter()
@@ -697,16 +694,15 @@ impl PrimaryKeeper {
                             .await
                         }
                         KeeperRequest::Reset(rpc) => {
-                            rpc.handle(|time| {
-                                let this = &mut *self;
-                                async move {
-                                    assert!(!this.time.is_started(), "should not be running");
-                                    this.time = TimeState::Stopped(time);
-                                    join_all(this.keepers.iter().map(|(_, sender)| {
-                                        sender.call(KeeperRequest::Reset, time)
-                                    }))
-                                    .await;
-                                }
+                            rpc.handle(async |time| {
+                                assert!(!self.time.is_started(), "should not be running");
+                                self.time = TimeState::Stopped(time);
+                                join_all(
+                                    self.keepers
+                                        .iter()
+                                        .map(|(_, sender)| sender.call(KeeperRequest::Reset, time)),
+                                )
+                                .await;
                             })
                             .await
                         }

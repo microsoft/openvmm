@@ -412,7 +412,7 @@ impl ProxyTask {
             Some(request) => {
                 match request {
                     ChannelRequest::Open(rpc) => {
-                        rpc.handle(|open_request| async move {
+                        rpc.handle(async |open_request| {
                             let result = self.handle_open(proxy_id, &open_request).await;
                             result.ok().map(|event| OpenResult {
                                 guest_to_host_interrupt: Interrupt::from_event(event),
@@ -421,13 +421,13 @@ impl ProxyTask {
                         .await
                     }
                     ChannelRequest::Close(rpc) => {
-                        rpc.handle(|()| async {
+                        rpc.handle(async |()| {
                             self.handle_close(proxy_id).await;
                         })
                         .await
                     }
                     ChannelRequest::Gpadl(rpc) => {
-                        rpc.handle(|gpadl| async move {
+                        rpc.handle(async |gpadl| {
                             let result = self
                                 .handle_gpadl_create(proxy_id, gpadl.id, gpadl.count, &gpadl.buf)
                                 .await;
@@ -436,7 +436,7 @@ impl ProxyTask {
                         .await
                     }
                     ChannelRequest::TeardownGpadl(rpc) => {
-                        rpc.handle(|id| async move {
+                        rpc.handle(async |id| {
                             self.handle_gpadl_teardown(proxy_id, id).await;
                         })
                         .await

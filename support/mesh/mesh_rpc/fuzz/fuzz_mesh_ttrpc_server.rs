@@ -25,7 +25,7 @@ fn do_fuzz(input: &[u8]) {
 
     let mut recv = server.add_service();
 
-    DefaultPool::run_with(|driver| async move {
+    DefaultPool::run_with(async |driver| {
         let control_listener = tempfile::Builder::new()
             .make(|path| UnixListener::bind(path))
             .unwrap();

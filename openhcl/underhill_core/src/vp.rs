@@ -179,7 +179,7 @@ impl VpSpawner {
                     anyhow::bail!("processor {} not online", vp_index.index());
                 }
 
-                thread.set_idle_task(move |mut control| async move {
+                thread.set_idle_task(async move |mut control| {
                     let state = self
                         .run_vp(saved_state.take(), Some(&mut control), false)
                         .await;

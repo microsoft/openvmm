@@ -1612,7 +1612,7 @@ impl FloppyDiskController {
         let command_buffer = self.command_buffer.access();
 
         tracing::trace!(lba, size, "starting disk read");
-        self.set_io(|disk| async move {
+        self.set_io(async move |disk| {
             let buffers = command_buffer.buffers(0, size as usize, true);
             disk.read_vectored(&buffers, lba).await
         });
@@ -1714,7 +1714,7 @@ impl FloppyDiskController {
             return false;
         }
 
-        self.set_io(|disk| async move {
+        self.set_io(async move |disk| {
             let buffers = command_buffer.buffers(0, size as usize, false);
             let result = disk.write_vectored(&buffers, lba, false).await;
             if let Err(err) = result {
@@ -1807,7 +1807,7 @@ impl FloppyDiskController {
 
         tracing::trace!(?cylinder, ?head, ?lba, ?buffer_ptr, "Format: ");
 
-        self.set_io(|disk| async move {
+        self.set_io(async move |disk| {
             let buffers = command_buffer.buffers(0, size, false);
             let result = disk.write_vectored(&buffers, lba, false).await;
             if let Err(err) = result {

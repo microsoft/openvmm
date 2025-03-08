@@ -200,12 +200,18 @@ impl StateRequest {
     /// Runs this state request against `unit`.
     pub async fn apply(self, unit: &mut impl StateUnit) {
         match self {
-            StateRequest::Start(rpc) => rpc.handle(|()| async { unit.start().await }).await,
-            StateRequest::Stop(rpc) => rpc.handle(|()| async { unit.stop().await }).await,
-            StateRequest::Reset(rpc) => rpc.handle_failable(|()| unit.reset()).await,
-            StateRequest::Save(rpc) => rpc.handle_failable(|()| unit.save()).await,
-            StateRequest::Restore(rpc) => rpc.handle_failable(|buffer| unit.restore(buffer)).await,
-            StateRequest::PostRestore(rpc) => rpc.handle_failable(|()| unit.post_restore()).await,
+            StateRequest::Start(rpc) => rpc.handle(async |()| unit.start().await).await,
+            StateRequest::Stop(rpc) => rpc.handle(async |()| unit.stop().await).await,
+            StateRequest::Reset(rpc) => rpc.handle_failable(async |()| unit.reset().await).await,
+            StateRequest::Save(rpc) => rpc.handle_failable(async |()| unit.save().await).await,
+            StateRequest::Restore(rpc) => {
+                rpc.handle_failable(async |buffer| unit.restore(buffer).await)
+                    .await
+            }
+            StateRequest::PostRestore(rpc) => {
+                rpc.handle_failable(async |()| unit.post_restore().await)
+                    .await
+            }
             StateRequest::Inspect(req) => req.inspect(unit),
         }
     }

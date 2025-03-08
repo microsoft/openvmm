@@ -1426,7 +1426,7 @@ impl ClientTask {
             }
             TaskRequest::PostRestore(rpc) => rpc.handle_sync(|()| self.handle_post_restore()),
             TaskRequest::Start => self.handle_start(),
-            TaskRequest::Stop(rpc) => rpc.handle(|()| self.handle_stop()).await,
+            TaskRequest::Stop(rpc) => rpc.handle(async |()| self.handle_stop().await).await,
         }
     }
 

@@ -117,47 +117,45 @@ impl PartitionUnitRunner {
                 }
             }
             DebugRequest::GetVpState(rpc) => {
-                rpc.handle_failable(|vp| self.vp_set.get_vp_state(VpIndex::new(vp)))
+                rpc.handle_failable(async |vp| self.vp_set.get_vp_state(VpIndex::new(vp)).await)
                     .await
             }
             DebugRequest::SetVpState(rpc) => {
-                rpc.handle_failable(|(vp, state)| self.vp_set.set_vp_state(VpIndex::new(vp), state))
-                    .await
+                rpc.handle_failable(async |(vp, state)| {
+                    self.vp_set.set_vp_state(VpIndex::new(vp), state).await
+                })
+                .await
             }
             DebugRequest::ReadMemory(rpc) => {
-                rpc.handle_failable(|(addr, len)| async move {
-                    match addr {
-                        GuestAddress::Gva { vp, gva } => {
-                            self.vp_set
-                                .read_virtual_memory(VpIndex::new(vp), gva, len)
-                                .await
-                        }
-                        GuestAddress::Gpa(gpa) => {
-                            let mut buf = vec![0; len];
-                            self.debugger_state
-                                .guest_memory
-                                .read_at(gpa, &mut buf)
-                                .context("failed to read guest memory")?;
-                            Ok(buf)
-                        }
+                rpc.handle_failable(async |(addr, len)| match addr {
+                    GuestAddress::Gva { vp, gva } => {
+                        self.vp_set
+                            .read_virtual_memory(VpIndex::new(vp), gva, len)
+                            .await
+                    }
+                    GuestAddress::Gpa(gpa) => {
+                        let mut buf = vec![0; len];
+                        self.debugger_state
+                            .guest_memory
+                            .read_at(gpa, &mut buf)
+                            .context("failed to read guest memory")?;
+                        Ok(buf)
                     }
                 })
                 .await
             }
             DebugRequest::WriteMemory(rpc) => {
-                rpc.handle_failable(|(addr, data)| async move {
-                    match addr {
-                        GuestAddress::Gva { vp, gva } => {
-                            self.vp_set
-                                .write_virtual_memory(VpIndex::new(vp), gva, data)
-                                .await
-                        }
-                        GuestAddress::Gpa(gpa) => self
-                            .debugger_state
-                            .guest_memory
-                            .write_at(gpa, &data)
-                            .context("failed to write guest memory"),
+                rpc.handle_failable(async |(addr, data)| match addr {
+                    GuestAddress::Gva { vp, gva } => {
+                        self.vp_set
+                            .write_virtual_memory(VpIndex::new(vp), gva, data)
+                            .await
                     }
+                    GuestAddress::Gpa(gpa) => self
+                        .debugger_state
+                        .guest_memory
+                        .write_at(gpa, &data)
+                        .context("failed to write guest memory"),
                 })
                 .await
             }

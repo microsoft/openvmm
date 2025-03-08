@@ -633,11 +633,11 @@ mod tests {
         let mut server = Server::new();
         let mut recv = server.add_service::<items::Example>();
         let server_thread = std::thread::spawn(move || {
-            block_with_io(|driver| async move { server.run_single(&driver, s).await })
+            block_with_io(async |driver| server.run_single(&driver, s).await)
         });
 
         let client_thread = std::thread::spawn(move || {
-            DefaultPool::run_with(|driver| async move {
+            DefaultPool::run_with(async |driver| {
                 let client = Client::new(
                     &driver,
                     ExistingConnection::new(PolledSocket::new(&driver, c).unwrap()),

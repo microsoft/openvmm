@@ -50,7 +50,7 @@ fn test_ttrpc_interface(
     let mut b = [0];
     assert_eq!(stdout.read(&mut b)?, 0);
 
-    DefaultPool::run_with(|driver| async {
+    DefaultPool::run_with(async |driver| {
         let driver = driver;
         let _stderr_task = driver.spawn(
             "stderr",

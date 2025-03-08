@@ -421,7 +421,7 @@ pub fn main() -> anyhow::Result<()> {
         .init();
 
     term::enable_vt_and_utf8();
-    DefaultPool::run_with(|driver| async move {
+    DefaultPool::run_with(async |driver| {
         let Options { vm, command } = Options::parse();
 
         match command {
@@ -504,7 +504,7 @@ pub fn main() -> anyhow::Result<()> {
                     } else {
                         Some(Duration::from_secs(timeout))
                     };
-                    let query = || async {
+                    let query = async || {
                         client
                             .inspect(
                                 path.as_deref().unwrap_or(""),

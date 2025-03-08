@@ -3780,7 +3780,7 @@ impl Coordinator {
             };
             match message {
                 Message::UpdateFromVf(rpc) => {
-                    rpc.handle(|_| async {
+                    rpc.handle(async |_| {
                         self.update_guest_vf_state(state).await;
                     })
                     .await;

@@ -299,7 +299,7 @@ pub fn main() -> ! {
 
     // Send the dump file
 
-    if let Err(e) = block_with_io(|driver| async move {
+    if let Err(e) = block_with_io(async |driver| {
         let mut dump_stream = AllowStdIo::new(std::io::stdin());
         let pipe = vmbus_user_channel::message_pipe(
             &driver,

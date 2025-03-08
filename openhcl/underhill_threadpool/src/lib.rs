@@ -385,10 +385,9 @@ impl Thread {
     /// The idle task is run before waiting on the IO ring. The idle task can
     /// block synchronously by first calling [`IdleControl::pre_block`], and
     /// then by polling on the IO ring while the task blocks.
-    pub fn set_idle_task<F, Fut>(&self, f: F)
+    pub fn set_idle_task<F>(&self, f: F)
     where
-        F: 'static + Send + FnOnce(IdleControl) -> Fut,
-        Fut: std::future::Future<Output = ()>,
+        F: 'static + Send + AsyncFnOnce(IdleControl),
     {
         self.with_once(|_, once| once.client.set_idle_task(f))
     }

@@ -238,7 +238,8 @@ impl MappingManagerTask {
                     rpc.handle_sync(|params| self.add_mapping(params))
                 }
                 MappingRequest::RemoveMappings(rpc) => {
-                    rpc.handle(|range| self.remove_mappings(range)).await
+                    rpc.handle(async |range| self.remove_mappings(range).await)
+                        .await
                 }
                 MappingRequest::Inspect(deferred) => deferred.inspect(&mut *self),
             }
@@ -332,7 +333,7 @@ impl MappingManagerTask {
 impl Mappers {
     async fn invalidate(&self, ids: &[MapperId], range: MemoryRange) {
         tracing::debug!(mapper_count = ids.len(), %range, "sending invalidations");
-        join_all(ids.iter().map(|&MapperId(i)| async move {
+        join_all(ids.iter().map(async |&MapperId(i)| {
             if let Err(err) = self.mappers[i]
                 .req_send
                 .call(MapperRequest::Unmap, range)

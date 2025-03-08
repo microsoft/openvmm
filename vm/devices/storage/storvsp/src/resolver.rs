@@ -114,23 +114,23 @@ async fn handle_requests(
     while let Some(req) = requests.next().await {
         match req {
             ScsiControllerRequest::AddDevice(rpc) => {
-                rpc.handle_failable(|ScsiDeviceAndPath { path, device }| {
-                    let resolver = &resolver;
-                    let driver_source = &driver_source;
-                    let state = &state;
-                    async move {
-                        let device = resolver
-                            .resolve(device, ResolveScsiDeviceHandleParams { driver_source })
-                            .await
-                            .context("failed to resolve media")?;
+                rpc.handle_failable(async |ScsiDeviceAndPath { path, device }| {
+                    let device = resolver
+                        .resolve(
+                            device,
+                            ResolveScsiDeviceHandleParams {
+                                driver_source: &driver_source,
+                            },
+                        )
+                        .await
+                        .context("failed to resolve media")?;
 
-                        if let Some(state) = state.upgrade() {
-                            ScsiController { state }
-                                .attach(path, ScsiControllerDisk::new(device.0))
-                                .context("failed to attach device")?;
-                        }
-                        anyhow::Ok(())
+                    if let Some(state) = state.upgrade() {
+                        ScsiController { state }
+                            .attach(path, ScsiControllerDisk::new(device.0))
+                            .context("failed to attach device")?;
                     }
+                    anyhow::Ok(())
                 })
                 .await
             }

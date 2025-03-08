@@ -1651,7 +1651,7 @@ fn do_main() -> anyhow::Result<()> {
             Ok(())
         })
     } else {
-        DefaultPool::run_with(|driver| async move {
+        DefaultPool::run_with(async |driver| {
             let mesh = VmmMesh::new(&driver, opt.single_process)?;
             let result = run_control(&driver, &mesh, opt).await;
             mesh.shutdown().await;
@@ -2624,7 +2624,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             }
             InteractiveCommand::RestartVnc => {
                 if let Some(vnc) = &mut vnc_worker {
-                    let action = || async move {
+                    let action = async {
                         let vnc_host = mesh
                             .make_host("vnc", None)
                             .await
@@ -2634,7 +2634,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         anyhow::Result::<_>::Ok(())
                     };
 
-                    if let Err(error) = (action)().await {
+                    if let Err(error) = action.await {
                         eprintln!("error: {}", error);
                     }
                 } else {
@@ -2643,7 +2643,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             }
             InteractiveCommand::Hvsock { term, port } => {
                 let vm_rpc = &vm_rpc;
-                let action = || async move {
+                let action = async || {
                     let service_id = new_hvsock_service_id(port);
                     let socket = vm_rpc
                         .call_failable(

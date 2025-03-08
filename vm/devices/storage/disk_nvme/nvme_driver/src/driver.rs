@@ -776,9 +776,12 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
             loop {
                 match self.recv.next().await {
                     Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
-                        rpc.handle(|cpu| self.create_io_issuer(state, cpu)).await
+                        rpc.handle(async |cpu| self.create_io_issuer(state, cpu).await)
+                            .await
                     }
-                    Some(NvmeWorkerRequest::Save(rpc)) => rpc.handle(|_| self.save(state)).await,
+                    Some(NvmeWorkerRequest::Save(rpc)) => {
+                        rpc.handle(async |_| self.save(state).await).await
+                    }
                     None => break,
                 }
             }
@@ -942,7 +945,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             None => None,
         };
 
-        let io = join_all(self.io.drain(..).map(|q| async move { q.save().await }))
+        let io = join_all(self.io.drain(..).map(async |q| q.save().await))
             .await
             .into_iter()
             .flatten()

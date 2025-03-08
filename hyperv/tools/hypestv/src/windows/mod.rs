@@ -300,7 +300,7 @@ pub async fn main(driver: DefaultDriver) -> anyhow::Result<()> {
             }),
             Request::Inspect(rpc) => {
                 let vm = &mut vm;
-                rpc.handle(|(target, path)| async move {
+                rpc.handle(async |(target, path)| {
                     vm.as_mut()
                         .context("no active VM")?
                         .handle_inspect(target, &path)
@@ -309,7 +309,7 @@ pub async fn main(driver: DefaultDriver) -> anyhow::Result<()> {
                 .await
             }
             Request::Command(rpc) => {
-                rpc.handle(|cmd| async {
+                rpc.handle(async |cmd| {
                     match cmd {
                         InteractiveCommand::Detach => {
                             vm = None;

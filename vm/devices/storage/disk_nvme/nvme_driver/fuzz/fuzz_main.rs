@@ -44,7 +44,7 @@ where
 
 /// Uses the provided input to repeatedly create and execute an arbitrary action on the NvmeDriver.
 fn do_fuzz() {
-    DefaultPool::run_with(|driver| async move {
+    DefaultPool::run_with(async |driver| {
         let create_fuzzing_driver = FuzzNvmeDriver::new(driver).await;
         if let Err(_e) = create_fuzzing_driver {
             return;
