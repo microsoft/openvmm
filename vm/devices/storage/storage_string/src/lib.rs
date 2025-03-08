@@ -4,7 +4,6 @@
 //! Defines a fixed-size string format that's used by SCSI and NVMe
 //! specifications.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use inspect::Inspect;

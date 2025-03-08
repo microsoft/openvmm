@@ -6,7 +6,6 @@
 //! VTL2.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 
 mod devmsr;
 

@@ -4,7 +4,6 @@
 //! `petri` test artifacts used by in-tree VMM tests
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 /// Artifact declarations
 pub mod artifacts {

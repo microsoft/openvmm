@@ -3,7 +3,6 @@
 
 //! Resource definitions for the 16550A UART.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use mesh::MeshPayload;

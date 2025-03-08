@@ -10,7 +10,6 @@
 // UNSAFETY: needed to call internal Windows functions and to export unmangled
 // functions.
 #![expect(unsafe_code)]
-#![warn(missing_docs)]
 
 /// Links in crypto stubs to workaround rust stdlib's usage during hashmap
 /// initialization. This is to avoid the bcrypt.dll and advapi32.dll

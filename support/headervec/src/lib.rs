@@ -8,7 +8,6 @@
 // UNSAFETY: Implementing a custom data structure that requires manual memory
 // management and pointer manipulation.
 #![expect(unsafe_code)]
-#![warn(missing_docs)]
 #![no_std]
 
 extern crate alloc;

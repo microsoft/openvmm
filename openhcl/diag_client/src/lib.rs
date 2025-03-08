@@ -3,7 +3,6 @@
 
 //! The client for connecting to the Underhill diagnostics server.
 
-#![warn(missing_docs)]
 
 pub mod kmsg_stream;
 

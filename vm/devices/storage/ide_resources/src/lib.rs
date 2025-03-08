@@ -7,7 +7,6 @@
 //! at which point this crate name makes sense.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use inspect::Inspect;
 use mesh::MeshPayload;

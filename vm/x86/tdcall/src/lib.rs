@@ -4,7 +4,6 @@
 //! Common TDCALL handling for issuing tdcalls and functionality using tdcalls.
 
 #![no_std]
-#![warn(missing_docs)]
 
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;

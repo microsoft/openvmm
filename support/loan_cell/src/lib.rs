@@ -44,7 +44,6 @@
 
 // UNSAFETY: this is needed to work around the borrow checker.
 #![allow(unsafe_code)]
-#![warn(missing_docs)]
 #![no_std]
 
 use core::cell::Cell;

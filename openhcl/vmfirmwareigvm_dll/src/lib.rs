@@ -6,7 +6,6 @@
 //!
 //! The real magic is all in build.rs. See that file for more info.
 
-#![warn(missing_docs)]
 #![cfg_attr(not(any(test, feature = "ci")), no_std)]
 
 // required by the Rust compiler, even though we don't include any code

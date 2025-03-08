@@ -13,7 +13,6 @@
 //! if you want to add other vendor-specific behavior, do it in a separate
 //! wrapping emulator.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod resolver;

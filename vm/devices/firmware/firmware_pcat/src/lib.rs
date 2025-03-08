@@ -10,7 +10,6 @@
 //! configuration, along with hooks into various VMM runtime services (e.g:
 //! event logging, efficient busy-waiting, generation ID, etc...).
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod bios_boot_order;

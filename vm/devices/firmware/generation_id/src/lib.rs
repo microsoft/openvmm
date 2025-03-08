@@ -3,7 +3,6 @@
 
 //! Implementation of Generation ID services (shared across both PCAT and UEFI)
 
-#![warn(missing_docs)]
 
 use guestmem::GuestMemory;
 use inspect::InspectMut;

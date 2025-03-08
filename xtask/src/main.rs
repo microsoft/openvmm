@@ -8,7 +8,6 @@
 //! Follows the xtask workflow/convention, as described at
 //! <https://github.com/matklad/cargo-xtask>
 
-#![warn(missing_docs)]
 
 use anyhow::Context;
 use clap::Parser;

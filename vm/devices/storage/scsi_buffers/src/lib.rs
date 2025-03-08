@@ -4,7 +4,6 @@
 //! Functionality for referencing locked memory buffers for the lifetime of an
 //! IO.
 
-#![warn(missing_docs)]
 // UNSAFETY: Handling raw pointers and transmuting between types for different use cases.
 #![expect(unsafe_code)]
 

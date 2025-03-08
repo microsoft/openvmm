@@ -7,7 +7,6 @@
 //! other asynchronous hardware state changes in Linux.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 
 mod bind_kobject_uevent;
 

@@ -9,7 +9,6 @@
 //! Historically, this crate included a per-CPU thread pool implementation. Some
 //! vestigates remain in naming and elsewhere. TODO: clean this up.
 
-#![warn(missing_docs)]
 // UNSAFETY: This module uses unsafe code to interact with the io_uring kernel
 // interface.
 #![expect(unsafe_code)]

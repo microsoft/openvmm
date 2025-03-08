@@ -4,7 +4,6 @@
 //! This module implements a page memory allocator for allocating pages from a
 //! given portion of the guest address space.
 
-#![warn(missing_docs)]
 
 mod device_dma;
 

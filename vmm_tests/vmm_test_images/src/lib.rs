@@ -14,7 +14,6 @@
 //! updated to use the underlying artifact types themselves.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
 

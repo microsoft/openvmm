@@ -3,7 +3,6 @@
 
 //! Disk resources, for use with [`vm_resource`].
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod layer;

@@ -3,7 +3,6 @@
 
 //! Crate for defining tests that have tracing output.
 
-#![warn(missing_docs)]
 #[cfg(test)]
 extern crate self as test_with_tracing;
 

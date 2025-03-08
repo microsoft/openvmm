@@ -3,7 +3,6 @@
 
 //! Mesh RPC node implementations for cross-process.
 
-#![warn(missing_docs)]
 mod alpc_node;
 mod common;
 mod point_to_point;

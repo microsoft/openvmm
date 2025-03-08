@@ -4,7 +4,6 @@
 //! The [`MemoryRange`] type, which represents a 4KB-page-aligned byte range of
 //! memory, plus algorithms operating on the type.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 #![no_std]
 

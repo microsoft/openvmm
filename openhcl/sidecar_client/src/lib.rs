@@ -6,7 +6,6 @@
 #![cfg(target_os = "linux")]
 // UNSAFETY: Manually mapping memory for the sidecar kernel and calling ioctls.
 #![expect(unsafe_code)]
-#![warn(missing_docs)]
 
 use fs_err::os::unix::fs::OpenOptionsExt;
 use hvdef::hypercall::HvInputVtl;

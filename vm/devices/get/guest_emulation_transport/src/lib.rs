@@ -9,7 +9,6 @@
 
 #![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod api;
 pub mod error;

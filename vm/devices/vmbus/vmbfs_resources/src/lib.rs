@@ -3,7 +3,6 @@
 
 //! Resources for the vmbfs device.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use mesh::MeshPayload;

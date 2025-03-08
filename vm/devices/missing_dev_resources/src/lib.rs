@@ -4,7 +4,6 @@
 //! Resources for a device that ignores accesses to specified regions.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use mesh::MeshPayload;
 use std::ops::RangeInclusive;

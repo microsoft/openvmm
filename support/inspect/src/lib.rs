@@ -13,7 +13,6 @@
 //! For most cases, users should use the derive version of [`Inspect`](derive@Inspect)
 //! as this will automatically update the implementation as new fields are added.
 
-#![warn(missing_docs)]
 #![no_std]
 
 extern crate alloc;

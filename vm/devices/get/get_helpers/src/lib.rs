@@ -4,7 +4,6 @@
 //! Helpers to build GET (Guest Emulation Transport) protocol payloads.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use get_protocol::LogFlags;
 use get_protocol::LogLevel;

@@ -3,7 +3,6 @@
 
 //! Code to launch a terminal emulator for relaying input/output.
 
-#![warn(missing_docs)]
 
 mod unix;
 mod windows;

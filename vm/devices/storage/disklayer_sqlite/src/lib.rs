@@ -60,7 +60,6 @@
 //! disk format for testing in OpenVMM.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 mod auto_cache;
 pub mod resolver;

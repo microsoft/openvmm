@@ -4,7 +4,6 @@
 //! Resource definitions for core chipset devices.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod i8042 {
     //! Resource definitions for the i8042 PS2 keyboard/mouse controller.

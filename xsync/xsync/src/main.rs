@@ -3,7 +3,6 @@
 
 //! Tooling to sync dependencies in OpenVMM "overlay" repos with OpenVMM.
 
-#![warn(missing_docs)]
 
 use anyhow::Context;
 use clap::Parser;

@@ -17,7 +17,6 @@
 //! values, such as ports, handles, and file descriptors, whose ownership is to
 //! be transferred to the target node.
 
-#![warn(missing_docs)]
 // UNSAFETY: Serialization and deserialization of structs directly.
 #![expect(unsafe_code)]
 #![warn(clippy::std_instead_of_alloc)]

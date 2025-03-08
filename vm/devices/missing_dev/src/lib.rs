@@ -8,7 +8,6 @@
 //! down on missing-device logging.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;

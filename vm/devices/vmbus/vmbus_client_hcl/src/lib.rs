@@ -7,7 +7,6 @@
 //! Implementation of [`vmbus_client`] traits to communicate with the synic via
 //! the Linux HCL driver.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use anyhow::Context as _;

@@ -4,7 +4,6 @@
 //! RAM-backed disk layer implementation.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod resolver;
 

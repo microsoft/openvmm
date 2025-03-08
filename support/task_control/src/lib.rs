@@ -4,7 +4,6 @@
 //! A simple asynchronous task model for execution that needs to be started,
 //! stopped, mutated, and inspected.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use fast_select::FastSelect;

@@ -3,7 +3,6 @@
 
 //! Implements a command line utility to generate IGVM files.
 
-#![warn(missing_docs)]
 
 mod file_loader;
 mod identity_mapping;

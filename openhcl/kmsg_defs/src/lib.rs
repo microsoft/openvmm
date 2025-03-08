@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![warn(missing_docs)]
 
 //! Kmsg-related definitions shared by underhill_core and underhill_init.
 

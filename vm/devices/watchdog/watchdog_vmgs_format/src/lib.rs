@@ -6,7 +6,6 @@
 //! At the moment, the format is dead simple: it's just a single byte - either a
 //! 1 or a 0 - tha represents if the previous boot failed.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use thiserror::Error;

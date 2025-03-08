@@ -8,7 +8,6 @@
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: Interacting with low level hardware and bootloader primitives.
 #![expect(unsafe_code)]
-#![warn(missing_docs)]
 
 mod arch;
 mod boot_logger;

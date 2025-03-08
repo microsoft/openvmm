@@ -7,7 +7,6 @@
 //! The module also implements the VMGS unlocking process based on SKR.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod crypto;

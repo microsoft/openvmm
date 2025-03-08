@@ -3,7 +3,6 @@
 
 //! Vmbus channel offer support and related functionality.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod bus;

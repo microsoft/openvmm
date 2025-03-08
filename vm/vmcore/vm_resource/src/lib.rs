@@ -10,7 +10,6 @@
 //! link in different resource resolvers to support different resource types
 //! depending on compile-time configuration.
 
-#![warn(missing_docs)]
 // UNSAFETY: Uses transmute to allow for type erasure.
 #![expect(unsafe_code)]
 

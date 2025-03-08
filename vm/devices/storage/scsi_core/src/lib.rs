@@ -4,7 +4,6 @@
 //! Core SCSI traits and types.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;

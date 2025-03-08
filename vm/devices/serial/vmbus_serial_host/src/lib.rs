@@ -3,7 +3,6 @@
 
 //! The host (server) side implementation of a VMBUS based serial device.
 
-#![warn(missing_docs)]
 
 pub mod resolver;
 

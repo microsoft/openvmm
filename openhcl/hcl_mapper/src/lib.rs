@@ -5,7 +5,6 @@
 //! crate to map guest memory.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 
 use anyhow::Context;
 use hcl::ioctl::MshvVtlLow;

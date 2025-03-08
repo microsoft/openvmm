@@ -15,7 +15,6 @@
 //! poll implementation to identify exactly which futures are ready to be
 //! polled.
 
-#![warn(missing_docs)]
 // UNSAFETY: Using unchecked raw Arc, Pin, and Waker APIs.
 #![expect(unsafe_code)]
 

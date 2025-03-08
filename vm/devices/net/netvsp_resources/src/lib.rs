@@ -4,7 +4,6 @@
 //! Resource definitions for netvsp devices.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use guid::Guid;
 use mesh::MeshPayload;

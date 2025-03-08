@@ -3,7 +3,6 @@
 
 //! Async test attribute macro for `pal_async` crate.
 
-#![warn(missing_docs)]
 use quote::quote;
 use syn::parse_macro_input;
 use syn::spanned::Spanned;

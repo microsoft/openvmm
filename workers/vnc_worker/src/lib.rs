@@ -3,7 +3,6 @@
 
 //! A worker for running a VNC server.
 
-#![warn(missing_docs)]
 
 use anyhow::anyhow;
 use anyhow::Context;

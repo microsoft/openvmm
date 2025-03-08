@@ -6,7 +6,6 @@
 //! This emulates the local APIC, as documented by the Intel SDM. It supports
 //! both legacy (MMIO) and X2APIC (MSR) modes.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use bitfield_struct::bitfield;

@@ -26,7 +26,6 @@
 // reorganizing and refactoring the code to be more Rust-y, there's still quite
 // a ways to go.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use self::floppy_sizes::FloppyImageType;

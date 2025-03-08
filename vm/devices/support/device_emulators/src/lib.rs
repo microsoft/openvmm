@@ -3,7 +3,6 @@
 
 //! Utilities for implementing device emulators.
 
-#![warn(missing_docs)]
 
 /// Performs a device register read as a series of 32-bit reads.
 pub fn read_as_u32_chunks<F, Num>(offset: Num, data: &mut [u8], mut read_u32: F)

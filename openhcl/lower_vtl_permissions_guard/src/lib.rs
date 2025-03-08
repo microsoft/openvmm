@@ -6,7 +6,6 @@
 //! access to pages that were previously protected.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 
 mod device_dma;
 

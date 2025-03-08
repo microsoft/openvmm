@@ -4,7 +4,6 @@
 //! Underhill VM memory management.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 
 mod init;
 mod mapping;

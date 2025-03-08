@@ -4,7 +4,6 @@
 //! See [`OpenvmmKnownPathsTestArtifactResolver`].
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ErasedArtifactHandle;

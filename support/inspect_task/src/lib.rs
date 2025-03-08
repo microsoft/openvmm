@@ -3,7 +3,6 @@
 
 //! Logic for inspecting the task list.
 
-#![warn(missing_docs)]
 
 use inspect::Inspect;
 use pal_async::task::TaskData;

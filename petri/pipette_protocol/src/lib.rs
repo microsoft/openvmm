@@ -4,7 +4,6 @@
 //! The pipette protocol used for host-to-guest agent communications. It is
 //! defined as messages over a mesh point-to-point connection.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use mesh::pipe::ReadPipe;

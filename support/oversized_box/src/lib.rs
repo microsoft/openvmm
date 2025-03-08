@@ -9,7 +9,6 @@
 
 // UNSAFETY: Manual memory management and pointer manipulation.
 #![expect(unsafe_code)]
-#![warn(missing_docs)]
 
 use std::marker::PhantomData;
 use std::mem::MaybeUninit;

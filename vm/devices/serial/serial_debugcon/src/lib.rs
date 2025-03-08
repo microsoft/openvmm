@@ -7,7 +7,6 @@
 //! be used for debugging (hence the name). It offers no flow control
 //! mechanisms, or any method of reading data into the Guest.
 
-#![warn(missing_docs)]
 
 pub mod resolver;
 

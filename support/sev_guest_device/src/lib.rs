@@ -4,7 +4,6 @@
 //! The crate includes the abstraction layer of Linux SEV-SNP Guest APIs and
 //! definitions of data structures according to SEV-SNP specification.
 
-#![warn(missing_docs)]
 
 pub mod protocol;
 

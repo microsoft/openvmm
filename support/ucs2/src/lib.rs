@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![warn(missing_docs)]
 // UNSAFETY: Defining and implementing from_slice_unchecked.
 #![expect(unsafe_code)]
 

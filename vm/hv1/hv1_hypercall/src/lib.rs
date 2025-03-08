@@ -19,7 +19,6 @@
 //!     <https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/tlfs>
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 mod aarch64;
 mod imp;

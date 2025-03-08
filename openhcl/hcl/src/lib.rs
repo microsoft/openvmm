@@ -5,7 +5,6 @@
 //! related kernel functionality.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 // UNSAFETY: Calling ioctls.
 #![expect(unsafe_code)]
 

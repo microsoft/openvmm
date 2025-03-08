@@ -3,7 +3,6 @@
 
 //! IC protocol definitions.
 
-#![warn(missing_docs)]
 #![allow(dead_code)]
 
 use bitfield_struct::bitfield;

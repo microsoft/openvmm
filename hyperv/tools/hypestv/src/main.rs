@@ -3,7 +3,6 @@
 
 //! Interactive CLI for Hyper-V VMs.
 
-#![warn(missing_docs)]
 
 mod windows;
 

@@ -10,7 +10,6 @@
 //! backends should be in their own crates.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod pr;
 pub mod resolve;

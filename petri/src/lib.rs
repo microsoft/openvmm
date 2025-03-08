@@ -7,7 +7,6 @@
 //! and Hyper-V based VMs.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 mod disk_image;
 mod linux_direct_serial_agent;

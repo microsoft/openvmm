@@ -3,7 +3,6 @@
 
 //! Cryptography primitives for disk encryption.
 
-#![warn(missing_docs)]
 
 #[cfg(windows)]
 use bcrypt as sys;

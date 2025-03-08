@@ -3,7 +3,6 @@
 
 //! Provides the [`Guid`] type with the same layout as the Windows type `GUID`.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use std::str::FromStr;

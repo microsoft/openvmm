@@ -7,7 +7,6 @@
 
 #![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use anyhow::Context;
 use hcl_mapper::HclMapper;

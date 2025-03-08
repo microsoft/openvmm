@@ -6,7 +6,6 @@
 //! This is needed because Rust's intrinsics are marked unsafe (despite
 //! these few being completely safe to invoke).
 
-#![warn(missing_docs)]
 #![no_std]
 // UNSAFETY: Calling a cpu intrinsic.
 #![expect(unsafe_code)]

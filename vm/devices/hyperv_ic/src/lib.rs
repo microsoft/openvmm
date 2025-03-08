@@ -13,7 +13,6 @@
 //! * heartbeat IC for reporting guest health
 //! * KVP IC for exchanging arbitrary key/value data between the host and guest
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod resolver;

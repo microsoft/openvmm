@@ -22,7 +22,6 @@
 //! best implemented in a separate disk implementation.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 mod bitmap;
 pub mod resolve;

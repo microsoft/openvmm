@@ -4,7 +4,6 @@
 //! Resource definitions for the GET family of devices.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 /// Guest Emulation Log device resources.
 pub mod gel {

@@ -3,7 +3,6 @@
 
 //! An asynchronous IO platform.
 
-#![warn(missing_docs)]
 
 #[cfg(test)]
 extern crate self as pal_async;

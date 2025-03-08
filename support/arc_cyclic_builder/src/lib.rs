@@ -63,7 +63,6 @@
 //!
 //! TODO: add links to any upstream PRs we end up sending out
 
-#![warn(missing_docs)]
 // UNSAFETY: See crate-level doccomment.
 #![expect(unsafe_code)]
 

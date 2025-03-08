@@ -6,7 +6,6 @@
 //!
 //! It will unconditionally report that no floppy drives are present.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use arrayvec::ArrayVec;

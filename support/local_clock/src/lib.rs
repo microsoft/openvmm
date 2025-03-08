@@ -29,7 +29,6 @@
 //!
 //! [`Inspect`]: inspect::Inspect
 
-#![warn(missing_docs)]
 
 mod clock_impls;
 

@@ -3,7 +3,6 @@
 
 //! Types and traits to model chipset devices, and associated chipset services.
 
-#![warn(missing_docs)]
 
 /// Implemented by any device that is considered part of the guest's "chipset"
 /// (insofar as it exists on one or more system busses).

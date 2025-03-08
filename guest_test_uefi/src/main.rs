@@ -5,7 +5,6 @@
 // HACK: workaround for building guest_test_uefi as part of the workspace in CI.
 #![cfg_attr(all(not(test), target_os = "uefi"), no_main)]
 #![cfg_attr(all(not(test), target_os = "uefi"), no_std)]
-#![warn(missing_docs)]
 
 // HACK: workaround for building guest_test_uefi as part of the workspace in CI
 //

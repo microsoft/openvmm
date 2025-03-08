@@ -14,7 +14,6 @@
 //!
 //! This implementation includes a small DHCP server for address assignment.
 
-#![warn(missing_docs)]
 
 mod arp;
 mod dhcp;

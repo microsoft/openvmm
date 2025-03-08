@@ -4,7 +4,6 @@
 //! Resource definitions for MANA/GDMA devices.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use mesh::MeshPayload;
 use net_backend_resources::mac_address::MacAddress;

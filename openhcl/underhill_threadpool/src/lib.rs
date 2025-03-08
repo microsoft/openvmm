@@ -8,7 +8,6 @@
 //!
 //! This is built on top of [`pal_uring`] and [`pal_async`].
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use inspect::Inspect;

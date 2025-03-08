@@ -3,7 +3,6 @@
 
 //! Root binary crate for OpenVMM.
 
-#![warn(missing_docs)]
 
 // Ensure openvmm_resources gets linked.
 extern crate openvmm_resources as _;

@@ -4,7 +4,6 @@
 //! A worker for profiling on VTL2.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use anyhow::Context;

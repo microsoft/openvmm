@@ -5,7 +5,6 @@
 
 #![no_std]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use core::sync::atomic::AtomicU32;
 use core::sync::atomic::AtomicU8;

@@ -13,7 +13,6 @@
 //!     <https://learn.microsoft.com/en-us/virtualization/hyper-v-on-windows/tlfs/tlfs>
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod cpuid;
 pub mod hv;
