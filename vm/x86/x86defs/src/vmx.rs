@@ -148,6 +148,8 @@ impl VmcsField {
     pub const VMX_VMCS_GUEST_PAT: Self = Self(0x00002804);
     pub const VMX_VMCS_GUEST_EFER: Self = Self(0x00002806);
 
+    pub const VMX_VMCS_VIRTUAL_APIC_PAGE: Self = Self(0x00002012);
+
     pub const VMX_VMCS_EOI_EXIT_0: Self = Self(0x0000201C);
     pub const VMX_VMCS_EOI_EXIT_1: Self = Self(0x0000201E);
     pub const VMX_VMCS_EOI_EXIT_2: Self = Self(0x00002020);

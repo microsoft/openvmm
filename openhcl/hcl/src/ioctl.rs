@@ -1643,6 +1643,7 @@ impl<'a, T: BackingPrivate<'a>> Backing<'a> for T {}
 
 mod private {
     use super::Error;
+    use super::Hcl;
     use super::HclVp;
     use super::NoRunner;
     use super::ProcessorRunner;
@@ -1652,7 +1653,8 @@ mod private {
     use sidecar_client::SidecarVp;
 
     pub trait BackingPrivate<'a>: Sized {
-        fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>) -> Result<Self, NoRunner>;
+        fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>, hcl: &Hcl)
+            -> Result<Self, NoRunner>;
 
         fn try_set_reg(
             runner: &mut ProcessorRunner<'_, Self>,
@@ -2295,7 +2297,7 @@ impl Hcl {
             None
         };
 
-        let state = T::new(vp, sidecar.as_ref())?;
+        let state = T::new(vp, sidecar.as_ref(), self)?;
 
         // Set this thread as the runner.
         let VpState::NotRunning =

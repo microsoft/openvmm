@@ -9,6 +9,7 @@ use super::hcl_rmpquery_pages;
 use super::mshv_pvalidate;
 use super::mshv_rmpadjust;
 use super::mshv_rmpquery;
+use super::Hcl;
 use super::HclVp;
 use super::MshvVtl;
 use super::NoRunner;
@@ -173,7 +174,7 @@ impl MshvVtl {
 }
 
 impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
-    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
+    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
         let super::BackingState::Snp { vmsa } = &vp.backing else {
             return Err(NoRunner::MismatchedIsolation);

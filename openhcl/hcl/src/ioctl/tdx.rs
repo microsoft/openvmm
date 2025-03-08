@@ -5,6 +5,7 @@
 
 use super::hcl_tdcall;
 use super::mshv_tdcall;
+use super::Hcl;
 use super::HclVp;
 use super::MshvVtl;
 use super::NoRunner;
@@ -243,28 +244,10 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
         *self.tdx_vp_entry_flags_mut() = *vp_entry_flags;
     }
 
-    fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {
-        let class_code = match vtl {
-            GuestVtl::Vtl0 => TdVpsClassCode::VMCS_1,
-            GuestVtl::Vtl1 => TdVpsClassCode::VMCS_2,
-        };
-        let field_size = match field.field_width() {
-            x86defs::vmx::FieldWidth::Width16 => x86defs::tdx::FieldSize::Size16Bit,
-            x86defs::vmx::FieldWidth::Width32 => x86defs::tdx::FieldSize::Size32Bit,
-            x86defs::vmx::FieldWidth::Width64 => x86defs::tdx::FieldSize::Size64Bit,
-            x86defs::vmx::FieldWidth::WidthNatural => x86defs::tdx::FieldSize::Size64Bit,
-        };
-        TdxExtendedFieldCode::new()
-            .with_context_code(TdxContextCode::TD_VCPU)
-            .with_class_code(class_code.0)
-            .with_field_code(field.into())
-            .with_field_size(field_size)
-    }
-
     fn write_vmcs(&mut self, vtl: GuestVtl, field: VmcsField, mask: u64, value: u64) -> u64 {
         tdcall_vp_wr(
             &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
-            Self::vmcs_field_code(field, vtl),
+            vmcs_field_code(field, vtl),
             value,
             mask,
         )
@@ -274,7 +257,7 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     fn read_vmcs(&self, vtl: GuestVtl, field: VmcsField) -> u64 {
         tdcall_vp_rd(
             &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
-            Self::vmcs_field_code(field, vtl),
+            vmcs_field_code(field, vtl),
         )
         .expect("fatal vmcs access failure")
     }
@@ -411,8 +394,26 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     }
 }
 
+fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {
+    let class_code = match vtl {
+        GuestVtl::Vtl0 => TdVpsClassCode::VMCS_1,
+        GuestVtl::Vtl1 => TdVpsClassCode::VMCS_2,
+    };
+    let field_size = match field.field_width() {
+        x86defs::vmx::FieldWidth::Width16 => x86defs::tdx::FieldSize::Size16Bit,
+        x86defs::vmx::FieldWidth::Width32 => x86defs::tdx::FieldSize::Size32Bit,
+        x86defs::vmx::FieldWidth::Width64 => x86defs::tdx::FieldSize::Size64Bit,
+        x86defs::vmx::FieldWidth::WidthNatural => x86defs::tdx::FieldSize::Size64Bit,
+    };
+    TdxExtendedFieldCode::new()
+        .with_context_code(TdxContextCode::TD_VCPU)
+        .with_class_code(class_code.0)
+        .with_field_code(field.into())
+        .with_field_size(field_size)
+}
+
 impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
-    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
+    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>, hcl: &Hcl) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
         let super::BackingState::Tdx {
             vtl0_apic_page,
@@ -421,6 +422,17 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
         else {
             return Err(NoRunner::MismatchedIsolation);
         };
+
+        // Register the VTL 1 APIC page with the TD module.
+        // The VTL 0 APIC page is registered by the kernel.
+        let vtl1_apic_page_addr = vtl1_apic_page.pfns()[0] * 4096;
+        tdcall_vp_wr(
+            &mut MshvVtlTdcall(&hcl.mshv_vtl),
+            vmcs_field_code(VmcsField::VMX_VMCS_VIRTUAL_APIC_PAGE, GuestVtl::Vtl1),
+            vtl1_apic_page_addr,
+            !0,
+        )
+        .expect("failed registering VTL1 APIC page");
 
         // SAFETY: The mapping is held for the appropriate lifetime, and the
         // APIC page is never accessed as any other type, or by any other location.

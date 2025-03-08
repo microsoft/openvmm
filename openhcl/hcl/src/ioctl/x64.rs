@@ -7,6 +7,7 @@ use super::private::BackingPrivate;
 use super::BackingState;
 use super::Error;
 use super::GuestVtl;
+use super::Hcl;
 use super::HclVp;
 use super::NoRunner;
 use super::ProcessorRunner;
@@ -169,7 +170,7 @@ impl ProcessorRunner<'_, MshvX64<'_>> {
 }
 
 impl<'a> BackingPrivate<'a> for MshvX64<'a> {
-    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>) -> Result<Self, NoRunner> {
+    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
         let BackingState::Mshv { reg_page } = &vp.backing else {
             return Err(NoRunner::MismatchedIsolation);
         };
