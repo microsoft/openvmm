@@ -2394,7 +2394,7 @@ mod tests {
     use scsi_core::save_restore::ScsiDvdSavedState;
     use scsi_core::AsyncScsiDisk;
     use scsi_core::Request;
-
+    use test_with_tracing::test;
     use zerocopy::IntoBytes;
 
     #[derive(Debug)]
