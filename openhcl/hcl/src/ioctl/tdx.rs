@@ -425,7 +425,7 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
 
         // Register the VTL 1 APIC page with the TD module.
         // The VTL 0 APIC page is registered by the kernel.
-        let vtl1_apic_page_addr = vtl1_apic_page.pfns()[0] * 4096;
+        let vtl1_apic_page_addr = vtl1_apic_page.pfns()[0] * user_driver::memory::PAGE_SIZE64;
         tdcall_vp_wr(
             &mut MshvVtlTdcall(&hcl.mshv_vtl),
             vmcs_field_code(VmcsField::VMX_VMCS_VIRTUAL_APIC_PAGE, GuestVtl::Vtl1),
