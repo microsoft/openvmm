@@ -2517,6 +2517,10 @@ pub mod tests {
 
     impl RemoteLocalNode {
         fn new(driver: &impl Spawn) -> Self {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "can't use mesh channels from mesh_node"
+            )]
             let (send, recv) = futures_channel::mpsc::unbounded::<RemoteEvent>();
             let node = Arc::new(LocalNode::with_id(NodeId::new(), Box::new(NullConnect)));
             let task = driver.spawn("test", {
