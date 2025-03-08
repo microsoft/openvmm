@@ -62,7 +62,7 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
 
     // An INIT/SIPI targeted at a VP with more than one guest VTL enabled is ignored.
     if init && !apic_backing.vp().backing.cvm_state().vtl1_enabled {
-        debug_assert_eq!(vtl, GuestVtl::Vtl0);
+        assert_eq!(vtl, GuestVtl::Vtl0);
         apic_backing.handle_init(vtl)?;
     }
 
@@ -70,7 +70,7 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
         if apic_backing.vp().backing.cvm_state_mut().lapics[vtl].activity == MpState::WaitForSipi
             && !apic_backing.vp().backing.cvm_state().vtl1_enabled
         {
-            debug_assert_eq!(vtl, GuestVtl::Vtl0);
+            assert_eq!(vtl, GuestVtl::Vtl0);
             let base = (vector as u64) << 12;
             let selector = (vector as u16) << 8;
             apic_backing.handle_sipi(

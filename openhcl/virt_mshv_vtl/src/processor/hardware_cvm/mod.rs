@@ -842,7 +842,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
             false
         } else if !self.vp.backing.cvm_state().vtl1_enabled {
             // VTL 1 must be active on the vp
-            tracelimit::warn_ratelimited!("vtl call not allowed because vtl 1 is not active");
+            tracelimit::warn_ratelimited!("vtl call not allowed because vtl 1 is not enabled");
             false
         } else {
             true
@@ -1499,10 +1499,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     ) -> Result<(), UhRunVpError> {
         if let Some(start_enable_vtl_state) = self.inner.hv_start_enable_vtl_vp[vtl].lock().take() {
             if vtl == GuestVtl::Vtl1 {
-                if !*self.cvm_vp_inner().vtl1_enable_called.lock() {
-                    tracing::error!("Got a wake to start VTL 1 without being enabled. This shouldn't be possible.");
+                assert!(*self.cvm_vp_inner().vtl1_enable_called.lock());
+                if let InitialVpContextOperation::EnableVpVtl = start_enable_vtl_state.operation {
+                    self.backing.cvm_state_mut().vtl1_enabled = true;
                 }
-                self.backing.cvm_state_mut().vtl1_enabled = true;
             }
 
             tracing::debug!(
