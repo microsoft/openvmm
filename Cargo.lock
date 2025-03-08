@@ -4533,9 +4533,11 @@ dependencies = [
  "guid",
  "inspect",
  "inspect_counters",
+ "memory_range",
  "mesh",
  "nvme",
  "nvme_spec",
+ "page_pool_alloc",
  "pal_async",
  "parking_lot",
  "pci_core",
@@ -4978,6 +4980,7 @@ name = "page_pool_alloc"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "guestmem",
  "inspect",
  "memory_range",
  "mesh",

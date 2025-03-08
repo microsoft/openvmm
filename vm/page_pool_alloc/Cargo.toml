@@ -20,6 +20,7 @@ parking_lot.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+guestmem.workspace = true
 
 [lints]
 workspace = true
