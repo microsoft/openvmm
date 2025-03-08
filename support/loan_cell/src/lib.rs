@@ -43,7 +43,7 @@
 //! ```
 
 // UNSAFETY: this is needed to work around the borrow checker.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 #![no_std]
 
 use core::cell::Cell;

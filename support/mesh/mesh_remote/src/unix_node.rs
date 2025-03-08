@@ -1222,9 +1222,6 @@ fn try_recv(socket: &Socket, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::R
 
     // On Linux, automatically set O_CLOEXEC on incoming fds.
     #[cfg(target_os = "linux")]
-    // Ignore libc misuse of deprecated warning, the flags below are not really
-    // deprecated.
-    #[allow(deprecated)]
     let flags = libc::MSG_CMSG_CLOEXEC;
     #[cfg(not(target_os = "linux"))]
     let flags = 0;
@@ -1268,10 +1265,6 @@ fn try_recv(socket: &Socket, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::R
     }
 
     // Check for truncation only after taking ownership of the fds.
-    //
-    // Ignore libc misuse of deprecated warning, the flags below are not really
-    // deprecated.
-    #[allow(deprecated)]
     if hdr.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0 {
         return Err(io::Error::from_raw_os_error(libc::EMSGSIZE));
     }

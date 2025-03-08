@@ -9,9 +9,7 @@
 //! Linux file system semantics on Windows.
 
 // Crate-specific lints
-#![allow(
-    clippy::field_reassign_with_default, // protocol code benefits from imperative field assignment
-)]
+#![expect(clippy::field_reassign_with_default)] // protocol code benefits from imperative field assignment
 #![cfg(any(windows, target_os = "linux"))]
 
 mod path;

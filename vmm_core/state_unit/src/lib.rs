@@ -95,7 +95,7 @@ pub enum StateRequest {
 /// Implementing this is optional, to be used with [`UnitBuilder::spawn`] or
 /// [`StateRequest::apply`]; state units can also directly process incoming
 /// [`StateRequest`]s.
-#[allow(async_fn_in_trait)] // Don't need Send bounds
+#[expect(async_fn_in_trait)] // Don't need Send bounds
 pub trait StateUnit: InspectMut {
     /// Start asynchronous processing.
     async fn start(&mut self);

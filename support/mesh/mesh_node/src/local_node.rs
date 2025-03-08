@@ -376,7 +376,7 @@ impl<T: Default + HandlePortEvent> From<Port> for PortWithHandler<T> {
 /// Scoped unsafe code with a safe interface.
 mod unsafe_code {
     // UNSAFETY: needed to destructure objects that have `Drop` implementations.
-    #![allow(unsafe_code)]
+    #![expect(unsafe_code)]
 
     use super::Port;
     use super::PortInner;

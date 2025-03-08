@@ -15,7 +15,7 @@
 //! This comes at a cost of using `unsafe` code internally.
 
 // UNSAFETY: needed to avoid monomorphization.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 use crate::ChannelError;
 use crate::RecvError;
