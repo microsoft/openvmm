@@ -3,7 +3,6 @@
 
 //! Implements a UART backend that communicates with the host over a VMBUS pipe.
 
-
 pub use vmbus_serial_protocol::UART_INTERFACE_INSTANCE_COM1;
 pub use vmbus_serial_protocol::UART_INTERFACE_INSTANCE_COM2;
 pub use vmbus_serial_protocol::UART_INTERFACE_INSTANCE_COM3;

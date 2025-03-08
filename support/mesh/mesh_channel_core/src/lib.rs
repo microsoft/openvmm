@@ -7,7 +7,6 @@
 //! This contains only the basic channel implementations, not the extra utility
 //! types on top that `mesh_channel` provides.
 
-
 mod deque;
 mod error;
 mod mpsc;

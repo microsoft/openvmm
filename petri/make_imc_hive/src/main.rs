@@ -3,7 +3,6 @@
 
 //! Tool to make an IMC hive for injecting pipette into a Windows guest.
 
-
 #[cfg(windows)]
 mod windows;
 

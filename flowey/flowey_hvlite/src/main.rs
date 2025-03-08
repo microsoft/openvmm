@@ -3,7 +3,6 @@
 
 //! Flowey pipelines used by the OpenVMM project
 
-
 fn main() {
     flowey_cli::flowey_main::<flowey_hvlite::pipelines::OpenvmmPipelines>(
         "flowey_hvlite",

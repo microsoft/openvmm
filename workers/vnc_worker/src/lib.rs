@@ -3,7 +3,6 @@
 
 //! A worker for running a VNC server.
 
-
 use anyhow::anyhow;
 use anyhow::Context;
 use futures::FutureExt;

@@ -3,7 +3,6 @@
 
 //! Interactive CLI for Hyper-V VMs.
 
-
 mod windows;
 
 #[cfg(windows)]

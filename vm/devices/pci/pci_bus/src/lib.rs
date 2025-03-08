@@ -14,7 +14,6 @@
 //! Incoming config space accesses are then routed to connected
 //! [`GenericPciBusDevice`] devices.
 
-
 use bitfield_struct::bitfield;
 use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;

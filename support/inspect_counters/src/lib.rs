@@ -3,7 +3,6 @@
 
 //! Inspectable types for implementing performance counters.
 
-
 use inspect::Inspect;
 use inspect::Value;
 use std::sync::atomic::AtomicU64;

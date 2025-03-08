@@ -3,7 +3,6 @@
 
 //! Support for building import libs from .def files.
 
-
 use anyhow::Context;
 use std::process::Command;
 

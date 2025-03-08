@@ -14,7 +14,6 @@
 //! which means it's invalid to reference it as a `&[u16]`, or any similar
 //! wrapper type (e.g: `widestring::U16CStr`).
 
-
 pub mod storage_backend;
 
 use guid::Guid;

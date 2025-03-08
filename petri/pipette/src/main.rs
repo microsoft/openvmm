@@ -4,7 +4,6 @@
 //! This is the petri pipette agent, which runs on the guest and executes
 //! commands and other requests from the host.
 
-
 mod agent;
 mod execute;
 mod shutdown;

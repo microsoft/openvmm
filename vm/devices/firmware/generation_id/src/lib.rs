@@ -3,7 +3,6 @@
 
 //! Implementation of Generation ID services (shared across both PCAT and UEFI)
 
-
 use guestmem::GuestMemory;
 use inspect::InspectMut;
 use mesh::RecvError;

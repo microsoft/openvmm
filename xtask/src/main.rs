@@ -8,7 +8,6 @@
 //! Follows the xtask workflow/convention, as described at
 //! <https://github.com/matklad/cargo-xtask>
 
-
 use anyhow::Context;
 use clap::Parser;
 use clap::Subcommand;

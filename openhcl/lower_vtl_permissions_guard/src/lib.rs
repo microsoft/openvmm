@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-
 //! Implements a VtlMemoryProtection guard that can be used to temporarily allow
 //! access to pages that were previously protected.
 

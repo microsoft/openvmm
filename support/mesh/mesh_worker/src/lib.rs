@@ -11,7 +11,6 @@
 //! [`register_workers`] macro and the [`RegisteredWorkers`] factory are helpful
 //! for defining the possible workers in a binary.
 
-
 mod worker;
 
 // TODO: flatten this module.

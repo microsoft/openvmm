@@ -14,7 +14,6 @@
 //!
 //! This implementation includes a small DHCP server for address assignment.
 
-
 mod arp;
 mod dhcp;
 #[cfg_attr(unix, path = "dns_unix.rs")]

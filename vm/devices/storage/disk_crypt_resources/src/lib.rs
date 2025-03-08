@@ -3,7 +3,6 @@
 
 //! Resources for the encrypted disk device.
 
-
 use mesh::MeshPayload;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::Resource;

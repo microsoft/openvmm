@@ -8,7 +8,6 @@
 //! NOTE: this crate is no longer used by OpenVMM/OpenHCL, and only remains
 //! in-tree to support testing devices.
 
-
 pub mod device;
 pub mod services;
 

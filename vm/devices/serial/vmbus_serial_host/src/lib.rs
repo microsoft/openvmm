@@ -3,7 +3,6 @@
 
 //! The host (server) side implementation of a VMBUS based serial device.
 
-
 pub mod resolver;
 
 use async_trait::async_trait;

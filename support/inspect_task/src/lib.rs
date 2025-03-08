@@ -3,7 +3,6 @@
 
 //! Logic for inspecting the task list.
 
-
 use inspect::Inspect;
 use pal_async::task::TaskData;
 use pal_async::task::TaskList;

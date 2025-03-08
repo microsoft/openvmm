@@ -3,7 +3,6 @@
 
 //! Core types shared by serial port implementations and users.
 
-
 pub mod disconnected;
 pub mod resources;
 pub mod serial_io;

@@ -4,7 +4,6 @@
 //! This module implements a page memory allocator for allocating pages from a
 //! given portion of the guest address space.
 
-
 mod device_dma;
 
 pub use device_dma::PagePoolDmaBuffer;

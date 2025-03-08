@@ -64,7 +64,6 @@
 //!      unmapping it. The exact implications of this are not easy to reason
 //!      about.
 
-
 mod mapping_manager;
 mod memory_manager;
 mod partition_mapper;

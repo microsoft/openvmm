@@ -3,7 +3,6 @@
 
 //! Data structures that may be useful when working with hv1_hypercall.
 
-
 mod proc_mask;
 mod vtl_array;
 

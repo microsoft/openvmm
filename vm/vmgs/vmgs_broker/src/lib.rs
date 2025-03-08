@@ -3,7 +3,6 @@
 
 //! A task + RPC client for interacting with a shared VMGS instance.
 
-
 mod broker;
 mod client;
 pub mod non_volatile_store;

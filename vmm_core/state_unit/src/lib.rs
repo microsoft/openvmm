@@ -28,7 +28,6 @@
 //! This model allows for asynchronous, highly concurrent state changes, and it
 //! works across process boundaries thanks to `mesh`.
 
-
 use futures::future::join_all;
 use futures::FutureExt;
 use futures::StreamExt;

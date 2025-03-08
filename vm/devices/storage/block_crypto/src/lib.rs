@@ -3,7 +3,6 @@
 
 //! Cryptography primitives for disk encryption.
 
-
 #[cfg(windows)]
 use bcrypt as sys;
 #[cfg(unix)]

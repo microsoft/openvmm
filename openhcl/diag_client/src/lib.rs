@@ -3,7 +3,6 @@
 
 //! The client for connecting to the Underhill diagnostics server.
 
-
 pub mod kmsg_stream;
 
 use anyhow::Context;

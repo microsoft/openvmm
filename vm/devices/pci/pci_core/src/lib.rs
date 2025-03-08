@@ -6,7 +6,6 @@
 //! A collection of constants, types, and traits that are shared across all PCI
 //! implementations (i.e: vpci, pci_gen1, pcie).
 
-
 pub mod test_helpers;
 
 pub mod bar_mapping;
