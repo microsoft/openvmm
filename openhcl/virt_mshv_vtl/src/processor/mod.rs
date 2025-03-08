@@ -354,12 +354,11 @@ pub enum SidecarRemoveExit {
 
 impl UhVpInner {
     // Create a new vp's state.
-    pub fn new(cpu_index: u32, vp_info: TargetVpInfo) -> Self {
+    pub fn new(vp_info: TargetVpInfo) -> Self {
         Self {
             wake_reasons: Default::default(),
             message_queues: VtlArray::from_fn(|_| MessageQueues::new()),
             waker: Default::default(),
-            cpu_index,
             vp_info,
             hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
             sidecar_exit_reason: Default::default(),
@@ -652,7 +651,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
             {
                 let mut current = Default::default();
                 affinity::get_current_thread_affinity(&mut current).unwrap();
-                assert_eq!(&current, CpuSet::new().set(self.inner.cpu_index));
+                assert_eq!(&current, CpuSet::new().set(self.vp_index().index()));
             }
 
             // Lower the priority of this VP thread so that the VM does not return
@@ -791,7 +790,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         let inner = partition.vp(vp_info.base.vp_index).unwrap();
         let mut runner = partition
             .hcl
-            .runner(inner.cpu_index, idle_control.is_none())
+            .runner(inner.vp_index().index(), idle_control.is_none())
             .unwrap();
 
         let backing_shared = T::shared(&partition.backing_shared);
@@ -918,7 +917,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 
     fn vp_index(&self) -> VpIndex {
-        self.inner.vp_info.base.vp_index
+        self.inner.vp_index()
     }
 
     #[cfg(guest_arch = "x86_64")]
