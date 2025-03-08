@@ -8,8 +8,6 @@
 //! This crate uses lxutil.dll, a library created for the Windows Subsystem for Linux to emulate
 //! Linux file system semantics on Windows.
 
-// Crate-specific lints
-#![expect(clippy::field_reassign_with_default)] // protocol code benefits from imperative field assignment
 #![cfg(any(windows, target_os = "linux"))]
 
 mod path;
