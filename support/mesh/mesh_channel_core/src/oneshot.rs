@@ -142,8 +142,8 @@ fn decode_message<T: MeshField>(message: Message<'_>) -> Result<BoxedValue, Chan
 #[derive(Debug)]
 struct Slot {
     state: Mutex<SlotState>,
-    // Stored in the slot to but exclusively owned by the `OneshotReceiverCore`.
-    // This minimizes the size of the `OneshotReceiverCore`.
+    // Stored in the shared slot but exclusively owned by the
+    // `OneshotReceiverCore`. This minimizes the size of the `OneshotReceiver`.
     receiver: SyncUnsafeCell<ManuallyDrop<ReceiverState>>,
 }
 
