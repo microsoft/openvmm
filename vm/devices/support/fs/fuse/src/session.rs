@@ -1,10 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(
-    clippy::field_reassign_with_default // protocol code benefits from imperative field assignment
-)]
-
 use super::protocol::*;
 use super::reply::ReplySender;
 use super::request::FuseOperation;

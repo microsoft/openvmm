@@ -13,7 +13,7 @@ use libc::c_ulong;
 use libc::c_void;
 use libc::size_t;
 // https://github.com/rust-lang/libc/issues/1848
-#[cfg_attr(target_env = "musl", allow(deprecated))]
+#[cfg_attr(target_env = "musl", expect(deprecated))]
 use libc::time_t;
 use openssl_sys::BIGNUM;
 use std::ffi::CStr;
@@ -29,7 +29,7 @@ unsafe extern "C" {
     pub fn OSSL_PARAM_get_uint64(p: *const OSSL_PARAM, val: *mut u64) -> c_int;
     pub fn OSSL_PARAM_get_size_t(p: *const OSSL_PARAM, val: *mut size_t) -> c_int;
     // https://github.com/rust-lang/libc/issues/1848
-    #[cfg_attr(target_env = "musl", allow(deprecated))]
+    #[cfg_attr(target_env = "musl", expect(deprecated))]
     pub fn OSSL_PARAM_get_time_t(p: *const OSSL_PARAM, val: *mut time_t) -> c_int;
 
     pub fn OSSL_PARAM_set_int(p: *mut OSSL_PARAM, val: c_int) -> c_int;
@@ -42,7 +42,7 @@ unsafe extern "C" {
     pub fn OSSL_PARAM_set_uint64(p: *mut OSSL_PARAM, val: u64) -> c_int;
     pub fn OSSL_PARAM_set_size_t(p: *mut OSSL_PARAM, val: size_t) -> c_int;
     // https://github.com/rust-lang/libc/issues/1848
-    #[cfg_attr(target_env = "musl", allow(deprecated))]
+    #[cfg_attr(target_env = "musl", expect(deprecated))]
     pub fn OSSL_PARAM_set_time_t(p: *mut OSSL_PARAM, val: time_t) -> c_int;
 
     pub fn OSSL_PARAM_get_BN(p: *const OSSL_PARAM, val: *mut *mut BIGNUM) -> c_int;
@@ -99,7 +99,7 @@ unsafe extern "C" {
 
     pub fn OSSL_PARAM_construct_size_t(key: *const c_char, buf: *mut size_t) -> OSSL_PARAM;
     // https://github.com/rust-lang/libc/issues/1848
-    #[cfg_attr(target_env = "musl", allow(deprecated))]
+    #[cfg_attr(target_env = "musl", expect(deprecated))]
     pub fn OSSL_PARAM_construct_time_t(key: *const c_char, buf: *mut time_t) -> OSSL_PARAM;
 
     pub fn OSSL_PARAM_construct_utf8_string(

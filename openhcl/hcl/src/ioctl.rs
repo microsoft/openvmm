@@ -4,7 +4,7 @@
 //! Interface to `mshv_vtl` driver.
 
 // Used to implement the [`private::BackingPrivate`] trait.
-#![allow(private_interfaces)]
+#![expect(private_interfaces)]
 
 mod deferred;
 
