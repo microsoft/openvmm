@@ -950,7 +950,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
             return Err((HvError::AccessDenied, 0));
         }
 
-        // VTL 1 mut be enabled already.
+        // VTL 1 must be enabled already.
         let guest_vsm_lock = self.vp.cvm_partition().guest_vsm.read();
         let GuestVsmState::Enabled { vtl1, .. } = &*guest_vsm_lock else {
             return Err((HvError::InvalidVtlState, 0));
@@ -1349,7 +1349,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             return Err(HvError::InvalidRegisterValue);
         }
 
-        // VTL 1 mut be enabled already.
+        // VTL 1 must be enabled already.
         let mut guest_vsm_lock = self.cvm_partition().guest_vsm.write();
         let GuestVsmState::Enabled { vtl1, .. } = &mut *guest_vsm_lock else {
             return Err(HvError::InvalidVtlState);
@@ -1399,7 +1399,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         )?;
 
         // TODO GUEST VSM: actually use the enable_vtl_protection value when
-        // deciding whether to check vtl access();
+        // deciding whether to check vtl access()
+        // TODO GUEST VSM: should only be set if enable_vtl_protection is true?
         protector.set_vtl1_protections_enabled();
 
         // Note: Zero memory on reset will happen regardless of this value,
