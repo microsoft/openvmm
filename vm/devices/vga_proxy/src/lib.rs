@@ -4,6 +4,7 @@
 //! A fake VGA device that proxies all PCI accesses to the emulated host device.
 
 #![expect(missing_docs)]
+
 use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;
 use chipset_device::io::deferred::DeferredRead;

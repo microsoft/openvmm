@@ -4,6 +4,7 @@
 //! Client-facing definitions for the VM worker.
 
 #![expect(missing_docs)]
+
 pub mod config;
 pub mod entrypoint;
 pub mod rpc;

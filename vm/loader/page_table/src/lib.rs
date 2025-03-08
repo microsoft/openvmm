@@ -4,6 +4,7 @@
 //! Methods to construct page tables.
 
 #![expect(missing_docs)]
+
 pub mod aarch64;
 pub mod x64;
 

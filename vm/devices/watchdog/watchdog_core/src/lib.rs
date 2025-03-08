@@ -9,6 +9,7 @@
 //! Guest Watchdog device.
 
 #![expect(missing_docs)]
+
 pub mod platform;
 use inspect::Inspect;
 use std::task::Context;

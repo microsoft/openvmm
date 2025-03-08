@@ -5,6 +5,7 @@
 //! new Azure hardware SKUs.
 
 #![expect(missing_docs)]
+
 pub mod access;
 pub mod bnic;
 

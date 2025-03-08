@@ -4,6 +4,7 @@
 //! A chipset for fuzz-testing devices.
 
 #![expect(missing_docs)]
+
 use chipset_arc_mutex_device::device::ArcMutexChipsetDeviceBuilder;
 use chipset_arc_mutex_device::device::ArcMutexChipsetServicesFinalize;
 use chipset_arc_mutex_device::services::ChipsetServices;

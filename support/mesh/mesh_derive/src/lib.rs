@@ -4,6 +4,7 @@
 //! Derive macro for `mesh::MeshPayload` and `mesh_protobuf::Protobuf`.
 
 #![expect(missing_docs)]
+
 use heck::ToSnakeCase;
 use proc_macro2::Span;
 use proc_macro2::TokenStream;

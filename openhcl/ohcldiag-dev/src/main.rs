@@ -5,6 +5,7 @@
 //! guarantees.
 
 #![expect(missing_docs)]
+
 mod completions;
 
 use anyhow::Context;

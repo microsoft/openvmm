@@ -7,6 +7,7 @@
 //! documentation on the kmsg entry format.
 
 #![expect(missing_docs)]
+
 use std::fmt::Display;
 use std::time::Duration;
 use thiserror::Error;

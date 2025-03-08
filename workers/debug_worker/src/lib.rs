@@ -8,6 +8,7 @@
 //! guest debugger is not available or practical.
 
 #![expect(missing_docs)]
+
 mod gdb;
 
 use anyhow::Context;

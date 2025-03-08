@@ -5,6 +5,7 @@
 //! GET (Guest Emulation Transport)
 
 #![expect(missing_docs)]
+
 use bitfield_struct::bitfield;
 use guid::Guid;
 use open_enum::open_enum;

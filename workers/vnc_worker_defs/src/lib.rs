@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+
 use mesh::MeshPayload;
 use mesh_worker::WorkerId;
 use std::net::TcpListener;

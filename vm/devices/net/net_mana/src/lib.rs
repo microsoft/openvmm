@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+
 use anyhow::Context as _;
 use async_trait::async_trait;
 use futures::FutureExt;

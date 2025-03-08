@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+
 fn main() {
     // WinHvPlatform isn't in the public SDK yet, so build a minimal import lib
     // for it.

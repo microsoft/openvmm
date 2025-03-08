@@ -5,6 +5,7 @@
 //! for the worker process.
 
 #![expect(missing_docs)]
+
 mod cli_args;
 mod crash_dump;
 mod meshworker;
