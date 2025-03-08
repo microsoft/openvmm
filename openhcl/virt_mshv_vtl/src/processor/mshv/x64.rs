@@ -17,8 +17,9 @@ use super::super::vp_state::UhVpStateAccess;
 use crate::BackingShared;
 use crate::Error;
 use crate::GuestVsmState;
-use crate::GuestVsmVtl1State;
 use crate::GuestVtl;
+use crate::VbsIsolatedVtl1State;
+use crate::processor::BackingSharedParams;
 use crate::processor::SidecarExitReason;
 use crate::processor::SidecarRemoveExit;
 use crate::processor::UhHypercallHandler;
@@ -49,6 +50,7 @@ use hvdef::hypercall;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use parking_lot::RwLock;
 use std::sync::atomic::Ordering::Relaxed;
 use virt::StopVp;
 use virt::VpHaltReason;
@@ -89,6 +91,21 @@ pub struct HypervisorBackedX86 {
     stats: ProcessorStatsX86,
 }
 
+/// Partition-wide shared data for hypervisor backed VMs.
+#[derive(Inspect)]
+pub struct HypervisorBackedX86Shared {
+    pub(crate) guest_vsm: RwLock<GuestVsmState<VbsIsolatedVtl1State>>,
+}
+
+impl HypervisorBackedX86Shared {
+    /// Creates a new partition-shared data structure for hypervisor backed VMs.
+    pub fn new(params: BackingSharedParams) -> Result<Self, Error> {
+        Ok(Self {
+            guest_vsm: RwLock::new(GuestVsmState::from_availability(params.guest_vsm_available)),
+        })
+    }
+}
+
 #[derive(Inspect, Default)]
 struct ProcessorStatsX86 {
     io_port: Counter,
@@ -120,14 +137,20 @@ pub struct MshvEmulationCache {
 
 impl BackingPrivate for HypervisorBackedX86 {
     type HclBacking<'mshv> = MshvX64<'mshv>;
-    type Shared = ();
+    type Shared = HypervisorBackedX86Shared;
     type EmulationCache = MshvEmulationCache;
 
-    fn shared(_: &BackingShared) -> &Self::Shared {
-        &()
+    fn shared(shared: &BackingShared) -> &Self::Shared {
+        let BackingShared::Hypervisor(shared) = shared else {
+            unreachable!()
+        };
+        shared
     }
 
-    fn new(params: BackingParams<'_, '_, Self>, _shared: &()) -> Result<Self, Error> {
+    fn new(
+        params: BackingParams<'_, '_, Self>,
+        _shared: &HypervisorBackedX86Shared,
+    ) -> Result<Self, Error> {
         // Initialize shared register state to architectural state. The kernel
         // zero initializes this.
         //
@@ -916,7 +939,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             return Err(HvError::InvalidVtlState);
         }
 
-        let mut guest_vsm_lock = self.partition.guest_vsm.write();
+        let mut guest_vsm_lock = self.shared.guest_vsm.write();
 
         // Initialize partition.guest_vsm state if necessary.
         match *guest_vsm_lock {
@@ -926,15 +949,15 @@ impl UhProcessor<'_, HypervisorBackedX86> {
             GuestVsmState::NotGuestEnabled => {
                 // TODO: check status
                 *guest_vsm_lock = GuestVsmState::Enabled {
-                    vtl1: GuestVsmVtl1State::VbsIsolated {
-                        state: Default::default(),
-                    },
+                    vtl1: Default::default(),
                 };
             }
-            GuestVsmState::Enabled { vtl1: _ } => {}
+            GuestVsmState::Enabled { .. } => {}
         }
 
-        let guest_vsm = guest_vsm_lock.get_vbs_isolated_mut().unwrap();
+        let GuestVsmState::Enabled { vtl1 } = &mut *guest_vsm_lock else {
+            unreachable!()
+        };
         let protections = HvMapGpaFlags::from(value.default_vtl_protection_mask() as u32);
 
         if value.reserved() != 0 {
@@ -947,7 +970,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         // setting the enable_vtl_protection bit when it was previously
         // disabled; other cases are handled directly by the hypervisor.
         if !value.enable_vtl_protection() {
-            if guest_vsm.enable_vtl_protection {
+            if vtl1.enable_vtl_protection {
                 // A malicious guest could change its hypercall parameters in
                 // memory while the intercept is being handled; this case
                 // explicitly handles that situation.
@@ -974,12 +997,12 @@ impl UhProcessor<'_, HypervisorBackedX86> {
         }
 
         // Don't allow changing existing protections once set.
-        if let Some(current_protections) = guest_vsm.default_vtl_protections {
+        if let Some(current_protections) = vtl1.default_vtl_protections {
             if protections != current_protections {
                 return Err(HvError::InvalidRegisterValue);
             }
         }
-        guest_vsm.default_vtl_protections = Some(protections);
+        vtl1.default_vtl_protections = Some(protections);
 
         for ram_range in self.partition.lower_vtl_memory_layout.ram().iter() {
             self.partition
@@ -998,7 +1021,7 @@ impl UhProcessor<'_, HypervisorBackedX86> {
 
         let hc_regs = [(HvX64RegisterName::VsmPartitionConfig, u64::from(value))];
         self.runner.set_vp_registers_hvcall(vtl.into(), hc_regs)?;
-        guest_vsm.enable_vtl_protection = true;
+        vtl1.enable_vtl_protection = true;
 
         Ok(())
     }
@@ -1238,7 +1261,10 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         // the HvCheckSparseGpaPageVtlAccess hypercall--which is unimplemented in whp--will never be made.
         if mode == virt_support_x86emu::emulate::TranslateMode::Execute
             && self.vtl == GuestVtl::Vtl0
-            && self.vp.vtl1_supported()
+            && !matches!(
+                *self.vp.shared.guest_vsm.read(),
+                GuestVsmState::NotPlatformSupported,
+            )
         {
             // Should always be called after translate gva with the tlb lock flag
             debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vtl));
@@ -1790,18 +1816,18 @@ impl<T> hv1_hypercall::ModifyVtlProtectionMask
         // A VTL cannot change its own VTL permissions until it has enabled VTL protection and
         // configured default permissions. Higher VTLs are not under this restriction (as they may
         // need to apply default permissions before VTL protection is enabled).
-        if target_vtl == self.intercepted_vtl {
-            if !self
-                .vp
-                .partition
-                .guest_vsm
-                .read()
-                .get_vbs_isolated()
-                .ok_or((HvError::AccessDenied, 0))?
-                .enable_vtl_protection
-            {
-                return Err((HvError::AccessDenied, 0));
-            }
+        if target_vtl == self.intercepted_vtl
+            && !matches!(
+                *self.vp.shared.guest_vsm.read(),
+                GuestVsmState::Enabled {
+                    vtl1: VbsIsolatedVtl1State {
+                        enable_vtl_protection: true,
+                        default_vtl_protections: Some(_),
+                    },
+                }
+            )
+        {
+            return Err((HvError::AccessDenied, 0));
         }
 
         // TODO VBS GUEST VSM: verify this logic is correct

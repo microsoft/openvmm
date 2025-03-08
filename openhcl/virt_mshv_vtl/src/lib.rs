@@ -16,6 +16,7 @@ cfg_if::cfg_if!(
         pub use processor::snp::SnpBacked;
         pub use processor::tdx::TdxBacked;
         pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
+        pub use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
         use devmsr::MsrDevice;
@@ -32,6 +33,7 @@ cfg_if::cfg_if!(
         type IrrBitmap = BitArray<[u32; 8], Lsb0>;
     } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
         pub use crate::processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
+        pub use crate::processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
         use hvdef::HvArm64RegisterName;
     }
 );
@@ -226,7 +228,6 @@ pub struct UhPartitionInner {
     /// This is only set for TDX VMs. For SNP VMs, this is implemented by the
     /// hypervisor. For non-isolated VMs, this isn't a concept.
     untrusted_synic: Option<GlobalSynic>,
-    guest_vsm: RwLock<GuestVsmState>,
     #[inspect(skip)]
     isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     shared_dma_client: Option<Arc<dyn DmaClient>>,
@@ -246,8 +247,7 @@ pub struct UhPartitionInner {
 #[inspect(external_tag)]
 #[doc(hidden)]
 pub enum BackingShared {
-    // No shared state for hypervisor-backed VMs today.
-    Hypervisor,
+    Hypervisor(#[inspect(flatten)] HypervisorBackedShared),
     #[cfg(guest_arch = "x86_64")]
     Snp(#[inspect(flatten)] SnpBackedShared),
     #[cfg(guest_arch = "x86_64")]
@@ -261,14 +261,8 @@ impl BackingShared {
     ) -> Result<BackingShared, Error> {
         Ok(match isolation {
             IsolationType::None | IsolationType::Vbs => {
-                #[allow(irrefutable_let_patterns)]
-                let BackingSharedParams {
-                    cvm_state: None, ..
-                } = backing_shared_params
-                else {
-                    unreachable!()
-                };
-                BackingShared::Hypervisor
+                assert!(backing_shared_params.cvm_state.is_none());
+                BackingShared::Hypervisor(HypervisorBackedShared::new(backing_shared_params)?)
             }
             #[cfg(guest_arch = "x86_64")]
             IsolationType::Snp => BackingShared::Snp(SnpBackedShared::new(backing_shared_params)?),
@@ -281,7 +275,7 @@ impl BackingShared {
 
     fn cvm_state(&self) -> Option<&UhCvmPartitionState> {
         match self {
-            BackingShared::Hypervisor => None,
+            BackingShared::Hypervisor(_) => None,
             #[cfg(guest_arch = "x86_64")]
             BackingShared::Snp(s) => Some(&s.cvm),
             #[cfg(guest_arch = "x86_64")]
@@ -414,6 +408,8 @@ pub struct UhCvmPartitionState {
     lapic: VtlArray<LocalApicSet, 2>,
     /// The emulated hypervisor state.
     hv: GlobalHv,
+    /// Guest VSM state.
+    guest_vsm: RwLock<GuestVsmState<CvmVtl1State>>,
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -437,75 +433,32 @@ pub struct UhCvmVpInner {
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 #[derive(Inspect)]
 #[inspect(tag = "guest vsm state")]
-/// Partition-wide state for guest vsm. Only applies to CVMs.
-enum GuestVsmState {
+/// Partition-wide state for guest vsm.
+enum GuestVsmState<T: Inspect> {
     NotPlatformSupported,
     NotGuestEnabled,
-    Enabled { vtl1: GuestVsmVtl1State },
+    Enabled { vtl1: T },
 }
 
-impl GuestVsmState {
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    fn get_vbs_isolated(&self) -> Option<&VbsIsolatedVtl1State> {
-        match self {
-            GuestVsmState::Enabled {
-                vtl1: GuestVsmVtl1State::VbsIsolated { state },
-            } => Some(state),
-
-            _ => None,
-        }
-    }
-
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    fn get_vbs_isolated_mut(&mut self) -> Option<&mut VbsIsolatedVtl1State> {
-        match self {
-            GuestVsmState::Enabled {
-                vtl1: GuestVsmVtl1State::VbsIsolated { state },
-            } => Some(state),
-
-            _ => None,
-        }
-    }
-
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    fn get_hardware_cvm_mut(&mut self) -> Option<&mut HardwareCvmVtl1State> {
-        match self {
-            GuestVsmState::Enabled {
-                vtl1: GuestVsmVtl1State::HardwareCvm { state },
-            } => Some(state),
-
-            _ => None,
-        }
-    }
-
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    fn get_hardware_cvm(&self) -> Option<&HardwareCvmVtl1State> {
-        match self {
-            GuestVsmState::Enabled {
-                vtl1: GuestVsmVtl1State::HardwareCvm { state },
-            } => Some(state),
-            _ => None,
+impl<T: Inspect> GuestVsmState<T> {
+    pub fn from_availability(guest_vsm_available: bool) -> Self {
+        if guest_vsm_available {
+            GuestVsmState::NotGuestEnabled
+        } else {
+            GuestVsmState::NotPlatformSupported
         }
     }
 }
 
-#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-#[derive(Clone, Copy, Inspect)]
-#[inspect(external_tag)]
-enum GuestVsmVtl1State {
-    HardwareCvm { state: HardwareCvmVtl1State },
-    VbsIsolated { state: VbsIsolatedVtl1State },
-}
-
-#[derive(Clone, Copy, Default, Inspect)]
+#[derive(Default, Inspect)]
 struct VbsIsolatedVtl1State {
     #[inspect(with = "|flags| flags.map(|f| inspect::AsHex(u32::from(f)))")]
     default_vtl_protections: Option<HvMapGpaFlags>,
     enable_vtl_protection: bool,
 }
 
-#[derive(Clone, Copy, Default, Inspect)]
-struct HardwareCvmVtl1State {
+#[derive(Default, Inspect)]
+struct CvmVtl1State {
     /// Whether VTL 1 has been enabled on any vp
     enabled_on_any_vp: bool,
     /// Whether guest memory should be zeroed before it resets.
@@ -747,52 +700,59 @@ impl WakeReason {
 impl UhPartition {
     /// Revokes guest VSM.
     pub fn revoke_guest_vsm(&self) -> Result<(), RevokeGuestVsmError> {
-        let mut vsm_state = self.inner.guest_vsm.write();
-
-        if matches!(*vsm_state, GuestVsmState::Enabled { vtl1: _ }) {
-            return Err(RevokeGuestVsmError::Vtl1AlreadyEnabled);
+        fn revoke<T: Inspect>(vsm_state: &mut GuestVsmState<T>) -> Result<(), RevokeGuestVsmError> {
+            if matches!(vsm_state, GuestVsmState::Enabled { .. }) {
+                return Err(RevokeGuestVsmError::Vtl1AlreadyEnabled);
+            }
+            *vsm_state = GuestVsmState::NotPlatformSupported;
+            Ok(())
         }
 
-        *vsm_state = GuestVsmState::NotPlatformSupported;
+        match &self.inner.backing_shared {
+            BackingShared::Hypervisor(s) => {
+                revoke(&mut *s.guest_vsm.write())?;
+                self.inner
+                    .hcl
+                    .set_guest_vsm_partition_config(false)
+                    .map_err(RevokeGuestVsmError::SetGuestVsmConfig)?;
+            }
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Snp(SnpBackedShared { cvm, .. })
+            | BackingShared::Tdx(TdxBackedShared { cvm, .. }) => {
+                revoke(&mut *cvm.guest_vsm.write())?;
+                let mut cpuid_lock = self.inner.cpuid.lock();
+                let current_result =
+                    cpuid_lock.result(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0, &[0; 4]);
 
-        if !self.inner.isolation.is_hardware_isolated() {
-            self.inner
-                .hcl
-                .set_guest_vsm_partition_config(false)
-                .map_err(RevokeGuestVsmError::SetGuestVsmConfig)?;
-        } else {
-            let mut cpuid_lock = self.inner.cpuid.lock();
-            let current_result =
-                cpuid_lock.result(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0, &[0; 4]);
+                let mut features = hvdef::HvFeatures::from(u128::from_le_bytes(
+                    current_result
+                        .iter()
+                        .flat_map(|i| i.to_le_bytes())
+                        .collect::<Vec<u8>>()
+                        .try_into()
+                        .unwrap(),
+                ));
 
-            let mut features = hvdef::HvFeatures::from(u128::from_le_bytes(
-                current_result
-                    .iter()
-                    .flat_map(|i| i.to_le_bytes())
-                    .collect::<Vec<u8>>()
-                    .try_into()
-                    .unwrap(),
-            ));
+                let privileges = hvdef::HvPartitionPrivilege::from(features.privileges());
+                features.set_privileges(privileges.with_access_vsm(false).into());
 
-            let privileges = hvdef::HvPartitionPrivilege::from(features.privileges());
-            features.set_privileges(privileges.with_access_vsm(false).into());
+                let split_u128 = |x: u128| -> [u32; 4] {
+                    let bytes = x.to_le_bytes();
+                    [
+                        u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+                        u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+                        u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+                        u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+                    ]
+                };
 
-            let split_u128 = |x: u128| -> [u32; 4] {
-                let bytes = x.to_le_bytes();
-                [
-                    u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-                    u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-                    u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
-                    u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
-                ]
-            };
-
-            cpuid_lock.update_result(
-                hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES,
-                0,
-                &split_u128(features.into()),
-            );
-        }
+                cpuid_lock.update_result(
+                    hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES,
+                    0,
+                    &split_u128(features.into()),
+                );
+            }
+        };
 
         Ok(())
     }
@@ -1649,17 +1609,6 @@ impl<'a> UhProtoPartition<'a> {
             Mutex::new(CpuidLeafSet::new(Vec::new())),
         );
 
-        let vsm_state = if guest_vsm_available {
-            if is_hardware_isolated {
-                tracing::warn!(
-                    "Advertising guest vsm as being supported to the guest. This feature is in development, so the guest might crash."
-                );
-            }
-            GuestVsmState::NotGuestEnabled
-        } else {
-            GuestVsmState::NotPlatformSupported
-        };
-
         #[cfg(guest_arch = "x86_64")]
         let cpuid = UhPartition::construct_cpuid_results(
             &late_params.cpuid,
@@ -1718,7 +1667,9 @@ impl<'a> UhProtoPartition<'a> {
 
         #[cfg(guest_arch = "x86_64")]
         let cvm_state = cvm_cpuid
-            .map(|cpuid| Self::construct_cvm_state(&params, &late_params, &caps, cpuid))
+            .map(|cpuid| {
+                Self::construct_cvm_state(&params, &late_params, &caps, cpuid, guest_vsm_available)
+            })
             .transpose()?;
         #[cfg(guest_arch = "aarch64")]
         let cvm_state = None;
@@ -1743,7 +1694,6 @@ impl<'a> UhProtoPartition<'a> {
             isolation,
             hide_isolation: params.hide_isolation,
             untrusted_synic,
-            guest_vsm: RwLock::new(vsm_state),
             isolated_memory_protector: late_params.isolated_memory_protector.clone(),
             shared_dma_client: late_params.shared_dma_client,
             private_dma_client: late_params.private_dma_client,
@@ -1754,6 +1704,7 @@ impl<'a> UhProtoPartition<'a> {
                 BackingSharedParams {
                     cvm_state,
                     vp_count: params.topology.vp_count(),
+                    guest_vsm_available,
                 },
             )?,
             #[cfg(guest_arch = "x86_64")]
@@ -1903,6 +1854,7 @@ impl UhProtoPartition<'_> {
         late_params: &UhLateParams<'_>,
         caps: &PartitionCapabilities,
         cpuid: cvm_cpuid::CpuidResults,
+        guest_vsm_available: bool,
     ) -> Result<UhCvmPartitionState, Error> {
         let vp_count = params.topology.vp_count() as usize;
         let vps = (0..vp_count)
@@ -1938,6 +1890,12 @@ impl UhProtoPartition<'_> {
             ref_time,
         });
 
+        if guest_vsm_available {
+            tracing::warn!(
+                "Advertising guest vsm as being supported to the guest. This feature is in development, so the guest might crash."
+            );
+        }
+
         Ok(UhCvmPartitionState {
             cpuid,
             tlb_locked_vps,
@@ -1948,6 +1906,7 @@ impl UhProtoPartition<'_> {
                 .ok_or(Error::MissingSharedMemory)?,
             lapic,
             hv,
+            guest_vsm: RwLock::new(GuestVsmState::from_availability(guest_vsm_available)),
         })
     }
 }
