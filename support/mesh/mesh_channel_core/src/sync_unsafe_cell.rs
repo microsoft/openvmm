@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 // UNSAFETY: needed to implement `Sync` for `SyncUnsafeCell`.
 #![allow(unsafe_code)]
 
