@@ -443,7 +443,7 @@ impl RelayChannelTask {
             RelayChannelRequest::Stop(rpc) => rpc.handle_sync(|()| self.running = false),
             RelayChannelRequest::Save(rpc) => rpc.handle_sync(|_| self.handle_save()),
             RelayChannelRequest::Restore(rpc) => {
-                rpc.handle_failable(|state| self.handle_restore(state))
+                rpc.handle_failable(async |state| self.handle_restore(state).await)
                     .await
             }
             RelayChannelRequest::Inspect(deferred) => deferred.inspect(self),
