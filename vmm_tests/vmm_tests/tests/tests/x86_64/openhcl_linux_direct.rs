@@ -167,6 +167,9 @@ async fn storvsp(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
                         .into_resource()),
                         read_only: false,
                     }],
+                    prog_if_override: None,
+                    sub_class_override: None,
+                    base_class_override: None,
                 }
                 .into_resource(),
             });
@@ -445,6 +448,9 @@ async fn openhcl_linux_stripe_storvsp(config: PetriVmConfigOpenVmm) -> Result<()
                             .into_resource()),
                             read_only: false,
                         }],
+                        prog_if_override: None,
+                        sub_class_override: None,
+                        base_class_override: None,
                     }
                     .into_resource(),
                 },

@@ -93,7 +93,7 @@ const CAP: spec::Cap = spec::Cap::new()
     .with_css_nvm(true)
     .with_to(!0);
 
-/// The NVMe controller's capabilities.
+/// The virtual NVMe controller's capabilities.
 #[derive(Debug, Copy, Clone)]
 pub struct NvmeControllerCaps {
     /// The number of entries in the MSI-X table.
@@ -103,6 +103,12 @@ pub struct NvmeControllerCaps {
     /// The subsystem ID, used as part of the subnqn field of the identify
     /// controller response.
     pub subsystem_id: Guid,
+    /// Override the PCI Code Programming Interface field.
+    pub prog_if_override: Option<ProgrammingInterface>,
+    /// Override the PCI Code Subclass field.
+    pub sub_class_override: Option<Subclass>,
+    /// Override the PCI Code Base Class field.
+    pub base_class_override: Option<ClassCode>,
 }
 
 impl NvmeController {
@@ -130,9 +136,15 @@ impl NvmeController {
                 vendor_id: VENDOR_ID,
                 device_id: 0x00a9,
                 revision_id: 0,
-                prog_if: ProgrammingInterface::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME,
-                sub_class: Subclass::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY,
-                base_class: ClassCode::MASS_STORAGE_CONTROLLER,
+                prog_if: caps.prog_if_override.unwrap_or(
+                    ProgrammingInterface::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME,
+                ),
+                sub_class: caps
+                    .sub_class_override
+                    .unwrap_or(Subclass::MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY),
+                base_class: caps
+                    .base_class_override
+                    .unwrap_or(ClassCode::MASS_STORAGE_CONTROLLER),
                 type0_sub_vendor_id: 0,
                 type0_sub_system_id: 0,
             },
@@ -169,7 +181,7 @@ impl NvmeController {
         self.workers.client()
     }
 
-    /// Reads from the virtual BAR 0.
+    /// Handles PC (guest) reads from the virtual BAR 0.
     pub fn read_bar0(&mut self, addr: u16, data: &mut [u8]) -> IoResult {
         if data.len() < 4 {
             return IoResult::Err(IoError::InvalidAccessSize);
@@ -201,7 +213,7 @@ impl NvmeController {
             return IoResult::Err(IoError::InvalidAccessSize);
         }
 
-        // Handle 32-bit registers.
+        // Handles 32-bit registers.
         let d: u32 = match spec::Register(addr) {
             spec::Register::VS => NVME_VERSION,
             spec::Register::INTMS => self.registers.interrupt_mask,
@@ -221,10 +233,10 @@ impl NvmeController {
         IoResult::Ok
     }
 
-    /// Writes to the virtual BAR 0.
+    /// Handles PC (guest) writes to the virtual BAR 0.
     pub fn write_bar0(&mut self, addr: u16, data: &[u8]) -> IoResult {
         if addr >= 0x1000 {
-            // Doorbell write.
+            // Doorbell write (notifying this device of a new entry in one of the queues).
             let base = addr - 0x1000;
             let index = base >> DOORBELL_STRIDE_BITS;
             if (index << DOORBELL_STRIDE_BITS) != base {

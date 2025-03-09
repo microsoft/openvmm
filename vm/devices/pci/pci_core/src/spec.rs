@@ -38,7 +38,7 @@ pub mod hwid {
     }
 
     open_enum::open_enum! {
-        /// ClassCode identifies the PCI device's type.
+        /// ClassCode identifies the PCI device's type, the "Base Class".
         ///
         /// Values pulled from <https://wiki.osdev.org/PCI#Class_Codes>.
         #[derive(Inspect)]
@@ -116,20 +116,20 @@ pub mod hwid {
 
             NONE = 0x00,
 
-            // Mass Storage Controller (Class code: 0x01)
+            // Mass Storage Controller (Base class code: 0x01)
             MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY = 0x08,
 
-            // Network Controller (Class code: 0x02)
+            // Network Controller (Base class code: 0x02)
             // Other values: 0x01 - 0x08, 0x80
             NETWORK_CONTROLLER_ETHERNET = 0x00,
 
-            // Bridge (Class code: 0x06)
+            // Bridge (Base class code: 0x06)
             // Other values: 0x02 - 0x0A
             BRIDGE_HOST = 0x00,
             BRIDGE_ISA = 0x01,
             BRIDGE_OTHER = 0x80,
 
-            // Base System Peripheral (Class code: 0x08)
+            // Base System Peripheral (Base class code: 0x08)
             // Other values: 0x00 - 0x06
             BASE_SYSTEM_PERIPHERAL_OTHER = 0x80,
         }
@@ -159,11 +159,13 @@ pub mod hwid {
 
             NONE = 0x00,
 
-            // Non-Volatile Memory Controller (Class code:0x01, Subclass: 0x08)
-            // Other values: 0x01
+            // Non-Volatile Memory Subsystem, Vendor Specific Interface (Base class code:0x01, Subclass: 0x08)
+            MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_VENDOR_SPECIFIC = 0x00,
+
+            // NVM Express (NVMe) I/O controller (Base class code:0x01, Subclass: 0x08)
             MASS_STORAGE_CONTROLLER_NON_VOLATILE_MEMORY_NVME = 0x02,
 
-            // Ethernet Controller (Class code: 0x02, Subclass: 0x00)
+            // Ethernet Controller (Base class code: 0x02, Subclass: 0x00)
             NETWORK_CONTROLLER_ETHERNET_GDMA = 0x01,
         }
     }

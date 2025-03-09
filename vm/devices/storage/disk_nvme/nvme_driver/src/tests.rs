@@ -65,6 +65,9 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
+            prog_if_override: None,
+            sub_class_override: None,
+            base_class_override: None,
         },
     );
 
@@ -99,6 +102,9 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
+            prog_if_override: None,
+            sub_class_override: None,
+            base_class_override: None,
         },
     );
 
@@ -144,6 +150,9 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
+            prog_if_override: None,
+            sub_class_override: None,
+            base_class_override: None,
         },
     );
     nvme.client()
@@ -251,6 +260,9 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
+            prog_if_override: None,
+            sub_class_override: None,
+            base_class_override: None,
         },
     );
 
@@ -284,6 +296,9 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
+            prog_if_override: None,
+            sub_class_override: None,
+            base_class_override: None,
         },
     );
 

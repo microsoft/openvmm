@@ -337,6 +337,9 @@ impl StorageBuilder {
                     namespaces: std::mem::take(&mut self.vtl0_nvme_namespaces),
                     max_io_queues: 64,
                     msix_count: 64,
+                    prog_if_override: None,
+                    sub_class_override: None,
+                    base_class_override: None,
                 }
                 .into_resource(),
             });
@@ -369,6 +372,9 @@ impl StorageBuilder {
                     namespaces: std::mem::take(&mut self.vtl2_nvme_namespaces),
                     max_io_queues: 64,
                     msix_count: 64,
+                    prog_if_override: None,
+                    sub_class_override: None,
+                    base_class_override: None,
                 }
                 .into_resource(),
             });

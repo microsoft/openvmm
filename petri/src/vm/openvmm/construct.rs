@@ -717,6 +717,9 @@ impl PetriVmConfigSetupCore<'_> {
                             .into_resource(),
                             read_only: false,
                         }],
+                        prog_if_override: None,
+                        sub_class_override: None,
+                        base_class_override: None,
                     }
                     .into_resource(),
                 })]);
