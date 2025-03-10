@@ -603,7 +603,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         self.vp.partition.request_proxy_irr_filter_update(
             self.intercepted_vtl,
             vector as u8,
-            self.vp.vp_index().index(),
+            self.vp.vp_index(),
         );
 
         // Update `proxy_irr_blocked` for this VP itself
@@ -1414,8 +1414,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
     /// Returns the per-vp cvm inner state for this vp
     pub fn cvm_vp_inner(&self) -> &'_ crate::UhCvmVpInner {
-        self.cvm_partition()
-            .vp_inner(self.inner.vp_info.base.vp_index.index())
+        self.cvm_partition().vp_inner(self.vp_index().index())
     }
 
     /// Returns the appropriately backed TLB flush and lock access
@@ -1481,7 +1480,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             }
 
             tracing::debug!(
-                vp_index = self.inner.cpu_index,
+                vp_index = self.vp_index().index(),
                 ?vtl,
                 ?start_enable_vtl_state.operation,
                 "setting up vp with initial registers"

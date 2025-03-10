@@ -649,11 +649,9 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 return Err(VpHaltReason::Cancel);
             }
         } else {
-            {
-                let mut current = Default::default();
-                affinity::get_current_thread_affinity(&mut current).unwrap();
-                assert_eq!(&current, CpuSet::new().set(self.inner.cpu_index));
-            }
+            let mut current = Default::default();
+            affinity::get_current_thread_affinity(&mut current).unwrap();
+            assert_eq!(&current, CpuSet::new().set(self.inner.cpu_index));
 
             // Lower the priority of this VP thread so that the VM does not return
             // to VTL0 while there is still outstanding VTL2 work to do.
@@ -791,7 +789,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         let inner = partition.vp(vp_info.base.vp_index).unwrap();
         let mut runner = partition
             .hcl
-            .runner(inner.cpu_index, idle_control.is_none())
+            .runner(inner.vp_index().index(), idle_control.is_none())
             .unwrap();
 
         let backing_shared = T::shared(&partition.backing_shared);
@@ -918,7 +916,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 
     fn vp_index(&self) -> VpIndex {
-        self.inner.vp_info.base.vp_index
+        self.inner.vp_index()
     }
 
     #[cfg(guest_arch = "x86_64")]

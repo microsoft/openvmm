@@ -654,10 +654,17 @@ struct UhVpInner {
     message_queues: VtlArray<MessageQueues, 2>,
     #[inspect(skip)]
     vp_info: TargetVpInfo,
+    /// The Linux kernel's CPU index for this VP.
     cpu_index: u32,
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
     hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<VpStartEnableVtl>>>, 2>,
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
+}
+
+impl UhVpInner {
+    pub fn vp_index(&self) -> VpIndex {
+        self.vp_info.base.vp_index
+    }
 }
 
 #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
@@ -855,11 +862,16 @@ impl UhPartitionInner {
 
     /// For requester VP to issue `proxy_irr_blocked` update to other VPs
     #[cfg(guest_arch = "x86_64")]
-    fn request_proxy_irr_filter_update(&self, vtl: GuestVtl, device_vector: u8, req_vp_index: u32) {
+    fn request_proxy_irr_filter_update(
+        &self,
+        vtl: GuestVtl,
+        device_vector: u8,
+        req_vp_index: VpIndex,
+    ) {
         tracing::debug!(
             ?vtl,
             device_vector,
-            req_vp_index,
+            req_vp_index = req_vp_index.index(),
             "request_proxy_irr_filter_update"
         );
 
@@ -871,7 +883,7 @@ impl UhPartitionInner {
 
         // Wake all other VPs for their `proxy_irr_blocked` filter update
         for vp in self.vps.iter() {
-            if vp.cpu_index != req_vp_index {
+            if vp.vp_index() != req_vp_index {
                 vp.wake(vtl, WakeReason::UPDATE_PROXY_IRR_FILTER);
             }
         }
@@ -1593,7 +1605,7 @@ impl<'a> UhProtoPartition<'a> {
             .vps_arch()
             .map(|vp_info| {
                 // TODO: determine CPU index, which in theory could be different
-                // from the VP index.
+                // from the VP index, though this hasn't happened yet.
                 let cpu_index = vp_info.base.vp_index.index();
                 UhVpInner::new(cpu_index, vp_info)
             })

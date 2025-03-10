@@ -537,7 +537,7 @@ impl HardwareIsolatedBacking for TdxBacked {
         shared: &'a Self::Shared,
     ) -> impl TlbFlushLockAccess + 'a {
         TdxTlbLockFlushAccess {
-            vp_index: vp_index.index() as usize,
+            vp_index,
             partition,
             shared,
         }
@@ -3425,7 +3425,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
 
         // Send flush IPIs to the specified VPs.
         TdxTlbLockFlushAccess {
-            vp_index: self.vp.vp_index().index() as usize,
+            vp_index: self.vp.vp_index(),
             partition: self.vp.partition,
             shared: self.vp.shared,
         }
@@ -3478,7 +3478,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
 
         // Send flush IPIs to the specified VPs.
         TdxTlbLockFlushAccess {
-            vp_index: self.vp.vp_index().index() as usize,
+            vp_index: self.vp.vp_index(),
             partition: self.vp.partition,
             shared: self.vp.shared,
         }
@@ -3552,7 +3552,7 @@ impl TdxTlbLockFlushAccess<'_> {
         // for each VP.
         std::sync::atomic::fence(Ordering::SeqCst);
         for target_vp in processors {
-            if self.vp_index != target_vp
+            if self.vp_index.index() as usize != target_vp
                 && self.shared.active_vtl[target_vp].load(Ordering::Relaxed) == target_vtl as u8
             {
                 self.partition.vps[target_vp].wake_vtl2();
@@ -3564,7 +3564,7 @@ impl TdxTlbLockFlushAccess<'_> {
 }
 
 struct TdxTlbLockFlushAccess<'a> {
-    vp_index: usize,
+    vp_index: VpIndex,
     partition: &'a UhPartitionInner,
     shared: &'a TdxBackedShared,
 }

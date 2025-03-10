@@ -227,7 +227,7 @@ impl HardwareIsolatedBacking for SnpBacked {
         shared: &'a Self::Shared,
     ) -> impl TlbFlushLockAccess + 'a {
         SnpTlbLockFlushAccess {
-            vp_index: vp_index.index() as usize,
+            vp_index,
             partition,
             shared,
         }
@@ -2352,7 +2352,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
 }
 
 struct SnpTlbLockFlushAccess<'a> {
-    vp_index: usize,
+    vp_index: VpIndex,
     partition: &'a UhPartitionInner,
     shared: &'a SnpBackedShared,
 }
