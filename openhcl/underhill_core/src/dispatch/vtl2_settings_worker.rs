@@ -1409,6 +1409,9 @@ async fn make_nvme_controller_config(
             namespaces,
             max_io_queues: 64,
             msix_count: 64,
+            prog_if_override: None,
+            sub_class_override: None,
+            base_class_override: None,
         }
         .into_resource(),
     })

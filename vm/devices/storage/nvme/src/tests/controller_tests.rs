@@ -29,6 +29,7 @@ fn instantiate_controller(
     driver: DefaultDriver,
     gm: &GuestMemory,
     int_controller: Option<&TestPciInterruptController>,
+    caps: Option<NvmeControllerCaps>,
 ) -> NvmeController {
     let mut mmio_reg = TestNvmeMmioRegistration {};
     let vm_task_driver = &VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -38,11 +39,14 @@ fn instantiate_controller(
         gm.clone(),
         &mut msi_interrupt_set,
         &mut mmio_reg,
-        NvmeControllerCaps {
+        caps.unwrap_or(NvmeControllerCaps {
             msix_count: 64,
             max_io_queues: 64,
             subsystem_id: Guid::new_random(),
-        },
+            prog_if_override: None,
+            sub_class_override: None,
+            base_class_override: None,
+        }),
     );
 
     if let Some(intc) = int_controller {
@@ -108,7 +112,7 @@ pub async fn instantiate_and_build_admin_queue(
     driver: DefaultDriver,
     gm: &GuestMemory,
 ) -> NvmeController {
-    let mut nvmec = instantiate_controller(driver.clone(), gm, int_controller);
+    let mut nvmec = instantiate_controller(driver.clone(), gm, int_controller, None);
     // Set the BARs.
     nvmec.pci_cfg_write(0x10, 0).unwrap();
     nvmec.pci_cfg_write(0x20, BAR0_LEN as u32).unwrap();
@@ -196,8 +200,12 @@ pub async fn instantiate_and_build_admin_queue(
 #[async_test]
 async fn test_basic_registers(driver: DefaultDriver) {
     let gm = test_memory();
-    let mut nvmec = instantiate_controller(driver, &gm, None);
+    let mut nvmec = instantiate_controller(driver, &gm, None, None);
     let mut dword = 0u32;
+
+    // Read device code identitifying info.
+    nvmec.pci_cfg_read(0x08, &mut dword).unwrap();
+    assert_eq!(dword, 0x01080200);
 
     // Read controller caps, version.
     nvmec.read_bar0(0, dword.as_mut_bytes()).unwrap();
@@ -218,9 +226,32 @@ async fn test_basic_registers(driver: DefaultDriver) {
 }
 
 #[async_test]
+async fn test_basic_registers_with_overrides(driver: DefaultDriver) {
+    let gm = test_memory();
+    let mut nvmec = instantiate_controller(
+        driver,
+        &gm,
+        None,
+        Some(NvmeControllerCaps {
+            msix_count: 64,
+            max_io_queues: 64,
+            subsystem_id: Guid::new_random(),
+            prog_if_override: Some(0xF1.into()),
+            sub_class_override: Some(0xF2.into()),
+            base_class_override: Some(0xF3.into()),
+        }),
+    );
+    let mut dword = 0u32;
+
+    // Read device code identitifying info.
+    nvmec.pci_cfg_read(0x08, &mut dword).unwrap();
+    assert_eq!(dword, 0xF3F2F100);
+}
+
+#[async_test]
 async fn test_invalid_configuration(driver: DefaultDriver) {
     let gm = test_memory();
-    let mut nvmec = instantiate_controller(driver, &gm, None);
+    let mut nvmec = instantiate_controller(driver, &gm, None, None);
     let mut dword = 0u32;
     nvmec.read_bar0(0x14, dword.as_mut_bytes()).unwrap();
     // Set MPS to some disallowed value
@@ -234,7 +265,7 @@ async fn test_invalid_configuration(driver: DefaultDriver) {
 #[async_test]
 async fn test_enable_controller(driver: DefaultDriver) {
     let gm = test_memory();
-    let mut nvmec = instantiate_controller(driver, &gm, None);
+    let mut nvmec = instantiate_controller(driver, &gm, None, None);
 
     // Set the ACQ base to 0x1000 and the ASQ base to 0x2000.
     let mut qword = 0x1000;
@@ -261,7 +292,7 @@ async fn test_enable_controller(driver: DefaultDriver) {
 #[async_test]
 async fn test_multi_page_admin_queues(driver: DefaultDriver) {
     let gm = test_memory();
-    let mut nvmec = instantiate_controller(driver, &gm, None);
+    let mut nvmec = instantiate_controller(driver, &gm, None, None);
 
     // Set the ACQ base to 0x1000 and the ASQ base to 0x3000.
     let mut qword = 0x1000;

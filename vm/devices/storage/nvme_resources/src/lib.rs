@@ -23,6 +23,12 @@ pub struct NvmeControllerHandle {
     pub max_io_queues: u16,
     /// The initial set of namespaces.
     pub namespaces: Vec<NamespaceDefinition>,
+    /// Override the PCI Code Programming Interface field.
+    pub prog_if_override: Option<u8>,
+    /// Override the PCI Code Subclass field.
+    pub sub_class_override: Option<u8>,
+    /// Override the PCI Code Base Class field.
+    pub base_class_override: Option<u8>,
 }
 
 impl ResourceId<PciDeviceHandleKind> for NvmeControllerHandle {
