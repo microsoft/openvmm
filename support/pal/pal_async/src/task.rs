@@ -11,15 +11,14 @@ use parking_lot::Mutex;
 use slab::Slab;
 use std::fmt::Debug;
 use std::fmt::Display;
-use std::future::Future;
 use std::panic::Location;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::sync::Weak;
 
 /// A handle to a task.
 pub type Task<T> = async_task::Task<T, TaskMetadata>;

@@ -5,7 +5,6 @@
 
 use pal_async::driver::Driver;
 use pal_async::timer::PolledTimer;
-use std::future::Future;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;

@@ -3,14 +3,13 @@
 
 //! Single-threaded task pools backed by platform-specific IO backends.
 
-use crate::task::task_queue;
 use crate::task::Schedule;
 use crate::task::Scheduler;
 use crate::task::Spawn;
 use crate::task::TaskMetadata;
 use crate::task::TaskQueue;
+use crate::task::task_queue;
 use std::future::poll_fn;
-use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::Poll;

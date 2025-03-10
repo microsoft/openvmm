@@ -6,12 +6,11 @@
 use crate::driver::Driver;
 use crate::driver::PollImpl;
 use crate::waker::WakerList;
-use pal::windows::chk_status;
 use pal::windows::Overlapped;
 use pal::windows::SendSyncRawHandle;
+use pal::windows::chk_status;
 use parking_lot::Mutex;
 use std::fs::File;
-use std::future::Future;
 use std::io;
 use std::mem::ManuallyDrop;
 use std::os::windows::prelude::*;

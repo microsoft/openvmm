@@ -3,16 +3,16 @@
 
 //! TTRPC client.
 
-use crate::message::read_message;
-use crate::message::write_message;
+use crate::message::MESSAGE_TYPE_REQUEST;
+use crate::message::MESSAGE_TYPE_RESPONSE;
 use crate::message::ReadResult;
 use crate::message::Request;
 use crate::message::Response;
 use crate::message::TooLongError;
-use crate::message::MESSAGE_TYPE_REQUEST;
-use crate::message::MESSAGE_TYPE_RESPONSE;
-use crate::rpc::status_from_err;
+use crate::message::read_message;
+use crate::message::write_message;
 use crate::rpc::ProtocolError;
+use crate::rpc::status_from_err;
 use crate::service::Code;
 use crate::service::DecodedRpc;
 use crate::service::GenericRpc;
@@ -25,10 +25,10 @@ use futures::AsyncWrite;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures_concurrency::future::Race;
-use mesh::payload::EncodeAs;
-use mesh::payload::Timestamp;
 use mesh::Deadline;
 use mesh::MeshPayload;
+use mesh::payload::EncodeAs;
+use mesh::payload::Timestamp;
 use pal_async::driver::Driver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
@@ -39,7 +39,6 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::future::pending;
-use std::future::Future;
 use std::pin::pin;
 use std::task::ready;
 use std::time::Duration;
@@ -503,9 +502,9 @@ mod tests {
     use crate::service::Code;
     use mesh::CancelContext;
     use mesh::Deadline;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::socket::PolledSocket;
-    use pal_async::DefaultDriver;
     use std::future::pending;
     use std::net::TcpStream;
     use std::time::Duration;

@@ -24,7 +24,6 @@ use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use parking_lot::Mutex;
 use slab::Slab;
-use std::future::Future;
 use std::pin::pin;
 use std::pin::Pin;
 use std::sync::Arc;

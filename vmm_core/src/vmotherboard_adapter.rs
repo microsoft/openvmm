@@ -63,7 +63,7 @@ impl CpuIo for ChipsetPlusSynic {
         vp: VpIndex,
         address: u64,
         data: &mut [u8],
-    ) -> impl std::future::Future<Output = ()> {
+    ) -> impl Future<Output = ()> {
         self.chipset.mmio_read(vp.index(), address, data)
     }
 
@@ -72,7 +72,7 @@ impl CpuIo for ChipsetPlusSynic {
         vp: VpIndex,
         address: u64,
         data: &[u8],
-    ) -> impl std::future::Future<Output = ()> {
+    ) -> impl Future<Output = ()> {
         self.chipset.mmio_write(vp.index(), address, data)
     }
 
@@ -81,7 +81,7 @@ impl CpuIo for ChipsetPlusSynic {
         vp: VpIndex,
         port: u16,
         data: &mut [u8],
-    ) -> impl std::future::Future<Output = ()> {
+    ) -> impl Future<Output = ()> {
         self.chipset.io_read(vp.index(), port, data)
     }
 
@@ -90,7 +90,7 @@ impl CpuIo for ChipsetPlusSynic {
         vp: VpIndex,
         port: u16,
         data: &[u8],
-    ) -> impl std::future::Future<Output = ()> {
+    ) -> impl Future<Output = ()> {
         self.chipset.io_write(vp.index(), port, data)
     }
 }

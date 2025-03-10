@@ -9,15 +9,15 @@
 use crate::resource::Resource;
 use crate::resource::SerializedMessage;
 use mesh_protobuf;
-use mesh_protobuf::encoding::SerializedMessageEncoder;
-use mesh_protobuf::inplace;
-use mesh_protobuf::inplace_none;
-use mesh_protobuf::protobuf::decode_with;
-use mesh_protobuf::protobuf::MessageSizer;
-use mesh_protobuf::protobuf::MessageWriter;
 use mesh_protobuf::DefaultEncoding;
 use mesh_protobuf::MessageDecode;
 use mesh_protobuf::MessageEncode;
+use mesh_protobuf::encoding::SerializedMessageEncoder;
+use mesh_protobuf::inplace;
+use mesh_protobuf::inplace_none;
+use mesh_protobuf::protobuf::MessageSizer;
+use mesh_protobuf::protobuf::MessageWriter;
+use mesh_protobuf::protobuf::decode_with;
 use std::any::Any;
 use std::any::TypeId;
 use std::borrow::Cow;
@@ -321,7 +321,9 @@ impl<'a> Message<'a> {
     /// # Safety
     /// The caller must ensure that `message` is initialized. It will be dropped
     /// in place when the message is dropped, so it must not be used again.
-    pub(crate) unsafe fn new_stack<T: 'a + DefaultEncoding>(message: &'a mut MaybeUninit<T>) -> Self
+    pub(crate) unsafe fn new_stack<T: 'a + DefaultEncoding>(
+        mut message: MaybeUninit<&'a mut T>,
+    ) -> Self
     where
         T::Encoding: MessageEncode<T, Resource>,
     {
@@ -449,7 +451,7 @@ macro_rules! stack_message {
         #[expect(unsafe_code)]
         {
             // SAFETY: The value is initialized and never used again.
-            unsafe { $crate::message::Message::new_stack(&mut ::core::mem::MaybeUninit::new($v)) }
+            unsafe { $crate::message::Message::new_stack(::core::mem::MaybeUninit::new(&mut $v)) }
         }
     };
 }

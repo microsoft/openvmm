@@ -16,7 +16,6 @@ use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
 use chipset_device::ChipsetDevice;
 use inspect::InspectMut;
-use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::sync::Arc;

@@ -30,7 +30,6 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use ms_tpm_20_ref::MsTpm20RefPlatform;
 use parking_lot::Mutex;
-use std::future::Future;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
 use std::sync::Arc;

@@ -26,7 +26,6 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::convert::TryInto;
 use std::future::poll_fn;
-use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::ready;

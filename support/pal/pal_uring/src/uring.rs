@@ -17,9 +17,9 @@ use pal_async::interest::SLOT_COUNT;
 use pal_async::timer::Instant;
 use pal_async::timer::PollTimer;
 use pal_async::timer::TimerDriver;
+use pal_async::wait::MAXIMUM_WAIT_READ_SIZE;
 use pal_async::wait::PollWait;
 use pal_async::wait::WaitDriver;
-use pal_async::wait::MAXIMUM_WAIT_READ_SIZE;
 use std::fmt::Debug;
 use std::io;
 use std::os::unix::prelude::*;
@@ -391,7 +391,6 @@ pub(crate) mod tests {
     use once_cell::sync::OnceCell;
     use pal_async::executor_tests;
     use pal_async::task::Spawn;
-    use std::future::Future;
     use std::io;
     use std::thread::JoinHandle;
 

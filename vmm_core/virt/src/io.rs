@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 use hvdef::Vtl;
-use std::future::Future;
 use vm_topology::processor::VpIndex;
 
 /// This trait provides the operations between the VP dispatch loop and the

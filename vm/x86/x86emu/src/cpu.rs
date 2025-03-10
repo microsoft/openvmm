@@ -5,7 +5,6 @@
 
 use crate::registers::RegisterIndex;
 use crate::registers::Segment;
-use std::future::Future;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
 

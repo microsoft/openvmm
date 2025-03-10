@@ -11,7 +11,6 @@
 //! [`futures::AsyncRead`]), where one send can be split into multiple receives,
 //! or multiple sends can be combined into one receive.
 
-use std::future::Future;
 use std::io;
 use std::io::IoSlice;
 use std::io::IoSliceMut;

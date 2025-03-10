@@ -25,7 +25,6 @@ use std::cell::Cell;
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::future::poll_fn;
-use std::future::Future;
 use std::pin::pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;

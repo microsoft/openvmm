@@ -19,7 +19,6 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use std::collections::BTreeMap;
 use std::future::pending;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use task_control::AsyncRun;

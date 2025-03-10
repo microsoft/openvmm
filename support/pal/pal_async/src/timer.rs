@@ -7,7 +7,6 @@ use crate::driver::Driver;
 use crate::driver::PollImpl;
 use crate::sparsevec::SparseVec;
 use crate::waker::WakerList;
-use std::future::Future;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;

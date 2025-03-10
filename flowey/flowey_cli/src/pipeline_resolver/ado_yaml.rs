@@ -1,10 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::common_yaml::FloweySource;
 use super::common_yaml::check_generated_yaml_and_json;
 use super::common_yaml::job_flowey_bootstrap_source;
 use super::common_yaml::write_generated_yaml_and_json;
-use super::common_yaml::FloweySource;
 use super::generic::ResolvedJobArtifact;
 use super::generic::ResolvedJobUseParameter;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
@@ -127,7 +127,9 @@ pub fn ado_yaml(
             let _ = (artifact, publish);
 
             if ado_bootstrap_template.is_empty() {
-                anyhow::bail!("Did not specify flowey bootstrap template. Please provide one using `Pipeline::ado_set_flowey_bootstrap_template`")
+                anyhow::bail!(
+                    "Did not specify flowey bootstrap template. Please provide one using `Pipeline::ado_set_flowey_bootstrap_template`"
+                )
             }
 
             let ado_bootstrap_template = ado_bootstrap_template
@@ -267,6 +269,7 @@ echo "$(FLOWEY_TEMP_DIR)/work" | {var_db_insert_working_dir}
 "###
             )
             .trim_start()
+            .to_owned()
         })?;
 
         // import pipeline vars being used by the job into flowey

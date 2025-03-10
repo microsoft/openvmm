@@ -108,22 +108,21 @@ mod error_oldchan {
 
 #[cfg(feature = "newchan_spsc")]
 mod spsc_newchan {
-    pub use mesh_channel_core::channel;
     pub use mesh_channel_core::Receiver;
     pub use mesh_channel_core::Sender;
+    pub use mesh_channel_core::channel;
 }
 
 #[cfg(not(feature = "newchan_spsc"))]
 mod spsc {
-    use crate::bidir::Channel;
     use crate::RecvError;
     use crate::TryRecvError;
+    use crate::bidir::Channel;
     use mesh_node::local_node::Port;
     use mesh_node::local_node::PortField;
     use mesh_node::message::MeshField;
     use mesh_protobuf::DefaultEncoding;
     use std::fmt::Debug;
-    use std::future::Future;
     use std::pin::Pin;
     use std::task::Context;
     use std::task::Poll;
@@ -336,14 +335,13 @@ mod spsc {
 
 #[cfg(not(feature = "newchan_oneshot"))]
 mod oneshot {
-    use crate::bidir::Channel;
     use crate::RecvError;
+    use crate::bidir::Channel;
     use mesh_node::local_node::Port;
     use mesh_node::local_node::PortField;
     use mesh_node::message::MeshField;
     use mesh_protobuf::DefaultEncoding;
     use std::fmt::Debug;
-    use std::future::Future;
     use std::pin::Pin;
     use std::task::Context;
     use std::task::Poll;
@@ -450,26 +448,25 @@ mod oneshot {
 
 #[cfg(feature = "newchan_oneshot")]
 mod oneshot_newchan {
-    pub use mesh_channel_core::oneshot;
     pub use mesh_channel_core::OneshotReceiver;
     pub use mesh_channel_core::OneshotSender;
+    pub use mesh_channel_core::oneshot;
 }
 
 #[cfg(feature = "newchan_mpsc")]
 mod mpsc_newchan {
-    pub use mesh_channel_core::channel as mpsc_channel;
     pub use mesh_channel_core::Receiver as MpscReceiver;
     pub use mesh_channel_core::Sender as MpscSender;
+    pub use mesh_channel_core::channel as mpsc_channel;
 }
 
 #[cfg(not(feature = "newchan_mpsc"))]
 mod mpsc {
-    use crate::bidir::Channel;
     use crate::RecvError;
+    use crate::bidir::Channel;
     use mesh_node::message::MeshField;
     use mesh_protobuf::Protobuf;
     use std::fmt::Debug;
-    use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
     use std::task::Context;
@@ -631,7 +628,7 @@ mod mpsc {
 
     impl<T> Debug for MpscSender<T> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            Debug::fmt(&self.0 .0, f)
+            Debug::fmt(&self.0.0, f)
         }
     }
 

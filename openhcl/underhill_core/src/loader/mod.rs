@@ -12,8 +12,8 @@ use guestmem::GuestMemory;
 use hvdef::HV_PAGE_SIZE;
 use igvm_defs::MemoryMapEntryType;
 use loader::importer::Register;
-use loader::uefi::config;
 use loader::uefi::IMAGE_SIZE;
+use loader::uefi::config;
 use loader_defs::paravisor::PageRegionDescriptor;
 use memory_range::MemoryRange;
 #[cfg(guest_arch = "x86_64")]
@@ -541,11 +541,9 @@ pub fn write_uefi_config(
         &platform_config.smbios.chassis_asset_tag,
     );
 
-    cfg.add({
-        &config::NvdimmCount {
-            count: platform_config.general.nvdimm_count,
-            padding: [0; 3],
-        }
+    cfg.add(&config::NvdimmCount {
+        count: platform_config.general.nvdimm_count,
+        padding: [0; 3],
     });
 
     if let Some(instance_guid) = platform_config.general.vpci_instance_filter {

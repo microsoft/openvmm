@@ -23,7 +23,6 @@ use scsi_buffers::RequestBuffers;
 use scsi_core::AsyncScsiDisk;
 use scsi_core::ScsiResult;
 use scsi_defs as scsi;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
