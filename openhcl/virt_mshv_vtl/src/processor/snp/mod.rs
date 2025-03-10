@@ -423,7 +423,7 @@ impl BackingPrivate for SnpBacked {
         this: &mut UhProcessor<'_, Self>,
         dev: &impl CpuIo,
     ) -> Result<bool, UhRunVpError> {
-        this.hcvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
+        this.cvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
             let vmsa = this.runner.vmsa_mut(vtl);
             if vmsa.event_inject().valid()
                 && vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI

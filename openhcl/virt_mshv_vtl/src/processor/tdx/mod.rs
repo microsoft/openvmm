@@ -870,10 +870,55 @@ impl BackingPrivate for TdxBacked {
 
     fn handle_cross_vtl_interrupts(
         this: &mut UhProcessor<'_, Self>,
-        _dev: &impl CpuIo,
+        dev: &impl CpuIo,
     ) -> Result<bool, UhRunVpError> {
         // TODO TDX GUEST VSM
-        this.hcvm_handle_cross_vtl_interrupts(|_this, _vtl, _check_rflags| false)
+        this.cvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
+            let backing_vtl = &this.backing.vtls[vtl];
+            if backing_vtl.interruption_information.valid()
+                && backing_vtl.interruption_information.interruption_type() == INTERRUPT_TYPE_NMI
+            {
+                return true;
+            }
+
+            let interruptibility: Interruptibility = this
+                .runner
+                .read_vmcs32(vtl, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY)
+                .into();
+
+            if (check_rflags
+                && !RFlags::from_bits(backing_vtl.private_regs.rflags).interrupt_enable())
+                || interruptibility.blocked_by_sti()
+                || interruptibility.blocked_by_movss()
+            {
+                return false;
+            }
+
+            let (vector, ppr) = if this.backing.cvm.lapics[vtl].lapic.is_offloaded() {
+                let vector = backing_vtl.private_regs.rvi;
+                let ppr = std::cmp::max(
+                    backing_vtl.private_regs.svi.into(),
+                    this.runner.tdx_apic_page(vtl).tpr.value,
+                );
+                (vector, ppr)
+            } else {
+                let lapic = &mut this.backing.cvm.lapics[vtl].lapic;
+                let vector = lapic.next_irr().unwrap_or(0);
+                let ppr = lapic
+                    .access(&mut TdxApicClient {
+                        partition: this.partition,
+                        apic_page: this.runner.tdx_apic_page_mut(vtl),
+                        dev,
+                        vmtime: &this.vmtime,
+                        vtl,
+                    })
+                    .get_ppr();
+                (vector, ppr)
+            };
+            let vector_priority = (vector as u32) >> 4;
+            let ppr_priority = ppr >> 4;
+            vector_priority > ppr_priority
+        })
     }
 
     fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv> {

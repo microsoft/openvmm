@@ -1428,7 +1428,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     /// true if an interrupt of appropriate priority, or an NMI, is pending for
     /// the given VTL. The boolean specifies whether RFLAGS.IF should be checked.
     /// Returns true if interrupt reprocessing is required.
-    pub(crate) fn hcvm_handle_cross_vtl_interrupts(
+    pub(crate) fn cvm_handle_cross_vtl_interrupts(
         &mut self,
         is_interrupt_pending: impl Fn(&mut Self, GuestVtl, bool) -> bool,
     ) -> Result<bool, UhRunVpError> {

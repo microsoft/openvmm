@@ -562,7 +562,7 @@ pub struct TdxL2EnterGuestState {
     pub rip: u64,
     pub ssp: u64,
     pub rvi: u8, // GUEST_INTERRUPT_STATUS lower bits
-    pub svi: u8, // GUSET_INTERRUPT_STATUS upper bits
+    pub svi: u8, // GUEST_INTERRUPT_STATUS upper bits
     pub reserved: [u8; 6],
 }
 

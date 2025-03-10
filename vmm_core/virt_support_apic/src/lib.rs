@@ -1472,7 +1472,8 @@ impl LocalApic {
         r
     }
 
-    fn next_irr(&self) -> Option<u8> {
+    /// Returns the next pending interrupt vector, if any.
+    pub fn next_irr(&self) -> Option<u8> {
         if !self.software_enabled() {
             return None;
         }
