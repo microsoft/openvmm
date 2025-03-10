@@ -53,6 +53,10 @@ pub struct ShimParamsRaw {
     pub bounce_buffer_start: i64,
     /// The size of the bounce buffer range. This is 0 if unavailable.
     pub bounce_buffer_size: u64,
+    /// The offset to the page_tables start address. This is 0 if unavailable.
+    pub page_tables_start: i64,
+    /// The size of the underhill page tables. This is 0 if unavailable.
+    pub page_tables_size: u64,
 }
 
 open_enum! {
@@ -118,4 +122,75 @@ impl MemoryVtlType {
                 | MemoryVtlType::VTL2_GPA_POOL
         )
     }
+}
+
+/// This structure describes the initial state of the TD VP. When a VP (both BSP and AP)
+/// starts at ResetVector (RV), this is loaded at the beginning of the RV page.
+/// Fields in the trampoline context must be loaded from memory by the
+/// trampoline code.
+///
+/// Note that this trampoline context must also be used for bringing up APs, as
+/// the code placed in the reset vector will use this format to figure out what
+/// register state to load.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, IntoBytes, Immutable)]
+pub struct TdxTrampolineContext {
+    /// Mailbox command
+    pub mailbox_command: u16,
+    /// Reserved
+    pub mailbox_reserved: u16,
+    /// Mailbox APIC ID
+    pub mailbox_apic_id: u32,
+    /// AP wakeup vector
+    pub mailbox_wakeup_vector: u64,
+    /// Padding
+    pub padding_1: u32,
+    /// Data selector
+    pub data_selector: u16,
+    /// Static GDT limit
+    pub static_gdt_limit: u16,
+    /// Static GDT base
+    pub static_gdt_base: u32,
+    /// Task selector
+    pub task_selector: u16,
+    /// IDTR limit
+    pub idtr_limit: u16,
+    /// IDTR base
+    pub idtr_base: u64,
+    /// Initial RIP
+    pub initial_rip: u64,
+    /// CS
+    pub code_selector: u16,
+    /// Padding
+    pub padding_2: [u16; 2],
+    /// GDTR limit
+    pub gdtr_limit: u16,
+    /// GDTR base
+    pub gdtr_base: u64,
+    /// RSP
+    pub rsp: u64,
+    /// RBP
+    pub rbp: u64,
+    /// RSI
+    pub rsi: u64,
+    /// R8
+    pub r8: u64,
+    /// R9
+    pub r9: u64,
+    /// R10
+    pub r10: u64,
+    /// R11
+    pub r11: u64,
+    /// CR0
+    pub cr0: u64,
+    /// CR3
+    pub cr3: u64,
+    /// CR4
+    pub cr4: u64,
+    /// Transistion CR3
+    pub transition_cr3: u32,
+    /// Padding
+    pub padding_3: u32,
+    /// Statuc GDT
+    pub static_gdt: [u8; 16],
 }

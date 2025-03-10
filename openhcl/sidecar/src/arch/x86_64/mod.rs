@@ -18,6 +18,7 @@ use hvdef::HvError;
 use hvdef::HypercallCode;
 use minimal_rt::arch::msr::write_msr;
 use minimal_rt::arch::Serial;
+use minimal_rt::isolation::IsolationType;
 use x86defs::Exception;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
@@ -225,6 +226,7 @@ fn hypercall(code: HypercallCode, rep_count: usize) -> Result<(), HvError> {
     // the input and output pages are not concurrently accessed.
     unsafe {
         minimal_rt::arch::hypercall::invoke_hypercall(
+            IsolationType::None,
             control,
             addr_space::hypercall_input_pa(),
             addr_space::hypercall_output_pa(),

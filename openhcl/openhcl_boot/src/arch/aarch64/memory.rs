@@ -4,13 +4,18 @@
 //! Setting up memory
 
 use crate::hvcall;
+use crate::hypercall::HypercallPages;
 use crate::PartitionInfo;
 use crate::ShimParams;
 use aarch64defs::IntermPhysAddrSize;
 
-pub fn setup_vtl2_memory(_shim_params: &ShimParams, _partition_info: &PartitionInfo) {
+pub fn setup_vtl2_memory(
+    _shim_params: &ShimParams,
+    _partition_info: &PartitionInfo,
+) -> HypercallPages {
     // TODO: memory acceptance isn't currently supported in the boot shim for aarch64.
     let _ = _shim_params.bounce_buffer;
+    let _ = _shim_params.page_tables;
 
     // Enable VTL protection so that vtl 2 protections can be applied. All other config
     // should be set by the user mode
@@ -24,6 +29,11 @@ pub fn setup_vtl2_memory(_shim_params: &ShimParams, _partition_info: &PartitionI
             hvdef::HvRegisterValue::from(u64::from(vsm_config)),
         )
         .expect("setting vsm config shouldn't fail");
+
+    HypercallPages {
+        input: None,
+        output: None,
+    }
 }
 
 pub fn physical_address_bits(_isolation: crate::IsolationType) -> u8 {

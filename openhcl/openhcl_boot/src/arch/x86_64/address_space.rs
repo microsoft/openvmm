@@ -101,6 +101,18 @@ impl PageTableEntry {
     pub fn clear(&mut self) {
         self.write_pte(0);
     }
+
+    pub fn set_shared(&mut self, shared_bit: u64) {
+        let mut val = self.read_pte();
+        val |= shared_bit | X64_PTE_PRESENT | X64_PTE_ACCESSED | X64_PTE_READ_WRITE | X64_PTE_DIRTY;
+        self.write_pte(val);
+    }
+
+    pub fn set_private(&mut self, shared_bit: u64) {
+        let mut val = self.read_pte();
+        val &= !shared_bit;
+        self.write_pte(val);
+    }
 }
 
 #[repr(C)]
@@ -196,6 +208,7 @@ fn unmap_page_helper(local_map: &LocalMap<'_>) {
 /// address.
 ///
 /// # Safety
+///
 /// Caller ensures that the specified address is actually that of a page table.
 unsafe fn page_table_at_address(address: u64) -> &'static mut PageTable {
     // SAFETY: Guaranteed by caller.
@@ -205,6 +218,7 @@ unsafe fn page_table_at_address(address: u64) -> &'static mut PageTable {
 /// Returns a reference to the PDE corresponding to a virtual address.
 ///
 /// # Safety
+///
 /// This routine requires the caller to ensure that the VA is a valid one for which the paging
 /// hierarchy was configured by the file loader (the page directory must exist). If this is not
 /// true this routine will panic rather than corrupt the address space.
@@ -252,4 +266,32 @@ pub fn init_local_map(va: u64) -> LocalMap<'static> {
 
     unmap_page_helper(&local_map);
     local_map
+}
+
+/// Set the shared bit in the PTE of the local map for a given VA.
+///
+/// # Safety
+///
+/// This routine requires the caller to pass VA that is a valid large page
+/// for which the paging hierarchy was configured and the page directory must exist.
+pub unsafe fn map_with_shared_bit(va: u64, shared_bit: u64) {
+    // SAFETY: Unsafe conditions are met. See above comments
+    unsafe {
+        let entry = get_pde_for_va(va);
+        entry.set_shared(shared_bit);
+    }
+}
+
+/// Clear the shared bit in the PTE of the local map for a given VA.
+///
+/// # Safety
+///
+/// This routine requires the caller to pass VA that is a valid large page
+/// for which the paging hierarchy was configured and the page directory must exist.
+pub unsafe fn map_with_private_bit(va: u64, shared_bit: u64) {
+    // SAFETY: Unsafe conditions are met. See above comments
+    unsafe {
+        let entry = get_pde_for_va(va);
+        entry.set_private(shared_bit);
+    }
 }

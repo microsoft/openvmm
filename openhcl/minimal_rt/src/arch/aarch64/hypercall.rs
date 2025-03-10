@@ -41,6 +41,7 @@
 //! to make it possible to merge with the x64 case easily.
 //!
 
+use crate::isolation::IsolationType;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use hvdef::HvResult;
@@ -58,6 +59,7 @@ use zerocopy::KnownLayout;
 /// hypercalls, the caller must ensure that there are no output words so that
 /// there is no register corruption.
 pub unsafe fn invoke_hypercall(
+    _isolation_type: IsolationType,
     control: hvdef::hypercall::Control,
     input: u64,
     output: u64,

@@ -3,7 +3,6 @@
 
 //! Parse partition info using the IGVM device tree parameter.
 
-use super::shim_params::IsolationType;
 use super::shim_params::ShimParams;
 use super::PartitionInfo;
 use crate::boot_logger::log;
@@ -13,6 +12,7 @@ use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
 use crate::host_params::MAX_VTL2_USED_RANGES;
+use crate::host_params::shim_params::IsolationType;
 use crate::single_threaded::off_stack;
 use crate::single_threaded::OffStackRef;
 use arrayvec::ArrayVec;
