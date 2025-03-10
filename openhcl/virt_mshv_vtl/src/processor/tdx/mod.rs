@@ -872,7 +872,6 @@ impl BackingPrivate for TdxBacked {
         this: &mut UhProcessor<'_, Self>,
         dev: &impl CpuIo,
     ) -> Result<bool, UhRunVpError> {
-        // TODO TDX GUEST VSM
         this.cvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
             let backing_vtl = &this.backing.vtls[vtl];
             if backing_vtl.interruption_information.valid()
