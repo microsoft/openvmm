@@ -61,11 +61,9 @@ impl AsyncResolveResource<PciDeviceHandleKind, NvmeControllerHandle> for NvmeCon
                 msix_count: resource.msix_count,
                 max_io_queues: resource.max_io_queues,
                 subsystem_id: resource.subsystem_id,
-                prog_if_override: resource.prog_if_override.map_or(None, |v| Some(v.into())),
-                sub_class_override: resource.sub_class_override.map_or(None, |v| Some(v.into())),
-                base_class_override: resource
-                    .base_class_override
-                    .map_or(None, |v| Some(v.into())),
+                prog_if_override: resource.prog_if_override.map(|v| v.into()),
+                sub_class_override: resource.sub_class_override.map(|v| v.into()),
+                base_class_override: resource.base_class_override.map(|v| v.into()),
             },
         );
         for NamespaceDefinition {
