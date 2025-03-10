@@ -8616,6 +8616,7 @@ dependencies = [
  "petri_artifacts_vmm_test",
  "scsidisk_resources",
  "storvsp_resources",
+ "tempfile",
  "tracing",
  "unix_socket",
  "vm_resource",
