@@ -25,6 +25,9 @@ use mesh::Cancel;
 use mesh::CancelContext;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
+use pal_async::task::Task;
+use pal_async::wait::PolledWait;
+use pal_async::windows::TpPool;
 use pal_event::Event;
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -114,6 +117,7 @@ struct Channel {
     server_request_send: Option<mesh::Sender<ChannelServerRequest>>,
     incoming_event: Event,
     worker_result: Option<mesh::OneshotReceiver<()>>,
+    event_task: Option<Task<()>>,
 }
 
 struct ProxyTask {
@@ -150,10 +154,21 @@ impl ProxyTask {
         proxy_id: u64,
         open_request: &OpenRequest,
     ) -> anyhow::Result<Event> {
-        let event = open_request
-            .interrupt
-            .event()
-            .context("synic guest event ports not backed by events, not supported")?;
+        let mut _event_storage = None;
+        let (event, task) = if let Some(event) = open_request.interrupt.event() {
+            (event, None)
+        } else {
+            let event = Event::new();
+            let driver = TpPool::system();
+            let wait = PolledWait::new(&driver, event.clone())?;
+            let interrupt = open_request.interrupt.clone();
+            let task = TpPool::system().spawn("vmbus-proxy-event", async move {
+                Self::run_event_loop(wait, interrupt).await;
+            });
+
+            _event_storage = Some(event);
+            (_event_storage.as_ref().unwrap(), Some(task))
+        };
 
         self.proxy
             .open(
@@ -184,6 +199,7 @@ impl ProxyTask {
         let mut channels = self.channels.lock();
         let channel = channels.get_mut(&proxy_id).unwrap();
         channel.worker_result = Some(recv);
+        channel.event_task = task;
         Ok(channel.incoming_event.clone())
     }
 
@@ -340,6 +356,7 @@ impl ProxyTask {
                 server_request_send,
                 incoming_event,
                 worker_result: None,
+                event_task: None,
             },
         );
         request_recv
@@ -414,9 +431,18 @@ impl ProxyTask {
                     ChannelRequest::Open(rpc) => {
                         rpc.handle(async |open_request| {
                             let result = self.handle_open(proxy_id, &open_request).await;
-                            result.ok().map(|event| OpenResult {
-                                guest_to_host_interrupt: Interrupt::from_event(event),
-                            })
+                            match result {
+                                Ok(event) => Some(OpenResult {
+                                    guest_to_host_interrupt: Interrupt::from_event(event),
+                                }),
+                                Err(err) => {
+                                    tracing::error!(
+                                        error = err.as_ref() as &dyn std::error::Error,
+                                        "failed to open channel"
+                                    );
+                                    None
+                                }
+                            }
                         })
                         .await
                     }
@@ -531,6 +557,13 @@ impl ProxyTask {
         }
 
         tracing::debug!("proxy channel requests finished");
+    }
+
+    async fn run_event_loop(mut wait: PolledWait<Event>, interrupt: Interrupt) {
+        loop {
+            wait.wait().await.expect("event wait should not fail");
+            interrupt.deliver();
+        }
     }
 }
 

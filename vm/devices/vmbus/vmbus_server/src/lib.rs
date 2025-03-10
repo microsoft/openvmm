@@ -1669,7 +1669,8 @@ impl ServerTaskInner {
 
         let interrupt_page = self
             .gm
-            .lock_gpns(false, &[interrupt_page / PAGE_SIZE as u64])?;
+            .subrange(interrupt_page, PAGE_SIZE as u64, true)?
+            .lock_gpns(false, &[0])?;
         let channel_bitmap = Arc::new(ChannelBitmap::new(interrupt_page));
         self.channel_bitmap = Some(channel_bitmap.clone());
 

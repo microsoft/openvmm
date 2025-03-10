@@ -1784,12 +1784,21 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 reserved_state,
             } => {
                 let channel_id = channel.info.expect("assigned").channel_id;
-                tracing::info!(
-                    offer_id = offer_id.0,
-                    channel_id = channel_id.0,
-                    result,
-                    "opened channel"
-                );
+                if result >= 0 {
+                    tracing::info!(
+                        offer_id = offer_id.0,
+                        channel_id = channel_id.0,
+                        result,
+                        "opened channel"
+                    );
+                } else {
+                    tracing::error!(
+                        offer_id = offer_id.0,
+                        channel_id = channel_id.0,
+                        result,
+                        "failed to open channel"
+                    );
+                }
 
                 self.inner
                     .pending_messages
@@ -2237,6 +2246,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .find(|v| request.version_requested == **v as u32)
             .copied()?;
 
+        if let Some(max_version) = self.inner.max_version {
+            if version as u32 > max_version.version {
+                return None;
+            }
+        }
+
         let supported_flags = if version >= Version::Copper {
             // The max version and features may be limited in order to test older protocol versions.
             //
@@ -2245,10 +2260,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 SUPPORTED_FEATURE_FLAGS.with_confidential_channels(request.trusted);
 
             if let Some(max_version) = self.inner.max_version {
-                if version as u32 > max_version.version {
-                    return None;
-                }
-
                 max_supported_flags & max_version.feature_flags
             } else {
                 max_supported_flags
