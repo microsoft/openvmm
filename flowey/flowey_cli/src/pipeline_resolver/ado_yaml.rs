@@ -267,6 +267,7 @@ echo "$(FLOWEY_TEMP_DIR)/work" | {var_db_insert_working_dir}
 "###
             )
             .trim_start()
+            .to_owned()
         })?;
 
         // import pipeline vars being used by the job into flowey

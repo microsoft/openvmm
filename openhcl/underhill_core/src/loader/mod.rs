@@ -541,11 +541,9 @@ pub fn write_uefi_config(
         &platform_config.smbios.chassis_asset_tag,
     );
 
-    cfg.add({
-        &config::NvdimmCount {
-            count: platform_config.general.nvdimm_count,
-            padding: [0; 3],
-        }
+    cfg.add(&config::NvdimmCount {
+        count: platform_config.general.nvdimm_count,
+        padding: [0; 3],
     });
 
     if let Some(instance_guid) = platform_config.general.vpci_instance_filter {
