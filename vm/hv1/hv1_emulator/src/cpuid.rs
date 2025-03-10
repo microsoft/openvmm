@@ -115,9 +115,13 @@ pub fn hv_cpuid_leaves(
                 .with_use_apic_msrs(use_apic_msrs);
 
             if hardware_isolated {
-                enlightenments = enlightenments
-                    .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
-                    .with_long_spin_wait_count(!0); // no spin wait notifications;
+                enlightenments = enlightenments.with_long_spin_wait_count(!0); // no spin wait notifications;
+
+                // TODO TDX GUEST VSM
+                if isolation != IsolationType::Tdx {
+                    enlightenments = enlightenments
+                        .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
+                }
 
                 // TODO HCVM:
                 //    .with_use_synthetic_cluster_ipi(true);
