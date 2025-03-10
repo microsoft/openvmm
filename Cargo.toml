@@ -42,6 +42,7 @@ members = [
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
+  "opentmk"
 ]
 exclude = [
   "xsync",
@@ -525,6 +526,7 @@ xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
 #zerocopy = { version = "0.7.32", features = ["derive"]}
 zerocopy = { version = "0.8.14", features = ["derive"]}
+linked_list_allocator = "0.10.5"
 
 [workspace.metadata.xtask.unused-deps]
 # Pulled in through "tracing", but we need to pin the version

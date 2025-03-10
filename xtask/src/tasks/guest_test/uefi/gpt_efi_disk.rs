@@ -22,7 +22,7 @@ pub fn create_gpt_efi_disk(out_img: &Path, with_files: &[(&Path, &Path)]) -> Res
         ));
     }
 
-    let disk_size = 1024 * 1024 * 32; // 32MB disk should be enough for our tests
+    let disk_size = 1024 * 1024 * 512; // 32MB disk should be enough for our tests
     let num_sectors = disk_size / SECTOR_SIZE;
 
     let mut disk = vec![0; num_sectors * SECTOR_SIZE];
