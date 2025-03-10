@@ -2000,6 +2000,7 @@ mod save_restore {
                         waker: _,
                         // Topology information
                         vp_info: _,
+                        cpu_index: _,
                         hv_start_enable_vtl_vp: _,
                     },
                 // Saved

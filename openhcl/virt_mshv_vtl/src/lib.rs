@@ -615,15 +615,18 @@ impl UhProcessorBox {
         control: Option<&'a mut IdleControl>,
     ) -> Result<UhProcessor<'a, T>, Error> {
         if let Some(control) = &control {
-            let vp_index = self.vp_info.base.vp_index.index();
+            let vp_index = self.vp_info.base.vp_index;
 
             let mut current = Default::default();
             affinity::get_current_thread_affinity(&mut current).unwrap();
-            assert_eq!(&current, CpuSet::new().set(vp_index));
+            assert_eq!(&current, CpuSet::new().set(vp_index.index()));
 
             self.partition
                 .hcl
-                .set_poll_file(vp_index, control.ring_fd().as_raw_fd())
+                .set_poll_file(
+                    self.partition.vp(vp_index).unwrap().cpu_index,
+                    control.ring_fd().as_raw_fd(),
+                )
                 .map_err(Error::Hcl)?;
         }
 
@@ -651,6 +654,8 @@ struct UhVpInner {
     message_queues: VtlArray<MessageQueues, 2>,
     #[inspect(skip)]
     vp_info: TargetVpInfo,
+    /// The Linux kernel's CPU index for this VP.
+    cpu_index: u32,
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
     hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<VpStartEnableVtl>>>, 2>,
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
@@ -1595,7 +1600,16 @@ impl<'a> UhProtoPartition<'a> {
         )
         .map_err(Error::Hcl)?;
 
-        let vps: Vec<_> = params.topology.vps_arch().map(UhVpInner::new).collect();
+        let vps: Vec<_> = params
+            .topology
+            .vps_arch()
+            .map(|vp_info| {
+                // TODO: determine CPU index, which in theory could be different
+                // from the VP index, though this hasn't happened yet.
+                let cpu_index = vp_info.base.vp_index.index();
+                UhVpInner::new(cpu_index, vp_info)
+            })
+            .collect();
 
         // Enable support for VPCI devices if the hypervisor supports it.
         #[cfg(guest_arch = "x86_64")]

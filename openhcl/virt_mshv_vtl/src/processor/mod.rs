@@ -354,11 +354,12 @@ pub enum SidecarRemoveExit {
 
 impl UhVpInner {
     // Create a new vp's state.
-    pub fn new(vp_info: TargetVpInfo) -> Self {
+    pub fn new(cpu_index: u32, vp_info: TargetVpInfo) -> Self {
         Self {
             wake_reasons: Default::default(),
             message_queues: VtlArray::from_fn(|_| MessageQueues::new()),
             waker: Default::default(),
+            cpu_index,
             vp_info,
             hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
             sidecar_exit_reason: Default::default(),
@@ -648,11 +649,9 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 return Err(VpHaltReason::Cancel);
             }
         } else {
-            {
-                let mut current = Default::default();
-                affinity::get_current_thread_affinity(&mut current).unwrap();
-                assert_eq!(&current, CpuSet::new().set(self.vp_index().index()));
-            }
+            let mut current = Default::default();
+            affinity::get_current_thread_affinity(&mut current).unwrap();
+            assert_eq!(&current, CpuSet::new().set(self.inner.cpu_index));
 
             // Lower the priority of this VP thread so that the VM does not return
             // to VTL0 while there is still outstanding VTL2 work to do.
