@@ -162,7 +162,7 @@ where
 
         // Read in each section pointed to by the program headers.
         for phdr in phdrs {
-            if phdr.p_type.get(LE) != elf::PT_LOAD || phdr.p_filesz.get(LE) == 0 {
+            if phdr.p_type.get(LE) != elf::PT_LOAD {
                 continue;
             }
 
@@ -204,7 +204,7 @@ where
     // During the second pass, read in each section pointed to by the program headers,
     // and import into the guest memory.
     for phdr in phdrs {
-        if phdr.p_type.get(LE) != elf::PT_LOAD || phdr.p_filesz.get(LE) == 0 {
+        if phdr.p_type.get(LE) != elf::PT_LOAD {
             continue;
         }
 
