@@ -142,11 +142,7 @@ pub struct SimpleVmbusClientDeviceWrapper<T: SimpleVmbusClientDeviceAsync> {
 
 impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceWrapper<T> {
     /// Create a new instance.
-    pub fn new(
-        driver: impl SpawnDriver + Clone,
-        dma_alloc: Arc<dyn DmaClient>,
-        device: T,
-    ) -> Result<Self> {
+    pub fn new(driver: impl SpawnDriver + Clone, dma_alloc: DmaClient, device: T) -> Result<Self> {
         let spawner = Arc::new(driver.clone());
         Ok(Self {
             instance_id: device.instance_id(),
@@ -225,7 +221,7 @@ struct SimpleVmbusClientDeviceTask<T: SimpleVmbusClientDeviceAsync> {
     device: TaskControl<RelayDeviceTask<T>, T::Runner>,
     saved_state: Option<T::SavedState>,
     spawner: Arc<dyn SpawnDriver>,
-    dma_alloc: Arc<dyn DmaClient>,
+    dma_alloc: DmaClient,
 }
 
 impl<T: SimpleVmbusClientDeviceAsync> AsyncRun<SimpleVmbusClientDeviceTaskState>
@@ -256,7 +252,7 @@ impl<T: SimpleVmbusClientDeviceAsync> InspectTaskMut<SimpleVmbusClientDeviceTask
 }
 
 impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
-    pub fn new(device: T, spawner: Arc<dyn SpawnDriver>, dma_alloc: Arc<dyn DmaClient>) -> Self {
+    pub fn new(device: T, spawner: Arc<dyn SpawnDriver>, dma_alloc: DmaClient) -> Self {
         Self {
             device: TaskControl::new(RelayDeviceTask(device)),
             saved_state: None,

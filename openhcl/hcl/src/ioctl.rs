@@ -74,7 +74,6 @@ use std::os::unix::prelude::*;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::sync::Once;
 use thiserror::Error;
 use user_driver::memory::MemoryBlock;
@@ -1481,6 +1480,171 @@ impl MshvHvcall {
 
         self.get_vp_register_for_vtl_inner(vtl, name.into())
     }
+
+    fn pin_unpin_gpa_ranges_internal(
+        &self,
+        gpa_ranges: &[HvGpaRange],
+        action: GpaPinUnpinAction,
+    ) -> Result<(), PinUnpinError> {
+        const PIN_REQUEST_HEADER_SIZE: usize =
+            size_of::<hvdef::hypercall::PinUnpinGpaPageRangesHeader>();
+        const MAX_INPUT_ELEMENTS: usize =
+            (HV_PAGE_SIZE as usize - PIN_REQUEST_HEADER_SIZE) / size_of::<u64>();
+
+        let header = hvdef::hypercall::PinUnpinGpaPageRangesHeader { reserved: 0 };
+        let mut ranges_processed = 0;
+
+        for chunk in gpa_ranges.chunks(MAX_INPUT_ELEMENTS) {
+            // SAFETY: This unsafe block is valid because:
+            // 1. The code and header going to match the expected input for the hypercall.
+            //
+            // 2. Hypercall result is checked right after the hypercall is issued.
+            //
+            let output = unsafe {
+                self.hvcall_rep(
+                    match action {
+                        GpaPinUnpinAction::PinGpaRange => HypercallCode::HvCallPinGpaPageRanges,
+                        GpaPinUnpinAction::UnpinGpaRange => HypercallCode::HvCallUnpinGpaPageRanges,
+                    },
+                    &header,
+                    HvcallRepInput::Elements(chunk),
+                    None::<&mut [u8]>,
+                )
+                .expect("submitting pin/unpin hypercall should not fail")
+            };
+
+            ranges_processed += output.elements_processed();
+
+            output.result().map_err(|e| PinUnpinError {
+                ranges_processed,
+                error: e,
+            })?;
+        }
+
+        // At end all the ranges should be processed
+        if ranges_processed == gpa_ranges.len() {
+            Ok(())
+        } else {
+            Err(PinUnpinError {
+                ranges_processed,
+                error: HvError::OperationFailed,
+            })
+        }
+    }
+
+    fn to_hv_gpa_range_array(gpa_memory_ranges: &[MemoryRange]) -> Vec<HvGpaRange> {
+        const PAGES_PER_ENTRY: u64 = 2048;
+        const PAGE_SIZE: u64 = HV_PAGE_SIZE;
+
+        // Estimate the total number of pages across all memory ranges
+        let estimated_size: usize = gpa_memory_ranges
+            .iter()
+            .map(|memory_range| {
+                let total_pages = (memory_range.end() - memory_range.start()).div_ceil(PAGE_SIZE);
+                total_pages.div_ceil(PAGES_PER_ENTRY)
+            })
+            .sum::<u64>() as usize;
+
+        // Create a vector with the estimated size
+        let mut hv_gpa_ranges = Vec::with_capacity(estimated_size);
+
+        for memory_range in gpa_memory_ranges {
+            // Calculate the total number of pages in the memory range
+            let total_pages = (memory_range.end() - memory_range.start()).div_ceil(PAGE_SIZE);
+
+            // Convert start address to page number
+            let start_page = memory_range.start_4k_gpn();
+
+            // Generate the ranges and append them to the vector
+            hv_gpa_ranges.extend(
+                (0..total_pages)
+                    .step_by(PAGES_PER_ENTRY as usize)
+                    .map(|start| {
+                        let end = std::cmp::min(total_pages, start + PAGES_PER_ENTRY);
+                        let pages_in_this_range = end - start;
+                        let gpa_page_number = start_page + start;
+
+                        let extended = HvGpaRangeExtended::new()
+                            .with_additional_pages(pages_in_this_range - 1)
+                            .with_large_page(false) // Assuming not a large page
+                            .with_gpa_page_number(gpa_page_number);
+
+                        HvGpaRange(extended.into_bits())
+                    }),
+            );
+        }
+
+        hv_gpa_ranges // Return the vector at the end
+    }
+
+    // TODO: this function allocates via `to_hv_gpa_range_array`. Remove this
+    // allocation by having a fixed size internal buffer of the max allowable
+    // hypercall rep list size, and chunk/convert on the fly.
+    fn perform_pin_unpin_gpa_ranges(
+        &self,
+        gpa_ranges: &[MemoryRange],
+        action: GpaPinUnpinAction,
+        rollback_action: GpaPinUnpinAction,
+    ) -> Result<(), HvError> {
+        let hv_gpa_ranges: Vec<HvGpaRange> = Self::to_hv_gpa_range_array(gpa_ranges);
+
+        // Attempt to pin/unpin the ranges
+        match self.pin_unpin_gpa_ranges_internal(&hv_gpa_ranges, action) {
+            Ok(_) => Ok(()),
+            Err(PinUnpinError {
+                error,
+                ranges_processed,
+            }) => {
+                // Unpin the ranges that were successfully pinned
+                let pinned_ranges = &hv_gpa_ranges[..ranges_processed];
+                if let Err(rollback_error) =
+                    self.pin_unpin_gpa_ranges_internal(pinned_ranges, rollback_action)
+                {
+                    // Panic if rollback is failing
+                    panic!(
+                        "Failed to perform action {:?} on ranges. Error : {:?}. \
+                        Attempted to rollback {:?} ranges out of {:?}.\n rollback error: {:?}",
+                        action,
+                        error,
+                        ranges_processed,
+                        gpa_ranges.len(),
+                        rollback_error
+                    );
+                }
+                // Surface the original error
+                Err(error)
+            }
+        }
+    }
+
+    /// Pins the specified guest physical address ranges in the hypervisor.
+    /// The memory ranges passed to this function must be VA backed memory.
+    /// If a partial failure occurs (i.e., some but not all the ranges were successfully pinned),
+    /// the function will automatically attempt to unpin any successfully pinned ranges.
+    /// This "rollback" behavior ensures that no partially pinned state remains, which
+    /// could otherwise lead to inconsistencies.
+    ///
+    pub fn pin_gpa_ranges(&self, ranges: &[MemoryRange]) -> Result<(), HvError> {
+        self.perform_pin_unpin_gpa_ranges(
+            ranges,
+            GpaPinUnpinAction::PinGpaRange,
+            GpaPinUnpinAction::UnpinGpaRange,
+        )
+    }
+
+    /// Unpins the specified guest physical address ranges in the hypervisor.
+    /// The memory ranges passed to this function must be VA backed memory.
+    /// If a partial failure occurs (i.e., some but not all the ranges were successfully unpinned),
+    /// the function will automatically attempt to pin any successfully unpinned ranges. This "rollback"
+    /// behavior ensures that no partially unpinned state remains, which could otherwise lead to inconsistencies.
+    ///
+    pub fn unpin_gpa_ranges(&self, ranges: &[MemoryRange]) -> Result<(), HvError> {
+        self.perform_pin_unpin_gpa_ranges(
+            ranges,
+            GpaPinUnpinAction::UnpinGpaRange,
+            GpaPinUnpinAction::PinGpaRange,
+        )
+    }
 }
 
 /// The HCL device and collection of fds.
@@ -1563,7 +1727,7 @@ impl HclVp {
         vp: u32,
         map_reg_page: bool,
         isolation_type: IsolationType,
-        private_dma_client: Option<&Arc<dyn DmaClient>>,
+        private_dma_client: Option<&DmaClient>,
     ) -> Result<Self, Error> {
         let fd = &hcl.mshv_vtl.file;
         let run: MappedPage<hcl_run> =
@@ -2229,7 +2393,7 @@ impl Hcl {
     pub fn add_vps(
         &mut self,
         vp_count: u32,
-        private_pool: Option<&Arc<dyn DmaClient>>,
+        private_pool: Option<&DmaClient>,
     ) -> Result<(), Error> {
         self.vps = (0..vp_count)
             .map(|vp| {
@@ -2630,171 +2794,6 @@ impl Hcl {
             })),
             x => Ok(Err(aarch64::TranslateErrorAarch64 { code: x })),
         }
-    }
-
-    fn to_hv_gpa_range_array(gpa_memory_ranges: &[MemoryRange]) -> Vec<HvGpaRange> {
-        const PAGES_PER_ENTRY: u64 = 2048;
-        const PAGE_SIZE: u64 = HV_PAGE_SIZE;
-
-        // Estimate the total number of pages across all memory ranges
-        let estimated_size: usize = gpa_memory_ranges
-            .iter()
-            .map(|memory_range| {
-                let total_pages = (memory_range.end() - memory_range.start()).div_ceil(PAGE_SIZE);
-                total_pages.div_ceil(PAGES_PER_ENTRY)
-            })
-            .sum::<u64>() as usize;
-
-        // Create a vector with the estimated size
-        let mut hv_gpa_ranges = Vec::with_capacity(estimated_size);
-
-        for memory_range in gpa_memory_ranges {
-            // Calculate the total number of pages in the memory range
-            let total_pages = (memory_range.end() - memory_range.start()).div_ceil(PAGE_SIZE);
-
-            // Convert start address to page number
-            let start_page = memory_range.start_4k_gpn();
-
-            // Generate the ranges and append them to the vector
-            hv_gpa_ranges.extend(
-                (0..total_pages)
-                    .step_by(PAGES_PER_ENTRY as usize)
-                    .map(|start| {
-                        let end = std::cmp::min(total_pages, start + PAGES_PER_ENTRY);
-                        let pages_in_this_range = end - start;
-                        let gpa_page_number = start_page + start;
-
-                        let extended = HvGpaRangeExtended::new()
-                            .with_additional_pages(pages_in_this_range - 1)
-                            .with_large_page(false) // Assuming not a large page
-                            .with_gpa_page_number(gpa_page_number);
-
-                        HvGpaRange(extended.into_bits())
-                    }),
-            );
-        }
-
-        hv_gpa_ranges // Return the vector at the end
-    }
-
-    fn pin_unpin_gpa_ranges_internal(
-        &self,
-        gpa_ranges: &[HvGpaRange],
-        action: GpaPinUnpinAction,
-    ) -> Result<(), PinUnpinError> {
-        const PIN_REQUEST_HEADER_SIZE: usize =
-            size_of::<hvdef::hypercall::PinUnpinGpaPageRangesHeader>();
-        const MAX_INPUT_ELEMENTS: usize =
-            (HV_PAGE_SIZE as usize - PIN_REQUEST_HEADER_SIZE) / size_of::<u64>();
-
-        let header = hvdef::hypercall::PinUnpinGpaPageRangesHeader { reserved: 0 };
-        let mut ranges_processed = 0;
-
-        for chunk in gpa_ranges.chunks(MAX_INPUT_ELEMENTS) {
-            // SAFETY: This unsafe block is valid because:
-            // 1. The code and header going to match the expected input for the hypercall.
-            //
-            // 2. Hypercall result is checked right after the hypercall is issued.
-            //
-            let output = unsafe {
-                self.mshv_hvcall
-                    .hvcall_rep(
-                        match action {
-                            GpaPinUnpinAction::PinGpaRange => HypercallCode::HvCallPinGpaPageRanges,
-                            GpaPinUnpinAction::UnpinGpaRange => {
-                                HypercallCode::HvCallUnpinGpaPageRanges
-                            }
-                        },
-                        &header,
-                        HvcallRepInput::Elements(chunk),
-                        None::<&mut [u8]>,
-                    )
-                    .expect("submitting pin/unpin hypercall should not fail")
-            };
-
-            ranges_processed += output.elements_processed();
-
-            output.result().map_err(|e| PinUnpinError {
-                ranges_processed,
-                error: e,
-            })?;
-        }
-
-        // At end all the ranges should be processed
-        if ranges_processed == gpa_ranges.len() {
-            Ok(())
-        } else {
-            Err(PinUnpinError {
-                ranges_processed,
-                error: HvError::OperationFailed,
-            })
-        }
-    }
-
-    fn perform_pin_unpin_gpa_ranges(
-        &self,
-        gpa_ranges: &[MemoryRange],
-        action: GpaPinUnpinAction,
-        rollback_action: GpaPinUnpinAction,
-    ) -> Result<(), HvError> {
-        let hv_gpa_ranges: Vec<HvGpaRange> = Self::to_hv_gpa_range_array(gpa_ranges);
-
-        // Attempt to pin/unpin the ranges
-        match self.pin_unpin_gpa_ranges_internal(&hv_gpa_ranges, action) {
-            Ok(_) => Ok(()),
-            Err(PinUnpinError {
-                error,
-                ranges_processed,
-            }) => {
-                // Unpin the ranges that were successfully pinned
-                let pinned_ranges = &hv_gpa_ranges[..ranges_processed];
-                if let Err(rollback_error) =
-                    self.pin_unpin_gpa_ranges_internal(pinned_ranges, rollback_action)
-                {
-                    // Panic if rollback is failing
-                    panic!(
-                        "Failed to perform action {:?} on ranges. Error : {:?}. \
-                        Attempted to rollback {:?} ranges out of {:?}.\n rollback error: {:?}",
-                        action,
-                        error,
-                        ranges_processed,
-                        gpa_ranges.len(),
-                        rollback_error
-                    );
-                }
-                // Surface the original error
-                Err(error)
-            }
-        }
-    }
-
-    /// Pins the specified guest physical address ranges in the hypervisor.
-    /// The memory ranges passed to this function must be VA backed memory.
-    /// If a partial failure occurs (i.e., some but not all the ranges were successfully pinned),
-    /// the function will automatically attempt to unpin any successfully pinned ranges.
-    /// This "rollback" behavior ensures that no partially pinned state remains, which
-    /// could otherwise lead to inconsistencies.
-    ///
-    pub fn pin_gpa_ranges(&self, ranges: &[MemoryRange]) -> Result<(), HvError> {
-        self.perform_pin_unpin_gpa_ranges(
-            ranges,
-            GpaPinUnpinAction::PinGpaRange,
-            GpaPinUnpinAction::UnpinGpaRange,
-        )
-    }
-
-    /// Unpins the specified guest physical address ranges in the hypervisor.
-    /// The memory ranges passed to this function must be VA backed memory.
-    /// If a partial failure occurs (i.e., some but not all the ranges were successfully unpinned),
-    /// the function will automatically attempt to pin any successfully unpinned ranges. This "rollback"
-    /// behavior ensures that no partially unpinned state remains, which could otherwise lead to inconsistencies.
-    ///
-    pub fn unpin_gpa_ranges(&self, ranges: &[MemoryRange]) -> Result<(), HvError> {
-        self.perform_pin_unpin_gpa_ranges(
-            ranges,
-            GpaPinUnpinAction::UnpinGpaRange,
-            GpaPinUnpinAction::PinGpaRange,
-        )
     }
 
     /// Read the vsm capabilities register for VTL2.

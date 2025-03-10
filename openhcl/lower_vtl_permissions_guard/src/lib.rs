@@ -15,7 +15,7 @@ use anyhow::Result;
 use inspect::Inspect;
 use std::sync::Arc;
 use user_driver::memory::MemoryBlock;
-use user_driver::DmaClient;
+use user_driver::DmaAlloc;
 use virt::VtlMemoryProtection;
 
 /// A guard that will restore [`hvdef::HV_MAP_GPA_PERMISSIONS_NONE`] permissions
@@ -74,14 +74,14 @@ impl Drop for PagesAccessibleToLowerVtl {
 /// A [`DmaClient`] wrapper that will lower the VTL permissions of the page
 /// on the allocated memory block.
 #[derive(Inspect)]
-pub struct LowerVtlMemorySpawner<T: DmaClient> {
+pub struct LowerVtlMemorySpawner<T: DmaAlloc> {
     #[inspect(skip)]
     spawner: T,
     #[inspect(skip)]
     vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
 }
 
-impl<T: DmaClient> LowerVtlMemorySpawner<T> {
+impl<T: DmaAlloc> LowerVtlMemorySpawner<T> {
     /// Create a new wrapped [`DmaClient`] spawner that will lower the VTL
     /// permissions of the returned [`MemoryBlock`].
     pub fn new(spawner: T, vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>) -> Self {
@@ -92,7 +92,7 @@ impl<T: DmaClient> LowerVtlMemorySpawner<T> {
     }
 }
 
-impl<T: DmaClient> DmaClient for LowerVtlMemorySpawner<T> {
+impl<T: DmaAlloc> DmaAlloc for LowerVtlMemorySpawner<T> {
     fn allocate_dma_buffer(&self, len: usize) -> Result<MemoryBlock> {
         let mem = self.spawner.allocate_dma_buffer(len)?;
         let vtl_guard =

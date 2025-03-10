@@ -149,7 +149,6 @@ pub(crate) mod msg {
     use chipset_resources::battery::HostBatteryUpdate;
     use guid::Guid;
     use mesh::rpc::Rpc;
-    use std::sync::Arc;
     use user_driver::DmaClient;
     use vpci::bus_control::VpciBusEvent;
 
@@ -180,7 +179,7 @@ pub(crate) mod msg {
         /// Inspect the state of the process loop.
         Inspect(inspect::Deferred),
         /// Store the gpa allocator to be used for attestation.
-        SetGpaAllocator(Arc<dyn DmaClient>),
+        SetGpaAllocator(DmaClient),
 
         // Late bound receivers for Guest Notifications
         /// Take the late-bound GuestRequest receiver for Generation Id updates.
@@ -482,7 +481,7 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     igvm_attest_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
     #[inspect(skip)]
     igvm_attest_read_send: mesh::Sender<Vec<u8>>,
-    gpa_allocator: Option<Arc<dyn DmaClient>>,
+    gpa_allocator: Option<DmaClient>,
     stats: Stats,
 
     guest_notification_listeners: GuestNotificationListeners,
@@ -1833,7 +1832,7 @@ async fn request_saved_state(
 async fn request_igvm_attest(
     mut access: HostRequestPipeAccess,
     request: msg::IgvmAttestRequestData,
-    gpa_allocator: Option<Arc<dyn DmaClient>>,
+    gpa_allocator: Option<DmaClient>,
 ) -> Result<Result<Vec<u8>, IgvmAttestError>, FatalError> {
     let allocator = gpa_allocator.ok_or(FatalError::GpaAllocatorUnavailable)?;
     let dma_size = request.response_buffer_len;

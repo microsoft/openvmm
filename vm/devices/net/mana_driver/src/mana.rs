@@ -535,8 +535,8 @@ impl<T: DeviceBacking> Vport<T> {
     }
 
     /// Returns an object that can allocate dma memory to be shared with the device.
-    pub async fn dma_client(&self) -> Arc<dyn DmaClient> {
-        self.inner.gdma.lock().await.device().dma_client()
+    pub async fn dma_client(&self) -> DmaClient {
+        self.inner.gdma.lock().await.device().dma_client().clone()
     }
 }
 

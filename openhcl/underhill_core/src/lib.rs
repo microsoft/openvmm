@@ -318,6 +318,7 @@ async fn launch_workers(
         hide_isolation: opt.hide_isolation,
         nvme_keep_alive: opt.nvme_keep_alive,
         test_configuration: opt.test_configuration,
+        pin_dma_ranges: opt.pin_dma_ranges,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =

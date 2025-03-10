@@ -65,7 +65,7 @@ async fn create_mana_device(
     pci_id: &str,
     vp_count: u32,
     max_sub_channels: u16,
-    dma_client: Arc<dyn DmaClient>,
+    dma_client: DmaClient,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
     // Disable FLR on vfio attach/detach; this allows faster system
     // startup/shutdown with the caveat that the device needs to be properly
@@ -118,7 +118,7 @@ async fn try_create_mana_device(
     pci_id: &str,
     vp_count: u32,
     max_sub_channels: u16,
-    dma_client: Arc<dyn DmaClient>,
+    dma_client: DmaClient,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
     let device = VfioDevice::new(driver_source, pci_id, dma_client)
         .await
@@ -201,8 +201,7 @@ struct HclNetworkVFManagerWorker {
     vtl2_pci_id: String,
     #[inspect(skip)]
     dma_mode: GuestDmaMode,
-    #[inspect(skip)]
-    dma_client: Arc<dyn DmaClient>,
+    dma_client: DmaClient,
 }
 
 impl HclNetworkVFManagerWorker {
@@ -218,7 +217,7 @@ impl HclNetworkVFManagerWorker {
         vp_count: u32,
         max_sub_channels: u16,
         dma_mode: GuestDmaMode,
-        dma_client: Arc<dyn DmaClient>,
+        dma_client: DmaClient,
     ) -> (Self, mesh::Sender<HclNetworkVfManagerMessage>) {
         let (tx_to_worker, worker_rx) = mesh::channel();
         let vtl0_bus_control = if save_state.hidden_vtl0.lock().unwrap_or(false) {
@@ -858,7 +857,7 @@ impl HclNetworkVFManager {
         max_sub_channels: u16,
         netvsp_state: &Option<Vec<SavedState>>,
         dma_mode: GuestDmaMode,
-        dma_client: Arc<dyn DmaClient>,
+        dma_client: DmaClient,
     ) -> anyhow::Result<(
         Self,
         Vec<HclNetworkVFManagerEndpointInfo>,

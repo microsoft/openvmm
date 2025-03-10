@@ -593,8 +593,6 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .map_interrupt(0, 0)
             .context("failed to map interrupt 0")?;
 
-        let dma_client = worker.device.dma_client();
-
         // Restore the admin queue pair.
         let admin = saved_state
             .worker_data
@@ -602,7 +600,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .as_ref()
             .map(|a| {
                 // Restore memory block for admin queue pair.
-                let mem_block = dma_client
+                let mem_block = worker
+                    .device
+                    .dma_client()
                     .attach_dma_buffer(a.mem_len, a.base_pfn)
                     .expect("unable to restore mem block");
                 QueuePair::restore(driver.clone(), interrupt0, registers.clone(), mem_block, a)
@@ -645,8 +645,10 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     .device
                     .map_interrupt(q.iv, q.cpu)
                     .context("failed to map interrupt")?;
-                let mem_block =
-                    dma_client.attach_dma_buffer(q.queue_data.mem_len, q.queue_data.base_pfn)?;
+                let mem_block = worker
+                    .device
+                    .dma_client()
+                    .attach_dma_buffer(q.queue_data.mem_len, q.queue_data.base_pfn)?;
                 let q =
                     IoQueue::restore(driver.clone(), interrupt, registers.clone(), mem_block, q)?;
                 let issuer = IoIssuer {

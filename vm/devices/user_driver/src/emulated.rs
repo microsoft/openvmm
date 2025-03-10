@@ -11,6 +11,7 @@ use crate::memory::MemoryBlock;
 use crate::memory::PAGE_SIZE;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
+use crate::DmaAlloc;
 use crate::DmaClient;
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
@@ -34,8 +35,8 @@ use std::sync::Arc;
 pub struct EmulatedDevice<T> {
     device: Arc<Mutex<T>>,
     controller: MsiController,
-    shared_mem: DeviceSharedMemory,
     bar0_len: usize,
+    dma_client: DmaClient,
 }
 
 impl<T: InspectMut> Inspect for EmulatedDevice<T> {
@@ -107,7 +108,7 @@ impl<T: PciConfigSpace + MmioIntercept> EmulatedDevice<T> {
         Self {
             device: Arc::new(Mutex::new(device)),
             controller,
-            shared_mem,
+            dma_client: DmaClient::new(Arc::new(EmulatedDmaAllocator { shared_mem }), None),
             bar0_len,
         }
     }
@@ -272,7 +273,7 @@ pub struct EmulatedDmaAllocator {
     shared_mem: DeviceSharedMemory,
 }
 
-impl DmaClient for EmulatedDmaAllocator {
+impl DmaAlloc for EmulatedDmaAllocator {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
         let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);
         memory.as_slice().atomic_fill(0);
@@ -302,10 +303,8 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
         })
     }
 
-    fn dma_client(&self) -> Arc<dyn DmaClient> {
-        Arc::new(EmulatedDmaAllocator {
-            shared_mem: self.shared_mem.clone(),
-        }) as Arc<dyn DmaClient>
+    fn dma_client(&self) -> &DmaClient {
+        &self.dma_client
     }
 
     fn max_interrupt_count(&self) -> u32 {

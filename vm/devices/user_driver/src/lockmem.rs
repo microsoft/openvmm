@@ -126,7 +126,7 @@ unsafe impl MappedDmaTarget for LockedMemory {
 #[derive(Clone, Inspect)]
 pub struct LockedMemorySpawner;
 
-impl crate::DmaClient for LockedMemorySpawner {
+impl crate::DmaAlloc for LockedMemorySpawner {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<crate::memory::MemoryBlock> {
         Ok(crate::memory::MemoryBlock::new(LockedMemory::new(len)?))
     }

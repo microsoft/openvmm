@@ -11,6 +11,7 @@ hcl.workspace = true
 hcl_mapper.workspace = true
 lower_vtl_permissions_guard.workspace = true
 
+guestmem.workspace = true
 hvdef.workspace = true
 inspect.workspace = true
 memory_range.workspace = true
@@ -21,6 +22,11 @@ virt.workspace = true
 vmcore.workspace = true
 
 anyhow.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+pal_async.workspace = true
+pal_async_test.workspace = true
 
 [lints]
 workspace = true

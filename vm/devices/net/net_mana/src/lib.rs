@@ -1223,7 +1223,7 @@ struct ContiguousBufferManager {
 struct OutOfMemory;
 
 impl ContiguousBufferManager {
-    pub fn new(dma_client: Arc<dyn DmaClient>, page_limit: u32) -> anyhow::Result<Self> {
+    pub fn new(dma_client: DmaClient, page_limit: u32) -> anyhow::Result<Self> {
         let len = PAGE_SIZE32 * page_limit;
         let mem = dma_client.allocate_dma_buffer(len as usize)?;
         Ok(Self {

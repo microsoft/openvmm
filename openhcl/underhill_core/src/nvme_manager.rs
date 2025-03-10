@@ -306,6 +306,7 @@ impl NvmeManagerWorker {
                             AllocationVisibility::Private
                         },
                         persistent_allocations: self.save_restore_supported,
+                        bounce_buffer_pages: None,
                     })
                     .map_err(InnerError::DmaClient)?;
 
@@ -375,6 +376,7 @@ impl NvmeManagerWorker {
                     AllocationVisibility::Private
                 },
                 persistent_allocations: true,
+                bounce_buffer_pages: None,
             })?;
 
             // This code can wait on each VFIO device until it is arrived.

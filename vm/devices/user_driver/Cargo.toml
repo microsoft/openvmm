@@ -26,9 +26,11 @@ vmcore.workspace = true
 
 anyhow.workspace = true
 parking_lot.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 vfio-bindings.workspace = true
 zerocopy.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 fs-err.workspace = true
 futures.workspace = true
@@ -37,6 +39,9 @@ libc.workspace = true
 pal_event.workspace = true
 sparse_mmap = { workspace = true, optional = true }
 vfio_sys = { workspace = true, optional = true }
+
+[dev-dependencies]
+pal_async_test.workspace = true
 
 [lints]
 workspace = true

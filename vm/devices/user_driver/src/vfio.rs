@@ -56,7 +56,7 @@ pub struct VfioDevice {
     interrupts: Vec<Option<InterruptState>>,
     #[inspect(skip)]
     config_space: vfio_sys::RegionInfo,
-    dma_client: Arc<dyn DmaClient>,
+    dma_client: DmaClient,
 }
 
 #[derive(Inspect)]
@@ -73,7 +73,7 @@ impl VfioDevice {
     pub async fn new(
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
-        dma_client: Arc<dyn DmaClient>,
+        dma_client: DmaClient,
     ) -> anyhow::Result<Self> {
         Self::restore(driver_source, pci_id, false, dma_client).await
     }
@@ -84,7 +84,7 @@ impl VfioDevice {
         driver_source: &VmTaskDriverSource,
         pci_id: &str,
         keepalive: bool,
-        dma_client: Arc<dyn DmaClient>,
+        dma_client: DmaClient,
     ) -> anyhow::Result<Self> {
         let path = Path::new("/sys/bus/pci/devices").join(pci_id);
 
@@ -231,8 +231,8 @@ impl DeviceBacking for VfioDevice {
         (*self).map_bar(n)
     }
 
-    fn dma_client(&self) -> Arc<dyn DmaClient> {
-        self.dma_client.clone()
+    fn dma_client(&self) -> &DmaClient {
+        &self.dma_client
     }
 
     fn max_interrupt_count(&self) -> u32 {

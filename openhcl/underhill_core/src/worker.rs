@@ -69,7 +69,9 @@ use get_protocol::TripleFaultType;
 use guest_emulation_transport::api::platform_settings::DevicePlatformSettings;
 use guest_emulation_transport::api::platform_settings::General;
 use guest_emulation_transport::GuestEmulationTransportClient;
+use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
+use guestmem::MemoryWrite;
 use guid::Guid;
 use hcl_compat_uefi_nvram_storage::HclCompatNvramQuirks;
 use hvdef::hypercall::HvGuestOsId;
@@ -124,7 +126,7 @@ use uevent::UeventListener;
 use underhill_attestation::AttestationType;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
-use user_driver::DmaClient;
+use user_driver::MapDmaOptions;
 use virt::state::HvRegisterState;
 use virt::Partition;
 use virt::VpIndex;
@@ -283,6 +285,9 @@ pub struct UnderhillEnvCfg {
 
     /// test configuration
     pub test_configuration: Option<TestScenarioConfig>,
+
+    /// Enable pinning of DMA ranges.
+    pub pin_dma_ranges: bool,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -749,6 +754,7 @@ impl UhVmNetworkSettings {
                 AllocationVisibility::Private
             },
             persistent_allocations: false,
+            bounce_buffer_pages: None,
         })?;
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
@@ -1512,6 +1518,7 @@ async fn new_underhill_vm(
             .vtom_offset_bit
             .map(|bit| 1 << bit)
             .unwrap_or(0),
+        env_cfg.pin_dma_ranges,
     )
     .context("failed to create global dma manager")?;
 
@@ -1572,6 +1579,7 @@ async fn new_underhill_vm(
                         AllocationVisibility::Private
                     },
                     persistent_allocations: false,
+                    bounce_buffer_pages: None,
                 })
                 .context("get dma client")?,
         );
@@ -1740,24 +1748,18 @@ async fn new_underhill_vm(
                 lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                 allocation_visibility: AllocationVisibility::Shared,
                 persistent_allocations: false,
+                bounce_buffer_pages: None,
             })
-            .ok()
-            .map(|client| {
-                let client: Arc<dyn DmaClient> = client;
-                client
-            }),
+            .ok(),
         private_dma_client: dma_manager
             .new_client(DmaClientParameters {
                 device_name: "partition-private".into(),
                 lower_vtl_policy: LowerVtlPermissionPolicy::Any,
                 allocation_visibility: AllocationVisibility::Private,
                 persistent_allocations: false,
+                bounce_buffer_pages: None,
             })
-            .ok()
-            .map(|client| {
-                let client: Arc<dyn DmaClient> = client;
-                client
-            }),
+            .ok(),
     };
 
     let (partition, vps) = proto_partition
@@ -2887,6 +2889,7 @@ async fn new_underhill_vm(
                     lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
                     allocation_visibility: AllocationVisibility::Private,
                     persistent_allocations: false,
+                    bounce_buffer_pages: None,
                 })
                 .context("shutdown relay dma client")?,
             shutdown_guest,
@@ -2956,6 +2959,220 @@ async fn new_underhill_vm(
     dma_manager
         .validate_restore()
         .context("failed to validate restore for dma manager")?;
+
+    // BUGBUG: remove, only for testing dma mapping
+    {
+        use guestmem::MemoryRead;
+
+        // DMA SELF TEST
+        let client = dma_manager
+            .new_client(DmaClientParameters {
+                device_name: "self-test".into(),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                allocation_visibility: AllocationVisibility::Private,
+                persistent_allocations: true,
+                bounce_buffer_pages: Some(10),
+            })
+            .context("self test client")?;
+
+        let pages = PagedRange::new(0, hvdef::HV_PAGE_SIZE_USIZE * 5, &[1, 2, 3, 4, 5]).unwrap();
+        pages
+            .writer(gm.vtl0())
+            .fill(12, hvdef::HV_PAGE_SIZE_USIZE * 5)
+            .context("initial self test fill")?;
+
+        let transaction = client
+            .map_dma_ranges(
+                gm.vtl0(),
+                pages,
+                MapDmaOptions {
+                    always_bounce: true,
+                    is_rx: true,
+                    is_tx: true,
+                },
+            )
+            .await?;
+
+        let bounced_pfns = transaction.pfns().to_vec();
+        tracing::error!(?transaction, ?bounced_pfns, "self test transaction");
+
+        let mut buffer = [9u8; hvdef::HV_PAGE_SIZE_USIZE * 5];
+        buffer[0] = 42;
+        buffer[hvdef::HV_PAGE_SIZE_USIZE * 3 - 1] = 42;
+
+        // do "dma"
+        transaction.write_bounced(buffer.as_ref())?;
+
+        client
+            .unmap_dma_ranges(transaction)
+            .context("self test unmap dma")?;
+
+        let read_buf: Vec<u8> = pages
+            .reader(gm.vtl0())
+            .read_n(hvdef::HV_PAGE_SIZE_USIZE * 5)?;
+
+        assert_eq!(read_buf, buffer);
+
+        let transaction = client
+            .map_dma_ranges(
+                gm.vtl0(),
+                pages,
+                MapDmaOptions {
+                    always_bounce: false,
+                    is_rx: true,
+                    is_tx: true,
+                },
+            )
+            .await?;
+
+        tracing::error!(?transaction, "self test transaction2");
+
+        client
+            .unmap_dma_ranges(transaction)
+            .context("self test unmap dma")?;
+
+        // 5 pages with each page being the number of its
+        let expected_buf = [1, 2, 3, 4, 5]
+            .iter()
+            .flat_map(|i| vec![*i; hvdef::HV_PAGE_SIZE_USIZE])
+            .collect::<Vec<u8>>();
+
+        let read_buf: Vec<u8> = pages
+            .reader(gm.vtl0())
+            .read_n(hvdef::HV_PAGE_SIZE_USIZE * 5)?;
+
+        assert_eq!(read_buf, expected_buf);
+
+        // test with 3 pages, partial first, full last
+        gm.vtl0()
+            .fill_at(hvdef::HV_PAGE_SIZE, 123, hvdef::HV_PAGE_SIZE as usize * 3)?;
+
+        tracing::error!("3 page partial first, full last");
+        let len = hvdef::HV_PAGE_SIZE_USIZE * 3 - 123;
+
+        let pages = PagedRange::new(123, len, &[1, 2, 3]).unwrap();
+        let transaction = client
+            .map_dma_ranges(
+                gm.vtl0(),
+                pages,
+                MapDmaOptions {
+                    always_bounce: true,
+                    is_rx: true,
+                    is_tx: true,
+                },
+            )
+            .await?;
+
+        tracing::error!("write bounced");
+
+        let mut buffer = [9u8; hvdef::HV_PAGE_SIZE_USIZE * 3];
+        buffer[0] = 42;
+        buffer[123] = 240;
+        buffer[hvdef::HV_PAGE_SIZE_USIZE * 3 - 1] = 47;
+        transaction.write_bounced(buffer.as_ref())?;
+
+        tracing::error!("unmap");
+
+        client
+            .unmap_dma_ranges(transaction)
+            .context("self test unmap dma")?;
+
+        let mut expected_buf = [0; hvdef::HV_PAGE_SIZE_USIZE * 3];
+        expected_buf[0..123].copy_from_slice(&[123; 123]);
+        expected_buf[123..].copy_from_slice(&buffer[123..]);
+
+        tracing::error!("read gm");
+
+        // create a new paged range that spans all 3 pages
+        let pages = PagedRange::new(0, hvdef::HV_PAGE_SIZE_USIZE * 3, &[1, 2, 3]).unwrap();
+
+        let read_buf: Vec<u8> = pages
+            .reader(gm.vtl0())
+            .read_n(hvdef::HV_PAGE_SIZE_USIZE * 3)?;
+        assert_eq!(read_buf, expected_buf);
+
+        // test with 3 pages, full first, partial last
+        gm.vtl0()
+            .fill_at(hvdef::HV_PAGE_SIZE, 123, hvdef::HV_PAGE_SIZE as usize * 3)?;
+
+        tracing::error!("full first, partial last");
+
+        let pages = PagedRange::new(0, hvdef::HV_PAGE_SIZE_USIZE * 3 - 123, &[1, 2, 3]).unwrap();
+        let transaction = client
+            .map_dma_ranges(
+                gm.vtl0(),
+                pages,
+                MapDmaOptions {
+                    always_bounce: true,
+                    is_rx: true,
+                    is_tx: true,
+                },
+            )
+            .await?;
+        let mut buffer = [9u8; hvdef::HV_PAGE_SIZE_USIZE * 3];
+        buffer[0] = 42;
+        buffer[hvdef::HV_PAGE_SIZE_USIZE * 3 - 123] = 47;
+        tracing::error!("write bounched");
+        transaction.write_bounced(buffer.as_ref())?;
+
+        tracing::error!("unmap");
+
+        client
+            .unmap_dma_ranges(transaction)
+            .context("self test unmap dma")?;
+
+        let mut expected_buf = [0; hvdef::HV_PAGE_SIZE_USIZE * 3];
+        expected_buf[0..hvdef::HV_PAGE_SIZE_USIZE * 3 - 123]
+            .copy_from_slice(&buffer[..hvdef::HV_PAGE_SIZE_USIZE * 3 - 123]);
+        expected_buf[hvdef::HV_PAGE_SIZE_USIZE * 3 - 123..].copy_from_slice(&[123; 123]);
+
+        tracing::error!("read gm");
+
+        // create a new paged range that spans all 3 pages
+        let pages = PagedRange::new(0, hvdef::HV_PAGE_SIZE_USIZE * 3, &[1, 2, 3]).unwrap();
+
+        let read_buf: Vec<u8> = pages
+            .reader(gm.vtl0())
+            .read_n(hvdef::HV_PAGE_SIZE_USIZE * 3)?;
+        assert_eq!(read_buf, expected_buf);
+
+        // test with 1 page, small byte range in page
+        gm.vtl0()
+            .fill_at(hvdef::HV_PAGE_SIZE, 123, hvdef::HV_PAGE_SIZE as usize)?;
+
+        tracing::error!("1 page");
+
+        let pages = PagedRange::new(123, 123, &[1]).unwrap();
+        let transaction = client
+            .map_dma_ranges(
+                gm.vtl0(),
+                pages,
+                MapDmaOptions {
+                    always_bounce: true,
+                    is_rx: true,
+                    is_tx: true,
+                },
+            )
+            .await?;
+        let mut buffer = [9u8; hvdef::HV_PAGE_SIZE_USIZE];
+        buffer[0] = 42;
+        buffer[123] = 240;
+        buffer[hvdef::HV_PAGE_SIZE_USIZE - 1] = 47;
+        transaction.write_bounced(buffer.as_ref())?;
+
+        client
+            .unmap_dma_ranges(transaction)
+            .context("self test unmap dma")?;
+        let mut expected_buf = [0; hvdef::HV_PAGE_SIZE_USIZE];
+        expected_buf[0..123].copy_from_slice(&[123; 123]);
+        expected_buf[123..246].copy_from_slice(&buffer[123..246]);
+        expected_buf[246..].copy_from_slice(&[123; hvdef::HV_PAGE_SIZE_USIZE - 246]);
+
+        let pages = PagedRange::new(0, hvdef::HV_PAGE_SIZE_USIZE, &[1]).unwrap();
+        let read_buf: Vec<u8> = pages.reader(gm.vtl0()).read_n(hvdef::HV_PAGE_SIZE_USIZE)?;
+
+        assert_eq!(read_buf, expected_buf);
+    }
 
     // Start the VP tasks on the thread pool.
     crate::vp::spawn_vps(tp, vps, vp_runners, &chipset, isolation)
