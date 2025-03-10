@@ -431,13 +431,12 @@ async fn openhcl_linux_storvsp_dvd_nvme(config: PetriVmConfigOpenVmm) -> Result<
 
     let disk_len = nvme_disk_sectors * sector_size;
     let mut backing_file = tempfile::tempfile()?;
+    let data_chunk: Vec<u8> = (0..64).collect();
+    let data_chunk = data_chunk.as_slice();
     let mut bytes = vec![0_u8; disk_len as usize];
-    for i in 0..(disk_len / 0xff) {
-        // This should always be divisible by 64
-        for j in 0..0xff {
-            bytes[(i * 0xff + j) as usize] = j as u8;
-        }
-    }
+    bytes.chunks_exact_mut(64).for_each(|v| {
+        v.copy_from_slice(&data_chunk);
+    });
     backing_file.write_all(&bytes)?;
 
     let (vm, agent) = config
@@ -445,7 +444,7 @@ async fn openhcl_linux_storvsp_dvd_nvme(config: PetriVmConfigOpenVmm) -> Result<
         .with_custom_config(|c| {
             c.vpci_devices.extend([new_test_vtl2_nvme_device(
                 vtl2_nsid,
-                nvme_disk_sectors * sector_size,
+                disk_len,
                 NVME_INSTANCE,
                 Some(backing_file),
             )]);
