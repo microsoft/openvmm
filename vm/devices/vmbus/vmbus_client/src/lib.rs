@@ -63,7 +63,8 @@ const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
     .with_guest_specified_signal_parameters(true)
     .with_channel_interrupt_redirection(true)
     .with_modify_connection(true)
-    .with_client_id(true);
+    .with_client_id(true)
+    .with_pause_resume(true);
 
 /// The client interface synic events.
 pub trait SynicEventClient: Send + Sync {
@@ -1022,7 +1023,8 @@ impl ClientTask {
         }
     }
 
-    fn handle_synic_message(&mut self, data: &[u8]) {
+    /// Returns false if the message was a pause complete message.
+    fn handle_synic_message(&mut self, data: &[u8]) -> bool {
         let msg = Message::parse(data, self.state.get_version()).unwrap();
         tracing::trace!(?msg, "received client message from synic");
 
@@ -1065,6 +1067,9 @@ impl ClientTask {
             Message::CloseReservedChannelResponse(..) => {
                 todo!("Unsupported message {msg:?}")
             }
+            Message::PauseResponse(..) => {
+                return false;
+            }
             // Messages that should only be received by a vmbus server.
             Message::RequestOffers(..)
             | Message::OpenChannel2(..)
@@ -1082,10 +1087,13 @@ impl ClientTask {
             | Message::TlConnectRequest2(..)
             | Message::TlConnectRequest(..)
             | Message::ModifyChannel(..)
-            | Message::ModifyConnection(..) => {
+            | Message::ModifyConnection(..)
+            | Message::Pause(..)
+            | Message::Resume(..) => {
                 unreachable!("Client received server message {msg:?}");
             }
         }
+        true
     }
 
     fn handle_open_channel(
@@ -1455,8 +1463,27 @@ impl ClientTask {
 
     async fn handle_stop(&mut self) {
         assert!(self.running);
+
         loop {
-            self.msg_source.pause_message_stream();
+            if self.can_pause_resume() {
+                // Send a pause and flush any queued messages to ensure the host
+                // sees it.
+                self.inner.messages.send(&protocol::Pause {});
+                self.inner.messages.flush_messages().await;
+                // Push the resume message onto the queue now. This ensures the
+                // resume message is sent before any other messages, that new
+                // messages sent during processing below will be queued rather
+                // than sent immediately, and it means we don't need to save the
+                // paused state in the saved state.
+                self.inner
+                    .messages
+                    .queued
+                    .push_back(OutgoingMessage::new(&protocol::Resume));
+            } else {
+                // Mask the sint to pause the message stream. The host will
+                // retry any queued messages after the sint is unmasked.
+                self.msg_source.pause_message_stream();
+            }
 
             // Process messages until we hit EOF.
             tracing::debug!("draining messages");
@@ -1472,7 +1499,11 @@ impl ClientTask {
                     break;
                 }
 
-                self.handle_synic_message(&buf[..size]);
+                if !self.handle_synic_message(&buf[..size]) {
+                    // Received a pause response message. We won't receive
+                    // any more messages until we send a resume message.
+                    break;
+                }
             }
 
             // Flush any pending outgoing messages. This needs to be done with
@@ -1482,7 +1513,12 @@ impl ClientTask {
             // FUTURE: We can save these pending messages instead, but older
             // versions of OpenHCL cannot restore them. Remove this code once
             // those older versions are no longer supported (e.g. late 2025).
-            if self.inner.messages.is_empty() {
+            //
+            // When pause/resume is supported, we assume that we can save
+            // pending messages safely, though, since a rollback to a version
+            // that doesn't support pause/resume will not be able to restore the
+            // paused state anyway.
+            if self.inner.messages.is_empty() || self.can_pause_resume() {
                 break;
             }
             tracing::info!("flushing outgoing messages");
@@ -1493,6 +1529,22 @@ impl ClientTask {
         tracing::debug!("messages drained");
         // Because the run loop awaits all async operations, there is no need for rundown.
         self.running = false;
+    }
+
+    /// Returns whether the server supports in-band messages to pause/resume the
+    /// message stream.
+    ///
+    /// For hosts where this is not supported, we mask the sint to pause new
+    /// messages being queued to the sint, then drain the messages. This does
+    /// not work with some host implementations, which cannot support draining
+    /// the message queue while the sint is masked (due to the use of
+    /// HvPostMessageDirect).
+    fn can_pause_resume(&self) -> bool {
+        if let ClientState::Connected { version } = self.state {
+            version.feature_flags.pause_resume()
+        } else {
+            false
+        }
     }
 
     async fn run(&mut self) {
