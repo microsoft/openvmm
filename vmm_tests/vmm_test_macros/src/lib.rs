@@ -399,6 +399,9 @@ fn parse_vhd(input: ParseStream<'_>, generation: Generation) -> syn::Result<Imag
         "ubuntu_2404_server_aarch64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64
         )),
+        "ubuntu_2404_server_x64" => Ok(image_info!(
+            ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_X64
+        )),
         _ => Err(Error::new(word.span(), "unrecognized vhd")),
     }
 }
@@ -542,7 +545,7 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `none`: No guest
 ///
 /// Valid VHD options are:
-/// - `ubuntu_2204_server_x64`: Canonical's provided Ubuntu Linux 22.04 cloudimg disk image
+/// - `ubuntu_2404_server_x64`: Canonical's provided Ubuntu Linux 22.04 cloudimg disk image
 /// - `windows_datacenter_core_2022_x64`: Our provided Windows Datacenter Core 2022 VHD
 /// - `freebsd_13_2_x64`: The FreeBSD Project's provided FreeBSD 13.2 VHD
 ///
