@@ -93,8 +93,8 @@ impl<T: DmaClient> LowerVtlMemorySpawner<T> {
 }
 
 impl<T: DmaClient> DmaClient for LowerVtlMemorySpawner<T> {
-    fn allocate_dma_buffer(&self, len: usize) -> Result<MemoryBlock> {
-        let mem = self.spawner.allocate_dma_buffer(len)?;
+    fn allocate_dma_buffer(&self, len: usize, tag: String) -> Result<MemoryBlock> {
+        let mem = self.spawner.allocate_dma_buffer(len, tag)?;
         let vtl_guard =
             PagesAccessibleToLowerVtl::new_from_pages(self.vtl_protect.clone(), mem.pfns())
                 .context("failed to lower VTL permissions on memory block")?;

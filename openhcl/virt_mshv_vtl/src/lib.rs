@@ -360,7 +360,10 @@ impl UhCvmVpState {
             .shared_dma_client
             .as_ref()
             .ok_or(Error::MissingSharedMemory)?
-            .allocate_dma_buffer(overlay_pages_required * HV_PAGE_SIZE as usize)
+            .allocate_dma_buffer(
+                overlay_pages_required * HV_PAGE_SIZE as usize,
+                format!("vp-{}-direct-overlay", vp_info.base.vp_index.index()),
+            )
             .map_err(Error::AllocateSharedVisOverlay)?;
 
         let apic_base = virt::vp::Apic::at_reset(&inner.caps, vp_info).apic_base;
