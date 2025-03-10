@@ -5,19 +5,29 @@
 
 use super::address_space::init_local_map;
 use super::address_space::LocalMap;
-use crate::host_params::shim_params::IsolationType;
 use crate::host_params::PartitionInfo;
 use crate::hypercall::hvcall;
+use crate::hypercall::HypercallPages;
+use crate::host_params::shim_params::IsolationType;
 use crate::ShimParams;
+use loader_defs::linux::boot_params;
+use loader_defs::linux::e820entry;
+use loader_defs::linux::E820_RESERVED;
+use loader_defs::shim::TdxTrampolineContext;
 use memory_range::MemoryRange;
 use sha2::Digest;
 use sha2::Sha384;
+use x86defs::tdx::RESET_VECTOR_PAGE;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use x86defs::X64_LARGE_PAGE_SIZE;
 
 /// On isolated systems, transitions all VTL2 RAM to be private and accepted, with the appropriate
 /// VTL permissions applied.
-pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInfo) {
+/// For TDX-isolated partitions, this function returns input and outpute pages to be used for hypercalls  
+pub fn setup_vtl2_memory(
+    shim_params: &ShimParams,
+    partition_info: &PartitionInfo,
+) -> HypercallPages {
     // Only if the partition is VBS-isolated, accept memory and apply vtl 2 protections here.
     // Non-isolated partitions can undergo servicing, and additional information
     // would be needed to determine whether vtl 2 protections should be applied
@@ -25,7 +35,10 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
     // TODO: if applying vtl 2 protections for non-isolated VMs moves to the
     // boot shim, apply them here.
     if let IsolationType::None = shim_params.isolation_type {
-        return;
+        return HypercallPages {
+            input: None,
+            output: None,
+        };
     }
 
     if let IsolationType::Vbs = shim_params.isolation_type {
@@ -117,6 +130,19 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
         if !already_accepted {
             accept_pending_vtl2_memory(shim_params, &mut local_map, ram_buffer, imported_range);
         }
+    }
+
+    // For TDVMCALL based hypercalls, take the first 2 MB region from ram_buffer for hypercall pages
+    if shim_params.isolation_type == IsolationType::Tdx {
+        let input_page = ram_buffer.as_mut_ptr() as u64;
+        return HypercallPages {
+            input: Some(input_page),
+            output: Some(input_page + 4096),
+        };
+    }
+    HypercallPages {
+        input: None,
+        output: None,
     }
 }
 
@@ -270,4 +296,49 @@ pub fn verify_imported_regions_hash(shim_params: &ShimParams) {
     if hasher.finalize().as_slice() != shim_params.imported_regions_hash() {
         panic!("Imported regions hash mismatch");
     }
+}
+
+/// Mark the page tables region of underhill as E820-reserved,
+/// so the L1-VMM will not use them while AP init code is running.
+pub fn reserve_pages_for_multivp(
+    isolation_type: IsolationType,
+    page_tables_address_start: u64,
+    page_tables_address_end: u64,
+    boot_params: &mut boot_params,
+) {
+    if isolation_type == IsolationType::Tdx {
+        add_page_to_e820_entry(
+            boot_params,
+            page_tables_address_start,
+            page_tables_address_end - page_tables_address_start,
+            E820_RESERVED,
+        );
+
+        prepare_tdxcontext_for_ap();
+    }
+}
+
+/// Mark the given entry in the E820 map as reserved
+fn add_page_to_e820_entry(boot_params: &mut boot_params, addr: u64, size: u64, typ: u32) {
+    let entry = &mut boot_params.e820_map[boot_params.e820_entries as usize];
+    *entry = e820entry {
+        addr: addr.into(),
+        size: size.into(),
+        typ: typ.into(),
+    };
+    boot_params.e820_entries += 1;
+}
+
+fn prepare_tdxcontext_for_ap() {
+    // This makes ResetVector skip LDGT on AP, so the GDT page is not marked reserved.
+    // If this changes, then the GDT page should be marked reserved in e820
+
+    let context_ptr: *mut TdxTrampolineContext = RESET_VECTOR_PAGE as *mut TdxTrampolineContext;
+    let tdxcontext: &mut TdxTrampolineContext = unsafe { context_ptr.as_mut().unwrap() };
+    tdxcontext.gdtr_limit = 0;
+    tdxcontext.idtr_limit = 0;
+    tdxcontext.code_selector = 0;
+    tdxcontext.task_selector = 0;
+    tdxcontext.cr0 |= x86defs::X64_CR0_PG | x86defs::X64_CR0_PE | x86defs::X64_CR0_NE;
+    tdxcontext.cr4 |= x86defs::X64_CR4_PAE | x86defs::X64_CR4_MCE;
 }

@@ -3,8 +3,8 @@
 
 //! Arch-specific VSM details.
 
-use crate::host_params::shim_params::IsolationType;
 use loader_defs::shim::SupportedIsolationType;
+use minimal_rt::isolation::IsolationType;
 
 pub fn get_isolation_type(supported_isolation_type: SupportedIsolationType) -> IsolationType {
     if supported_isolation_type != SupportedIsolationType::VBS {

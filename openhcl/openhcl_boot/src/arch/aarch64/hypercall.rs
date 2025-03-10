@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::host_params::shim_params::IsolationType;
+
 /// Writes a synthehtic register to tell the hypervisor the OS ID for the boot shim.
 fn report_os_id(guest_os_id: u64) {
     // On ARM64, to be able to make hypercalls, one needs first to set the Guest OS ID
@@ -16,12 +18,12 @@ fn report_os_id(guest_os_id: u64) {
     );
 }
 
-pub(crate) fn initialize(guest_os_id: u64) {
+pub(crate) fn initialize(guest_os_id: u64, _input_page: Option<u64>, _isolation: IsolationType) {
     // We are assuming we are running under a Microsoft hypervisor.
     report_os_id(guest_os_id);
 }
 
 /// Call before jumping to kernel.
-pub(crate) fn uninitialize() {
+pub(crate) fn uninitialize(_input_page: Option<u64>, _isolation: IsolationType) {
     report_os_id(0);
 }

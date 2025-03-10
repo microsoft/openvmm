@@ -15,5 +15,7 @@ zerocopy.workspace = true
 [build-dependencies]
 minimal_rt_build.workspace = true
 
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+
 [lints]
 workspace = true
