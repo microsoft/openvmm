@@ -8,7 +8,7 @@ resolver = "2"
 
 [workspace.package]
 rust-version = "1.85"
-edition = "2021"
+edition = "2024"
 
 [workspace.dependencies]
 anyhow = "1.0"
