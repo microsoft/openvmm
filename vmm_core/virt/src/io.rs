@@ -7,7 +7,7 @@ use vm_topology::processor::VpIndex;
 
 /// This trait provides the operations between the VP dispatch loop and the
 /// platform's devices.
-pub trait CpuIo: Send + Sync {
+pub trait CpuIo {
     /// Check if a given address will be handled by a device.
     fn is_mmio(&self, address: u64) -> bool;
 
