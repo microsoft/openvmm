@@ -119,9 +119,6 @@ impl MemoryLayout {
         if ram_size == 0 || ram_size & (PAGE_SIZE - 1) != 0 {
             return Err(Error::BadSize);
         }
-        if gaps.len() < 2 {
-            return Err(Error::BadMmioGaps);
-        }
 
         validate_ranges(gaps)?;
         let mut ram = Vec::new();
