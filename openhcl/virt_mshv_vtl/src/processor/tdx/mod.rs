@@ -1851,8 +1851,8 @@ impl UhProcessor<'_, TdxBacked> {
                     tracing::trace!(
                         "Caught Exception: {:?}",
                         exit_info._exit_interruption_info()
-                );
-                breakpoint_debug_exception = true;
+                    );
+                    breakpoint_debug_exception = true;
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.exception
             }
