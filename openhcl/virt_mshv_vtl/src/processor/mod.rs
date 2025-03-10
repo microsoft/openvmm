@@ -35,7 +35,6 @@ cfg_if::cfg_if! {
 use super::Error;
 use super::UhPartitionInner;
 use super::UhVpInner;
-use crate::GuestVsmState;
 use crate::GuestVtl;
 use crate::WakeReason;
 use hcl::ioctl;
@@ -269,6 +268,7 @@ pub struct BackingSharedParams {
     pub(crate) cvm_state: Option<crate::UhCvmPartitionState>,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     pub(crate) vp_count: u32,
+    pub(crate) guest_vsm_available: bool,
 }
 
 /// Processor backing.
@@ -1022,13 +1022,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             devices,
         )
         .await
-    }
-
-    fn vtl1_supported(&self) -> bool {
-        !matches!(
-            *self.partition.guest_vsm.read(),
-            GuestVsmState::NotPlatformSupported
-        )
     }
 
     fn deliver_synic_messages(&mut self, vtl: GuestVtl, sints: u16) {
