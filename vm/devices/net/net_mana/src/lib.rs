@@ -1120,14 +1120,6 @@ impl<T: DeviceBacking> ManaQueue<T> {
             };
 
             let segment_count = tail_sgl_offset + meta.segment_count - header_segment_count;
-            // Verbose logging for testing. TODO: Remove before checkin
-            tracing::error!(
-                "ERIK segment_count {:?} tail_sgl_offset {:?} meta.segment_count {:?} header_segment_count {:?}",
-                segment_count,
-                tail_sgl_offset,
-                meta.segment_count,
-                header_segment_count
-            );
             let sgl = if segment_count < 31 {
                 let sgl = &mut sgl[..segment_count];
                 for (tail, sge) in segments[header_segment_count..]
