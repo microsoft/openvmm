@@ -251,8 +251,7 @@ pub fn vtl2_memory_range(
     let physical_address_size = physical_address_size - 1;
 
     // Create an initial memory layout to determine the highest used address.
-    let dummy_layout = MemoryLayout::new(physical_address_size, mem_size, mmio_gaps, None)
-        .map_err(Error::MemoryConfig)?;
+    let dummy_layout = MemoryLayout::new(mem_size, mmio_gaps, None).map_err(Error::MemoryConfig)?;
 
     // TODO: Underhill kernel panics if loaded at 32TB or higher. Restrict the
     // max address to 32TB until this is fixed.

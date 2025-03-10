@@ -24,7 +24,6 @@ pub struct MemoryRangeWithNode {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "inspect", derive(inspect::Inspect))]
 pub struct MemoryLayout {
-    physical_address_size: u8,
     #[cfg_attr(feature = "inspect", inspect(with = "inspect_ranges_with_metadata"))]
     ram: Vec<MemoryRangeWithNode>,
     #[cfg_attr(feature = "inspect", inspect(with = "inspect_ranges"))]
@@ -75,14 +74,6 @@ pub enum Error {
     /// VTL2 range is below the end of ram, and overlaps.
     #[error("vtl2 range is below end of ram")]
     Vtl2RangeBeforeEndOfRam,
-    /// An address doesn't fit into the physical address space.
-    #[error("range {range} is outside of physical address space ({width} bits)")]
-    PhysicalAddressExceeded {
-        /// The range.
-        range: MemoryRange,
-        /// The physical address width.
-        width: u8,
-    },
 }
 
 fn validate_ranges(ranges: &[MemoryRange]) -> Result<(), Error> {
@@ -121,7 +112,6 @@ impl MemoryLayout {
     ///
     /// All RAM is assigned to NUMA node 0.
     pub fn new(
-        physical_address_size: u8,
         ram_size: u64,
         gaps: &[MemoryRange],
         vtl2_range: Option<MemoryRange>,
@@ -154,7 +144,7 @@ impl MemoryLayout {
             last_end = next_end;
         }
 
-        Self::build(physical_address_size, ram, gaps.to_vec(), vtl2_range)
+        Self::build(ram, gaps.to_vec(), vtl2_range)
     }
 
     /// Makes a new memory layout for a guest with the given mmio gaps and
@@ -163,20 +153,18 @@ impl MemoryLayout {
     /// `memory` and `gaps` ranges must be in sorted order and non-overlapping,
     /// and describe page aligned ranges.
     pub fn new_from_ranges(
-        physical_address_size: u8,
         memory: &[MemoryRangeWithNode],
         gaps: &[MemoryRange],
     ) -> Result<Self, Error> {
         validate_ranges_with_metadata(memory)?;
         validate_ranges(gaps)?;
-        Self::build(physical_address_size, memory.to_vec(), gaps.to_vec(), None)
+        Self::build(memory.to_vec(), gaps.to_vec(), None)
     }
 
     /// Builds the memory layout.
     ///
     /// `ram` and `mmio` must already be known to be sorted.
     fn build(
-        physical_address_size: u8,
         ram: Vec<MemoryRangeWithNode>,
         mmio: Vec<MemoryRange>,
         vtl2_range: Option<MemoryRange>,
@@ -191,16 +179,6 @@ impl MemoryLayout {
 
         all_ranges.sort();
         validate_ranges(&all_ranges)?;
-
-        let max_physical_address = 1 << physical_address_size;
-        for &range in &all_ranges {
-            if range.end() > max_physical_address {
-                return Err(Error::PhysicalAddressExceeded {
-                    range,
-                    width: physical_address_size,
-                });
-            }
-        }
 
         if all_ranges
             .iter()
@@ -220,7 +198,6 @@ impl MemoryLayout {
         }
 
         Ok(Self {
-            physical_address_size,
             ram,
             mmio,
             vtl2_range,
@@ -242,11 +219,6 @@ impl MemoryLayout {
     /// mmio.
     pub fn vtl2_range(&self) -> Option<MemoryRange> {
         self.vtl2_range
-    }
-
-    /// The bit width of a physical address for the VM.
-    pub fn physical_address_size(&self) -> u8 {
-        self.physical_address_size
     }
 
     /// The total RAM size in bytes. This is not contiguous.
@@ -345,7 +317,7 @@ mod tests {
             },
         ];
 
-        let layout = MemoryLayout::new(42, TB, mmio, None).unwrap();
+        let layout = MemoryLayout::new(TB, mmio, None).unwrap();
         assert_eq!(
             layout.ram(),
             &[
@@ -367,7 +339,7 @@ mod tests {
         assert_eq!(layout.ram_size(), TB);
         assert_eq!(layout.end_of_ram(), TB + 2 * GB);
 
-        let layout = MemoryLayout::new_from_ranges(42, ram, mmio).unwrap();
+        let layout = MemoryLayout::new_from_ranges(ram, mmio).unwrap();
         assert_eq!(
             layout.ram(),
             &[
@@ -392,20 +364,20 @@ mod tests {
 
     #[test]
     fn bad_layout() {
-        MemoryLayout::new(42, TB + 1, &[], None).unwrap_err();
+        MemoryLayout::new(TB + 1, &[], None).unwrap_err();
         let mmio = &[
             MemoryRange::new(3 * GB..4 * GB),
             MemoryRange::new(GB..2 * GB),
         ];
-        MemoryLayout::new(42, TB, mmio, None).unwrap_err();
+        MemoryLayout::new(TB, mmio, None).unwrap_err();
 
-        MemoryLayout::new_from_ranges(42, &[], mmio).unwrap_err();
+        MemoryLayout::new_from_ranges(&[], mmio).unwrap_err();
 
         let ram = &[MemoryRangeWithNode {
             range: MemoryRange::new(0..GB),
             vnode: 0,
         }];
-        MemoryLayout::new_from_ranges(42, ram, mmio).unwrap_err();
+        MemoryLayout::new_from_ranges(ram, mmio).unwrap_err();
 
         let ram = &[MemoryRangeWithNode {
             range: MemoryRange::new(0..GB + MB),
@@ -415,12 +387,6 @@ mod tests {
             MemoryRange::new(GB..2 * GB),
             MemoryRange::new(3 * GB..4 * GB),
         ];
-        MemoryLayout::new_from_ranges(42, ram, mmio).unwrap_err();
-
-        let mmio = &[
-            MemoryRange::new(GB..2 * GB),
-            MemoryRange::new(3 * GB..4 * GB),
-        ];
-        MemoryLayout::new(36, TB, mmio, None).unwrap_err();
+        MemoryLayout::new_from_ranges(ram, mmio).unwrap_err();
     }
 }

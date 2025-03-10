@@ -164,7 +164,12 @@ pub trait ProtoPartition {
     #[cfg(guest_arch = "x86_64")]
     fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4];
 
-    /// The number of bits of a physical address.
+    /// The maximum physical address width that processors and devices for this
+    /// partition can access.
+    ///
+    /// This may be smaller than what is reported to the guest via architectural
+    /// interfaces by default, and it may be larger or smaller than what the VMM
+    /// ultimately chooses to report to the guest.
     fn max_physical_address_size(&self) -> u8;
 
     /// Constructs the full partition.

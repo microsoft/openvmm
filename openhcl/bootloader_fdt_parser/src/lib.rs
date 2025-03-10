@@ -138,9 +138,6 @@ pub struct ParsedBootDtInfo {
     /// index.
     #[inspect(iter_by_index)]
     pub cpus: Vec<Cpu>,
-    /// The physical address bits of the system. Today, this is only reported on aarch64.
-    /// TODO: Could we also report this on x64, and in CVMs?
-    pub physical_address_bits: Option<u8>,
     /// The physical address of the VTL0 alias mapping, if one is configured.
     pub vtl0_alias_map: Option<u64>,
     /// The memory ranges for VTL2 that were reported to the kernel. This is
@@ -504,7 +501,6 @@ impl ParsedBootDtInfo {
         let mut vtl0_mmio = Vec::new();
         let mut config_ranges = Vec::new();
         let mut vtl2_memory = Vec::new();
-        let mut physical_address_bits = None;
         let mut gic = None;
         let mut partition_memory_map = Vec::new();
         let mut accepted_ranges = Vec::new();
@@ -529,11 +525,6 @@ impl ParsedBootDtInfo {
             match child.name {
                 "cpus" => {
                     cpus = parse_cpus(&child)?;
-
-                    // Read physical address bits if present.
-                    if let Some(prop) = try_find_property(&child, "pa_bits") {
-                        physical_address_bits = Some(prop.read_u32(0).map_err(err_to_owned)? as u8);
-                    }
                 }
 
                 "openhcl" => {
@@ -582,7 +573,6 @@ impl ParsedBootDtInfo {
             config_ranges,
             vtl2_memory,
             partition_memory_map,
-            physical_address_bits,
             vtl0_alias_map,
             accepted_ranges,
             gic,
@@ -685,7 +675,6 @@ mod tests {
         let p_compatible = builder.add_string("compatible")?;
         let p_ranges = builder.add_string("ranges")?;
         let p_numa_node_id = builder.add_string("numa-node-id")?;
-        let p_pa_bits = builder.add_string("pa_bits")?;
         let p_igvm_type = builder.add_string(IGVM_DT_IGVM_TYPE_PROPERTY)?;
         let p_openhcl_memory = builder.add_string("openhcl,memory-type")?;
 
@@ -699,10 +688,6 @@ mod tests {
             .start_node("cpus")?
             .add_u32(p_address_cells, 1)?
             .add_u32(p_size_cells, 0)?;
-
-        if let Some(pa_bits) = info.physical_address_bits {
-            cpu_builder = cpu_builder.add_u32(p_pa_bits, pa_bits as u32)?;
-        }
 
         // add cpus
         for (index, cpu) in info.cpus.iter().enumerate() {
@@ -941,7 +926,6 @@ mod tests {
                 MemoryRange::new(0x20000..0x30000),
                 MemoryRange::new(0x30000..0x40000),
             ],
-            physical_address_bits: Some(48),
             vtl0_alias_map: Some(1 << 48),
             gic: Some(GicInfo {
                 gic_distributor_base: 0x10000,

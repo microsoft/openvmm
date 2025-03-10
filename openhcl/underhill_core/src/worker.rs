@@ -985,7 +985,6 @@ fn build_vtl0_memory_layout(
     vtl0_memory_map: Vec<(MemoryRangeWithNode, MemoryMapEntryType)>,
     mmio: &[MemoryRange],
     mut shared_pool_size: u64,
-    physical_address_size: u8,
 ) -> anyhow::Result<BuiltVtl0MemoryLayout> {
     // Allocate shared_pool memory starting from the last (top of memory)
     // continuing downward until the size is covered.
@@ -1041,18 +1040,15 @@ fn build_vtl0_memory_layout(
         .map(|(entry, _typ)| entry.clone())
         .collect::<Vec<_>>();
 
-    tracing::info!(physical_address_size, "physical address size");
-
-    let vtl0_memory_layout = MemoryLayout::new_from_ranges(physical_address_size, &memory, mmio)
-        .context("invalid memory layout")?;
+    let vtl0_memory_layout =
+        MemoryLayout::new_from_ranges(&memory, mmio).context("invalid memory layout")?;
 
     let complete_memory = vtl0_memory_map
         .iter()
         .map(|(entry, _typ)| entry.clone())
         .collect::<Vec<_>>();
-    let complete_memory_layout =
-        MemoryLayout::new_from_ranges(physical_address_size, &complete_memory, mmio)
-            .context("invalid complete memory layout")?;
+    let complete_memory_layout = MemoryLayout::new_from_ranges(&complete_memory, mmio)
+        .context("invalid complete memory layout")?;
 
     tracing::info!(
         vtl0_ram = vtl0_memory_layout
@@ -1273,29 +1269,12 @@ async fn new_underhill_vm(
         })
         .collect::<Vec<_>>();
 
-    #[cfg(guest_arch = "aarch64")]
-    let physical_address_size = boot_info
-        .physical_address_bits
-        .context("bootloader did not provide physical address size")?;
-
-    #[cfg(guest_arch = "x86_64")]
-    let physical_address_size =
-        virt::x86::max_physical_address_size_from_cpuid(&|leaf, sub_leaf| {
-            let result = safe_intrinsics::cpuid(leaf, sub_leaf);
-            [result.eax, result.ebx, result.ecx, result.edx]
-        });
-
     let BuiltVtl0MemoryLayout {
         vtl0_memory_map,
         vtl0_memory_layout: mem_layout,
         shared_pool,
         complete_memory_layout,
-    } = build_vtl0_memory_layout(
-        vtl0_memory_map,
-        &boot_info.vtl0_mmio,
-        shared_pool_size,
-        physical_address_size,
-    )?;
+    } = build_vtl0_memory_layout(vtl0_memory_map, &boot_info.vtl0_mmio, shared_pool_size)?;
 
     let hide_isolation = isolation.is_isolated() && env_cfg.hide_isolation;
 
@@ -3292,7 +3271,10 @@ async fn load_firmware(
     #[cfg(guest_arch = "x86_64")]
     let registers = {
         let crate::loader::VpContext::Vbs(mut registers) = vtl0_vp_context;
-        registers.extend(loader::common::compute_variable_mtrrs(mem_layout));
+        registers.extend(loader::common::compute_variable_mtrrs(
+            mem_layout,
+            partition.caps().physical_address_width,
+        ));
         registers
     };
     #[cfg(guest_arch = "aarch64")]

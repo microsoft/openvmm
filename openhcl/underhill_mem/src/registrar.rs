@@ -197,7 +197,6 @@ mod tests {
     #[test]
     fn test_registrar() {
         let layout = MemoryLayout::new(
-            42,
             1 << 40,
             &[
                 MemoryRange::new(0x10000..0x20000),

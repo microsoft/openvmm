@@ -244,12 +244,6 @@ pub fn write_dt(
         .add_u32(p_address_cells, address_cells)?
         .add_u32(p_size_cells, 0)?;
 
-    if cfg!(target_arch = "aarch64") {
-        let pa_bits = crate::arch::physical_address_bits(partition_info.isolation);
-        let p_pa_bits = cpu_builder.add_string("pa_bits")?;
-        cpu_builder = cpu_builder.add_u32(p_pa_bits, pa_bits.into())?;
-    }
-
     // Add a CPU node for each cpu.
     for (vp_index, cpu_entry) in partition_info.cpus.iter().enumerate() {
         let name = format_fixed!(32, "cpu@{}", vp_index + 1);

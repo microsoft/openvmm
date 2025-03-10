@@ -96,7 +96,10 @@ pub fn import_default_gdt(
 /// gaps, such as booting Linux, UEFI, or PCAT.
 ///
 /// N.B. Currently this panics if there are not exactly two MMIO ranges.
-pub fn compute_variable_mtrrs(memory: &MemoryLayout) -> Vec<X86Register> {
+pub fn compute_variable_mtrrs(
+    memory: &MemoryLayout,
+    physical_address_width: u8,
+) -> Vec<X86Register> {
     const WRITEBACK: u64 = 0x6;
 
     assert_eq!(
@@ -108,8 +111,8 @@ pub fn compute_variable_mtrrs(memory: &MemoryLayout) -> Vec<X86Register> {
     let mmio_gap_low = memory.mmio()[0];
     let mmio_gap_high = memory.mmio()[1];
 
-    // Clamp the GpaSpaceSize to something reasonable
-    let gpa_space_size = memory.physical_address_size().clamp(36, 52);
+    // Clamp the width to something reasonable.
+    let gpa_space_size = physical_address_width.clamp(36, 52);
 
     // The MMIO limits will be the basis of the MTRR calculations
     // as page count doesn't work when there may be gaps between memory blocks.

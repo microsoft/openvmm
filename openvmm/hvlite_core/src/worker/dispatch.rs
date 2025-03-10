@@ -796,24 +796,24 @@ impl InitializedVm {
         };
 
         // Choose the memory layout of the VM.
-        let mem_layout = MemoryLayout::new(
-            physical_address_size,
-            cfg.memory.mem_size,
-            &cfg.memory.mmio_gaps,
-            vtl2_range,
-        )
-        .context("invalid memory configuration")?;
+        let mem_layout = MemoryLayout::new(cfg.memory.mem_size, &cfg.memory.mmio_gaps, vtl2_range)
+            .context("invalid memory configuration")?;
+
+        if mem_layout.end_of_ram_or_mmio() > 1 << physical_address_size {
+            anyhow::bail!(
+                "memory layout ends at {:#x}, which exceeds the address with of {} bits",
+                mem_layout.end_of_ram_or_mmio(),
+                physical_address_size
+            );
+        }
 
         let mut memory_builder = GuestMemoryBuilder::new();
         memory_builder = memory_builder
             .existing_backing(shared_memory)
-            .vtl0_alias_map(
-                cfg.hypervisor
-                    .with_vtl2
-                    .as_ref()
-                    .map(|cfg| cfg.vtl0_alias_map)
-                    .unwrap_or_default(),
-            )
+            .vtl0_alias_map(cfg.hypervisor.with_vtl2.as_ref().and_then(|cfg| {
+                cfg.vtl0_alias_map
+                    .then_some(1 << (physical_address_size - 1))
+            }))
             .prefetch_ram(cfg.memory.prefetch_memory)
             .x86_legacy_support(
                 matches!(cfg.load_mode, LoadMode::Pcat { .. }) || cfg.chipset.with_hyperv_vga,
@@ -2414,7 +2414,10 @@ impl LoadedVmInner {
         // VTL2 will setup MTRRs for VTL0 if needed.
         #[cfg(guest_arch = "x86_64")]
         if self.hypervisor_cfg.with_vtl2.is_none() {
-            regs.extend(loader::common::compute_variable_mtrrs(&self.mem_layout));
+            regs.extend(loader::common::compute_variable_mtrrs(
+                &self.mem_layout,
+                self.partition.caps().physical_address_width,
+            ));
         }
 
         // Only set initial page visibility on isolated partitions.
