@@ -4226,23 +4226,25 @@ dependencies = [
 
 [[package]]
 name = "mshv-bindings"
-version = "0.1.1"
-source = "git+https://github.com/rust-vmm/mshv?branch=main#7bacc75e3612fcb9c11bc7526414d70d04aa158e"
+version = "0.3.4"
+source = "git+https://github.com/rust-vmm/mshv?branch=main#c7edf4d5a2d73cacadba160b11c63098dc3696fd"
 dependencies = [
  "libc",
+ "num_enum",
  "serde",
  "serde_derive",
  "vmm-sys-util",
- "zerocopy 0.7.35",
+ "zerocopy 0.8.23",
 ]
 
 [[package]]
 name = "mshv-ioctls"
-version = "0.1.1"
-source = "git+https://github.com/rust-vmm/mshv?branch=main#7bacc75e3612fcb9c11bc7526414d70d04aa158e"
+version = "0.3.4"
+source = "git+https://github.com/rust-vmm/mshv?branch=main#c7edf4d5a2d73cacadba160b11c63098dc3696fd"
 dependencies = [
  "libc",
  "mshv-bindings",
+ "thiserror 2.0.12",
  "vmm-sys-util",
 ]
 
@@ -4510,6 +4512,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "num_enum"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e613fc340b2220f734a8595782c551f1250e969d87d3be1ae0579e8d4065179"
+dependencies = [
+ "num_enum_derive",
+]
+
+[[package]]
+name = "num_enum_derive"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af1844ef2428cc3e1cb900be36181049ef3d3193c63e43026cfe202983b27a56"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.100",
 ]
 
 [[package]]
@@ -7725,7 +7747,6 @@ dependencies = [
  "virt",
  "virt_support_x86emu",
  "vmcore",
- "vmm-sys-util",
  "x86defs",
  "x86emu",
  "zerocopy 0.8.23",
