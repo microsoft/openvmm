@@ -1175,10 +1175,10 @@ impl GuestMemory {
         f().map_err(|err| self.wrap_err(gpa_len, op, err))
     }
 
-    // Creates a smaller view into guest memory, constraining accesses within the new boundaries. For smaller ranges,
-    // some memory implementations (e.g. HDV) may choose to lock the pages into memory for faster access. Locking
-    // random guest memory may cause issues, so only opt in to this behavior when the range can be considered "owned"
-    // by the caller.
+    /// Creates a smaller view into guest memory, constraining accesses within the new boundaries. For smaller ranges,
+    /// some memory implementations (e.g. HDV) may choose to lock the pages into memory for faster access. Locking
+    /// random guest memory may cause issues, so only opt in to this behavior when the range can be considered "owned"
+    /// by the caller.
     pub fn subrange(
         &self,
         offset: u64,
@@ -1196,6 +1196,17 @@ impl GuestMemory {
                 create_memory_subrange(self.inner.clone(), offset, len, allow_preemptive_locking)
             }
         })
+    }
+
+    /// Creates a smaller view into guest memory, constraining accesses within the new boundaries, allowing the
+    /// implementation to lock the pages into memory for faster access. Locking random guest memory may cause issues, so only
+    /// opt in to this behavior when the range can be considered "owned" by the caller.
+    pub fn lockable_subrange(
+        &self,
+        offset: u64,
+        len: u64,
+    ) -> Result<GuestMemory, GuestMemoryError> {
+        self.subrange(offset, len, true)
     }
 
     /// Returns the mapping for all of guest memory.

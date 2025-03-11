@@ -1792,6 +1792,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         "opened channel"
                     );
                 } else {
+                    // Log channel open failures at error level for visibility.
                     tracing::error!(
                         offer_id = offer_id.0,
                         channel_id = channel_id.0,
@@ -2246,6 +2247,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .find(|v| request.version_requested == **v as u32)
             .copied()?;
 
+        // The max version may be limited in order to test older protocol versions.
         if let Some(max_version) = self.inner.max_version {
             if version as u32 > max_version.version {
                 return None;
@@ -2253,12 +2255,11 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         }
 
         let supported_flags = if version >= Version::Copper {
-            // The max version and features may be limited in order to test older protocol versions.
-            //
-            // N.B. Confidential channels should only be enabled if the connection is trusted.
+            // Confidential channels should only be enabled if the connection is trusted.
             let max_supported_flags =
                 SUPPORTED_FEATURE_FLAGS.with_confidential_channels(request.trusted);
 
+            // The max features may be limited in order to test older protocol versions.
             if let Some(max_version) = self.inner.max_version {
                 max_supported_flags & max_version.feature_flags
             } else {

@@ -425,7 +425,7 @@ impl ProxyTask {
                                 Err(err) => {
                                     tracing::error!(
                                         error = err.as_ref() as &dyn std::error::Error,
-                                        "failed to open channel"
+                                        "failed to open proxy channel"
                                     );
                                     None
                                 }
