@@ -16,7 +16,7 @@ pub fn check_crate_name_nodash(path: &Path) -> anyhow::Result<()> {
     }
 
     let contents = fs_err::read_to_string(path)?;
-    let parsed = contents.parse::<toml_edit::Document>()?;
+    let parsed = contents.parse::<toml_edit::DocumentMut>()?;
 
     let package_name = match parsed
         .as_table()
