@@ -1119,6 +1119,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 1
             };
 
+            let mut bounced_len_with_padding_total = bounced_len_with_padding;
             let segment_count = tail_sgl_offset + meta.segment_count - header_segment_count;
             let sgl = if segment_count < 31 {
                 let sgl = &mut sgl[..segment_count];
@@ -1135,67 +1136,75 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 sgl
             } else {
                 // Tx segment count exceeds the limit. Coalescing using a bounce buffer.
-                let mut data_remaining = meta.len as usize;
-                let mut segments = segments.iter().peekable();
-                let mut sgl_index = 0;
-                let mut segment_data_read = 0 as usize;
-                let mut segment_data_remaining = segments.peek().unwrap().len as usize;
-                while data_remaining > 0 && sgl_index < 31 {
-                    // NOTE: allocate will panic if size is larger than PAGE_SIZE32 (4096)
-                    let buffer_len = std::cmp::min(data_remaining, (PAGE_SIZE32 - 1) as usize);
-                    let mut buf: ContiguousBuffer<'_> =
-                        match self.tx_bounce_buffer.allocate(buffer_len as u32) {
-                            Ok(buf) => buf,
-                            Err(err) => {
-                                tracelimit::error_ratelimited!(
-                                    err = &err as &dyn std::error::Error,
-                                    meta.len,
-                                    "failed to bounce buffer"
-                                );
-                                // Drop the packet
-                                return Ok(None);
-                            }
-                        };
-                    let mut next = buf.as_slice();
-                    let mut buffer_remaining = buffer_len;
-                    while buffer_remaining > 0 {
-                        if segments.peek().is_none() {
-                            break;
-                        } else if let Some(&seg) = segments.peek() {
-                            if segment_data_remaining > 0 {
-                                let len = std::cmp::min(segment_data_remaining, buffer_remaining);
-                                self.guest_memory.read_to_atomic(
-                                    seg.gpa + segment_data_read as u64,
-                                    &next[..len],
-                                )?;
-                                next = &next[len..];
-                                buffer_remaining -= len;
-                                data_remaining -= len;
-                                segment_data_remaining -= len;
-                                segment_data_read += len;
-                                if segment_data_remaining == 0 && segments.peek().is_some() {
-                                    segment_data_read = 0;
-                                    segment_data_remaining = segments.peek().unwrap().len as usize;
-                                    segments.next();
-                                }
-                            }
-                        }
-                    }
-                    let buf = buf.commit();
-                    sgl[sgl_index] = Sge {
-                        address: buf.gpa,
-                        mem_key: self.mem_key,
-                        size: buffer_len as u32,
+                let mut segment_index = header_segment_count;
+                let mut segments_remaining = segment_count;
+                let mut segments_peekable = segments[header_segment_count..].iter().peekable();
+                let mut sgl_index = tail_sgl_offset;
+                while segments_remaining >= 31 && segments_peekable.peek().is_some() {
+                    let seg = segments_peekable.next().unwrap();
+                    let next_segment_len = if let Some(&next) = segments_peekable.peek() {
+                        next.len
+                    } else {
+                        0
                     };
-                    sgl_index += 1;
+                    // NOTE: allocate will panic if size is larger than PAGE_SIZE32 (4096)
+                    if segments_peekable.peek().is_none()
+                        || seg.len + next_segment_len >= PAGE_SIZE32
+                    {
+                        sgl[sgl_index] = Sge {
+                            address: self.guest_memory.iova(seg.gpa).unwrap(),
+                            mem_key: self.mem_key,
+                            size: seg.len,
+                        };
+                        sgl_index += 1;
+                        segments_remaining -= 1;
+                        segment_index += 1;
+                    } else {
+                        // Combine segments and bounce buffer
+                        let buffer_len = seg.len + next_segment_len;
+                        let mut buf: ContiguousBuffer<'_> =
+                            match self.tx_bounce_buffer.allocate(buffer_len as u32) {
+                                Ok(buf) => buf,
+                                Err(err) => {
+                                    tracelimit::error_ratelimited!(
+                                        err = &err as &dyn std::error::Error,
+                                        meta.len,
+                                        "failed to bounce buffer"
+                                    );
+                                    // Drop the packet
+                                    return Ok(None);
+                                }
+                            };
+                        let mut next = buf.as_slice();
+                        let len = seg.len as usize;
+                        self.guest_memory
+                            .read_to_atomic(seg.gpa as u64, &next[..len])?;
+                        next = &next[len..];
+                        let seg = segments_peekable.next().unwrap();
+                        let len = seg.len as usize;
+                        self.guest_memory
+                            .read_to_atomic(seg.gpa as u64, &next[..len])?;
+
+                        let buf = buf.commit();
+                        sgl[sgl_index] = Sge {
+                            address: buf.gpa,
+                            mem_key: self.mem_key,
+                            size: buffer_len as u32,
+                        };
+                        sgl_index += 1;
+                        segments_remaining -= 2;
+                        segment_index += 2;
+                        bounced_len_with_padding_total += buffer_len;
+                    }
                 }
-                if data_remaining > 0 {
-                    tracing::error!(meta.len, sgl_index, "failed to bounce buffer too much data");
-                    // Drop the packet
-                    return Ok(None);
+                let sgl = &mut sgl[..segments_remaining];
+                for (tail, sge) in segments[segment_index..].iter().zip(&mut sgl[sgl_index..]) {
+                    *sge = Sge {
+                        address: self.guest_memory.iova(tail.gpa).unwrap(),
+                        mem_key: self.mem_key,
+                        size: tail.len,
+                    };
                 }
-                let sgl_length = sgl_index + 1;
-                let sgl = &mut sgl[..sgl_length];
                 sgl
             };
 
@@ -1221,7 +1230,8 @@ impl<T: DeviceBacking> ManaQueue<T> {
             PostedTx {
                 id: meta.id,
                 wqe_len,
-                bounced_len_with_padding,
+                bounced_len_with_padding: bounced_len_with_padding
+                    .max(bounced_len_with_padding_total),
             }
         };
         Ok(Some(tx))
