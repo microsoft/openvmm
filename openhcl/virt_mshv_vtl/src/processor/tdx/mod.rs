@@ -1816,7 +1816,7 @@ impl UhProcessor<'_, TdxBacked> {
                 #[cfg(feature = "gdb")]
                 {
                     // Check if the interrupt was triggered by a hardware breakpoint.
-                    let debug_regs = virt::Processor::access_state(intercepted_vtl.into())
+                    let debug_regs = TdxBacked::access_vp_state(self, GuestVtl::Vtl0)
                         .debug_regs()
                         .expect("register query should not fail");
                     // The lowest four bits of DR6 indicate which of the
