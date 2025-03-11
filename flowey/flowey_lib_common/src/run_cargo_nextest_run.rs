@@ -237,7 +237,7 @@ impl FlowNode for Node {
                     // the profile, and if so, where the output if going to be.
                     let junit_path = {
                         let nextest_toml = fs_err::read_to_string(&config_file)?
-                            .parse::<toml_edit::Document>()
+                            .parse::<toml_edit::DocumentMut>()
                             .context("failed to parse nextest.toml")?;
 
                         let path = Some(&nextest_toml)

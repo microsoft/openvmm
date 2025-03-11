@@ -115,7 +115,7 @@ impl Cmd for CargoToml {
                     Ok(base_clippy_toml) => {
                         log::info!("base clippy.toml found, regenerating overlay clippy.toml",);
                         let mut base_clippy_toml =
-                            toml_edit::Document::from_str(&base_clippy_toml)?;
+                            toml_edit::DocumentMut::from_str(&base_clippy_toml)?;
                         base_clippy_toml.fmt();
                         let generated_clippy_toml = format!(
                             "{}{}",

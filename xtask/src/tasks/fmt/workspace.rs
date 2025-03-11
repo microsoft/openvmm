@@ -34,7 +34,7 @@ impl Xtask for VerifyWorkspace {
         let excluded = {
             // will always be root Cargo.toml, as xtasks run from project root
             let contents = fs_err::read_to_string("Cargo.toml")?;
-            let parsed = contents.parse::<toml_edit::Document>()?;
+            let parsed = contents.parse::<toml_edit::DocumentMut>()?;
 
             if let Some(excluded) = parsed
                 .as_table()
@@ -138,7 +138,7 @@ fn workspace_manifests() -> anyhow::Result<HashSet<PathBuf>> {
 fn verify_dependencies(path: &PathBuf) -> Result<(), anyhow::Error> {
     // TODO: Convert this to a better crate like cargo_toml once it supports inherited dependencies fully.
     let contents = fs_err::read_to_string(path)?;
-    let parsed = contents.parse::<toml_edit::Document>()?;
+    let parsed = contents.parse::<toml_edit::DocumentMut>()?;
 
     let package_name = match parsed
         .as_table()

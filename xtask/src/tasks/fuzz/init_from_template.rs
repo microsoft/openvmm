@@ -79,7 +79,7 @@ pub(super) fn init_from_template(
     let new_workspace_entry = new_fuzz_dir.strip_prefix(&ctx.root)?.display().to_string();
     let root_toml_raw = fs_err::read_to_string(ctx.root.join("Cargo.toml"))?;
     let mut root_toml = root_toml_raw
-        .parse::<toml_edit::Document>()
+        .parse::<toml_edit::DocumentMut>()
         .context("invalid root workspace Cargo.toml")?;
     let members = &mut root_toml["workspace"]["members"].as_array_mut().unwrap();
     // TODO: slot the new fuzz crate into the workspace members array in *sorted order*
