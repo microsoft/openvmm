@@ -62,7 +62,7 @@ async fn test_gdma(driver: DefaultDriver) {
     let buffer = Arc::new(
         gdma.device()
             .dma_client()
-            .allocate_dma_buffer(0x5000)
+            .allocate_dma_buffer(0x5000, "test-gdma".into())
             .unwrap(),
     );
     let mut arena = ResourceArena::new();

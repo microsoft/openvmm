@@ -688,7 +688,10 @@ impl BackingPrivate for TdxBacked {
             .private_dma_client
             .as_ref()
             .ok_or(crate::Error::MissingPrivateMemory)?
-            .allocate_dma_buffer(HV_PAGE_SIZE as usize)
+            .allocate_dma_buffer(
+                HV_PAGE_SIZE as usize,
+                format!("tdx-flush-page vp {}", params.vp_info.base.vp_index.index()),
+            )
             .map_err(crate::Error::AllocateTlbFlushPage)?;
 
         let untrusted_synic = params

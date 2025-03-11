@@ -815,7 +815,11 @@ impl Drop for PagePoolAllocator {
 }
 
 impl user_driver::DmaClient for PagePoolAllocator {
-    fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+    fn allocate_dma_buffer(
+        &self,
+        len: usize,
+        tag: String,
+    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
         if len as u64 % PAGE_SIZE != 0 {
             anyhow::bail!("not a page-size multiple");
         }
@@ -824,7 +828,7 @@ impl user_driver::DmaClient for PagePoolAllocator {
             .context("allocation of size 0 not supported")?;
 
         let alloc = self
-            .alloc(size_pages, "vfio dma".into())
+            .alloc(size_pages, tag)
             .context("failed to allocate shared mem")?;
 
         // The VfioDmaBuffer trait requires that newly allocated buffers are
