@@ -1540,7 +1540,7 @@ impl ClientTask {
     /// the message queue while the sint is masked (due to the use of
     /// HvPostMessageDirect).
     fn can_pause_resume(&self) -> bool {
-        if let ClientState::Connected { version } = self.state {
+        if let ClientState::Connected { version, .. } = self.state {
             version.feature_flags.pause_resume()
         } else {
             false
