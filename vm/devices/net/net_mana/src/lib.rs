@@ -1096,7 +1096,9 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     (self.guest_memory.iova(head.gpa).unwrap(), 0)
                 };
 
-            // 31 is a hardware limit. Max WQE size is 512 bytes.
+            // Hardware limit for short oob is 31. Max WQE size is 512 bytes.
+            // Hardware limit for long oob is 30.
+            let hardware_segment_limit = if short_format { 31 } else { 30 };
             let mut sgl = [Sge::new_zeroed(); 31];
             sgl[0] = Sge {
                 address: head_iova,
@@ -1121,7 +1123,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
 
             let mut bounced_len_with_padding_total = bounced_len_with_padding;
             let segment_count = tail_sgl_offset + meta.segment_count - header_segment_count;
-            let sgl = if segment_count < 31 {
+            let sgl = if segment_count < hardware_segment_limit {
                 let sgl = &mut sgl[..segment_count];
                 for (tail, sge) in segments[header_segment_count..]
                     .iter()
@@ -1140,7 +1142,9 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 let mut segments_remaining = segment_count;
                 let mut segments_peekable = segments[header_segment_count..].iter().peekable();
                 let mut sgl_index = tail_sgl_offset;
-                while segments_remaining >= 31 && segments_peekable.peek().is_some() {
+                while segments_remaining >= hardware_segment_limit
+                    && segments_peekable.peek().is_some()
+                {
                     let seg = segments_peekable.next().unwrap();
                     let next_segment_len = if let Some(&next) = segments_peekable.peek() {
                         next.len
