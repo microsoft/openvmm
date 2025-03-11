@@ -435,7 +435,7 @@ async fn openhcl_linux_storvsp_dvd_nvme(config: PetriVmConfigOpenVmm) -> Result<
     let data_chunk = data_chunk.as_slice();
     let mut bytes = vec![0_u8; disk_len as usize];
     bytes.chunks_exact_mut(64).for_each(|v| {
-        v.copy_from_slice(&data_chunk);
+        v.copy_from_slice(data_chunk);
     });
     backing_file.write_all(&bytes)?;
 
