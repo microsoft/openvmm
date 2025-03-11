@@ -145,6 +145,9 @@ pub struct PartitionConfig<'a> {
     pub guest_memory: &'a GuestMemory,
     /// Cpuid leaves to add to the default CPUID results.
     pub cpuid: &'a [CpuidLeaf],
+    /// The offset of the VTL0 alias map. This maps VTL0's view of memory into
+    /// VTL2 at the specified offset (which must be a power of 2).
+    pub vtl0_alias_map: Option<u64>,
 }
 
 /// Trait for a prototype partition, one that is partially created but still
@@ -226,9 +229,6 @@ pub struct LateMapVtl0MemoryConfig {
 /// VTL2 configuration.
 #[derive(Debug)]
 pub struct Vtl2Config {
-    /// Enable the VTL0 alias map. This maps VTL0's view of memory in VTL2 at
-    /// the highest legal physical address bit.
-    pub vtl0_alias_map: bool,
     /// If set, map VTL0 memory late after VTL2 has started. The current
     /// heuristic is to defer mapping VTL0 memory until the first
     /// [`hvdef::HypercallCode::HvCallModifyVtlProtectionMask`] hypercall is
