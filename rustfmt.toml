@@ -3,4 +3,4 @@
 
 newline_style="unix"
 use_field_init_shorthand=true
-edition="2021"
+style_edition="2021"
