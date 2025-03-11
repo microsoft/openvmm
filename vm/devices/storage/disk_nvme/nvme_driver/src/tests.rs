@@ -23,19 +23,14 @@ use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
 use test_with_tracing::test;
-<<<<<<< HEAD
-=======
 use user_driver::emulated::create_guest_memory;
 use user_driver::emulated::EmulatedDevice;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
->>>>>>> b692c60d (Getting a better solutioon for TestBacking)
+use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
-use user_driver::emulated::EmulatedDevice;
-use user_driver::emulated::Mapping;
-use user_driver::interrupt::DeviceInterrupt;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::IntoBytes;
@@ -137,12 +132,10 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     let (guest_mem, _page_pool, dma_client) = create_test_memory(pages, allow_dma);
 
     let driver_dma_mem = if allow_dma {
-        guest_mem.clone()
-        // TODO: This is most definitely wrong, what needs to happen here is that the underlying
-        // backing (SparseMapping) needs to support driver dma
-        // mem.guest_mem
-        //     .subrange(base_len as u64, payload_len as u64, false)
-        //     .unwrap()
+        let range_half = (pages / 2) * PAGE_SIZE64;
+        guest_mem
+            .subrange(0 as u64, range_half as u64, false)
+            .unwrap()
     } else {
         guest_mem.clone()
     };
