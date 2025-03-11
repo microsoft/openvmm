@@ -488,6 +488,8 @@ impl ProxyTask {
         }
     }
 
+    /// Returns true if the request was handled successfully, and false if a receive error happened
+    /// so the hvsocket relay should not be used again.
     fn handle_hvsock_request(
         &self,
         spawner: &impl Spawn,
@@ -499,7 +501,7 @@ impl ProxyTask {
             Err(e) => {
                 // Closed can happen normally during shutdown, so does not need to be logged.
                 if !matches!(e, mesh::RecvError::Closed) {
-                    tracing::error!(
+                    tracelimit::error_ratelimited!(
                         error = ?&e as &dyn std::error::Error,
                         "hvsock request receive failed"
                     );

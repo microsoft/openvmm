@@ -1785,7 +1785,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             } => {
                 let channel_id = channel.info.expect("assigned").channel_id;
                 if result >= 0 {
-                    tracing::info!(
+                    tracelimit::info_ratelimited!(
                         offer_id = offer_id.0,
                         channel_id = channel_id.0,
                         result,
@@ -1793,7 +1793,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     );
                 } else {
                     // Log channel open failures at error level for visibility.
-                    tracing::error!(
+                    tracelimit::error_ratelimited!(
                         offer_id = offer_id.0,
                         channel_id = channel_id.0,
                         result,

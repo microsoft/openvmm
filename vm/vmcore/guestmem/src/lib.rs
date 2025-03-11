@@ -1198,14 +1198,13 @@ impl GuestMemory {
         })
     }
 
-    /// Creates a smaller view into guest memory, constraining accesses within the new boundaries, allowing the
-    /// implementation to lock the pages into memory for faster access. Locking random guest memory may cause issues, so only
-    /// opt in to this behavior when the range can be considered "owned" by the caller.
+    /// Returns a subrange where pages from the subrange can be locked.
     pub fn lockable_subrange(
         &self,
         offset: u64,
         len: u64,
     ) -> Result<GuestMemory, GuestMemoryError> {
+        // TODO: Enforce subrange is actually lockable.
         self.subrange(offset, len, true)
     }
 
