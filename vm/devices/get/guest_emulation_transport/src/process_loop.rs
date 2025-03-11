@@ -28,7 +28,6 @@ use std::cmp::min;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::future::pending;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use thiserror::Error;

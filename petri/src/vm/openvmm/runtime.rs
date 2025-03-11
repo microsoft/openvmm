@@ -28,7 +28,6 @@ use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
-use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;

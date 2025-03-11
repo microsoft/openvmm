@@ -44,7 +44,6 @@ use pal_async::wait::PolledWait;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::future::Future;
 use std::io;
 use std::ops::Deref;
 use std::os::windows::prelude::*;

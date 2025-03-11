@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use std::future::Future;
 
 /// Trait for transitioning device state.
 pub trait ChangeDeviceState {

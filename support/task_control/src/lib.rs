@@ -13,7 +13,6 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
 use std::future::poll_fn;
-use std::future::Future;
 use std::pin::pin;
 use std::pin::Pin;
 use std::sync::Arc;

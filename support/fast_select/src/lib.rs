@@ -19,7 +19,6 @@
 #![expect(unsafe_code)]
 
 use parking_lot::Mutex;
-use std::future::Future;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ops::Deref;

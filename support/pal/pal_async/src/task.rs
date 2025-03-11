@@ -11,7 +11,6 @@ use parking_lot::Mutex;
 use slab::Slab;
 use std::fmt::Debug;
 use std::fmt::Display;
-use std::future::Future;
 use std::panic::Location;
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;

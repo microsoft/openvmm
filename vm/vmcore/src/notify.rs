@@ -13,7 +13,6 @@ use pal_async::wait::PolledWait;
 use pal_event::Event;
 use parking_lot::Mutex;
 use std::future::poll_fn;
-use std::future::Future;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;

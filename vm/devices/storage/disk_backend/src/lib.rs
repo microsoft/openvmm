@@ -21,7 +21,6 @@ use scsi_buffers::RequestBuffers;
 use stackfuture::StackFuture;
 use std::fmt::Debug;
 use std::future::ready;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use thiserror::Error;

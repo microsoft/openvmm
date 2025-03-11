@@ -37,7 +37,6 @@ use pal::windows::SendSyncRawHandle;
 use pal::windows::WaitPacket;
 use parking_lot::Mutex;
 use std::fs::File;
-use std::future::Future;
 use std::io;
 use std::os::windows::prelude::*;
 use std::pin::pin;

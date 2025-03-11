@@ -13,7 +13,6 @@ use mesh_node::message::MeshField;
 use mesh_protobuf::Protobuf;
 use std::convert::Infallible;
 use std::fmt::Debug;
-use std::future::Future;
 use std::pin::Pin;
 use std::task::ready;
 use std::task::Poll;

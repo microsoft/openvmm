@@ -22,7 +22,6 @@ use mesh::MeshPayload;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::fs::File;
-use std::future::Future;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;

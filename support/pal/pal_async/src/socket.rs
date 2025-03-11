@@ -14,7 +14,6 @@ use futures::AsyncWrite;
 use parking_lot::Mutex;
 use std::fmt::Debug;
 use std::future::poll_fn;
-use std::future::Future;
 use std::io;
 use std::io::Read;
 use std::io::Write;

@@ -39,7 +39,6 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::future::pending;
-use std::future::Future;
 use std::pin::pin;
 use std::task::ready;
 use std::time::Duration;

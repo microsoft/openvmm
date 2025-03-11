@@ -31,7 +31,6 @@ use mesh_node::message::OwnedMessage;
 use mesh_protobuf::DefaultEncoding;
 use parking_lot::Mutex;
 use std::fmt::Debug;
-use std::future::Future;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;

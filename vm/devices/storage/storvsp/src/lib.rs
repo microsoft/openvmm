@@ -59,7 +59,6 @@ use std::collections::hash_map::Entry;
 use std::collections::hash_map::HashMap;
 use std::fmt::Debug;
 use std::future::poll_fn;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;

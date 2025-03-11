@@ -22,7 +22,6 @@ use core::cmp::Ordering;
 use core::fmt;
 use core::fmt::Write;
 use core::future::poll_fn;
-use core::future::Future;
 use core::pin::Pin;
 use core::task::Context;
 use core::task::Poll;

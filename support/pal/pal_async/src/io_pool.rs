@@ -10,7 +10,6 @@ use crate::task::Spawn;
 use crate::task::TaskMetadata;
 use crate::task::TaskQueue;
 use std::future::poll_fn;
-use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::Poll;

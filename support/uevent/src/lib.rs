@@ -22,7 +22,6 @@ use pal_async::driver::SpawnDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
 use socket2::Socket;
-use std::future::Future;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;

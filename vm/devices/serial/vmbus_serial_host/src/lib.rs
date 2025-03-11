@@ -16,7 +16,6 @@ use std::cmp::min;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::future::poll_fn;
-use std::future::Future;
 use std::pin::pin;
 use std::pin::Pin;
 use std::task::ready;

@@ -32,7 +32,6 @@ use std::cell::Cell;
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::future::poll_fn;
-use std::future::Future;
 use std::io;
 use std::os::unix::prelude::*;
 use std::pin::pin;
@@ -624,8 +623,7 @@ mod tests {
     use io_uring::types;
     use pal_async::task::Spawn;
     use parking_lot::Mutex;
-    use std::future::Future;
-    use std::os::unix::prelude::*;
+        use std::os::unix::prelude::*;
     use std::pin::Pin;
     use std::sync::Arc;
     use std::task::Context;

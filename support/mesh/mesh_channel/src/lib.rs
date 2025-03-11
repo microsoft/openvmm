@@ -123,8 +123,7 @@ mod spsc {
     use mesh_node::message::MeshField;
     use mesh_protobuf::DefaultEncoding;
     use std::fmt::Debug;
-    use std::future::Future;
-    use std::pin::Pin;
+        use std::pin::Pin;
     use std::task::Context;
     use std::task::Poll;
 
@@ -343,8 +342,7 @@ mod oneshot {
     use mesh_node::message::MeshField;
     use mesh_protobuf::DefaultEncoding;
     use std::fmt::Debug;
-    use std::future::Future;
-    use std::pin::Pin;
+        use std::pin::Pin;
     use std::task::Context;
     use std::task::Poll;
 
@@ -469,8 +467,7 @@ mod mpsc {
     use mesh_node::message::MeshField;
     use mesh_protobuf::Protobuf;
     use std::fmt::Debug;
-    use std::future::Future;
-    use std::pin::Pin;
+        use std::pin::Pin;
     use std::sync::Arc;
     use std::task::Context;
     use std::task::Poll;

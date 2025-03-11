@@ -56,7 +56,6 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::future::poll_fn;
-use std::future::Future;
 use std::io;
 use std::io::IoSlice;
 use std::io::IoSliceMut;

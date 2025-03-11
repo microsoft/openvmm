@@ -29,7 +29,6 @@ use pal::unix::SyscallResult;
 use pal_event::Event;
 use parking_lot::Mutex;
 use std::fs::File;
-use std::future::Future;
 use std::io;
 use std::os::unix::prelude::*;
 use std::pin::pin;

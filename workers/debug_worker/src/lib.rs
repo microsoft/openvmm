@@ -31,7 +31,6 @@ use pal_async::socket::Listener;
 use pal_async::socket::PolledSocket;
 use socket2::Socket;
 use std::fmt::Display;
-use std::future::Future;
 use std::io::Write;
 use std::net::TcpListener;
 use std::pin::Pin;

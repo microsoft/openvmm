@@ -50,7 +50,6 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
 use scsi_buffers::RequestBuffers;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;

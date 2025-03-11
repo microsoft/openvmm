@@ -23,7 +23,6 @@ use pal::windows::pipe::FILE_PIPE_WRITE_READY;
 use pal::windows::Overlapped;
 use pal_event::Event;
 use std::fs::File;
-use std::future::Future;
 use std::io;
 use std::io::Write;
 use std::os::windows::prelude::*;

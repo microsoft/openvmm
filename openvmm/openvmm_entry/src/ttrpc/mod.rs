@@ -49,7 +49,6 @@ use pal_async::DefaultPool;
 use parking_lot::Mutex;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::fs::File;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use storvsp_resources::ScsiControllerHandle;

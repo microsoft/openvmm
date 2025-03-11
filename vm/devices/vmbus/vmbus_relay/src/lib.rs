@@ -37,7 +37,6 @@ use pal_async::task::Task;
 use pal_event::Event;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;

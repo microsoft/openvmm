@@ -182,8 +182,7 @@ mod private {
     use hv1_emulator::hv::ProcessorVtlHv;
     use hv1_emulator::synic::ProcessorSynic;
     use inspect::InspectMut;
-    use std::future::Future;
-    use virt::io::CpuIo;
+        use virt::io::CpuIo;
     use virt::vp::AccessVpState;
     use virt::StopVp;
     use virt::VpHaltReason;

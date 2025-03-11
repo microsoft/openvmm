@@ -2331,8 +2331,7 @@ pub mod tests {
     use pal_async::task::Task;
     use pal_async::DefaultDriver;
     use std::future::poll_fn;
-    use std::future::Future;
-    use std::marker::PhantomData;
+        use std::marker::PhantomData;
     use std::pin::pin;
     use std::pin::Pin;
     use std::task::Context;

@@ -7,7 +7,6 @@ use crate::any::AsAny;
 use crate::driver::Driver;
 use crate::driver::PollImpl;
 use std::future::poll_fn;
-use std::future::Future;
 use std::io;
 #[cfg(unix)]
 use std::os::unix::prelude::*;

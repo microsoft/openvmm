@@ -391,8 +391,7 @@ pub(crate) mod tests {
     use once_cell::sync::OnceCell;
     use pal_async::executor_tests;
     use pal_async::task::Spawn;
-    use std::future::Future;
-    use std::io;
+        use std::io;
     use std::thread::JoinHandle;
 
     pub struct SingleThreadPool {

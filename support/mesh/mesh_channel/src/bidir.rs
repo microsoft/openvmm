@@ -28,7 +28,6 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::fmt::Debug;
 use std::future::poll_fn;
-use std::future::Future;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;

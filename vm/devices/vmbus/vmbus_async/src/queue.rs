@@ -18,7 +18,6 @@ use ring::OutgoingPacketType;
 use ring::TransferPageRange;
 use smallvec::smallvec;
 use std::future::poll_fn;
-use std::future::Future;
 use std::ops::Deref;
 use std::task::ready;
 use std::task::Context;

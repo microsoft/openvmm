@@ -50,7 +50,6 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::fmt::Display;
-use std::future::Future;
 use std::pin::pin;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;

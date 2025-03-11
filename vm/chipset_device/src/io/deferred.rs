@@ -28,7 +28,6 @@
 //! }
 //! ```
 
-use std::future::Future;
 use std::pin::Pin;
 use std::task::ready;
 use std::task::Context;

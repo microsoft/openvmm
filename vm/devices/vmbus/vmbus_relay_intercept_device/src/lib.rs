@@ -23,7 +23,6 @@ use inspect::InspectMut;
 use mesh::rpc::RpcSend;
 use pal_async::driver::SpawnDriver;
 use std::future::pending;
-use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
 use task_control::AsyncRun;

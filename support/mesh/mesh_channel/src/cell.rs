@@ -19,7 +19,6 @@ use mesh_protobuf::EncodeAs;
 use mesh_protobuf::Protobuf;
 use mesh_protobuf::SerializedMessage;
 use std::future::poll_fn;
-use std::future::Future;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;

@@ -21,7 +21,6 @@ use disk_backend_resources::DiskWithReservationsHandle;
 use inspect::Inspect;
 use parking_lot::Mutex;
 use scsi_buffers::RequestBuffers;
-use std::future::Future;
 use std::num::NonZeroU64;
 use std::num::Wrapping;
 use thiserror::Error;

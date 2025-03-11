@@ -14,7 +14,6 @@ use mesh_protobuf::Protobuf;
 use mesh_protobuf::SerializedMessage;
 use mesh_protobuf::Timestamp;
 use parking_lot::Mutex;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Weak;

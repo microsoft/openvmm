@@ -18,7 +18,6 @@ use pal_async::local::LocalDriver;
 use pal_async::socket::Listener;
 use pal_async::socket::PolledSocket;
 use pal_async::timer::PolledTimer;
-use std::future::Future;
 use std::net::TcpListener;
 use std::pin::Pin;
 use std::time::Duration;

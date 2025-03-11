@@ -9,7 +9,6 @@
 
 use mesh::MeshPayload;
 use parking_lot::Mutex;
-use std::future::Future;
 use std::sync::Arc;
 use std::sync::Weak;
 

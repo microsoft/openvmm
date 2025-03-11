@@ -29,7 +29,6 @@ use crate::error::RecvError;
 use crate::error::TryRecvError;
 use crate::sync_unsafe_cell::SyncUnsafeCell;
 use core::fmt::Debug;
-use core::future::Future;
 use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
 use core::mem::MaybeUninit;

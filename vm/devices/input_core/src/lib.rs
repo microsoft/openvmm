@@ -50,7 +50,7 @@ pub trait InputSource<T>: futures::Stream<Item = T> + Unpin + Send {
     fn set_active(
         &mut self,
         active: bool,
-    ) -> Pin<Box<dyn '_ + std::future::Future<Output = ()> + Send>>;
+    ) -> Pin<Box<dyn '_ + Future<Output = ()> + Send>>;
 }
 
 /// A resolved [`InputSource`].

@@ -17,7 +17,6 @@ use parking_lot::Condvar;
 use parking_lot::MappedMutexGuard;
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;
-use std::future::Future;
 use std::pin::pin;
 use std::pin::Pin;
 use std::sync::Arc;

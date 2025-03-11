@@ -455,7 +455,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
         drop(self);
     }
 
-    fn reset(&mut self) -> impl Send + std::future::Future<Output = ()> + use<T> {
+    fn reset(&mut self) -> impl Send + Future<Output = ()> + use<T> {
         let driver = self.driver.clone();
         let mut task = std::mem::take(&mut self.task).unwrap();
         async move {

@@ -40,7 +40,6 @@ use inspect::Inspect;
 use scsi_buffers::OwnedRequestBuffers;
 use scsi_buffers::RequestBuffers;
 use std::convert::Infallible;
-use std::future::Future;
 use std::pin::Pin;
 use thiserror::Error;
 

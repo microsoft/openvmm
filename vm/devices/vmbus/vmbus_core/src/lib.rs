@@ -14,7 +14,6 @@ use protocol::MessageHeader;
 use protocol::VmbusMessage;
 use protocol::HEADER_SIZE;
 use protocol::MAX_MESSAGE_SIZE;
-use std::future::Future;
 use std::str::FromStr;
 use std::task::Poll;
 use thiserror::Error;
