@@ -6,6 +6,7 @@
 
 mod channel_bitmap;
 mod channels;
+pub mod event;
 pub mod hvsock;
 mod monitor;
 mod proxyintegration;
