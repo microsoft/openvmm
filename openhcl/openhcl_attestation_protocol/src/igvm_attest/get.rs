@@ -142,7 +142,7 @@ const IGVM_ATTEST_VERSION_CURRENT: u32 = 2;
 /// [0] error_code: Requesting IGVM Agent Error code
 /// [1] retry: Retry preference
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct IgvmCapabilityBitMap {
     pub error_code: bool,
     pub retry: bool,
@@ -190,7 +190,7 @@ impl IgvmAttestRequestData {
 /// Bitmap indicates a signal to requestor
 /// [0] IGVM_SIGNAL_RETRY_RCOMMENDED_BIT: Retry recommendation
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmSignal {
     pub retry: bool,
     #[bits(31)]
@@ -199,7 +199,7 @@ pub struct IgvmSignal {
 
 /// The common response header that comply with both V1 and V2 Igvm attest response
 #[repr(C)]
-#[derive(Default, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Default, Debug, IntoBytes, FromBytes)]
 pub struct IgvmAttestCommonResponseHeader {
     /// Data size
     pub data_size: u32,
@@ -213,7 +213,7 @@ pub const IGVM_ATTEST_RESPONSE_CURRENT_VERSION: u32 = IGVM_ATTEST_RESPONSE_VERSI
 
 /// The response header for `IGVM_ERROR_INFO` (C-style struct)
 #[repr(C)]
-#[derive(Default, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Default, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmErrorInfo {
     /// ErrorCode propogated from IgvmAgent
     pub error_code: u32,

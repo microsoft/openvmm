@@ -17,7 +17,6 @@ use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_CURRENT
 use openhcl_attestation_protocol::igvm_attest::get::IGVM_ATTEST_RESPONSE_VERSION_2;
 use tee_call::TeeType;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -199,11 +198,11 @@ impl IgvmAttestRequestHelper {
 pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponseHeader, Error> {
     // Extract common header fields regardless of header version or request type
     // For V1 request, response buffer should be empty in case of attestation failure
-    let header = IgvmAttestCommonResponseHeader::read_from_prefix(&response).ok_or(
-        Error::ResponseSizeTooSmall {
+    let header = IgvmAttestCommonResponseHeader::read_from_prefix(&response)
+        .map_err(|_| Error::ResponseSizeTooSmall {
             response_size: response.len(),
-        },
-    )?;
+        })?
+        .0;
 
     // Check header data_size and version
     if header.data_size as usize > response.len() {
@@ -225,9 +224,10 @@ pub fn parse_response_header(response: &[u8]) -> Result<IgvmAttestCommonResponse
         let error_info = IgvmErrorInfo::read_from_prefix(
             &response[size_of::<IgvmAttestCommonResponseHeader>()..],
         )
-        .ok_or(Error::ResponseSizeTooSmall {
+        .map_err(|_| Error::ResponseSizeTooSmall {
             response_size: response.len(),
-        })?;
+        })?
+        .0;
 
         if 0 != error_info.error_code {
             Err(Error::Attestation {

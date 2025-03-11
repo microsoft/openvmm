@@ -88,8 +88,6 @@ pub fn parse_response(response: &[u8]) -> Result<IgvmWrappedKeyParsedResponse, W
 mod tests {
     use super::*;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
-    use zerocopy::AsBytes;
-    use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
 
     const KEY_REFERENCE: &str = r#"{
