@@ -458,7 +458,7 @@ impl TestMapper {
         Ok(Self { mem: fd, len })
     }
 
-    /// Creates guest memory over the entirity of the TestMapper object
+    /// Returns sparse memory that maps to the entire TestMapper
     pub fn get_sparse_mapping(&self) -> SparseMapping {
         let mappable = self.mappable();
         let mapping = SparseMapping::new(self.len).unwrap();

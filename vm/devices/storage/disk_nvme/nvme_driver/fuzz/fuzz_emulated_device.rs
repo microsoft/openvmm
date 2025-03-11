@@ -30,8 +30,13 @@ pub struct FuzzEmulatedDevice<T: InspectMut> {
 impl<T: PciConfigSpace + MmioIntercept + InspectMut> FuzzEmulatedDevice<T> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
     pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory) -> Self {
+        let allocator = EmulatedDmaAllocator {
+            shared_mem: mem.clone(),
+        };
+        let device = EmulatedDevice::new(device, msi_set, allocator);
+
         Self {
-            device: EmulatedDevice::new(device, msi_set, shared_mem),
+            device,
         }
     }
 }

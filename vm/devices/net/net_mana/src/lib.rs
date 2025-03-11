@@ -1342,7 +1342,10 @@ mod tests {
             }],
             &mut ExternallyManagedMmioIntercepts,
         );
-        let device = EmulatedDevice::new(device, msi_set, mem);
+        let allocator = EmulatedDmaAllocator {
+            shared_mem: mem.clone(),
+        };
+        let device = EmulatedDevice::new(device, msi_set, allocator);
         let dev_config = ManaQueryDeviceCfgResp {
             pf_cap_flags1: 0.into(),
             pf_cap_flags2: 0,
@@ -1429,7 +1432,10 @@ mod tests {
             }],
             &mut ExternallyManagedMmioIntercepts,
         );
-        let device = EmulatedDevice::new(device, msi_set, mem);
+        let allocator = EmulatedDmaAllocator {
+            shared_mem: mem.clone(),
+        };
+        let device = EmulatedDevice::new(device, msi_set, allocator);
         let cap_flags1 = gdma_defs::bnic::BasicNicDriverFlags::new().with_query_filter_state(1);
         let dev_config = ManaQueryDeviceCfgResp {
             pf_cap_flags1: cap_flags1,

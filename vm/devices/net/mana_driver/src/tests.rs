@@ -40,7 +40,10 @@ async fn test_gdma(driver: DefaultDriver) {
         }],
         &mut ExternallyManagedMmioIntercepts,
     );
-    let device = EmulatedDevice::new(device, msi_set, mem);
+    let allocator = EmulatedDmaAllocator {
+        shared_mem: mem.clone(),
+    };
+    let device = EmulatedDevice::new(device, msi_set, allocator);
 
     let mut gdma = GdmaDriver::new(&driver, device, 1).await.unwrap();
     gdma.test_eq().await.unwrap();

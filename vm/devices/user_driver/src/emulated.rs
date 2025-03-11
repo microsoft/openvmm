@@ -140,12 +140,12 @@ pub struct DeviceSharedMemory {
     state: Arc<Mutex<Vec<u64>>>,
 }
 
-struct TestBacking {
+struct SparseMapBacking {
     sparse_mmap: SparseMapping,
     allow_dma: bool
 }
 
-unsafe impl GuestMemoryAccess for TestBacking {
+unsafe impl GuestMemoryAccess for SparseMapBacking {
     fn mapping(&self) -> Option<NonNull<u8>> {
         self.sparse_mmap.mapping()
     }
@@ -159,8 +159,9 @@ unsafe impl GuestMemoryAccess for TestBacking {
     }
 }
 
+/// Takes sparse mapping as input and converts it to GuestMemory with the allow_dma switch
 pub fn create_guest_memory(sparse_mmap: SparseMapping, allow_dma: bool) -> GuestMemory {
-    let test_backing = TestBacking {
+    let test_backing = SparseMapBacking {
         sparse_mmap,
         allow_dma,
     };
