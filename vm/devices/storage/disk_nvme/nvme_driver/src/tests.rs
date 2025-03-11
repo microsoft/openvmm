@@ -23,6 +23,13 @@ use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
 use test_with_tracing::test;
+<<<<<<< HEAD
+=======
+use user_driver::emulated::create_guest_memory;
+use user_driver::emulated::EmulatedDevice;
+use user_driver::emulated::Mapping;
+use user_driver::interrupt::DeviceInterrupt;
+>>>>>>> b692c60d (Getting a better solutioon for TestBacking)
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
@@ -58,7 +65,7 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
 
     // Memory setup
     let pages = 1000;
-    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages);
+    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages, false);
 
     // Controller Driver Setup
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -94,7 +101,7 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
 
     // Memory setup
     let pages = 1000;
-    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages);
+    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages, false);
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
@@ -127,7 +134,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
 
     // Memory setup
     let pages = 100000;
-    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages);
+    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages, allow_dma);
 
     let driver_dma_mem = if allow_dma {
         guest_mem.clone()
@@ -248,7 +255,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 
     // Memory setup
     let pages = 1000;
-    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages);
+    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages, false);
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
     let mut msi_x = MsiInterruptSet::new();
@@ -420,10 +427,11 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
 }
 
 /// Creates test memory that leverages the TestMapper. Returned GuestMemory references the entire range
-/// and the page pool references only the second half
-fn create_test_memory(num_pages: u64) -> (GuestMemory, PagePool, Arc<PagePoolAllocator>){
+/// and the page pool allocator references only the second half
+fn create_test_memory(num_pages: u64, allow_dma: bool) -> (GuestMemory, PagePool, Arc<PagePoolAllocator>){
     let test_mapper = TestMapper::new(num_pages).unwrap();
-    let guest_mem = test_mapper.create_guest_memory();
+    let sparse_mmap = test_mapper.get_sparse_mapping();
+    let guest_mem = create_guest_memory(sparse_mmap, allow_dma);
     let pool = PagePool::new(
         &[MemoryRange::from_4k_gpn_range(num_pages/2..num_pages)],
         test_mapper

@@ -26,6 +26,7 @@ use pci_core::msi::MsiControl;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
 use safeatomic::AtomicSliceOps;
+use sparse_mmap::SparseMapping;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
@@ -137,6 +138,33 @@ pub struct DeviceSharedMemory {
     dma: GuestMemory,
     len: usize,
     state: Arc<Mutex<Vec<u64>>>,
+}
+
+struct TestBacking {
+    sparse_mmap: SparseMapping,
+    allow_dma: bool
+}
+
+unsafe impl GuestMemoryAccess for TestBacking {
+    fn mapping(&self) -> Option<NonNull<u8>> {
+        self.sparse_mmap.mapping()
+    }
+
+    fn base_iova(&self) -> Option<u64> {
+        self.allow_dma.then_some(0)
+    }
+
+    fn max_address(&self) -> u64 {
+        self.sparse_mmap.max_address()
+    }
+}
+
+pub fn create_guest_memory(sparse_mmap: SparseMapping, allow_dma: bool) -> GuestMemory {
+    let test_backing = TestBacking {
+        sparse_mmap,
+        allow_dma,
+    };
+    GuestMemory::new("test mapper guest memory", test_backing)
 }
 
 struct Backing {
