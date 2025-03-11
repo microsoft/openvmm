@@ -62,7 +62,6 @@ use virt::x86::MsrError;
 use virt::x86::MsrErrorExt;
 use virt::x86::SegmentRegister;
 use virt::x86::TableRegister;
-use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt_support_apic::ApicClient;
@@ -1817,8 +1816,7 @@ impl UhProcessor<'_, TdxBacked> {
                 #[cfg(feature = "gdb")]
                 {
                     // Check if the interrupt was triggered by a hardware breakpoint.
-                    let debug_regs = self
-                        .access_state(intercepted_vtl.into())
+                    let debug_regs = virt::Processor::access_state(intercepted_vtl.into())
                         .debug_regs()
                         .expect("register query should not fail");
                     // The lowest four bits of DR6 indicate which of the
