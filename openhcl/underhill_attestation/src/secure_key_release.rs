@@ -191,7 +191,7 @@ pub async fn request_vmgs_encryption_keys(
                     igvm_http_status_code = &http_status_code,
                     retry_signal = &retry_signal,
                     error = &wrapped_key_attest_error as &dyn std::error::Error,
-                    "VMGS key-encryption failed due to igvm attest retryable error, will retry"
+                    "VMGS key-encryption failed due to igvm attest error"
                 );
                 if !retry_signal || i == (max_retry - 1) {
                     Err(wrapped_key_attest_error)?
@@ -215,7 +215,7 @@ pub async fn request_vmgs_encryption_keys(
                     igvm_http_status_code = &http_status_code,
                     retry_signal = &retry_signal,
                     error = &key_release_attest_error as &dyn std::error::Error,
-                    "VMGS key-encryption failed due to igvm attest retryable error, will retry"
+                    "VMGS key-encryption failed due to igvm attest error"
                 );
                 if !retry_signal || i == (max_retry - 1) {
                     Err(key_release_attest_error)?
