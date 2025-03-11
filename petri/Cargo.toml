@@ -3,7 +3,7 @@
 
 [package]
 name = "petri"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -14,11 +14,13 @@ petri_artifacts_core.workspace = true
 petri_artifacts_vmm_test.workspace = true
 chipset_resources.workspace = true
 diag_client.workspace = true
+disk_vhd1.workspace = true
 hvlite_defs.workspace = true
 hvlite_helpers.workspace = true
 hvlite_pcat_locator.workspace = true
 hyperv_ic_resources.workspace = true
 hyperv_secure_boot_templates.workspace = true
+gdma_resources.workspace = true
 vmbus_serial_resources.workspace = true
 underhill_confidentiality.workspace = true
 vtl2_settings_proto.workspace = true
@@ -26,6 +28,7 @@ disk_backend_resources.workspace = true
 framebuffer.workspace = true
 get_resources.workspace = true
 ide_resources.workspace = true
+net_backend_resources.workspace = true
 nvme_resources.workspace = true
 scsidisk_resources.workspace = true
 serial_core.workspace = true
@@ -42,19 +45,22 @@ vm_resource.workspace = true
 vmgs_format.workspace = true
 vmm_core_defs.workspace = true
 vmotherboard.workspace = true
+vmsocket.workspace = true
 
 guid.workspace = true
 inspect = { workspace = true, features = ["initiate"] }
+kmsg.workspace = true
 mesh_process.workspace = true
 mesh_worker.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
 pal.workspace = true
-tempfile_helpers.workspace = true
 unix_socket.workspace = true
 sparse_mmap.workspace = true
 
 anyhow.workspace = true
+async-trait.workspace = true
+clap.workspace = true
 fatfs = { workspace = true, features = ["std", "alloc"] }
 fs-err.workspace = true
 fscommon.workspace = true
@@ -62,8 +68,14 @@ futures.workspace = true
 futures-concurrency.workspace = true
 gptman.workspace = true
 image = { workspace = true, features = ["png"] }
+jiff = { workspace = true, features = ["serde"] }
+libtest-mimic.workspace = true
+linkme.workspace = true
 mbrman.workspace = true
+parking_lot.workspace = true
 prost.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

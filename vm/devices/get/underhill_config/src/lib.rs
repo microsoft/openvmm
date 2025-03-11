@@ -5,6 +5,7 @@
 //!
 //! The structs and functions for Underhill configuration
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 use guid::Guid;

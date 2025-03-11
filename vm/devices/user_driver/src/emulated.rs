@@ -11,7 +11,7 @@ use crate::memory::MemoryBlock;
 use crate::memory::PAGE_SIZE;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
-use crate::HostDmaAllocator;
+use crate::DmaClient;
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
@@ -21,6 +21,7 @@ use guestmem::GuestMemoryAccess;
 use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::Mutex;
+use pci_core::chipset_device_ext::PciChipsetDeviceExt;
 use pci_core::msi::MsiControl;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
@@ -34,6 +35,7 @@ pub struct EmulatedDevice<T> {
     device: Arc<Mutex<T>>,
     controller: MsiController,
     shared_mem: DeviceSharedMemory,
+    bar0_len: usize,
 }
 
 impl<T: InspectMut> Inspect for EmulatedDevice<T> {
@@ -76,6 +78,9 @@ impl<T: PciConfigSpace + MmioIntercept> EmulatedDevice<T> {
         let controller = MsiController::new(msi_set.len());
         msi_set.connect(&controller);
 
+        let bars = device.probe_bar_masks();
+        let bar0_len = !(bars[0] & !0xf) as usize + 1;
+
         // Enable BAR0 at 0, BAR4 at X.
         device.pci_cfg_write(0x20, 0).unwrap();
         device.pci_cfg_write(0x24, 0x1).unwrap();
@@ -103,6 +108,7 @@ impl<T: PciConfigSpace + MmioIntercept> EmulatedDevice<T> {
             device: Arc::new(Mutex::new(device)),
             controller,
             shared_mem,
+            bar0_len,
         }
     }
 }
@@ -113,6 +119,7 @@ pub struct Mapping<T> {
     #[inspect(skip)]
     device: Arc<Mutex<T>>,
     addr: u64,
+    len: usize,
 }
 
 #[repr(C, align(4096))]
@@ -259,11 +266,13 @@ unsafe impl MappedDmaTarget for DmaBuffer {
     }
 }
 
+#[derive(Inspect)]
 pub struct EmulatedDmaAllocator {
+    #[inspect(skip)]
     shared_mem: DeviceSharedMemory,
 }
 
-impl HostDmaAllocator for EmulatedDmaAllocator {
+impl DmaClient for EmulatedDmaAllocator {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
         let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);
         memory.as_slice().atomic_fill(0);
@@ -275,40 +284,28 @@ impl HostDmaAllocator for EmulatedDmaAllocator {
     }
 }
 
-#[cfg(target_os = "linux")]
-#[cfg(feature = "vfio")]
-impl crate::vfio::VfioDmaBuffer for EmulatedDmaAllocator {
-    fn create_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
-        Ok(MemoryBlock::new(
-            self.shared_mem.alloc(len).context("out of memory")?,
-        ))
-    }
-
-    fn restore_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
-        anyhow::bail!("restore is not supported for emulated DMA")
-    }
-}
-
 impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedDevice<T> {
     type Registers = Mapping<T>;
-    type DmaAllocator = EmulatedDmaAllocator;
 
     fn id(&self) -> &str {
         "emulated"
     }
 
     fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers> {
+        if n != 0 {
+            anyhow::bail!("invalid bar {n}");
+        }
         Ok(Mapping {
             device: self.device.clone(),
             addr: (n as u64) << 32,
+            len: self.bar0_len,
         })
     }
 
-    /// Returns an object that can allocate host memory to be shared with the device.
-    fn host_allocator(&self) -> Self::DmaAllocator {
-        EmulatedDmaAllocator {
+    fn dma_client(&self) -> Arc<dyn DmaClient> {
+        Arc::new(EmulatedDmaAllocator {
             shared_mem: self.shared_mem.clone(),
-        }
+        }) as Arc<dyn DmaClient>
     }
 
     fn max_interrupt_count(&self) -> u32 {
@@ -326,6 +323,10 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for EmulatedD
 }
 
 impl<T: MmioIntercept + Send> DeviceRegisterIo for Mapping<T> {
+    fn len(&self) -> usize {
+        self.len
+    }
+
     fn read_u32(&self, offset: usize) -> u32 {
         let mut n = [0; 4];
         self.device

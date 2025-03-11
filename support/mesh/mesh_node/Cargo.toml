@@ -3,26 +3,28 @@
 
 [package]
 name = "mesh_node"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 mesh_derive.workspace = true
 mesh_protobuf.workspace = true
 open_enum.workspace = true
+
+bitfield-struct.workspace = true
 futures-channel.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(windows)'.dependencies]
 pal.workspace = true
 
 [dev-dependencies]
-pal_async.workspace = true
+futures.workspace = true
 
+pal_async.workspace = true
 test_with_tracing.workspace = true
 
 [lints]

@@ -3,6 +3,7 @@
 
 //! Serde defs for ADO YAML
 
+#![expect(missing_docs)]
 #![allow(unused)]
 
 use serde::Deserialize;

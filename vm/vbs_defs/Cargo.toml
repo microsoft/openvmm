@@ -3,7 +3,7 @@
 
 [package]
 name = "vbs_defs"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -12,6 +12,5 @@ igvm_defs.workspace = true
 open_enum.workspace = true
 static_assertions.workspace = true
 zerocopy.workspace = true
-
 [lints]
 workspace = true

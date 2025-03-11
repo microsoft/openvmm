@@ -4,21 +4,19 @@
 //! Implementation of the Underhill guest crash device, used by
 //! `underhill_crash` to send user-mode crash dumps to the host.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod resolver;
 
-use anyhow::Context;
+use anyhow::anyhow;
 use async_trait::async_trait;
 use get_protocol::crash;
 use get_protocol::crash::CRASHDUMP_GUID;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
-use mesh::error::RemoteResult;
-use mesh::error::RemoteResultExt;
 use mesh::rpc::FailableRpc;
+use mesh::rpc::PendingFailableRpc;
 use mesh::rpc::RpcSend;
 use std::fs::File;
 use std::io::Seek;
@@ -34,8 +32,10 @@ use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
 use vmcore::save_restore::SavedStateNotSupported;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// The crash device.
 #[derive(InspectMut)]
@@ -60,7 +60,7 @@ struct GuestCrashPipe {
 }
 
 impl GuestCrashPipe {
-    fn send<T: AsBytes>(&mut self, data: &T) -> std::io::Result<()> {
+    fn send<T: IntoBytes + Immutable + KnownLayout>(&mut self, data: &T) -> std::io::Result<()> {
         self.pipe.try_send(data.as_bytes())
     }
 
@@ -74,7 +74,9 @@ impl GuestCrashPipe {
         data: &'a mut [u8],
     ) -> anyhow::Result<(crash::Header, &'a [u8])> {
         let message = self.recv(data).await?;
-        let header = crash::Header::read_from_prefix(message).context("truncated message")?;
+        let header = crash::Header::read_from_prefix(message)
+            .map_err(|_| anyhow!("truncated message"))?
+            .0;
         Ok((header, message))
     }
 }
@@ -93,7 +95,7 @@ enum ProtocolState {
 
 enum DumpState {
     OpeningFile {
-        recv: mesh::OneshotReceiver<RemoteResult<File>>,
+        recv: PendingFailableRpc<File>,
     },
     Writing {
         file: File,
@@ -227,7 +229,7 @@ impl GuestCrashDevice {
                         }
                         crash::MessageType::REQUEST_NIX_DUMP_START_V1 => {
                             let (send, recv) = mesh::oneshot();
-                            let recv = self.request_dump.call(|x| x, recv);
+                            let recv = self.request_dump.call_failable(|x| x, recv);
                             channel.state = ProtocolState::DumpRequested {
                                 activity_id: header.activity_id,
                                 done: send,
@@ -245,7 +247,7 @@ impl GuestCrashDevice {
                     let DumpState::OpeningFile { recv } = state else {
                         unreachable!()
                     };
-                    let status = match recv.await.flatten() {
+                    let status = match recv.await {
                         Ok(file) => {
                             *state = DumpState::Writing {
                                 file,
@@ -320,7 +322,8 @@ impl GuestCrashDevice {
                         match header.message_type {
                             crash::MessageType::REQUEST_NIX_DUMP_WRITE_V1 => {
                                 let request = crash::DumpWriteRequestV1::read_from_prefix(message)
-                                    .context("truncated message")?;
+                                    .map_err(|_| anyhow!("truncated message"))? // TODO: zerocopy: anyhow! (https://github.com/microsoft/openvmm/issues/759)
+                                    .0;
                                 *payload = Some((request.offset, request.size));
                             }
                             crash::MessageType::REQUEST_NIX_DUMP_COMPLETE_V1 => {

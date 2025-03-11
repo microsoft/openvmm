@@ -3,7 +3,7 @@
 
 [package]
 name = "vmcore"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -28,6 +28,5 @@ thiserror.workspace = true
 time = { workspace = true, optional = true }
 tracing.workspace = true
 zerocopy.workspace = true
-
 [lints]
 workspace = true

@@ -1,10 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 use petri_artifacts_common::tags::IsTestIso;
 use petri_artifacts_common::tags::IsTestVhd;
 use petri_artifacts_common::tags::MachineArch;
-use petri_artifacts_common::tags::OsFlavor;
 use proc_macro2::Ident;
 use proc_macro2::Span;
 use proc_macro2::TokenStream;
@@ -21,10 +22,17 @@ use syn::Path;
 use syn::Token;
 
 struct Config {
+    vmm: Option<Vmm>,
     firmware: Firmware,
     arch: MachineArch,
     span: Span,
     extra_deps: Vec<Path>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Vmm {
+    OpenVmm,
+    HyperV,
 }
 
 enum Firmware {
@@ -43,6 +51,8 @@ struct OpenhclUefiOptions {
 
 enum IsolationType {
     Vbs,
+    Snp,
+    Tdx,
 }
 
 enum PcatGuest {
@@ -58,7 +68,6 @@ enum UefiGuest {
 
 struct ImageInfo {
     image_artifact: TokenStream,
-    os_flavor: OsFlavor,
     arch: MachineArch,
     name_prefix: String,
 }
@@ -82,8 +91,14 @@ fn arch_to_tokens(arch: MachineArch) -> TokenStream {
 }
 
 impl Config {
-    fn name_prefix(&self) -> String {
+    fn name_prefix(&self, specific_vmm: Option<Vmm>) -> String {
         let arch_prefix = arch_to_str(self.arch);
+
+        let vmm_prefix = match (specific_vmm, self.vmm) {
+            (_, Some(Vmm::OpenVmm)) | (Some(Vmm::OpenVmm), None) => "openvmm",
+            (_, Some(Vmm::HyperV)) | (Some(Vmm::HyperV), None) => "hyperv",
+            _ => "",
+        };
 
         let firmware_prefix = match &self.firmware {
             Firmware::LinuxDirect => "linux",
@@ -107,7 +122,7 @@ impl Config {
             Firmware::OpenhclUefi(opt, _) => opt.name_prefix(),
         };
 
-        let mut name_prefix = format!("{}_{}", firmware_prefix, arch_prefix);
+        let mut name_prefix = format!("{}_{}_{}", vmm_prefix, firmware_prefix, arch_prefix);
         if let Some(guest_prefix) = guest_prefix {
             name_prefix.push('_');
             name_prefix.push_str(&guest_prefix);
@@ -119,104 +134,6 @@ impl Config {
 
         name_prefix
     }
-
-    fn deps(&self) -> Vec<TokenStream> {
-        match (self.arch, &self.firmware) {
-            (MachineArch::X86_64, Firmware::LinuxDirect) => vec![
-                quote!(::petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64),
-                quote!(::petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64),
-                quote!(::petri_artifacts_common::artifacts::PIPETTE_LINUX_X64),
-            ],
-            (MachineArch::Aarch64, Firmware::LinuxDirect) => vec![
-                quote!(::petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_INITRD_AARCH64),
-                quote!(::petri_artifacts_vmm_test::artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64),
-                quote!(::petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64),
-            ],
-            (MachineArch::X86_64, Firmware::Pcat(guest)) => {
-                guest.deps()
-            }
-            (MachineArch::X86_64, Firmware::Uefi(guest)) => {
-                let mut deps = vec![quote!(
-                    ::petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_X64
-                )];
-                deps.extend(guest.deps());
-                deps
-            }
-            (MachineArch::Aarch64, Firmware::Uefi(guest)) => {
-                let mut deps = vec![quote!(
-                    ::petri_artifacts_vmm_test::artifacts::loadable::UEFI_FIRMWARE_AARCH64
-                )];
-                deps.extend(guest.deps());
-                deps
-            }
-            (MachineArch::X86_64, Firmware::OpenhclLinuxDirect) => vec![
-                quote!(
-                    ::petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64
-                ),
-                quote!(::petri_artifacts_vmm_test::artifacts::OPENHCL_DUMP_DIRECTORY),
-                quote!(::petri_artifacts_common::artifacts::PIPETTE_LINUX_X64),
-            ],
-            (MachineArch::X86_64, Firmware::OpenhclUefi(opt, guest)) => {
-                let mut deps = vec![
-                    if opt.isolation.is_some() {
-                        quote!(::petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_CVM_X64)
-                    } else {
-                        quote!(::petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64)
-                    },
-                    quote!(::petri_artifacts_vmm_test::artifacts::OPENHCL_DUMP_DIRECTORY),
-                    quote!(::petri_artifacts_common::artifacts::PIPETTE_LINUX_X64), // For VTL2 Pipette
-                ];
-                deps.extend(guest.deps());
-                deps
-            }
-            (MachineArch::Aarch64, _) => {
-                unreachable!()
-            }
-        }
-    }
-
-    fn optional_deps(&self) -> Vec<TokenStream> {
-        match (self.arch, &self.firmware) {
-            (MachineArch::X86_64, Firmware::Pcat(_)) => {
-                vec![
-                    quote!(::petri_artifacts_vmm_test::artifacts::loadable::PCAT_FIRMWARE_X64),
-                    quote!(::petri_artifacts_vmm_test::artifacts::loadable::SVGA_FIRMWARE_X64),
-                ]
-            }
-            _ => vec![],
-        }
-    }
-}
-
-fn maybe_pipette(
-    arch: MachineArch,
-    flavor: OsFlavor,
-    mut deps: Vec<TokenStream>,
-) -> Vec<TokenStream> {
-    match (arch, flavor) {
-        (MachineArch::X86_64, OsFlavor::Linux) => {
-            deps.push(quote!(
-                ::petri_artifacts_common::artifacts::PIPETTE_LINUX_X64
-            ));
-        }
-        (MachineArch::X86_64, OsFlavor::Windows) => {
-            deps.push(quote!(
-                ::petri_artifacts_common::artifacts::PIPETTE_WINDOWS_X64
-            ));
-        }
-        (MachineArch::Aarch64, OsFlavor::Linux) => {
-            deps.push(quote!(
-                ::petri_artifacts_common::artifacts::PIPETTE_LINUX_AARCH64
-            ));
-        }
-        (MachineArch::Aarch64, OsFlavor::Windows) => {
-            deps.push(quote!(
-                ::petri_artifacts_common::artifacts::PIPETTE_WINDOWS_AARCH64
-            ));
-        }
-        _ => {}
-    }
-    deps
 }
 
 impl PcatGuest {
@@ -226,15 +143,6 @@ impl PcatGuest {
             PcatGuest::Iso(iso) => iso.name_prefix.clone(),
         }
     }
-
-    fn deps(&self) -> Vec<TokenStream> {
-        let (flavor, artifact) = match self {
-            PcatGuest::Vhd(vhd) => (vhd.os_flavor, vhd.image_artifact.clone()),
-            PcatGuest::Iso(iso) => (iso.os_flavor, iso.image_artifact.clone()),
-        };
-
-        maybe_pipette(MachineArch::X86_64, flavor, vec![artifact])
-    }
 }
 
 impl ToTokens for PcatGuest {
@@ -242,11 +150,11 @@ impl ToTokens for PcatGuest {
         tokens.extend(match self {
             PcatGuest::Vhd(known_vhd) => {
                 let vhd = known_vhd.image_artifact.clone();
-                quote!(::petri::PcatGuest::Vhd(petri::BootImageConfig::from_vhd(#vhd)))
+                quote!(::petri::PcatGuest::Vhd(petri::BootImageConfig::from_vhd(resolver.require(#vhd))))
             }
             PcatGuest::Iso(known_iso) => {
                 let iso = known_iso.image_artifact.clone();
-                quote!(::petri::PcatGuest::Iso(petri::BootImageConfig::from_iso(#iso)))
+                quote!(::petri::PcatGuest::Iso(petri::BootImageConfig::from_iso(resolver.require(#iso))))
             }
         });
     }
@@ -260,25 +168,6 @@ impl UefiGuest {
             UefiGuest::None => None,
         }
     }
-
-    fn deps(&self) -> Vec<TokenStream> {
-        match self {
-            UefiGuest::Vhd(known_vhd) => maybe_pipette(
-                known_vhd.arch,
-                known_vhd.os_flavor,
-                vec![known_vhd.image_artifact.clone()],
-            ),
-            UefiGuest::GuestTestUefi(arch) => match arch {
-                MachineArch::X86_64 => vec![quote!(
-                    ::petri_artifacts_vmm_test::artifacts::test_vhd::GUEST_TEST_UEFI_X64
-                )],
-                MachineArch::Aarch64 => vec![quote!(
-                    ::petri_artifacts_vmm_test::artifacts::test_vhd::GUEST_TEST_UEFI_AARCH64
-                )],
-            },
-            UefiGuest::None => vec![],
-        }
-    }
 }
 
 impl ToTokens for UefiGuest {
@@ -286,34 +175,44 @@ impl ToTokens for UefiGuest {
         tokens.extend(match self {
             UefiGuest::Vhd(known_vhd) => {
                 let v = known_vhd.image_artifact.clone();
-                quote!(::petri::UefiGuest::Vhd(petri::BootImageConfig::from_vhd(#v)))
+                quote!(::petri::UefiGuest::Vhd(petri::BootImageConfig::from_vhd(resolver.require(#v))))
             }
             UefiGuest::GuestTestUefi(arch) => {
                 let arch_tokens = arch_to_tokens(*arch);
-                quote!(::petri::UefiGuest::GuestTestUefi(#arch_tokens))
+                quote!(::petri::UefiGuest::guest_test_uefi(resolver, #arch_tokens))
             }
             UefiGuest::None => quote!(::petri::UefiGuest::None),
         });
     }
 }
 
-impl ToTokens for Firmware {
+struct FirmwareAndArch {
+    firmware: Firmware,
+    arch: MachineArch,
+}
+
+impl ToTokens for FirmwareAndArch {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        tokens.extend(match self {
-            Firmware::LinuxDirect => quote!(::petri::Firmware::LinuxDirect),
-            Firmware::Pcat(guest) => quote!(::petri::Firmware::Pcat { guest: #guest }),
-            Firmware::Uefi(guest) => quote!(::petri::Firmware::Uefi { guest: #guest }),
-            Firmware::OpenhclLinuxDirect => quote!(::petri::Firmware::OpenhclLinuxDirect),
+        let arch = arch_to_tokens(self.arch);
+        tokens.extend(match &self.firmware {
+            Firmware::LinuxDirect => {
+                quote!(::petri::Firmware::linux_direct(resolver, #arch))
+            }
+            Firmware::Pcat(guest) => {
+                quote!(::petri::Firmware::pcat(resolver, #guest))
+            }
+            Firmware::Uefi(guest) => {
+                quote!(::petri::Firmware::uefi(resolver, #arch, #guest))
+            }
+            Firmware::OpenhclLinuxDirect => {
+                quote!(::petri::Firmware::openhcl_linux_direct(resolver, #arch))
+            }
             Firmware::OpenhclUefi(OpenhclUefiOptions { nvme, isolation }, guest) => {
                 let isolation = match isolation {
                     Some(i) => quote!(Some(#i)),
                     None => quote!(None),
                 };
-                quote!(::petri::Firmware::OpenhclUefi {
-                    guest: #guest,
-                    isolation: #isolation,
-                    vtl2_nvme_boot: #nvme
-                })
+                quote!(::petri::Firmware::openhcl_uefi(resolver, #arch, #guest, #isolation, #nvme))
             }
         })
     }
@@ -331,7 +230,7 @@ impl Parse for Args {
             .collect();
 
         for config in &configs {
-            #[allow(clippy::single_match)] // more patterns coming later
+            #[expect(clippy::single_match)] // more patterns coming later
             match config.firmware {
                 Firmware::Uefi(UefiGuest::Vhd(ImageInfo { arch, .. })) => {
                     if config.arch != arch {
@@ -352,8 +251,17 @@ impl Parse for Args {
 impl Parse for Config {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let word = input.parse::<Ident>()?;
+        let word_string = word.to_string();
 
-        let (arch, firmware) = match &*word.to_string() {
+        let (vmm, remainder) = if let Some(remainder) = word_string.strip_prefix("hyperv_") {
+            (Some(Vmm::HyperV), remainder)
+        } else if let Some(remainder) = word_string.strip_prefix("openvmm_") {
+            (Some(Vmm::OpenVmm), remainder)
+        } else {
+            (None, word_string.as_str())
+        };
+
+        let (arch, firmware) = match remainder {
             "linux_direct_x64" => (MachineArch::X86_64, Firmware::LinuxDirect),
             "linux_direct_aarch64" => (MachineArch::Aarch64, Firmware::LinuxDirect),
             "openhcl_linux_direct_x64" => (MachineArch::X86_64, Firmware::OpenhclLinuxDirect),
@@ -373,7 +281,11 @@ impl Parse for Config {
                 MachineArch::X86_64,
                 Firmware::OpenhclUefi(parse_openhcl_uefi_options(input)?, parse_uefi_guest(input)?),
             ),
-            "openhcl_linux_direct_aarch64" | "pcat_aarch64" | "openhcl_uefi_aarch64" => {
+            "openhcl_uefi_aarch64" => (
+                MachineArch::Aarch64,
+                Firmware::OpenhclUefi(parse_openhcl_uefi_options(input)?, parse_uefi_guest(input)?),
+            ),
+            "openhcl_linux_direct_aarch64" | "pcat_aarch64" => {
                 return Err(Error::new(
                     word.span(),
                     "aarch64 is not supported for this firmware, use x64 instead",
@@ -385,6 +297,7 @@ impl Parse for Config {
         let extra_deps = parse_extra_deps(input)?;
 
         Ok(Config {
+            vmm,
             firmware,
             arch,
             span: input.span(),
@@ -456,7 +369,6 @@ fn parse_vhd(input: ParseStream<'_>, generation: Generation) -> syn::Result<Imag
         ($artifact:ty) => {
             ImageInfo {
                 image_artifact: quote!($artifact),
-                os_flavor: <$artifact>::OS_FLAVOR,
                 arch: <$artifact>::ARCH,
                 name_prefix: word.to_string(),
             }
@@ -498,7 +410,6 @@ fn parse_iso(input: ParseStream<'_>) -> syn::Result<ImageInfo> {
         ($artifact:ty) => {
             ImageInfo {
                 image_artifact: quote!($artifact),
-                os_flavor: <$artifact>::OS_FLAVOR,
                 arch: <$artifact>::ARCH,
                 name_prefix: word.to_string() + "_iso",
             }
@@ -519,6 +430,8 @@ impl OpenhclUefiOptions {
         if let Some(isolation) = &self.isolation {
             prefix.push_str(match isolation {
                 IsolationType::Vbs => "vbs",
+                IsolationType::Snp => "snp",
+                IsolationType::Tdx => "tdx",
             });
         }
         if self.nvme {
@@ -552,6 +465,18 @@ impl Parse for OpenhclUefiOptions {
                     }
                     options.isolation = Some(IsolationType::Vbs);
                 }
+                "snp" => {
+                    if options.isolation.is_some() {
+                        return Err(Error::new(word.span(), "isolation type already specified"));
+                    }
+                    options.isolation = Some(IsolationType::Snp);
+                }
+                "tdx" => {
+                    if options.isolation.is_some() {
+                        return Err(Error::new(word.span(), "isolation type already specified"));
+                    }
+                    options.isolation = Some(IsolationType::Tdx);
+                }
                 _ => return Err(Error::new(word.span(), "unrecognized openhcl uefi option")),
             }
         }
@@ -562,7 +487,9 @@ impl Parse for OpenhclUefiOptions {
 impl ToTokens for IsolationType {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         tokens.extend(match self {
-            IsolationType::Vbs => quote!(::hvlite_defs::config::IsolationType::Vbs),
+            IsolationType::Vbs => quote!(petri::IsolationType::Vbs),
+            IsolationType::Snp => quote!(petri::IsolationType::Snp),
+            IsolationType::Tdx => quote!(petri::IsolationType::Tdx),
         });
     }
 }
@@ -591,11 +518,15 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// Transform the function into VMM tests, one for each specified firmware configuration.
 ///
 /// Valid configuration options are:
-/// - `linux_direct_{arch}`: Our provided Linux direct image
-/// - `openhcl_linux_direct_{arch}`: Our provided Linux direct image with OpenHCL
-/// - `pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration
-/// - `uefi_{arch}(<UEFI guest>)`: A Gen 2 configuration
-/// - `openhcl_uefi_{arch}[list,of,options](<UEFI guest>)`: A Gen 2 configuration with OpenHCL
+/// - `{vmm}_linux_direct_{arch}`: Our provided Linux direct image
+/// - `{vmm}_openhcl_linux_direct_{arch}`: Our provided Linux direct image with OpenHCL
+/// - `{vmm}_pcat_{arch}(<PCAT guest>)`: A Gen 1 configuration
+/// - `{vmm}_uefi_{arch}(<UEFI guest>)`: A Gen 2 configuration
+/// - `{vmm}_openhcl_uefi_{arch}[list,of,options](<UEFI guest>)`: A Gen 2 configuration with OpenHCL
+///
+/// Valid VMMs are:
+/// - openvmm
+/// - hyperv
 ///
 /// Valid architectures are:
 /// - x64
@@ -631,17 +562,43 @@ pub fn vmm_test(
 ) -> proc_macro::TokenStream {
     let args = parse_macro_input!(attr as Args);
     let item = parse_macro_input!(item as ItemFn);
-    make_vmm_test(args, item)
+    make_vmm_test(args, item, None)
         .unwrap_or_else(|err| err.to_compile_error())
         .into()
 }
 
-fn make_vmm_test(args: Args, item: ItemFn) -> syn::Result<TokenStream> {
+/// Same options as `vmm_test`, but only for OpenVMM tests
+#[proc_macro_attribute]
+pub fn openvmm_test(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let args = parse_macro_input!(attr as Args);
+    let item = parse_macro_input!(item as ItemFn);
+    make_vmm_test(args, item, Some(Vmm::OpenVmm))
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
+}
+
+/// Same options as `vmm_test`, but only for Hyper-V tests
+#[proc_macro_attribute]
+pub fn hyperv_test(
+    attr: proc_macro::TokenStream,
+    item: proc_macro::TokenStream,
+) -> proc_macro::TokenStream {
+    let args = parse_macro_input!(attr as Args);
+    let item = parse_macro_input!(item as ItemFn);
+    make_vmm_test(args, item, Some(Vmm::HyperV))
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
+}
+
+fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Result<TokenStream> {
     let original_args =
         match item.sig.inputs.len() {
             1 => quote! {config},
-            2 => quote! {config, resolver},
-            3 => quote! {config, resolver, driver },
+            2 => quote! {config, extra_deps},
+            3 => quote! {config, extra_deps, driver },
             _ => return Err(Error::new(
                 item.sig.inputs.span(),
                 "expected 1, 2, or 3 arguments (the PetriVmConfig, ArtifactResolver, and Driver)",
@@ -651,12 +608,10 @@ fn make_vmm_test(args: Args, item: ItemFn) -> syn::Result<TokenStream> {
     let original_name = &item.sig.ident;
     let mut tests = TokenStream::new();
     let mut guest_archs = HashSet::new();
+    // FUTURE: compute all this in code instead of in the macro.
     for config in args.configs {
-        let name = format!("{}_{original_name}", config.name_prefix());
-        let fn_name = Ident::new(&name, original_name.span());
+        let name = format!("{}_{original_name}", config.name_prefix(specific_vmm));
 
-        let deps = config.deps();
-        let optional_deps = config.optional_deps();
         let extra_deps = config.extra_deps;
 
         let guest_arch = match config.arch {
@@ -665,35 +620,71 @@ fn make_vmm_test(args: Args, item: ItemFn) -> syn::Result<TokenStream> {
         };
         guest_archs.insert(guest_arch);
 
-        let firmware = config.firmware;
+        let firmware = FirmwareAndArch {
+            firmware: config.firmware,
+            arch: config.arch,
+        };
         let arch = arch_to_tokens(config.arch);
 
-        tests.extend(quote!(
-        #[cfg(guest_arch=#guest_arch)]
-        #[::pal_async::async_test]
-        async fn #fn_name(driver: ::pal_async::DefaultDriver) -> anyhow::Result<()> {
-            let resolver = crate::prelude::vmm_tests_artifact_resolver()
-                .require(::petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY)
-                .require(::petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE)
-                #( .require(#deps) )*
-                #( .require(#extra_deps) )*
-                #( .try_require(#optional_deps) )*
-                .finalize();
-            let config = PetriVmConfig::new(
-                #firmware,
-                #arch,
-                resolver.clone(),
-                &driver,
-            )?;
-            #original_name(#original_args).await
-        }))
+        let (cfg_conditions, artifacts, mut petri_vm_config) = match (specific_vmm, config.vmm) {
+            (Some(Vmm::HyperV), Some(Vmm::HyperV))
+            | (Some(Vmm::HyperV), None)
+            | (None, Some(Vmm::HyperV)) => (
+                quote!(#[cfg(all(guest_arch=#guest_arch, windows))]),
+                quote!(::petri::hyperv::PetriVmArtifactsHyperV::new(
+                    resolver, firmware, arch,
+                )),
+                quote!(::petri::hyperv::PetriVmConfigHyperV::new(
+                    &params, artifacts, &driver,
+                )?),
+            ),
+
+            (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
+            | (Some(Vmm::OpenVmm), None)
+            | (None, Some(Vmm::OpenVmm)) => (
+                quote!(#[cfg(guest_arch=#guest_arch)]),
+                quote!(::petri::openvmm::PetriVmArtifactsOpenVmm::new(
+                    resolver, firmware, arch,
+                )),
+                quote!(::petri::openvmm::PetriVmConfigOpenVmm::new(
+                    &params, artifacts, &driver,
+                )?),
+            ),
+            (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
+            _ => return Err(Error::new(config.span, "vmm mismatch")),
+        };
+
+        if specific_vmm.is_none() {
+            petri_vm_config = quote!(Box::new(#petri_vm_config));
+        }
+
+        let test = quote! {
+            #cfg_conditions
+            ::petri::SimpleTest::new(
+                #name,
+                |resolver| {
+                    let firmware = #firmware;
+                    let arch = #arch;
+                    let extra_deps = (#(resolver.require(#extra_deps),)*);
+                    (#artifacts, extra_deps)
+                },
+                |params, (artifacts, extra_deps)| {
+                    ::pal_async::DefaultPool::run_with(async |driver| {
+                        let config = #petri_vm_config;
+                        #original_name(#original_args).await
+                    })
+                }
+            ).into(),
+        };
+
+        tests.extend(test);
     }
 
     let guest_archs = guest_archs.into_iter();
 
-    // Allow dead code for tests that are not run on the current architecture.
     Ok(quote! {
-        #tests
+        ::petri::multitest!(vec![#tests]);
+        // Allow dead code for tests that are not run on the current architecture.
         #[cfg_attr(not(any(#(guest_arch = #guest_archs,)*)), allow(dead_code))]
         #item
     })

@@ -32,6 +32,7 @@ use futures::executor::block_on;
 use guestmem::GuestMemoryAccess;
 use guestmem::PageFaultAction;
 use memory_range::MemoryRange;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use parking_lot::Mutex;
 use sparse_mmap::SparseMapping;
@@ -59,7 +60,7 @@ impl std::fmt::Debug for VaMapper {
 struct MapperInner {
     mapping: SparseMapping,
     waiters: Mutex<Option<Vec<MapWaiter>>>,
-    req_send: mesh::MpscSender<MappingRequest>,
+    req_send: mesh::Sender<MappingRequest>,
     id: MapperId,
 }
 
@@ -156,7 +157,7 @@ impl MapperTask {
 #[derive(Debug, Error)]
 pub enum VaMapperError {
     #[error("failed to communicate with the memory manager")]
-    MemoryManagerGone(#[source] mesh::RecvError),
+    MemoryManagerGone(#[source] RpcError),
     #[error("failed to reserve address space")]
     Reserve(#[source] std::io::Error),
 }
@@ -190,7 +191,7 @@ impl MapperInner {
 
 impl VaMapper {
     pub(crate) async fn new(
-        req_send: mesh::MpscSender<MappingRequest>,
+        req_send: mesh::Sender<MappingRequest>,
         len: u64,
         remote_process: Option<RemoteProcess>,
     ) -> Result<Self, VaMapperError> {

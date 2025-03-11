@@ -19,12 +19,12 @@ use crate::sparsevec::SparseVec;
 use crate::wait::PollWait;
 use crate::wait::WaitDriver;
 use crate::waker::WakerList;
+use headervec::HeaderVec;
 use once_cell::sync::OnceCell;
 use pal::windows::afd;
 use pal::windows::set_file_completion_notification_modes;
 use pal::windows::Overlapped;
 use pal::windows::SendSyncRawHandle;
-use pal::HeaderVec;
 use pal_event::Event;
 use std::fs::File;
 use std::io;
@@ -57,7 +57,7 @@ pub(crate) struct State {
 
 #[derive(Debug, Default)]
 pub(crate) struct WaitState {
-    poll_info: HeaderVec<afd::PollInfo, [afd::PollHandleInfo; 32]>,
+    poll_info: HeaderVec<afd::PollInfo, afd::PollHandleInfo, 32>,
     handles: Vec<SendSyncRawHandle>,
     indexes: Vec<usize>,
     afd_in_flight: bool,
@@ -111,7 +111,7 @@ impl State {
             if !entry
                 .waker
                 .as_ref()
-                .map_or(false, |old| old.will_wake(cx.waker()))
+                .is_some_and(|old| old.will_wake(cx.waker()))
             {
                 entry.waker = Some(cx.waker().clone());
             }
@@ -176,8 +176,8 @@ impl State {
         }
 
         let poll_info = &mut wait_state.poll_info;
-        **poll_info = Default::default();
-        poll_info.clear();
+        poll_info.head = Default::default();
+        poll_info.clear_tail();
         poll_info.extend(self.sockets.iter().filter_map(|(_, entry)| {
             let events = entry.interests.events_to_poll();
             if !events.is_empty() {
@@ -188,7 +188,7 @@ impl State {
         }));
 
         wait_state.afd_in_flight = false;
-        if !poll_info.is_empty() {
+        if !poll_info.tail.is_empty() {
             thread_local! {
                 static AFD_EVENT: Event = Event::new();
             }
@@ -199,13 +199,13 @@ impl State {
                 .as_raw_handle();
             let afd_event = AFD_EVENT.with(|e| e.as_handle().as_raw_handle());
             wait_state.afd_overlapped.set_event(afd_event);
-            poll_info.number_of_handles = poll_info.len().try_into().unwrap();
-            poll_info.timeout = i64::MAX;
+            poll_info.head.number_of_handles = poll_info.tail.len().try_into().unwrap();
+            poll_info.head.timeout = i64::MAX;
             let len = poll_info.total_byte_len();
             unsafe {
                 if !afd::poll(
                     afd_handle,
-                    poll_info,
+                    poll_info.as_mut_ptr(),
                     len,
                     wait_state.afd_overlapped.as_ptr(),
                 ) {
@@ -226,7 +226,7 @@ impl State {
     }
 
     pub fn post_wait(&mut self, wait_state: &mut WaitState, wakers: &mut WakerList) {
-        for info in wait_state.poll_info.as_slice() {
+        for info in &wait_state.poll_info.tail {
             let (_, entry) = self
                 .sockets
                 .iter_mut()
@@ -267,7 +267,7 @@ impl State {
 impl WaitState {
     pub fn wait(&mut self, _wait_cancel: &WaitCancel, timeout: Option<Duration>) {
         let mut n = !0;
-        if self.afd_in_flight || self.poll_info.number_of_handles == 0 {
+        if self.afd_in_flight || self.poll_info.head.number_of_handles == 0 {
             let timeout =
                 timeout.map_or(INFINITE, |t| t.as_millis().min(INFINITE as u128 - 1) as u32);
 
@@ -312,13 +312,13 @@ impl WaitState {
                 ) == 0
                 {
                     assert_eq!(GetLastError(), ERROR_OPERATION_ABORTED);
-                    self.poll_info.number_of_handles = 0;
+                    self.poll_info.head.number_of_handles = 0;
                 }
             }
         }
 
         self.poll_info
-            .truncate(self.poll_info.number_of_handles as usize);
+            .truncate_tail(self.poll_info.head.number_of_handles as usize);
 
         self.done_entry = self.indexes.get(n as usize).copied();
     }

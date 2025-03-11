@@ -3,7 +3,7 @@
 
 [package]
 name = "vmbus_server"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -35,14 +35,13 @@ tracelimit.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(windows)'.dependencies]
 vmbus_proxy.workspace = true
-winapi.workspace = true
+windows.workspace = true
 
 [dev-dependencies]
 test_with_tracing.workspace = true
-zerocopy_helpers.workspace = true
+getrandom.workspace = true
 
 [lints]
 workspace = true

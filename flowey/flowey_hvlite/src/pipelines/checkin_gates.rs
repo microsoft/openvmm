@@ -201,7 +201,6 @@ impl IntoPipeline for CheckinGatesCli {
                 pub_rustdoc_linux,
             ),
         ] {
-            let deny_warnings = !matches!(backend_hint, PipelineBackendHint::Local);
             let job = pipeline
                 .new_job(
                     platform,
@@ -211,9 +210,6 @@ impl IntoPipeline for CheckinGatesCli {
                 .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
                     platform,
                 ))
-                .dep_on(|_ctx| {
-                    flowey_lib_hvlite::build_rustdoc::Request::SetDenyWarnings(deny_warnings)
-                })
                 .dep_on(
                     |ctx| flowey_lib_hvlite::_jobs::build_and_publish_rustdoc::Params {
                         target_triple: target.as_triple(),
@@ -433,7 +429,12 @@ impl IntoPipeline for CheckinGatesCli {
                         },
                         profile: CommonProfile::from_release(release),
                         // FIXME: this relies on openvmm default features
-                        features: [].into(),
+                        // Our ARM test runners need the latest WHP changes
+                        features: if matches!(arch, CommonArch::Aarch64) {
+                            [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::UnstableWhp].into()
+                        } else {
+                            [].into()
+                        },
                         artifact_dir: ctx.publish_artifact(pub_openvmm),
                         done: ctx.new_done_handle(),
                     }
@@ -633,6 +634,15 @@ impl IntoPipeline for CheckinGatesCli {
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm"));
             let (pub_openhcl_igvm_extras, _use_openhcl_igvm_extras) =
                 pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras"));
+
+            let (pub_openhcl_baseline, _use_openhcl_baseline) =
+                if matches!(config, PipelineConfig::Ci) {
+                    let (p, u) = pipeline.new_artifact(format!("{arch_tag}-openhcl-baseline"));
+                    (Some(p), Some(u))
+                } else {
+                    (None, None)
+                };
+
             // also build pipette musl on this job, as until we land the
             // refactor that allows building musl without the full openhcl
             // toolchain, it would require pulling in all the openhcl
@@ -683,8 +693,12 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 .dep_on(|ctx| {
+                    let publish_baseline_artifact = pub_openhcl_baseline
+                        .map(|baseline_artifact| ctx.publish_artifact(baseline_artifact));
+
                     flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::Params {
                         igvm_files: igvm_recipes
+                            .clone()
                             .into_iter()
                             .map(|recipe| OpenhclIgvmBuildParams {
                                 profile: openvmm_hcl_profile,
@@ -697,6 +711,7 @@ impl IntoPipeline for CheckinGatesCli {
                         artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
                         artifact_dir_openhcl_igvm_extras: ctx
                             .publish_artifact(pub_openhcl_igvm_extras),
+                        artifact_openhcl_verify_size_baseline: publish_baseline_artifact,
                         done: ctx.new_done_handle(),
                     }
                 })
@@ -713,6 +728,30 @@ impl IntoPipeline for CheckinGatesCli {
                 );
 
             all_jobs.push(job.finish());
+
+            if arch == CommonArch::X86_64 && matches!(config, PipelineConfig::Pr) {
+                let job = pipeline
+                    .new_job(
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                        FlowArch::X86_64,
+                        format!("verify openhcl binary size [{}]", arch_tag),
+                    )
+                    .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
+                        FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
+                    ))
+                    .dep_on(
+                        |ctx| flowey_lib_hvlite::_jobs::check_openvmm_hcl_size::Request {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxMusl,
+                            },
+                            done: ctx.new_done_handle(),
+                            pipeline_name: "openvmm-ci.yaml".into(),
+                        },
+                    )
+                    .finish();
+                all_jobs.push(job);
+            }
         }
 
         // Emit clippy + unit-test jobs

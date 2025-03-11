@@ -7,7 +7,7 @@ use pal_async::local::block_with_io;
 use pal_async::socket::PolledSocket;
 use std::net::TcpListener;
 use vnc::Error;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 fn pixel(r: u8, g: u8, b: u8) -> u32 {
     (r as u32) << 16 | (g as u32) << 8 | b as u32
@@ -37,7 +37,7 @@ impl vnc::Input for IgnoreInput {
 }
 
 fn main() -> Result<(), Error> {
-    block_with_io(|driver| async move {
+    block_with_io(async |driver| {
         let light_grey = pixel(127, 127, 127);
         let dark_grey = pixel(63, 63, 63);
         // Checkerboard pattern.

@@ -18,8 +18,8 @@ use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::snp::HvPspCpuidPage;
 use x86defs::xsave;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 enum CpuidPageIndexErr {
     OutOfBounds,
@@ -106,7 +106,7 @@ impl SnpCpuidInitializer {
         ];
         cpuid_pages
             .as_mut_slice()
-            .as_bytes_mut()
+            .as_mut_bytes()
             .copy_from_slice(cpuid_pages_data);
 
         Self { cpuid_pages }
@@ -150,7 +150,7 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
                     .with_ibpb(true)
                     .with_ibrs(true)
                     .with_stibp(true)
-                    .with_mdd(true)
+                    .with_ssbd(true)
                     .with_stibp_always_on(true)
                     .with_efer_lmsle_unsupported(true)
                     .with_psfd(true)
@@ -498,7 +498,6 @@ impl CpuidArchSupport for SnpCpuidSupport {
 mod tests {
     use super::*;
     use x86defs::snp::HvPspCpuidLeaf;
-    use zerocopy::FromZeroes;
 
     // Tests the increment and validation implementations of CpuidPageIndex
     #[test]

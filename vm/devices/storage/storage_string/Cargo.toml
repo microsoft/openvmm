@@ -3,7 +3,7 @@
 
 [package]
 name = "storage_string"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -12,6 +12,5 @@ mesh_protobuf.workspace = true
 
 thiserror.workspace = true
 zerocopy.workspace = true
-
 [lints]
 workspace = true

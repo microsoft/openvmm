@@ -3,7 +3,6 @@
 
 //! Resource definitions for the debugcon serial device.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use mesh::MeshPayload;

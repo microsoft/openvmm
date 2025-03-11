@@ -19,6 +19,9 @@ use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
+use mesh::rpc::TryRpcSend;
 use mesh::RecvError;
 use parking_lot::Mutex;
 use std::cmp::min;
@@ -32,16 +35,17 @@ use thiserror::Error;
 use underhill_config::Vtl2SettingsErrorInfo;
 use underhill_config::Vtl2SettingsErrorInfoVec;
 use unicycle::FuturesUnordered;
-use user_driver::vfio::VfioDmaBuffer;
+use user_driver::DmaClient;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_async::pipe::MessagePipe;
 use vmbus_ring::RingMem;
 use vpci::bus_control::VpciBusEvent;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
-use zerocopy_helpers::FromBytesExt;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Error type for GET errors
 #[derive(Debug, Error)]
@@ -115,10 +119,12 @@ fn validate_response(header: get_protocol::HeaderHostResponse) -> Result<(), Fat
 }
 
 /// Parse the HostResponse message sent from the host in `buf`.
-fn read_host_response_validated<T: FromBytes>(buf: &[u8]) -> Result<T, FatalError> {
-    let response = T::read_from(buf).ok_or_else(|| FatalError::MessageSizeHostResponse {
+fn read_host_response_validated<T: FromBytes + Immutable + KnownLayout>(
+    buf: &[u8],
+) -> Result<T, FatalError> {
+    let response = T::read_from_bytes(buf).map_err(|_| FatalError::MessageSizeHostResponse {
         len: buf.len(),
-        response: get_protocol::HeaderHostResponse::read_from(buf)
+        response: get_protocol::HeaderHostResponse::read_from_bytes(buf)
             .unwrap()
             .message_id,
     })?;
@@ -127,11 +133,11 @@ fn read_host_response_validated<T: FromBytes>(buf: &[u8]) -> Result<T, FatalErro
 }
 
 /// Parse the GuestNotification message sent from the host in `buf`.
-fn read_guest_notification<T: FromBytes>(
+fn read_guest_notification<T: FromBytes + Immutable + KnownLayout>(
     notification: get_protocol::GuestNotifications,
     buf: &[u8],
 ) -> Result<T, FatalError> {
-    T::read_from(buf).ok_or(FatalError::MessageSizeGuestNotification {
+    T::read_from_bytes(buf).map_err(|_| FatalError::MessageSizeGuestNotification {
         len: buf.len(),
         notification,
     })
@@ -144,7 +150,7 @@ pub(crate) mod msg {
     use guid::Guid;
     use mesh::rpc::Rpc;
     use std::sync::Arc;
-    use user_driver::vfio::VfioDmaBuffer;
+    use user_driver::DmaClient;
     use vpci::bus_control::VpciBusEvent;
 
     #[derive(Debug)]
@@ -174,7 +180,7 @@ pub(crate) mod msg {
         /// Inspect the state of the process loop.
         Inspect(inspect::Deferred),
         /// Store the gpa allocator to be used for attestation.
-        SetGpaAllocator(Arc<dyn VfioDmaBuffer>),
+        SetGpaAllocator(Arc<dyn DmaClient>),
 
         // Late bound receivers for Guest Notifications
         /// Take the late-bound GuestRequest receiver for Generation Id updates.
@@ -398,6 +404,15 @@ impl<const MAX_SIZE: usize, T: Send + 'static> BufferedSender<MAX_SIZE, T> {
     }
 }
 
+impl<const MAX_SIZE: usize, T: Send + 'static> TryRpcSend for &mut BufferedSender<MAX_SIZE, T> {
+    type Message = T;
+    type Error = BufferedSenderFull;
+
+    fn try_send_rpc(self, message: Self::Message) -> Result<(), Self::Error> {
+        self.send(message)
+    }
+}
+
 /// A variant of `Option<mesh::Sender<T>>` for late-bound guest notification
 /// consumers that buffers a fixed-number of messages during the window between
 /// GET init and worker startup.
@@ -467,8 +482,7 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     igvm_attest_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
     #[inspect(skip)]
     igvm_attest_read_send: mesh::Sender<Vec<u8>>,
-    #[inspect(skip)]
-    gpa_allocator: Option<Arc<dyn VfioDmaBuffer>>,
+    gpa_allocator: Option<Arc<dyn DmaClient>>,
     stats: Stats,
 
     guest_notification_listeners: GuestNotificationListeners,
@@ -508,7 +522,7 @@ struct GuestNotificationListeners {
 // pair of notifications that don't really act like "notifications" for the
 // foreseeable future...
 enum GuestNotificationResponse {
-    ModifyVtl2Settings(Result<Result<(), Vec<Vtl2SettingsErrorInfo>>, RecvError>),
+    ModifyVtl2Settings(Result<(), RpcError<Vec<Vtl2SettingsErrorInfo>>>),
 }
 
 #[derive(Default, Inspect)]
@@ -534,7 +548,7 @@ mod inspect_helpers {
 struct HostRequestPipeAccess {
     response_message_recv_mutex: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
     response_message_recv: Option<mesh::Receiver<Vec<u8>>>,
-    request_message_send: Arc<mesh::Sender<WriteRequest>>,
+    request_message_send: mesh::Sender<WriteRequest>,
 }
 
 impl Drop for HostRequestPipeAccess {
@@ -548,18 +562,18 @@ struct PipeChannels {
     response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
     // This is None when a `HostRequestPipeAccess` has ownership for an IgvmAttest request.
     igvm_attest_response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
-    message_send: Arc<mesh::Sender<WriteRequest>>,
+    message_send: mesh::Sender<WriteRequest>,
 }
 
 enum WriteRequest {
     Message(Vec<u8>),
-    Flush(mesh::OneshotSender<()>),
+    Flush(Rpc<(), ()>),
 }
 
 impl HostRequestPipeAccess {
     fn new(
         response_message_recv_mutex: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
-        request_message_send: Arc<mesh::Sender<WriteRequest>>,
+        request_message_send: mesh::Sender<WriteRequest>,
     ) -> Self {
         let response_message_recv = response_message_recv_mutex.lock().take().unwrap();
         Self {
@@ -590,13 +604,14 @@ impl HostRequestPipeAccess {
     /// Waits for a known, fixed-size response message from the host.
     ///
     /// The caller is responsible for validating the message ID.
-    async fn recv_response_fixed_size<T: AsBytes + FromBytes>(
+    async fn recv_response_fixed_size<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
         &mut self,
         id: HostRequests,
     ) -> Result<T, FatalError> {
         let response = self.recv_response().await;
-        let header =
-            get_protocol::HeaderHostRequest::read_from_prefix(response.as_bytes()).unwrap();
+        let header = get_protocol::HeaderHostRequest::read_from_prefix(response.as_bytes())
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         if id != header.message_id {
             return Err(FatalError::ResponseHeaderMismatchId(header.message_id, id));
         }
@@ -607,14 +622,34 @@ impl HostRequestPipeAccess {
     ///
     /// Fails if the response's message ID does not match the request's message
     /// ID.
-    async fn send_request_fixed_size<T: AsBytes + ?Sized, U: AsBytes + FromBytes>(
+    async fn send_request_fixed_size<
+        T: IntoBytes + ?Sized + Immutable + KnownLayout,
+        U: IntoBytes + FromBytes + Immutable + KnownLayout,
+    >(
         &mut self,
         data: &T,
     ) -> Result<U, FatalError> {
         self.send_message(data.as_bytes().to_vec());
-        let req_header =
-            get_protocol::HeaderHostRequest::read_from_prefix(data.as_bytes()).unwrap();
+        let req_header = get_protocol::HeaderHostRequest::read_from_prefix(data.as_bytes())
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         self.recv_response_fixed_size(req_header.message_id).await
+    }
+
+    /// Sends a fail notification to the host.
+    ///
+    /// This function does not wait for a response from the host.
+    /// It is specifically designed for scenarios where the host does not send any response.
+    /// One of such scenario is the save failure, where host does not send any response.
+    ///
+    /// In the future, GED notifications for failures need to be added.
+    /// This will require updates to both the host and openHCL.
+    async fn send_failed_save_state<T: IntoBytes + ?Sized + Immutable + KnownLayout>(
+        &mut self,
+        data: &T,
+    ) -> Result<(), FatalError> {
+        self.send_message(data.as_bytes().to_vec());
+        Ok(())
     }
 }
 
@@ -636,7 +671,7 @@ impl<T: RingMem> ProcessLoop<T> {
                 igvm_attest_response_message_recv: Arc::new(Mutex::new(Some(
                     igvm_attest_read_recv,
                 ))),
-                message_send: Arc::new(write_send),
+                message_send: write_send,
             },
             read_send,
             write_recv,
@@ -683,7 +718,7 @@ impl<T: RingMem> ProcessLoop<T> {
 
             // The next message must be the version response.
             let mut response = get_protocol::VersionResponse::new_zeroed();
-            let len = self.read_pipe(response.as_bytes_mut()).await?;
+            let len = self.read_pipe(response.as_mut_bytes()).await?;
 
             validate_response(response.message_header)?;
 
@@ -751,8 +786,9 @@ impl<T: RingMem> ProcessLoop<T> {
                             // way to get these kinds of per-message stats is to
                             // quickly re-parse the header before sending the
                             // message down the wire.
-                            if let Some(header) =
+                            if let Ok((header, _)) =
                                 get_protocol::HeaderRaw::read_from_prefix(outgoing.as_ref())
+                            // TODO: zerocopy: use-rest-of-range, zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
                             {
                                 match header.message_type {
                                     get_protocol::MessageTypes::HOST_REQUEST => {
@@ -780,7 +816,7 @@ impl<T: RingMem> ProcessLoop<T> {
                         }
                         match self.write_recv.recv().await.unwrap() {
                             WriteRequest::Message(message) => outgoing = message,
-                            WriteRequest::Flush(send) => send.send(()),
+                            WriteRequest::Flush(send) => send.complete(()),
                         }
                     }
                 }
@@ -878,7 +914,8 @@ impl<T: RingMem> ProcessLoop<T> {
                     let len = len?;
                     let buf = &buf[..len];
                     let header = get_protocol::HeaderRaw::read_from_prefix(buf)
-                        .ok_or(FatalError::MessageSizeHeader(len))?;
+                        .map_err(|_| FatalError::MessageSizeHeader(len))?
+                        .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                     match header.message_type {
                         get_protocol::MessageTypes::HOST_RESPONSE => {
@@ -953,17 +990,16 @@ impl<T: RingMem> ProcessLoop<T> {
     /// for its response.
     fn push_basic_host_request_handler<Req, I, Resp>(
         &mut self,
-        req: mesh::rpc::Rpc<I, Resp>,
+        req: Rpc<I, Resp>,
         f: impl 'static + Send + FnOnce(I) -> Req,
     ) where
-        Req: AsBytes + 'static + Send + Sync,
+        Req: IntoBytes + 'static + Send + Sync + Immutable + KnownLayout,
         I: 'static + Send,
-        Resp: 'static + AsBytes + FromBytes + Send,
+        Resp: 'static + IntoBytes + FromBytes + Send + Immutable + KnownLayout,
     {
-        self.push_host_request_handler(|mut access| {
-            req.handle_must_succeed(move |input| async move {
-                access.send_request_fixed_size(&f(input)).await
-            })
+        self.push_host_request_handler(async move |mut access| {
+            req.handle_must_succeed(async |input| access.send_request_fixed_size(&f(input)).await)
+                .await
         });
     }
 
@@ -973,10 +1009,10 @@ impl<T: RingMem> ProcessLoop<T> {
         match message {
             // GET infrastructure - not part of the GET protocol itself.
             // No direct interaction with the host.
-            Msg::FlushWrites(mesh::rpc::Rpc((), response)) => {
+            Msg::FlushWrites(rpc) => {
                 self.pipe_channels
                     .message_send
-                    .send(WriteRequest::Flush(response));
+                    .send(WriteRequest::Flush(rpc));
             }
             Msg::Inspect(req) => {
                 req.inspect(self);
@@ -1034,7 +1070,9 @@ impl<T: RingMem> ProcessLoop<T> {
             // Host Requests
             Msg::DevicePlatformSettingsV2(req) => {
                 self.push_host_request_handler(|access| {
-                    req.handle_must_succeed(|()| request_device_platform_settings_v2(access))
+                    req.handle_must_succeed(async |()| {
+                        request_device_platform_settings_v2(access).await
+                    })
                 });
             }
             Msg::VmgsFlush(req) => {
@@ -1048,7 +1086,7 @@ impl<T: RingMem> ProcessLoop<T> {
                 });
             }
             Msg::GetVtl2SavedStateFromHost(req) => self.push_host_request_handler(|access| {
-                req.handle_must_succeed(|()| request_saved_state(access))
+                req.handle_must_succeed(async |()| request_saved_state(access).await)
             }),
             Msg::GuestStateProtection(req) => {
                 self.push_basic_host_request_handler(req, |request| *request);
@@ -1065,19 +1103,19 @@ impl<T: RingMem> ProcessLoop<T> {
                 let shared_pool_allocator = self.gpa_allocator.clone();
 
                 self.push_igvm_attest_request_handler(|access| {
-                    req.handle_must_succeed(|request| {
-                        request_igvm_attest(access, *request, shared_pool_allocator)
+                    req.handle_must_succeed(async |request| {
+                        request_igvm_attest(access, *request, shared_pool_allocator).await
                     })
                 });
             }
             Msg::VmgsRead(req) => {
                 self.push_host_request_handler(|access| {
-                    req.handle_must_succeed(|input| request_vmgs_read(access, input))
+                    req.handle_must_succeed(async |input| request_vmgs_read(access, input).await)
                 });
             }
             Msg::VmgsWrite(req) => {
                 self.push_host_request_handler(|access| {
-                    req.handle_must_succeed(|input| request_vmgs_write(access, input))
+                    req.handle_must_succeed(async |input| request_vmgs_write(access, input).await)
                 });
             }
             Msg::VpciDeviceControl(req) => {
@@ -1130,18 +1168,21 @@ impl<T: RingMem> ProcessLoop<T> {
                 });
             }
             Msg::SendServicingState(req) => self.push_host_request_handler(move |access| {
-                req.handle_must_succeed(|data| request_send_servicing_state(access, data))
+                req.handle_must_succeed(async |data| {
+                    request_send_servicing_state(access, data).await
+                })
             }),
-            Msg::CompleteStartVtl0(mesh::rpc::Rpc(input, res)) => {
+            Msg::CompleteStartVtl0(rpc) => {
+                let (input, res) = rpc.split();
                 self.complete_start_vtl0(input)?;
-                res.send(());
+                res.complete(());
             }
 
             // Host Notifications (don't require a response)
             Msg::PowerState(state) => {
                 // Queue behind any pending requests to avoid terminating while
                 // something important is in flight.
-                self.push_host_request_handler(move |mut access| async move {
+                self.push_host_request_handler(async move |mut access| {
                     let message = match state {
                         msg::PowerState::PowerOff => get_protocol::PowerOffNotification::new(false)
                             .as_bytes()
@@ -1305,12 +1346,12 @@ impl<T: RingMem> ProcessLoop<T> {
 
     fn handle_modify_vtl2_settings_notification(&mut self, buf: &[u8]) -> Result<(), FatalError> {
         let (request, remaining) =
-            get_protocol::ModifyVtl2SettingsNotification::read_from_prefix_split(buf).ok_or(
+            get_protocol::ModifyVtl2SettingsNotification::read_from_prefix(buf).map_err(|_| {
                 FatalError::MessageSizeGuestNotification {
                     len: buf.len(),
                     notification: get_protocol::GuestNotifications::MODIFY_VTL2_SETTINGS,
-                },
-            )?;
+                }
+            })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let expected_len = request.size as usize;
         if remaining.len() != expected_len {
@@ -1331,12 +1372,12 @@ impl<T: RingMem> ProcessLoop<T> {
         buf: &[u8],
     ) -> Result<(), FatalError> {
         let (request, remaining) =
-            get_protocol::ModifyVtl2SettingsRev1Notification::read_from_prefix_split(buf).ok_or(
-                FatalError::MessageSizeGuestNotification {
+            get_protocol::ModifyVtl2SettingsRev1Notification::read_from_prefix(buf).map_err(
+                |_| FatalError::MessageSizeGuestNotification {
                     len: buf.len(),
                     notification: get_protocol::GuestNotifications::MODIFY_VTL2_SETTINGS_REV1,
                 },
-            )?;
+            )?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let expected_len = request.size as usize;
         if remaining.len() != expected_len {
@@ -1368,17 +1409,13 @@ impl<T: RingMem> ProcessLoop<T> {
         vtl2_settings_buf: Vec<u8>,
         kind: get_protocol::GuestNotifications,
     ) -> Result<(), FatalError> {
-        let (result_send, result_recv) = mesh::oneshot();
-
-        let req = ModifyVtl2SettingsRequest(mesh::rpc::Rpc(vtl2_settings_buf, result_send));
-        let res = result_recv
+        let res = self
+            .guest_notification_listeners
+            .vtl2_settings
+            .try_call_failable(ModifyVtl2SettingsRequest, vtl2_settings_buf)
+            .map_err(|_| FatalError::TooManyGuestNotifications(kind))?
             .map(GuestNotificationResponse::ModifyVtl2Settings)
             .boxed();
-
-        self.guest_notification_listeners
-            .vtl2_settings
-            .send(req)
-            .map_err(|_| FatalError::TooManyGuestNotifications(kind))?;
 
         self.guest_notification_responses.push(res);
         Ok(())
@@ -1439,13 +1476,14 @@ impl<T: RingMem> ProcessLoop<T> {
 
     fn complete_modify_vtl2_settings(
         &mut self,
-        result: Result<Result<(), Vec<Vtl2SettingsErrorInfo>>, RecvError>,
+        result: Result<(), RpcError<Vec<Vtl2SettingsErrorInfo>>>,
     ) -> Result<(), FatalError> {
-        let errors = result.unwrap_or_else(|err| {
-            Err(vec![Vtl2SettingsErrorInfo::new(
+        let errors = result.map_err(|err| match err {
+            RpcError::Call(err) => err,
+            RpcError::Channel(err) => vec![Vtl2SettingsErrorInfo::new(
                 underhill_config::Vtl2SettingsErrorCode::InternalFailure,
                 err.to_string(),
-            )])
+            )],
         });
 
         let (status, errors_json) = match errors {
@@ -1523,7 +1561,9 @@ async fn request_device_platform_settings_v2(
     let mut result = Vec::new();
     loop {
         let buf = access.recv_response().await;
-        let header = get_protocol::HeaderHostResponse::read_from_prefix(buf.as_slice()).unwrap();
+        let header = get_protocol::HeaderHostResponse::read_from_prefix(buf.as_slice())
+            .unwrap()
+            .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         // Protocol wart: request is sent as a
         // `HostRequests::DEVICE_PLATFORM_SETTINGS_V2`, but the host will send
@@ -1540,13 +1580,13 @@ async fn request_device_platform_settings_v2(
         match header.message_id {
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2 => {
                 let (response, remaining) =
-                    get_protocol::DevicePlatformSettingsResponseV2::read_from_prefix_split(
+                    get_protocol::DevicePlatformSettingsResponseV2::read_from_prefix(
                         buf.as_slice(),
                     )
-                    .ok_or(FatalError::MessageSizeHostResponse {
+                    .map_err(|_| FatalError::MessageSizeHostResponse {
                         len: buf.len(),
                         response: HostRequests::DEVICE_PLATFORM_SETTINGS_V2,
-                    })?;
+                    })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                 if response.size as usize != remaining.len() {
                     return Err(FatalError::DevicePlatformSettingsV2Payload {
@@ -1560,13 +1600,13 @@ async fn request_device_platform_settings_v2(
             }
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2_REV1 => {
                 let (response, remaining) =
-                    get_protocol::DevicePlatformSettingsResponseV2Rev1::read_from_prefix_split(
+                    get_protocol::DevicePlatformSettingsResponseV2Rev1::read_from_prefix(
                         buf.as_slice(),
                     )
-                    .ok_or(FatalError::MessageSizeGuestNotification {
+                    .map_err(|_| FatalError::MessageSizeGuestNotification {
                         len: buf.len(),
                         notification: get_protocol::GuestNotifications::MODIFY_VTL2_SETTINGS_REV1,
-                    })?;
+                    })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                 if remaining.len() != (response.size as usize) {
                     return Err(FatalError::DevicePlatformSettingsV2Payload {
@@ -1613,13 +1653,11 @@ async fn request_vmgs_read(
     let buf = access.recv_response().await;
 
     let vmgs_buf_len = (sector_count * sector_size) as usize;
-    let (response, remaining) = get_protocol::VmgsReadResponse::read_from_prefix_split(
-        buf.as_slice(),
-    )
-    .ok_or(FatalError::MessageSizeHostResponse {
-        len: buf.len(),
-        response: HostRequests::VMGS_READ,
-    })?;
+    let (response, remaining) = get_protocol::VmgsReadResponse::read_from_prefix(buf.as_slice())
+        .map_err(|_| FatalError::MessageSizeHostResponse {
+            len: buf.len(),
+            response: HostRequests::VMGS_READ,
+        })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
     if response.message_header.message_id != HostRequests::VMGS_READ {
         return Err(FatalError::ResponseHeaderMismatchId(
@@ -1668,9 +1706,9 @@ async fn request_send_servicing_state(
     let saved_state_buf = match result {
         Ok(saved_state_buf) => saved_state_buf,
         Err(_err) => {
-            // TODO: send error to host.
+            // Sends a failure notification to host.
             return access
-                .send_request_fixed_size(&get_protocol::SaveGuestVtl2StateRequest::new(
+                .send_failed_save_state(&get_protocol::SaveGuestVtl2StateRequest::new(
                     get_protocol::GuestVtl2SaveRestoreStatus::FAILURE,
                 ))
                 .await
@@ -1745,13 +1783,11 @@ async fn request_saved_state(
         let message_buf = access.recv_response().await;
 
         let (response_header, remaining) =
-            get_protocol::RestoreGuestVtl2StateResponse::read_from_prefix_split(
-                message_buf.as_slice(),
-            )
-            .ok_or(FatalError::MessageSizeHostResponse {
+            get_protocol::RestoreGuestVtl2StateResponse::read_from_prefix(message_buf.as_slice())
+                .map_err(|_| FatalError::MessageSizeHostResponse {
                 len: message_buf.len(),
                 response: HostRequests::RESTORE_GUEST_VTL2_STATE,
-            })?;
+            })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let message_id = response_header.message_header.message_id;
         if message_id != HostRequests::RESTORE_GUEST_VTL2_STATE {
@@ -1797,12 +1833,12 @@ async fn request_saved_state(
 async fn request_igvm_attest(
     mut access: HostRequestPipeAccess,
     request: msg::IgvmAttestRequestData,
-    gpa_allocator: Option<Arc<dyn VfioDmaBuffer>>,
+    gpa_allocator: Option<Arc<dyn DmaClient>>,
 ) -> Result<Result<Vec<u8>, IgvmAttestError>, FatalError> {
     let allocator = gpa_allocator.ok_or(FatalError::GpaAllocatorUnavailable)?;
     let dma_size = request.response_buffer_len;
     let mem = allocator
-        .create_dma_buffer(dma_size)
+        .allocate_dma_buffer(dma_size)
         .map_err(FatalError::GpaMemoryAllocationError)?;
 
     // Host expects the vTOM bit to be stripped
@@ -1827,7 +1863,8 @@ async fn request_igvm_attest(
     let response = access.recv_response().await;
 
     // Validate the response and returns the validated data.
-    let Some(response) = get_protocol::IgvmAttestResponse::read_from_prefix(&response) else {
+    // TODO: zerocopy: use error here, use rest of range (https://github.com/microsoft/openvmm/issues/759)
+    let Ok((response, _)) = get_protocol::IgvmAttestResponse::read_from_prefix(&response) else {
         Err(FatalError::DeserializeIgvmAttestResponse)?
     };
 

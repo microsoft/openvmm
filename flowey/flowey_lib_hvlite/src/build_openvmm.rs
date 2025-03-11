@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 pub enum OpenvmmFeature {
     Gdb,
     Tpm,
+    UnstableWhp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -92,6 +93,7 @@ impl FlowNode for Node {
                             done: v,
                         }
                     })),
+                    OpenvmmFeature::UnstableWhp => {}
                 }
             }
 
@@ -106,6 +108,7 @@ impl FlowNode for Node {
                         match f {
                             OpenvmmFeature::Gdb => "gdb",
                             OpenvmmFeature::Tpm => "tpm",
+                            OpenvmmFeature::UnstableWhp => "unstable_whp",
                         }
                         .into()
                     })

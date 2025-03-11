@@ -1,5 +1,8 @@
 #!/usr/bin/python3
 
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
 #
 # There is a similar tool implemented in C inside the Linux kernel source tree.
 # The goal for this one has been to be independent of the kernel source tree,
@@ -72,7 +75,7 @@ import stat
 import time
 import warnings
 
-from typing import BinaryIO
+from typing import BinaryIO, List
 
 
 class CpioEntry(object):
@@ -538,12 +541,12 @@ class CfgCondEval:
 
 
 class InitRamFsConfig:
-    def __init__(self, file_names) -> None:
+    def __init__(self, config_files: List[str]) -> None:
         self.cpio_entries = []
         inode = 721
 
-        for file_name in file_names:
-            with open(file_name, 'rt') as f:
+        for config_file in config_files:
+            with open(config_file, 'rt') as f:
                 cfg_cond = False
                 skip_next_line = False
                 for line_idx, line in enumerate(f):
@@ -630,10 +633,10 @@ def __open_output_stream(file_name: str, compression: str):
         raise Exception("Unknown compression algorithm")
 
 
-def create_cpio_from_config(config_file: str, output_file: str, compression: str):
+def create_cpio_from_config(config_files: List[str], output_file: str, compression: str):
     with __open_output_stream(output_file, compression) as ostream:
         with CpioRamFs(ostream) as cpio:
-            config = InitRamFsConfig(config_file)
+            config = InitRamFsConfig(config_files)
             for entry in config.entries():
                 cpio.write(entry)
 
@@ -679,6 +682,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if not os.path.isdir(args.config_file_or_dir):
-        create_cpio_from_config(args.config_file_or_dir, args.output_file, args.compression)
+        create_cpio_from_config([args.config_file_or_dir], args.output_file, args.compression)
     else:
         create_cpio_from_dir(args.config_file_or_dir, args.output_file, args.compression)

@@ -3,8 +3,6 @@
 
 //! Emulator for 16550 serial UART.
 
-#![warn(missing_docs)]
-
 pub mod resolver;
 mod spec;
 

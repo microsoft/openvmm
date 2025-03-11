@@ -3,7 +3,7 @@
 
 [package]
 name = "net_dio"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(windows)'.dependencies]

@@ -4,23 +4,28 @@
 //! See [`OpenvmmKnownPathsTestArtifactResolver`].
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ErasedArtifactHandle;
 use std::env::consts::EXE_EXTENSION;
 use std::path::Path;
 use std::path::PathBuf;
-use tempfile::TempDir;
 use vmm_test_images::KnownIso;
 use vmm_test_images::KnownVhd;
 
-/// An implementation of [`petri_artifacts_core::TestArtifactResolverBackend`]
+/// An implementation of [`petri_artifacts_core::ResolveTestArtifact`]
 /// that resolves artifacts to various "known paths" within the context of
 /// the OpenVMM repository.
-pub struct OpenvmmKnownPathsTestArtifactResolver;
+pub struct OpenvmmKnownPathsTestArtifactResolver<'a>(&'a str);
 
-impl petri_artifacts_core::TestArtifactResolverBackend for OpenvmmKnownPathsTestArtifactResolver {
+impl<'a> OpenvmmKnownPathsTestArtifactResolver<'a> {
+    /// Creates a new resolver for a test with the given name.
+    pub fn new(test_name: &'a str) -> Self {
+        Self(test_name)
+    }
+}
+
+impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifactResolver<'_> {
     #[rustfmt::skip]
     fn resolve(&self, id: ErasedArtifactHandle) -> anyhow::Result<PathBuf> {
         use petri_artifacts_common::artifacts as common;
@@ -32,10 +37,9 @@ impl petri_artifacts_core::TestArtifactResolverBackend for OpenvmmKnownPathsTest
             _ if id == common::PIPETTE_WINDOWS_AARCH64 => pipette_path(MachineArch::Aarch64, PipetteFlavor::Windows),
             _ if id == common::PIPETTE_LINUX_AARCH64 => pipette_path(MachineArch::Aarch64, PipetteFlavor::Linux),
 
-            _ if id == common::TEST_LOG_DIRECTORY => test_log_directory_path(),
+            _ if id == common::TEST_LOG_DIRECTORY => test_log_directory_path(self.0),
 
             _ if id == OPENVMM_NATIVE => openvmm_native_executable_path(),
-            _ if id == OPENHCL_DUMP_DIRECTORY => openhcl_dump_path(),
 
             _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_X64 => linux_direct_x64_test_kernel_path(),
             _ if id == loadable::LINUX_DIRECT_TEST_KERNEL_AARCH64 => linux_direct_arm_image_path(),
@@ -47,9 +51,10 @@ impl petri_artifacts_core::TestArtifactResolverBackend for OpenvmmKnownPathsTest
             _ if id == loadable::UEFI_FIRMWARE_X64 => uefi_firmware_path(MachineArch::X86_64),
             _ if id == loadable::UEFI_FIRMWARE_AARCH64 => uefi_firmware_path(MachineArch::Aarch64),
 
-            _ if id == openhcl_igvm::LATEST_STANDARD_X64 => openhcl_bin_path(OpenhclVersion::Latest, OpenhclFlavor::Standard),
-            _ if id == openhcl_igvm::LATEST_CVM_X64 => openhcl_bin_path(OpenhclVersion::Latest, OpenhclFlavor::Cvm),
-            _ if id == openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_bin_path(OpenhclVersion::Latest, OpenhclFlavor::LinuxDirect),
+            _ if id == openhcl_igvm::LATEST_STANDARD_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Standard),
+            _ if id == openhcl_igvm::LATEST_CVM_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Cvm),
+            _ if id == openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::LinuxDirect),
+            _ if id == openhcl_igvm::LATEST_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::Standard),
 
             _ if id == openhcl_igvm::um_bin::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_extras_path(OpenhclVersion::Latest,OpenhclFlavor::LinuxDirect,OpenhclExtras::UmBin),
             _ if id == openhcl_igvm::um_dbg::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_extras_path(OpenhclVersion::Latest,OpenhclFlavor::LinuxDirect,OpenhclExtras::UmDbg),
@@ -272,9 +277,13 @@ fn uefi_firmware_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
 }
 
 /// Path to the output location of the requested OpenHCL package.
-fn openhcl_bin_path(version: OpenhclVersion, flavor: OpenhclFlavor) -> anyhow::Result<PathBuf> {
-    let (path, name, cmd) = match (version, flavor) {
-        (OpenhclVersion::Latest, OpenhclFlavor::Standard) => (
+fn openhcl_bin_path(
+    arch: MachineArch,
+    version: OpenhclVersion,
+    flavor: OpenhclFlavor,
+) -> anyhow::Result<PathBuf> {
+    let (path, name, cmd) = match (arch, version, flavor) {
+        (MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Standard) => (
             "flowey-out/artifacts/build-igvm/debug/x64",
             "openhcl-x64.bin",
             MissingCommand::XFlowey {
@@ -282,7 +291,7 @@ fn openhcl_bin_path(version: OpenhclVersion, flavor: OpenhclFlavor) -> anyhow::R
                 xflowey_args: &["build-igvm", "x64"],
             },
         ),
-        (OpenhclVersion::Latest, OpenhclFlavor::Cvm) => (
+        (MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Cvm) => (
             "flowey-out/artifacts/build-igvm/debug/x64-cvm",
             "openhcl-x64-cvm.bin",
             MissingCommand::XFlowey {
@@ -290,7 +299,7 @@ fn openhcl_bin_path(version: OpenhclVersion, flavor: OpenhclFlavor) -> anyhow::R
                 xflowey_args: &["build-igvm", "x64-cvm"],
             },
         ),
-        (OpenhclVersion::Latest, OpenhclFlavor::LinuxDirect) => (
+        (MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::LinuxDirect) => (
             "flowey-out/artifacts/build-igvm/debug/x64-test-linux-direct",
             "openhcl-x64-test-linux-direct.bin",
             MissingCommand::XFlowey {
@@ -298,6 +307,15 @@ fn openhcl_bin_path(version: OpenhclVersion, flavor: OpenhclFlavor) -> anyhow::R
                 xflowey_args: &["build-igvm", "x64-test-linux-direct"],
             },
         ),
+        (MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::Standard) => (
+            "flowey-out/artifacts/build-igvm/debug/aarch64",
+            "openhcl-aarch64.bin",
+            MissingCommand::XFlowey {
+                description: "OpenHCL IGVM file",
+                xflowey_args: &["build-igvm", "aarch64"],
+            },
+        ),
+        _ => anyhow::bail!("no openhcl bin with given arch, version, and flavor"),
     };
 
     get_path(path, name, cmd)
@@ -334,30 +352,18 @@ fn openhcl_extras_path(
     )
 }
 
-/// Path to our standard test output directory.
-fn test_log_directory_path() -> anyhow::Result<PathBuf> {
-    Ok(if let Some(path) = std::env::var_os("TEST_OUTPUT_PATH") {
+/// Path to the per-test test output directory.
+fn test_log_directory_path(test_name: &str) -> anyhow::Result<PathBuf> {
+    let root = if let Some(path) = std::env::var_os("TEST_OUTPUT_PATH") {
         PathBuf::from(path)
     } else {
         get_repo_root()?.join("vmm_test_results")
-    })
-}
-
-/// Path to the location for OpenHCL crash dump files.
-fn openhcl_dump_path() -> anyhow::Result<PathBuf> {
-    static DUMP_PATH: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
-    Ok(
-        if let Some(path) = std::env::var_os("OPENHCL_DUMP_PATH")
-            .or_else(|| std::env::var_os("HVLITE_UNDERHILL_DUMP_PATH"))
-        {
-            PathBuf::from(path)
-        } else {
-            DUMP_PATH
-                .get_or_init(|| TempDir::new().unwrap())
-                .path()
-                .to_owned()
-        },
-    )
+    };
+    // Use a per-test subdirectory, replacing `::` with `__` to avoid issues
+    // with filesystems that don't support `::` in filenames.
+    let path = root.join(test_name.replace("::", "__"));
+    fs_err::create_dir_all(&path)?;
+    Ok(path)
 }
 
 const VMM_TESTS_DIR_ENV_VAR: &str = "VMM_TESTS_CONTENT_DIR";
@@ -453,7 +459,7 @@ pub fn get_output_executable_path(name: &str) -> anyhow::Result<PathBuf> {
 /// A description of a command that can be run to create a missing file.
 // DEVNOTE: `pub` in order to re-use logic in closed-source known_paths resolver
 #[derive(Copy, Clone)]
-#[allow(missing_docs)] // Self-describing field names.
+#[expect(missing_docs)] // Self-describing field names.
 pub enum MissingCommand<'a> {
     /// A `cargo build` invocation.
     Build {
@@ -470,7 +476,7 @@ pub enum MissingCommand<'a> {
         description: &'a str,
         xflowey_args: &'a [&'a str],
     },
-    /// A `ci/restore.sh` invocation.
+    /// A `xflowey restore-packages` invocation.
     Restore { description: &'a str },
     /// A custom command.
     Custom { description: &'a str, cmd: &'a str },
@@ -499,7 +505,7 @@ impl MissingCommand<'_> {
                     args.join(" ")
                 ),
             MissingCommand::Restore { description } => {
-                anyhow::bail!("Failed to find {}. Run ci/restore.sh.", description)
+                anyhow::bail!("Failed to find {}. Run `cargo xflowey restore-packages`.", description)
             }
             MissingCommand::Custom { description, cmd } => {
                 anyhow::bail!(

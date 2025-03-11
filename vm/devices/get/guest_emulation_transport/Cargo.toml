@@ -3,7 +3,7 @@
 
 [package]
 name = "guest_emulation_transport"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -40,8 +40,6 @@ thiserror.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
-zerocopy_helpers.workspace = true
-
 vmbus_user_channel.workspace = true
 
 [dev-dependencies]

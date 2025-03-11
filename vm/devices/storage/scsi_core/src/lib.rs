@@ -4,7 +4,6 @@
 //! Core SCSI traits and types.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
@@ -98,7 +97,7 @@ pub trait ScsiSaveRestore {
 pub mod save_restore {
     //! SCSI device saved state definitions.
 
-    #![allow(missing_docs)]
+    #![expect(missing_docs)]
 
     use mesh::payload::Protobuf;
 
@@ -147,7 +146,7 @@ pub mod save_restore {
     }
 
     #[derive(Debug, Default, PartialEq, Eq, Copy, Clone, inspect::Inspect, Protobuf)]
-    #[allow(clippy::enum_variant_names)]
+    #[expect(clippy::enum_variant_names)]
     #[mesh(package = "storage.scsi.dvd")]
     pub enum DriveState {
         #[mesh(1)]

@@ -3,7 +3,6 @@
 
 //! Resource definitions for PCI devices.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use chipset_device::mmio::RegisterMmioIntercept;

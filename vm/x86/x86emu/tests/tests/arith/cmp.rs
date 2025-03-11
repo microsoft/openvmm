@@ -4,7 +4,8 @@
 use crate::tests::common::run_test;
 use crate::tests::common::RFLAGS_ARITH_MASK;
 use iced_x86::code_asm::*;
-use x86emu::CpuState;
+use x86emu::Cpu;
+use x86emu::Gp;
 
 #[test]
 fn cmp_memory_to_regvalue() {
@@ -23,17 +24,17 @@ fn cmp_memory_to_regvalue() {
     ];
 
     for &(left, right, rflags) in &variations {
-        let (state, _cpu) = run_test(
+        let mut cpu = run_test(
             RFLAGS_ARITH_MASK,
             |asm| asm.cmp(dword_ptr(rax + 0x10), eax),
-            |state, cpu| {
-                state.gps[CpuState::RAX] = right;
-                cpu.valid_gva = state.gps[CpuState::RAX].wrapping_add(0x10);
+            |cpu| {
+                cpu.set_gp(Gp::RAX.into(), right);
+                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
                 cpu.mem_val = left;
             },
         );
 
-        assert_eq!(state.rflags & RFLAGS_ARITH_MASK, rflags.into());
+        assert_eq!(cpu.rflags() & RFLAGS_ARITH_MASK, rflags.into());
     }
 }
 
@@ -55,17 +56,17 @@ fn cmp_memory_to_regvalue64() {
     ];
 
     for &(left, right, rflags) in &variations {
-        let (state, _cpu) = run_test(
+        let mut cpu = run_test(
             RFLAGS_ARITH_MASK,
             |asm| asm.cmp(qword_ptr(rax + 0x10), rax),
-            |state, cpu| {
-                state.gps[CpuState::RAX] = right;
-                cpu.valid_gva = state.gps[CpuState::RAX].wrapping_add(0x10);
+            |cpu| {
+                cpu.set_gp(Gp::RAX.into(), right);
+                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
                 cpu.mem_val = left;
             },
         );
 
-        assert_eq!(state.rflags & RFLAGS_ARITH_MASK, rflags.into());
+        assert_eq!(cpu.rflags() & RFLAGS_ARITH_MASK, rflags.into());
     }
 }
 
@@ -93,17 +94,17 @@ fn cmp_memory_to_regvalue_byte() {
     ];
 
     for &(left, right, rflags) in &variations {
-        let (state, _cpu) = run_test(
+        let mut cpu = run_test(
             RFLAGS_ARITH_MASK,
             |asm| asm.cmp(al, byte_ptr(rax + 0x10)),
-            |state, cpu| {
-                state.gps[CpuState::RAX] = left;
-                cpu.valid_gva = state.gps[CpuState::RAX].wrapping_add(0x10);
+            |cpu| {
+                cpu.set_gp(Gp::RAX.into(), left);
+                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
                 cpu.mem_val = right;
             },
         );
 
-        assert_eq!(state.rflags & RFLAGS_ARITH_MASK, rflags.into());
+        assert_eq!(cpu.rflags() & RFLAGS_ARITH_MASK, rflags.into());
     }
 }
 
@@ -131,17 +132,17 @@ fn cmp_regvalue_to_memory() {
     ];
 
     for &(left, right, rflags) in &variations {
-        let (state, _cpu) = run_test(
+        let mut cpu = run_test(
             RFLAGS_ARITH_MASK,
             |asm| asm.cmp(eax, dword_ptr(rax + 0x10)),
-            |state, cpu| {
-                state.gps[CpuState::RAX] = left;
-                cpu.valid_gva = state.gps[CpuState::RAX].wrapping_add(0x10);
+            |cpu| {
+                cpu.set_gp(Gp::RAX.into(), left);
+                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
                 cpu.mem_val = right;
             },
         );
 
-        assert_eq!(state.rflags & RFLAGS_ARITH_MASK, rflags.into());
+        assert_eq!(cpu.rflags() & RFLAGS_ARITH_MASK, rflags.into());
     }
 }
 
@@ -169,17 +170,17 @@ fn cmp_regvalue_to_memory64() {
     ];
 
     for &(left, right, rflags) in &variations {
-        let (state, _cpu) = run_test(
+        let mut cpu = run_test(
             RFLAGS_ARITH_MASK,
             |asm| asm.cmp(rax, qword_ptr(rax + 0x10)),
-            |state, cpu| {
-                state.gps[CpuState::RAX] = left;
-                cpu.valid_gva = state.gps[CpuState::RAX].wrapping_add(0x10);
+            |cpu| {
+                cpu.set_gp(Gp::RAX.into(), left);
+                cpu.valid_gva = cpu.gp(Gp::RAX.into()).wrapping_add(0x10);
                 cpu.mem_val = right;
             },
         );
 
-        assert_eq!(state.rflags & RFLAGS_ARITH_MASK, rflags.into());
+        assert_eq!(cpu.rflags() & RFLAGS_ARITH_MASK, rflags.into());
     }
 }
 
@@ -203,16 +204,16 @@ fn cmp_memory_to_byte() {
     ];
 
     for &(left, right, rflags) in &variations {
-        let (state, _cpu) = run_test(
+        let mut cpu = run_test(
             RFLAGS_ARITH_MASK,
             |asm| asm.cmp(dword_ptr(rax), right),
-            |state, cpu| {
-                state.gps[CpuState::RAX] = 0x1234;
-                cpu.valid_gva = state.gps[CpuState::RAX];
+            |cpu| {
+                cpu.set_gp(Gp::RAX.into(), 0x1234);
+                cpu.valid_gva = cpu.gp(Gp::RAX.into());
                 cpu.mem_val = left;
             },
         );
 
-        assert_eq!(state.rflags & RFLAGS_ARITH_MASK, rflags.into());
+        assert_eq!(cpu.rflags() & RFLAGS_ARITH_MASK, rflags.into());
     }
 }

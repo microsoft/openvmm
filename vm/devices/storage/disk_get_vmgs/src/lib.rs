@@ -8,7 +8,6 @@
 //! device.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 
 use disk_backend::DiskError;
 use disk_backend::DiskIo;

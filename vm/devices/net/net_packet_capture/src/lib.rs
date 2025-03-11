@@ -3,6 +3,8 @@
 
 //! `pcapng` compatible packet capture endpoint implementation.
 
+#![expect(missing_docs)]
+
 use async_trait::async_trait;
 use futures::lock::Mutex;
 use futures::FutureExt;
@@ -136,7 +138,7 @@ enum PacketCaptureEndpointCommand {
 }
 
 pub struct PacketCaptureEndpointControl {
-    control_tx: Arc<mesh::Sender<PacketCaptureEndpointCommand>>,
+    control_tx: mesh::Sender<PacketCaptureEndpointCommand>,
 }
 
 impl PacketCaptureEndpointControl {
@@ -198,7 +200,6 @@ impl InspectMut for PacketCaptureEndpoint {
 impl PacketCaptureEndpoint {
     pub fn new(endpoint: Box<dyn Endpoint>, id: String) -> (Self, PacketCaptureEndpointControl) {
         let (control_tx, control_rx) = mesh::channel();
-        let control_tx = Arc::new(control_tx);
         let control = PacketCaptureEndpointControl {
             control_tx: control_tx.clone(),
         };
@@ -310,7 +311,7 @@ impl Endpoint for PacketCaptureEndpoint {
                 Message::PacketCaptureEndpointCommand(
                     PacketCaptureEndpointCommand::PacketCapture(rpc),
                 ) => {
-                    let options = rpc.0;
+                    let (options, response) = rpc.split();
                     let result = async {
                         let id = &self.id;
                         let start = match options.operation {
@@ -341,7 +342,7 @@ impl Endpoint for PacketCaptureEndpoint {
                         Err(e) => (Err(e), false),
                         Ok(value) => (Ok(()), value),
                     };
-                    rpc.1.send(result.map_err(RemoteError::new));
+                    response.complete(result.map_err(RemoteError::new));
                     if restart_required {
                         break EndpointAction::RestartRequired;
                     }
@@ -363,11 +364,11 @@ struct Pcap {
     interface_descriptor_written: AtomicBool,
     enabled: AtomicBool,
     snaplen: AtomicUsize,
-    endpoint_control: Arc<mesh::Sender<PacketCaptureEndpointCommand>>,
+    endpoint_control: mesh::Sender<PacketCaptureEndpointCommand>,
 }
 
 impl Pcap {
-    fn new(endpoint_control: Arc<mesh::Sender<PacketCaptureEndpointCommand>>) -> Self {
+    fn new(endpoint_control: mesh::Sender<PacketCaptureEndpointCommand>) -> Self {
         Self {
             enabled: AtomicBool::new(false),
             snaplen: AtomicUsize::new(65535),

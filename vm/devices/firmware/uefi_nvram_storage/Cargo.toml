@@ -3,7 +3,7 @@
 
 [package]
 name = "uefi_nvram_storage"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -21,7 +21,6 @@ async-trait.workspace = true
 thiserror.workspace = true
 wchar.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 pal_async.workspace = true
 

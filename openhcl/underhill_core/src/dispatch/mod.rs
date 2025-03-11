@@ -10,6 +10,7 @@ use self::vtl2_settings_worker::DeviceInterfaces;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::emuplat::EmuplatServicing;
 use crate::nvme_manager::NvmeManager;
+use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
 use crate::servicing::NvmeSavedState;
@@ -33,7 +34,6 @@ use hyperv_ic_resources::shutdown::ShutdownType;
 use igvm_defs::MemoryMapEntryType;
 use inspect::Inspect;
 use mesh::error::RemoteError;
-use mesh::error::RemoteResult;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
@@ -41,7 +41,8 @@ use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
-use page_pool_alloc::PagePool;
+use openhcl_dma_manager::DmaClientSpawner;
+use openhcl_dma_manager::OpenhclDmaManager;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
@@ -105,10 +106,11 @@ pub trait LoadedVmNetworkSettings: Inspect {
         threadpool: &AffinitizedThreadpool,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        shared_vis_pages_pool: &Option<PagePool>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
+        dma_client_spawner: DmaClientSpawner,
+        is_isolated: bool,
     ) -> anyhow::Result<RuntimeSavedState>;
 
     /// Callback when network is removed externally.
@@ -141,6 +143,7 @@ pub(crate) struct LoadedVm {
     pub nvme_manager: Option<NvmeManager>,
     pub emuplat_servicing: EmuplatServicing,
     pub device_interfaces: Option<DeviceInterfaces>,
+    pub vmbus_client: Option<vmbus_client::VmbusClient>,
     /// Memory map with IGVM types for each range.
     pub vtl0_memory_map: Vec<(MemoryRangeWithNode, MemoryMapEntryType)>,
 
@@ -177,13 +180,13 @@ pub(crate) struct LoadedVm {
 
     pub _periodic_telemetry_task: Task<()>,
 
-    pub shared_vis_pool: Option<PagePool>,
-    pub private_pool: Option<PagePool>,
     pub nvme_keep_alive: bool,
+    pub test_configuration: Option<TestScenarioConfig>,
+    pub dma_manager: OpenhclDmaManager,
 }
 
 pub struct LoadedVmState<T> {
-    pub restart_response: mesh::OneshotSender<RemoteResult<T>>,
+    pub restart_rpc: FailableRpc<(), T>,
     pub servicing_state: ServicingState,
     pub vm_rpc: mesh::Receiver<UhVmRpc>,
     pub control_send: mesh::Sender<ControlRequest>,
@@ -262,16 +265,16 @@ impl LoadedVm {
                 Event::WorkerRpcGone => break None,
                 Event::WorkerRpc(message) => match message {
                     WorkerRpc::Stop => break None,
-                    WorkerRpc::Restart(response) => {
+                    WorkerRpc::Restart(rpc) => {
                         let state = async {
                             let running = self.stop().await;
                             match self.save(None, false).await {
-                                Ok(servicing_state) => Some((response, servicing_state)),
+                                Ok(servicing_state) => Some((rpc, servicing_state)),
                                 Err(err) => {
                                     if running {
                                         self.start(None).await;
                                     }
-                                    response.send(Err(RemoteError::new(err)));
+                                    rpc.complete(Err(RemoteError::new(err)));
                                     None
                                 }
                             }
@@ -279,9 +282,9 @@ impl LoadedVm {
                         .instrument(tracing::info_span!("restart"))
                         .await;
 
-                        if let Some((response, servicing_state)) = state {
+                        if let Some((rpc, servicing_state)) = state {
                             break Some(LoadedVmState {
-                                restart_response: response,
+                                restart_rpc: rpc,
                                 servicing_state,
                                 vm_rpc,
                                 control_send: self.control_send.lock().take().unwrap(),
@@ -304,9 +307,8 @@ impl LoadedVm {
                             "vtl0_memory_map",
                             inspect_helpers::vtl0_memory_map(&self.vtl0_memory_map),
                         );
-                        resp.field("shared_vis_pool", &self.shared_vis_pool);
-                        resp.field("private_pool", &self.private_pool);
                         resp.field("memory", &self.memory);
+                        resp.field("dma_manager", &self.dma_manager);
                     }),
                 },
                 Event::Vtl2ConfigNicRpc(message) => {
@@ -314,7 +316,7 @@ impl LoadedVm {
                 }
                 Event::UhVmRpc(msg) => match msg {
                     UhVmRpc::Resume(rpc) => {
-                        rpc.handle(|()| async {
+                        rpc.handle(async |()| {
                             if !self.state_units.is_running() {
                                 self.start(None).await;
                                 true
@@ -324,9 +326,9 @@ impl LoadedVm {
                         })
                         .await
                     }
-                    UhVmRpc::Pause(rpc) => rpc.handle(|()| self.stop()).await,
+                    UhVmRpc::Pause(rpc) => rpc.handle(async |()| self.stop().await).await,
                     UhVmRpc::Save(rpc) => {
-                        rpc.handle_failable(|()| async {
+                        rpc.handle_failable(async |()| {
                             let running = self.stop().await;
                             let r = self.save(None, false).await;
                             if running {
@@ -337,10 +339,11 @@ impl LoadedVm {
                         .await
                     }
                     UhVmRpc::ClearHalt(rpc) => {
-                        rpc.handle(|()| self.partition_unit.clear_halt()).await
+                        rpc.handle(async |()| self.partition_unit.clear_halt().await)
+                            .await
                     }
                     UhVmRpc::PacketCapture(rpc) => {
-                        rpc.handle_failable(|params| async {
+                        rpc.handle_failable(async |params| {
                             let network_settings = self
                                 .network_settings
                                 .as_ref()
@@ -379,7 +382,7 @@ impl LoadedVm {
                     }
                 }
                 Event::ShutdownRequest(rpc) => {
-                    rpc.handle(|msg| async {
+                    rpc.handle(async |msg| {
                         if matches!(msg.shutdown_type, ShutdownType::Hibernate) {
                             self.handle_hibernate_request(false).await;
                         }
@@ -434,11 +437,24 @@ impl LoadedVm {
         deadline: std::time::Instant,
         capabilities_flags: SaveGuestVtl2StateFlags,
     ) -> anyhow::Result<bool> {
+        if let Some(TestScenarioConfig::SaveStuck) = self.test_configuration {
+            tracing::info!("Test configuration SERVICING_SAVE_STUCK is set. Waiting indefinitely.");
+            std::future::pending::<()>().await;
+        }
+
         let running = self.state_units.is_running();
         let success = match self
             .handle_servicing_inner(correlation_id, deadline, capabilities_flags)
             .await
-        {
+            .and_then(|state| {
+                if let Some(TestScenarioConfig::SaveFail) = self.test_configuration {
+                    tracing::info!(
+                        "Test configuration SERVICING_SAVE_FAIL is set. Failing the save."
+                    );
+                    return Err(anyhow::anyhow!("Simulated servicing save failure"));
+                }
+                Ok(state)
+            }) {
             Ok(state) => {
                 self.get_client
                     .send_servicing_state(mesh::payload::encode(state))
@@ -470,7 +486,7 @@ impl LoadedVm {
         &mut self,
         correlation_id: Guid,
         deadline: std::time::Instant,
-        _capabilities_flags: SaveGuestVtl2StateFlags,
+        capabilities_flags: SaveGuestVtl2StateFlags,
     ) -> anyhow::Result<ServicingState> {
         if self.isolation.is_isolated() {
             anyhow::bail!("Servicing is not yet supported for isolated VMs");
@@ -478,10 +494,10 @@ impl LoadedVm {
 
         // NOTE: This is set via the corresponding env arg, as this feature is
         // experimental.
-        let nvme_keepalive = self.nvme_keep_alive;
+        let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
 
         // Do everything before the log flush under a span.
-        let mut state = async {
+        let r = async {
             if !self.stop().await {
                 // This should only occur if you tried to initiate a
                 // servicing operation after manually pausing underhill
@@ -530,7 +546,16 @@ impl LoadedVm {
             Ok(state)
         }
         .instrument(tracing::info_span!("servicing_save_vtl2", %correlation_id))
-        .await?;
+        .await;
+
+        let mut state = match r {
+            Ok(state) => state,
+            Err(err) => {
+                self.resume_drivers();
+                return Err(err);
+            }
+        };
+
         // Tell the initial process to flush all logs. Any logs
         // emitted after this point may be lost.
         state.init_state.flush_logs_result = Some({
@@ -619,6 +644,21 @@ impl LoadedVm {
         }
     }
 
+    /// Called after a failed servicing operation.
+    ///
+    /// FUTURE: model the drivers as "driver" state units (as opposed to guest
+    /// VM state units) so that we have a consistent way to model their state
+    /// transitions.
+    fn resume_drivers(&mut self) {
+        if let Some(client) = &mut self.vmbus_client {
+            client.start();
+        }
+
+        // BUGBUG: resume the other drivers. This only becomes a problem once
+        // nvme keepalive is enabled, since otherwise no other drivers have been
+        // stopped.
+    }
+
     async fn save(
         &mut self,
         _deadline: Option<std::time::Instant>,
@@ -645,27 +685,25 @@ impl LoadedVm {
             .save()
             .await
             .context("vmgs save failed")?;
-        let shared_vis_pool = self
-            .shared_vis_pool
-            .as_mut()
-            .map(vmcore::save_restore::SaveRestore::save)
-            .transpose()
-            .context("shared_vis_pool save failed")?;
 
-        // Only save private pool state if we are expected to keep VF devices
+        // Only save dma manager state if we are expected to keep VF devices
         // alive across save. Otherwise, don't persist the state at all, as
         // there should be no live DMA across save.
-        let private_pool = if vf_keepalive_flag {
-            self.private_pool
-                .as_mut()
-                .map(vmcore::save_restore::SaveRestore::save)
-                .transpose()
-                .context("private_pool save failed")?
+        let dma_manager_state = if vf_keepalive_flag {
+            use vmcore::save_restore::SaveRestore;
+            Some(self.dma_manager.save().context("dma_manager save failed")?)
         } else {
             None
         };
 
-        Ok(ServicingState {
+        let vmbus_client = if let Some(vmbus_client) = &mut self.vmbus_client {
+            vmbus_client.stop().await;
+            Some(vmbus_client.save().await)
+        } else {
+            None
+        };
+
+        let mut state = ServicingState {
             init_state: servicing::ServicingInitState {
                 firmware_type: self.firmware_type.into(),
                 vm_stop_reference_time: self.last_state_unit_stop.unwrap().as_100ns(),
@@ -675,11 +713,16 @@ impl LoadedVm {
                 vmgs: (vmgs, self.vmgs_disk_metadata.clone()),
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
                 nvme_state,
-                shared_pool_state: shared_vis_pool,
-                private_pool_state: private_pool,
+                dma_manager_state,
+                vmbus_client,
             },
             units,
-        })
+        };
+
+        state
+            .fix_pre_save()
+            .context("failed to fix up servicing state before save")?;
+        Ok(state)
     }
 
     #[instrument(skip(self))]
@@ -733,10 +776,11 @@ impl LoadedVm {
                 threadpool,
                 &self.uevent_listener,
                 &None, // VF getting added; no existing state
-                &self.shared_vis_pool,
                 self.partition.clone(),
                 &self.state_units,
                 &self.vmbus_server,
+                self.dma_manager.client_spawner(),
+                self.isolation.is_isolated(),
             )
             .await?;
 

@@ -4,9 +4,11 @@
 //! The module includes the definitions of data structures according to SEV-SNP specification.
 
 use bitfield_struct::bitfield;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Ioctl type defined by Linux.
 pub const SNP_GUEST_REQ_IOC_TYPE: u8 = b'S';
@@ -30,7 +32,7 @@ pub struct SnpGuestRequestIoctl {
 
 /// VMM error code.
 #[repr(C)]
-#[derive(FromZeroes)]
+#[derive(FromZeros, Immutable, KnownLayout)]
 pub struct VmmErrorCode {
     /// Firmware error
     pub fw_error: u32,
@@ -41,7 +43,7 @@ pub struct VmmErrorCode {
 /// Request structure for the `SNP_GET_REPORT` ioctl.
 /// See `MSG_REPORT_REQ` in Table 21, "SEV Secure Nested Paging Firmware ABI specification", Revision 1.55.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SnpReportReq {
     /// Guest-provided data to be included in the attestation report.
     pub user_data: [u8; 64],
@@ -62,7 +64,7 @@ const LINUX_SNP_REPORT_RESP_DATA_SIZE: usize = 4000;
 /// Response structure for the `SNP_GET_REPORT` ioctl.
 /// See `MSG_REPORT_RSP` in Table 24, "SEV Secure Nested Paging Firmware ABI specification", Revision 1.55.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SnpReportResp {
     /// The status of key derivation operation.
     /// 0h: Success.
@@ -90,7 +92,7 @@ pub const SNP_REPORT_DATA_SIZE: usize = 64;
 /// Report structure.
 /// See `ATTESTATION_REPORT` in Table 22, "SEV Secure Nested Paging Firmware ABI specification", Revision 1.55.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SnpReport {
     /// Version number of this attestation report.
     /// Set to 2h for this specification.
@@ -179,7 +181,7 @@ static_assertions::const_assert_eq!(SNP_REPORT_SIZE, size_of::<SnpReport>());
 /// Request structure for the `SNP_GET_DERIVED_KEY` ioctl.
 /// See `MSG_KEY_REQ` in Table 18, "SEV Secure Nested Paging Firmware ABI specification", Revision 1.55.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SnpDerivedKeyReq {
     /// Selects the root key from which to derive the key.
     /// 0 indicates VCEK
@@ -229,7 +231,7 @@ pub const SNP_DERIVED_KEY_SIZE: usize = 32;
 /// Response structure for the `SNP_GET_DERIVED_KEY` ioctl.
 /// See `MSG_KEY_RSP` in Table 20, "SEV Secure Nested Paging Firmware ABI specification", Revision 1.55.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SnpDerivedKeyResp {
     /// The status of key derivation operation.
     /// 0h: Success.

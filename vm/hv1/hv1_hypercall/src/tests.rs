@@ -20,16 +20,17 @@ use guestmem::PAGE_SIZE;
 use hvdef::hypercall::Control;
 use hvdef::hypercall::HypercallOutput;
 use hvdef::HvError;
-use hvdef::HvRepResult;
 use hvdef::HvResult;
 use hvdef::HV_PAGE_SIZE_USIZE;
 use open_enum::open_enum;
 use sparse_mmap::SparseMapping;
 use std::vec;
 use test_with_tracing::test;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // A useful base pattern to fill into hypercall input and output.
 const FILL_PATTERN: u64 = 0x123456789abcdef0;
@@ -303,42 +304,15 @@ impl From<TestResult> for HypercallOutput {
         match result {
             TestResult::Simple(SimpleResult::Success) => HypercallOutput::new(),
             TestResult::Simple(SimpleResult::Failure(err)) => {
-                HypercallOutput::new().with_call_status(err.0)
+                HypercallOutput::new().with_call_status(Err(err).into())
             }
             TestResult::Rep(RepResult::Success(rep_count)) => {
-                HypercallOutput::new().with_elements_processed(rep_count as u16)
+                HypercallOutput::new().with_elements_processed(rep_count)
             }
             TestResult::Rep(RepResult::Failure(err, rep_count)) => HypercallOutput::new()
-                .with_call_status(err.0)
-                .with_elements_processed(rep_count as u16),
+                .with_call_status(Err(err).into())
+                .with_elements_processed(rep_count),
             _ => panic!("Should not be invoked for VTL"),
-        }
-    }
-}
-
-trait MapToHypercallResult {
-    fn map_to_hypercall_result(
-        &self,
-        rep_count: usize,
-        elements_processed: &mut usize,
-    ) -> HvResult<()>;
-}
-
-impl MapToHypercallResult for HvRepResult {
-    fn map_to_hypercall_result(
-        &self,
-        rep_count: usize,
-        elements_processed: &mut usize,
-    ) -> HvResult<()> {
-        match self {
-            Ok(()) => {
-                *elements_processed = rep_count;
-                Ok(())
-            }
-            Err((e, reps)) => {
-                *elements_processed = *reps;
-                Err(*e)
-            }
         }
     }
 }
@@ -360,7 +334,7 @@ struct TestController {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     enum TestHypercallCode: u16 {
         #![allow(non_upper_case_globals)]
         CallSimpleNoOutput = 0x1001,
@@ -379,19 +353,18 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct TestInput([u8; 16]);
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 struct TestOutput([u8; 16]);
 
 // Simple hypercall with no input or output.
 type TestNull = SimpleHypercall<(), (), { TestHypercallCode::CallNull.0 }>;
 impl HypercallDispatch<TestNull> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, _params: HypercallParameters<'_>) -> HvResult<()> {
-        self.ctrl.simple_null()?;
-        Ok(())
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestNull::run(params, |()| self.ctrl.simple_null())
     }
 }
 
@@ -400,10 +373,8 @@ type TestSimpleNoOutput =
     SimpleHypercall<TestInput, (), { TestHypercallCode::CallSimpleNoOutput.0 }>;
 
 impl HypercallDispatch<TestSimpleNoOutput> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
-        let (input, _) = TestSimpleNoOutput::parse(params);
-        self.ctrl.simple_no_output(input)?;
-        Ok(())
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestSimpleNoOutput::run(params, |input| self.ctrl.simple_no_output(input))
     }
 }
 
@@ -411,10 +382,8 @@ impl HypercallDispatch<TestSimpleNoOutput> for TestHypercallHandler<'_> {
 type TestSimple = SimpleHypercall<TestInput, TestOutput, { TestHypercallCode::CallSimple.0 }>;
 
 impl HypercallDispatch<TestSimple> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
-        let (input, output) = TestSimple::parse(params);
-        *output = self.ctrl.simple(input)?;
-        Ok(())
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestSimple::run(params, |input| self.ctrl.simple(input))
     }
 }
 
@@ -422,22 +391,20 @@ impl HypercallDispatch<TestSimple> for TestHypercallHandler<'_> {
 type TestRepNoOutput = RepHypercall<TestInput, u64, (), { TestHypercallCode::CallRepNoOutput.0 }>;
 
 impl HypercallDispatch<TestRepNoOutput> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
-        let (header, input, _, elements_processed) = TestRepNoOutput::parse(params);
-        self.ctrl
-            .rep_no_output(header, input)
-            .map_to_hypercall_result(input.len(), elements_processed)
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestRepNoOutput::run(params, |header, input, _output| {
+            self.ctrl.rep_no_output(header, input)
+        })
     }
 }
 
 // Rep hypercall with input and output.
 type TestRep = RepHypercall<TestInput, u64, u64, { TestHypercallCode::CallRep.0 }>;
 impl HypercallDispatch<TestRep> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
-        let (header, input, output, elements_processed) = TestRep::parse(params);
-        self.ctrl
-            .rep(header, input, output)
-            .map_to_hypercall_result(input.len(), elements_processed)
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestRep::run(params, |header, input, output| {
+            self.ctrl.rep(header, input, output)
+        })
     }
 }
 
@@ -446,10 +413,10 @@ type TestVariableNoOutput =
     VariableHypercall<TestInput, (), { TestHypercallCode::CallVariableNoOutput.0 }>;
 
 impl HypercallDispatch<TestVariableNoOutput> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
-        let (input, var_header, _) = TestVariableNoOutput::parse(params);
-        self.ctrl.variable_no_output(input, var_header)?;
-        Ok(())
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestVariableNoOutput::run(params, |input, var_header| {
+            self.ctrl.variable_no_output(input, var_header)
+        })
     }
 }
 
@@ -457,10 +424,10 @@ impl HypercallDispatch<TestVariableNoOutput> for TestHypercallHandler<'_> {
 type TestVariable = VariableHypercall<TestInput, TestOutput, { TestHypercallCode::CallVariable.0 }>;
 
 impl HypercallDispatch<TestVariable> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
-        let (input, var_header, output) = TestVariable::parse(params);
-        *output = self.ctrl.variable(input, var_header)?;
-        Ok(())
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestVariable::run(params, |input, var_header| {
+            self.ctrl.variable(input, var_header)
+        })
     }
 }
 
@@ -469,12 +436,10 @@ type TestVariableRep =
     VariableRepHypercall<TestInput, u64, u64, { TestHypercallCode::CallVariableRep.0 }>;
 
 impl HypercallDispatch<TestVariableRep> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
-        let (header, var_header, input, output, elements_processed) =
-            TestVariableRep::parse(params);
-        self.ctrl
-            .variable_rep(header, var_header, input, output)
-            .map_to_hypercall_result(input.len(), elements_processed)
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        TestVariableRep::run(params, |header, var_header, input, output| {
+            self.ctrl.variable_rep(header, var_header, input, output)
+        })
     }
 }
 
@@ -482,10 +447,10 @@ impl HypercallDispatch<TestVariableRep> for TestHypercallHandler<'_> {
 pub type TestVtl = VtlHypercall<{ TestHypercallCode::CallVtl.0 }>;
 
 impl HypercallDispatch<TestVtl> for TestHypercallHandler<'_> {
-    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HvResult<()> {
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         let (input, _) = TestVtl::parse(params);
         self.ctrl.vtl_switch(input);
-        Ok(())
+        HypercallOutput::SUCCESS
     }
 }
 
@@ -680,7 +645,7 @@ impl TestMemory {
 
         let mut buffers = [TestHypercallAlignedPage::new_zeroed(); 2];
         for buffer in buffers.iter_mut() {
-            let buffer = buffer.0.as_bytes_mut();
+            let buffer = buffer.0.as_mut_bytes();
             buffer.fill(BACK_BYTE);
         }
 
@@ -717,7 +682,7 @@ impl TestMemory {
             self.gm
                 .read_at(
                     TestMemory::INPUT_BASE as u64,
-                    self.internal_buffers[Self::IN_INDEX].0.as_bytes_mut(),
+                    self.internal_buffers[Self::IN_INDEX].0.as_mut_bytes(),
                 )
                 .unwrap();
         }
@@ -726,7 +691,7 @@ impl TestMemory {
             self.gm
                 .read_at(
                     TestMemory::OUTPUT_BASE as u64,
-                    self.internal_buffers[Self::OUT_INDEX].0.as_bytes_mut(),
+                    self.internal_buffers[Self::OUT_INDEX].0.as_mut_bytes(),
                 )
                 .unwrap();
         }
@@ -764,7 +729,7 @@ impl TestController {
 
     fn simple_no_output<InputT>(&self, input_header: &InputT) -> HvResult<()>
     where
-        InputT: AsBytes + FromBytes + Sized + Copy,
+        InputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         println!("simple_no_output");
         match self.test_result {
@@ -782,8 +747,8 @@ impl TestController {
 
     fn simple<InputT, OutputT>(&self, input: &InputT) -> HvResult<OutputT>
     where
-        InputT: AsBytes + FromBytes + Sized + Copy,
-        OutputT: AsBytes + FromBytes + Sized + Copy,
+        InputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
+        OutputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         println!("simple");
         match self.test_result {
@@ -802,8 +767,8 @@ impl TestController {
 
     fn rep_no_output<InputT, InRepT>(&self, header: &InputT, input: &[InRepT]) -> HvRepResult
     where
-        InputT: AsBytes + FromBytes + Sized + Copy,
-        InRepT: AsBytes + FromBytes + Sized + Copy,
+        InputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
+        InRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         println!("rep_no_output");
         let (rep_start, rep_count) = self.reps.unwrap();
@@ -830,9 +795,9 @@ impl TestController {
         output: &mut [OutRepT],
     ) -> HvRepResult
     where
-        InputT: AsBytes + FromBytes + Sized + Copy,
-        InRepT: AsBytes + FromBytes + Sized + Copy,
-        OutRepT: AsBytes + FromBytes + Sized + Copy,
+        InputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
+        InRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
+        OutRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         println!("rep");
         let (rep_start, rep_count) = self.reps.unwrap();
@@ -861,7 +826,7 @@ impl TestController {
 
     fn variable_no_output<InputT>(&self, input: &InputT, var_header: &[u64]) -> HvResult<()>
     where
-        InputT: AsBytes + FromBytes + Sized + Copy,
+        InputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         println!("simple_variable_no_output");
         match self.test_result {
@@ -884,8 +849,8 @@ impl TestController {
 
     fn variable<InputT, OutputT>(&self, input: &InputT, var_header: &[u64]) -> HvResult<OutputT>
     where
-        InputT: AsBytes + FromBytes + Sized + Copy,
-        OutputT: AsBytes + FromBytes + Sized + Copy,
+        InputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
+        OutputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         println!("simple_variable");
         match self.test_result {
@@ -914,9 +879,9 @@ impl TestController {
         output: &mut [OutRepT],
     ) -> HvRepResult
     where
-        InputT: AsBytes + FromBytes + Sized + Copy,
-        InRepT: AsBytes + FromBytes + Sized + Copy,
-        OutRepT: AsBytes + FromBytes + Sized + Copy,
+        InputT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
+        InRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
+        OutRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         println!("var_rep");
         let (rep_start, rep_count) = self.reps.unwrap();
@@ -949,10 +914,11 @@ impl TestController {
 
     fn generate_test_input<InputHeaderT>() -> InputHeaderT
     where
-        InputHeaderT: AsBytes + FromBytes + Sized + Copy,
+        InputHeaderT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         assert!(size_of::<InputHeaderT>() % 8 == 0);
-        *InputHeaderT::ref_from(vec![FILL_PATTERN; size_of::<TestInput>() / 8].as_bytes()).unwrap()
+        *InputHeaderT::ref_from_bytes(vec![FILL_PATTERN; size_of::<TestInput>() / 8].as_bytes())
+            .unwrap()
     }
 
     fn generate_var_header(size: usize) -> Vec<u8> {
@@ -963,7 +929,7 @@ impl TestController {
 
     fn generate_input_reps<InRepT>(rep_count: usize) -> Vec<InRepT>
     where
-        InRepT: AsBytes + FromBytes + Sized + Copy,
+        InRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         let size = rep_count * size_of::<InRepT>();
         let pattern_count = (size + 7) / 8;
@@ -972,21 +938,22 @@ impl TestController {
             reps.push(FILL_PATTERN + 2 + i as u64);
         }
 
-        let (reps, _) = InRepT::slice_from_prefix(reps.as_bytes(), rep_count).unwrap();
+        let (reps, _) = <[InRepT]>::ref_from_prefix_with_elems(reps.as_bytes(), rep_count).unwrap();
         reps.to_vec()
     }
 
     fn generate_test_output<OutputT>() -> OutputT
     where
-        OutputT: AsBytes + FromBytes + FromZeroes + Sized + Copy,
+        OutputT: IntoBytes + FromBytes + FromZeros + Sized + Copy + Immutable + KnownLayout,
     {
         assert!(size_of::<TestOutput>() % 16 == 0);
-        *OutputT::ref_from(vec![!FILL_PATTERN; size_of::<TestOutput>() / 8].as_bytes()).unwrap()
+        *OutputT::ref_from_bytes(vec![!FILL_PATTERN; size_of::<TestOutput>() / 8].as_bytes())
+            .unwrap()
     }
 
     fn generate_output_reps<OutRepT>(rep_count: usize) -> Vec<OutRepT>
     where
-        OutRepT: AsBytes + FromBytes + Sized + Copy,
+        OutRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         let size = rep_count * size_of::<OutRepT>();
         let pattern_count = (size + 7) / 8;
@@ -995,7 +962,8 @@ impl TestController {
             reps.push(!FILL_PATTERN - 2 - i as u64);
         }
 
-        let (reps, _) = OutRepT::slice_from_prefix(reps.as_bytes(), rep_count).unwrap();
+        let (reps, _) =
+            <[OutRepT]>::ref_from_prefix_with_elems(reps.as_bytes(), rep_count).unwrap();
         reps.to_vec()
     }
 }
@@ -1205,7 +1173,7 @@ fn check_test_result(test_params: &TestParams, result: HypercallOutput, control:
             _ => 0,
         };
 
-        assert_eq!(control.rep_start(), reps);
+        assert_eq!({ control.rep_start() }, reps);
     }
 }
 
@@ -1250,10 +1218,10 @@ fn invoke_hypercall<InputT, InRepT, OutputT, OutRepT>(
     output_reps: &mut [OutRepT],
 ) -> (HypercallOutput, Control)
 where
-    InputT: AsBytes + FromBytes + Sized,
-    InRepT: AsBytes + FromBytes + Sized,
-    OutputT: AsBytes + FromBytes + Sized,
-    OutRepT: AsBytes + FromBytes + Sized,
+    InputT: IntoBytes + FromBytes + Sized + Immutable + KnownLayout,
+    InRepT: IntoBytes + FromBytes + Sized + Immutable + KnownLayout,
+    OutputT: IntoBytes + FromBytes + Sized + Immutable + KnownLayout,
+    OutRepT: IntoBytes + FromBytes + Sized + Immutable + KnownLayout,
 {
     assert!(size_of::<InputT>() % 8 == 0);
     assert!(size_of::<OutputT>() % 8 == 0);
@@ -1349,7 +1317,7 @@ where
         let len = combined_input.len().min(PAGE_SIZE - params.in_offset);
         let input_buffer = &mut test_mem.internal_buffers[TestMemory::IN_INDEX]
             .0
-            .as_bytes_mut()[params.in_offset..params.in_offset + len];
+            .as_mut_bytes()[params.in_offset..params.in_offset + len];
         input_buffer.copy_from_slice(&combined_input[..len]);
 
         // Write the input to guest memory.
@@ -1372,7 +1340,7 @@ where
 
         if pair_count != 0 {
             let mut input_buffer = vec![[0u64; 2]; pair_count];
-            input_buffer.as_bytes_mut()[..combined_input.len()]
+            input_buffer.as_mut_bytes()[..combined_input.len()]
                 .copy_from_slice(combined_input.as_bytes());
 
             io.set_fast_input(&input_buffer[..pair_count]);
@@ -1408,7 +1376,7 @@ where
         let mut io = io_gen(&mut handler);
         let result = HypercallOutput::from(io.get_result());
         let control = Control::from(io.control());
-        let call_status = HvError(result.call_status());
+        let call_status = result.call_status();
 
         // Copy the output back. Note that in the case of errors the hypercall parser may not have
         // actually modified the output buffers/registers, and it is the responsibility of the test
@@ -1419,8 +1387,8 @@ where
         // that in cases where this routine does not modify the output, the hypercall parser does
         // not do so either.
         if is_timeout
-            || (call_status != HvError::InvalidHypercallInput
-                && call_status != HvError::InvalidAlignment)
+            || (call_status != Err(HvError::InvalidHypercallInput).into()
+                && call_status != Err(HvError::InvalidAlignment).into())
         {
             let mut output_buffer;
             let (hdr, reps) = if !params.fast {
@@ -1428,19 +1396,19 @@ where
 
                 let output_buffer = &mut test_mem.internal_buffers[TestMemory::OUT_INDEX]
                     .0
-                    .as_bytes_mut()[params.out_offset..params.out_offset + output_len];
+                    .as_mut_bytes()[params.out_offset..params.out_offset + output_len];
 
                 output_buffer.as_bytes().split_at(size_of::<OutputT>())
             } else {
                 output_buffer = vec![[0u64; 2]; (output_len + 15) / 16];
                 io.get_fast_output(input_register_pairs.unwrap(), &mut output_buffer);
-                let output_buffer = &mut output_buffer.as_bytes_mut()[..output_len];
+                let output_buffer = &mut output_buffer.as_mut_bytes()[..output_len];
 
                 output_buffer.as_bytes().split_at(size_of::<OutputT>())
             };
 
-            output.as_bytes_mut().copy_from_slice(hdr);
-            output_reps.as_bytes_mut().copy_from_slice(reps);
+            output.as_mut_bytes().copy_from_slice(hdr);
+            output_reps.as_mut_bytes().copy_from_slice(reps);
         }
 
         (result, control)
@@ -1596,7 +1564,7 @@ fn hypercall_simple(test_params: TestParams) {
 
     check_test_result(&test_params, result, control);
 
-    let expected_output_size = if result.call_status() == 0 {
+    let expected_output_size = if result.call_status().is_ok() {
         assert_eq!(
             output.as_bytes(),
             TestController::generate_test_output::<TestOutput>().as_bytes()
@@ -1816,7 +1784,7 @@ fn hypercall_variable(test_params: TestParams) {
 
     check_test_result(&test_params, result, control);
 
-    let expected_output_size = if result.call_status() == 0 {
+    let expected_output_size = if result.call_status().is_ok() {
         assert_eq!(
             output.as_bytes(),
             TestController::generate_test_output::<TestOutput>().as_bytes()

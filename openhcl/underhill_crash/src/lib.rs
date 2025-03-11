@@ -4,6 +4,7 @@
 //! This module implements sending crash dump files to the host.
 
 #![cfg(target_os = "linux")]
+#![expect(missing_docs)]
 // UNSAFETY: Calling libc functions to gather system information, and manipulating
 // stdout & stderr.
 #![expect(unsafe_code)]
@@ -46,9 +47,11 @@ use vmbus_async::pipe::MessagePipe;
 use vmbus_async::pipe::MessageReadHalf;
 use vmbus_async::pipe::MessageWriteHalf;
 use vmbus_user_channel::MappedRingMem;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const CRASHDMP_VDEV_MAX_TX_BYTES: usize = 4096 * 4; // 16 KB
 const KMSG_NOTE_BYTES: usize = 1024 * 256; // 256 KB
@@ -108,12 +111,12 @@ impl OsVersionInfo {
     }
 }
 
-async fn read_message<T: AsBytes + FromBytes>(
+async fn read_message<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
     pipe: &mut MessageReadHalf<'_, MappedRingMem>,
 ) -> anyhow::Result<T> {
     let mut message = T::new_zeroed();
-    pipe.recv_exact(message.as_bytes_mut()).await?;
-    let header = Header::read_from_prefix(message.as_bytes()).unwrap();
+    pipe.recv_exact(message.as_mut_bytes()).await?;
+    let header = Header::read_from_prefix(message.as_bytes()).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     check_header(&header)?;
     Ok(message)
 }
@@ -296,7 +299,7 @@ pub fn main() -> ! {
 
     // Send the dump file
 
-    if let Err(e) = block_with_io(|driver| async move {
+    if let Err(e) = block_with_io(async |driver| {
         let mut dump_stream = AllowStdIo::new(std::io::stdin());
         let pipe = vmbus_user_channel::message_pipe(
             &driver,
@@ -495,7 +498,7 @@ impl<'a> DumpStreamer<'a> {
     async fn insert_kmsg_note(&mut self, buf: &mut [u8]) -> anyhow::Result<()> {
         // elf header
         let mut ehdr: Elf64_Ehdr = Elf64_Ehdr::new_zeroed();
-        self.read(ehdr.as_bytes_mut(), true).await;
+        self.read(ehdr.as_mut_bytes(), true).await;
         self.write(ehdr.as_bytes()).await?;
 
         tracing::trace!("ehdr: {:#x?}", &ehdr);
@@ -507,7 +510,7 @@ impl<'a> DumpStreamer<'a> {
 
         // notes program header
         let mut notes_phdr: Elf64_Phdr = Elf64_Phdr::new_zeroed();
-        self.read(notes_phdr.as_bytes_mut(), true).await;
+        self.read(notes_phdr.as_mut_bytes(), true).await;
 
         tracing::trace!("initial notes_phdr: {:#x?}", notes_phdr);
         if notes_phdr.p_type != PT_NOTE {
@@ -527,7 +530,7 @@ impl<'a> DumpStreamer<'a> {
             let phdrs_size = phnum * size_of::<Elf64_Phdr>();
             self.read(&mut buf[..phdrs_size], true).await;
             let phdrs: &mut [Elf64_Phdr] =
-                Elf64_Phdr::mut_slice_from(&mut buf[..phdrs_size]).unwrap();
+                <[Elf64_Phdr]>::mut_from_bytes(&mut buf[..phdrs_size]).unwrap();
 
             tracing::trace!("initial phdrs: {:#x?}", phdrs);
             for phdr in &mut phdrs[..] {

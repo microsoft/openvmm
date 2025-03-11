@@ -3,11 +3,12 @@
 
 [package]
 name = "underhill_threadpool"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 inspect = { workspace = true, features = ["std"] }
+loan_cell.workspace = true
 pal.workspace = true
 pal_async.workspace = true
 pal_uring.workspace = true

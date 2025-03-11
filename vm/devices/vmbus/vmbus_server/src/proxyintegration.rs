@@ -13,12 +13,14 @@ use super::OfferRequest;
 use super::ProxyHandle;
 use super::TaggedStream;
 use super::VmbusServerControl;
+use crate::HvsockRelayChannelHalf;
 use anyhow::Context;
+use futures::future::OptionFuture;
 use futures::stream::SelectAll;
+use futures::FutureExt;
 use futures::StreamExt;
 use guestmem::GuestMemory;
-use mesh::error::RemoteResultExt;
-use mesh::rpc::Rpc;
+use mesh::rpc::RpcSend;
 use mesh::Cancel;
 use mesh::CancelContext;
 use pal_async::driver::SpawnDriver;
@@ -34,16 +36,37 @@ use vmbus_channel::bus::ChannelServerRequest;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::bus::OpenRequest;
+use vmbus_channel::bus::OpenResult;
 use vmbus_channel::gpadl::GpadlId;
-use vmbus_proxy::vmbusioctl::VMBUS_CHANNEL_ENUMERATE_DEVICE_INTERFACE;
-use vmbus_proxy::vmbusioctl::VMBUS_CHANNEL_NAMED_PIPE_MODE;
-use vmbus_proxy::vmbusioctl::VMBUS_CHANNEL_REQUEST_MONITORED_NOTIFICATION;
+use vmbus_core::protocol;
+use vmbus_core::HvsockConnectRequest;
+use vmbus_core::HvsockConnectResult;
 use vmbus_proxy::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use vmbus_proxy::ProxyAction;
 use vmbus_proxy::VmbusProxy;
 use vmcore::interrupt::Interrupt;
-use winapi::shared::winerror::ERROR_CANCELLED;
-use zerocopy::AsBytes;
+use windows::core::HRESULT;
+use windows::Win32::Foundation::ERROR_CANCELLED;
+use zerocopy::IntoBytes;
+
+/// Provides access to a vmbus server, and its optional hvsocket relay.
+pub struct ProxyServerInfo {
+    control: Arc<VmbusServerControl>,
+    hvsock_relay: Option<HvsockRelayChannelHalf>,
+}
+
+impl ProxyServerInfo {
+    /// Creates a new `ProxyServerInfo` instance.
+    pub fn new(
+        control: Arc<VmbusServerControl>,
+        hvsock_relay: Option<HvsockRelayChannelHalf>,
+    ) -> Self {
+        Self {
+            control,
+            hvsock_relay,
+        }
+    }
+}
 
 pub struct ProxyIntegration {
     cancel: Cancel,
@@ -57,25 +80,29 @@ impl ProxyIntegration {
     }
 
     /// Returns the handle to the vmbus proxy driver.
-    pub fn handle(&self) -> &OwnedHandle {
-        &self.handle
+    pub fn handle(&self) -> BorrowedHandle<'_> {
+        self.handle.as_handle()
     }
 
-    pub(crate) async fn start(
+    /// Starts the vmbus proxy.
+    pub async fn start(
         driver: &(impl SpawnDriver + Clone),
         handle: ProxyHandle,
-        server: Arc<VmbusServerControl>,
-        mem: &GuestMemory,
+        server: ProxyServerInfo,
+        vtl2_server: Option<ProxyServerInfo>,
+        mem: Option<&GuestMemory>,
     ) -> io::Result<Self> {
         let mut proxy = VmbusProxy::new(driver, handle)?;
         let handle = proxy.handle().try_clone_to_owned()?;
-        proxy.set_memory(mem).await?;
+        if let Some(mem) = mem {
+            proxy.set_memory(mem).await?;
+        }
 
         let (cancel_ctx, cancel) = CancelContext::new().with_cancel();
         driver
             .spawn(
                 "vmbus_proxy",
-                proxy_thread(driver.clone(), proxy, server, cancel_ctx),
+                proxy_thread(driver.clone(), proxy, server, vtl2_server, cancel_ctx),
             )
             .detach();
 
@@ -85,6 +112,7 @@ impl ProxyIntegration {
 
 struct Channel {
     server_request_send: Option<mesh::Sender<ChannelServerRequest>>,
+    incoming_event: Event,
     worker_result: Option<mesh::OneshotReceiver<()>>,
 }
 
@@ -93,19 +121,35 @@ struct ProxyTask {
     gpadls: Arc<Mutex<HashMap<u64, HashSet<GpadlId>>>>,
     proxy: Arc<VmbusProxy>,
     server: Arc<VmbusServerControl>,
+    vtl2_server: Option<Arc<VmbusServerControl>>,
+    hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
+    vtl2_hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
 }
 
 impl ProxyTask {
-    fn new(control: Arc<VmbusServerControl>, proxy: Arc<VmbusProxy>) -> Self {
+    fn new(
+        server: Arc<VmbusServerControl>,
+        vtl2_server: Option<Arc<VmbusServerControl>>,
+        hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
+        vtl2_hvsock_response_send: Option<mesh::Sender<HvsockConnectResult>>,
+        proxy: Arc<VmbusProxy>,
+    ) -> Self {
         Self {
             channels: Arc::new(Mutex::new(HashMap::new())),
             gpadls: Arc::new(Mutex::new(HashMap::new())),
             proxy,
-            server: control,
+            server,
+            hvsock_response_send,
+            vtl2_hvsock_response_send,
+            vtl2_server,
         }
     }
 
-    async fn handle_open(&self, proxy_id: u64, open_request: &OpenRequest) -> anyhow::Result<()> {
+    async fn handle_open(
+        &self,
+        proxy_id: u64,
+        open_request: &OpenRequest,
+    ) -> anyhow::Result<Event> {
         let event = open_request
             .interrupt
             .event()
@@ -137,13 +181,10 @@ impl ProxyTask {
             })
             .unwrap();
 
-        self.channels
-            .lock()
-            .get_mut(&proxy_id)
-            .unwrap()
-            .worker_result = Some(recv);
-
-        Ok(())
+        let mut channels = self.channels.lock();
+        let channel = channels.get_mut(&proxy_id).unwrap();
+        channel.worker_result = Some(recv);
+        Ok(channel.incoming_event.clone())
     }
 
     async fn handle_close(&self, proxy_id: u64) {
@@ -207,17 +248,47 @@ impl ProxyTask {
         offer: vmbus_proxy::vmbusioctl::VMBUS_CHANNEL_OFFER,
         incoming_event: Event,
     ) -> Option<mesh::Receiver<ChannelRequest>> {
-        let channel_type = if offer.ChannelFlags & VMBUS_CHANNEL_ENUMERATE_DEVICE_INTERFACE != 0 {
-            let pipe_mode = u32::from_ne_bytes(offer.UserDefined[..4].try_into().unwrap());
-            let message_mode = match pipe_mode {
-                vmbus_proxy::vmbusioctl::VMBUS_PIPE_TYPE_BYTE => false,
-                vmbus_proxy::vmbusioctl::VMBUS_PIPE_TYPE_MESSAGE => true,
-                _ => panic!("BUGBUG: unsupported"),
+        let server = match offer.TargetVtl {
+            0 => self.server.as_ref(),
+            2 => {
+                if let Some(server) = self.vtl2_server.as_ref() {
+                    server.as_ref()
+                } else {
+                    tracing::error!(?offer, "VTL2 offer without VTL2 server");
+                    return None;
+                }
+            }
+            _ => {
+                tracing::error!(?offer, "unsupported offer VTL");
+                return None;
+            }
+        };
+
+        let channel_type = if offer.ChannelFlags.tlnpi_provider() {
+            let params = offer.UserDefined.as_hvsock_params();
+            ChannelType::HvSocket {
+                is_connect: params.is_for_guest_accept != 0,
+                is_for_container: params.is_for_guest_container != 0,
+                silo_id: if params.version.get() == protocol::HvsockParametersVersion::PRE_RS5 {
+                    Guid::ZERO
+                } else {
+                    params.silo_id.get()
+                },
+            }
+        } else if offer.ChannelFlags.enumerate_device_interface() {
+            let params = offer.UserDefined.as_pipe_params();
+            let message_mode = match params.pipe_type {
+                protocol::PipeType::BYTE => false,
+                protocol::PipeType::MESSAGE => true,
+                _ => {
+                    tracing::error!(?offer, "unsupported offer pipe mode");
+                    return None;
+                }
             };
             ChannelType::Pipe { message_mode }
         } else {
             ChannelType::Device {
-                pipe_packets: offer.ChannelFlags & VMBUS_CHANNEL_NAMED_PIPE_MODE != 0,
+                pipe_packets: offer.ChannelFlags.named_pipe_mode(),
             }
         };
 
@@ -232,24 +303,23 @@ impl ProxyTask {
             mmio_megabytes_optional: offer.MmioMegabytesOptional,
             subchannel_index: offer.SubChannelIndex,
             channel_type,
-            use_mnf: (offer.ChannelFlags & VMBUS_CHANNEL_REQUEST_MONITORED_NOTIFICATION) != 0,
+            use_mnf: offer.ChannelFlags.request_monitored_notification(),
             offer_order: id.try_into().ok(),
             allow_confidential_external_memory: false,
         };
         let (request_send, request_recv) = mesh::channel();
         let (server_request_send, server_request_recv) = mesh::channel();
-        let (send, recv) = mesh::oneshot();
-        self.server.send.send(OfferRequest::Offer(
+
+        let recv = server.send.call_failable(
+            OfferRequest::Offer,
             OfferInfo {
                 params: offer.into(),
-                event: Interrupt::from_event(incoming_event),
                 request_send,
                 server_request_recv,
             },
-            send,
-        ));
+        );
 
-        let (request_recv, server_request_send) = match recv.await.flatten() {
+        let (request_recv, server_request_send) = match recv.await {
             Ok(()) => (Some(request_recv), Some(server_request_send)),
             Err(err) => {
                 // Currently there is no way to propagate this failure.
@@ -268,6 +338,7 @@ impl ProxyTask {
             id,
             Channel {
                 server_request_send,
+                incoming_event,
                 worker_result: None,
             },
         );
@@ -295,7 +366,18 @@ impl ProxyTask {
         }
     }
 
-    async fn run_offers(
+    fn handle_tl_connect_result(&self, result: HvsockConnectResult, vtl: u8) {
+        let send = match vtl {
+            0 => self.hvsock_response_send.as_ref(),
+            2 => self.vtl2_hvsock_response_send.as_ref(),
+            _ => panic!("hvsocket response with unsupported VTL {vtl}"),
+        };
+
+        send.expect("got hvsocket response without having sent a request")
+            .send(result);
+    }
+
+    async fn run_proxy_actions(
         &self,
         send: mesh::Sender<TaggedStream<u64, mesh::Receiver<ChannelRequest>>>,
     ) {
@@ -316,6 +398,9 @@ impl ProxyTask {
                     self.handle_revoke(id).await;
                 }
                 ProxyAction::InterruptPolicy {} => {}
+                ProxyAction::TlConnectResult { result, vtl } => {
+                    self.handle_tl_connect_result(result, vtl);
+                }
             }
         }
 
@@ -327,20 +412,22 @@ impl ProxyTask {
             Some(request) => {
                 match request {
                     ChannelRequest::Open(rpc) => {
-                        rpc.handle(|open_request| async move {
+                        rpc.handle(async |open_request| {
                             let result = self.handle_open(proxy_id, &open_request).await;
-                            result.is_ok()
+                            result.ok().map(|event| OpenResult {
+                                guest_to_host_interrupt: Interrupt::from_event(event),
+                            })
                         })
                         .await
                     }
                     ChannelRequest::Close(rpc) => {
-                        rpc.handle(|()| async {
+                        rpc.handle(async |()| {
                             self.handle_close(proxy_id).await;
                         })
                         .await
                     }
                     ChannelRequest::Gpadl(rpc) => {
-                        rpc.handle(|gpadl| async move {
+                        rpc.handle(async |gpadl| {
                             let result = self
                                 .handle_gpadl_create(proxy_id, gpadl.id, gpadl.count, &gpadl.buf)
                                 .await;
@@ -349,14 +436,14 @@ impl ProxyTask {
                         .await
                     }
                     ChannelRequest::TeardownGpadl(rpc) => {
-                        rpc.handle(|id| async move {
+                        rpc.handle(async |id| {
                             self.handle_gpadl_teardown(proxy_id, id).await;
                         })
                         .await
                     }
                     // Modifying the target VP is handle by the server, there is nothing the proxy
                     // driver needs to do.
-                    ChannelRequest::Modify(Rpc(_, response)) => response.send(0),
+                    ChannelRequest::Modify(rpc) => rpc.complete(0),
                 }
             }
             None => {
@@ -369,7 +456,7 @@ impl ProxyTask {
                         tracing::warn!(proxy_id, "closed while some gpadls are still registered");
                         for gpadl_id in gpadls {
                             if let Err(e) = self.proxy.delete_gpadl(proxy_id, gpadl_id.0).await {
-                                if e.raw_os_error() == Some(ERROR_CANCELLED as i32) {
+                                if e.code() == HRESULT::from(ERROR_CANCELLED) {
                                     // No further IOs will succeed if one was cancelled. This can
                                     // happen here if we're in the process of shutting down.
                                     tracing::debug!("gpadl delete cancelled");
@@ -388,20 +475,49 @@ impl ProxyTask {
         }
     }
 
-    async fn run_channel_requests(
+    fn handle_hvsock_request(&self, spawner: &impl Spawn, request: HvsockConnectRequest, vtl: u8) {
+        let proxy = self.proxy.clone();
+        spawner
+            .spawn("vmbus-proxy-hvsock-req", async move {
+                proxy.tl_connect_request(&request, vtl).await
+            })
+            .detach();
+    }
+
+    async fn run_server_requests(
         self: &Arc<Self>,
         spawner: impl Spawn,
         mut recv: mesh::Receiver<TaggedStream<u64, mesh::Receiver<ChannelRequest>>>,
+        mut hvsock_request_recv: Option<mesh::Receiver<HvsockConnectRequest>>,
+        mut vtl2_hvsock_request_recv: Option<mesh::Receiver<HvsockConnectRequest>>,
     ) {
         let mut channel_requests = SelectAll::new();
 
         'outer: loop {
             let (proxy_id, request) = loop {
+                let mut hvsock_requests = OptionFuture::from(
+                    hvsock_request_recv
+                        .as_mut()
+                        .map(|recv| Box::pin(recv.recv()).fuse()),
+                );
+
+                let mut vtl2_hvsock_requests = OptionFuture::from(
+                    vtl2_hvsock_request_recv
+                        .as_mut()
+                        .map(|recv| Box::pin(recv.recv()).fuse()),
+                );
+
                 futures::select! { // merge semantics
                     r = recv.select_next_some() => {
                         channel_requests.push(r);
                     }
                     r = channel_requests.select_next_some() => break r,
+                    r = hvsock_requests => {
+                        self.handle_hvsock_request(&spawner, r.unwrap().unwrap(), 0);
+                    }
+                    r = vtl2_hvsock_requests => {
+                        self.handle_hvsock_request(&spawner, r.unwrap().unwrap(), 2);
+                    }
                     complete => break 'outer,
                 }
             };
@@ -421,14 +537,44 @@ impl ProxyTask {
 async fn proxy_thread(
     spawner: impl Spawn,
     proxy: VmbusProxy,
-    server: Arc<VmbusServerControl>,
+    server: ProxyServerInfo,
+    vtl2_server: Option<ProxyServerInfo>,
     mut cancel: CancelContext,
 ) {
+    // Separate the hvsocket relay channels.
+    let (hvsock_request_recv, hvsock_response_send) = server
+        .hvsock_relay
+        .map(|relay| (relay.request_receive, relay.response_send))
+        .unzip();
+
+    // Separate the hvsocket relay channels and the server for VTL2.
+    let (vtl2_control, vtl2_hvsock_request_recv, vtl2_hvsock_response_send) =
+        if let Some(server) = vtl2_server {
+            let (vtl2_hvsock_request_recv, vtl2_hvsock_response_send) = server
+                .hvsock_relay
+                .map(|relay| (relay.request_receive, relay.response_send))
+                .unzip();
+            (
+                Some(server.control),
+                vtl2_hvsock_request_recv,
+                vtl2_hvsock_response_send,
+            )
+        } else {
+            (None, None, None)
+        };
+
     let (send, recv) = mesh::channel();
     let proxy = Arc::new(proxy);
-    let task = Arc::new(ProxyTask::new(server, Arc::clone(&proxy)));
-    let offers = task.run_offers(send);
-    let requests = task.run_channel_requests(spawner, recv);
+    let task = Arc::new(ProxyTask::new(
+        server.control,
+        vtl2_control,
+        hvsock_response_send,
+        vtl2_hvsock_response_send,
+        Arc::clone(&proxy),
+    ));
+    let offers = task.run_proxy_actions(send);
+    let requests =
+        task.run_server_requests(spawner, recv, hvsock_request_recv, vtl2_hvsock_request_recv);
     let cancellation = async {
         cancel.cancelled().await;
         tracing::debug!("proxy thread cancelling");

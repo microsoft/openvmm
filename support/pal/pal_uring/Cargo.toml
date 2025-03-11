@@ -3,7 +3,7 @@
 
 [package]
 name = "pal_uring"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -12,6 +12,7 @@ ci = []
 
 [target.'cfg(target_os = "linux")'.dependencies]
 inspect.workspace = true
+loan_cell.workspace = true
 pal.workspace = true
 pal_async.workspace = true
 

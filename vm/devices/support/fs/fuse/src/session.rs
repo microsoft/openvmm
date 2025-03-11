@@ -1,10 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(
-    clippy::field_reassign_with_default // protocol code benefits from imperative field assignment
-)]
-
 use super::protocol::*;
 use super::reply::ReplySender;
 use super::request::FuseOperation;
@@ -16,7 +12,9 @@ use parking_lot::RwLock;
 use std::io;
 use std::sync::atomic;
 use thiserror::Error;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::KnownLayout;
 
 // These are the flags that libfuse enables by default when calling init.
 const DEFAULT_FLAGS: u32 = FUSE_ASYNC_READ
@@ -488,7 +486,9 @@ impl Session {
     }
 
     /// Send a reply and call the release method if the reply was interrupted.
-    fn send_release_if_interrupted<TArg: zerocopy::AsBytes + std::fmt::Debug>(
+    fn send_release_if_interrupted<
+        TArg: zerocopy::IntoBytes + std::fmt::Debug + Immutable + KnownLayout,
+    >(
         &self,
         request: &Request,
         sender: &mut impl ReplySender,

@@ -1,10 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::field_reassign_with_default, // protocol code benefits from imperative field assignment
-)]
 
 use fuse::protocol::*;
 use fuse::Connection;
@@ -12,7 +10,7 @@ use fuse::*;
 use std::fs;
 use std::os::linux::fs::MetadataExt;
 use std::path::Path;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 // Implements a file system similar to libfuse's hello_ll sample.
 // This test is excluded from CI because it requires root.

@@ -3,6 +3,7 @@
 
 //! The user-mode netvsp VMBus device implementation.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod buffers;
@@ -76,6 +77,7 @@ use task_control::StopTask;
 use task_control::TaskControl;
 use thiserror::Error;
 use vmbus_async::queue;
+use vmbus_async::queue::ExternalDataError;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::Queue;
 use vmbus_channel::bus::OfferParams;
@@ -103,9 +105,11 @@ use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // The minimum ring space required to handle a control message. Most control messages only need to send a completion
 // packet, but also need room for an additional SEND_VF_ASSOCIATION message.
@@ -216,7 +220,7 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
     }
 }
 
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 enum WorkerState {
     Init(Option<InitState>),
     Ready(ReadyState),
@@ -326,11 +330,12 @@ impl RxBufferRange {
     }
 
     fn send_if_remote(&self, id: u32) -> bool {
-        if self.id_range.contains(&id) {
+        // Only queue 0 should get reserved buffer IDs. Otherwise check if the
+        // ID is owned by the current range.
+        if id < RX_RESERVED_CONTROL_BUFFERS || self.id_range.contains(&id) {
             false
         } else {
-            let i = id.saturating_sub(RX_RESERVED_CONTROL_BUFFERS)
-                / self.remote_ranges.buffers_per_queue;
+            let i = (id - RX_RESERVED_CONTROL_BUFFERS) / self.remote_ranges.buffers_per_queue;
             let _ = self.remote_ranges.buffer_id_send[i as usize].unbounded_send(id);
             true
         }
@@ -345,7 +350,7 @@ struct RxBufferRanges {
 impl RxBufferRanges {
     fn new(buffer_count: u32, queue_count: u32) -> (Self, Vec<mpsc::UnboundedReceiver<u32>>) {
         let buffers_per_queue = (buffer_count - RX_RESERVED_CONTROL_BUFFERS) / queue_count;
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods)] // TODO
         let (send, recv): (Vec<_>, Vec<_>) = (0..queue_count).map(|_| mpsc::unbounded()).unzip();
         (
             Self {
@@ -731,7 +736,7 @@ impl OffloadConfig {
             },
             checksum,
             lso_v2,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         }
     }
 }
@@ -1161,12 +1166,12 @@ impl VmbusDevice for Nic {
         {
             let coordinator = &mut self.coordinator.state_mut().unwrap();
             coordinator.workers[0].stop().await;
-            coordinator.workers[0].start();
         }
 
         if r.is_err() && channel_idx == 0 {
             self.coordinator.remove();
         } else {
+            // The coordinator will restart any stopped workers.
             self.coordinator.start();
         }
         r?;
@@ -1224,7 +1229,7 @@ impl VmbusDevice for Nic {
         // Stop the coordinator and worker associated with this channel.
         let coordinator_running = self.coordinator.stop().await;
         let worker = &mut self.coordinator.state_mut().unwrap().workers[channel_idx as usize];
-        let worker_running = worker.stop().await;
+        worker.stop().await;
         let (net_queue, worker_state) = worker.get_mut();
 
         // Update the target VP on the driver.
@@ -1239,10 +1244,7 @@ impl VmbusDevice for Nic {
             }
         }
 
-        if worker_running {
-            worker.start();
-        }
-
+        // The coordinator will restart any stopped workers.
         if coordinator_running {
             self.coordinator.start();
         }
@@ -1250,9 +1252,6 @@ impl VmbusDevice for Nic {
 
     fn start(&mut self) {
         if !self.coordinator.is_running() {
-            if let Some(coordinator) = self.coordinator.state_mut() {
-                coordinator.start_workers();
-            }
             self.coordinator.start();
         }
     }
@@ -1311,8 +1310,9 @@ impl Nic {
             .clone();
         driver.retarget_vp(open_request.open_data.target_vp);
 
-        let raw = gpadl_channel(&driver, &self.resources, open_request, channel_idx)?;
-        let mut queue = Queue::new(raw)?;
+        let raw = gpadl_channel(&driver, &self.resources, open_request, channel_idx)
+            .map_err(OpenError::Ring)?;
+        let mut queue = Queue::new(raw).map_err(OpenError::Queue)?;
         let guest_os_id = self.adapter.get_guest_os_id.as_ref().map(|f| f());
         let can_use_ring_size_opt = can_use_ring_opt(&mut queue, guest_os_id);
         let worker = Worker {
@@ -1362,7 +1362,7 @@ impl Nic {
         // processor.
         driver_builder.run_on_target(!self.adapter.tx_fast_completions);
 
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods)] // TODO
         let (send, recv) = mpsc::channel(1);
         self.coordinator_send = Some(send);
         self.coordinator.insert(
@@ -1395,7 +1395,7 @@ enum NetRestoreError {
     #[error("send/receive buffer invalid gpadl ID")]
     UnknownGpadlId(#[from] UnknownGpadlId),
     #[error("failed to restore channels")]
-    Channel(#[from] ChannelRestoreError),
+    Channel(#[source] ChannelRestoreError),
     #[error(transparent)]
     ReceiveBuffer(#[from] BufferError),
     #[error(transparent)]
@@ -1436,7 +1436,10 @@ impl Nic {
             //      state (vmbus believes the channel is open/active). There
             //      are a number of failure paths after this point because this
             //      call also restores vmbus device state, like the GPADL map.
-            let requests = control.restore(&open).await?;
+            let requests = control
+                .restore(&open)
+                .await
+                .map_err(NetRestoreError::Channel)?;
 
             match state.primary {
                 saved_state::Primary::Version => {
@@ -1586,7 +1589,10 @@ impl Nic {
                 }
             }
         } else {
-            control.restore(&[false]).await?;
+            control
+                .restore(&[false])
+                .await
+                .map_err(NetRestoreError::Channel)?;
         }
         Ok(())
     }
@@ -1789,11 +1795,9 @@ impl Nic {
 #[derive(Debug, Error)]
 enum WorkerError {
     #[error("packet error")]
-    Packet(#[from] PacketError),
+    Packet(#[source] PacketError),
     #[error("unexpected packet order: {0}")]
-    UnexpectedPacketOrder(#[from] PacketOrderError),
-    #[error("invalid gpadl id")]
-    InvalidGpadlId(#[from] UnknownGpadlId),
+    UnexpectedPacketOrder(#[source] PacketOrderError),
     #[error("unknown rndis message type: {0}")]
     UnknownRndisMessageType(u32),
     #[error("memory access error")]
@@ -1845,9 +1849,9 @@ impl From<task_control::Cancelled> for WorkerError {
 #[derive(Debug, Error)]
 enum OpenError {
     #[error("error establishing ring buffer")]
-    Ring(#[from] vmbus_channel::gpadl_ring::Error),
+    Ring(#[source] vmbus_channel::gpadl_ring::Error),
     #[error("error establishing vmbus queue")]
-    Queue(#[from] queue::Error),
+    Queue(#[source] queue::Error),
 }
 
 #[derive(Debug, Error)]
@@ -1855,7 +1859,9 @@ enum PacketError {
     #[error("UnknownType {0}")]
     UnknownType(u32),
     #[error("Access")]
-    Access(#[from] AccessError),
+    Access(#[source] AccessError),
+    #[error("ExternalData")]
+    ExternalData(#[source] ExternalDataError),
     #[error("InvalidSendBufferIndex")]
     InvalidSendBufferIndex,
 }
@@ -1920,7 +1926,7 @@ impl Packet<'_> {
     }
 }
 
-fn read_packet_data<T: AsBytes + FromBytes>(
+fn read_packet_data<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
     reader: &mut impl MemoryRead,
 ) -> Result<T, PacketError> {
     reader.read_plain().map_err(PacketError::Access)
@@ -2011,7 +2017,9 @@ fn parse_packet<'a, T: RingMem>(
     Ok(Packet {
         data,
         transaction_id: packet.transaction_id(),
-        external_data: packet.read_external_ranges().map_err(PacketError::Access)?,
+        external_data: packet
+            .read_external_ranges()
+            .map_err(PacketError::ExternalData)?,
         send_buffer_suballocation,
     })
 }
@@ -2023,14 +2031,18 @@ struct NvspMessage<T> {
     padding: &'static [u8],
 }
 
-impl<T: AsBytes> NvspMessage<T> {
+impl<T: IntoBytes + Immutable + KnownLayout> NvspMessage<T> {
     fn payload(&self) -> [&[u8]; 3] {
         [self.header.as_bytes(), self.data.as_bytes(), self.padding]
     }
 }
 
 impl<T: RingMem> NetChannel<T> {
-    fn message<P: AsBytes>(&self, message_type: u32, data: P) -> NvspMessage<P> {
+    fn message<P: IntoBytes + Immutable + KnownLayout>(
+        &self,
+        message_type: u32,
+        data: P,
+    ) -> NvspMessage<P> {
         let padding = self.padding(&data);
         NvspMessage {
             header: protocol::MessageHeader { message_type },
@@ -2041,7 +2053,7 @@ impl<T: RingMem> NetChannel<T> {
 
     /// Returns zero padding bytes to round the payload up to the packet size.
     /// Only needed for Windows guests, which are picky about packet sizes.
-    fn padding<P: AsBytes>(&self, data: &P) -> &'static [u8] {
+    fn padding<P: IntoBytes + Immutable + KnownLayout>(&self, data: &P) -> &'static [u8] {
         static PADDING: &[u8] = &[0; protocol::PACKET_SIZE_V61];
         let padding_len = self.packet_size
             - cmp::min(
@@ -2224,7 +2236,7 @@ impl<T: RingMem> NetChannel<T> {
                 control.control_messages_len += reader.len();
                 control.control_messages.push_back(ControlMessage {
                     message_type,
-                    data: reader.read_all().map_err(WorkerError::Access)?.into(),
+                    data: reader.read_all()?.into(),
                 });
 
                 false
@@ -2251,10 +2263,7 @@ impl<T: RingMem> NetChannel<T> {
             .find(|r| !r.is_empty())
             .ok_or(WorkerError::RndisMessageTooSmall)?;
         let mut data = reader.into_inner();
-        let request: rndisprot::Packet = headers
-            .reader(mem)
-            .read_plain()
-            .map_err(WorkerError::Access)?;
+        let request: rndisprot::Packet = headers.reader(mem).read_plain()?;
         if request.num_oob_data_elements != 0
             || request.oob_data_length != 0
             || request.oob_data_offset != 0
@@ -2287,8 +2296,7 @@ impl<T: RingMem> NetChannel<T> {
                 )
                 .ok_or(WorkerError::RndisMessageTooSmall)?;
             while !ppi.is_empty() {
-                let h: rndisprot::PerPacketInfo =
-                    ppi.reader(mem).read_plain().map_err(WorkerError::Access)?;
+                let h: rndisprot::PerPacketInfo = ppi.reader(mem).read_plain()?;
                 if h.size == 0 {
                     return Err(WorkerError::RndisMessageTooSmall);
                 }
@@ -2300,8 +2308,7 @@ impl<T: RingMem> NetChannel<T> {
                     .ok_or(WorkerError::RndisMessageTooSmall)?;
                 match h.typ {
                     rndisprot::PPI_TCP_IP_CHECKSUM => {
-                        let n: rndisprot::TxTcpIpChecksumInfo =
-                            d.reader(mem).read_plain().map_err(WorkerError::Access)?;
+                        let n: rndisprot::TxTcpIpChecksumInfo = d.reader(mem).read_plain()?;
 
                         metadata.offload_tcp_checksum =
                             (n.is_ipv4() || n.is_ipv6()) && n.tcp_checksum();
@@ -2332,8 +2339,7 @@ impl<T: RingMem> NetChannel<T> {
                         }
                     }
                     rndisprot::PPI_LSO => {
-                        let n: rndisprot::TcpLsoInfo =
-                            d.reader(mem).read_plain().map_err(WorkerError::Access)?;
+                        let n: rndisprot::TcpLsoInfo = d.reader(mem).read_plain()?;
 
                         metadata.offload_tcp_segmentation = true;
                         metadata.offload_tcp_checksum = true;
@@ -2451,7 +2457,7 @@ impl<T: RingMem> NetChannel<T> {
         }
 
         #[repr(C)]
-        #[derive(AsBytes)]
+        #[derive(IntoBytes, Immutable, KnownLayout)]
         struct SendIndirectionMsg {
             pub message: protocol::Message5SendIndirectionTable,
             pub send_indirection_table:
@@ -2644,8 +2650,7 @@ impl<T: RingMem> NetChannel<T> {
                     return Err(WorkerError::InvalidRndisState);
                 }
 
-                let request: rndisprot::InitializeRequest =
-                    reader.read_plain().map_err(WorkerError::Access)?;
+                let request: rndisprot::InitializeRequest = reader.read_plain()?;
 
                 tracing::trace!(
                     ?request,
@@ -2672,8 +2677,7 @@ impl<T: RingMem> NetChannel<T> {
                         af_list_offset: 0,
                         af_list_size: 0,
                     },
-                )
-                .map_err(WorkerError::Access)?;
+                )?;
                 self.send_rndis_control_message(buffers, id, message_length)?;
                 if let PrimaryChannelGuestVfState::Available { vfid } = primary.guest_vf_state {
                     if self.guest_vf_is_available(
@@ -2703,8 +2707,7 @@ impl<T: RingMem> NetChannel<T> {
                 }
             }
             rndisprot::MESSAGE_TYPE_QUERY_MSG => {
-                let request: rndisprot::QueryRequest =
-                    reader.read_plain().map_err(WorkerError::Access)?;
+                let request: rndisprot::QueryRequest = reader.read_plain()?;
 
                 tracing::trace!(?request, "handling control message MESSAGE_TYPE_QUERY_MSG");
 
@@ -2734,13 +2737,11 @@ impl<T: RingMem> NetChannel<T> {
                         information_buffer_offset: size_of::<rndisprot::QueryComplete>() as u32,
                         information_buffer_length: tx as u32,
                     },
-                )
-                .map_err(WorkerError::Access)?;
+                )?;
                 self.send_rndis_control_message(buffers, id, message_length)?;
             }
             rndisprot::MESSAGE_TYPE_SET_MSG => {
-                let request: rndisprot::SetRequest =
-                    reader.read_plain().map_err(WorkerError::Access)?;
+                let request: rndisprot::SetRequest = reader.read_plain()?;
 
                 tracing::trace!(?request, "handling control message MESSAGE_TYPE_SET_MSG");
 
@@ -2767,8 +2768,7 @@ impl<T: RingMem> NetChannel<T> {
                         request_id: request.request_id,
                         status,
                     },
-                )
-                .map_err(WorkerError::Access)?;
+                )?;
                 self.send_rndis_control_message(buffers, id, message_length)?;
             }
             rndisprot::MESSAGE_TYPE_RESET_MSG => {
@@ -2778,8 +2778,7 @@ impl<T: RingMem> NetChannel<T> {
                 return Err(WorkerError::RndisMessageTypeNotImplemented)
             }
             rndisprot::MESSAGE_TYPE_KEEPALIVE_MSG => {
-                let request: rndisprot::KeepaliveRequest =
-                    reader.read_plain().map_err(WorkerError::Access)?;
+                let request: rndisprot::KeepaliveRequest = reader.read_plain()?;
 
                 tracing::trace!(
                     ?request,
@@ -2794,8 +2793,7 @@ impl<T: RingMem> NetChannel<T> {
                         request_id: request.request_id,
                         status: rndisprot::STATUS_SUCCESS,
                     },
-                )
-                .map_err(WorkerError::Access)?;
+                )?;
                 self.send_rndis_control_message(buffers, id, message_length)?;
             }
             rndisprot::MESSAGE_TYPE_SET_EX_MSG => {
@@ -2940,7 +2938,7 @@ impl<T: RingMem> NetChannel<T> {
 }
 
 /// Writes an RNDIS message to `writer`.
-fn write_rndis_message<T: AsBytes>(
+fn write_rndis_message<T: IntoBytes + Immutable + KnownLayout>(
     writer: &mut impl MemoryWrite,
     message_type: u32,
     extra: usize,
@@ -3298,7 +3296,7 @@ impl Adapter {
         // Vmswitch doesn't validate the NDIS header on this object, so read it manually.
         let mut params = rndisprot::NdisReceiveScaleParameters::new_zeroed();
         let len = reader.len().min(size_of_val(&params));
-        reader.clone().read(&mut params.as_bytes_mut()[..len])?;
+        reader.clone().read(&mut params.as_mut_bytes()[..len])?;
 
         if ((params.flags & NDIS_RSS_PARAM_FLAG_DISABLE_RSS) != 0)
             || ((params.hash_information & NDIS_HASH_FUNCTION_MASK) == 0)
@@ -3323,7 +3321,8 @@ impl Adapter {
             .read(&mut key)?;
         reader
             .skip(params.indirection_table_offset as usize)?
-            .read(indirection_table[..indirection_table_size].as_bytes_mut())?;
+            .read(indirection_table[..indirection_table_size].as_mut_bytes())?;
+        tracelimit::info_ratelimited!(?indirection_table, "OID_GEN_RECEIVE_SCALE_PARAMETERS");
         if indirection_table
             .iter()
             .any(|&x| x >= self.max_queues as u32)
@@ -3506,7 +3505,7 @@ impl Adapter {
     }
 }
 
-fn read_ndis_object<T: AsBytes + FromBytes + Debug>(
+fn read_ndis_object<T: IntoBytes + FromBytes + Debug + Immutable + KnownLayout>(
     mut reader: impl MemoryRead,
     object_type: rndisprot::NdisObjectType,
     min_revision: u8,
@@ -3515,9 +3514,11 @@ fn read_ndis_object<T: AsBytes + FromBytes + Debug>(
     let mut buffer = T::new_zeroed();
     let sent_size = reader.len();
     let len = sent_size.min(size_of_val(&buffer));
-    reader.read(&mut buffer.as_bytes_mut()[..len])?;
+    reader.read(&mut buffer.as_mut_bytes()[..len])?;
     validate_ndis_object_header(
-        &rndisprot::NdisObjectHeader::read_from_prefix(buffer.as_bytes()).unwrap(),
+        &rndisprot::NdisObjectHeader::read_from_prefix(buffer.as_bytes())
+            .unwrap()
+            .0, // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         sent_size,
         object_type,
         min_revision,
@@ -3686,6 +3687,13 @@ impl Coordinator {
                 self.restore_guest_vf_state(state).await;
                 self.restart = false;
             }
+
+            // Ensure that all workers except the primary are started. The
+            // primary is started below if there are no outstanding messages.
+            for worker in &mut self.workers[1..] {
+                worker.start();
+            }
+
             enum Message {
                 Internal(CoordinatorMessage),
                 ChannelDisconnected,
@@ -3695,7 +3703,6 @@ impl Coordinator {
                 PendingVfStateComplete,
                 TimerExpired,
             }
-            self.start_workers();
             let timer_sleep = async {
                 if let Some(sleep_duration) = sleep_duration {
                     let mut timer = PolledTimer::new(&state.adapter.driver);
@@ -3761,22 +3768,25 @@ impl Coordinator {
                         (internal_msg, endpoint_restart, timer_sleep).race().await
                     }
                 };
-                stop.until_stopped(wait_for_message).await?
+
+                let mut wait_for_message = std::pin::pin!(wait_for_message);
+                match (&mut wait_for_message).now_or_never() {
+                    Some(message) => message,
+                    None => {
+                        self.workers[0].start();
+                        stop.until_stopped(wait_for_message).await?
+                    }
+                }
             };
             match message {
                 Message::UpdateFromVf(rpc) => {
-                    rpc.handle(|_| async {
+                    rpc.handle(async |_| {
                         self.update_guest_vf_state(state).await;
                     })
                     .await;
                 }
                 Message::OfferVfDevice => {
-                    let stopped = if self.workers[0].is_running() {
-                        self.workers[0].stop().await;
-                        true
-                    } else {
-                        false
-                    };
+                    self.workers[0].stop().await;
                     if let Some(primary) = self.primary_mut() {
                         if matches!(
                             primary.guest_vf_state,
@@ -3784,9 +3794,6 @@ impl Coordinator {
                         ) {
                             primary.guest_vf_state = PrimaryChannelGuestVfState::Ready;
                         }
-                    }
-                    if stopped {
-                        self.workers[0].start();
                     }
 
                     state.pending_vf_state = CoordinatorStatePendingVfState::Pending;
@@ -3803,7 +3810,6 @@ impl Coordinator {
                                 primary.pending_link_action = PendingLinkAction::Active(up);
                             }
                         }
-                        self.workers[0].start();
                     }
                     sleep_duration = None;
                 }
@@ -3812,12 +3818,7 @@ impl Coordinator {
                 }
                 Message::UpdateFromEndpoint(EndpointAction::RestartRequired) => self.restart = true,
                 Message::UpdateFromEndpoint(EndpointAction::LinkStatusNotify(connect)) => {
-                    let stopped = if self.workers[0].is_running() {
-                        self.workers[0].stop().await;
-                        true
-                    } else {
-                        false
-                    };
+                    self.workers[0].stop().await;
 
                     // These are the only link state transitions that are tracked.
                     // 1. up -> down or down -> up
@@ -3832,18 +3833,12 @@ impl Coordinator {
 
                     // If there is any existing sleep timer running, cancel it out.
                     sleep_duration = None;
-                    if stopped {
-                        self.workers[0].start();
-                    }
                 }
                 Message::Internal(CoordinatorMessage::Restart) => self.restart = true,
                 Message::Internal(CoordinatorMessage::StartTimer(duration)) => {
                     sleep_duration = Some(duration);
                     // Restart primary task.
-                    if self.workers[0].is_running() {
-                        self.workers[0].stop().await;
-                        self.workers[0].start();
-                    }
+                    self.workers[0].stop().await;
                 }
                 Message::ChannelDisconnected => {
                     break;
@@ -4111,7 +4106,12 @@ impl Coordinator {
                     .into_iter()
                     .filter(|&index| index < num_queues)
                     .collect::<Vec<_>>();
-                active_queues.len() as u16
+                if !active_queues.is_empty() {
+                    active_queues.len() as u16
+                } else {
+                    tracelimit::warn_ratelimited!("Invalid RSS indirection table");
+                    num_queues
+                }
             } else {
                 num_queues
             };
@@ -4158,14 +4158,37 @@ impl Coordinator {
 
                 let mut initial_rx = initial_rx.as_slice();
                 let mut range_start = 0;
-                let mut active_count = 0;
-                for queue_index in 0..num_queues {
-                    let queue_active =
-                        active_queues.is_empty() || active_queues.contains(&queue_index);
+                let primary_queue_excluded = !active_queues.is_empty() && active_queues[0] != 0;
+                let first_queue = if !primary_queue_excluded {
+                    0
+                } else {
+                    // If the primary queue is excluded from the guest supplied
+                    // indirection table, it is assigned just the reserved
+                    // buffers.
+                    queue_config.push(QueueConfig {
+                        pool: Box::new(BufferPool::new(guest_buffers.clone())),
+                        initial_rx: &[RxId(0)],
+                        driver: Box::new(drivers[0].clone()),
+                    });
+                    rx_buffers.push(RxBufferRange::new(
+                        ranges.clone(),
+                        0..RX_RESERVED_CONTROL_BUFFERS,
+                        None,
+                    ));
+                    range_start = RX_RESERVED_CONTROL_BUFFERS;
+                    1
+                };
+                for queue_index in first_queue..num_queues {
+                    let queue_active = active_queues.is_empty()
+                        || active_queues.binary_search(&queue_index).is_ok();
                     let (range_end, end, buffer_id_recv) = if queue_active {
-                        active_count += 1;
-                        let range_end =
-                            RX_RESERVED_CONTROL_BUFFERS + active_count * ranges.buffers_per_queue;
+                        let range_end = range_start
+                            + ranges.buffers_per_queue
+                            + if queue_index == 0 {
+                                RX_RESERVED_CONTROL_BUFFERS
+                            } else {
+                                0
+                            };
                         (
                             range_end,
                             initial_rx.partition_point(|id| id.0 < range_end),
@@ -4232,12 +4255,6 @@ impl Coordinator {
         Ok(())
     }
 
-    fn start_workers(&mut self) {
-        for worker in &mut self.workers {
-            worker.start();
-        }
-    }
-
     fn primary_mut(&mut self) -> Option<&mut PrimaryChannelState> {
         self.workers[0]
             .state_mut()
@@ -4250,12 +4267,8 @@ impl Coordinator {
     }
 
     async fn update_guest_vf_state(&mut self, c_state: &mut CoordinatorState) {
-        if !self.workers[0].is_running() {
-            return;
-        }
         self.workers[0].stop().await;
         self.restore_guest_vf_state(c_state).await;
-        self.workers[0].start();
     }
 }
 
@@ -4355,7 +4368,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
     ) -> Result<Option<Packet<'a>>, WorkerError> {
         let (mut read, _) = self.queue.split();
         let packet = match read.try_read() {
-            Ok(packet) => parse_packet(&packet, send_buffer, version)?,
+            Ok(packet) => {
+                parse_packet(&packet, send_buffer, version).map_err(WorkerError::Packet)?
+            }
             Err(queue::TryReadError::Empty) => return Ok(None),
             Err(queue::TryReadError::Queue(err)) => return Err(err.into()),
         };
@@ -4371,7 +4386,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
     ) -> Result<Packet<'a>, WorkerError> {
         let (mut read, _) = self.queue.split();
         let mut packet_ref = read.read().await?;
-        let packet = parse_packet(&packet_ref, send_buffer, version)?;
+        let packet =
+            parse_packet(&packet_ref, send_buffer, version).map_err(WorkerError::Packet)?;
         if matches!(packet.data, PacketData::RndisPacket(_)) {
             // In WorkerState::Init if an rndis packet is received, assume it is MESSAGE_TYPE_INITIALIZE_MSG
             tracing::trace!(target: "netvsp/vmbus", "detected rndis initialization message");
@@ -5162,8 +5178,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
         // message.
         while reader.len() > 0 {
             let mut this_reader = reader.clone();
-            let header: rndisprot::MessageHeader =
-                this_reader.read_plain().map_err(WorkerError::Access)?;
+            let header: rndisprot::MessageHeader = this_reader.read_plain()?;
             if self.handle_rndis_message(
                 buffers,
                 state,
@@ -5174,9 +5189,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
             )? {
                 num_packets += 1;
             }
-            reader
-                .skip(header.message_length as usize)
-                .map_err(WorkerError::Access)?;
+            reader.skip(header.message_length as usize)?;
         }
 
         Ok(num_packets)
@@ -5256,8 +5269,7 @@ impl ActiveState {
                     done.push(RxId(id));
                 } else {
                     self.primary
-                        .as_mut()
-                        .unwrap()
+                        .as_mut()?
                         .free_control_buffers
                         .push(ControlMessageId(id));
                 }

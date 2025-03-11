@@ -4,6 +4,7 @@
 //! Various "legacy" chipset devices that collectively implement the Hyper-V
 //! Generation 1 VM chipset.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod i440bx_host_pci_bridge;

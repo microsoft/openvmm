@@ -6,8 +6,10 @@
 use safeatomic::AtomicSliceOps;
 use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// The 4KB page size used by user-mode devices.
 pub const PAGE_SIZE: usize = 4096;
@@ -100,6 +102,17 @@ pub struct MemoryBlock {
     mem: Arc<dyn MappedDmaTarget>,
 }
 
+impl std::fmt::Debug for MemoryBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryBlock")
+            .field("base", &self.base)
+            .field("len", &self.len)
+            .field("pfns", &self.pfns())
+            .field("pfn_bias", &self.pfn_bias())
+            .finish()
+    }
+}
+
 // SAFETY: The inner MappedDmaTarget is Send + Sync, so a view of it is too.
 unsafe impl Send for MemoryBlock {}
 // SAFETY: The inner MappedDmaTarget is Send + Sync, so a view of it is too.
@@ -155,7 +168,7 @@ impl MemoryBlock {
     }
 
     /// Reads an object from the buffer at `offset`.
-    pub fn read_obj<T: FromBytes>(&self, offset: usize) -> T {
+    pub fn read_obj<T: FromBytes + Immutable + KnownLayout>(&self, offset: usize) -> T {
         self.as_slice()[offset..][..size_of::<T>()].atomic_read_obj()
     }
 
@@ -165,7 +178,7 @@ impl MemoryBlock {
     }
 
     /// Writes an object into the buffer at `offset`.
-    pub fn write_obj<T: AsBytes>(&self, offset: usize, data: &T) {
+    pub fn write_obj<T: IntoBytes + Immutable + KnownLayout>(&self, offset: usize, data: &T) {
         self.as_slice()[offset..][..size_of::<T>()].atomic_write_obj(data);
     }
 

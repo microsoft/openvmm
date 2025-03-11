@@ -5,7 +5,7 @@
 // UNSAFETY: Calls to Win32 functions to handle delay loading, interacting
 // with low level primitives, and memory management.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 pub mod afd;
 pub mod alpc;
@@ -54,6 +54,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Once;
 use std::time::Duration;
 use widestring::U16CString;
+use widestring::Utf16Str;
 use winapi::shared::ntdef;
 use winapi::shared::ntdef::NTSTATUS;
 use winapi::shared::ntstatus;
@@ -315,7 +316,7 @@ impl IoCompletionPort {
 
     // Per MSDN, overlapped values are not dereferenced by PostQueuedCompletionStatus,
     // they are passed as-is to the caller of GetQueuedCompletionStatus.
-    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[expect(clippy::not_unsafe_ptr_arg_deref)]
     pub fn post(&self, bytes: u32, key: usize, overlapped: *mut OVERLAPPED) {
         unsafe {
             if PostQueuedCompletionStatus(self.0.as_raw_handle(), bytes, key, overlapped) == 0 {
@@ -527,6 +528,11 @@ impl UnicodeString {
         let buffer = NonNull::new(self.0.Buffer).unwrap_or_else(NonNull::dangling);
         unsafe { std::slice::from_raw_parts(buffer.as_ptr(), self.0.Length as usize / 2) }
     }
+
+    pub fn as_mut_slice(&mut self) -> &mut [u16] {
+        let buffer = NonNull::new(self.0.Buffer).unwrap_or_else(NonNull::dangling);
+        unsafe { std::slice::from_raw_parts_mut(buffer.as_ptr(), self.0.Length as usize / 2) }
+    }
 }
 
 impl Drop for UnicodeString {
@@ -628,6 +634,22 @@ impl AsUnicodeStringRef for UnicodeString {
 impl AsUnicodeStringRef for UnicodeStringRef<'_> {
     fn as_unicode_string_ref(&self) -> &UnicodeStringRef<'_> {
         self
+    }
+}
+
+impl AsRef<windows::Win32::Foundation::UNICODE_STRING> for UnicodeStringRef<'_> {
+    fn as_ref(&self) -> &windows::Win32::Foundation::UNICODE_STRING {
+        // SAFETY: These are different definitions of the same type, so the memory layout is the
+        // same.
+        unsafe { std::mem::transmute(&self.0) }
+    }
+}
+
+impl<'a> TryFrom<&'a Utf16Str> for UnicodeStringRef<'a> {
+    type Error = StringTooLong;
+
+    fn try_from(value: &'a Utf16Str) -> std::result::Result<Self, Self::Error> {
+        UnicodeStringRef::new(value.as_slice()).ok_or(StringTooLong)
     }
 }
 
@@ -771,6 +793,14 @@ impl<'a> ObjectAttributes<'a> {
     /// Returns the OBJECT_ATTRIBUTES pointer for passing to an NT syscall.
     pub fn as_ptr(&self) -> *mut ntdef::OBJECT_ATTRIBUTES {
         std::ptr::from_ref(&self.attributes).cast_mut()
+    }
+}
+
+impl AsRef<windows::Wdk::Foundation::OBJECT_ATTRIBUTES> for ObjectAttributes<'_> {
+    fn as_ref(&self) -> &windows::Wdk::Foundation::OBJECT_ATTRIBUTES {
+        // SAFETY: These are different definitions of the same type, so the memory layout is the
+        // same.
+        unsafe { std::mem::transmute(&self.attributes) }
     }
 }
 

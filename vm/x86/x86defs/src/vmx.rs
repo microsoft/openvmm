@@ -7,9 +7,10 @@
 
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 open_enum! {
     /// VMX exit reason
@@ -146,6 +147,8 @@ impl VmcsField {
 
     pub const VMX_VMCS_GUEST_PAT: Self = Self(0x00002804);
     pub const VMX_VMCS_GUEST_EFER: Self = Self(0x00002806);
+
+    pub const VMX_VMCS_VIRTUAL_APIC_PAGE: Self = Self(0x00002012);
 
     pub const VMX_VMCS_EOI_EXIT_0: Self = Self(0x0000201C);
     pub const VMX_VMCS_EOI_EXIT_1: Self = Self(0x0000201E);
@@ -356,14 +359,14 @@ pub struct SecondaryProcessorControls {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ApicRegister {
     pub value: u32,
     _reserved: [u32; 3],
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ApicPage {
     pub reserved_0: [ApicRegister; 2],
     pub id: ApicRegister,

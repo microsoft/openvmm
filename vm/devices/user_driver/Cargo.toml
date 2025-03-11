@@ -3,7 +3,7 @@
 
 [package]
 name = "user_driver"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -20,6 +20,7 @@ pal_async.workspace = true
 pci_core.workspace = true
 safeatomic.workspace = true
 uevent.workspace = true
+event-listener.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
 
@@ -28,7 +29,6 @@ parking_lot.workspace = true
 tracing.workspace = true
 vfio-bindings.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(target_os = "linux")'.dependencies]
 fs-err.workspace = true
 futures.workspace = true

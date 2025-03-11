@@ -3,7 +3,7 @@
 
 [package]
 name = "hcl_compat_uefi_nvram_storage"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -18,7 +18,6 @@ guid.workspace = true
 inspect = { workspace = true, optional = true }
 open_enum.workspace = true
 ucs2.workspace = true
-zerocopy_helpers.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
@@ -27,7 +26,6 @@ thiserror.workspace = true
 tracing.workspace = true
 wchar.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 pal_async.workspace = true
 

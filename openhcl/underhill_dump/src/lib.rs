@@ -15,6 +15,7 @@
 //!    tracing stop notifications.
 
 #![cfg(target_os = "linux")]
+#![expect(missing_docs)]
 
 use anyhow::Context;
 use std::fs::File;
@@ -37,7 +38,7 @@ pub fn main() -> ! {
 pub fn do_main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1).peekable();
 
-    let level = if args.peek().map_or(false, |x| x == "-v") {
+    let level = if args.peek().is_some_and(|x| x == "-v") {
         args.next();
         Level::DEBUG
     } else {

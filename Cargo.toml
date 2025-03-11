@@ -19,7 +19,8 @@ members = [
   "openhcl/vmfirmwareigvm_dll",
   # VMM tests
   "vmm_tests/vmm_tests",
-  # hyper-v
+  # hyper-v tooling
+  "hyperv/tools/hypestv",
   # fuzzing
   "support/inspect/fuzz",
   "support/mesh/mesh_rpc/fuzz",
@@ -30,6 +31,7 @@ members = [
   "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
   "vm/devices/storage/scsi_buffers/fuzz",
+  "vm/devices/storage/storvsp/fuzz",
   "vm/vmcore/guestmem/fuzz",
   "vm/x86/x86emu/fuzz",
   # in-guest test bins
@@ -40,7 +42,6 @@ members = [
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
-  "hyperv/tools/hypestv",
 ]
 exclude = [
   "xsync",
@@ -48,7 +49,8 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.82"
+rust-version = "1.85"
+edition = "2021"
 
 [workspace.dependencies]
 xtask_fuzz = { path = "xtask/xtask_fuzz" }
@@ -73,7 +75,6 @@ petri_artifact_resolver_openvmm_known_paths = { path = "vmm_tests/petri_artifact
 petri_artifacts_vmm_test = { path = "vmm_tests/petri_artifacts_vmm_test" }
 vmm_test_images = { path = "vmm_tests/vmm_test_images" }
 vmm_test_macros = { path = "vmm_tests/vmm_test_macros" }
-vmm_test_petri_support = { path = "vmm_tests/vmm_test_petri_support" }
 
 petri = { path = "petri" }
 petri_artifacts_common = { path = "petri/petri_artifacts_common" }
@@ -94,6 +95,7 @@ debug_ptr = { path = "support/debug_ptr" }
 fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }
+headervec = { path = "support/headervec" }
 inspect = { path = "support/inspect", default-features = false, features = ["derive"] }
 inspect_counters = { path = "support/inspect_counters" }
 inspect_derive = { path = "support/inspect_derive" }
@@ -101,6 +103,7 @@ inspect_proto = { path = "support/inspect_proto" }
 inspect_rlimit = { path = "support/inspect_rlimit" }
 inspect_task = { path = "support/inspect_task" }
 kmsg = { path = "support/kmsg" }
+loan_cell = { path = "support/loan_cell" }
 local_clock = { path = "support/local_clock" }
 mesh = { path = "support/mesh" }
 mesh_build = { path = "support/mesh/mesh_build" }
@@ -130,7 +133,6 @@ sparse_mmap = { path = "support/sparse_mmap" }
 task_control = { path = "support/task_control" }
 tdx_guest_device = { path = "support/tdx_guest_device" }
 tee_call = { path = "support/tee_call" }
-tempfile_helpers = { path = "support/tempfile_helpers" }
 term = { path = "support/term" }
 test_with_tracing = { path = "support/test_with_tracing" }
 test_with_tracing_macro = { path = "support/test_with_tracing/test_with_tracing_macro" }
@@ -142,7 +144,6 @@ unix_socket = { path = "support/unix_socket" }
 vmsocket = { path = "support/vmsocket" }
 win_import_lib = { path = "support/win_import_lib" }
 win_prng_support = { path = "support/win_prng_support" }
-zerocopy_helpers = { path = "support/zerocopy_helpers" }
 
 azure_profiler_proto = { path = "openhcl/azure_profiler_proto" }
 bootloader_fdt_parser = { path = "openhcl/bootloader_fdt_parser" }
@@ -150,14 +151,14 @@ build_info = { path = "openhcl/build_info" }
 diag_client = { path = "openhcl/diag_client" }
 diag_proto = { path = "openhcl/diag_proto" }
 diag_server = { path = "openhcl/diag_server" }
-get_lower_vtl = { path = "openhcl/get_lower_vtl" }
 hcl = { path = "openhcl/hcl" }
+hcl_mapper = { path = "openhcl/hcl_mapper" }
 host_fdt_parser = { path = "openhcl/host_fdt_parser" }
 kmsg_defs = { path = "openhcl/kmsg_defs" }
 lower_vtl_permissions_guard = { path = "openhcl/lower_vtl_permissions_guard" }
 minimal_rt = { path = "openhcl/minimal_rt" }
 minimal_rt_build = { path = "openhcl/minimal_rt_build" }
-page_pool_alloc = { path = "openhcl/page_pool_alloc" }
+openhcl_dma_manager = { path = "openhcl/openhcl_dma_manager" }
 sidecar_client = { path = "openhcl/sidecar_client" }
 sidecar_defs = { path = "openhcl/sidecar_defs" }
 underhill_attestation = { path = "openhcl/underhill_attestation" }
@@ -318,14 +319,15 @@ vmbus_server = { path = "vm/devices/vmbus/vmbus_server" }
 vmbus_user_channel = { path = "vm/devices/vmbus/vmbus_user_channel" }
 hv1_emulator = { path = "vm/hv1/hv1_emulator" }
 hv1_hypercall = { path = "vm/hv1/hv1_hypercall" }
+hv1_structs = { path = "vm/hv1/hv1_structs" }
 hvdef = { path = "vm/hv1/hvdef" }
-vtl_array = { path = "vm/hv1/vtl_array" }
 vhd1_defs = { path = "vm/vhd1_defs" }
 kvm = { path = "vm/kvm" }
 loader = { path = "vm/loader" }
 igvmfilegen_config = { path = "vm/loader/igvmfilegen_config" }
 loader_defs = { path = "vm/loader/loader_defs" }
 page_table = { path = "vm/loader/page_table" }
+page_pool_alloc = { path = "vm/page_pool_alloc" }
 vbs_defs = { path = "vm/vbs_defs" }
 vmgs = { path = "vm/vmgs/vmgs" }
 vmgs_broker = { path = "vm/vmgs/vmgs_broker" }
@@ -395,18 +397,18 @@ criterion = { version = "0.5", default-features = false }
 crossterm = "0.27"
 ctrlc = "3.4.0"
 der = "0.7"
-diff = "0.1"
 dirs = "5.0"
 elfcore = "1.1.5"
 embed-resource = "2.4.2"
 env_logger = "0.10"
 event-listener = "5.3"
+expect-test = "1.5"
 fatfs = { version = "0.3.6", default-features = false }
 filepath = "0.1"
 fs-err = "2.9"
 fscommon = "0.1.1"
 futures = "0.3.31"
-futures-concurrency = "7.2.1"
+futures-concurrency = "7.6.3"
 futures-executor = "0.3"
 futures-core = "0.3"
 futures-channel = "0.3"
@@ -435,17 +437,17 @@ iced-x86 = { version = "1.17", default-features = false, features = [
   "no_d3now",
 ] }
 ignore = "0.4"
-igvm = "0.3.3"
-igvm_defs = { version = "0.3.3", default-features = false, features = [
-  "unstable",
-] }
+igvm = {git = "https://github.com/microsoft/igvm", rev = "365065d7e31da0a0116e7934de3ecd85f00bab70"}
+igvm_defs = {git = "https://github.com/microsoft/igvm", rev = "365065d7e31da0a0116e7934de3ecd85f00bab70", default-features = false, features = [ "unstable" ]}
 image = { version = "0.24", default-features = false }
 io-uring = "0.6"
+jiff = "0.1"
 kvm-bindings = "0.7"
 # Use of these specific REPO will go away when changes are taken upstream.
 landlock = "0.3.1"
 libc = "0.2"
 libfuzzer-sys = "0.4"
+libtest-mimic = "0.8"
 linkme = "0.3.9"
 log = "0.4"
 macaddr = "1.0"
@@ -466,7 +468,7 @@ pbjson = "0.5"
 pbjson-build = "0.5"
 pbjson-types = "0.5"
 pcap-file = "2.0.0"
-petgraph = "0.6.4"
+petgraph = "0.7.1"
 proc-macro2 = "1.0"
 prost = "0.11"
 prost-build = "0.11"
@@ -515,13 +517,14 @@ which = "6"
 widestring = "1.0"
 win_etw_tracing = "0.1"
 winapi = "0.3"
-windows = "0.56"
+windows = "0.59"
 windows-service = "0.7"
 windows-sys = "0.52"
 xshell = "=0.2.2" # pin to 0.2.2 to work around https://github.com/matklad/xshell/issues/63
 xshell-macros = "0.2"
 # We add the derive feature here since the vast majority of our crates use it.
-zerocopy = { version = "0.7.32", features = ["derive"] }
+#zerocopy = { version = "0.7.32", features = ["derive"]}
+zerocopy = { version = "0.8.14", features = ["derive"]}
 
 [workspace.metadata.xtask.unused-deps]
 # Pulled in through "tracing", but we need to pin the version
@@ -587,16 +590,20 @@ nonstandard_style = { level = "deny", priority = -2 }
 rust_2018_idioms = { level = "deny", priority = -2 }
 
 rust-2024-compatibility = { level = "warn", priority = -1 }
-# TODO: Fix all of the below, https://github.com/microsoft/openvmm/issues/288
 edition_2024_expr_fragment_specifier = "allow"
-impl_trait_overcaptures = "allow"
-deprecated-safe-2024 = "allow"
+# TODO: Fix all of the below, https://github.com/microsoft/openvmm/issues/288
+tail-expr-drop-order = "allow"
+if-let-rescope = "allow"
 
 unused_qualifications = "warn"
+missing_docs = "warn"
 
 # Code that needs unsafe should opt-in via a module-scoped allow.
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "forbid"
+
+# TODO: Needed for xshell compatibility, fixed in v0.2.7
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(trick_rust_analyzer_into_highlighting_interpolated_bits)'] }
 
 [workspace.lints.clippy]
 dbg_macro = "warn"
@@ -620,6 +627,9 @@ string_to_string = "warn"
 suboptimal_flops = "warn"
 undocumented_unsafe_blocks = "warn"
 unnecessary_box_returns = "warn"
+
+# TODO: Remove this allow in Rust 1.86. See https://github.com/rust-lang/rust-clippy/pull/14115.
+precedence = "allow"
 
 # Possible future additions:
 #

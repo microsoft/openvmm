@@ -15,11 +15,9 @@ use openssl::rsa::Padding;
 use openssl::sign::Verifier;
 use openssl::x509::X509VerifyResult;
 use openssl::x509::X509;
+use std::fmt::Write;
 use thiserror::Error;
 
-use std::fmt::Write;
-
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum KeyReleaseError {
     #[error("the response payload size is too small to parse")]
@@ -36,7 +34,6 @@ pub(crate) enum KeyReleaseError {
     ParseHeader(#[source] CommonError),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum AkvKeyReleaseJwtError {
     #[error("JWT data is not valid UTF-8: {0}")]
@@ -69,7 +66,6 @@ pub(crate) enum AkvKeyReleaseJwtError {
     KeyHsmBlobToJson(#[source] serde_json::Error),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum JwtSignatureVerificationError {
     #[error("invalid key type {key_type:?}, expected {expected_type:?}")]
@@ -89,7 +85,6 @@ pub(crate) enum JwtSignatureVerificationError {
     UnsupportedSigningAlgorithm(String),
 }
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum CertificateChainValidationError {
     #[error("certificate chain is empty")]

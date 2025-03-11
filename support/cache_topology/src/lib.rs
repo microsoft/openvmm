@@ -4,7 +4,6 @@
 //! Provides ways to describe a machine's cache topology and to query it from
 //! the current running machine.
 
-#![warn(missing_docs)]
 // UNSAFETY: needed to call Win32 functions to query cache topology
 #![cfg_attr(windows, expect(unsafe_code))]
 
@@ -190,7 +189,7 @@ mod linux {
                         .file_name()
                         .unwrap()
                         .to_str()
-                        .map_or(false, |s| s.starts_with("index"))
+                        .is_some_and(|s| s.starts_with("index"))
                     {
                         continue;
                     }

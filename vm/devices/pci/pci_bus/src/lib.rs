@@ -14,8 +14,6 @@
 //! Incoming config space accesses are then routed to connected
 //! [`GenericPciBusDevice`] devices.
 
-#![warn(missing_docs)]
-
 use bitfield_struct::bitfield;
 use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;
@@ -36,11 +34,11 @@ use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use vmcore::device_state::ChangeDeviceState;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// Standard x86 IO ports associated with PCI
-#[allow(missing_docs)] // self explanatory constants
+#[expect(missing_docs)] // self explanatory constants
 pub mod standard_x86_io_ports {
     pub const ADDR_START: u16 = 0xCF8;
     pub const ADDR_END: u16 = 0xCFB;
@@ -443,7 +441,7 @@ impl PortIoIntercept for GenericPciBus {
 
         let new_value = {
             let mut temp: u32 = 0;
-            temp.as_bytes_mut()[..data.len()].copy_from_slice(data);
+            temp.as_mut_bytes()[..data.len()].copy_from_slice(data);
             temp
         };
 
@@ -545,7 +543,7 @@ impl PollDevice for GenericPciBus {
                     address,
                 } => {
                     let mut buf = 0;
-                    if let Poll::Ready(res) = deferred_device_read.poll_read(cx, buf.as_bytes_mut())
+                    if let Poll::Ready(res) = deferred_device_read.poll_read(cx, buf.as_mut_bytes())
                     {
                         let value = match res {
                             Ok(()) => buf,
@@ -575,7 +573,7 @@ impl PollDevice for GenericPciBus {
                     address,
                 } => {
                     let mut buf = 0;
-                    if let Poll::Ready(res) = deferred_device_read.poll_read(cx, buf.as_bytes_mut())
+                    if let Poll::Ready(res) = deferred_device_read.poll_read(cx, buf.as_mut_bytes())
                     {
                         let old_value = match res {
                             Ok(()) => buf,

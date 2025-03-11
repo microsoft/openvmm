@@ -3,7 +3,7 @@
 
 [package]
 name = "underhill_core"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -32,7 +32,6 @@ cvm_tracing.workspace = true
 diag_proto.workspace = true
 diag_server.workspace = true
 debug_worker_defs = { workspace = true, optional = true }
-page_pool_alloc =  { workspace = true, features = ["vfio"] }
 virt.workspace = true
 vmm_core.workspace = true
 vmm_core_defs.workspace = true
@@ -59,14 +58,12 @@ hyperv_uefi_custom_vars_json.workspace = true
 framebuffer.workspace = true
 hcl_compat_uefi_nvram_storage = { workspace = true, features = ["inspect"] }
 get_helpers.workspace = true
-get_lower_vtl.workspace = true
 get_protocol.workspace = true
 guest_emulation_transport.workspace = true
 ide.workspace = true
 ide_resources.workspace = true
 input_core.workspace = true
 kmsg_defs.workspace = true
-lower_vtl_permissions_guard = { workspace = true, features = ["vfio"] }
 mana_driver.workspace = true
 mcr_resources.workspace = true
 net_backend.workspace = true
@@ -76,6 +73,7 @@ net_mana.workspace = true
 netvsp.workspace = true
 nvme_driver.workspace = true
 nvme_resources.workspace = true
+openhcl_dma_manager.workspace = true
 scsi_core.workspace = true
 scsidisk.workspace = true
 scsidisk_resources.workspace = true
@@ -101,8 +99,9 @@ vm_manifest_builder.workspace = true
 vmbus_async.workspace = true
 vmbus_user_channel.workspace = true
 vmbus_channel.workspace = true
-vmbus_core.workspace = true
+vmbus_client.workspace = true
 vmbus_client_hcl.workspace = true
+vmbus_core.workspace = true
 vmbus_relay.workspace = true
 vmbus_relay_intercept_device.workspace = true
 vmbus_serial_guest.workspace = true
@@ -168,7 +167,6 @@ time = { workspace = true, features = ["macros"] }
 tracing-subscriber = { workspace = true, features = ["registry"] }
 tracing.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 firmware_pcat.workspace = true
 

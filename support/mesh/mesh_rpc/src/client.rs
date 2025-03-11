@@ -47,7 +47,7 @@ use unix_socket::UnixStream;
 
 /// A TTRPC client connection.
 pub struct Client {
-    send: mesh::Sender<mesh::Message>,
+    send: mesh::Sender<mesh::OwnedMessage>,
     task: Task<()>,
 }
 
@@ -228,12 +228,14 @@ impl CallBuilder<'_> {
     {
         let (send, recv) = mesh::oneshot();
 
-        self.client.send.send(mesh::Message::new(ClientRequest {
-            service: R::NAME.to_string(),
-            deadline: self.deadline.map(Into::into),
-            rpc: DecodedRpc::Rpc(rpc(input, send)),
-            wait_ready: self.wait_ready,
-        }));
+        self.client
+            .send
+            .send(mesh::OwnedMessage::new(ClientRequest {
+                service: R::NAME.to_string(),
+                deadline: self.deadline.map(Into::into),
+                rpc: DecodedRpc::Rpc(rpc(input, send)),
+                wait_ready: self.wait_ready,
+            }));
 
         Call(recv)
     }
@@ -243,16 +245,18 @@ impl CallBuilder<'_> {
     pub(crate) fn start_raw(&self, service: &str, method: &str, data: Vec<u8>) -> Call<Vec<u8>> {
         let (send, recv) = mesh::oneshot();
 
-        self.client.send.send(mesh::Message::new(ClientRequest {
-            service: service.to_string(),
-            deadline: self.deadline.map(Into::into),
-            rpc: GenericRpc {
-                method: method.to_string(),
-                data,
-                port: send.into(),
-            },
-            wait_ready: self.wait_ready,
-        }));
+        self.client
+            .send
+            .send(mesh::OwnedMessage::new(ClientRequest {
+                service: service.to_string(),
+                deadline: self.deadline.map(Into::into),
+                rpc: GenericRpc {
+                    method: method.to_string(),
+                    data,
+                    port: send.into(),
+                },
+                wait_ready: self.wait_ready,
+            }));
 
         Call(recv)
     }
@@ -407,7 +411,7 @@ impl<T: Dial> ClientWorker<T> {
 
     async fn run_connection(&mut self, stream: T::Stream) -> anyhow::Result<()> {
         let (mut reader, mut writer) = AsyncReadExt::split(stream);
-        let responses = Mutex::new(HashMap::<u32, mesh::OneshotSender<mesh::Message>>::new());
+        let responses = Mutex::new(HashMap::<u32, mesh::OneshotSender<mesh::OwnedMessage>>::new());
         let recv_task = async {
             while let Some(message) = read_message(&mut reader)
                 .await
@@ -425,7 +429,7 @@ impl<T: Dial> ClientWorker<T> {
 
                 let result = handle_message(message);
 
-                response_send.send(mesh::Message::new(result));
+                response_send.send(mesh::OwnedMessage::new(result));
             }
             Ok(())
         };

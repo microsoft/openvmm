@@ -7,7 +7,6 @@
 //! NOTE: this crate does not define any concrete Artifact types itself.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,6 +15,10 @@ use std::sync::Arc;
 // exported to support the `declare_artifacts!` macro
 #[doc(hidden)]
 pub use paste;
+use std::cell::RefCell;
+use std::ffi::OsStr;
+use std::marker::PhantomData;
+use std::path::Path;
 
 /// A trait that marks a type as being the type-safe ID for a petri artifact.
 ///
@@ -36,12 +39,149 @@ pub trait ArtifactId: 'static {
 /// A type-safe handle to a particular Artifact, as declared using the
 /// [`declare_artifacts!`](crate::declare_artifacts) macro.
 #[derive(Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ArtifactHandle<A: ArtifactId>(core::marker::PhantomData<A>);
+pub struct ArtifactHandle<A: ArtifactId>(PhantomData<A>);
 
 impl<A: ArtifactId + std::fmt::Debug> std::fmt::Debug for ArtifactHandle<A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Debug::fmt(&self.erase(), f)
     }
+}
+
+/// A resolved artifact path for artifact `A`.
+pub struct ResolvedArtifact<A = ()>(Option<PathBuf>, PhantomData<A>);
+
+impl<A> Clone for ResolvedArtifact<A> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone(), self.1)
+    }
+}
+
+impl<A> std::fmt::Debug for ResolvedArtifact<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ResolvedArtifact").field(&self.0).finish()
+    }
+}
+
+impl<A> ResolvedArtifact<A> {
+    /// Erases the type `A`.
+    pub fn erase(self) -> ResolvedArtifact {
+        ResolvedArtifact(self.0, PhantomData)
+    }
+
+    /// Gets the resolved path of the artifact.
+    #[track_caller]
+    pub fn get(&self) -> &Path {
+        self.0
+            .as_ref()
+            .expect("cannot get path in requirements phase")
+    }
+}
+
+impl<A> From<ResolvedArtifact<A>> for PathBuf {
+    #[track_caller]
+    fn from(ra: ResolvedArtifact<A>) -> PathBuf {
+        ra.0.expect("cannot get path in requirements phase")
+    }
+}
+
+impl<A> AsRef<Path> for ResolvedArtifact<A> {
+    #[track_caller]
+    fn as_ref(&self) -> &Path {
+        self.get()
+    }
+}
+
+impl<A> AsRef<OsStr> for ResolvedArtifact<A> {
+    #[track_caller]
+    fn as_ref(&self) -> &OsStr {
+        self.get().as_ref()
+    }
+}
+
+/// A resolve artifact path for an optional artifact `A`.
+#[derive(Clone, Debug)]
+pub struct ResolvedOptionalArtifact<A = ()>(OptionalArtifactState, PhantomData<A>);
+
+#[derive(Clone, Debug)]
+enum OptionalArtifactState {
+    Collecting,
+    Missing,
+    Present(PathBuf),
+}
+
+impl<A> ResolvedOptionalArtifact<A> {
+    /// Erases the type `A`.
+    pub fn erase(self) -> ResolvedOptionalArtifact {
+        ResolvedOptionalArtifact(self.0, PhantomData)
+    }
+
+    /// Gets the resolved path of the artifact, if it was found.
+    #[track_caller]
+    pub fn get(&self) -> Option<&Path> {
+        match self.0 {
+            OptionalArtifactState::Collecting => panic!("cannot get path in requirements phase"),
+            OptionalArtifactState::Missing => None,
+            OptionalArtifactState::Present(ref path) => Some(path),
+        }
+    }
+}
+
+/// An artifact resolver, used both to express requirements for artifacts and to
+/// resolve them to paths.
+pub struct ArtifactResolver<'a>(ArtifactResolverInner<'a>);
+
+impl<'a> ArtifactResolver<'a> {
+    /// Returns a resolver to collect requirements; the artifact objects returned by
+    /// [`require`](Self::require) will panic if used.
+    pub fn collector(requirements: &'a mut TestArtifactRequirements) -> Self {
+        ArtifactResolver(ArtifactResolverInner::Collecting(RefCell::new(
+            requirements,
+        )))
+    }
+
+    /// Returns a resolver to resolve artifacts.
+    pub fn resolver(artifacts: &'a TestArtifacts) -> Self {
+        ArtifactResolver(ArtifactResolverInner::Resolving(artifacts))
+    }
+
+    /// Resolve a required artifact.
+    pub fn require<A: ArtifactId>(&self, handle: ArtifactHandle<A>) -> ResolvedArtifact<A> {
+        match &self.0 {
+            ArtifactResolverInner::Collecting(requirements) => {
+                requirements.borrow_mut().require(handle.erase());
+                ResolvedArtifact(None, PhantomData)
+            }
+            ArtifactResolverInner::Resolving(artifacts) => {
+                ResolvedArtifact(Some(artifacts.get(handle).to_owned()), PhantomData)
+            }
+        }
+    }
+
+    /// Resolve an optional artifact.
+    pub fn try_require<A: ArtifactId>(
+        &self,
+        handle: ArtifactHandle<A>,
+    ) -> ResolvedOptionalArtifact<A> {
+        match &self.0 {
+            ArtifactResolverInner::Collecting(requirements) => {
+                requirements.borrow_mut().try_require(handle.erase());
+                ResolvedOptionalArtifact(OptionalArtifactState::Collecting, PhantomData)
+            }
+            ArtifactResolverInner::Resolving(artifacts) => ResolvedOptionalArtifact(
+                artifacts
+                    .try_get(handle)
+                    .map_or(OptionalArtifactState::Missing, |p| {
+                        OptionalArtifactState::Present(p.to_owned())
+                    }),
+                PhantomData,
+            ),
+        }
+    }
+}
+
+enum ArtifactResolverInner<'a> {
+    Collecting(RefCell<&'a mut TestArtifactRequirements>),
+    Resolving(&'a TestArtifacts),
 }
 
 /// A type-erased handle to a particular Artifact, with no information as to
@@ -83,7 +223,7 @@ impl<A: ArtifactId> ArtifactHandle<A> {
     /// Create a new typed artifact handle. It is unlikely you will need to call
     /// this directly.
     pub const fn new() -> Self {
-        Self(core::marker::PhantomData)
+        Self(PhantomData)
     }
 }
 
@@ -141,61 +281,72 @@ macro_rules! declare_artifacts {
     };
 }
 
-/// An object-safe trait used to abstract details of artifact resolution.
+/// A trait to resolve artifacts to paths.
 ///
-/// Test authors are expected to use the [`TestArtifactResolver`] and
-/// [`TestArtifacts`] abstractions to interact with resolvers, and should not
+/// Test authors are expected to use the [`TestArtifactRequirements`] and
+/// [`TestArtifacts`] abstractions to interact with artifacts, and should not
 /// use this API directly.
-pub trait TestArtifactResolverBackend {
+pub trait ResolveTestArtifact {
     /// Given an artifact handle, return its corresponding PathBuf.
     ///
     /// This method must use type-erased handles, as using typed artifact
     /// handles in this API would cause the trait to no longer be object-safe.
     fn resolve(&self, id: ErasedArtifactHandle) -> anyhow::Result<PathBuf>;
+}
 
-    /// Invoked once all calls to `resolve` has gone through.
-    ///
-    /// Callers must ensure that this method is called after their final call to
-    /// `resolve`. By doing this, it is possible to implement "dry-run"
-    /// resolvers, which simply list a test's required dependencies, and then
-    /// terminate the test run.
-    fn finalize(self: Box<Self>) {}
+impl<T: ResolveTestArtifact + ?Sized> ResolveTestArtifact for &T {
+    fn resolve(&self, id: ErasedArtifactHandle) -> anyhow::Result<PathBuf> {
+        (**self).resolve(id)
+    }
 }
 
 /// A set of dependencies required to run a test.
-pub struct TestArtifactResolver {
-    backend: Box<dyn TestArtifactResolverBackend>,
+#[derive(Clone)]
+pub struct TestArtifactRequirements {
     artifacts: Vec<(ErasedArtifactHandle, bool)>,
 }
 
-impl TestArtifactResolver {
+impl TestArtifactRequirements {
     /// Create an empty set of dependencies.
-    pub fn new(backend: Box<dyn TestArtifactResolverBackend>) -> Self {
-        TestArtifactResolver {
-            backend,
+    pub fn new() -> Self {
+        TestArtifactRequirements {
             artifacts: Vec::new(),
         }
     }
 
     /// Add a dependency to the set of required artifacts.
-    pub fn require(mut self, dependency: impl AsArtifactHandle) -> Self {
+    pub fn require(&mut self, dependency: impl AsArtifactHandle) -> &mut Self {
         self.artifacts.push((dependency.erase(), false));
         self
     }
 
     /// Add an optional dependency to the set of artifacts.
-    pub fn try_require(mut self, dependency: impl AsArtifactHandle) -> Self {
+    pub fn try_require(&mut self, dependency: impl AsArtifactHandle) -> &mut Self {
         self.artifacts.push((dependency.erase(), true));
         self
     }
 
-    /// Finalize the set of dependencies.
-    pub fn finalize(self) -> TestArtifacts {
+    /// Returns the current list of required depencencies.
+    pub fn required_artifacts(&self) -> impl Iterator<Item = ErasedArtifactHandle> + '_ {
+        self.artifacts
+            .iter()
+            .filter_map(|&(a, optional)| (!optional).then_some(a))
+    }
+
+    /// Returns the current list of optional dependencies.
+    pub fn optional_artifacts(&self) -> impl Iterator<Item = ErasedArtifactHandle> + '_ {
+        self.artifacts
+            .iter()
+            .filter_map(|&(a, optional)| optional.then_some(a))
+    }
+
+    /// Resolve the set of dependencies.
+    pub fn resolve(&self, resolver: impl ResolveTestArtifact) -> anyhow::Result<TestArtifacts> {
         let mut failed = String::new();
         let mut resolved = HashMap::new();
 
-        for (a, optional) in self.artifacts {
-            match self.backend.resolve(a) {
+        for &(a, optional) in &self.artifacts {
+            match resolver.resolve(a) {
                 Ok(p) => {
                     resolved.insert(a, p);
                 }
@@ -204,36 +355,34 @@ impl TestArtifactResolver {
             }
         }
 
-        self.backend.finalize();
-
         if !failed.is_empty() {
-            panic!("Artifact resolution failed:\n{}", failed);
+            anyhow::bail!("Artifact resolution failed:\n{}", failed);
         }
 
-        TestArtifacts {
+        Ok(TestArtifacts {
             artifacts: Arc::new(resolved),
-        }
+        })
     }
 }
 
 /// A resolved set of test artifacts, returned by
-/// [`TestArtifactResolver::finalize`].
+/// [`TestArtifactRequirements::resolve`].
 #[derive(Clone)]
 pub struct TestArtifacts {
     artifacts: Arc<HashMap<ErasedArtifactHandle, PathBuf>>,
 }
 
 impl TestArtifacts {
-    /// Try to resolve an artifact to a path.
+    /// Try to get the resolved path of an artifact.
     #[track_caller]
-    pub fn try_resolve(&self, artifact: impl AsArtifactHandle) -> Option<PathBuf> {
-        self.artifacts.get(&artifact.erase()).cloned()
+    pub fn try_get(&self, artifact: impl AsArtifactHandle) -> Option<&Path> {
+        self.artifacts.get(&artifact.erase()).map(|p| p.as_ref())
     }
 
-    /// Resolve an artifact to a path.
+    /// Get the resolved path of an artifact.
     #[track_caller]
-    pub fn resolve(&self, artifact: impl AsArtifactHandle) -> PathBuf {
-        self.try_resolve(artifact.erase())
+    pub fn get(&self, artifact: impl AsArtifactHandle) -> &Path {
+        self.try_get(artifact.erase())
             .unwrap_or_else(|| panic!("Artifact not initially required: {:?}", artifact.erase()))
     }
 }

@@ -3,7 +3,7 @@
 
 [package]
 name = "openhcl_boot"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -27,7 +27,6 @@ crc32fast.workspace = true
 # implementation of the hashing algorithms that does not use cpuid.
 sha2 = { workspace = true, features = ["force-soft"] }
 zerocopy.workspace = true
-
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 safe_intrinsics.workspace = true
 tdcall.workspace = true

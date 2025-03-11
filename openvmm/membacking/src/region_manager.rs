@@ -36,7 +36,7 @@ impl Inspect for RegionManager {
 /// Provides access to the region manager.
 #[derive(Debug, MeshPayload, Clone)]
 pub struct RegionManagerClient {
-    req_send: mesh::MpscSender<RegionRequest>,
+    req_send: mesh::Sender<RegionRequest>,
 }
 
 struct Region {
@@ -182,29 +182,33 @@ impl RegionManagerTask {
         }
     }
 
-    async fn run(&mut self, req_recv: &mut mesh::MpscReceiver<RegionRequest>) {
+    async fn run(&mut self, req_recv: &mut mesh::Receiver<RegionRequest>) {
         while let Some(req) = req_recv.next().await {
             match req {
                 RegionRequest::AddMapping(rpc) => {
-                    rpc.handle(|(id, params)| self.add_mapping(id, params))
+                    rpc.handle(async |(id, params)| self.add_mapping(id, params).await)
                         .await
                 }
                 RegionRequest::RemoveMappings(rpc) => {
-                    rpc.handle(|(id, range)| self.remove_mappings(id, range))
+                    rpc.handle(async |(id, range)| self.remove_mappings(id, range).await)
                         .await
                 }
                 RegionRequest::AddPartition(LocalOnly(rpc)) => {
-                    rpc.handle(|partition| self.add_partition(partition)).await
+                    rpc.handle(async |partition| self.add_partition(partition).await)
+                        .await
                 }
                 RegionRequest::AddRegion(rpc) => rpc.handle_sync(|params| self.add_region(params)),
                 RegionRequest::RemoveRegion(rpc) => {
-                    rpc.handle(|id| self.unmap_region(id, true)).await
+                    rpc.handle(async |id| self.unmap_region(id, true).await)
+                        .await
                 }
                 RegionRequest::MapRegion(rpc) => {
-                    rpc.handle(|(id, params)| self.map_region(id, params)).await
+                    rpc.handle(async |(id, params)| self.map_region(id, params).await)
+                        .await
                 }
                 RegionRequest::UnmapRegion(rpc) => {
-                    rpc.handle(|id| self.unmap_region(id, false)).await
+                    rpc.handle(async |id| self.unmap_region(id, false).await)
+                        .await
                 }
                 RegionRequest::Inspect(deferred) => {
                     deferred.inspect(&mut *self);
@@ -559,7 +563,7 @@ impl RegionManagerClient {
 #[must_use]
 pub struct RegionHandle {
     id: Option<RegionId>,
-    req_send: mesh::MpscSender<RegionRequest>,
+    req_send: mesh::Sender<RegionRequest>,
 }
 
 impl RegionHandle {
@@ -628,9 +632,7 @@ impl RegionHandle {
 impl Drop for RegionHandle {
     fn drop(&mut self) {
         if let Some(id) = self.id {
-            let (send, _recv) = mesh::oneshot();
-            self.req_send
-                .send(RegionRequest::RemoveRegion(Rpc(id, send)));
+            let _recv = self.req_send.call(RegionRequest::RemoveRegion, id);
             // Don't wait for the response.
         }
     }

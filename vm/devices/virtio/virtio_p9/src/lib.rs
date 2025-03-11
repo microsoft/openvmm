@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(any(windows, target_os = "linux"))]
 
 pub mod resolver;
@@ -28,7 +29,7 @@ pub struct VirtioPlan9Device {
 impl VirtioPlan9Device {
     pub fn new(tag: &str, fs: Plan9FileSystem, memory: GuestMemory) -> VirtioPlan9Device {
         // The tag uses the same format as 9p protocol strings (2 byte length followed by string).
-        let length = tag.as_bytes().len() + size_of::<u16>();
+        let length = tag.len() + size_of::<u16>();
 
         // Round the length up to a multiple of 4 to make the read function simpler.
         let length = (length + 3) & !3;
@@ -38,9 +39,7 @@ impl VirtioPlan9Device {
         {
             use std::io::Write;
             let mut cursor = std::io::Cursor::new(&mut tag_buffer);
-            cursor
-                .write_all(&(tag.as_bytes().len() as u16).to_le_bytes())
-                .unwrap();
+            cursor.write_all(&(tag.len() as u16).to_le_bytes()).unwrap();
             cursor.write_all(tag.as_bytes()).unwrap();
         }
 

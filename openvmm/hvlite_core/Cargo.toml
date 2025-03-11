@@ -3,7 +3,7 @@
 
 [package]
 name = "hvlite_core"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -97,7 +97,6 @@ getrandom.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(windows)'.dependencies]
 virt_whp = { workspace = true, optional = true }
 vmswitch.workspace = true

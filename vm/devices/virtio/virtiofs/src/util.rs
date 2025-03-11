@@ -1,9 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(
-    clippy::field_reassign_with_default // protocol code benefits from imperative field assignment
-)]
+#![expect(clippy::field_reassign_with_default)] // protocol code benefits from imperative field assignment
 
 use fuse::protocol::*;
 use std::time::Duration;

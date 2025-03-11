@@ -3,6 +3,7 @@
 
 //! TODO MCR
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 // #![warn(missing_docs)] // TODO MCR
 

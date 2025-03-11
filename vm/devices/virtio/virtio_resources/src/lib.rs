@@ -6,6 +6,7 @@
 //! Device-specific definitions are here to avoid needing to pull in a device
 //! implementation crate just to construct the device's config.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 use mesh::MeshPayload;

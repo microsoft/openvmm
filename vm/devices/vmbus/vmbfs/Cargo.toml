@@ -3,7 +3,7 @@
 
 [package]
 name = "vmbfs"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -25,7 +25,5 @@ bitfield-struct.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-zerocopy_helpers.workspace = true
-
 [lints]
 workspace = true

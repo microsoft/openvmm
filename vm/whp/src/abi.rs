@@ -254,7 +254,7 @@ pub const WHvPartitionPropertyCodeMsrActionList: WHV_PARTITION_PROPERTY_CODE =
 #[cfg(target_arch = "x86_64")]
 pub const WHvPartitionPropertyCodeUnimplementedMsrAction: WHV_PARTITION_PROPERTY_CODE =
     WHV_PARTITION_PROPERTY_CODE(0x00001010);
-pub const WhvPartitionPropertyCodePhysicalAddressWidth: WHV_PARTITION_PROPERTY_CODE =
+pub const WHvPartitionPropertyCodePhysicalAddressWidth: WHV_PARTITION_PROPERTY_CODE =
     WHV_PARTITION_PROPERTY_CODE(0x00001011);
 pub const WHvPartitionPropertyCodeArm64IcParameters: WHV_PARTITION_PROPERTY_CODE =
     WHV_PARTITION_PROPERTY_CODE(0x00001012);

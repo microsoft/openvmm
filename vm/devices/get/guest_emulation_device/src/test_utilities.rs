@@ -12,6 +12,7 @@ use get_protocol::HostRequests;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::UefiConsoleMode;
 use get_resources::ged::GuestEmulationRequest;
+use get_resources::ged::GuestServicingFlags;
 use guestmem::GuestMemory;
 use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
@@ -28,9 +29,9 @@ use vmbus_async::pipe::MessagePipe;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_ring::FlatRingMem;
 use vmbus_ring::RingMem;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -94,7 +95,7 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
         while !version_accepted {
             let mut version_request = get_protocol::VersionRequest::new_zeroed();
             self.channel
-                .recv_exact(version_request.as_bytes_mut())
+                .recv_exact(version_request.as_mut_bytes())
                 .await
                 .map_err(Error::Vmbus)?;
 
@@ -125,7 +126,8 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
             }
 
             let header = get_protocol::HeaderRaw::read_from_prefix(&message_buf[..4])
-                .ok_or(Error::MessageTooSmall)?;
+                .map_err(|_| Error::MessageTooSmall)?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
             if header.message_version != get_protocol::MessageVersions::HEADER_VERSION_1 {
                 return Err(Error::HeaderVersion(header.message_version));
@@ -139,8 +141,8 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                         let notification = get_protocol::EventLogNotification::read_from_prefix(
                             &message_buf[..size_of::<get_protocol::EventLogNotification>()],
                         )
-                        .unwrap();
-
+                        .unwrap()
+                        .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                         self.vmgs[0] = notification.event_log_id.0 as u8;
                     }
                     HostNotifications::POWER_OFF => {
@@ -157,11 +159,13 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                 match response {
                     Event::Response(response) => {
                         use get_protocol::test_utilities::TEST_VMGS_SECTOR_SIZE;
-                        let response_header =
-                            get_protocol::HeaderRaw::read_from_prefix(&response[..4]).unwrap();
-
+                        // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                         // Check if response needs special handling. Otherwise, send
                         // response directly back to the guest.
+                        let response_header =
+                            get_protocol::HeaderRaw::read_from_prefix(&response[..4])
+                                .unwrap()
+                                .0;
                         match response_header.message_type {
                             get_protocol::MessageTypes::HOST_RESPONSE => {
                                 let header: get_protocol::HeaderHostRequest =
@@ -174,7 +178,9 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                                             get_protocol::VmgsReadRequest::read_from_prefix(
                                                 &message_buf[..request_size],
                                             )
-                                            .unwrap();
+                                            .unwrap()
+                                            .0;
+                                        // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                                         let offset = request.sector_offset as usize
                                             * TEST_VMGS_SECTOR_SIZE as usize;
                                         let length = request.sector_count as usize
@@ -188,7 +194,9 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                                             get_protocol::VmgsWriteRequest::read_from_prefix(
                                                 &message_buf[..request_size],
                                             )
-                                            .unwrap();
+                                            .unwrap()
+                                            .0;
+                                        // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                                         let buf = &message_buf[request_size..];
                                         let offset = request.sector_offset as usize
                                             * TEST_VMGS_SECTOR_SIZE as usize;
@@ -334,7 +342,10 @@ enum TestTask {
 impl TestGedClient {
     pub async fn test_save_guest_vtl2_state(&mut self) {
         self.sender
-            .call_failable(GuestEmulationRequest::SaveGuestVtl2State, ())
+            .call_failable(
+                GuestEmulationRequest::SaveGuestVtl2State,
+                GuestServicingFlags::default(),
+            )
             .await
             .expect("no failure");
     }

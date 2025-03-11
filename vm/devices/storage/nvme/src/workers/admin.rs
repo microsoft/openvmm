@@ -49,9 +49,9 @@ use thiserror::Error;
 use vmcore::interrupt::Interrupt;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 const IOSQES: u8 = 6;
 const IOCQES: u8 = 4;
@@ -92,7 +92,7 @@ pub struct AdminState {
     #[inspect(with = "|x| inspect::iter_by_index(x).map_key(|x| x + 1)")]
     io_cqs: Vec<Option<IoCq>>,
     #[inspect(skip)]
-    sq_delete_response: mesh::MpscReceiver<u16>,
+    sq_delete_response: mesh::Receiver<u16>,
     #[inspect(with = "Option::is_some")]
     shadow_db_evt_gpa_base: Option<ShadowDoorbell>,
     #[inspect(iter_by_index)]
@@ -141,7 +141,7 @@ impl AdminState {
     pub fn new(handler: &AdminHandler, asq: u64, asqs: u16, acq: u64, acqs: u16) -> Self {
         // Start polling for namespace changes. Use a bounded channel to avoid
         // unbounded memory allocation when the queue is stuck.
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods)] // TODO
         let (send_changed_namespace, recv_changed_namespace) = futures::channel::mpsc::channel(256);
         let poll_namespace_change = handler
             .namespaces
@@ -559,10 +559,10 @@ impl AdminHandler {
         let cdw10: spec::Cdw10Identify = command.cdw10.into();
         // All identify results are 4096 bytes.
         let mut buf = [0u64; 512];
-        let buf = buf.as_bytes_mut();
+        let buf = buf.as_mut_bytes();
         match spec::Cns(cdw10.cns()) {
             spec::Cns::CONTROLLER => {
-                let id = spec::IdentifyController::mut_from_prefix(buf).unwrap();
+                let id = spec::IdentifyController::mut_from_prefix(buf).unwrap().0; // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                 *id = self.identify_controller();
 
                 write!(
@@ -576,7 +576,7 @@ impl AdminHandler {
                 if command.nsid >= 0xfffffffe {
                     return Err(spec::Status::INVALID_NAMESPACE_OR_FORMAT.into());
                 }
-                let nsids = u32::mut_slice_from(buf).unwrap();
+                let nsids = <[u32]>::mut_from_bytes(buf).unwrap();
                 for (ns, nsid) in self
                     .namespaces
                     .keys()
@@ -642,7 +642,7 @@ impl AdminHandler {
                 .with_broadcast_flush_behavior(spec::BroadcastFlushBehavior::NOT_SUPPORTED.0),
             cntrltype: spec::ControllerType::IO_CONTROLLER,
             oacs,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         }
     }
 

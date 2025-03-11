@@ -47,6 +47,7 @@
 //! VMM specific infrastructure (via some kind of compile-time feature flag
 //! infrastructure).
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod platform;
@@ -66,7 +67,7 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
 use local_clock::InspectableLocalClock;
-use pal_async::local::block_with_io;
+use pal_async::local::block_on;
 use platform::logger::UefiLogger;
 use platform::nvram::VsmConfig;
 use std::convert::TryInto;
@@ -221,7 +222,7 @@ impl UefiDevice {
 
     fn write_data(&mut self, addr: u32, data: u32) {
         match UefiCommand(addr) {
-            UefiCommand::NVRAM => block_with_io(|_| self.nvram_handle_command(data.into())),
+            UefiCommand::NVRAM => block_on(self.nvram_handle_command(data.into())),
             UefiCommand::EVENT_LOG_FLUSH => self.event_log_flush(data),
             UefiCommand::WATCHDOG_RESOLUTION
             | UefiCommand::WATCHDOG_CONFIG

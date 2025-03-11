@@ -3,6 +3,7 @@
 
 //! Backing for non-hardware-isolated ARM64 partitions.
 
+use super::Hcl;
 use super::HclVp;
 use super::NoRunner;
 use super::ProcessorRunner;
@@ -12,8 +13,6 @@ use hvdef::HvArm64RegisterName;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use sidecar_client::SidecarVp;
-use std::ptr::addr_of;
-use std::ptr::addr_of_mut;
 use thiserror::Error;
 
 /// Result when the translate gva hypercall returns a code indicating
@@ -34,19 +33,19 @@ impl ProcessorRunner<'_, MshvArm64> {
     pub fn cpu_context(&self) -> &hcl_cpu_context_aarch64 {
         // SAFETY: the cpu context will not be concurrently accessed by the
         // hypervisor while this VP is in VTL2.
-        unsafe { &*addr_of!((*self.run.as_ptr()).context).cast() }
+        unsafe { &*(&raw mut (*self.run.get()).context).cast() }
     }
 
     /// Returns a mutable reference to the current VTL's CPU context.
     pub fn cpu_context_mut(&mut self) -> &mut hcl_cpu_context_aarch64 {
         // SAFETY: the cpu context will not be concurrently accessed by the
         // hypervisor while this VP is in VTL2.
-        unsafe { &mut *addr_of_mut!((*self.run.as_ptr()).context).cast() }
+        unsafe { &mut *(&raw mut (*self.run.get()).context).cast() }
     }
 }
 
-impl super::BackingPrivate for MshvArm64 {
-    fn new(vp: &HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
+impl super::BackingPrivate<'_> for MshvArm64 {
+    fn new(vp: &HclVp, sidecar: Option<&SidecarVp<'_>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
         let super::BackingState::Mshv { reg_page: _ } = &vp.backing else {
             unreachable!()

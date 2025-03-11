@@ -3,16 +3,16 @@
 
 [package]
 name = "hv1_emulator"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+hv1_structs.workspace = true
 hvdef.workspace = true
 vm_topology.workspace = true
 guestmem.workspace = true
 virt.workspace = true
 vmcore.workspace = true
-vtl_array.workspace = true
 x86defs.workspace = true
 
 inspect.workspace = true
@@ -20,7 +20,6 @@ tracelimit.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [build-dependencies]
 build_rs_guest_arch.workspace = true
 

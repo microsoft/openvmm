@@ -4,10 +4,11 @@
 //! Tests common to every executor.
 
 // Uses futures channels, but is only test code.
-#![allow(clippy::disallowed_methods)]
+#![expect(clippy::disallowed_methods)]
 
 use crate::driver::Driver;
 use crate::socket::PolledSocket;
+use crate::task::with_current_task_metadata;
 use crate::task::Spawn;
 use crate::timer::Instant;
 use futures::channel::oneshot;
@@ -44,6 +45,16 @@ where
     S: Spawn,
     F: 'static + FnOnce() + Send,
 {
+    // Validate that there is no current task after the thread is done.
+    let mut f = move || {
+        let (spawn, run) = f();
+        let run = move || {
+            run();
+            with_current_task_metadata(|metadata| assert!(metadata.is_none()));
+        };
+        (spawn, run)
+    };
+
     // no tasks
     {
         let (_, run) = f();
@@ -169,10 +180,13 @@ pub async fn socket_tests(driver: impl Driver) {
 
     // accept/connect
     {
-        let (listener, path) =
-            tempfile_helpers::with_temp_path(|path| UnixListener::bind(path)).unwrap();
-        let mut l = PolledSocket::new(&driver, listener).unwrap();
-        let _c = PolledSocket::connect_unix(&driver, &path).await.unwrap();
+        let listener = tempfile::Builder::new()
+            .make(|path| UnixListener::bind(path))
+            .unwrap();
+        let mut l = PolledSocket::new(&driver, listener.as_file()).unwrap();
+        let _c = PolledSocket::connect_unix(&driver, listener.path())
+            .await
+            .unwrap();
         let _s = l.accept().await.unwrap();
     }
 

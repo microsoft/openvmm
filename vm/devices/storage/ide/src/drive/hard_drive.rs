@@ -30,8 +30,8 @@ use std::task::Poll;
 use std::task::Waker;
 use thiserror::Error;
 use tracing_helpers::ErrorValueExt;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 const MAX_CMD_BUFFER_BYTES: usize = 64 * 1024;
 
@@ -1084,7 +1084,7 @@ impl HardDrive {
             total_sectors_48_bit: self.geometry.total_sectors.into(),
             default_sector_size_config: 0x4000, // describes the sector size related info. Reflect the underlying device sector size and logical:physical ratio
             logical_block_alignment: 0x4000, // describes alignment of logical blocks within physical block
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         self.command_buffer.buffer[..protocol::IDENTIFY_DEVICE_BYTES].atomic_write_obj(&features);
@@ -1190,7 +1190,7 @@ impl HardDrive {
                 sector_count = write_sector_count,
                 "starting disk write"
             );
-            self.set_io(|disk| async move {
+            self.set_io(async move |disk| {
                 let buffers = command_buffer.buffers(0, size as usize, false);
                 disk.write_vectored(&buffers, lba, fua).await
             });
@@ -1228,7 +1228,7 @@ impl HardDrive {
 
         let sector_count = command.sectors_before_interrupt;
         tracing::trace!(lba, sector_count, "starting disk read");
-        self.set_io(|disk| async move {
+        self.set_io(async move |disk| {
             let buffers = command_buffer.buffers(
                 0,
                 protocol::HARD_DRIVE_SECTOR_BYTES as usize * sector_count as usize,
@@ -1329,7 +1329,7 @@ impl HardDrive {
     }
 
     fn flush(&mut self) {
-        self.set_io(|disk| async move { disk.sync_cache().await });
+        self.set_io(async |disk| disk.sync_cache().await);
     }
 
     fn flush_complete(&mut self) {

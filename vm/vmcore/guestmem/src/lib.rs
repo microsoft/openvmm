@@ -5,6 +5,7 @@
 
 // UNSAFETY: This crate's whole purpose is manual memory mapping and management.
 #![expect(unsafe_code)]
+#![expect(missing_docs)]
 
 pub mod ranges;
 
@@ -15,15 +16,18 @@ use sparse_mmap::AsMappableRef;
 use std::fmt::Debug;
 use std::io;
 use std::ops::Deref;
+use std::ops::DerefMut;
 use std::ops::Range;
 use std::ptr::NonNull;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use thiserror::Error;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 // Effective page size for page-related operations in this crate.
 pub const PAGE_SIZE: usize = 4096;
@@ -102,7 +106,7 @@ impl std::fmt::Display for GuestMemoryErrorInner {
         // Include the precise GPA if provided and different from the start of
         // the range.
         if let Some(gpa) = self.gpa {
-            if self.range.as_ref().map_or(true, |range| range.start != gpa) {
+            if self.range.as_ref().is_none_or(|range| range.start != gpa) {
                 write!(f, " at {:#x}", gpa)?;
             }
         }
@@ -203,9 +207,9 @@ struct AlignedPage([AtomicU8; PAGE_SIZE]);
 impl AlignedHeapMemory {
     /// Allocates a new memory of `size` bytes, rounded up to a page size.
     pub fn new(size: usize) -> Self {
-        #[allow(clippy::declare_interior_mutable_const)] // <https://github.com/rust-lang/rust-clippy/issues/7665>
+        #[expect(clippy::declare_interior_mutable_const)] // <https://github.com/rust-lang/rust-clippy/issues/7665>
         const ZERO: AtomicU8 = AtomicU8::new(0);
-        #[allow(clippy::declare_interior_mutable_const)]
+        #[expect(clippy::declare_interior_mutable_const)]
         const ZERO_PAGE: AlignedPage = AlignedPage([ZERO; PAGE_SIZE]);
         let mut pages = Vec::new();
         pages.resize_with(size.div_ceil(PAGE_SIZE), || ZERO_PAGE);
@@ -218,6 +222,19 @@ impl AlignedHeapMemory {
     pub fn len(&self) -> usize {
         self.pages.len() * PAGE_SIZE
     }
+
+    /// Returns an immutable slice of bytes.
+    ///
+    /// This must take `&mut self` since the buffer is mutable via interior
+    /// mutability with just `&self`.
+    pub fn as_bytes(&mut self) -> &[u8] {
+        self.as_mut()
+    }
+
+    /// Returns a mutable slice of bytes.
+    pub fn as_mut_bytes(&mut self) -> &mut [u8] {
+        self.as_mut()
+    }
 }
 
 impl Deref for AlignedHeapMemory {
@@ -229,9 +246,31 @@ impl Deref for AlignedHeapMemory {
     }
 }
 
+impl DerefMut for AlignedHeapMemory {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: the buffer is unaliased and valid.
+        unsafe { std::slice::from_raw_parts_mut(self.pages.as_mut_ptr().cast(), self.len()) }
+    }
+}
+
 impl AsRef<[AtomicU8]> for AlignedHeapMemory {
     fn as_ref(&self) -> &[AtomicU8] {
         self
+    }
+}
+
+impl AsMut<[AtomicU8]> for AlignedHeapMemory {
+    fn as_mut(&mut self) -> &mut [AtomicU8] {
+        self
+    }
+}
+
+impl AsMut<[u8]> for AlignedHeapMemory {
+    fn as_mut(&mut self) -> &mut [u8] {
+        // FUTURE: use AtomicU8::get_mut_slice once stabilized.
+        // SAFETY: the buffer is unaliased, so it is fine to cast away the atomicness of the
+        // slice.
+        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr().cast(), self.len()) }
     }
 }
 
@@ -795,6 +834,7 @@ struct GuestMemoryInner<T: ?Sized = dyn GuestMemoryAccess> {
     region_def: RegionDefinition,
     regions: Vec<MemoryRegion>,
     debug_name: Arc<str>,
+    allocated: bool,
     imp: T,
 }
 
@@ -953,18 +993,22 @@ impl GuestMemory {
         if imp.mapping().is_some() && !cfg!(miri) {
             sparse_mmap::initialize_try_copy();
         }
+        Self::new_inner(debug_name.into(), imp, false)
+    }
 
+    fn new_inner(debug_name: Arc<str>, imp: impl GuestMemoryAccess, allocated: bool) -> Self {
         let regions = vec![MemoryRegion::new(&imp)];
         Self {
             inner: Arc::new(GuestMemoryInner {
                 imp,
-                debug_name: debug_name.into(),
+                debug_name,
                 region_def: RegionDefinition {
                     invalid_mask: 1 << 63,
                     region_mask: !0 >> 1,
                     region_bits: 63, // right shift of 64 isn't valid, so restrict the space
                 },
                 regions,
+                allocated,
             }),
         }
     }
@@ -1042,6 +1086,7 @@ impl GuestMemory {
             region_def,
             regions,
             imp,
+            allocated: false,
         };
 
         Ok(Self {
@@ -1059,7 +1104,51 @@ impl GuestMemory {
     /// different debug name, manually use `GuestMemory::new` with
     /// [`AlignedHeapMemory`].
     pub fn allocate(size: usize) -> Self {
-        GuestMemory::new("heap", AlignedHeapMemory::new(size))
+        Self::new_inner("heap".into(), AlignedHeapMemory::new(size), true)
+    }
+
+    /// If this memory is unaliased and was created via
+    /// [`GuestMemory::allocate`], returns the backing buffer.
+    ///
+    /// Returns `Err(self)` if there are other references to this memory (via
+    /// `clone()`).
+    pub fn into_inner_buf(self) -> Result<AlignedHeapMemory, Self> {
+        if !self.inner.allocated {
+            return Err(self);
+        }
+        // FUTURE: consider using `Any` and `Arc::downcast` once trait upcasting is stable.
+        // SAFETY: the inner implementation is guaranteed to be a `AlignedHeapMemory`.
+        let inner = unsafe {
+            Arc::<GuestMemoryInner<AlignedHeapMemory>>::from_raw(Arc::into_raw(self.inner).cast())
+        };
+        let inner = Arc::try_unwrap(inner).map_err(|inner| Self { inner })?;
+        Ok(inner.imp)
+    }
+
+    /// If this memory was created via [`GuestMemory::allocate`], returns a slice to
+    /// the allocated buffer.
+    pub fn inner_buf(&self) -> Option<&[AtomicU8]> {
+        if !self.inner.allocated {
+            return None;
+        }
+        // FUTURE: consider using `<dyn Any>::downcast` once trait upcasting is stable.
+        // SAFETY: the inner implementation is guaranteed to be a `AlignedHeapMemory`.
+        let inner = unsafe { &*core::ptr::from_ref(&self.inner.imp).cast::<AlignedHeapMemory>() };
+        Some(inner)
+    }
+
+    /// If this memory was created via [`GuestMemory::allocate`] and there are
+    /// no other references to it, returns a mutable slice to the backing
+    /// buffer.
+    pub fn inner_buf_mut(&mut self) -> Option<&mut [u8]> {
+        if !self.inner.allocated {
+            return None;
+        }
+        let inner = Arc::get_mut(&mut self.inner)?;
+        // FUTURE: consider using `<dyn Any>::downcast` once trait upcasting is stable.
+        // SAFETY: the inner implementation is guaranteed to be a `AlignedHeapMemory`.
+        let imp = unsafe { &mut *core::ptr::from_mut(&mut inner.imp).cast::<AlignedHeapMemory>() };
+        Some(imp.as_mut())
     }
 
     /// Returns an empty guest memory, which fails every operation.
@@ -1361,7 +1450,11 @@ impl GuestMemory {
     ///
     /// FUTURE: once we are on Rust 1.79, add a method specifically for atomic
     /// accesses that const asserts that the size is appropriate.
-    pub fn write_plain<T: AsBytes>(&self, gpa: u64, b: &T) -> Result<(), GuestMemoryError> {
+    pub fn write_plain<T: IntoBytes + Immutable + KnownLayout>(
+        &self,
+        gpa: u64,
+        b: &T,
+    ) -> Result<(), GuestMemoryError> {
         // Note that this is const, so the match below will compile out.
         let len = size_of::<T>();
         self.with_op(Some((gpa, len as u64)), GuestMemoryOperation::Write, || {
@@ -1397,7 +1490,7 @@ impl GuestMemory {
     }
 
     /// Attempts a sequentially-consistent compare exchange of the value at `gpa`.
-    pub fn compare_exchange<T: AsBytes + FromBytes + Copy>(
+    pub fn compare_exchange<T: IntoBytes + FromBytes + Immutable + KnownLayout + Copy>(
         &self,
         gpa: u64,
         current: T,
@@ -1423,7 +1516,7 @@ impl GuestMemory {
                         let mut current = current;
                         let success = self.inner.imp.compare_exchange_fallback(
                             gpa,
-                            current.as_bytes_mut(),
+                            current.as_mut_bytes(),
                             new.as_bytes(),
                         )?;
 
@@ -1435,7 +1528,7 @@ impl GuestMemory {
     }
 
     /// Attempts a sequentially-consistent compare exchange of the value at `gpa`.
-    pub fn compare_exchange_bytes<T: AsBytes + FromBytes + ?Sized>(
+    pub fn compare_exchange_bytes<T: IntoBytes + FromBytes + Immutable + KnownLayout + ?Sized>(
         &self,
         gpa: u64,
         current: &mut T,
@@ -1461,7 +1554,7 @@ impl GuestMemory {
                     |current| {
                         let success = self.inner.imp.compare_exchange_fallback(
                             gpa,
-                            current.as_bytes_mut(),
+                            current.as_mut_bytes(),
                             new.as_bytes(),
                         )?;
 
@@ -1483,7 +1576,10 @@ impl GuestMemory {
     ///
     /// FUTURE: once we are on Rust 1.79, add a method specifically for atomic
     /// accesses that const asserts that the size is appropriate.
-    pub fn read_plain<T: FromBytes>(&self, gpa: u64) -> Result<T, GuestMemoryError> {
+    pub fn read_plain<T: FromBytes + Immutable + KnownLayout>(
+        &self,
+        gpa: u64,
+    ) -> Result<T, GuestMemoryError> {
         // Note that this is const, so the match below will compile out.
         let len = size_of::<T>();
         self.with_op(Some((gpa, len as u64)), GuestMemoryOperation::Read, || {
@@ -1876,15 +1972,20 @@ pub trait MemoryRead {
     fn skip(&mut self, len: usize) -> Result<&mut Self, AccessError>;
     fn len(&self) -> usize;
 
-    fn read_plain<T: AsBytes + FromBytes>(&mut self) -> Result<T, AccessError> {
-        let mut value: T = FromZeroes::new_zeroed();
-        self.read(value.as_bytes_mut())?;
+    fn read_plain<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
+        &mut self,
+    ) -> Result<T, AccessError> {
+        let mut value: T = FromZeros::new_zeroed();
+        self.read(value.as_mut_bytes())?;
         Ok(value)
     }
 
-    fn read_n<T: AsBytes + FromBytes + Copy>(&mut self, len: usize) -> Result<Vec<T>, AccessError> {
-        let mut value = vec![FromZeroes::new_zeroed(); len];
-        self.read(value.as_bytes_mut())?;
+    fn read_n<T: IntoBytes + FromBytes + Immutable + KnownLayout + Copy>(
+        &mut self,
+        len: usize,
+    ) -> Result<Vec<T>, AccessError> {
+        let mut value = vec![FromZeros::new_zeroed(); len];
+        self.read(value.as_mut_bytes())?;
         Ok(value)
     }
 
@@ -2101,7 +2202,7 @@ pub trait UnmapRom: Send + Sync {
 }
 
 #[cfg(test)]
-#[allow(clippy::undocumented_unsafe_blocks)]
+#[expect(clippy::undocumented_unsafe_blocks)]
 mod tests {
     use crate::BitmapInfo;
     use crate::GuestMemory;
@@ -2316,5 +2417,21 @@ mod tests {
         gm.read_plain::<u16>(PAGE_SIZE64 * 3 - 1).unwrap_err();
         gm.read_plain::<u8>(PAGE_SIZE64 * 3 - 1).unwrap();
         gm.write_plain::<u8>(PAGE_SIZE64 * 3 - 1, &0).unwrap_err();
+    }
+
+    #[test]
+    fn test_allocated() {
+        let mut gm = GuestMemory::allocate(0x10000);
+        let pattern = [0x42; 0x10000];
+        gm.write_at(0, &pattern).unwrap();
+        assert_eq!(gm.inner_buf_mut().unwrap(), &pattern);
+        gm.inner_buf().unwrap();
+        let gm2 = gm.clone();
+        assert!(gm.inner_buf_mut().is_none());
+        gm.inner_buf().unwrap();
+        let mut gm = gm.into_inner_buf().unwrap_err();
+        drop(gm2);
+        assert_eq!(gm.inner_buf_mut().unwrap(), &pattern);
+        gm.into_inner_buf().unwrap();
     }
 }

@@ -6,13 +6,13 @@
 use self::internal::*;
 use crate::node::steps::ado::AdoResourcesRepositoryId;
 use crate::node::user_facing::AdoRuntimeVar;
-use crate::node::user_facing::GhContextVar;
 use crate::node::user_facing::GhPermission;
 use crate::node::user_facing::GhPermissionValue;
 use crate::node::FlowArch;
 use crate::node::FlowNodeBase;
 use crate::node::FlowPlatform;
 use crate::node::FlowPlatformLinuxDistro;
+use crate::node::GhUserSecretVar;
 use crate::node::IntoRequest;
 use crate::node::NodeHandle;
 use crate::node::ReadVar;
@@ -41,6 +41,7 @@ pub mod user_facing {
     pub use super::GhScheduleTriggers;
     pub use super::HostExt;
     pub use super::IntoPipeline;
+    pub use super::ParameterKind;
     pub use super::Pipeline;
     pub use super::PipelineBackendHint;
     pub use super::PipelineJob;
@@ -295,6 +296,17 @@ pub enum GhRunner {
     RunnerGroup { group: String, labels: Vec<String> },
 }
 
+/// Parameter type (unstable / stable).
+#[derive(Debug, Clone)]
+pub enum ParameterKind {
+    // The parameter is considered an unstable API, and should not be
+    // taken as a dependency.
+    Unstable,
+    // The parameter is considered a stable API, and can be used by
+    // external pipelines to control behavior of the pipeline.
+    Stable,
+}
+
 #[derive(Clone, Debug)]
 #[must_use]
 pub struct UseParameter<T> {
@@ -533,8 +545,8 @@ impl Pipeline {
     ///
     /// For more information on defining secrets for use in GitHub Actions, see
     /// <https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions>
-    pub fn gh_use_secret(&mut self, secret_name: impl AsRef<str>) -> GhContextVar {
-        GhContextVar::from_secrets(secret_name)
+    pub fn gh_use_secret(&mut self, secret_name: impl AsRef<str>) -> GhUserSecretVar {
+        GhUserSecretVar(secret_name.as_ref().to_string())
     }
 
     pub fn new_job(
@@ -669,7 +681,12 @@ impl Pipeline {
     /// To obtain a [`ReadVar<bool>`] that can be used within a node, use the
     /// [`PipelineJobCtx::use_parameter`] method.
     ///
+    /// `name` is the name of the parameter.
+    ///
     /// `description` is an arbitrary string, which will be be shown to users.
+    ///
+    /// `kind` is the type of parameter and if it should be treated as a stable
+    /// external API to callers of the pipeline.
     ///
     /// `default` is the default value for the parameter. If none is provided,
     /// the parameter _must_ be specified in order for the pipeline to run.
@@ -678,13 +695,18 @@ impl Pipeline {
     /// parameter accepts.
     pub fn new_parameter_bool(
         &mut self,
+        name: impl AsRef<str>,
         description: impl AsRef<str>,
+        kind: ParameterKind,
         default: Option<bool>,
     ) -> UseParameter<bool> {
         let idx = self.parameters.len();
+        let name = new_parameter_name(name, kind.clone());
         self.parameters.push(ParameterMeta {
             parameter: Parameter::Bool {
+                name,
                 description: description.as_ref().into(),
+                kind,
                 default,
             },
             used_by_jobs: BTreeSet::new(),
@@ -701,7 +723,12 @@ impl Pipeline {
     /// To obtain a [`ReadVar<i64>`] that can be used within a node, use the
     /// [`PipelineJobCtx::use_parameter`] method.
     ///
+    /// `name` is the name of the parameter.
+    ///
     /// `description` is an arbitrary string, which will be be shown to users.
+    ///
+    /// `kind` is the type of parameter and if it should be treated as a stable
+    /// external API to callers of the pipeline.
     ///
     /// `default` is the default value for the parameter. If none is provided,
     /// the parameter _must_ be specified in order for the pipeline to run.
@@ -710,14 +737,19 @@ impl Pipeline {
     /// parameter accepts.
     pub fn new_parameter_num(
         &mut self,
+        name: impl AsRef<str>,
         description: impl AsRef<str>,
+        kind: ParameterKind,
         default: Option<i64>,
         possible_values: Option<Vec<i64>>,
     ) -> UseParameter<i64> {
         let idx = self.parameters.len();
+        let name = new_parameter_name(name, kind.clone());
         self.parameters.push(ParameterMeta {
             parameter: Parameter::Num {
+                name,
                 description: description.as_ref().into(),
+                kind,
                 default,
                 possible_values,
             },
@@ -735,7 +767,12 @@ impl Pipeline {
     /// To obtain a [`ReadVar<String>`] that can be used within a node, use the
     /// [`PipelineJobCtx::use_parameter`] method.
     ///
+    /// `name` is the name of the parameter.
+    ///
     /// `description` is an arbitrary string, which will be be shown to users.
+    ///
+    /// `kind` is the type of parameter and if it should be treated as a stable
+    /// external API to callers of the pipeline.
     ///
     /// `default` is the default value for the parameter. If none is provided,
     /// the parameter _must_ be specified in order for the pipeline to run.
@@ -746,14 +783,19 @@ impl Pipeline {
     /// then any string is allowed.
     pub fn new_parameter_string(
         &mut self,
+        name: impl AsRef<str>,
         description: impl AsRef<str>,
+        kind: ParameterKind,
         default: Option<impl AsRef<str>>,
         possible_values: Option<Vec<String>>,
     ) -> UseParameter<String> {
         let idx = self.parameters.len();
+        let name = new_parameter_name(name, kind.clone());
         self.parameters.push(ParameterMeta {
             parameter: Parameter::String {
+                name,
                 description: description.as_ref().into(),
+                kind,
                 default: default.map(|x| x.as_ref().into()),
                 possible_values,
             },
@@ -823,7 +865,13 @@ impl PipelineJobCtx<'_> {
             .used_by_jobs
             .insert(self.job_idx);
 
-        crate::node::thin_air_read_runtime_var(format!("param{}", param.idx), false)
+        crate::node::thin_air_read_runtime_var(
+            self.pipeline.parameters[param.idx]
+                .parameter
+                .name()
+                .to_string(),
+            false,
+        )
     }
 
     /// Shortcut which allows defining a bool pipeline parameter within a Job.
@@ -832,10 +880,14 @@ impl PipelineJobCtx<'_> {
     /// - use [`Pipeline::new_parameter_bool`] + [`Self::use_parameter`] instead.
     pub fn new_parameter_bool(
         &mut self,
+        name: impl AsRef<str>,
         description: impl AsRef<str>,
+        kind: ParameterKind,
         default: Option<bool>,
     ) -> ReadVar<bool> {
-        let param = self.pipeline.new_parameter_bool(description, default);
+        let param = self
+            .pipeline
+            .new_parameter_bool(name, description, kind, default);
         self.use_parameter(param)
     }
 
@@ -845,13 +897,15 @@ impl PipelineJobCtx<'_> {
     /// - use [`Pipeline::new_parameter_num`] + [`Self::use_parameter`] instead.
     pub fn new_parameter_num(
         &mut self,
+        name: impl AsRef<str>,
         description: impl AsRef<str>,
+        kind: ParameterKind,
         default: Option<i64>,
         possible_values: Option<Vec<i64>>,
     ) -> ReadVar<i64> {
-        let param = self
-            .pipeline
-            .new_parameter_num(description, default, possible_values);
+        let param =
+            self.pipeline
+                .new_parameter_num(name, description, kind, default, possible_values);
         self.use_parameter(param)
     }
 
@@ -861,13 +915,15 @@ impl PipelineJobCtx<'_> {
     /// - use [`Pipeline::new_parameter_string`] + [`Self::use_parameter`] instead.
     pub fn new_parameter_string(
         &mut self,
+        name: impl AsRef<str>,
         description: impl AsRef<str>,
+        kind: ParameterKind,
         default: Option<String>,
         possible_values: Option<Vec<String>>,
     ) -> ReadVar<String> {
-        let param = self
-            .pipeline
-            .new_parameter_string(description, default, possible_values);
+        let param =
+            self.pipeline
+                .new_parameter_string(name, description, kind, default, possible_values);
         self.use_parameter(param)
     }
 }
@@ -1084,6 +1140,16 @@ impl PipelineJob<'_> {
             job_idx: self.job_idx,
         }
     }
+
+    /// Return the job's platform.
+    pub fn get_platform(&self) -> FlowPlatform {
+        self.pipeline.jobs[self.job_idx].platform
+    }
+
+    /// Return the job's architecture.
+    pub fn get_arch(&self) -> FlowArch {
+        self.pipeline.jobs[self.job_idx].arch
+    }
 }
 
 #[derive(Clone)]
@@ -1111,6 +1177,13 @@ pub trait IntoPipeline {
     fn into_pipeline(self, backend_hint: PipelineBackendHint) -> anyhow::Result<Pipeline>;
 }
 
+fn new_parameter_name(name: impl AsRef<str>, kind: ParameterKind) -> String {
+    match kind {
+        ParameterKind::Unstable => format!("__unstable_{}", name.as_ref()),
+        ParameterKind::Stable => name.as_ref().into(),
+    }
+}
+
 /// Structs which should only be used by top-level flowey emitters. If you're a
 /// pipeline author, these are not types you need to care about!
 pub mod internal {
@@ -1123,10 +1196,6 @@ pub mod internal {
             if is_use { "use_from" } else { "publish_from" },
             artifact.as_ref()
         )
-    }
-
-    pub fn consistent_param_runtime_var_name(idx: usize) -> String {
-        format!("param{idx}")
     }
 
     #[derive(Debug)]
@@ -1273,18 +1342,34 @@ pub mod internal {
     #[derive(Debug, Clone)]
     pub enum Parameter {
         Bool {
+            name: String,
             description: String,
+            kind: ParameterKind,
             default: Option<bool>,
         },
         String {
+            name: String,
             description: String,
             default: Option<String>,
+            kind: ParameterKind,
             possible_values: Option<Vec<String>>,
         },
         Num {
+            name: String,
             description: String,
             default: Option<i64>,
+            kind: ParameterKind,
             possible_values: Option<Vec<i64>>,
         },
+    }
+
+    impl Parameter {
+        pub fn name(&self) -> &str {
+            match self {
+                Parameter::Bool { name, .. } => name,
+                Parameter::String { name, .. } => name,
+                Parameter::Num { name, .. } => name,
+            }
+        }
     }
 }

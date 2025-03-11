@@ -6,7 +6,7 @@ name: '[flowey] OpenVMM CI'
 on:
   workflow_dispatch:
     inputs:
-      param0:
+      verbose:
         description: Run with verbose output
         default: false
         required: false
@@ -31,7 +31,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -41,7 +41,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -49,7 +49,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -102,8 +102,8 @@ jobs:
         echo '"debug"' | flowey v 0 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey v 0 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey v 0 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey v 0 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/guide"
         echo "$AgentTempDirNormal/publish_artifacts/guide" | flowey v 0 'artifact_publish_from_guide' --update-from-stdin --is-raw-string
@@ -152,7 +152,7 @@ jobs:
     - name: unpack mdbook-mermaid
       run: flowey e 0 flowey_lib_common::download_mdbook_mermaid 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 0 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -170,10 +170,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 0 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 0 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 0 flowey_lib_common::git_checkout 3
@@ -187,7 +187,7 @@ jobs:
     - name: install Rust
       run: flowey e 0 flowey_lib_common::install_rust 0
       shell: bash
-    - name: build HvLite guide (mdbook)
+    - name: build OpenVMM guide (mdbook)
       run: flowey e 0 flowey_lib_hvlite::build_guide 1
       shell: bash
     - name: 🌼 write_into Var
@@ -221,7 +221,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -231,7 +231,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -239,7 +239,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -292,13 +292,13 @@ jobs:
         echo '"debug"' | flowey.exe v 1 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey.exe v 1 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey.exe v 1 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey.exe v 1 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-rustdoc"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-rustdoc" | flowey.exe v 1 'artifact_publish_from_x64-windows-rustdoc' --update-from-stdin --is-raw-string
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 1 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -316,10 +316,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 1 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 1 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 1 flowey_lib_common::git_checkout 3
@@ -424,7 +424,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -434,7 +434,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -442,7 +442,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -495,8 +495,8 @@ jobs:
         echo '"debug"' | flowey v 10 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey v 10 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey v 10 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey v 10 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-guest_test_uefi"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-guest_test_uefi" | flowey v 10 'artifact_publish_from_aarch64-guest_test_uefi' --update-from-stdin --is-raw-string
@@ -558,7 +558,7 @@ jobs:
     - name: unpack Microsoft.WSL.LxUtil.AARCH64.zip
       run: flowey e 10 flowey_lib_hvlite::download_lxutil 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 10 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -576,10 +576,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 10 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 10 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 10 flowey_lib_common::git_checkout 3
@@ -785,7 +785,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -795,7 +795,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -803,7 +803,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -856,8 +856,8 @@ jobs:
         echo '"debug"' | flowey v 11 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey v 11 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey v 11 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey v 11 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-guest_test_uefi"
         echo "$AgentTempDirNormal/publish_artifacts/x64-guest_test_uefi" | flowey v 11 'artifact_publish_from_x64-guest_test_uefi' --update-from-stdin --is-raw-string
@@ -921,7 +921,7 @@ jobs:
     - name: unpack Microsoft.WSL.LxUtil.x64.zip
       run: flowey e 11 flowey_lib_hvlite::download_lxutil 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 11 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -939,10 +939,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar5 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 11 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 11 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 11 flowey_lib_common::git_checkout 3
@@ -1209,7 +1209,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -1219,7 +1219,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -1227,7 +1227,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -1280,11 +1280,13 @@ jobs:
         echo '"debug"' | flowey v 12 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey v 12 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey v 12 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey v 12 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-pipette"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-pipette" | flowey v 12 'artifact_publish_from_aarch64-linux-musl-pipette' --update-from-stdin --is-raw-string
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-openhcl-baseline"
+        echo "$AgentTempDirNormal/publish_artifacts/aarch64-openhcl-baseline" | flowey v 12 'artifact_publish_from_aarch64-openhcl-baseline' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-openhcl-igvm"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-openhcl-igvm" | flowey v 12 'artifact_publish_from_aarch64-openhcl-igvm' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-openhcl-igvm-extras"
@@ -1337,7 +1339,7 @@ jobs:
     - name: report common cargo flags
       run: flowey e 12 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 12 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -1355,10 +1357,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 12 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 12 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 12 flowey_lib_common::git_checkout 3
@@ -1460,7 +1462,7 @@ jobs:
       run: flowey e 12 flowey_lib_hvlite::run_cargo_build 0
       shell: bash
     - name: split debug symbols
-      run: flowey e 12 flowey_lib_hvlite::run_split_debug_info 4
+      run: flowey e 12 flowey_lib_hvlite::run_split_debug_info 5
       shell: bash
     - name: reporting split debug info
       run: flowey e 12 flowey_lib_hvlite::run_cargo_build 1
@@ -1564,20 +1566,44 @@ jobs:
     - name: copying OpenHCL igvm extras to artifact dir
       run: flowey e 12 flowey_lib_common::copy_to_artifact_dir 0
       shell: bash
-    - name: inject cross env
-      run: flowey e 12 flowey_lib_hvlite::init_cross_build 2
+    - name: extract X64 sysroot.tar.gz
+      run: flowey e 12 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 1
       shell: bash
-    - name: cargo build pipette
+    - name: inject cross env
+      run: flowey e 12 flowey_lib_hvlite::init_cross_build 4
+      shell: bash
+    - name: cargo build openvmm_hcl
       run: flowey e 12 flowey_lib_common::run_cargo_build 3
       shell: bash
     - name: 🌼 write_into Var
       run: flowey e 12 flowey_lib_hvlite::run_cargo_build 7
       shell: bash
     - name: split debug symbols
-      run: flowey e 12 flowey_lib_hvlite::run_split_debug_info 3
+      run: flowey e 12 flowey_lib_hvlite::run_split_debug_info 4
       shell: bash
     - name: reporting split debug info
       run: flowey e 12 flowey_lib_hvlite::run_cargo_build 8
+      shell: bash
+    - name: report built openvmm_hcl
+      run: flowey e 12 flowey_lib_hvlite::build_openvmm_hcl 1
+      shell: bash
+    - name: copying openhcl build to publish dir
+      run: flowey e 12 flowey_lib_hvlite::artifact_openvmm_hcl_sizecheck::publish 0
+      shell: bash
+    - name: inject cross env
+      run: flowey e 12 flowey_lib_hvlite::init_cross_build 2
+      shell: bash
+    - name: cargo build pipette
+      run: flowey e 12 flowey_lib_common::run_cargo_build 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 12 flowey_lib_hvlite::run_cargo_build 9
+      shell: bash
+    - name: split debug symbols
+      run: flowey e 12 flowey_lib_hvlite::run_split_debug_info 3
+      shell: bash
+    - name: reporting split debug info
+      run: flowey e 12 flowey_lib_hvlite::run_cargo_build 10
       shell: bash
     - name: report built pipette
       run: flowey e 12 flowey_lib_hvlite::build_pipette 0
@@ -1596,6 +1622,11 @@ jobs:
       with:
         name: aarch64-linux-musl-pipette
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-pipette/
+    - name: 🌼📦 Publish aarch64-openhcl-baseline
+      uses: actions/upload-artifact@v4
+      with:
+        name: aarch64-openhcl-baseline
+        path: ${{ runner.temp }}/publish_artifacts/aarch64-openhcl-baseline/
     - name: 🌼📦 Publish aarch64-openhcl-igvm
       uses: actions/upload-artifact@v4
       with:
@@ -1624,7 +1655,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -1634,7 +1665,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -1642,7 +1673,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -1695,11 +1726,13 @@ jobs:
         echo '"debug"' | flowey v 13 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey v 13 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey v 13 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey v 13 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-pipette"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-pipette" | flowey v 13 'artifact_publish_from_x64-linux-musl-pipette' --update-from-stdin --is-raw-string
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-openhcl-baseline"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-openhcl-baseline" | flowey v 13 'artifact_publish_from_x64-openhcl-baseline' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm"
         echo "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm" | flowey v 13 'artifact_publish_from_x64-openhcl-igvm' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-openhcl-igvm-extras"
@@ -1752,7 +1785,7 @@ jobs:
     - name: report common cargo flags
       run: flowey e 13 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 13 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -1770,10 +1803,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 13 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 13 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 13 flowey_lib_common::git_checkout 3
@@ -1794,7 +1827,7 @@ jobs:
       run: flowey e 13 flowey_lib_hvlite::init_openvmm_magicpath_protoc 0
       shell: bash
     - name: inject cross env
-      run: flowey e 13 flowey_lib_hvlite::init_cross_build 3
+      run: flowey e 13 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: 🌼 Zip Vars
       run: flowey e 13 flowey_lib_hvlite::run_cargo_build 2
@@ -1830,16 +1863,16 @@ jobs:
       run: flowey e 13 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 0
       shell: bash
     - name: inject cross env
-      run: flowey e 13 flowey_lib_hvlite::init_cross_build 1
+      run: flowey e 13 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build openvmm_hcl
-      run: flowey e 13 flowey_lib_common::run_cargo_build 2
+      run: flowey e 13 flowey_lib_common::run_cargo_build 3
       shell: bash
     - name: 🌼 write_into Var
-      run: flowey e 13 flowey_lib_hvlite::run_cargo_build 6
+      run: flowey e 13 flowey_lib_hvlite::run_cargo_build 8
       shell: bash
     - name: report built openvmm_hcl
-      run: flowey e 13 flowey_lib_hvlite::build_openvmm_hcl 0
+      run: flowey e 13 flowey_lib_hvlite::build_openvmm_hcl 1
       shell: bash
     - name: 🌼 write_into Var
       run: flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23
@@ -1875,7 +1908,7 @@ jobs:
       run: flowey e 13 flowey_lib_hvlite::run_cargo_build 0
       shell: bash
     - name: split debug symbols
-      run: flowey e 13 flowey_lib_hvlite::run_split_debug_info 7
+      run: flowey e 13 flowey_lib_hvlite::run_split_debug_info 8
       shell: bash
     - name: reporting split debug info
       run: flowey e 13 flowey_lib_hvlite::run_cargo_build 1
@@ -2145,19 +2178,40 @@ jobs:
       run: flowey e 13 flowey_lib_common::copy_to_artifact_dir 0
       shell: bash
     - name: inject cross env
-      run: flowey e 13 flowey_lib_hvlite::init_cross_build 2
+      run: flowey e 13 flowey_lib_hvlite::init_cross_build 1
       shell: bash
-    - name: cargo build pipette
-      run: flowey e 13 flowey_lib_common::run_cargo_build 3
+    - name: cargo build openvmm_hcl
+      run: flowey e 13 flowey_lib_common::run_cargo_build 2
       shell: bash
     - name: 🌼 write_into Var
-      run: flowey e 13 flowey_lib_hvlite::run_cargo_build 7
+      run: flowey e 13 flowey_lib_hvlite::run_cargo_build 6
       shell: bash
     - name: split debug symbols
       run: flowey e 13 flowey_lib_hvlite::run_split_debug_info 6
       shell: bash
     - name: reporting split debug info
-      run: flowey e 13 flowey_lib_hvlite::run_cargo_build 8
+      run: flowey e 13 flowey_lib_hvlite::run_cargo_build 7
+      shell: bash
+    - name: report built openvmm_hcl
+      run: flowey e 13 flowey_lib_hvlite::build_openvmm_hcl 0
+      shell: bash
+    - name: copying openhcl build to publish dir
+      run: flowey e 13 flowey_lib_hvlite::artifact_openvmm_hcl_sizecheck::publish 0
+      shell: bash
+    - name: inject cross env
+      run: flowey e 13 flowey_lib_hvlite::init_cross_build 3
+      shell: bash
+    - name: cargo build pipette
+      run: flowey e 13 flowey_lib_common::run_cargo_build 4
+      shell: bash
+    - name: 🌼 write_into Var
+      run: flowey e 13 flowey_lib_hvlite::run_cargo_build 9
+      shell: bash
+    - name: split debug symbols
+      run: flowey e 13 flowey_lib_hvlite::run_split_debug_info 7
+      shell: bash
+    - name: reporting split debug info
+      run: flowey e 13 flowey_lib_hvlite::run_cargo_build 10
       shell: bash
     - name: report built pipette
       run: flowey e 13 flowey_lib_hvlite::build_pipette 0
@@ -2176,6 +2230,11 @@ jobs:
       with:
         name: x64-linux-musl-pipette
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-musl-pipette/
+    - name: 🌼📦 Publish x64-openhcl-baseline
+      uses: actions/upload-artifact@v4
+      with:
+        name: x64-openhcl-baseline
+        path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-baseline/
     - name: 🌼📦 Publish x64-openhcl-igvm
       uses: actions/upload-artifact@v4
       with:
@@ -2211,7 +2270,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -2221,7 +2280,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -2229,7 +2288,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -2282,8 +2341,8 @@ jobs:
         echo '"debug"' | flowey.exe v 14 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey.exe v 14 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey.exe v 14 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey.exe v 14 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
       shell: bash
     - name: install Rust
@@ -2295,7 +2354,7 @@ jobs:
     - name: report common cargo flags
       run: flowey.exe e 14 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 14 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -2313,10 +2372,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 14 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 14 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 14 flowey_lib_common::git_checkout 3
@@ -2536,7 +2595,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -2546,7 +2605,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -2554,7 +2613,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -2607,8 +2666,8 @@ jobs:
         echo '"debug"' | flowey v 15 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey v 15 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey v 15 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey v 15 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
       shell: bash
     - name: install Rust
@@ -2661,7 +2720,7 @@ jobs:
     - name: unpack Microsoft.WSL.LxUtil.AARCH64.zip
       run: flowey e 15 flowey_lib_hvlite::download_lxutil 1
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 15 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -2679,10 +2738,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 15 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 15 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 15 flowey_lib_common::git_checkout 3
@@ -2909,7 +2968,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -2919,7 +2978,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -2927,7 +2986,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -2980,8 +3039,8 @@ jobs:
         echo '"debug"' | flowey v 16 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey v 16 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey v 16 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey v 16 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
       shell: bash
     - name: install Rust
@@ -2993,7 +3052,7 @@ jobs:
     - name: report common cargo flags
       run: flowey e 16 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 16 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -3011,10 +3070,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 16 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 16 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 16 flowey_lib_common::git_checkout 3
@@ -3280,7 +3339,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -3290,7 +3349,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -3298,7 +3357,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -3351,8 +3410,8 @@ jobs:
         echo '"debug"' | flowey.exe v 17 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey.exe v 17 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey.exe v 17 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey.exe v 17 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
       shell: bash
     - name: report common cargo flags
@@ -3399,7 +3458,7 @@ jobs:
     - name: installing cargo-nextest
       run: flowey.exe e 17 flowey_lib_common::download_cargo_nextest 1
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 17 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -3417,10 +3476,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar6 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 17 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 17 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 17 flowey_lib_common::git_checkout 3
@@ -3609,8 +3668,8 @@ jobs:
         echo '"debug"' | flowey.exe v 18 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey.exe v 18 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey.exe v 18 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey.exe v 18 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         echo "${{ runner.temp }}\\used_artifacts\\x64-guest_test_uefi" | flowey.exe v 18 'artifact_use_from_x64-guest_test_uefi' --update-from-stdin --is-raw-string
         echo "${{ runner.temp }}\\used_artifacts\\x64-linux-musl-pipette" | flowey.exe v 18 'artifact_use_from_x64-linux-musl-pipette' --update-from-stdin --is-raw-string
@@ -3626,18 +3685,18 @@ jobs:
       run: flowey.exe e 18 flowey_lib_common::cache 4
       shell: bash
     - run: |
-        flowey.exe v 18 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar8 --is-raw-string
+        flowey.exe v 18 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar7 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar7'
+    - run: |
+        flowey.exe v 18 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar8 --is-raw-string
       shell: bash
       name: 🌼 Write to 'floweyvar8'
-    - run: |
-        flowey.exe v 18 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar9 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar9'
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar8 }}
-        path: ${{ env.floweyvar9 }}
+        key: ${{ env.floweyvar7 }}
+        path: ${{ env.floweyvar8 }}
       name: 'Restore cache: cargo-nextest'
     - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
       shell: flowey.exe v 18 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
@@ -3655,18 +3714,18 @@ jobs:
       run: flowey.exe e 18 flowey_lib_common::cache 8
       shell: bash
     - run: |
-        flowey.exe v 18 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar10 --is-raw-string
+        flowey.exe v 18 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar9 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar9'
+    - run: |
+        flowey.exe v 18 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar10 --is-raw-string
       shell: bash
       name: 🌼 Write to 'floweyvar10'
-    - run: |
-        flowey.exe v 18 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar11 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar11'
     - id: flowey_lib_common__cache__9
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar10 }}
-        path: ${{ env.floweyvar11 }}
+        key: ${{ env.floweyvar9 }}
+        path: ${{ env.floweyvar10 }}
       name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
       shell: flowey.exe v 18 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
@@ -3680,7 +3739,7 @@ jobs:
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 18 flowey_lib_hvlite::download_uefi_mu_msvm 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 18 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -3688,20 +3747,20 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey.exe v 18 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey.exe v 18 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar4 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar5'
+      name: 🌼 Write to 'floweyvar4'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar5 }}
-      name: checkout repo hvlite
+        persist-credentials: ${{ env.floweyvar4 }}
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 18 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 18 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 18 flowey_lib_common::git_checkout 3
@@ -3714,6 +3773,9 @@ jobs:
       shell: bash
     - name: move MSVM.fd into its magic folder
       run: flowey.exe e 18 flowey_lib_hvlite::init_openvmm_magicpath_uefi_mu_msvm 0
+      shell: bash
+    - name: init hyperv tests
+      run: flowey.exe e 18 flowey_lib_hvlite::init_hyperv_tests 0
       shell: bash
     - name: 🌼 write_into Var
       run: flowey.exe e 18 flowey_lib_hvlite::run_cargo_nextest_run 0
@@ -3743,18 +3805,18 @@ jobs:
       run: flowey.exe e 18 flowey_lib_common::cache 0
       shell: bash
     - run: |
-        flowey.exe v 18 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar6 --is-raw-string
+        flowey.exe v 18 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar5 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar5'
+    - run: |
+        flowey.exe v 18 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar6 --is-raw-string
       shell: bash
       name: 🌼 Write to 'floweyvar6'
-    - run: |
-        flowey.exe v 18 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar7 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar7'
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar6 }}
-        path: ${{ env.floweyvar7 }}
+        key: ${{ env.floweyvar5 }}
+        path: ${{ env.floweyvar6 }}
       name: 'Restore cache: azcopy'
     - run: ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
       shell: flowey.exe v 18 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
@@ -3838,28 +3900,6 @@ jobs:
         name: x64-windows-intel-vmm-tests-logs
         path: ${{ env.floweyvar3 }}
       name: 'publish test results: logs (x64-windows-intel-vmm-tests)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🌼 write_into Var
-      run: flowey.exe e 18 flowey_lib_common::publish_test_results 10
-      shell: bash
-    - name: 🌼 write_into Var
-      run: flowey.exe e 18 flowey_lib_common::publish_test_results 11
-      shell: bash
-    - run: |
-        flowey.exe v 18 'flowey_lib_common::publish_test_results:17:flowey_lib_common/src/publish_test_results.rs:141:57' --write-to-gh-env FLOWEY_CONDITION
-      shell: bash
-      name: 🌼❓ Write to 'FLOWEY_CONDITION'
-    - run: |
-        flowey.exe v 18 'flowey_lib_common::publish_test_results:19:flowey_lib_common/src/publish_test_results.rs:149:62' --write-to-gh-env floweyvar4 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar4'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - id: flowey_lib_common__publish_test_results__12
-      uses: actions/upload-artifact@v4
-      with:
-        name: x64-windows-intel-vmm-tests-openhcl-dumps
-        path: ${{ env.floweyvar4 }}
-      name: 'publish test results: openhcl-dumps (x64-windows-intel-vmm-tests)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🌼 write_into Var
       run: flowey.exe e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
@@ -3968,8 +4008,8 @@ jobs:
         echo '"debug"' | flowey.exe v 19 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey.exe v 19 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey.exe v 19 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey.exe v 19 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         echo "${{ runner.temp }}\\used_artifacts\\x64-guest_test_uefi" | flowey.exe v 19 'artifact_use_from_x64-guest_test_uefi' --update-from-stdin --is-raw-string
         echo "${{ runner.temp }}\\used_artifacts\\x64-linux-musl-pipette" | flowey.exe v 19 'artifact_use_from_x64-linux-musl-pipette' --update-from-stdin --is-raw-string
@@ -3985,18 +4025,18 @@ jobs:
       run: flowey.exe e 19 flowey_lib_common::cache 4
       shell: bash
     - run: |
-        flowey.exe v 19 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar8 --is-raw-string
+        flowey.exe v 19 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar7 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar7'
+    - run: |
+        flowey.exe v 19 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar8 --is-raw-string
       shell: bash
       name: 🌼 Write to 'floweyvar8'
-    - run: |
-        flowey.exe v 19 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar9 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar9'
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar8 }}
-        path: ${{ env.floweyvar9 }}
+        key: ${{ env.floweyvar7 }}
+        path: ${{ env.floweyvar8 }}
       name: 'Restore cache: cargo-nextest'
     - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
       shell: flowey.exe v 19 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
@@ -4014,18 +4054,18 @@ jobs:
       run: flowey.exe e 19 flowey_lib_common::cache 8
       shell: bash
     - run: |
-        flowey.exe v 19 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar10 --is-raw-string
+        flowey.exe v 19 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar9 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar9'
+    - run: |
+        flowey.exe v 19 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar10 --is-raw-string
       shell: bash
       name: 🌼 Write to 'floweyvar10'
-    - run: |
-        flowey.exe v 19 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar11 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar11'
     - id: flowey_lib_common__cache__9
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar10 }}
-        path: ${{ env.floweyvar11 }}
+        key: ${{ env.floweyvar9 }}
+        path: ${{ env.floweyvar10 }}
       name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
       shell: flowey.exe v 19 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
@@ -4039,7 +4079,7 @@ jobs:
     - name: unpack mu_msvm package (x64)
       run: flowey.exe e 19 flowey_lib_hvlite::download_uefi_mu_msvm 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 19 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -4047,20 +4087,20 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey.exe v 19 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey.exe v 19 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar4 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar5'
+      name: 🌼 Write to 'floweyvar4'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar5 }}
-      name: checkout repo hvlite
+        persist-credentials: ${{ env.floweyvar4 }}
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 19 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 19 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 19 flowey_lib_common::git_checkout 3
@@ -4073,6 +4113,9 @@ jobs:
       shell: bash
     - name: move MSVM.fd into its magic folder
       run: flowey.exe e 19 flowey_lib_hvlite::init_openvmm_magicpath_uefi_mu_msvm 0
+      shell: bash
+    - name: init hyperv tests
+      run: flowey.exe e 19 flowey_lib_hvlite::init_hyperv_tests 0
       shell: bash
     - name: 🌼 write_into Var
       run: flowey.exe e 19 flowey_lib_hvlite::run_cargo_nextest_run 0
@@ -4102,18 +4145,18 @@ jobs:
       run: flowey.exe e 19 flowey_lib_common::cache 0
       shell: bash
     - run: |
-        flowey.exe v 19 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar6 --is-raw-string
+        flowey.exe v 19 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar5 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar5'
+    - run: |
+        flowey.exe v 19 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar6 --is-raw-string
       shell: bash
       name: 🌼 Write to 'floweyvar6'
-    - run: |
-        flowey.exe v 19 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar7 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar7'
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar6 }}
-        path: ${{ env.floweyvar7 }}
+        key: ${{ env.floweyvar5 }}
+        path: ${{ env.floweyvar6 }}
       name: 'Restore cache: azcopy'
     - run: ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
       shell: flowey.exe v 19 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
@@ -4199,28 +4242,6 @@ jobs:
       name: 'publish test results: logs (x64-windows-amd-vmm-tests)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🌼 write_into Var
-      run: flowey.exe e 19 flowey_lib_common::publish_test_results 10
-      shell: bash
-    - name: 🌼 write_into Var
-      run: flowey.exe e 19 flowey_lib_common::publish_test_results 11
-      shell: bash
-    - run: |
-        flowey.exe v 19 'flowey_lib_common::publish_test_results:17:flowey_lib_common/src/publish_test_results.rs:141:57' --write-to-gh-env FLOWEY_CONDITION
-      shell: bash
-      name: 🌼❓ Write to 'FLOWEY_CONDITION'
-    - run: |
-        flowey.exe v 19 'flowey_lib_common::publish_test_results:19:flowey_lib_common/src/publish_test_results.rs:149:62' --write-to-gh-env floweyvar4 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar4'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - id: flowey_lib_common__publish_test_results__12
-      uses: actions/upload-artifact@v4
-      with:
-        name: x64-windows-amd-vmm-tests-openhcl-dumps
-        path: ${{ env.floweyvar4 }}
-      name: 'publish test results: openhcl-dumps (x64-windows-amd-vmm-tests)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🌼 write_into Var
       run: flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: 🌼 write_into Var
@@ -4278,7 +4299,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -4288,7 +4309,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -4296,7 +4317,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -4349,13 +4370,13 @@ jobs:
         echo '"debug"' | flowey v 2 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey v 2 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey v 2 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey v 2 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-rustdoc"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-rustdoc" | flowey v 2 'artifact_publish_from_x64-linux-rustdoc' --update-from-stdin --is-raw-string
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 2 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -4373,10 +4394,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 2 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 2 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 2 flowey_lib_common::git_checkout 3
@@ -4475,7 +4496,7 @@ jobs:
     - name: 🌼🥾 Publish bootstrapped flowey
       uses: actions/upload-artifact@v4
       with:
-        name: _internal-flowey-bootstrap-x86_64-linux-uid-16
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-17
         path: ${{ runner.temp }}/bootstrapped-flowey
   job20:
     name: run vmm-tests [x64-linux]
@@ -4538,8 +4559,8 @@ jobs:
         echo '"debug"' | flowey v 20 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey v 20 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey v 20 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey v 20 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         echo "$AgentTempDirNormal/used_artifacts/x64-guest_test_uefi" | flowey v 20 'artifact_use_from_x64-guest_test_uefi' --update-from-stdin --is-raw-string
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-musl-pipette" | flowey v 20 'artifact_use_from_x64-linux-musl-pipette' --update-from-stdin --is-raw-string
@@ -4557,18 +4578,18 @@ jobs:
       run: flowey e 20 flowey_lib_common::cache 4
       shell: bash
     - run: |
-        flowey v 20 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar8 --is-raw-string
+        flowey v 20 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar7 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar7'
+    - run: |
+        flowey v 20 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar8 --is-raw-string
       shell: bash
       name: 🌼 Write to 'floweyvar8'
-    - run: |
-        flowey v 20 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar9 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar9'
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar8 }}
-        path: ${{ env.floweyvar9 }}
+        key: ${{ env.floweyvar7 }}
+        path: ${{ env.floweyvar8 }}
       name: 'Restore cache: cargo-nextest'
     - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
       shell: flowey v 20 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
@@ -4592,18 +4613,18 @@ jobs:
       run: flowey e 20 flowey_lib_common::cache 8
       shell: bash
     - run: |
-        flowey v 20 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar10 --is-raw-string
+        flowey v 20 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar9 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar9'
+    - run: |
+        flowey v 20 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar10 --is-raw-string
       shell: bash
       name: 🌼 Write to 'floweyvar10'
-    - run: |
-        flowey v 20 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar11 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar11'
     - id: flowey_lib_common__cache__9
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar10 }}
-        path: ${{ env.floweyvar11 }}
+        key: ${{ env.floweyvar9 }}
+        path: ${{ env.floweyvar10 }}
       name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
       shell: flowey v 20 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
@@ -4617,7 +4638,7 @@ jobs:
     - name: unpack mu_msvm package (x64)
       run: flowey e 20 flowey_lib_hvlite::download_uefi_mu_msvm 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 20 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -4625,20 +4646,20 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey v 20 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey v 20 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar4 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar5'
+      name: 🌼 Write to 'floweyvar4'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar5 }}
-      name: checkout repo hvlite
+        persist-credentials: ${{ env.floweyvar4 }}
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 20 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 20 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 20 flowey_lib_common::git_checkout 3
@@ -4677,18 +4698,18 @@ jobs:
       run: flowey e 20 flowey_lib_common::cache 0
       shell: bash
     - run: |
-        flowey v 20 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar6 --is-raw-string
+        flowey v 20 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar5 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar5'
+    - run: |
+        flowey v 20 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar6 --is-raw-string
       shell: bash
       name: 🌼 Write to 'floweyvar6'
-    - run: |
-        flowey v 20 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar7 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar7'
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar6 }}
-        path: ${{ env.floweyvar7 }}
+        key: ${{ env.floweyvar5 }}
+        path: ${{ env.floweyvar6 }}
       name: 'Restore cache: azcopy'
     - run: ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
       shell: flowey v 20 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
@@ -4774,28 +4795,6 @@ jobs:
       name: 'publish test results: logs (x64-linux-vmm-tests)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🌼 write_into Var
-      run: flowey e 20 flowey_lib_common::publish_test_results 10
-      shell: bash
-    - name: 🌼 write_into Var
-      run: flowey e 20 flowey_lib_common::publish_test_results 11
-      shell: bash
-    - run: |
-        flowey v 20 'flowey_lib_common::publish_test_results:17:flowey_lib_common/src/publish_test_results.rs:141:57' --write-to-gh-env FLOWEY_CONDITION
-      shell: bash
-      name: 🌼❓ Write to 'FLOWEY_CONDITION'
-    - run: |
-        flowey v 20 'flowey_lib_common::publish_test_results:19:flowey_lib_common/src/publish_test_results.rs:149:62' --write-to-gh-env floweyvar4 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar4'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - id: flowey_lib_common__publish_test_results__12
-      uses: actions/upload-artifact@v4
-      with:
-        name: x64-linux-vmm-tests-openhcl-dumps
-        path: ${{ env.floweyvar4 }}
-      name: 'publish test results: openhcl-dumps (x64-linux-vmm-tests)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🌼 write_into Var
       run: flowey e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: 🌼 write_into Var
@@ -4854,11 +4853,61 @@ jobs:
     - job7
     if: github.event.pull_request.draft == false
     steps:
-    - name: 🌼🥾 Download bootstrapped flowey
-      uses: actions/download-artifact@v4
+    - run: echo "injected!"
+      name: 🌼🥾 Bootstrap flowey
+      shell: bash
+    - run: |
+        set -x
+        i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
+        sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
+        . "$HOME/.cargo/env"
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+        rustup show
+      if: runner.os == 'Linux'
+      name: rustup (Linux)
+      shell: bash
+    - run: |
+        set -x
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
+        ./rustup-init.exe -y --default-toolchain=1.85.0
+        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+      if: runner.os == 'Windows' && runner.arch == 'X64'
+      name: rustup (Windows X64)
+      shell: bash
+    - run: |
+        set -x
+        curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
+        ./rustup-init.exe -y --default-toolchain=1.85.0
+        echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
+      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      name: rustup (Windows ARM64)
+      shell: bash
+    - uses: actions/checkout@v4
       with:
-        name: _internal-flowey-bootstrap-x86_64-windows-uid-12
-        path: ${{ runner.temp }}/bootstrapped-flowey
+        path: flowey_bootstrap
+    - name: Build flowey
+      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target aarch64-pc-windows-msvc --profile flowey-ci
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Stage flowey artifact
+      run: |
+        mkdir ./flowey_bootstrap_temp
+        mv ./.github/workflows/openvmm-ci.yaml ./flowey_bootstrap_temp/pipeline.yaml
+        mv target/aarch64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Copy flowey artifact
+      run: |
+        OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
+        mkdir -p $OutDirNormal
+        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
+      working-directory: flowey_bootstrap
+      shell: bash
+    - name: Cleanup staged flowey artifact
+      run: rm -rf ./flowey_bootstrap_temp
+      working-directory: flowey_bootstrap
+      shell: bash
     - name: 🌼📦 Download aarch64-guest_test_uefi
       uses: actions/download-artifact@v4
       with:
@@ -4892,6 +4941,15 @@ jobs:
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
+    - name: 🌼🔎 Self-check YAML
+      run: |-
+        ESCAPED_AGENT_TEMPDIR=$(
+        cat <<'EOF' | sed 's/\\/\\\\/g'
+        ${{ runner.temp }}
+        EOF
+        )
+        flowey.exe pipeline github --runtime $ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml --out .github/workflows/openvmm-ci.yaml ci checkin-gates --config=ci
+      shell: bash
     - name: 🌼🛫 Initialize job
       run: |
         AgentTempDirNormal="${{ runner.temp }}"
@@ -4903,8 +4961,8 @@ jobs:
         echo '"debug"' | flowey.exe v 21 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey.exe v 21 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey.exe v 21 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey.exe v 21 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         echo "${{ runner.temp }}\\used_artifacts\\aarch64-guest_test_uefi" | flowey.exe v 21 'artifact_use_from_aarch64-guest_test_uefi' --update-from-stdin --is-raw-string
         echo "${{ runner.temp }}\\used_artifacts\\aarch64-linux-musl-pipette" | flowey.exe v 21 'artifact_use_from_aarch64-linux-musl-pipette' --update-from-stdin --is-raw-string
@@ -4920,18 +4978,18 @@ jobs:
       run: flowey.exe e 21 flowey_lib_common::cache 4
       shell: bash
     - run: |
-        flowey.exe v 21 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar8 --is-raw-string
+        flowey.exe v 21 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar7 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar7'
+    - run: |
+        flowey.exe v 21 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar8 --is-raw-string
       shell: bash
       name: 🌼 Write to 'floweyvar8'
-    - run: |
-        flowey.exe v 21 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar9 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar9'
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar8 }}
-        path: ${{ env.floweyvar9 }}
+        key: ${{ env.floweyvar7 }}
+        path: ${{ env.floweyvar8 }}
       name: 'Restore cache: cargo-nextest'
     - run: ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
       shell: flowey.exe v 21 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
@@ -4949,18 +5007,18 @@ jobs:
       run: flowey.exe e 21 flowey_lib_common::cache 8
       shell: bash
     - run: |
-        flowey.exe v 21 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar10 --is-raw-string
+        flowey.exe v 21 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar9 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar9'
+    - run: |
+        flowey.exe v 21 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar10 --is-raw-string
       shell: bash
       name: 🌼 Write to 'floweyvar10'
-    - run: |
-        flowey.exe v 21 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar11 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar11'
     - id: flowey_lib_common__cache__9
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar10 }}
-        path: ${{ env.floweyvar11 }}
+        key: ${{ env.floweyvar9 }}
+        path: ${{ env.floweyvar10 }}
       name: 'Restore cache: gh-release-download'
     - run: ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
       shell: flowey.exe v 21 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
@@ -4974,7 +5032,7 @@ jobs:
     - name: unpack mu_msvm package (aarch64)
       run: flowey.exe e 21 flowey_lib_hvlite::download_uefi_mu_msvm 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 21 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -4982,20 +5040,20 @@ jobs:
       shell: bash
       name: 🌼❓ Write to 'FLOWEY_CONDITION'
     - run: |
-        flowey.exe v 21 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey.exe v 21 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar4 --is-raw-string
       shell: bash
-      name: 🌼 Write to 'floweyvar5'
+      name: 🌼 Write to 'floweyvar4'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar5 }}
-      name: checkout repo hvlite
+        persist-credentials: ${{ env.floweyvar4 }}
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 21 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 21 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 21 flowey_lib_common::git_checkout 3
@@ -5008,6 +5066,9 @@ jobs:
       shell: bash
     - name: move MSVM.fd into its magic folder
       run: flowey.exe e 21 flowey_lib_hvlite::init_openvmm_magicpath_uefi_mu_msvm 0
+      shell: bash
+    - name: init hyperv tests
+      run: flowey.exe e 21 flowey_lib_hvlite::init_hyperv_tests 0
       shell: bash
     - name: 🌼 write_into Var
       run: flowey.exe e 21 flowey_lib_hvlite::run_cargo_nextest_run 0
@@ -5037,18 +5098,18 @@ jobs:
       run: flowey.exe e 21 flowey_lib_common::cache 0
       shell: bash
     - run: |
-        flowey.exe v 21 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar6 --is-raw-string
+        flowey.exe v 21 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar5 --is-raw-string
+      shell: bash
+      name: 🌼 Write to 'floweyvar5'
+    - run: |
+        flowey.exe v 21 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar6 --is-raw-string
       shell: bash
       name: 🌼 Write to 'floweyvar6'
-    - run: |
-        flowey.exe v 21 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar7 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar7'
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar6 }}
-        path: ${{ env.floweyvar7 }}
+        key: ${{ env.floweyvar5 }}
+        path: ${{ env.floweyvar6 }}
       name: 'Restore cache: azcopy'
     - run: ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
       shell: flowey.exe v 21 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file {0} --is-raw-string
@@ -5134,28 +5195,6 @@ jobs:
       name: 'publish test results: logs (aarch64-windows-vmm-tests)'
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: 🌼 write_into Var
-      run: flowey.exe e 21 flowey_lib_common::publish_test_results 10
-      shell: bash
-    - name: 🌼 write_into Var
-      run: flowey.exe e 21 flowey_lib_common::publish_test_results 11
-      shell: bash
-    - run: |
-        flowey.exe v 21 'flowey_lib_common::publish_test_results:17:flowey_lib_common/src/publish_test_results.rs:141:57' --write-to-gh-env FLOWEY_CONDITION
-      shell: bash
-      name: 🌼❓ Write to 'FLOWEY_CONDITION'
-    - run: |
-        flowey.exe v 21 'flowey_lib_common::publish_test_results:19:flowey_lib_common/src/publish_test_results.rs:149:62' --write-to-gh-env floweyvar4 --is-raw-string
-      shell: bash
-      name: 🌼 Write to 'floweyvar4'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - id: flowey_lib_common__publish_test_results__12
-      uses: actions/upload-artifact@v4
-      with:
-        name: aarch64-windows-vmm-tests-openhcl-dumps
-        path: ${{ env.floweyvar4 }}
-      name: 'publish test results: openhcl-dumps (aarch64-windows-vmm-tests)'
-      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
-    - name: 🌼 write_into Var
       run: flowey.exe e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 1
       shell: bash
     - name: 🌼 write_into Var
@@ -5213,7 +5252,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -5223,7 +5262,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -5231,7 +5270,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -5284,11 +5323,11 @@ jobs:
         echo '"debug"' | flowey v 22 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey v 22 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey v 22 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey v 22 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 22 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -5306,10 +5345,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 22 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 22 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 22 flowey_lib_common::git_checkout 3
@@ -5321,7 +5360,7 @@ jobs:
       run: flowey e 22 flowey_lib_common::install_rust 0
       shell: bash
     - run: ${{ github.token }}
-      shell: flowey v 22 'flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm:2:flowey_lib_hvlite/src/_jobs/test_local_flowey_build_igvm.rs:32:28' --is-secret --update-from-file {0} --is-raw-string
+      shell: flowey v 22 'flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm:2:flowey_core/src/node/github_context.rs:42:41' --is-secret --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.token'
     - name: test cargo xflowey build-igvm x64 --install-missing-deps
       run: flowey e 22 flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm 1
@@ -5342,7 +5381,7 @@ jobs:
     - name: 🌼🥾 Download bootstrapped flowey
       uses: actions/download-artifact@v4
       with:
-        name: _internal-flowey-bootstrap-x86_64-linux-uid-16
+        name: _internal-flowey-bootstrap-x86_64-linux-uid-17
         path: ${{ runner.temp }}/bootstrapped-flowey
     - name: 🌼📦 Download guide
       uses: actions/download-artifact@v4
@@ -5373,8 +5412,8 @@ jobs:
         echo '"debug"' | flowey v 3 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey v 3 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey v 3 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey v 3 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         echo "$AgentTempDirNormal/used_artifacts/guide" | flowey v 3 'artifact_use_from_guide' --update-from-stdin --is-raw-string
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-rustdoc" | flowey v 3 'artifact_use_from_x64-linux-rustdoc' --update-from-stdin --is-raw-string
@@ -5424,7 +5463,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -5434,7 +5473,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -5442,7 +5481,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -5495,11 +5534,11 @@ jobs:
         echo '"debug"' | flowey.exe v 4 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey.exe v 4 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey.exe v 4 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey.exe v 4 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 4 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -5517,10 +5556,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 4 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 4 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 4 flowey_lib_common::git_checkout 3
@@ -5614,7 +5653,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -5624,7 +5663,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -5632,7 +5671,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -5685,11 +5724,11 @@ jobs:
         echo '"debug"' | flowey v 5 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey v 5 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey v 5 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey v 5 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey e 5 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -5707,10 +5746,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey v 5 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey v 5 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey e 5 flowey_lib_common::git_checkout 3
@@ -5815,7 +5854,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -5825,7 +5864,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -5833,7 +5872,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -5886,8 +5925,8 @@ jobs:
         echo '"debug"' | flowey.exe v 6 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey.exe v 6 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey.exe v 6 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey.exe v 6 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-windows-hypestv"
         echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-hypestv" | flowey.exe v 6 'artifact_publish_from_aarch64-windows-hypestv' --update-from-stdin --is-raw-string
@@ -5909,7 +5948,7 @@ jobs:
     - name: report common cargo flags
       run: flowey.exe e 6 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 6 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -5927,10 +5966,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 6 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 6 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 6 flowey_lib_common::git_checkout 3
@@ -6115,7 +6154,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -6125,7 +6164,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -6133,7 +6172,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -6186,8 +6225,8 @@ jobs:
         echo '"debug"' | flowey.exe v 7 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey.exe v 7 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey.exe v 7 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey.exe v 7 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-windows-openvmm"
         echo "${{ runner.temp }}\\publish_artifacts\\aarch64-windows-openvmm" | flowey.exe v 7 'artifact_publish_from_aarch64-windows-openvmm' --update-from-stdin --is-raw-string
@@ -6237,7 +6276,7 @@ jobs:
     - name: unpack Microsoft.WSL.LxUtil.AARCH64.zip
       run: flowey.exe e 7 flowey_lib_hvlite::download_lxutil 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 7 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -6255,10 +6294,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 7 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 7 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 7 flowey_lib_common::git_checkout 3
@@ -6385,14 +6424,6 @@ jobs:
       with:
         name: aarch64-windows-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmm-tests-archive/
-    - name: 🌼🧼 Redact bootstrap var db
-      run: rm $AgentTempDirNormal/bootstrapped-flowey/job7.json
-      shell: bash
-    - name: 🌼🥾 Publish bootstrapped flowey
-      uses: actions/upload-artifact@v4
-      with:
-        name: _internal-flowey-bootstrap-x86_64-windows-uid-12
-        path: ${{ runner.temp }}/bootstrapped-flowey
   job8:
     name: build artifacts (not for VMM tests) [x64-windows]
     runs-on:
@@ -6410,7 +6441,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -6420,7 +6451,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -6428,7 +6459,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -6481,8 +6512,8 @@ jobs:
         echo '"debug"' | flowey.exe v 8 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey.exe v 8 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey.exe v 8 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey.exe v 8 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-hypestv"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-hypestv" | flowey.exe v 8 'artifact_publish_from_x64-windows-hypestv' --update-from-stdin --is-raw-string
@@ -6504,7 +6535,7 @@ jobs:
     - name: report common cargo flags
       run: flowey.exe e 8 flowey_lib_common::cfg_cargo_common_flags 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 8 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -6522,10 +6553,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar3 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 8 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 8 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 8 flowey_lib_common::git_checkout 3
@@ -6713,7 +6744,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.82.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.85.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -6723,7 +6754,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -6731,7 +6762,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.82.0
+        ./rustup-init.exe -y --default-toolchain=1.85.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -6784,8 +6815,8 @@ jobs:
         echo '"debug"' | flowey.exe v 9 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey.exe v 9 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
 
-        cat <<'EOF' | flowey.exe v 9 'param0' --update-from-stdin
-        ${{ inputs.param0 != '' && inputs.param0 || 'false' }}
+        cat <<'EOF' | flowey.exe v 9 'verbose' --update-from-stdin
+        ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-openvmm"
         echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-openvmm" | flowey.exe v 9 'artifact_publish_from_x64-windows-openvmm' --update-from-stdin --is-raw-string
@@ -6835,7 +6866,7 @@ jobs:
     - name: unpack Microsoft.WSL.LxUtil.x64.zip
       run: flowey.exe e 9 flowey_lib_hvlite::download_lxutil 0
       shell: bash
-    - name: check if hvlite needs to be cloned
+    - name: check if openvmm needs to be cloned
       run: flowey.exe e 9 flowey_lib_common::git_checkout 0
       shell: bash
     - run: |
@@ -6853,10 +6884,10 @@ jobs:
         fetch-depth: '1'
         path: repo0
         persist-credentials: ${{ env.floweyvar1 }}
-      name: checkout repo hvlite
+      name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - run: ${{ github.workspace }}
-      shell: flowey.exe v 9 'flowey_lib_common::git_checkout:4:flowey_lib_common/src/git_checkout.rs:524:31' --update-from-file {0} --is-raw-string
+      shell: flowey.exe v 9 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file {0} --is-raw-string
       name: 🌼 Read from 'github.workspace'
     - name: report cloned repo directories
       run: flowey.exe e 9 flowey_lib_common::git_checkout 3

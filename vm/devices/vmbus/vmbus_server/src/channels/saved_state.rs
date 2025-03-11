@@ -1,11 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::ConnectionTarget;
 use super::OfferError;
 use super::OfferParamsInternal;
 use super::OfferedInfo;
 use super::RestoreState;
+use super::SUPPORTED_FEATURE_FLAGS;
 use guid::Guid;
 use mesh::payload::Protobuf;
 use std::fmt::Display;
@@ -34,20 +34,33 @@ impl super::Server {
     pub fn restore(&mut self, saved: SavedState) -> Result<(), RestoreError> {
         tracing::trace!(?saved, "restoring channel state");
 
-        let saved = if let Some(saved) = saved.state {
-            saved
-        } else {
-            return Ok(());
-        };
+        if let Some(saved) = saved.state {
+            self.state = saved.connection.restore()?;
 
-        self.state = saved.connection.restore()?;
+            for saved_channel in saved.channels {
+                self.restore_one_channel(saved_channel)?;
+            }
 
-        for saved_channel in saved.channels {
-            self.restore_one_channel(saved_channel)?;
+            for saved_gpadl in saved.gpadls {
+                self.restore_one_gpadl(saved_gpadl)?;
+            }
+        } else if let Some(saved) = saved.disconnected_state {
+            self.state = super::ConnectionState::Disconnected;
+            for saved_channel in saved.reserved_channels {
+                self.restore_one_channel(saved_channel)?;
+            }
+
+            for saved_gpadl in saved.reserved_gpadls {
+                self.restore_one_gpadl(saved_gpadl)?;
+            }
         }
 
-        for saved_gpadl in saved.gpadls {
-            self.restore_one_gpadl(saved_gpadl)?;
+        self.pending_messages
+            .0
+            .reserve(saved.pending_messages.len());
+
+        for message in saved.pending_messages {
+            self.pending_messages.0.push_back(message.restore()?);
         }
 
         Ok(())
@@ -129,34 +142,71 @@ impl super::Server {
         Ok(())
     }
 
-    /// Saves
+    /// Saves state.
     pub fn save(&self) -> SavedState {
-        let connection = match Connection::save(&self.state) {
-            Some(c) => c,
-            None => return SavedState { state: None },
-        };
+        let state = self.save_connected_state();
+        let disconnected_state = state.is_none().then(|| self.save_disconnected_state());
+        SavedState {
+            state,
+            disconnected_state,
+            pending_messages: self.save_pending_messages(),
+        }
+    }
 
+    fn save_connected_state(&self) -> Option<ConnectedState> {
+        let connection = Connection::save(&self.state)?;
         let channels = self
             .channels
             .iter()
             .filter_map(|(_, channel)| Channel::save(channel))
             .collect();
 
-        let gpadls = self
-            .gpadls
+        let gpadls = self.save_gpadls();
+        Some(ConnectedState {
+            connection,
+            channels,
+            gpadls,
+        })
+    }
+
+    fn save_gpadls(&self) -> Vec<Gpadl> {
+        self.gpadls
             .iter()
             .filter_map(|((gpadl_id, offer_id), gpadl)| {
                 Gpadl::save(*gpadl_id, self.channels[*offer_id].info?.channel_id, gpadl)
             })
+            .collect()
+    }
+
+    fn save_disconnected_state(&self) -> DisconnectedState {
+        // Save reserved channels only.
+        let channels = self
+            .channels
+            .iter()
+            .filter_map(|(_, channel)| {
+                channel
+                    .state
+                    .is_reserved()
+                    .then(|| Channel::save(channel))
+                    .flatten()
+            })
             .collect();
 
-        SavedState {
-            state: Some(ConnectedState {
-                connection,
-                channels,
-                gpadls,
-            }),
+        // Save the GPADLs for reserved channels.
+        // N.B. There cannot be any other GPADLs while disconnected.
+        let gpadls = self.save_gpadls();
+        DisconnectedState {
+            reserved_channels: channels,
+            reserved_gpadls: gpadls,
         }
+    }
+
+    fn save_pending_messages(&self) -> Vec<OutgoingMessage> {
+        self.pending_messages
+            .0
+            .iter()
+            .map(OutgoingMessage::save)
+            .collect()
     }
 }
 
@@ -206,6 +256,13 @@ pub enum RestoreError {
 
     #[error(transparent)]
     ServerError(#[from] anyhow::Error),
+
+    #[error(
+        "reserved channel with ID {0} has a pending message but is missing from the saved state"
+    )]
+    MissingReservedChannel(u32),
+    #[error("a saved pending message is larger than the maximum message size")]
+    MessageTooLarge,
 }
 
 #[derive(Debug, Protobuf, Clone)]
@@ -213,6 +270,13 @@ pub enum RestoreError {
 pub struct SavedState {
     #[mesh(1)]
     state: Option<ConnectedState>,
+    // Disconnected state is used to save any open reserved channels while the guest is
+    // disconnected. It is mutually exclusive with `state`, but is separate to maintain saved state
+    // compatibility.
+    #[mesh(2)]
+    disconnected_state: Option<DisconnectedState>,
+    #[mesh(3)]
+    pending_messages: Vec<OutgoingMessage>,
 }
 
 #[derive(Debug, Clone, Protobuf)]
@@ -224,6 +288,15 @@ struct ConnectedState {
     channels: Vec<Channel>,
     #[mesh(3)]
     gpadls: Vec<Gpadl>,
+}
+
+#[derive(Debug, Clone, Protobuf)]
+#[mesh(package = "vmbus.server.channels")]
+struct DisconnectedState {
+    #[mesh(1)]
+    reserved_channels: Vec<Channel>,
+    #[mesh(2)]
+    reserved_gpadls: Vec<Gpadl>,
 }
 
 #[derive(Debug, Clone, Protobuf)]
@@ -243,7 +316,7 @@ impl VersionInfo {
         }
     }
 
-    fn restore(self) -> Result<vmbus_core::VersionInfo, RestoreError> {
+    fn restore(self, trusted: bool) -> Result<vmbus_core::VersionInfo, RestoreError> {
         let version = super::SUPPORTED_VERSIONS
             .iter()
             .find(|v| self.version == **v as u32)
@@ -251,7 +324,8 @@ impl VersionInfo {
             .ok_or(RestoreError::UnsupportedVersion(self.version))?;
 
         let feature_flags = FeatureFlags::from(self.feature_flags);
-        if feature_flags.contains_unsupported_bits() {
+        let supported_flags = SUPPORTED_FEATURE_FLAGS.with_confidential_channels(trusted);
+        if !supported_flags.contains(feature_flags) {
             return Err(RestoreError::UnsupportedFeatureFlags(feature_flags.into()));
         }
 
@@ -305,6 +379,8 @@ enum Connection {
         client_id: Option<Guid>,
         #[mesh(8)]
         trusted: bool,
+        #[mesh(9)]
+        paused: bool,
     },
 }
 
@@ -335,6 +411,7 @@ impl Connection {
                 modifying: info.modifying,
                 client_id: Some(info.client_id),
                 trusted: info.trusted,
+                paused: info.paused,
             }),
             super::ConnectionState::Disconnecting {
                 next_action,
@@ -357,7 +434,7 @@ impl Connection {
                 trusted,
             } => super::ConnectionState::Connecting {
                 info: super::ConnectionInfo {
-                    version: version.restore()?,
+                    version: version.restore(trusted)?,
                     trusted,
                     interrupt_page,
                     monitor_page: monitor_page.map(MonitorPageGpas::restore),
@@ -365,6 +442,7 @@ impl Connection {
                     offers_sent: false,
                     modifying: false,
                     client_id: client_id.unwrap_or(Guid::ZERO),
+                    paused: false,
                 },
                 next_action: next_action.restore(),
             },
@@ -377,8 +455,9 @@ impl Connection {
                 modifying,
                 client_id,
                 trusted,
+                paused,
             } => super::ConnectionState::Connected(super::ConnectionInfo {
-                version: version.restore()?,
+                version: version.restore(trusted)?,
                 trusted,
                 offers_sent,
                 interrupt_page,
@@ -386,6 +465,7 @@ impl Connection {
                 target_message_vp,
                 modifying,
                 client_id: client_id.unwrap_or(Guid::ZERO),
+                paused,
             }),
             Connection::Disconnecting { next_action } => super::ConnectionState::Disconnecting {
                 next_action: next_action.restore(),
@@ -661,7 +741,7 @@ impl OpenRequest {
                 .guest_specified_interrupt_info
                 .as_ref()
                 .map(SignalInfo::save),
-            flags: value.flags,
+            flags: value.flags.into(),
         }
     }
 
@@ -675,7 +755,7 @@ impl OpenRequest {
             guest_specified_interrupt_info: self
                 .guest_specified_interrupt_info
                 .map(SignalInfo::restore),
-            flags: self.flags,
+            flags: self.flags.into(),
         }
     }
 }
@@ -733,7 +813,9 @@ impl ReservedState {
     }
 
     fn restore(&self) -> Result<super::ReservedState, RestoreError> {
-        let version = self.version.clone().restore().map_err(|e| match e {
+        // We don't know if the connection when the channel was reserved was trusted, so assume it
+        // was for what feature flags are accepted here; it doesn't affect any actual behavior.
+        let version = self.version.clone().restore(true).map_err(|e| match e {
             RestoreError::UnsupportedVersion(v) => RestoreError::UnsupportedReserveVersion(v),
             RestoreError::UnsupportedFeatureFlags(f) => {
                 RestoreError::UnsupportedReserveFeatureFlags(f)
@@ -749,7 +831,7 @@ impl ReservedState {
 
         Ok(super::ReservedState {
             version,
-            target: ConnectionTarget {
+            target: super::ConnectionTarget {
                 vp: self.vp,
                 sint: self.sint,
             },
@@ -971,4 +1053,19 @@ enum GpadlState {
     Accepted,
     #[mesh(4)]
     TearingDown,
+}
+
+#[derive(Debug, Clone, Protobuf, PartialEq, Eq)]
+#[mesh(package = "vmbus.server.channels")]
+struct OutgoingMessage(Vec<u8>);
+
+impl OutgoingMessage {
+    fn save(value: &vmbus_core::OutgoingMessage) -> Self {
+        Self(value.data().to_vec())
+    }
+
+    fn restore(self) -> Result<vmbus_core::OutgoingMessage, RestoreError> {
+        vmbus_core::OutgoingMessage::from_message(&self.0)
+            .map_err(|_| RestoreError::MessageTooLarge)
+    }
 }

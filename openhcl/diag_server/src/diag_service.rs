@@ -478,7 +478,7 @@ impl DiagServiceHandler {
                 // sockets, but don't block the process exit notification.
                 driver
                     .spawn("socket-wait", async move {
-                        let await_output_relay = |task, raw| async {
+                        let await_output_relay = async |task, raw| {
                             let socket = if let Some(task) = task {
                                 Some(task.await)
                             } else {
@@ -605,7 +605,7 @@ impl DiagServiceHandler {
 
                 match op_data {
                     diag_proto::network_packet_capture_request::OpData::StartData(start_data) => {
-                        let writers = join_all(start_data.conns.iter().map(|c| async move {
+                        let writers = join_all(start_data.conns.iter().map(async |c| {
                             let conn = self.take_connection(*c).await?;
                             Ok(conn.into_inner())
                         }))

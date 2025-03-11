@@ -14,9 +14,9 @@ use disk_backend::Disk;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// An NVMe namespace built on top of a [`Disk`].
 #[derive(Inspect)]
@@ -40,7 +40,7 @@ impl Namespace {
     }
 
     pub fn identify(&self, buf: &mut [u8]) {
-        let id = nvm::IdentifyNamespace::mut_from_prefix(buf).unwrap();
+        let id = nvm::IdentifyNamespace::mut_from_prefix(buf).unwrap().0; // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let size = self.disk.sector_count();
 
         let rescap = if let Some(pr) = self.disk.pr() {
@@ -63,13 +63,15 @@ impl Namespace {
             nlbaf: 0,
             flbas: nvm::Flbas::new().with_low_index(0),
             rescap,
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
         id.lbaf[0] = nvm::Lbaf::new().with_lbads(self.block_shift as u8);
     }
 
     pub fn namespace_id_descriptor(&self, buf: &mut [u8]) {
-        let id = nvm::NamespaceIdentificationDescriptor::mut_from_prefix(buf).unwrap();
+        let id = nvm::NamespaceIdentificationDescriptor::mut_from_prefix(buf)
+            .unwrap()
+            .0; // TODO: zerocopy: from-prefix (mut_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
         let mut nid = [0u8; 0x10];
         if let Some(guid) = self.disk.disk_id() {
             nid = guid;
@@ -180,10 +182,13 @@ impl Namespace {
             nvm::NvmOpcode::DSM => {
                 let cdw10 = nvm::Cdw10Dsm::from(command.cdw10);
                 let cdw11 = nvm::Cdw11Dsm::from(command.cdw11);
-                let mut dsm_ranges = nvm::DsmRange::new_box_slice_zeroed(cdw10.nr_z() as usize + 1);
+                // TODO: zerocopy: manual: review carefully! (https://github.com/microsoft/openvmm/issues/759)
+                let mut dsm_ranges =
+                    <[nvm::DsmRange]>::new_box_zeroed_with_elems(cdw10.nr_z() as usize + 1)
+                        .unwrap();
                 let prp =
                     PrpRange::parse(&self.mem, size_of_val(dsm_ranges.as_ref()), command.dptr)?;
-                prp.read(&self.mem, dsm_ranges.as_bytes_mut())?;
+                prp.read(&self.mem, dsm_ranges.as_mut_bytes())?;
                 tracing::debug!(nsid = self.nsid, ?cdw11, ?dsm_ranges, "dsm");
                 if cdw11.ad() {
                     for range in dsm_ranges.as_ref() {

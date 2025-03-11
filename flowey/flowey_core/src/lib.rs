@@ -7,6 +7,8 @@
 //! this crate!** The crate you should be using is called `flowey`, which only
 //! exports user-facing types / traits.
 
+#![expect(missing_docs)]
+
 pub mod node;
 pub mod patch;
 pub mod pipeline;

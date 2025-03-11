@@ -22,7 +22,6 @@ use thiserror::Error;
 use vmgs::EncryptionAlgorithm;
 use vmgs::Vmgs;
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum RequestVmgsEncryptionKeysError {
     #[error("failed to generate an RSA transfer key")]

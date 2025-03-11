@@ -4,11 +4,9 @@
 //! NVMe driver implementation.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 mod driver;
 mod namespace;
-mod page_allocator;
 mod queue_pair;
 mod queues;
 mod registers;

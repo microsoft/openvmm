@@ -4,6 +4,7 @@
 //! An endpoint built on the vmswitch DirectIO interface.
 
 #![cfg(windows)]
+#![expect(missing_docs)]
 
 pub mod resolver;
 

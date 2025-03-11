@@ -4,7 +4,6 @@
 //! Resources for emulated SCSI disks.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use inspect::Inspect;
 use mesh::payload::Protobuf;

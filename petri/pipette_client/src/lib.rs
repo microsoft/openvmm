@@ -3,7 +3,6 @@
 
 //! The client for `pipette`.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod process;
@@ -22,6 +21,7 @@ use futures::AsyncWriteExt;
 use futures::StreamExt;
 use futures::TryFutureExt;
 use futures_concurrency::future::TryJoin;
+use mesh::rpc::RpcError;
 use mesh_remote::PointToPointMesh;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -81,7 +81,7 @@ impl PipetteClient {
     }
 
     /// Pings the agent to check if it's alive.
-    pub async fn ping(&self) -> Result<(), mesh::RecvError> {
+    pub async fn ping(&self) -> Result<(), RpcError> {
         self.send.call(PipetteRequest::Ping, ()).await
     }
 
@@ -227,8 +227,10 @@ async fn recv_diag_files(output_dir: PathBuf, mut diag_file_recv: mesh::Receiver
             .expect("failed to write diagnostic file");
         tracing::debug!(name, "diagnostic file transfer complete");
 
-        // ATTACHMENT is most reliable when using true canonicalized paths
-        #[allow(clippy::disallowed_methods)]
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ATTACHMENT is most reliable when using true canonicalized paths"
+        )]
         let canonical_path = path
             .canonicalize()
             .expect("failed to canonicalize attachment path");

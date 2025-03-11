@@ -14,7 +14,6 @@
 //! updated to use the underlying artifact types themselves.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
 
@@ -23,7 +22,7 @@ use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
 #[cfg_attr(feature = "clap", clap(rename_all = "verbatim"))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(missing_docs)] // Self-describing names
+#[expect(missing_docs)] // Self-describing names
 pub enum KnownVhd {
     Gen1WindowsDataCenterCore2022,
     Gen2WindowsDataCenterCore2022,
@@ -117,7 +116,7 @@ impl KnownVhd {
 #[cfg_attr(feature = "clap", clap(rename_all = "verbatim"))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(missing_docs)] // Self-describing names
+#[expect(missing_docs)] // Self-describing names
 pub enum KnownIso {
     FreeBsd13_2,
 }

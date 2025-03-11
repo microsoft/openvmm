@@ -7,7 +7,6 @@
 //! At a high level: Given a [`BaseChipsetBuilder`] + a list of
 //! [`BaseChipsetDevices`](options::BaseChipsetDevices), return [`Chipset`].
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod base_chipset;

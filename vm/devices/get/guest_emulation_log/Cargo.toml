@@ -3,7 +3,7 @@
 
 [package]
 name = "guest_emulation_log"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -24,7 +24,5 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-zerocopy_helpers.workspace = true
-
 [lints]
 workspace = true

@@ -51,7 +51,11 @@ use sidecar::SidecarConfig;
 use sidecar_defs::SidecarOutput;
 use sidecar_defs::SidecarParams;
 use single_threaded::OffStackRef;
-use zerocopy::FromZeroes;
+use zerocopy::FromBytes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 #[derive(Debug)]
 struct CommandLineTooLong;
@@ -81,10 +85,7 @@ fn build_kernel_command_line(
         "printk.time=1",
         // Enable facility and level output on console for ohcldiag-dev.
         "console_msg_format=syslog",
-        // Set uio parameters to size and configure vmbus ring buffer behavior.
-        "uio_hv_generic.send_buf_size=0",
-        "uio_hv_generic.recv_buf_size=0",
-        "uio_hv_generic.ring_size=0x11000",
+        // Set uio parameter to configure vmbus ring buffer behavior.
         "uio_hv_generic.no_mask=1",
         // RELIABILITY: Dump anonymous pages and ELF headers only. Skip over
         // huge pages and the shared pages.
@@ -149,8 +150,10 @@ fn build_kernel_command_line(
         "unknown_nmi_panic=1",
         // Even with iommu=off, the SWIOTLB is still allocated on AARCH64
         // (iommu=off ignored entirely), and CVMs (memory encryption forces it on).
-        // Set it to the minimum, saving ~63 MiB.
-        "swiotlb=1",
+        // Set it to the minimum, saving ~63 MiB. The first parameter controls the
+        // area size, the second controls the number of areas (default is # of CPUs).
+        // Set them both to the minimum.
+        "swiotlb=1,1",
         // Use vfio for MANA devices.
         "vfio_pci.ids=1414:00ba",
         // WORKAROUND: Enable no-IOMMU mode. This mode provides no device isolation,
@@ -225,6 +228,12 @@ fn build_kernel_command_line(
         )?;
     }
 
+    // Only when explicitly supported by Host.
+    // TODO: Move from command line to device tree when stabilized.
+    if partition_info.nvme_keepalive && !partition_info.vtl2_pool_memory.is_empty() {
+        write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=1 ")?;
+    }
+
     if let Some(sidecar) = sidecar {
         write!(cmdline, "{} ", sidecar.kernel_command_line())?;
     }
@@ -262,7 +271,7 @@ fn build_kernel_command_line(
 const FDT_SIZE: usize = 256 * 1024;
 
 #[repr(C, align(4096))]
-#[derive(zerocopy::FromBytes, zerocopy::FromZeroes)]
+#[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
 struct Fdt {
     header: setup_data,
     data: [u8; FDT_SIZE - size_of::<setup_data>()],
@@ -314,7 +323,7 @@ enum ReservedMemoryType {
 fn reserved_memory_regions(
     partition_info: &PartitionInfo,
     sidecar: Option<&SidecarConfig<'_>>,
-) -> OffStackRef<'static, impl AsRef<[(MemoryRange, ReservedMemoryType)]>> {
+) -> OffStackRef<'static, impl AsRef<[(MemoryRange, ReservedMemoryType)]> + use<>> {
     let mut reserved = off_stack!(ArrayVec<(MemoryRange, ReservedMemoryType), MAX_RESERVED_MEM_RANGES>, ArrayVec::new_const());
     reserved.clear();
     reserved.extend(
@@ -383,10 +392,12 @@ mod x86_boot {
     use memory_range::walk_ranges;
     use memory_range::MemoryRange;
     use memory_range::RangeWalkResult;
-    use zerocopy::FromZeroes;
+    use zerocopy::FromZeros;
+    use zerocopy::Immutable;
+    use zerocopy::KnownLayout;
 
     #[repr(C)]
-    #[derive(FromZeroes)]
+    #[derive(FromZeros, Immutable, KnownLayout)]
     pub struct E820Ext {
         pub header: setup_data,
         pub entries: [e820entry; 512],
@@ -526,11 +537,11 @@ fn build_cc_blob_sev_info(
 }
 
 #[repr(C, align(4096))]
-#[derive(FromZeroes)]
+#[derive(FromZeros, Immutable, KnownLayout)]
 struct PageAlign<T>(T);
 
-const fn zeroed<T: FromZeroes>() -> T {
-    // SAFETY: `T` implements `FromZeroes`, so this is a safe initialization of `T`.
+const fn zeroed<T: FromZeros>() -> T {
+    // SAFETY: `T` implements `FromZeros`, so this is a safe initialization of `T`.
     unsafe { core::mem::MaybeUninit::<T>::zeroed().assume_init() }
 }
 
@@ -599,14 +610,23 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         )
         .vtl0_alias_map_available()
     {
-        // Disable the alias map on ARM because physical address size is not
-        // reliably reported. Since the position of the alias map bit is inferred
-        // from address size, the alias map is broken when the PA size is wrong.
-        // TODO: is this still true?
-        if !cfg!(target_arch = "aarch64") {
+        // If the vtl0 alias map was not provided in the devicetree, attempt to
+        // derive it from the architectural physical address bits.
+        //
+        // The value in the ID_AA64MMFR0_EL1 register used to determine the
+        // physical address bits can only represent multiples of 4. As a result,
+        // the Surface Pro X (and systems with similar CPUs) cannot properly
+        // report their address width of 39 bits. This causes the calculated
+        // alias map to be incorrect, which results in panics when trying to
+        // read memory and getting invalid data.
+        if partition_info.vtl0_alias_map.is_none() {
             partition_info.vtl0_alias_map =
                 Some(1 << (arch::physical_address_bits(p.isolation_type) - 1));
         }
+    } else {
+        // Ignore any devicetree-provided alias map if the conditions above
+        // aren't met.
+        partition_info.vtl0_alias_map = None;
     }
 
     if can_trust_host {
@@ -825,7 +845,7 @@ fn validate_vp_hw_ids(partition_info: &PartitionInfo) {
     if let Some((i, &vp_index)) = vp_indexes
         .iter()
         .enumerate()
-        .find(|(i, &vp_index)| *i as u32 != vp_index)
+        .find(|&(i, vp_index)| i as u32 != *vp_index)
     {
         panic!(
             "CPU hardware ID {:#x} does not correspond to VP index {}",
@@ -865,7 +885,7 @@ mod test {
     use memory_range::walk_ranges;
     use memory_range::MemoryRange;
     use memory_range::RangeWalkResult;
-    use zerocopy::FromZeroes;
+    use zerocopy::FromZeros;
 
     const HIGH_MMIO_GAP_END: u64 = 0x1000000000; //  64 GiB
     const VMBUS_MMIO_GAP_SIZE: u64 = 0x10000000; // 256 MiB
@@ -910,6 +930,7 @@ mod test {
             memory_allocation_mode: host_fdt_parser::MemoryAllocationMode::Host,
             entropy: None,
             vtl0_alias_map: None,
+            nvme_keepalive: false,
         }
     }
 
@@ -1098,8 +1119,8 @@ mod test {
     #[test]
     fn test_e820_basic() {
         // memmap with no param reclaim
-        let mut boot_params: boot_params = FromZeroes::new_zeroed();
-        let mut ext = FromZeroes::new_zeroed();
+        let mut boot_params: boot_params = FromZeros::new_zeroed();
+        let mut ext = FromZeros::new_zeroed();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..3 * ONE_MB).unwrap();
         let partition_info =
             partition_info_ram_ranges(&[ONE_MB..4 * ONE_MB], parameter_range, None);
@@ -1123,8 +1144,8 @@ mod test {
         );
 
         // memmap with reclaim
-        let mut boot_params: boot_params = FromZeroes::new_zeroed();
-        let mut ext = FromZeroes::new_zeroed();
+        let mut boot_params: boot_params = FromZeros::new_zeroed();
+        let mut ext = FromZeros::new_zeroed();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
         let partition_info = partition_info_ram_ranges(
             &[ONE_MB..6 * ONE_MB],
@@ -1153,8 +1174,8 @@ mod test {
         );
 
         // two mem ranges
-        let mut boot_params: boot_params = FromZeroes::new_zeroed();
-        let mut ext = FromZeroes::new_zeroed();
+        let mut boot_params: boot_params = FromZeros::new_zeroed();
+        let mut ext = FromZeros::new_zeroed();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
         let partition_info = partition_info_ram_ranges(
             &[ONE_MB..4 * ONE_MB, 4 * ONE_MB..10 * ONE_MB],
@@ -1183,8 +1204,8 @@ mod test {
         );
 
         // memmap in 1 mb chunks
-        let mut boot_params: boot_params = FromZeroes::new_zeroed();
-        let mut ext = FromZeroes::new_zeroed();
+        let mut boot_params: boot_params = FromZeros::new_zeroed();
+        let mut ext = FromZeros::new_zeroed();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
         let partition_info = partition_info_ram_ranges(
             &[
@@ -1226,8 +1247,8 @@ mod test {
     #[test]
     fn test_e820_param_not_covered() {
         // parameter range not covered by ram at all
-        let mut boot_params: boot_params = FromZeroes::new_zeroed();
-        let mut ext = FromZeroes::new_zeroed();
+        let mut boot_params: boot_params = FromZeros::new_zeroed();
+        let mut ext = FromZeros::new_zeroed();
         let parameter_range = MemoryRange::try_new(5 * ONE_MB..6 * ONE_MB).unwrap();
         let partition_info =
             partition_info_ram_ranges(&[ONE_MB..4 * ONE_MB], parameter_range, None);
@@ -1241,8 +1262,8 @@ mod test {
         .is_err());
 
         // parameter range start partial coverage
-        let mut boot_params: boot_params = FromZeroes::new_zeroed();
-        let mut ext = FromZeroes::new_zeroed();
+        let mut boot_params: boot_params = FromZeros::new_zeroed();
+        let mut ext = FromZeros::new_zeroed();
         let parameter_range = MemoryRange::try_new(3 * ONE_MB..6 * ONE_MB).unwrap();
         let partition_info =
             partition_info_ram_ranges(&[ONE_MB..4 * ONE_MB], parameter_range, None);
@@ -1256,8 +1277,8 @@ mod test {
         .is_err());
 
         // parameter range end partial coverage
-        let mut boot_params: boot_params = FromZeroes::new_zeroed();
-        let mut ext = FromZeroes::new_zeroed();
+        let mut boot_params: boot_params = FromZeros::new_zeroed();
+        let mut ext = FromZeros::new_zeroed();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..5 * ONE_MB).unwrap();
         let partition_info =
             partition_info_ram_ranges(&[4 * ONE_MB..6 * ONE_MB], parameter_range, None);
@@ -1271,8 +1292,8 @@ mod test {
         .is_err());
 
         // parameter range larger than ram
-        let mut boot_params: boot_params = FromZeroes::new_zeroed();
-        let mut ext = FromZeroes::new_zeroed();
+        let mut boot_params: boot_params = FromZeros::new_zeroed();
+        let mut ext = FromZeros::new_zeroed();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..8 * ONE_MB).unwrap();
         let partition_info =
             partition_info_ram_ranges(&[4 * ONE_MB..6 * ONE_MB], parameter_range, None);
@@ -1286,8 +1307,8 @@ mod test {
         .is_err());
 
         // ram has gap inside param range
-        let mut boot_params: boot_params = FromZeroes::new_zeroed();
-        let mut ext = FromZeroes::new_zeroed();
+        let mut boot_params: boot_params = FromZeros::new_zeroed();
+        let mut ext = FromZeros::new_zeroed();
         let parameter_range = MemoryRange::try_new(2 * ONE_MB..8 * ONE_MB).unwrap();
         let partition_info = partition_info_ram_ranges(
             &[ONE_MB..6 * ONE_MB, 7 * ONE_MB..10 * ONE_MB],
@@ -1307,8 +1328,8 @@ mod test {
     #[test]
     fn test_e820_huge() {
         // memmap with no param reclaim
-        let mut boot_params: boot_params = FromZeroes::new_zeroed();
-        let mut ext = FromZeroes::new_zeroed();
+        let mut boot_params: boot_params = FromZeros::new_zeroed();
+        let mut ext = FromZeros::new_zeroed();
         let ram = MemoryRange::new(0..32 * ONE_MB);
         let partition_info = partition_info_ram_ranges(&[ram.into()], MemoryRange::EMPTY, None);
         let reserved = (0..256)

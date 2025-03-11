@@ -9,8 +9,10 @@ use pal_async::async_test;
 use virt_support_x86emu::emulate::*;
 use vm_topology::processor::VpIndex;
 use x86defs::cpuid::Vendor;
-use x86emu::CpuState;
-use zerocopy::AsBytes;
+use x86defs::RFlags;
+use x86emu::Gp;
+use x86emu::Segment;
+use zerocopy::IntoBytes;
 
 const INITIAL_GVA: u64 = 0x2000;
 const INITIAL_GPA: u64 = 0x1000;
@@ -67,7 +69,7 @@ enum MockAccess {
 }
 
 impl MockSupport {
-    const WORKING_REGISTER: usize = CpuState::RSI;
+    const WORKING_REGISTER: Gp = Gp::RSI;
     const ASM_WORKING_REGISTER: AsmRegister64 = rsi;
 
     fn new(
@@ -87,12 +89,12 @@ impl MockSupport {
 
         match access_info {
             MockAccess::Read => {
-                state.gps[CpuState::RAX] = gva;
+                state.gps[Gp::RAX as usize] = gva;
                 asm.mov(Self::ASM_WORKING_REGISTER, dword_ptr(rax)).unwrap();
             }
             MockAccess::Write(write_value) => {
-                state.gps[CpuState::RAX] = gva;
-                state.gps[Self::WORKING_REGISTER] = write_value;
+                state.gps[Gp::RAX as usize] = gva;
+                state.gps[Self::WORKING_REGISTER as usize] = write_value;
                 asm.mov(dword_ptr(rax), Self::ASM_WORKING_REGISTER).unwrap();
             }
             MockAccess::Execute(mov_value) => {
@@ -103,7 +105,7 @@ impl MockSupport {
                 gm.write_at(VALUE_GPA, mov_value.as_bytes()).unwrap();
 
                 state.rip = gva;
-                state.gps[CpuState::RAX] = VALUE_GPA;
+                state.gps[Gp::RAX as usize] = VALUE_GPA;
 
                 asm.mov(Self::ASM_WORKING_REGISTER, dword_ptr(rax)).unwrap();
             }
@@ -152,7 +154,7 @@ impl MockSupport {
             panic!("nothing to be read")
         }
 
-        self.state.gps[Self::WORKING_REGISTER]
+        self.state.gps[Self::WORKING_REGISTER as usize]
     }
 }
 
@@ -167,13 +169,44 @@ impl EmulatorSupport for MockSupport {
         Vendor::INTEL
     }
 
-    fn state(&mut self) -> Result<CpuState, Self::Error> {
-        Ok(self.state.clone())
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(())
     }
 
-    fn set_state(&mut self, state: CpuState) -> Result<(), Self::Error> {
-        self.state = state;
-        Ok(())
+    fn gp(&mut self, reg: Gp) -> u64 {
+        self.state.gps[reg as usize]
+    }
+    fn set_gp(&mut self, reg: Gp, v: u64) {
+        self.state.gps[reg as usize] = v;
+    }
+    fn rip(&mut self) -> u64 {
+        self.state.rip
+    }
+    fn set_rip(&mut self, v: u64) {
+        self.state.rip = v;
+    }
+
+    fn segment(&mut self, reg: Segment) -> x86defs::SegmentRegister {
+        self.state.segs[reg as usize]
+    }
+
+    fn efer(&mut self) -> u64 {
+        self.state.efer
+    }
+    fn cr0(&mut self) -> u64 {
+        self.state.cr0
+    }
+    fn rflags(&mut self) -> RFlags {
+        self.state.rflags
+    }
+    fn set_rflags(&mut self, v: RFlags) {
+        self.state.rflags = v;
+    }
+    fn xmm(&mut self, _reg: usize) -> u128 {
+        todo!()
+    }
+    fn set_xmm(&mut self, _reg: usize, _v: u128) -> Result<(), Self::Error> {
+        todo!()
     }
 
     fn instruction_bytes(&self) -> &[u8] {
@@ -272,14 +305,6 @@ impl EmulatorSupport for MockSupport {
             exception_event.error_code(),
             exception_event.exception_parameter()
         );
-    }
-
-    fn get_xmm(&mut self, _reg: usize) -> Result<u128, Self::Error> {
-        todo!()
-    }
-
-    fn set_xmm(&mut self, _reg: usize, _value: u128) -> Result<(), Self::Error> {
-        todo!()
     }
 
     fn is_gpa_mapped(&self, _gpa: u64, _write: bool) -> bool {
@@ -604,7 +629,7 @@ async fn initial_gva_translation_misses() {
     );
 
     let mut asm = CodeAssembler::new(64).unwrap();
-    support.state.gps[CpuState::R9] = DECOY_VALUE;
+    support.set_gp(Gp::R9, DECOY_VALUE);
     asm.mov(rsi, r9).unwrap();
     let instruction_bytes = asm.assemble(support.state.rip).unwrap();
     gm.write_at(INITIAL_GPA, &instruction_bytes).unwrap();

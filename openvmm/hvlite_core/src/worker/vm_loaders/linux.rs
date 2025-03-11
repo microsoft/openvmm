@@ -309,7 +309,7 @@ fn build_dt(
     root_builder = timer.end_node()?;
 
     let mut soc = root_builder
-        .start_node("hvlite")?
+        .start_node("openvmm")?
         .add_str(p_compatible, "simple-bus")?
         .add_u32(p_address_cells, 2)?
         .add_u32(p_size_cells, 2)?

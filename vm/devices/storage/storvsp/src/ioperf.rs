@@ -18,7 +18,7 @@ use scsidisk::SimpleScsiDisk;
 use std::sync::Arc;
 use vmbus_async::queue::Queue;
 use vmbus_channel::connected_async_channels;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 pub struct PerfTester {
     _worker: TestWorker,
@@ -54,7 +54,7 @@ impl PerfTester {
         let test_guest_mem = GuestMemory::allocate(16 * 1024);
 
         let worker = TestWorker::start(
-            controller.state.clone(),
+            controller,
             driver,
             test_guest_mem.clone(),
             host,

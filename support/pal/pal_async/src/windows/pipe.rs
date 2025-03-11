@@ -62,7 +62,8 @@ pub struct PolledPipe {
 impl PolledPipe {
     /// Configures a pipe file for polled use.
     ///
-    /// Due to platform limitations, this will fail for unidirectional pipes and unbuffered pipes.
+    /// Due to platform limitations, this will fail for unidirectional pipes on
+    /// older versions of Windows and on unbuffered pipes.
     pub fn new(driver: &(impl ?Sized + Driver), file: File) -> io::Result<Self> {
         let message_mode = file.get_pipe_state()? & PIPE_READMODE_MESSAGE != 0;
         Self::new_internal(driver, file, message_mode)
@@ -215,8 +216,27 @@ impl AsyncRead for PolledPipe {
                     }
                     break n;
                 }
-                Err(err) if err.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) => {
-                    // EOF.
+                Err(err)
+                    if matches!(
+                        err.raw_os_error().map(|v| v as u32),
+                        Some(ERROR_BROKEN_PIPE | ERROR_PIPE_NOT_CONNECTED)
+                    ) =>
+                {
+                    // ERROR_BROKEN_PIPE is returned when the handle is closed.
+                    // ERROR_PIPE_NOT_CONNECTED is returned when the server
+                    // explicltly calls DisconnectNamedPipe. Either way, the
+                    // pipe is closed, so treat it as EOF.
+                    //
+                    // Note that in either case there may have been data loss,
+                    // since Windows named pipes drop all queued data when one
+                    // endpoint closes the pipe. It's not possible to detect
+                    // this, so there is no way to distinguish between clean and
+                    // unclean close.
+                    //
+                    // (Well, there is a trick, which is to put the pipe into
+                    // message mode and send a zero-length message to the other
+                    // end before closing. That operating mode not currently
+                    // supported by this crate.)
                     break 0;
                 }
                 Err(err) if err.raw_os_error() == Some(ERROR_NO_DATA as i32) => {

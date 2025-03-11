@@ -83,7 +83,7 @@ use vp_state::KvmVpStateAccess;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::msi::MsiAddress;
 use x86defs::msi::MsiData;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 // HACK: on certain machines, pcat spams these MSRs during boot.
 //
@@ -895,6 +895,14 @@ impl<T: CpuIo> KvmHypercallExit<'_, T> {
     );
 }
 
+impl<'a, T: CpuIo> hv1_hypercall::AsHandler<KvmHypercallExit<'a, T>>
+    for &mut KvmHypercallExit<'a, T>
+{
+    fn as_handler(&mut self) -> &mut KvmHypercallExit<'a, T> {
+        self
+    }
+}
+
 impl<T> hv1_hypercall::HypercallIo for KvmHypercallExit<'_, T> {
     fn advance_ip(&mut self) {
         // KVM automatically does this.
@@ -1284,12 +1292,20 @@ impl GuestEventPort for KvmGuestEventPort {
         *self.params.lock() = None;
     }
 
-    fn set(&mut self, _vtl: Vtl, vp: u32, sint: u8, flag: u16) {
+    fn set(
+        &mut self,
+        _vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Result<(), vmcore::synic::HypervisorError> {
         *self.params.lock() = Some(KvmEventPortParams {
             vp: VpIndex::new(vp),
             sint,
             flag,
         });
+
+        Ok(())
     }
 }
 

@@ -3,6 +3,8 @@
 
 //! Mesh tracing backend.
 
+#![expect(missing_docs)]
+
 mod bounded;
 
 use self::bounded::bounded;

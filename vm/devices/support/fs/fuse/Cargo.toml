@@ -3,7 +3,7 @@
 
 [package]
 name = "fuse"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -17,7 +17,6 @@ parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 

@@ -3,7 +3,7 @@
 
 [package]
 name = "vmgs_broker"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]

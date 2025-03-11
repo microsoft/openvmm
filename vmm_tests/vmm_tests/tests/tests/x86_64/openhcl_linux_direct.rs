@@ -6,8 +6,6 @@
 use anyhow::Context;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use disk_backend_resources::LayeredDiskHandle;
-use gdma_resources::GdmaDeviceHandle;
-use gdma_resources::VportDefinition;
 use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::VpciDeviceConfig;
@@ -15,8 +13,12 @@ use hvlite_defs::config::Vtl2BaseAddressType;
 use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
+use petri::openvmm::PetriVmConfigOpenVmm;
 use petri::pipette::cmd;
-use petri::PetriVmConfig;
+use petri::pipette::PipetteClient;
+use petri::OpenHclServicingFlags;
+use petri::ResolvedArtifact;
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use scsidisk_resources::SimpleScsiDvdRequest;
@@ -25,49 +27,13 @@ use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
 use vm_resource::IntoResource;
 use vmm_core_defs::HaltReason;
-use vmm_test_macros::vmm_test;
+use vmm_test_macros::openvmm_test;
 
-/// Boot an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
-/// the MANA emulator), and vmbus relay. This should expose a nic to VTL0 via
-/// vmbus.
-///
 /// Today this only tests that the nic can get an IP address via consomme's DHCP
 /// implementation.
 ///
 /// FUTURE: Test traffic on the nic.
-async fn boot_openhcl_linux_mana_nic(config: PetriVmConfig) -> Result<(), anyhow::Error> {
-    const MANA_INSTANCE: Guid = Guid::from_static_str("27b553e8-8b39-411b-a55f-839971a7884f");
-
-    let (vm, agent) = config
-        .with_vmbus_redirect()
-        .with_custom_config(|c| {
-            c.vpci_devices.push(VpciDeviceConfig {
-                vtl: DeviceVtl::Vtl2,
-                instance_id: MANA_INSTANCE,
-                resource: GdmaDeviceHandle {
-                    vports: vec![VportDefinition {
-                        mac_address: [0x00, 0x15, 0x5D, 0x12, 0x12, 0x12].into(),
-                        endpoint: net_backend_resources::consomme::ConsommeHandle { cidr: None }
-                            .into_resource(),
-                    }],
-                }
-                .into_resource(),
-            });
-        })
-        .with_custom_vtl2_settings(|v| {
-            v.dynamic
-                .as_mut()
-                .unwrap()
-                .nic_devices
-                .push(vtl2_settings_proto::NicDeviceLegacy {
-                    instance_id: MANA_INSTANCE.to_string(),
-                    subordinate_instance_id: None,
-                    max_sub_channels: None,
-                })
-        })
-        .run()
-        .await?;
-
+async fn validate_mana_nic(agent: &PipetteClient) -> Result<(), anyhow::Error> {
     let sh = agent.unix_shell();
     cmd!(sh, "ifconfig eth0 up").run().await?;
     cmd!(sh, "udhcpc eth0").run().await?;
@@ -77,6 +43,17 @@ async fn boot_openhcl_linux_mana_nic(config: PetriVmConfig) -> Result<(), anyhow
     assert!(output.contains("inet addr:10.0.0.2"));
     assert!(output.contains("inet6 addr: fe80::215:5dff:fe12:1212/64"));
 
+    Ok(())
+}
+
+/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
+/// the MANA emulator), and vmbus relay.
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn mana_nic(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+    let (vm, agent) = config.with_vmbus_redirect().with_nic().run().await?;
+
+    validate_mana_nic(&agent).await?;
+
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
 
@@ -84,28 +61,58 @@ async fn boot_openhcl_linux_mana_nic(config: PetriVmConfig) -> Result<(), anyhow
 }
 
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
-/// the MANA emulator), and vmbus relay.
-#[vmm_test(openhcl_linux_direct_x64)]
-async fn mana_nic(config: PetriVmConfig) -> Result<(), anyhow::Error> {
-    boot_openhcl_linux_mana_nic(config).await
+/// the MANA emulator), and vmbus relay. Use the shared pool override to test
+/// the shared pool dma path.
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn mana_nic_shared_pool(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+    let (vm, agent) = config
+        .with_vmbus_redirect()
+        .with_nic()
+        .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
+        .run()
+        .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+
+    Ok(())
 }
 
 /// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
-/// the MANA emulator), and vmbus relay. Use the shared pool override to test
-/// the shared pool dma path.
-#[vmm_test(openhcl_linux_direct_x64)]
-async fn mana_nic_shared_pool(config: PetriVmConfig) -> Result<(), anyhow::Error> {
-    boot_openhcl_linux_mana_nic(
-        config.with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1"),
-    )
-    .await
+/// the MANA emulator), and vmbus relay. Perform servicing and validate that the
+/// nic is still functional.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing(
+    config: PetriVmConfigOpenVmm,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    let (mut vm, agent) = config
+        .with_vmbus_redirect()
+        .with_nic()
+        .with_openhcl_command_line("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL=1")
+        .run()
+        .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
+        .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+
+    Ok(())
 }
 
 /// Test an OpenHCL Linux direct VM with a SCSI disk assigned to VTL2, and
 /// vmbus relay. This should expose a disk to VTL0 via vmbus.
-#[vmm_test(openhcl_linux_direct_x64)]
-async fn storvsp(config: PetriVmConfig) -> Result<(), anyhow::Error> {
-    const NVME_INSTANCE: Guid = Guid::from_static_str("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn storvsp(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+    const NVME_INSTANCE: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
     let vtl2_lun = 5;
     let vtl0_scsi_lun = 0;
     let vtl0_nvme_lun = 1;
@@ -173,7 +180,7 @@ async fn storvsp(config: PetriVmConfig) -> Result<(), anyhow::Error> {
                         vtl2_settings_proto::Lun {
                             location: vtl0_scsi_lun,
                             device_id: Guid::new_random().to_string(),
-                            vendor_id: "HvLite".to_string(),
+                            vendor_id: "OpenVMM".to_string(),
                             product_id: "Disk".to_string(),
                             product_revision_level: "1.0".to_string(),
                             serial_number: "0".to_string(),
@@ -195,7 +202,7 @@ async fn storvsp(config: PetriVmConfig) -> Result<(), anyhow::Error> {
                         vtl2_settings_proto::Lun {
                             location: vtl0_nvme_lun,
                             device_id: Guid::new_random().to_string(),
-                            vendor_id: "HvLite".to_string(),
+                            vendor_id: "OpenVMM".to_string(),
                             product_id: "Disk".to_string(),
                             product_revision_level: "1.0".to_string(),
                             serial_number: "0".to_string(),
@@ -253,8 +260,8 @@ async fn storvsp(config: PetriVmConfig) -> Result<(), anyhow::Error> {
 /// Test an OpenHCL Linux direct VM with a SCSI DVD assigned to VTL2, and vmbus
 /// relay. This should expose a DVD to VTL0 via vmbus. Start with an empty
 /// drive, then add and remove media.
-#[vmm_test(openhcl_linux_direct_x64)]
-async fn openhcl_linux_storvsp_dvd(config: PetriVmConfig) -> Result<(), anyhow::Error> {
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn openhcl_linux_storvsp_dvd(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     let vtl2_lun = 5;
     let vtl0_scsi_lun = 0;
     let scsi_instance = Guid::new_random();
@@ -297,7 +304,7 @@ async fn openhcl_linux_storvsp_dvd(config: PetriVmConfig) -> Result<(), anyhow::
                     luns: vec![vtl2_settings_proto::Lun {
                         location: vtl0_scsi_lun,
                         device_id: Guid::new_random().to_string(),
-                        vendor_id: "HvLite".to_string(),
+                        vendor_id: "OpenVMM".to_string(),
                         product_id: "Disk".to_string(),
                         product_revision_level: "1.0".to_string(),
                         serial_number: "0".to_string(),
@@ -390,10 +397,10 @@ async fn openhcl_linux_storvsp_dvd(config: PetriVmConfig) -> Result<(), anyhow::
 }
 
 /// Test an OpenHCL Linux Stripe VM with two SCSI disk assigned to VTL2 via NVMe Emulator
-#[vmm_test(openhcl_linux_direct_x64)]
-async fn openhcl_linux_stripe_storvsp(config: PetriVmConfig) -> Result<(), anyhow::Error> {
-    const NVME_INSTANCE_1: Guid = Guid::from_static_str("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
-    const NVME_INSTANCE_2: Guid = Guid::from_static_str("06a97a09-d5ad-4689-b638-9419d7346a68");
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn openhcl_linux_stripe_storvsp(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+    const NVME_INSTANCE_1: Guid = guid::guid!("dce4ebad-182f-46c0-8d30-8446c1c62ab3");
+    const NVME_INSTANCE_2: Guid = guid::guid!("06a97a09-d5ad-4689-b638-9419d7346a68");
     let vtl0_nvme_lun = 0;
     let vtl2_nsid = 1;
     let nvme_disk_sectors: u64 = 0x10000;
@@ -451,7 +458,7 @@ async fn openhcl_linux_stripe_storvsp(config: PetriVmConfig) -> Result<(), anyho
                     luns: vec![vtl2_settings_proto::Lun {
                         location: vtl0_nvme_lun,
                         device_id: Guid::new_random().to_string(),
-                        vendor_id: "HvLite".to_string(),
+                        vendor_id: "OpenVMM".to_string(),
                         product_id: "Disk".to_string(),
                         product_revision_level: "1.0".to_string(),
                         serial_number: "0".to_string(),
@@ -509,8 +516,10 @@ async fn openhcl_linux_stripe_storvsp(config: PetriVmConfig) -> Result<(), anyho
 
 /// Test VTL2 memory allocation mode, and validate that VTL0 saw the correct
 /// amount of ram.
-#[vmm_test(openhcl_linux_direct_x64)]
-async fn openhcl_linux_vtl2_ram_self_allocate(config: PetriVmConfig) -> Result<(), anyhow::Error> {
+#[openvmm_test(openhcl_linux_direct_x64)]
+async fn openhcl_linux_vtl2_ram_self_allocate(
+    config: PetriVmConfigOpenVmm,
+) -> Result<(), anyhow::Error> {
     let vtl2_ram_size = 1024 * 1024 * 1024; // 1GB
     let vm_ram_size = 6 * 1024 * 1024 * 1024; // 6GB
     let (mut vm, agent) = config

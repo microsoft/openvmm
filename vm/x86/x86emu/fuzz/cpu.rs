@@ -2,13 +2,31 @@
 // Licensed under the MIT License.
 
 use arbitrary::Arbitrary;
+use x86defs::RFlags;
+use x86defs::SegmentRegister;
 use x86emu::Cpu;
+use x86emu::RegisterIndex;
+use x86emu::Segment;
 
 #[derive(Debug, Arbitrary)]
 pub(crate) struct FuzzerCpu {
     mem_data: [u8; 8],
     io_data: [u8; 4],
     xmm_val: u128,
+    state: CpuState,
+}
+
+#[derive(Debug, Arbitrary)]
+struct CpuState {
+    /// GP registers, in the canonical order (as defined by `RAX`, etc.).
+    pub gps: [u64; 16],
+    /// Segment registers, in the canonical order (as defined by `ES`, etc.).
+    pub segs: [SegmentRegister; 6],
+    pub rip: u64,
+    pub rflags: RFlags,
+
+    pub cr0: u64,
+    pub efer: u64,
 }
 
 impl Cpu for FuzzerCpu {
@@ -54,10 +72,52 @@ impl Cpu for FuzzerCpu {
         Ok(())
     }
 
-    fn get_xmm(&mut self, _reg: usize) -> Result<u128, Self::Error> {
-        Ok(self.xmm_val)
+    fn gp(&mut self, reg: RegisterIndex) -> u64 {
+        self.state.gps[reg.extended_index as usize]
     }
 
+    fn gp_sign_extend(&mut self, reg: RegisterIndex) -> i64 {
+        self.state.gps[reg.extended_index as usize] as i64
+    }
+
+    fn set_gp(&mut self, reg: RegisterIndex, v: u64) {
+        self.state.gps[reg.extended_index as usize] = v;
+    }
+
+    fn rip(&mut self) -> u64 {
+        self.state.rip
+    }
+
+    fn set_rip(&mut self, v: u64) {
+        self.state.rip = v;
+    }
+
+    fn segment(&mut self, index: Segment) -> SegmentRegister {
+        self.state.segs[index as usize]
+    }
+
+    fn efer(&mut self) -> u64 {
+        self.state.efer
+    }
+
+    fn cr0(&mut self) -> u64 {
+        self.state.cr0
+    }
+
+    fn rflags(&mut self) -> RFlags {
+        self.state.rflags
+    }
+
+    fn set_rflags(&mut self, v: RFlags) {
+        self.state.rflags = v;
+    }
+
+    /// Gets the value of an XMM* register.
+    fn xmm(&mut self, _reg: usize) -> u128 {
+        self.xmm_val
+    }
+
+    /// Sets the value of an XMM* register.
     fn set_xmm(&mut self, _reg: usize, _value: u128) -> Result<(), Self::Error> {
         Ok(())
     }

@@ -22,7 +22,6 @@ flowey_request! {
         pub extra_env: Option<Vec<(String, String)>>,
         pub exclude: ReadVar<Option<Vec<String>>>,
         pub keep_going: bool,
-        pub tests: bool,
         pub all_targets: bool,
         /// Wait for specified side-effects to resolve before running cargo-run.
         ///
@@ -56,7 +55,6 @@ impl FlowNode for Node {
             extra_env,
             exclude,
             keep_going,
-            tests,
             all_targets,
             pre_build_deps,
             done,
@@ -101,9 +99,6 @@ impl FlowNode for Node {
                     }
                     if keep_going {
                         args.push("--keep-going");
-                    }
-                    if tests {
-                        args.push("--tests");
                     }
                     if all_targets {
                         args.push("--all-targets");

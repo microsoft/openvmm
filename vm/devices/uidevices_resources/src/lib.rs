@@ -4,7 +4,6 @@
 //! Resource definitions for UI devices.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use mesh::MeshPayload;
 use vm_resource::kind::FramebufferHandleKind;

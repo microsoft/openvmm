@@ -7,9 +7,10 @@ use crate::rndisprot;
 use bitfield_struct::bitfield;
 use inspect::Inspect;
 use vmbus_channel::gpadl::GpadlId;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const fn make_version(major: u16, minor: u16) -> u32 {
     ((major as u32) << 16) | minor as u32
@@ -204,7 +205,7 @@ pub const MESSAGE6_MAX: u32 = MESSAGE6_TYPE_PD_POST_BATCH;
 */
 
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum Status: u32 {
         NONE = 0,
         SUCCESS = 1,
@@ -216,7 +217,7 @@ open_enum::open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageHeader {
     pub message_type: u32,
 }
@@ -236,7 +237,7 @@ pub struct MessageHeader {
 // number.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageInit {
     pub protocol_version: u32,  // was MinProtocolVersion
     pub protocol_version2: u32, // was MaxProtocolVersion
@@ -248,7 +249,7 @@ pub struct MessageInit {
 // then versioning (i.e. this message will be the same for ever).
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MessageInitComplete {
     pub deprecated: u32, // was NegotiatedProtocolVersion (2) in Win6
     pub maximum_mdl_chain_length: u32,
@@ -267,7 +268,7 @@ pub const INVALID_PROTOCOL_VERSION: u32 = 0xffffffff;
 // OIDs sent by the VSC.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message1SendNdisVersion {
     pub ndis_major_version: u32,
     pub ndis_minor_version: u32,
@@ -279,7 +280,7 @@ pub struct Message1SendNdisVersion {
 // send data to the VSC.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message1SendReceiveBuffer {
     pub gpadl_handle: GpadlId,
     pub id: u16,
@@ -287,7 +288,7 @@ pub struct Message1SendReceiveBuffer {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReceiveBufferSection {
     pub offset: u32,
     pub sub_allocation_size: u32,
@@ -301,7 +302,7 @@ pub struct ReceiveBufferSection {
 // VSP before the VSP uses the receive buffer.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message1SendReceiveBufferComplete {
     pub status: Status,
     pub num_sections: u32,
@@ -314,7 +315,7 @@ pub struct Message1SendReceiveBufferComplete {
 // use the receive buffer again.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message1RevokeReceiveBuffer {
     pub id: u16,
 }
@@ -325,7 +326,7 @@ pub struct Message1RevokeReceiveBuffer {
 // send data to the VSP.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message1SendSendBuffer {
     pub gpadl_handle: GpadlId,
     pub id: u16,
@@ -338,7 +339,7 @@ pub struct Message1SendSendBuffer {
 // VSP before the VSP uses the sent buffer.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message1SendSendBufferComplete {
     pub status: Status,
 
@@ -357,7 +358,7 @@ pub struct Message1SendSendBufferComplete {
 // use the send buffer again.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message1RevokeSendBuffer {
     pub id: u16,
 }
@@ -366,7 +367,7 @@ pub struct Message1RevokeSendBuffer {
 // a RNDIS message to the opposite channel endpoint.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message1SendRndisPacket {
     //
     // This field is specified by RNIDS. They assume there's
@@ -395,7 +396,7 @@ pub struct Message1SendRndisPacket {
 // associated with the original RNDIS packet.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message1SendRndisPacketComplete {
     pub status: Status,
 }
@@ -406,7 +407,7 @@ pub struct Message1SendRndisPacketComplete {
 // OIDs sent by the VSC.
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message2SendNdisConfig {
     pub mtu: u32,
     pub reserved: u32,
@@ -415,7 +416,7 @@ pub struct Message2SendNdisConfig {
 
 #[derive(Inspect)]
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NdisConfigCapabilities {
     #[inspect(safe)]
     pub vmq: bool,
@@ -441,7 +442,7 @@ pub struct NdisConfigCapabilities {
 // NvspMessage4TypeSendVFAssociation
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message4SendVfAssociation {
     /// Specifies whether VF is allocated for this channel
     /// If 1, SerialNumber of the VF is specified.
@@ -457,7 +458,7 @@ pub struct Message4SendVfAssociation {
 // in NVSP_4_MESSAGE_SWITCH_DATA_PATH structure
 //
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum DataPath: u32 {
         SYNTHETIC = 0,
         VF = 1,
@@ -468,7 +469,7 @@ open_enum::open_enum! {
 // NvspMessage4TypeSwitchDataPath
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message4SwitchDataPath {
     /// Specifies the current data path that is active in the VM
     pub active_data_path: u32,
@@ -478,7 +479,7 @@ pub struct Message4SwitchDataPath {
 // NvspMessage5TypeOidQueryEx
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message5OidQueryEx {
     /// Header information for the Query OID
     header: rndisprot::NdisObjectHeader,
@@ -490,7 +491,7 @@ pub struct Message5OidQueryEx {
 // NvspMessage5TypeOidQueryExComplete
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message5OidQueryExComplete {
     pub status: u32,
     pub bytes: u32,
@@ -503,7 +504,7 @@ pub struct Message5OidQueryExComplete {
 // primary channel's channel close callback.
 //
 open_enum::open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum SubchannelOperation: u32 {
         NONE = 0,
         ALLOCATE = 1,
@@ -514,7 +515,7 @@ open_enum::open_enum! {
 // NvspMessage5TypeSubChannel
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message5SubchannelRequest {
     /// The subchannel operation
     pub operation: SubchannelOperation,
@@ -525,7 +526,7 @@ pub struct Message5SubchannelRequest {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message5SubchannelComplete {
     /// The status of the subchannel operation.
     pub status: Status,
@@ -538,7 +539,7 @@ pub struct Message5SubchannelComplete {
 // NvspMessage5TypeSendIndirectionTable
 //
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Message5SendIndirectionTable {
     //
     // The number of entries in the send indirection table.

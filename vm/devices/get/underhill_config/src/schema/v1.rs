@@ -235,7 +235,7 @@ impl ParseSchema<crate::PhysicalDevices> for Lun {
         &self,
         errors: &mut ParseErrors<'_>,
     ) -> Result<crate::PhysicalDevices, ParsingStopped> {
-        #[allow(deprecated)]
+        #[expect(deprecated)]
         if (self.is_dvd || self.physical_devices.is_some())
             && (self.device_type.is_some()
                 || self.device_path.is_some()
@@ -286,7 +286,7 @@ impl ParseSchema<crate::PhysicalDevices> for Lun {
             crate::PhysicalDevices::EmptyDrive
         } else {
             // Legacy compat path.
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             let (device_path, sub_device_path) =
                 self.device_path.as_ref().zip(self.sub_device_path).ok_or(
                     Error::StorageSchemaVersionMismatch("could not find any physical devices"),

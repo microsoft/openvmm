@@ -4,7 +4,7 @@
 [package]
 name = "chipset_device_fuzz"
 publish = false
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -15,7 +15,6 @@ closeable_mutex.workspace = true
 range_map_vec.workspace = true
 
 arbitrary = { workspace = true, features = ["derive"] }
-futures.workspace = true
 parking_lot.workspace = true
 zerocopy.workspace = true
 tracing.workspace = true

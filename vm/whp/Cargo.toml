@@ -3,14 +3,11 @@
 
 [package]
 name = "whp"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
 unstable_whp = []
-
-[target.'cfg(windows)'.dependencies]
-zerocopy.workspace = true
 
 [target.'cfg(windows)'.dependencies.winapi]
 workspace = true

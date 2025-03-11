@@ -42,7 +42,7 @@ use vm_topology::processor::aarch64::Aarch64Topology;
 use vm_topology::processor::x86::X86Topology;
 use vm_topology::processor::ArchTopology;
 use vm_topology::processor::ProcessorTopology;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -282,7 +282,7 @@ pub fn vtl2_memory_range(
     // Select a random base within the alignment
     let possible_bases = (aligned_max_addr - aligned_min_addr) / alignment;
     let mut num: u64 = 0;
-    getrandom::getrandom(num.as_bytes_mut()).expect("crng failure");
+    getrandom::getrandom(num.as_mut_bytes()).expect("crng failure");
     let selected_base = num % (possible_bases - 1);
     let selected_addr = aligned_min_addr + (selected_base * alignment);
     tracing::trace!(possible_bases, selected_base, selected_addr);
@@ -467,6 +467,7 @@ fn build_device_tree(
     let p_memory_allocation_mode = root.add_string("memory-allocation-mode")?;
     let p_memory_size = root.add_string("memory-size")?;
     let p_mmio_size = root.add_string("mmio-size")?;
+    let p_vf_keep_alive_devs = root.add_string("device-types")?;
     let mut openhcl = root.start_node("openhcl")?;
 
     let memory_allocation_mode = match vtl2_base_address {
@@ -493,6 +494,12 @@ fn build_device_tree(
             .add_prop_array(p_reg, &[entropy])?
             .end_node()?;
     }
+
+    // Indicate that NVMe keep-alive feature is supported by this VMM.
+    openhcl = openhcl
+        .start_node("keep-alive")?
+        .add_str(p_vf_keep_alive_devs, "nvme")?
+        .end_node()?;
 
     root = openhcl.end_node()?;
 

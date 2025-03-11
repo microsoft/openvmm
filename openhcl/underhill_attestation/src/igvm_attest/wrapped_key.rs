@@ -9,7 +9,6 @@ use crate::igvm_attest::Error as CommonError;
 use openhcl_attestation_protocol::igvm_attest::cps;
 use thiserror::Error;
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum WrappedKeyError {
     #[error("failed to deserialize the response payload into JSON: {json_data}")]
@@ -90,6 +89,8 @@ mod tests {
     use super::*;
     use openhcl_attestation_protocol::igvm_attest::get::IgvmErrorInfo;
     use zerocopy::AsBytes;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
 
     const KEY_REFERENCE: &str = r#"{
     "key_info": {

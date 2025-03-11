@@ -23,13 +23,15 @@ use virtio::VirtioQueueWorker;
 use virtio::VirtioQueueWorkerContext;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const VIRTIO_DEVICE_TYPE_FS: u16 = 26;
 
 /// PCI configuration space values for virtio-fs devices.
 #[repr(C)]
-#[derive(AsBytes)]
+#[derive(IntoBytes, Immutable, KnownLayout)]
 struct VirtioFsDeviceConfig {
     tag: [u8; 36],
     num_request_queues: u32,
@@ -74,7 +76,7 @@ impl VirtioFsDevice {
         };
 
         // Copy the tag into the config space (truncate it for now if too long).
-        let length = std::cmp::min(tag.as_bytes().len(), config.tag.len());
+        let length = std::cmp::min(tag.len(), config.tag.len());
         config.tag[..length].copy_from_slice(&tag.as_bytes()[..length]);
 
         Self {
@@ -155,7 +157,7 @@ impl VirtioDevice for VirtioFsDevice {
         let mut workers = self.workers.drain(..).collect::<Vec<_>>();
         self.driver
             .spawn("shutdown-virtiofs-queues".to_owned(), async move {
-                futures::future::join_all(workers.iter_mut().map(|worker| async {
+                futures::future::join_all(workers.iter_mut().map(async |worker| {
                     worker.stop().await;
                 }))
                 .await;

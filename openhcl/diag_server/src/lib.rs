@@ -4,7 +4,6 @@
 //! Underhill diagnostics server.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 
 mod diag_service;
 mod new_pty;

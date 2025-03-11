@@ -3,6 +3,8 @@
 
 //! Benchmarks for the VMBus ring buffer.
 
+#![expect(missing_docs)]
+
 use criterion::black_box;
 use criterion::criterion_group;
 use criterion::criterion_main;

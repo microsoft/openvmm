@@ -10,7 +10,7 @@ pub mod custom_vmfirmwareigvm_dll;
 pub mod restore_packages;
 
 #[derive(clap::Subcommand)]
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 pub enum OpenvmmPipelines {
     /// Alias for root-level `regen` command.
     // DEVNOTE: this enables the useful `cargo xflowey regen` alias

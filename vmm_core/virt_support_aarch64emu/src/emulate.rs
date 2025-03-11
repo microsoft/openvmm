@@ -20,8 +20,8 @@ use thiserror::Error;
 use virt::io::CpuIo;
 use virt::VpHaltReason;
 use vm_topology::processor::VpIndex;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 /// Support routines for the emulator.
 pub trait EmulatorSupport: AccessCpuState {
@@ -614,7 +614,7 @@ pub fn make_exception_event(syndrome: EsrEl2, fault_address: u64) -> HvAarch64Pe
     let exception_event_bytes = exception_event.as_bytes();
     let mut event = [0u8; 32];
     event.as_mut_slice()[..exception_event_bytes.len()].copy_from_slice(exception_event_bytes);
-    HvAarch64PendingEvent::read_from(&event[..]).unwrap()
+    HvAarch64PendingEvent::read_from_bytes(&event[..]).unwrap()
 }
 
 /// Injects an event into the guest if appropriate.
@@ -685,15 +685,42 @@ fn vtl_access_event(
 /// a monitor page GPA.
 ///
 /// Returns the bit number being set within the monitor page.
-pub fn emulate_mnf_write_fast_path(
-    instruction_bytes: &[u8],
-    interruption_pending: bool,
-    tlb_lock_held: bool,
-) -> Option<u32> {
-    if interruption_pending || !tlb_lock_held || instruction_bytes.is_empty() {
+pub fn emulate_mnf_write_fast_path<T: EmulatorSupport>(
+    opcode: u32,
+    support: &mut T,
+    gm: &GuestMemory,
+    dev: &impl CpuIo,
+) -> Option<u64> {
+    if support.interruption_pending() {
         return None;
     }
 
-    // TODO: Determine if there is a reasonable fast path for arm.
-    None
+    // LDSETx / STSETx. A "fast path" is possible because we can assume the
+    // MNF page is always zero-filled.
+    if (opcode & 0x38203c00) == 0x38203000 {
+        let mut cpu = EmulatorCpu::new(gm, dev, support, EsrEl2::from_bits(0));
+        let size = (1 << (opcode >> 30)) * 8;
+        let rs = (opcode >> 16) as u8 & 0x1f;
+        let bitmask = if rs < 31 { cpu.x(rs) } else { 0 };
+        let bitmask = if size == 64 {
+            bitmask
+        } else {
+            bitmask & ((1 << size) - 1)
+        };
+        let rt = opcode as u8 & 0x1f;
+        if rt != 31 {
+            cpu.update_x(rt, 0);
+        }
+
+        let new_pc = cpu.pc().wrapping_add(4);
+        cpu.update_pc(new_pc);
+        cpu.commit();
+        Some(bitmask)
+    } else {
+        tracelimit::warn_ratelimited!(
+            opcode = format!("{:x}", opcode),
+            "MNF fast path unknown opcode"
+        );
+        None
+    }
 }

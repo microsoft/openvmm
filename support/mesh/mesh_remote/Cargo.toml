@@ -3,7 +3,7 @@
 
 [package]
 name = "mesh_remote"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -23,7 +23,6 @@ thiserror.workspace = true
 tracing.workspace = true
 unicycle.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(windows)'.dependencies]
 ntapi.workspace = true
 

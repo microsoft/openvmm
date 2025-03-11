@@ -6,12 +6,11 @@
 
 #![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use thiserror::Error;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
-#[allow(missing_docs)] // self-explanatory fields
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("failed to open /dev/sev-guest")]

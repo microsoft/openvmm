@@ -5,6 +5,7 @@
 //! for the underhill environment.
 
 #![cfg(target_os = "linux")]
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod diag;
@@ -71,7 +72,6 @@ use pal_async::DefaultPool;
 use profiler_worker::ProfilerWorker;
 #[cfg(feature = "profiler")]
 use profiler_worker::ProfilerWorkerParameters;
-use std::sync::Arc;
 use std::time::Duration;
 use vmsocket::VmAddress;
 use vmsocket::VmListener;
@@ -106,7 +106,7 @@ fn new_underhill_remote_console_cfg(
                 synth_keyboard: true,
                 synth_mouse: true,
                 synth_video: true,
-                input: mesh::MpscReceiver::new(),
+                input: mesh::Receiver::new(),
                 framebuffer: Some(fb),
             },
             Some(fba),
@@ -117,7 +117,7 @@ fn new_underhill_remote_console_cfg(
                 synth_keyboard: false,
                 synth_mouse: false,
                 synth_video: false,
-                input: mesh::MpscReceiver::new(),
+                input: mesh::Receiver::new(),
                 framebuffer: None,
             },
             None,
@@ -145,12 +145,7 @@ pub fn main() -> anyhow::Result<()> {
     }
 
     // FUTURE: create and use the affinitized threadpool here.
-    let tracing_pool = DefaultPool::new();
-    let tracing_driver = tracing_pool.driver();
-    std::thread::Builder::new()
-        .name("tracing".to_owned())
-        .spawn(|| tracing_pool.run())
-        .unwrap();
+    let (_, tracing_driver) = DefaultPool::spawn_on_thread("tracing");
 
     // Try to run as a worker host, sending a remote tracer that will forward
     // tracing events back to the initial process for logging to the host. See
@@ -160,7 +155,7 @@ pub fn main() -> anyhow::Result<()> {
     // not return). Any worker host setup errors are return and bubbled up.
     try_run_mesh_host("underhill", {
         let tracing_driver = tracing_driver.clone();
-        |params: MeshHostParams| async move {
+        async |params: MeshHostParams| {
             if let Some(remote_tracer) = params.tracer {
                 init_tracing(tracing_driver, remote_tracer).context("failed to init tracing")?;
             }
@@ -315,7 +310,6 @@ async fn launch_workers(
         force_load_vtl0_image: opt.force_load_vtl0_image,
         nvme_vfio: opt.nvme_vfio,
         mcr: opt.mcr,
-        emulate_apic: opt.emulate_apic,
         enable_shared_visibility_pool: opt.enable_shared_visibility_pool,
         cvm_guest_vsm: opt.cvm_guest_vsm,
         halt_on_guest_halt: opt.halt_on_guest_halt,
@@ -323,6 +317,7 @@ async fn launch_workers(
         gdbstub: opt.gdbstub,
         hide_isolation: opt.hide_isolation,
         nvme_keep_alive: opt.nvme_keep_alive,
+        test_configuration: opt.test_configuration,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =
@@ -449,7 +444,6 @@ async fn run_control(
     let mut diag = DiagState::new().await?;
 
     let (diag_reinspect_send, mut diag_reinspect_recv) = mesh::channel();
-    let diag_reinspect_send = Arc::new(diag_reinspect_send);
     #[cfg(feature = "profiler")]
     let mut profiler_host = None;
     let mut state;
@@ -470,7 +464,7 @@ async fn run_control(
         Control(ControlRequest),
     }
 
-    let mut restart_response = None;
+    let mut restart_rpc = None;
     loop {
         let event = {
             let mut stream = (
@@ -492,7 +486,7 @@ async fn run_control(
             Event::Diag(request) => {
                 match request {
                     diag_server::DiagRequest::Start(rpc) => {
-                        rpc.handle_failable(|params| async {
+                        rpc.handle_failable(async |params| {
                             if workers.is_some() {
                                 Err(anyhow::anyhow!("workers have already been started"))?;
                             }
@@ -551,7 +545,7 @@ async fn run_control(
                         };
 
                         let r = async {
-                            if restart_response.is_some() {
+                            if restart_rpc.is_some() {
                                 anyhow::bail!("previous restart still in progress");
                             }
 
@@ -568,7 +562,7 @@ async fn run_control(
                             rpc.complete(r.map_err(RemoteError::new));
                         } else {
                             state = ControlState::Restarting;
-                            restart_response = Some(rpc.1);
+                            restart_rpc = Some(rpc);
                         }
                     }
                     diag_server::DiagRequest::Pause(rpc) => {
@@ -647,7 +641,7 @@ async fn run_control(
                     }
                     #[cfg(feature = "profiler")]
                     diag_server::DiagRequest::Profile(rpc) => {
-                        let Rpc(rpc_params, rpc_sender) = rpc;
+                        let (rpc_params, rpc_sender) = rpc.split();
                         // Create profiler host if there is none created before
                         if profiler_host.is_none() {
                             match launch_mesh_host(mesh, "profiler", Some(tracing.tracer()))
@@ -658,7 +652,7 @@ async fn run_control(
                                     profiler_host = Some(host);
                                 }
                                 Err(e) => {
-                                    rpc_sender.send(Err(RemoteError::new(e)));
+                                    rpc_sender.complete(Err(RemoteError::new(e)));
                                     continue;
                                 }
                             }
@@ -680,7 +674,7 @@ async fn run_control(
                                 profiler_worker = worker;
                             }
                             Err(e) => {
-                                rpc_sender.send(Err(RemoteError::new(e)));
+                                rpc_sender.complete(Err(RemoteError::new(e)));
                                 continue;
                             }
                         }
@@ -695,7 +689,7 @@ async fn run_control(
                                     .and_then(|result| result.context("profiler worker failed"))
                                     .map_err(RemoteError::new);
 
-                                rpc_sender.send(result);
+                                rpc_sender.complete(result);
                             })
                             .detach();
                     }
@@ -703,9 +697,9 @@ async fn run_control(
             }
             Event::Worker(event) => match event {
                 WorkerEvent::Started => {
-                    if let Some(response) = restart_response.take() {
+                    if let Some(response) = restart_rpc.take() {
                         tracing::info!("restart complete");
-                        response.send(Ok(()));
+                        response.complete(Ok(()));
                     } else {
                         tracing::info!("vm worker started");
                     }
@@ -719,19 +713,16 @@ async fn run_control(
                 }
                 WorkerEvent::RestartFailed(err) => {
                     tracing::error!(error = &err as &dyn std::error::Error, "restart failed");
-                    restart_response.take().unwrap().send(Err(err));
+                    restart_rpc.take().unwrap().complete(Err(err));
                     state = ControlState::Started;
                 }
             },
             Event::Control(req) => match req {
                 ControlRequest::FlushLogs(rpc) => {
-                    rpc.handle(|mut ctx| {
-                        let tracing = &mut tracing;
-                        async move {
-                            tracing::info!("flushing logs");
-                            ctx.until_cancelled(tracing.flush()).await?;
-                            Ok(())
-                        }
+                    rpc.handle(async |mut ctx| {
+                        tracing::info!("flushing logs");
+                        ctx.until_cancelled(tracing.flush()).await?;
+                        Ok(())
                     })
                     .await
                 }

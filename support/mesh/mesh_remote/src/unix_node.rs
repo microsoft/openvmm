@@ -66,9 +66,9 @@ use std::sync::Arc;
 use thiserror::Error;
 use tracing::instrument;
 use unicycle::FuturesUnordered;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// If true, use a SOCK_SEQPACKET socket. Otherwise, use a SOCK_STREAM socket.
 ///
@@ -206,7 +206,9 @@ async fn run_leader(
         if receivers.is_empty() {
             return;
         }
-        let recvs = receivers.iter_mut().map(|(_, recv)| recv.recv());
+        let recvs = receivers
+            .iter_mut()
+            .map(|(_, recv)| poll_fn(|cx| recv.poll_recv(cx)));
         let (req, index, _) = futures::select! { // merge semantics
             r = resign_recv.next() => break r,
             r = future::select_all(recvs).fuse() => r,
@@ -466,7 +468,7 @@ fn serialize_event(event: OutgoingEvent<'_>) -> io::Result<(Vec<u8>, Vec<OsResou
 fn serialize_large_event(event: OutgoingEvent<'_>) -> io::Result<(Vec<u8>, Vec<OsResource>)> {
     let packet = protocol::PacketHeader {
         packet_type: protocol::PacketType::LARGE_EVENT,
-        ..FromZeroes::new_zeroed()
+        ..FromZeros::new_zeroed()
     }
     .as_bytes()
     .to_vec();
@@ -504,7 +506,7 @@ fn start_connection(
     handle: RemoteNodeHandle,
     socket: UnixSocket,
 ) {
-    #[allow(clippy::disallowed_methods)] // TODO
+    #[expect(clippy::disallowed_methods)] // TODO
     let (send, recv) = mpsc::unbounded();
     let socket = Arc::new(socket);
     let sender = PacketSender {
@@ -629,7 +631,7 @@ async fn run_receive(
                 packet: protocol::ReleaseFds {
                     header: protocol::PacketHeader {
                         packet_type: protocol::PacketType::RELEASE_FDS,
-                        ..FromZeroes::new_zeroed()
+                        ..FromZeros::new_zeroed()
                     },
                     count: fds.len() as u64,
                 }
@@ -640,7 +642,9 @@ async fn run_receive(
         }
 
         let buf = &buf[..len];
-        let header = protocol::PacketHeader::read_from_prefix(buf).ok_or(ReceiveError::NoHeader)?;
+        let header = protocol::PacketHeader::read_from_prefix(buf)
+            .map_err(|_| ReceiveError::NoHeader)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         match header.packet_type {
             protocol::PacketType::EVENT => {
                 local_node.event(remote_id, &buf[size_of_val(&header)..], &mut fds);
@@ -648,7 +652,8 @@ async fn run_receive(
             }
             protocol::PacketType::RELEASE_FDS => {
                 let release_fds = protocol::ReleaseFds::read_from_prefix(buf)
-                    .ok_or(ReceiveError::BadReleaseFds)?;
+                    .map_err(|_| ReceiveError::BadReleaseFds)?
+                    .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                 let _ = send.unbounded_send(SenderCommand::ReleaseFds {
                     count: release_fds.count as usize,
                 });
@@ -1217,9 +1222,6 @@ fn try_recv(socket: &Socket, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::R
 
     // On Linux, automatically set O_CLOEXEC on incoming fds.
     #[cfg(target_os = "linux")]
-    // Ignore libc misuse of deprecated warning, the flags below are not really
-    // deprecated.
-    #[allow(deprecated)]
     let flags = libc::MSG_CMSG_CLOEXEC;
     #[cfg(not(target_os = "linux"))]
     let flags = 0;
@@ -1263,10 +1265,6 @@ fn try_recv(socket: &Socket, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::R
     }
 
     // Check for truncation only after taking ownership of the fds.
-    //
-    // Ignore libc misuse of deprecated warning, the flags below are not really
-    // deprecated.
-    #[allow(deprecated)]
     if hdr.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0 {
         return Err(io::Error::from_raw_os_error(libc::EMSGSIZE));
     }

@@ -3,7 +3,6 @@
 
 //! Resource definitions for the ARM PL011 serial port.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use mesh::MeshPayload;

@@ -3,10 +3,11 @@
 
 [package]
 name = "hv1_hypercall"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+hv1_structs.workspace = true
 hvdef.workspace = true
 guestmem.workspace = true
 tracelimit.workspace = true
@@ -14,7 +15,6 @@ tracelimit.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 open_enum.workspace = true
 sparse_mmap.workspace = true

@@ -79,15 +79,19 @@ use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
-use user_driver::HostDmaAllocator;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const HWC_WARNING_TIME_IN_MS: u32 = 3000;
+const HWC_WARNING_INCREASE_IN_MS: u32 = 1000;
 const HWC_TIMEOUT_DEFAULT_IN_MS: u32 = 10000;
 const HWC_TIMEOUT_FOR_SHUTDOWN_IN_MS: u32 = 100;
 const HWC_POLL_TIMEOUT_IN_MS: u64 = 10000;
+const HWC_INTERRUPT_POLL_WAIT_MIN_MS: u32 = 20;
+const HWC_INTERRUPT_POLL_WAIT_MAX_MS: u32 = 500;
 
 #[derive(Inspect)]
 struct Bar0<T: Inspect> {
@@ -97,6 +101,13 @@ struct Bar0<T: Inspect> {
 }
 
 impl<T: DeviceRegisterIo + Inspect> Doorbell for Bar0<T> {
+    fn page_count(&self) -> u32 {
+        self.mem
+            .len()
+            .saturating_sub(self.map.vf_db_pages_zone_offset as usize) as u32
+            >> self.doorbell_shift
+    }
+
     fn write(&self, page_number: u32, address: u32, value: u64) {
         let offset = self.map.vf_db_pages_zone_offset
             + ((page_number as u64) << self.doorbell_shift)
@@ -205,6 +216,15 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
     }
 }
 
+struct EqeWaitResult {
+    eqe_found: bool,
+    elapsed: u128,
+    eq_arm_count: u32,
+    interrupt_wait_count: u32,
+    interrupt_count: u32,
+    last_wait_result: anyhow::Result<()>,
+}
+
 impl<T: DeviceBacking> GdmaDriver<T> {
     pub fn doorbell(&self) -> Arc<dyn Doorbell> {
         self.bar0.clone() as _
@@ -212,6 +232,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
     pub async fn new(driver: &impl Driver, mut device: T, num_vps: u32) -> anyhow::Result<Self> {
         let bar0_mapping = device.map_bar(0)?;
+        let bar0_len = bar0_mapping.len();
+        if bar0_len < size_of::<RegMap>() {
+            anyhow::bail!("bar0 ({} bytes) too small for reg map", bar0_mapping.len());
+        }
         // Only allocate the HWC interrupt now. Rest will be allocated later.
         let num_msix = 1;
         let mut interrupt0 = device.map_interrupt(0, 0)?;
@@ -223,7 +247,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             if i == 0 && v == !0 {
                 anyhow::bail!("bar0 read returned -1, device is not present");
             }
-            map.as_bytes_mut()[i * 4..(i + 1) * 4].copy_from_slice(&v.to_ne_bytes());
+            map.as_mut_bytes()[i * 4..(i + 1) * 4].copy_from_slice(&v.to_ne_bytes());
         }
 
         tracing::debug!(?map, "register map");
@@ -246,9 +270,22 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             );
         }
 
-        let dma_buffer = device
-            .host_allocator()
-            .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)?;
+        if (bar0_len as u64).saturating_sub(map.vf_gdma_sriov_shared_reg_start)
+            < map.vf_gdma_sriov_shared_sz as u64
+        {
+            anyhow::bail!(
+                "bar0 ({} bytes) too small for shared memory at {}",
+                bar0_mapping.len(),
+                map.vf_gdma_sriov_shared_reg_start
+            );
+        }
+
+        let dma_client = device.dma_client();
+
+        let dma_buffer = dma_client
+            .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
+            .context("failed to allocate DMA buffer")?;
+
         let pages = dma_buffer.pfns();
 
         // Write the shared memory.
@@ -274,7 +311,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 .with_msg_version(SMC_MSG_TYPE_ESTABLISH_HWC_VERSION),
         };
 
-        let shmem = u32::slice_from(establish.as_bytes()).unwrap();
+        let shmem = <[u32]>::ref_from_bytes(establish.as_bytes()).unwrap();
         assert!(shmem.len() == 8);
         for (i, &n) in shmem.iter().enumerate() {
             bar0_mapping.write_u32(map.vf_gdma_sriov_shared_reg_start as usize + i * 4, n);
@@ -315,11 +352,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             doorbell_shift,
         });
 
-        let mut eq = Eq::new_eq(
-            dma_buffer.subblock(0, PAGE_SIZE),
-            DoorbellPage::new(bar0.clone(), !0),
-            0,
-        );
+        let mut eq = Eq::new_eq(dma_buffer.subblock(0, PAGE_SIZE), DoorbellPage::null(), 0);
 
         let mut cq_id = None;
         let mut rq_id = None;
@@ -352,13 +385,13 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             tracing::debug!(event_type = eqe.params.event_type(), "got init eqe");
             match eqe.params.event_type() {
                 GDMA_EQE_HWC_INIT_EQ_ID_DB => {
-                    let data = HwcInitEqIdDb::read_from_prefix(&eqe.data[..]).unwrap();
+                    let data = HwcInitEqIdDb::read_from_prefix(&eqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                     eq.set_id(data.eq_id().into());
-                    eq.set_doorbell(DoorbellPage::new(bar0.clone(), data.doorbell().into()));
+                    eq.set_doorbell(DoorbellPage::new(bar0.clone(), data.doorbell().into())?);
                     db_id = Some(data.doorbell());
                 }
                 GDMA_EQE_HWC_INIT_DATA => {
-                    let data = HwcInitTypeData::read_from_prefix(&eqe.data[..]).unwrap();
+                    let data = HwcInitTypeData::read_from_prefix(&eqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                     match data.ty() {
                         HWC_INIT_DATA_CQID => cq_id = Some(data.value()),
                         HWC_INIT_DATA_RQID => rq_id = Some(data.value()),
@@ -396,21 +429,21 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let cq_id = cq_id.context("cq id not provided")?;
         let cq = Cq::new_cq(
             dma_buffer.subblock(CQ_PAGE * PAGE_SIZE, PAGE_SIZE),
-            DoorbellPage::new(bar0.clone(), db_id),
+            DoorbellPage::new(bar0.clone(), db_id)?,
             cq_id,
         );
 
         let rq_id = rq_id.context("rq id not provided")?;
         let rq = Wq::new_rq(
             dma_buffer.subblock(RQ_PAGE * PAGE_SIZE, PAGE_SIZE),
-            DoorbellPage::new(bar0.clone(), db_id),
+            DoorbellPage::new(bar0.clone(), db_id)?,
             rq_id,
         );
 
         let sq_id = sq_id.context("sq id not provided")?;
         let sq = Wq::new_sq(
             dma_buffer.subblock(SQ_PAGE * PAGE_SIZE, PAGE_SIZE),
-            DoorbellPage::new(bar0.clone(), db_id),
+            DoorbellPage::new(bar0.clone(), db_id)?,
             sq_id,
         );
 
@@ -466,7 +499,12 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(this)
     }
 
-    async fn report_hwc_timeout(&mut self, last_cmd_failed: bool, ms_elapsed_for_interrupt: u32) {
+    async fn report_hwc_timeout(
+        &mut self,
+        last_cmd_failed: bool,
+        interrupt_loss: bool,
+        ms_elapsed: u32,
+    ) {
         // Perform initial check for ownership, failing without wait if device
         // is not present or owns shmem region
         let data = self
@@ -510,7 +548,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         );
         self.bar0.mem.write_u32(
             self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 24,
-            ((last_cmd_failed as u32) << 24) | (ms_elapsed_for_interrupt & 0xFFFFFF),
+            ((last_cmd_failed as u32) << 24)
+                | ((interrupt_loss as u32) << 25)
+                | (ms_elapsed & 0xFFFFFF),
         );
 
         // Format and write header information in final 32-bit range, flipping
@@ -601,7 +641,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         self.rq.commit();
     }
 
-    pub async fn request_version<Req: AsBytes, Resp: AsBytes + FromBytes>(
+    pub async fn request_version<
+        Req: IntoBytes + Immutable + KnownLayout,
+        Resp: IntoBytes + FromBytes + Immutable + KnownLayout,
+    >(
         &mut self,
         req_msg_type: u32,
         req_msg_version: u16,
@@ -646,7 +689,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let oob = HwcTxOob {
             flags3: HwcTxOobFlags3::new().with_vscq_id(self.cq.id()),
             flags4: HwcTxOobFlags4::new().with_vsq_id(self.sq.id()),
-            ..FromZeroes::new_zeroed()
+            ..FromZeros::new_zeroed()
         };
 
         let hw_access = async {
@@ -726,7 +769,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok((resp, self.hwc_activity_id))
     }
 
-    pub async fn request<Req: AsBytes, Resp: AsBytes + FromBytes>(
+    pub async fn request<
+        Req: IntoBytes + Immutable + KnownLayout,
+        Resp: IntoBytes + FromBytes + Immutable + KnownLayout,
+    >(
         &mut self,
         msg_type: u32,
         dev_id: GdmaDevId,
@@ -757,15 +803,15 @@ impl<T: DeviceBacking> GdmaDriver<T> {
     }
 
     pub fn process_all_eqs(&mut self) -> bool {
-        let mut eq_found = false;
+        let mut eqe_found = false;
         while let Some(eqe) = self.eq.pop() {
             self.eq_armed = false;
-            eq_found = true;
+            eqe_found = true;
             match eqe.params.event_type() {
                 GDMA_EQE_COMPLETION => self.cq_armed = false,
                 GDMA_EQE_TEST_EVENT => self.test_events += 1,
                 GDMA_EQE_HWC_RECONFIG_DATA => {
-                    let data = EqeDataReconfig::read_from_prefix(&eqe.data[..]).unwrap();
+                    let data = EqeDataReconfig::read_from_prefix(&eqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                     let mut value: [u8; 4] = [0; 4];
                     value[0..3].copy_from_slice(&data.data);
                     let value: u32 = u32::from_le_bytes(value);
@@ -796,7 +842,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             self.eq.arm();
             self.eq_armed = true;
         }
-        eq_found
+        eqe_found
     }
 
     async fn wait_for_hwc_interrupt(
@@ -816,56 +862,116 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         Ok(())
     }
 
-    async fn process_eqs_or_wait(&mut self) -> anyhow::Result<()> {
+    async fn process_eqs_or_wait_with_retry(&mut self) -> EqeWaitResult {
+        let mut eqe_wait_result = EqeWaitResult {
+            eqe_found: false,
+            elapsed: 0,
+            eq_arm_count: 0,
+            interrupt_wait_count: 0,
+            interrupt_count: 0,
+            last_wait_result: Ok(()),
+        };
         loop {
-            if self.process_all_eqs() {
-                return Ok(());
-            }
-
+            // Arm the EQ if it is not already armed.
             if !self.eq_armed {
-                tracing::trace!("arming eq");
+                eqe_wait_result.eq_arm_count += 1;
                 self.eq.arm();
                 self.eq_armed = true;
                 // Check if the event arrived while arming.
                 if self.process_all_eqs() {
                     // Remove any pending interrupt events.
                     let _ = self.interrupts[0].as_mut().unwrap().wait().now_or_never();
-                    return Ok(());
+                    eqe_wait_result.eqe_found = true;
+                    eqe_wait_result.last_wait_result = Ok(()); // Reset last_wait_result.
+                    break eqe_wait_result;
                 }
             }
-            tracing::trace!("waiting for eq interrupt");
+
+            // Wait for an interrupt.
+            eqe_wait_result.interrupt_wait_count += 1;
+            let ms_wait = (HWC_INTERRUPT_POLL_WAIT_MIN_MS
+                * 2u32.pow(eqe_wait_result.interrupt_wait_count - 1))
+            .min(HWC_INTERRUPT_POLL_WAIT_MAX_MS)
+            .min(self.hwc_timeout_in_ms - eqe_wait_result.elapsed as u32);
             let before_wait = std::time::Instant::now();
-            let wait_result = Self::wait_for_hwc_interrupt(
+            eqe_wait_result.last_wait_result = Self::wait_for_hwc_interrupt(
                 self.interrupts[0].as_mut().unwrap(),
                 Some(&mut self.hwc_failure),
-                self.hwc_timeout_in_ms,
+                ms_wait,
             )
             .await;
-
-            let wait_failed = wait_result.is_err();
-            let elapsed: u128 = before_wait.elapsed().as_millis();
-            if wait_failed || elapsed > self.hwc_warning_time_in_ms as u128 {
-                tracing::warn!(
-                    wait_failed,
-                    elapsed,
-                    self.hwc_warning_time_in_ms,
-                    "hwc {}",
-                    match wait_failed {
-                        true => "timeout",
-                        false => "delay warning",
-                    }
-                );
-                self.report_hwc_timeout(wait_failed, elapsed as u32).await;
-                if !wait_failed {
-                    // Increase warning threshold after each warning occurrence
-                    self.hwc_warning_time_in_ms += HWC_WARNING_TIME_IN_MS;
-                }
+            eqe_wait_result.elapsed += before_wait.elapsed().as_millis();
+            if eqe_wait_result.last_wait_result.is_ok() {
+                eqe_wait_result.interrupt_count += 1;
             }
 
-            if wait_failed {
-                return wait_result;
+            // Poll for EQ events.
+            if self.process_all_eqs() {
+                eqe_wait_result.eqe_found = true;
+                break eqe_wait_result;
+            }
+
+            // Exit with no eqe found if timeout occurs.
+            if eqe_wait_result.elapsed >= self.hwc_timeout_in_ms as u128 {
+                eqe_wait_result.eqe_found = false;
+                break eqe_wait_result;
             }
         }
+    }
+
+    async fn process_eqs_or_wait(&mut self) -> anyhow::Result<()> {
+        let eqe_wait_result = self.process_eqs_or_wait_with_retry().await;
+        let wait_failed = !eqe_wait_result.eqe_found;
+        let interrupt_loss = eqe_wait_result.interrupt_wait_count != 0
+            && eqe_wait_result.interrupt_count == 0
+            && !wait_failed;
+        if wait_failed
+            || eqe_wait_result.elapsed > self.hwc_warning_time_in_ms as u128
+            || interrupt_loss
+        {
+            tracing::warn!(
+                wait_failed,
+                wait_ms = eqe_wait_result.elapsed,
+                int_loss = interrupt_loss,
+                int_count = eqe_wait_result.interrupt_count,
+                int_waits = eqe_wait_result.interrupt_wait_count,
+                arm_count = eqe_wait_result.eq_arm_count,
+                warn_ms = self.hwc_warning_time_in_ms,
+                "hwc {}",
+                match (wait_failed, interrupt_loss) {
+                    (true, _) => "timeout waiting for response",
+                    (_, true) =>
+                        "response received with interrupt wait attempted but no interrupt received",
+                    _ => "response received with delay",
+                }
+            );
+            self.report_hwc_timeout(wait_failed, interrupt_loss, eqe_wait_result.elapsed as u32)
+                .await;
+            if !wait_failed && eqe_wait_result.elapsed > self.hwc_warning_time_in_ms as u128 {
+                // Increase warning threshold after each delay warning occurrence.
+                self.hwc_warning_time_in_ms += HWC_WARNING_INCREASE_IN_MS;
+            }
+        } else if eqe_wait_result.interrupt_wait_count != 0 || eqe_wait_result.eq_arm_count != 0 {
+            tracing::trace!(
+                wait_ms = eqe_wait_result.elapsed,
+                int_count = eqe_wait_result.interrupt_count,
+                int_waits = eqe_wait_result.interrupt_wait_count,
+                arm_count = eqe_wait_result.eq_arm_count,
+                "found HWC response EQE after arm or wait",
+            );
+        }
+        if wait_failed {
+            self.hwc_failure = true;
+            if eqe_wait_result.last_wait_result.is_err() {
+                return eqe_wait_result.last_wait_result;
+            } else {
+                return Err(anyhow::anyhow!(
+                    "MANA request timed out. No EQE found for HWC response."
+                ));
+            }
+        }
+        self.hwc_failure = false;
+        Ok(())
     }
 
     async fn wait_cq(&mut self) -> anyhow::Result<Cqe> {
@@ -926,7 +1032,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                     gd_drv_cap_flags1: DRIVER_CAP_FLAG_1_VARIABLE_INDIRECTION_TABLE_SUPPORT
                         | DRIVER_CAP_FLAG_1_HW_VPORT_LINK_AWARE
                         | DRIVER_CAP_FLAG_1_HWC_TIMEOUT_RECONFIG,
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 },
             )
             .await?;
@@ -1052,7 +1158,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                     gdma_region,
                     queue_size,
                     eq_pci_msix_index: msix,
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 },
             )
             .await?;
@@ -1092,7 +1198,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         mem: MemoryBlock,
     ) -> anyhow::Result<u64> {
         #[repr(C)]
-        #[derive(AsBytes)]
+        #[derive(IntoBytes, Immutable, KnownLayout)]
         struct Req {
             req: GdmaCreateDmaRegionReq,
             pages: [u64; 16],

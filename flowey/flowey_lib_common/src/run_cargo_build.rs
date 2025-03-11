@@ -149,6 +149,29 @@ impl FlowNode for Node {
                         "cargo"
                     };
 
+                    let cargo_out_dir = {
+                        // DEVNOTE: this is a _pragmatic_ implementation of this
+                        // logic, and is written with the undersatnding that
+                        // there are undoubtedly many "edge-cases" that may
+                        // result in the final target directory changing.
+                        //
+                        // One possible way to make this handling more robust
+                        // would be to start using `--message-format=json` when
+                        // invoking `cargo`, and then parsing the machine
+                        // readable output in order to obtain the output
+                        // artifact path _after_ the compilation has succeeded.
+                        if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
+                            PathBuf::from(dir)
+                        } else {
+                            in_folder.join("target")
+                        }
+                    }
+                    .join(target.to_string())
+                    .join(match profile {
+                        CargoBuildProfile::Debug => "debug",
+                        _ => cargo_profile,
+                    });
+
                     // FIXME: this flow is vestigial from a time when this node
                     // would return `CargoBuildCommand` back to the caller.
                     //
@@ -193,14 +216,7 @@ impl FlowNode for Node {
                         },
                         with_env,
                         cargo_work_dir: in_folder.clone(),
-                        cargo_out_dir: in_folder.join(
-                            Path::new("target")
-                                .join(target.to_string())
-                                .join(match profile {
-                                    CargoBuildProfile::Debug => "debug",
-                                    _ => cargo_profile,
-                                }),
-                        ),
+                        cargo_out_dir,
                         out_name,
                         crate_type: output_kind,
                         target,
@@ -297,7 +313,25 @@ fn rename_output(
     cargo_out_dir: &Path,
     dry_run: bool,
 ) -> Result<CargoBuildOutput, anyhow::Error> {
-    let do_rename = |ext: &str, no_dash: bool| {
+    fn rename_or_copy(from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<()> {
+        let res = fs_err::rename(from.as_ref(), to.as_ref());
+
+        let needs_copy = match res {
+            Ok(_) => false,
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::CrossesDevices => true,
+                _ => return Err(e),
+            },
+        };
+
+        if needs_copy {
+            fs_err::copy(from, to)?;
+        }
+
+        Ok(())
+    }
+
+    let do_rename = |ext: &str, no_dash: bool| -> anyhow::Result<_> {
         let file_name = if !no_dash {
             out_name.into()
         } else {
@@ -308,11 +342,12 @@ fn rename_output(
         let rename_path_base = out_dir.join(&file_name);
 
         if !dry_run {
-            fs_err::rename(
+            rename_or_copy(
                 out_path_base.with_extension(ext),
                 rename_path_base.with_extension(ext),
             )?;
         }
+
         anyhow::Ok(rename_path_base.with_extension(ext))
     };
 
@@ -340,7 +375,7 @@ fn rename_output(
             let so = {
                 let rename_path = out_dir.join(format!("lib{out_name}.so"));
                 if !dry_run {
-                    fs_err::rename(
+                    rename_or_copy(
                         cargo_out_dir.join(format!("lib{out_name}.so")),
                         &rename_path,
                     )?;
@@ -360,7 +395,7 @@ fn rename_output(
             let a = {
                 let rename_path = out_dir.join(format!("lib{out_name}.a"));
                 if !dry_run {
-                    fs_err::rename(cargo_out_dir.join(format!("lib{out_name}.a")), &rename_path)?;
+                    rename_or_copy(cargo_out_dir.join(format!("lib{out_name}.a")), &rename_path)?;
                 }
                 rename_path
             };

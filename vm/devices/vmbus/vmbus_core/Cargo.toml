@@ -3,7 +3,7 @@
 
 [package]
 name = "vmbus_core"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -18,7 +18,5 @@ futures.workspace = true
 static_assertions.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
-zerocopy_helpers.workspace = true
-
 [lints]
 workspace = true

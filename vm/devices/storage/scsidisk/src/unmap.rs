@@ -30,8 +30,9 @@ fn validate_unmap_list_header(
     // We will find out how many block descriptors the unmap request has
     let unmap_list_header =
         scsi::UnmapListHeader::read_from_prefix(&buffer[0..size_of::<scsi::UnmapListHeader>()])
-            .unwrap();
-    let unmap_list_header_length = unmap_list_header.data_length.get() as usize;
+            .unwrap()
+            .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+    let unmap_list_header_length = unmap_list_header.data_length.get() as usize; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     let expected = allocation_length - size_of_val(&unmap_list_header.data_length);
     if unmap_list_header_length != expected {
         tracelimit::error_ratelimited!(unmap_list_header_length, expected, "validate_unmap_error");
@@ -107,8 +108,8 @@ impl SimpleScsiDisk {
         let block_descriptor = scsi::UnmapBlockDescriptor::read_from_prefix(
             &buffer[unmap_info.offset..unmap_info.offset + size_of::<scsi::UnmapBlockDescriptor>()],
         )
-        .unwrap();
-
+        .unwrap()
+        .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range, err (https://github.com/microsoft/openvmm/issues/759)
         let start_lba = block_descriptor.start_lba.get();
         let lba_count = block_descriptor.lba_count.get() as u64;
 
@@ -135,7 +136,7 @@ impl SimpleScsiDisk {
             return Err(ScsiError::IllegalRequest(AdditionalSenseCode::INVALID_CDB));
         }
 
-        let cdb = scsi::Unmap::read_from_prefix(&request.cdb[..]).unwrap();
+        let cdb = scsi::Unmap::read_from_prefix(&request.cdb[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         // make sure the data buffer is large enough for UNMAP_LIST_HEADER
         let allocation_length = cdb.allocation_length.get() as usize;

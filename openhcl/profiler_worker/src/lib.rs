@@ -4,7 +4,6 @@
 //! A worker for profiling on VTL2.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use anyhow::Context;
@@ -74,7 +73,7 @@ impl Worker for ProfilerWorker {
 
     /// Run profiler worker and start a profiling session
     fn run(self, mut recv: mesh::Receiver<WorkerRpc<Self::State>>) -> anyhow::Result<()> {
-        DefaultPool::run_with(|driver| async move {
+        DefaultPool::run_with(async |driver| {
             let mut profiling = pin!(profile(self.profiler_request, &driver).fuse());
             loop {
                 let msg = futures::select! { // merge semantics
@@ -97,8 +96,8 @@ impl Worker for ProfilerWorker {
                         WorkerRpc::Stop => {
                             break;
                         }
-                        WorkerRpc::Restart(response) => {
-                            response.send(Err(RemoteError::new(anyhow::anyhow!("not supported"))));
+                        WorkerRpc::Restart(rpc) => {
+                            rpc.complete(Err(RemoteError::new(anyhow::anyhow!("not supported"))));
                         }
                         WorkerRpc::Inspect(_deferred) => {}
                     },

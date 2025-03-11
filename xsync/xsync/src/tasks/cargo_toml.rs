@@ -6,6 +6,7 @@ use anyhow::Context;
 use cargo_toml::PackageTemplate;
 use clap::Parser;
 use clap::Subcommand;
+use std::str::FromStr;
 
 #[derive(Subcommand)]
 pub enum Command {
@@ -31,7 +32,7 @@ impl Cmd for CargoToml {
         let overlay_cargo_toml =
             fs_err::read_to_string(ctx.overlay_workspace.join("Cargo.xsync.toml"))?;
         let mut overlay_cargo_toml = cargo_toml::Manifest::<
-            self::custom_meta::CargoOverlayMetadata,
+            super::custom_meta::CargoOverlayMetadata,
         >::from_slice_with_metadata(
             overlay_cargo_toml.as_bytes()
         )?;
@@ -58,14 +59,11 @@ impl Cmd for CargoToml {
         // handle simple inherited Cargo.toml fields
         //
         {
-            let self::custom_meta::Inherit {
+            let super::custom_meta::Inherit {
                 profile,
                 patch,
-                workspace:
-                    self::custom_meta::InheritWorkspace {
-                        lints,
-                        rust_version,
-                    },
+                workspace: super::custom_meta::InheritWorkspace { lints, package },
+                ..
             } = meta.inherit;
 
             if profile {
@@ -76,7 +74,7 @@ impl Cmd for CargoToml {
                 cargo_toml.patch = base_cargo_toml.patch.clone();
             }
 
-            if rust_version {
+            if package {
                 if cargo_toml.workspace.as_mut().unwrap().package.is_none() {
                     cargo_toml.workspace.as_mut().unwrap().package =
                         Some(PackageTemplate::default());
@@ -88,23 +86,59 @@ impl Cmd for CargoToml {
                     .unwrap()
                     .package
                     .as_mut()
-                    .unwrap()
-                    .rust_version)
-                    .clone_from(
-                        &base_cargo_toml
-                            .workspace
-                            .as_ref()
-                            .unwrap()
-                            .package
-                            .as_ref()
-                            .unwrap()
-                            .rust_version,
-                    );
+                    .unwrap())
+                .clone_from(
+                    base_cargo_toml
+                        .workspace
+                        .as_ref()
+                        .unwrap()
+                        .package
+                        .as_ref()
+                        .unwrap(),
+                );
             }
 
             if lints {
+                // Duplicate the lints section of Cargo.toml (which includes both
+                // rustc and clippy lints), and clippy.toml (which includes additional)
+                // clippy configuration.
                 (cargo_toml.workspace.as_mut().unwrap().lints)
                     .clone_from(&base_cargo_toml.workspace.as_ref().unwrap().lints);
+
+                let out = std::path::absolute(ctx.overlay_workspace.join("clippy.toml"))?;
+                let base_clippy_toml =
+                    fs_err::read_to_string(ctx.base_workspace.join("clippy.toml"));
+
+                // Ensure that the clippy.toml in the overlay matches that of the base repo exactly.
+                // This is a policy decision, and is open to changing in the future.
+                match base_clippy_toml {
+                    Ok(base_clippy_toml) => {
+                        log::info!("base clippy.toml found, regenerating overlay clippy.toml",);
+                        let mut base_clippy_toml =
+                            toml_edit::Document::from_str(&base_clippy_toml)?;
+                        base_clippy_toml.fmt();
+                        let generated_clippy_toml = format!(
+                            "{}{}",
+                            super::GENERATED_HEADER.trim_start(),
+                            &base_clippy_toml.to_string()
+                        );
+                        log::debug!("{generated_clippy_toml}");
+                        fs_err::write(out, generated_clippy_toml.as_bytes())?;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        log::info!(
+                            "base clippy.toml not found, removing overlay clippy.toml if present"
+                        );
+                        match fs_err::remove_file(out) {
+                            Ok(_) => {}
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(e) => Err(e).context("failed to remove overlay clippy.toml")?,
+                        }
+                    }
+                    Err(e) => {
+                        Err(e).context("failed to read base clippy.toml")?;
+                    }
+                }
             }
         }
 
@@ -161,33 +195,5 @@ impl Cmd for CargoToml {
         }
 
         Ok(())
-    }
-}
-
-mod custom_meta {
-    use serde::Deserialize;
-    use serde::Serialize;
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct CargoOverlayMetadata {
-        pub xsync: Xsync,
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct Xsync {
-        pub inherit: Inherit,
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct Inherit {
-        pub profile: bool,
-        pub patch: bool,
-        pub workspace: InheritWorkspace,
-    }
-
-    #[derive(Debug, Serialize, Deserialize)]
-    pub struct InheritWorkspace {
-        pub lints: bool,
-        pub rust_version: bool,
     }
 }

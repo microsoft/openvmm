@@ -29,7 +29,7 @@ impl SimpleFlowNode for Node {
 
         let hvlite_repo = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
         let rust_install = ctx.reqv(flowey_lib_common::install_rust::Request::EnsureInstalled);
-        let gh_token = ctx.get_gh_context_var(GhContextVar::GITHUB__TOKEN);
+        let gh_token = ctx.get_gh_context_var().global().token();
 
         let test_local = ctx.emit_rust_step(
             "test cargo xflowey build-igvm x64 --install-missing-deps",

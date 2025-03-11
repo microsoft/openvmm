@@ -21,7 +21,6 @@
 
 // UNSAFETY: unsafe needed to implement interior mutability to locked values.
 #![expect(unsafe_code)]
-#![warn(missing_docs)]
 
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;

@@ -4,6 +4,7 @@
 //! A TAP interface based endpoint.
 
 #![cfg(unix)]
+#![expect(missing_docs)]
 
 pub mod resolver;
 mod tap;

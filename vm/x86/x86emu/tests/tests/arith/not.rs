@@ -21,11 +21,11 @@ fn not_memory() {
     ];
 
     for (left, result) in variations {
-        let (_state, cpu) = run_lockable_test::<u64>(
+        let cpu = run_lockable_test::<u64>(
             RFlags::new(),
             LockTestBehavior::Fail,
             |asm| asm.not(dword_ptr(0x100)),
-            |_state, cpu| {
+            |cpu| {
                 cpu.valid_gva = 0x100;
                 cpu.mem_val = left;
             },

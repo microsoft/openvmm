@@ -10,7 +10,6 @@
 // UNSAFETY: needed to call internal Windows functions and to export unmangled
 // functions.
 #![expect(unsafe_code)]
-#![warn(missing_docs)]
 
 /// Links in crypto stubs to workaround rust stdlib's usage during hashmap
 /// initialization. This is to avoid the bcrypt.dll and advapi32.dll
@@ -209,7 +208,6 @@ pub mod private {
         len: u32,
         flags: u32,
     ) -> u32 {
-        #[allow(clippy::if_same_then_else)]
         if algorithm == BCRYPT_MAGIC_ALGORITHM_HANDLE && flags == 0 {
             // Rust 1.65 calls BCryptGenRandom this way with the magic handle we return from our implementation of
             // BCryptOpenAlgorithmProvider.

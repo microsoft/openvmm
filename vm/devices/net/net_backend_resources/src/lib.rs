@@ -5,7 +5,6 @@
 //!
 //! TODO: move the resource definitions to separate crates for each endpoint.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod mac_address;

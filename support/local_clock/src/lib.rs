@@ -29,8 +29,6 @@
 //!
 //! [`Inspect`]: inspect::Inspect
 
-#![warn(missing_docs)]
-
 mod clock_impls;
 
 pub use clock_impls::MockLocalClock;

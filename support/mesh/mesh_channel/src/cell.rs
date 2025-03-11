@@ -13,6 +13,7 @@ use mesh_node::local_node::PortControl;
 use mesh_node::local_node::PortWithHandler;
 use mesh_node::message::MeshField;
 use mesh_node::message::Message;
+use mesh_node::message::OwnedMessage;
 use mesh_node::resource::Resource;
 use mesh_protobuf::EncodeAs;
 use mesh_protobuf::Protobuf;
@@ -269,8 +270,8 @@ enum UpdateResponse {
 impl<T: 'static + MeshField + Send + Sync> HandlePortEvent for State<T> {
     fn message(
         &mut self,
-        control: &mut PortControl<'_>,
-        message: Message,
+        control: &mut PortControl<'_, '_>,
+        message: Message<'_>,
     ) -> Result<(), HandleMessageError> {
         let UpdateMessage::<T> { id, value } = message.parse().map_err(HandleMessageError::new)?;
         if self.id < id {
@@ -284,11 +285,11 @@ impl<T: 'static + MeshField + Send + Sync> HandlePortEvent for State<T> {
         Ok(())
     }
 
-    fn close(&mut self, _control: &mut PortControl<'_>) {}
+    fn close(&mut self, _control: &mut PortControl<'_, '_>) {}
 
-    fn fail(&mut self, _control: &mut PortControl<'_>, _err: NodeError) {}
+    fn fail(&mut self, _control: &mut PortControl<'_, '_>, _err: NodeError) {}
 
-    fn drain(&mut self) -> Vec<Message> {
+    fn drain(&mut self) -> Vec<OwnedMessage> {
         Vec::new()
     }
 }

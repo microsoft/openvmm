@@ -7,9 +7,10 @@
 
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const ATTESTATION_VERSION: u32 = 2;
 const ATTESTATION_SIGNATURE: u32 = 0x414c4348; // 'HCLA'
@@ -42,7 +43,7 @@ pub const AK_CERT_RESPONSE_HEADER_VERSION: u32 = 1;
 /// The struct (includes the appended [`runtime_claims::RuntimeClaims`]) also serves as the
 /// attestation report in vTPM guest attestation.
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmAttestRequest {
     /// Header (unmeasured)
     pub header: IgvmAttestRequestHeader,
@@ -58,7 +59,7 @@ pub struct IgvmAttestRequest {
 
 open_enum! {
     /// TEE attestation report type (C-style enum)
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum IgvmAttestReportType: u32 {
         /// Invalid report
         INVALID_REPORT = 0,
@@ -75,7 +76,7 @@ open_enum! {
 
 open_enum! {
     /// Request type (C-style enum)
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum IgvmAttestRequestType: u32 {
         /// Invalid request
         INVALID_REQUEST = 0,
@@ -90,7 +91,7 @@ open_enum! {
 
 open_enum! {
     /// Hash algorithm used for content of report data (C-style enum)
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum IgvmAttestHashType: u32 {
         /// Invalid hash
         INVALID_HASH = 0,
@@ -105,7 +106,7 @@ open_enum! {
 
 /// Unmeasured data used to provide transport sanity and versioning (C-style struct)
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmAttestRequestHeader {
     /// Signature
     pub signature: u32,
@@ -150,7 +151,7 @@ pub struct IgvmCapabilityBitMap {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmAttestRequestData {
     /// Data size
     pub data_size: u32,
@@ -226,7 +227,7 @@ pub struct IgvmErrorInfo {
 
 /// The response header for `KEY_RELEASE_REQUEST` (C-style struct)
 #[repr(C)]
-#[derive(Default, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Default, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmAttestKeyReleaseResponseHeader {
     /// Data size
     pub data_size: u32,
@@ -239,7 +240,7 @@ pub struct IgvmAttestKeyReleaseResponseHeader {
 /// The response header for `WRAPPED_KEY_REQUEST` (C-style struct)
 /// Currently the definition is the same as [`IgvmAttestKeyReleaseResponseHeader`].
 #[repr(C)]
-#[derive(Default, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Default, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmAttestWrappedKeyResponseHeader {
     /// Data size
     pub data_size: u32,
@@ -251,7 +252,7 @@ pub struct IgvmAttestWrappedKeyResponseHeader {
 
 /// The response header for `AK_CERT_REQUEST` (C-style struct)
 #[repr(C)]
-#[derive(Default, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Default, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IgvmAttestAkCertResponseHeader {
     /// Data size
     pub data_size: u32,

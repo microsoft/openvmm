@@ -7,7 +7,6 @@
 //! other asynchronous hardware state changes in Linux.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 
 mod bind_kobject_uevent;
 
@@ -32,7 +31,7 @@ use thiserror::Error;
 /// A listener for Linux udev events.
 pub struct UeventListener {
     _task: Task<()>,
-    send: mesh::MpscSender<TaskRequest>,
+    send: mesh::Sender<TaskRequest>,
 }
 
 /// An error from [`UeventListener::new`].
@@ -83,8 +82,8 @@ impl UeventListener {
                     || (kvs.get("RESIZE") == Some("1")
                         && kvs.get("SUBSYSTEM") == Some("block")
                         && kvs.get("ACTION") == Some("change")
-                        && kvs.get("MAJOR").map_or(false, |x| x.parse() == Ok(major))
-                        && kvs.get("MINOR").map_or(false, |x| x.parse() == Ok(minor)))
+                        && kvs.get("MAJOR").is_some_and(|x| x.parse() == Ok(major))
+                        && kvs.get("MINOR").is_some_and(|x| x.parse() == Ok(minor)))
                 {
                     notify();
                 }
@@ -105,16 +104,12 @@ impl UeventListener {
     ///
     /// This is inefficient if there are lots of waiters and lots of incoming
     /// uevents, but this is not an expected use case.
-    pub async fn wait_for_matching_child<T: 'static + Send, F, Fut>(
-        &self,
-        path: &Path,
-        f: F,
-    ) -> io::Result<T>
+    pub async fn wait_for_matching_child<T, F, Fut>(&self, path: &Path, f: F) -> io::Result<T>
     where
         F: Fn(PathBuf, bool) -> Fut,
         Fut: Future<Output = Option<T>>,
     {
-        let scan_for_matching_child = || async {
+        let scan_for_matching_child = async || {
             for entry in path.fs_err_read_dir()? {
                 let entry = entry?;
                 if let Some(r) = f(entry.path(), false).await {
@@ -282,7 +277,7 @@ impl Uevent<'_> {
 #[derive(Debug)]
 pub struct CallbackHandle {
     id: u64,
-    send: mesh::MpscSender<TaskRequest>,
+    send: mesh::Sender<TaskRequest>,
 }
 
 impl Drop for CallbackHandle {
@@ -299,7 +294,7 @@ enum TaskRequest {
 struct ListenerTask {
     socket: PolledSocket<Socket>,
     callbacks: Vec<Filter>,
-    recv: mesh::MpscReceiver<TaskRequest>,
+    recv: mesh::Receiver<TaskRequest>,
     next_id: u64,
 }
 

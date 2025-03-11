@@ -40,7 +40,7 @@ use uevent::UeventListener;
 use user_driver::vfio::vfio_set_device_reset_method;
 use user_driver::vfio::PciDeviceResetMethod;
 use user_driver::vfio::VfioDevice;
-use user_driver::vfio::VfioDmaBuffer;
+use user_driver::DmaClient;
 use vmcore::vm_task::VmTaskDriverSource;
 use vpci::bus_control::VpciBusControl;
 use vpci::bus_control::VpciBusEvent;
@@ -65,7 +65,7 @@ async fn create_mana_device(
     pci_id: &str,
     vp_count: u32,
     max_sub_channels: u16,
-    dma_buffer: Arc<dyn VfioDmaBuffer>,
+    dma_client: Arc<dyn DmaClient>,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
     // Disable FLR on vfio attach/detach; this allows faster system
     // startup/shutdown with the caveat that the device needs to be properly
@@ -89,7 +89,7 @@ async fn create_mana_device(
             pci_id,
             vp_count,
             max_sub_channels,
-            &dma_buffer,
+            dma_client.clone(),
         )
         .await
         {
@@ -118,9 +118,9 @@ async fn try_create_mana_device(
     pci_id: &str,
     vp_count: u32,
     max_sub_channels: u16,
-    dma_buffer: &Arc<dyn VfioDmaBuffer>,
+    dma_client: Arc<dyn DmaClient>,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
-    let device = VfioDevice::new(driver_source, pci_id, dma_buffer.clone())
+    let device = VfioDevice::new(driver_source, pci_id, dma_client)
         .await
         .context("failed to open device")?;
 
@@ -200,9 +200,9 @@ struct HclNetworkVFManagerWorker {
     vtl2_bus_control: HclVpciBusControl,
     vtl2_pci_id: String,
     #[inspect(skip)]
-    dma_buffer: Arc<dyn VfioDmaBuffer>,
-    #[inspect(skip)]
     dma_mode: GuestDmaMode,
+    #[inspect(skip)]
+    dma_client: Arc<dyn DmaClient>,
 }
 
 impl HclNetworkVFManagerWorker {
@@ -217,8 +217,8 @@ impl HclNetworkVFManagerWorker {
         endpoint_controls: Vec<DisconnectableEndpointControl>,
         vp_count: u32,
         max_sub_channels: u16,
-        dma_buffer: Arc<dyn VfioDmaBuffer>,
         dma_mode: GuestDmaMode,
+        dma_client: Arc<dyn DmaClient>,
     ) -> (Self, mesh::Sender<HclNetworkVfManagerMessage>) {
         let (tx_to_worker, worker_rx) = mesh::channel();
         let vtl0_bus_control = if save_state.hidden_vtl0.lock().unwrap_or(false) {
@@ -247,8 +247,8 @@ impl HclNetworkVFManagerWorker {
                 vtl0_bus_control,
                 vtl2_bus_control,
                 vtl2_pci_id,
-                dma_buffer,
                 dma_mode,
+                dma_client,
             },
             tx_to_worker,
         )
@@ -304,7 +304,7 @@ impl HclNetworkVFManagerWorker {
     async fn send_vf_state_change_notifications(&self) -> anyhow::Result<()> {
         const MAX_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
         let all_results =
-            futures::future::join_all(self.guest_state_notifications.iter().map(|update| async {
+            futures::future::join_all(self.guest_state_notifications.iter().map(async |update| {
                 update
                     .call(HclNetworkVFUpdateNotification::Update, ())
                     .await
@@ -335,7 +335,7 @@ impl HclNetworkVFManagerWorker {
 
             // Force data path to VTL2 on error.
             if let Err(err) =
-                futures::future::join_all(self.endpoint_controls.iter_mut().map(|control| async {
+                futures::future::join_all(self.endpoint_controls.iter_mut().map(async |control| {
                     let endpoint = control
                         .disconnect()
                         .await
@@ -393,7 +393,7 @@ impl HclNetworkVFManagerWorker {
     }
 
     pub async fn shutdown_vtl2_device(&mut self, keep_vf_alive: bool) {
-        futures::future::join_all(self.endpoint_controls.iter_mut().map(|control| async {
+        futures::future::join_all(self.endpoint_controls.iter_mut().map(async |control| {
             match control.disconnect().await {
                 Ok(Some(mut endpoint)) => {
                     tracing::info!("Network endpoint disconnected");
@@ -509,14 +509,14 @@ impl HclNetworkVFManagerWorker {
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::AddGuestVFManager(
                     rpc,
                 )) => {
-                    rpc.handle(|send_update| async {
+                    rpc.handle(async |send_update| {
                         self.guest_state_notifications.push(send_update);
                         self.guest_state.clone()
                     })
                     .await;
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::PacketCapture(rpc)) => {
-                    rpc.handle_failable(|params| self.handle_packet_capture(params))
+                    rpc.handle_failable(async |params| self.handle_packet_capture(params).await)
                         .await
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::AddVtl0VF) => {
@@ -556,42 +556,40 @@ impl HclNetworkVFManagerWorker {
                         rpc.complete(());
                         continue;
                     }
-                    rpc.handle(|bus_control| {
+                    rpc.handle(async |bus_control| {
                         let is_present = matches!(
                             self.vtl0_bus_control,
                             Vtl0Bus::Present(_) | Vtl0Bus::HiddenPresent(_)
                         );
                         assert!(is_present != bus_control.is_some());
                         tracing::info!(present = bus_control.is_some(), "VTL0 VF device change");
-                        async {
-                            if matches!(&self.vtl0_bus_control, Vtl0Bus::HiddenNotPresent) {
-                                self.vtl0_bus_control = Vtl0Bus::HiddenPresent(bus_control.unwrap())
-                            } else if matches!(&self.vtl0_bus_control, Vtl0Bus::HiddenPresent(_)) {
-                                self.vtl0_bus_control = Vtl0Bus::HiddenNotPresent;
-                            } else if vtl2_device_present {
-                                let bus_control = bus_control
-                                    .map(Vtl0Bus::Present)
-                                    .unwrap_or(Vtl0Bus::NotPresent);
-                                *self.guest_state.vtl0_vfid.lock().await =
-                                    vtl0_vfid_from_bus_control(&bus_control);
-                                let old_bus_control =
-                                    std::mem::replace(&mut self.vtl0_bus_control, bus_control);
-                                match self.vtl0_bus_control {
-                                    Vtl0Bus::Present(_) => self.notify_vtl0_vf_arrival(),
-                                    Vtl0Bus::NotPresent => {
-                                        self.try_notify_guest_and_revoke_vtl0_vf(&old_bus_control)
-                                            .await
-                                    }
-                                    _ => unreachable!(),
+                        if matches!(&self.vtl0_bus_control, Vtl0Bus::HiddenNotPresent) {
+                            self.vtl0_bus_control = Vtl0Bus::HiddenPresent(bus_control.unwrap())
+                        } else if matches!(&self.vtl0_bus_control, Vtl0Bus::HiddenPresent(_)) {
+                            self.vtl0_bus_control = Vtl0Bus::HiddenNotPresent;
+                        } else if vtl2_device_present {
+                            let bus_control = bus_control
+                                .map(Vtl0Bus::Present)
+                                .unwrap_or(Vtl0Bus::NotPresent);
+                            *self.guest_state.vtl0_vfid.lock().await =
+                                vtl0_vfid_from_bus_control(&bus_control);
+                            let old_bus_control =
+                                std::mem::replace(&mut self.vtl0_bus_control, bus_control);
+                            match self.vtl0_bus_control {
+                                Vtl0Bus::Present(_) => self.notify_vtl0_vf_arrival(),
+                                Vtl0Bus::NotPresent => {
+                                    self.try_notify_guest_and_revoke_vtl0_vf(&old_bus_control)
+                                        .await
                                 }
-                            } else {
-                                // When the VTL2 device is restored, the VTL0 update will be applied.
-                                assert_eq!(*self.guest_state.offered_to_guest.lock().await, false);
-                                assert!(self.guest_state.vtl0_vfid.lock().await.is_none());
-                                self.vtl0_bus_control = bus_control
-                                    .map(Vtl0Bus::Present)
-                                    .unwrap_or(Vtl0Bus::NotPresent);
+                                _ => unreachable!(),
                             }
+                        } else {
+                            // When the VTL2 device is restored, the VTL0 update will be applied.
+                            assert_eq!(*self.guest_state.offered_to_guest.lock().await, false);
+                            assert!(self.guest_state.vtl0_vfid.lock().await.is_none());
+                            self.vtl0_bus_control = bus_control
+                                .map(Vtl0Bus::Present)
+                                .unwrap_or(Vtl0Bus::NotPresent);
                         }
                     })
                     .await;
@@ -601,53 +599,46 @@ impl HclNetworkVFManagerWorker {
                         rpc.complete(());
                         continue;
                     }
-                    rpc.handle(|hide_vtl0| {
+                    rpc.handle(async |hide_vtl0| {
                         tracing::info!(hide_vtl0, "VTL0 VF device is hidden");
                         if hide_vtl0 {
                             *self.save_state.hidden_vtl0.lock() = Some(true);
-                            futures::future::Either::Left(async {
-                                if !matches!(self.vtl0_bus_control, Vtl0Bus::HiddenPresent(_)) {
-                                    let old_bus_control = std::mem::replace(
-                                        &mut self.vtl0_bus_control,
-                                        Vtl0Bus::HiddenNotPresent,
-                                    );
-                                    if matches!(old_bus_control, Vtl0Bus::Present(_)) {
-                                        if vtl2_device_present {
-                                            *self.guest_state.vtl0_vfid.lock().await =
-                                                vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
-                                            self.try_notify_guest_and_revoke_vtl0_vf(
-                                                &old_bus_control,
-                                            )
-                                            .await;
-                                        }
-                                        let Vtl0Bus::Present(bus_control) = old_bus_control else {
-                                            unreachable!();
-                                        };
-                                        self.vtl0_bus_control = Vtl0Bus::HiddenPresent(bus_control);
-                                    }
-                                }
-                            })
-                        } else {
-                            *self.save_state.hidden_vtl0.lock() = Some(false);
-                            futures::future::Either::Right(async {
-                                if matches!(self.vtl0_bus_control, Vtl0Bus::HiddenPresent(_)) {
-                                    let Vtl0Bus::HiddenPresent(bus_control) = std::mem::replace(
-                                        &mut self.vtl0_bus_control,
-                                        Vtl0Bus::NotPresent,
-                                    ) else {
-                                        unreachable!();
-                                    };
-                                    self.vtl0_bus_control = Vtl0Bus::Present(bus_control);
+                            if !matches!(self.vtl0_bus_control, Vtl0Bus::HiddenPresent(_)) {
+                                let old_bus_control = std::mem::replace(
+                                    &mut self.vtl0_bus_control,
+                                    Vtl0Bus::HiddenNotPresent,
+                                );
+                                if matches!(old_bus_control, Vtl0Bus::Present(_)) {
                                     if vtl2_device_present {
                                         *self.guest_state.vtl0_vfid.lock().await =
                                             vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
-                                        self.notify_vtl0_vf_arrival();
+                                        self.try_notify_guest_and_revoke_vtl0_vf(&old_bus_control)
+                                            .await;
                                     }
-                                } else if matches!(self.vtl0_bus_control, Vtl0Bus::HiddenNotPresent)
-                                {
-                                    self.vtl0_bus_control = Vtl0Bus::NotPresent;
+                                    let Vtl0Bus::Present(bus_control) = old_bus_control else {
+                                        unreachable!();
+                                    };
+                                    self.vtl0_bus_control = Vtl0Bus::HiddenPresent(bus_control);
                                 }
-                            })
+                            }
+                        } else {
+                            *self.save_state.hidden_vtl0.lock() = Some(false);
+                            if matches!(self.vtl0_bus_control, Vtl0Bus::HiddenPresent(_)) {
+                                let Vtl0Bus::HiddenPresent(bus_control) = std::mem::replace(
+                                    &mut self.vtl0_bus_control,
+                                    Vtl0Bus::NotPresent,
+                                ) else {
+                                    unreachable!();
+                                };
+                                self.vtl0_bus_control = Vtl0Bus::Present(bus_control);
+                                if vtl2_device_present {
+                                    *self.guest_state.vtl0_vfid.lock().await =
+                                        vtl0_vfid_from_bus_control(&self.vtl0_bus_control);
+                                    self.notify_vtl0_vf_arrival();
+                                }
+                            } else if matches!(self.vtl0_bus_control, Vtl0Bus::HiddenNotPresent) {
+                                self.vtl0_bus_control = Vtl0Bus::NotPresent;
+                            }
                         }
                     })
                     .await;
@@ -663,7 +654,7 @@ impl HclNetworkVFManagerWorker {
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::ShutdownComplete(rpc)) => {
                     assert!(self.is_shutdown_active);
                     drop(self.messages.take().unwrap());
-                    rpc.handle(|keep_vf_alive| async move {
+                    rpc.handle(async |keep_vf_alive| {
                         self.shutdown_vtl2_device(keep_vf_alive).await;
                     })
                     .await;
@@ -685,12 +676,13 @@ impl HclNetworkVFManagerWorker {
                     } else {
                         tracing::info!("VTL2 VF arrived");
                     }
+
                     let device_bound = match create_mana_device(
                         &self.driver_source,
                         &self.vtl2_pci_id,
                         self.vp_count,
                         self.max_sub_channels,
-                        self.dma_buffer.clone(),
+                        self.dma_client.clone(),
                     )
                     .await
                     {
@@ -865,8 +857,8 @@ impl HclNetworkVFManager {
         vp_count: u32,
         max_sub_channels: u16,
         netvsp_state: &Option<Vec<SavedState>>,
-        dma_buffer: Arc<dyn VfioDmaBuffer>,
         dma_mode: GuestDmaMode,
+        dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<(
         Self,
         Vec<HclNetworkVFManagerEndpointInfo>,
@@ -877,7 +869,7 @@ impl HclNetworkVFManager {
             &vtl2_pci_id,
             vp_count,
             max_sub_channels,
-            dma_buffer.clone(),
+            dma_client.clone(),
         )
         .await?;
         let (mut endpoints, endpoint_controls): (Vec<_>, Vec<_>) = (0..device.num_vports())
@@ -926,8 +918,8 @@ impl HclNetworkVFManager {
             endpoint_controls,
             vp_count,
             max_sub_channels,
-            dma_buffer,
             dma_mode,
+            dma_client,
         );
 
         // Queue new endpoints.
@@ -935,7 +927,7 @@ impl HclNetworkVFManager {
         // The proxy endpoints are not yet in use, so run them here to switch to the queued endpoints.
         // N.B Endpoint should not return any other action type other than `RestartRequired`
         //     at this time because the notification task hasn't been started yet.
-        futures::future::join_all(endpoints.iter_mut().map(|endpoint| async {
+        futures::future::join_all(endpoints.iter_mut().map(async |endpoint| {
             let message = endpoint.wait_for_endpoint_action().await;
             assert_eq!(message, net_backend::EndpointAction::RestartRequired);
         }))

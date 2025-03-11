@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 mod bnic;
 mod dma;
 mod hwc;
@@ -56,8 +58,8 @@ use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
 use vmcore::vm_task::VmTaskDriverSource;
-use zerocopy::AsBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 const REGMAP: Range<usize> = 0..40;
 const SHMEM: Range<usize> = 40..72;
@@ -173,7 +175,7 @@ impl GdmaDevice {
         Self {
             config,
             msix,
-            shmem: Shmem(FromZeroes::new_zeroed()),
+            shmem: Shmem(FromZeros::new_zeroed()),
             regmap,
             queues,
             destroying_hwc: false,
@@ -201,7 +203,7 @@ impl GdmaDevice {
     }
 
     fn write_shmem(&mut self, offset: usize, data: &[u8]) {
-        self.shmem.0.as_bytes_mut()[offset..offset + data.len()].copy_from_slice(data);
+        self.shmem.0.as_mut_bytes()[offset..offset + data.len()].copy_from_slice(data);
         if (SHMEM_LEN - 4..SHMEM_LEN).overlaps_range(&(offset..offset + data.len())) {
             let status = match self.handle_smc() {
                 Ok(true) => 0,

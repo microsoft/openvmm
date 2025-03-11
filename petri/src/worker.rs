@@ -1,11 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::OpenHclServicingFlags;
+use get_resources::ged::GuestServicingFlags;
 use hvlite_defs::config::Config;
 use hvlite_defs::rpc::PulseSaveRestoreError;
 use hvlite_defs::rpc::VmRpc;
 use hvlite_defs::worker::VmWorkerParameters;
 use hvlite_defs::worker::VM_WORKER;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh_worker::WorkerHandle;
 use mesh_worker::WorkerHost;
@@ -42,7 +45,7 @@ impl Worker {
         ))
     }
 
-    pub(crate) async fn resume(&self) -> Result<bool, mesh::RecvError> {
+    pub(crate) async fn resume(&self) -> Result<bool, RpcError> {
         self.rpc.call(VmRpc::Resume, ()).await
     }
 
@@ -51,18 +54,25 @@ impl Worker {
         Ok(())
     }
 
-    pub(crate) async fn pulse_save_restore(
-        &self,
-    ) -> Result<Result<(), PulseSaveRestoreError>, mesh::RecvError> {
-        self.rpc.call(VmRpc::PulseSaveRestore, ()).await
+    pub(crate) async fn pulse_save_restore(&self) -> Result<(), RpcError<PulseSaveRestoreError>> {
+        self.rpc.call_failable(VmRpc::PulseSaveRestore, ()).await
     }
 
     pub(crate) async fn restart_openhcl(
         &self,
         send: &mesh::Sender<get_resources::ged::GuestEmulationRequest>,
+        flags: OpenHclServicingFlags,
         file: std::fs::File,
     ) -> anyhow::Result<()> {
-        hvlite_helpers::underhill::service_underhill(&self.rpc, send, file).await
+        hvlite_helpers::underhill::service_underhill(
+            &self.rpc,
+            send,
+            GuestServicingFlags {
+                nvme_keepalive: flags.enable_nvme_keepalive,
+            },
+            file,
+        )
+        .await
     }
 
     pub(crate) async fn inspect_all(&self) -> String {

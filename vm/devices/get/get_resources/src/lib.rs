@@ -4,7 +4,6 @@
 //! Resource definitions for the GET family of devices.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 /// Guest Emulation Log device resources.
 pub mod gel {
@@ -80,7 +79,7 @@ pub mod ged {
         /// Access to VTL2 functionality.
         pub guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         /// Notification of firmware events.
-        pub firmware_event_send: Option<mesh::MpscSender<FirmwareEvent>>,
+        pub firmware_event_send: Option<mesh::Sender<FirmwareEvent>>,
         /// Enable secure boot.
         pub secure_boot_enabled: bool,
         /// The secure boot template type.
@@ -151,6 +150,13 @@ pub mod ged {
         const ID: &'static str = "ged";
     }
 
+    /// Define servicing behavior.
+    #[derive(MeshPayload, Default)]
+    pub struct GuestServicingFlags {
+        /// Retain memory for DMA-attached devices.
+        pub nvme_keepalive: bool,
+    }
+
     /// Actions a client can request that the Guest Emulation
     /// Device perform.
     #[derive(MeshPayload)]
@@ -160,7 +166,7 @@ pub mod ged {
         /// Wait for VTL2 to start VTL0.
         WaitForVtl0Start(Rpc<(), Result<(), Vtl0StartError>>),
         /// Save VTL2 state.
-        SaveGuestVtl2State(Rpc<(), Result<(), SaveRestoreError>>),
+        SaveGuestVtl2State(Rpc<GuestServicingFlags, Result<(), SaveRestoreError>>),
         /// Update the VTL2 settings.
         ModifyVtl2Settings(Rpc<Vec<u8>, Result<(), ModifyVtl2SettingsError>>),
     }
@@ -173,7 +179,7 @@ pub mod ged {
     /// The various errors that can occur during a save or restore
     /// operation for guest VTL2 state.
     #[derive(Debug, Error, MeshPayload)]
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     pub enum SaveRestoreError {
         #[error("an operation is in progress")]
         OperationInProgress,
@@ -185,7 +191,7 @@ pub mod ged {
 
     /// An error that can occur during a VTL2 settings update.
     #[derive(Debug, Error, MeshPayload)]
-    #[allow(missing_docs)]
+    #[expect(missing_docs)]
     pub enum ModifyVtl2SettingsError {
         #[error("large settings not supported")]
         LargeSettingsNotSupported,

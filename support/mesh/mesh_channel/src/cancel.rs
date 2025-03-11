@@ -482,7 +482,7 @@ mod tests {
         assert!(futures::poll!(ctx.cancelled()).is_ready());
     }
 
-    #[allow(clippy::redundant_clone)] // explicitly testing chained clones
+    #[expect(clippy::redundant_clone, reason = "explicitly testing chained clones")]
     async fn chain(use_cancel: bool) {
         let ctx = CancelContext::new();
         let (mut ctx, mut cancel) = ctx.with_cancel();

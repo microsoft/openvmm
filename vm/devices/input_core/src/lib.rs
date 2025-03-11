@@ -4,7 +4,6 @@
 //! Common input device-related definitions.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod mesh_input;
 

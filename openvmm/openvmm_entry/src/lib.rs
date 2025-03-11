@@ -4,7 +4,10 @@
 //! This module implements the interactive control process and the entry point
 //! for the worker process.
 
+#![expect(missing_docs)]
+
 mod cli_args;
+mod crash_dump;
 mod meshworker;
 mod serial_io;
 mod storage_builder;
@@ -28,9 +31,12 @@ use cli_args::NicConfigCli;
 use cli_args::SerialConfigCli;
 use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
+use crash_dump::spawn_dump_handler;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
+use disk_backend_resources::layer::SqliteAutoCacheDiskLayerHandle;
 use disk_backend_resources::layer::SqliteDiskLayerHandle;
+use disk_backend_resources::DiskLayerDescription;
 use floppy_resources::FloppyDiskConfig;
 use framebuffer::FramebufferAccess;
 use framebuffer::FRAMEBUFFER_SIZE;
@@ -44,6 +50,7 @@ use futures::StreamExt;
 use futures_concurrency::stream::Merge;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
+use get_resources::ged::GuestServicingFlags;
 use guid::Guid;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
@@ -65,7 +72,6 @@ use hvlite_defs::rpc::PulseSaveRestoreError;
 use hvlite_defs::rpc::VmRpc;
 use hvlite_defs::worker::VmWorkerParameters;
 use hvlite_defs::worker::VM_WORKER;
-use hvlite_helpers::crash_dump::spawn_dump_handler;
 use hvlite_helpers::disk::open_disk_type;
 use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
@@ -73,9 +79,9 @@ use inspect::InspectionBuilder;
 use io::Read;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh::CancelContext;
-use mesh::RecvError;
 use mesh_worker::launch_local_worker;
 use mesh_worker::WorkerEvent;
 use mesh_worker::WorkerHandle;
@@ -126,6 +132,7 @@ use vm_manifest_builder::MachineArch;
 use vm_manifest_builder::VmChipsetResult;
 use vm_manifest_builder::VmManifestBuilder;
 use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::DiskLayerHandleKind;
 use vm_resource::kind::NetEndpointHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
@@ -187,14 +194,9 @@ fn vm_config_from_command_line(
     spawner: impl Spawn,
     opt: &Options,
 ) -> anyhow::Result<(Config, VmResources)> {
-    let serial_pool = DefaultPool::new();
-    let serial_driver = serial_pool.driver();
+    let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
     // Ensure the serial driver stays alive with no tasks.
     serial_driver.spawn("leak", pending::<()>()).detach();
-    thread::Builder::new()
-        .name("serial".to_string())
-        .spawn(|| serial_pool.run())
-        .unwrap();
 
     let openhcl_vtl = if opt.vtl2 {
         DeviceVtl::Vtl2
@@ -558,7 +560,7 @@ fn vm_config_from_command_line(
         tracing::info!("Instantiating MCR controller");
 
         // Arbitrary but constant instance ID to be consistent across boots.
-        const MCR_INSTANCE_ID: Guid = Guid::from_static_str("07effd8f-7501-426c-a947-d8345f39113d");
+        const MCR_INSTANCE_ID: Guid = guid::guid!("07effd8f-7501-426c-a947-d8345f39113d");
 
         vpci_devices.push(VpciDeviceConfig {
             vtl: DeviceVtl::Vtl0,
@@ -579,8 +581,7 @@ fn vm_config_from_command_line(
         getrandom::getrandom(&mut mac_address[3..]).expect("rng failure");
 
         // Pick a fixed instance ID based on the index.
-        const BASE_INSTANCE_ID: Guid =
-            Guid::from_static_str("00000000-435d-11ee-9f59-00155d5016fc");
+        const BASE_INSTANCE_ID: Guid = guid::guid!("00000000-435d-11ee-9f59-00155d5016fc");
         let instance_id = Guid {
             data1: index as u32,
             ..BASE_INSTANCE_ID
@@ -1272,7 +1273,6 @@ fn vm_config_from_command_line(
                         Some(LateMapVtl0MemoryPolicy::InjectException)
                     }
                 },
-                vtl2_emulates_apic: opt.vtl2_emulates_apic,
             }),
             with_isolation,
             user_mode_hv_enlightenments: opt.no_enlightenments,
@@ -1280,7 +1280,7 @@ fn vm_config_from_command_line(
         },
         #[cfg(windows)]
         kernel_vmnics,
-        input: mesh::MpscReceiver::new(),
+        input: mesh::Receiver::new(),
         framebuffer,
         vga_firmware,
         vtl2_gfx: opt.vtl2_gfx,
@@ -1329,9 +1329,9 @@ fn cleanup_socket(path: &Path) {
     #[cfg(windows)]
     let is_socket = pal::windows::fs::is_unix_socket(path).unwrap_or(false);
     #[cfg(not(windows))]
-    let is_socket = path.metadata().map_or(false, |meta| {
-        std::os::unix::fs::FileTypeExt::is_socket(&meta.file_type())
-    });
+    let is_socket = path
+        .metadata()
+        .is_ok_and(|meta| std::os::unix::fs::FileTypeExt::is_socket(&meta.file_type()));
 
     if is_socket {
         let _ = std::fs::remove_file(path);
@@ -1405,7 +1405,7 @@ fn parse_endpoint(
     getrandom::getrandom(&mut mac_address[3..]).expect("rng failure");
 
     // Pick a fixed instance ID based on the index.
-    const BASE_INSTANCE_ID: Guid = Guid::from_static_str("00000000-da43-11ed-936a-00155d6db52f");
+    const BASE_INSTANCE_ID: Guid = guid::guid!("00000000-da43-11ed-936a-00155d6db52f");
     let instance_id = Guid {
         data1: *index as u32,
         ..BASE_INSTANCE_ID
@@ -1445,46 +1445,82 @@ impl NicConfig {
     }
 }
 
+enum LayerOrDisk {
+    Layer(DiskLayerDescription),
+    Disk(Resource<DiskHandleKind>),
+}
+
 fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource<DiskHandleKind>> {
-    let disk_type = match disk_cli {
+    let mut layers = Vec::new();
+    disk_open_inner(disk_cli, read_only, &mut layers)?;
+    if layers.len() == 1 && matches!(layers[0], LayerOrDisk::Disk(_)) {
+        let LayerOrDisk::Disk(disk) = layers.pop().unwrap() else {
+            unreachable!()
+        };
+        Ok(disk)
+    } else {
+        Ok(Resource::new(disk_backend_resources::LayeredDiskHandle {
+            layers: layers
+                .into_iter()
+                .map(|layer| match layer {
+                    LayerOrDisk::Layer(layer) => layer,
+                    LayerOrDisk::Disk(disk) => DiskLayerDescription {
+                        layer: DiskLayerHandle(disk).into_resource(),
+                        read_cache: false,
+                        write_through: false,
+                    },
+                })
+                .collect(),
+        }))
+    }
+}
+
+fn disk_open_inner(
+    disk_cli: &DiskCliKind,
+    read_only: bool,
+    layers: &mut Vec<LayerOrDisk>,
+) -> anyhow::Result<()> {
+    fn layer<T: IntoResource<DiskLayerHandleKind>>(layer: T) -> LayerOrDisk {
+        LayerOrDisk::Layer(layer.into_resource().into())
+    }
+    fn disk<T: IntoResource<DiskHandleKind>>(disk: T) -> LayerOrDisk {
+        LayerOrDisk::Disk(disk.into_resource())
+    }
+    match disk_cli {
         &DiskCliKind::Memory(len) => {
-            Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
-                RamDiskLayerHandle { len: Some(len) },
-            ))
+            layers.push(layer(RamDiskLayerHandle { len: Some(len) }));
         }
-        DiskCliKind::File(path) => open_disk_type(path, read_only)
-            .with_context(|| format!("failed to open {}", path.display()))?,
-        DiskCliKind::Blob { kind, url } => Resource::new(disk_backend_resources::BlobDiskHandle {
-            url: url.to_owned(),
-            format: match kind {
-                cli_args::BlobKind::Flat => disk_backend_resources::BlobDiskFormat::Flat,
-                cli_args::BlobKind::Vhd1 => disk_backend_resources::BlobDiskFormat::FixedVhd1,
-            },
-        }),
+        DiskCliKind::File(path) => layers.push(LayerOrDisk::Disk(
+            open_disk_type(path, read_only)
+                .with_context(|| format!("failed to open {}", path.display()))?,
+        )),
+        DiskCliKind::Blob { kind, url } => {
+            layers.push(disk(disk_backend_resources::BlobDiskHandle {
+                url: url.to_owned(),
+                format: match kind {
+                    cli_args::BlobKind::Flat => disk_backend_resources::BlobDiskFormat::Flat,
+                    cli_args::BlobKind::Vhd1 => disk_backend_resources::BlobDiskFormat::FixedVhd1,
+                },
+            }))
+        }
         DiskCliKind::MemoryDiff(inner) => {
-            Resource::new(disk_backend_resources::LayeredDiskHandle {
-                layers: vec![
-                    RamDiskLayerHandle { len: None }.into_resource().into(),
-                    DiskLayerHandle(disk_open(inner, true)?)
-                        .into_resource()
-                        .into(),
-                ],
-            })
+            layers.push(layer(RamDiskLayerHandle { len: None }));
+            disk_open_inner(inner, true, layers)?;
         }
-        DiskCliKind::PersistentReservationsWrapper(inner) => Resource::new(
+        DiskCliKind::PersistentReservationsWrapper(inner) => layers.push(disk(
             disk_backend_resources::DiskWithReservationsHandle(disk_open(inner, read_only)?),
-        ),
+        )),
         DiskCliKind::Crypt {
-            disk,
+            disk: inner,
             cipher,
             key_file,
-        } => Resource::new(disk_crypt_resources::DiskCryptHandle {
-            disk: disk_open(disk, read_only)?,
+        } => layers.push(disk(disk_crypt_resources::DiskCryptHandle {
+            disk: disk_open(inner, read_only)?,
             cipher: match cipher {
                 cli_args::DiskCipher::XtsAes256 => disk_crypt_resources::Cipher::XtsAes256,
             },
             key: fs_err::read(key_file).context("failed to read key file")?,
-        }),
+        })),
         DiskCliKind::Sqlite {
             path,
             create_with_len,
@@ -1505,17 +1541,15 @@ fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource
                 _ => {}
             }
 
-            Resource::new(disk_backend_resources::LayeredDiskHandle::single_layer(
-                SqliteDiskLayerHandle {
-                    dbhd_path: path.display().to_string(),
-                    format_dbhd: create_with_len.map(|len| {
-                        disk_backend_resources::layer::SqliteDiskLayerFormatParams {
-                            logically_read_only: false,
-                            len: Some(len),
-                        }
-                    }),
-                },
-            ))
+            layers.push(layer(SqliteDiskLayerHandle {
+                dbhd_path: path.display().to_string(),
+                format_dbhd: create_with_len.map(|len| {
+                    disk_backend_resources::layer::SqliteDiskLayerFormatParams {
+                        logically_read_only: false,
+                        len: Some(len),
+                    }
+                }),
+            }));
         }
         DiskCliKind::SqliteDiff { path, create, disk } => {
             // FUTURE: this code should be responsible for opening
@@ -1534,28 +1568,35 @@ fn disk_open(disk_cli: &DiskCliKind, read_only: bool) -> anyhow::Result<Resource
                 _ => {}
             }
 
-            Resource::new(disk_backend_resources::LayeredDiskHandle {
-                layers: vec![
-                    SqliteDiskLayerHandle {
-                        dbhd_path: path.display().to_string(),
-                        format_dbhd: create.then_some(
-                            disk_backend_resources::layer::SqliteDiskLayerFormatParams {
-                                logically_read_only: false,
-                                len: None,
-                            },
-                        ),
-                    }
-                    .into_resource()
-                    .into(),
-                    DiskLayerHandle(disk_open(disk, true)?)
-                        .into_resource()
-                        .into(),
-                ],
-            })
+            layers.push(layer(SqliteDiskLayerHandle {
+                dbhd_path: path.display().to_string(),
+                format_dbhd: create.then_some(
+                    disk_backend_resources::layer::SqliteDiskLayerFormatParams {
+                        logically_read_only: false,
+                        len: None,
+                    },
+                ),
+            }));
+            disk_open_inner(disk, true, layers)?;
         }
-    };
-
-    Ok(disk_type)
+        DiskCliKind::AutoCacheSqlite {
+            cache_path,
+            key,
+            disk,
+        } => {
+            layers.push(LayerOrDisk::Layer(DiskLayerDescription {
+                read_cache: true,
+                write_through: false,
+                layer: SqliteAutoCacheDiskLayerHandle {
+                    cache_path: cache_path.clone(),
+                    cache_key: key.clone(),
+                }
+                .into_resource(),
+            }));
+            disk_open_inner(disk, read_only, layers)?;
+        }
+    }
+    Ok(())
 }
 
 fn do_main() -> anyhow::Result<()> {
@@ -1610,7 +1651,7 @@ fn do_main() -> anyhow::Result<()> {
             Ok(())
         })
     } else {
-        DefaultPool::run_with(|driver| async move {
+        DefaultPool::run_with(async |driver| {
             let mesh = VmmMesh::new(&driver, opt.single_process)?;
             let result = run_control(&driver, &mesh, opt).await;
             mesh.shutdown().await;
@@ -1915,7 +1956,6 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
 
     // spin up the VM
     let (vm_rpc, rpc_recv) = mesh::channel();
-    let vm_rpc = Arc::new(vm_rpc);
     let (notify_send, notify_recv) = mesh::channel();
     let mut vm_worker = {
         let vm_host = mesh.make_host("vm", opt.log_file.clone()).await?;
@@ -2092,7 +2132,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         })
         .unwrap();
 
-    let mut state_change_task = None::<Task<Result<StateChange, RecvError>>>;
+    let mut state_change_task = None::<Task<Result<StateChange, RpcError>>>;
     let mut pulse_save_restore_interval: Option<Duration> = None;
     let mut pending_shutdown = None;
 
@@ -2113,8 +2153,8 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         PulseSaveRestore,
         Worker(WorkerEvent),
         VncWorker(WorkerEvent),
-        StateChange(Result<StateChange, RecvError>),
-        ShutdownResult(Result<hyperv_ic_resources::shutdown::ShutdownResult, RecvError>),
+        StateChange(Result<StateChange, RpcError>),
+        ShutdownResult(Result<hyperv_ic_resources::shutdown::ShutdownResult, RpcError>),
     }
 
     let mut console_command_recv = console_command_recv
@@ -2360,7 +2400,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         fn state_change<U: 'static + Send>(
             driver: impl Spawn,
             vm_rpc: &mesh::Sender<VmRpc>,
-            state_change_task: &mut Option<Task<Result<StateChange, RecvError>>>,
+            state_change_task: &mut Option<Task<Result<StateChange, RpcError>>>,
             f: impl FnOnce(Rpc<(), U>) -> VmRpc,
             g: impl FnOnce(U) -> StateChange + 'static + Send,
         ) {
@@ -2584,7 +2624,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             }
             InteractiveCommand::RestartVnc => {
                 if let Some(vnc) = &mut vnc_worker {
-                    let action = || async move {
+                    let action = async {
                         let vnc_host = mesh
                             .make_host("vnc", None)
                             .await
@@ -2594,7 +2634,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         anyhow::Result::<_>::Ok(())
                     };
 
-                    if let Err(error) = (action)().await {
+                    if let Err(error) = action.await {
                         eprintln!("error: {}", error);
                     }
                 } else {
@@ -2603,7 +2643,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             }
             InteractiveCommand::Hvsock { term, port } => {
                 let vm_rpc = &vm_rpc;
-                let action = || async move {
+                let action = async || {
                     let service_id = new_hvsock_service_id(port);
                     let socket = vm_rpc
                         .call_failable(
@@ -2649,6 +2689,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         hvlite_helpers::underhill::service_underhill(
                             &vm_rpc,
                             resources.ged_rpc.as_ref().context("no GED")?,
+                            GuestServicingFlags::default(),
                             file.into(),
                         )
                         .await?;
@@ -2786,7 +2827,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
 
 struct DiagDialer {
     driver: DefaultDriver,
-    vm_rpc: Arc<mesh::Sender<VmRpc>>,
+    vm_rpc: mesh::Sender<VmRpc>,
     openhcl_vtl: DeviceVtl,
 }
 

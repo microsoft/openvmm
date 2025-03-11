@@ -102,11 +102,6 @@ pub struct Options {
     #[clap(long, requires("vtl2"))]
     pub no_alias_map: bool,
 
-    /// The vtl2 paravisor has an APIC emulator, so do not emulate lower VTL
-    /// APICs on the host.
-    #[clap(long, requires("vtl2"))]
-    pub vtl2_emulates_apic: bool,
-
     /// enable isolation emulation
     #[clap(long, requires("vtl2"))]
     pub isolation: Option<IsolationCli>,
@@ -381,7 +376,7 @@ flags:
     ///
     /// Used internally for debugging and diagnostics.
     #[clap(long, default_value = "control", hide(true))]
-    #[allow(clippy::option_option)]
+    #[expect(clippy::option_option)]
     pub internal_worker: Option<Option<String>>,
 
     /// redirect the VTL 0 vmbus control plane to a proxy in VTL 2.
@@ -637,6 +632,12 @@ pub enum DiskCliKind {
         create: bool,
         disk: Box<DiskCliKind>,
     },
+    // autocache:[key]:<kind>
+    AutoCacheSqlite {
+        cache_path: String,
+        key: Option<String>,
+        disk: Box<DiskCliKind>,
+    },
     // prwrap:<kind>
     PersistentReservationsWrapper(Box<DiskCliKind>),
     // file:<path>
@@ -713,6 +714,16 @@ impl FromStr for DiskCliKind {
                             create: false,
                             disk,
                         },
+                    }
+                }
+                "autocache" => {
+                    let (key, kind) = arg.split_once(':').context("expected [key]:kind")?;
+                    let cache_path = std::env::var("OPENVMM_AUTO_CACHE_PATH")
+                        .context("must set cache path via OPENVMM_AUTO_CACHE_PATH")?;
+                    DiskCliKind::AutoCacheSqlite {
+                        cache_path,
+                        key: (!key.is_empty()).then(|| key.to_string()),
+                        disk: Box::new(kind.parse()?),
                     }
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),

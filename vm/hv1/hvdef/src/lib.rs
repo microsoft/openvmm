@@ -3,6 +3,7 @@
 
 //! Microsoft hypervisor definitions.
 
+#![expect(missing_docs)]
 #![no_std]
 
 use bitfield_struct::bitfield;
@@ -10,9 +11,11 @@ use core::fmt::Debug;
 use core::mem::size_of;
 use open_enum::open_enum;
 use static_assertions::const_assert;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 pub const HV_PAGE_SIZE: u64 = 4096;
 pub const HV_PAGE_SIZE_USIZE: usize = 4096;
@@ -95,7 +98,7 @@ pub struct HvPartitionPrivilege {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvPartitionIsolationType: u8 {
         NONE = 0,
         VBS = 1,
@@ -244,7 +247,7 @@ pub struct HvIsolationConfiguration {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HypercallCode: u16 {
         #![allow(non_upper_case_globals)]
 
@@ -342,153 +345,247 @@ pub const HV_X64_MSR_GUEST_CRASH_CTL: u32 = 0x40000105;
 
 pub const HV_X64_GUEST_CRASH_PARAMETER_MSRS: usize = 5;
 
-open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
-    pub enum HvError: u16 {
-        #![allow(non_upper_case_globals)]
+/// A hypervisor status code.
+///
+/// The non-success status codes are defined in [`HvError`].
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct HvStatus(pub u16);
 
-        InvalidHypercallCode = 0x0002,
-        InvalidHypercallInput = 0x0003,
-        InvalidAlignment = 0x0004,
-        InvalidParameter = 0x0005,
-        AccessDenied = 0x0006,
-        InvalidPartitionState = 0x0007,
-        OperationDenied = 0x0008,
-        UnknownProperty = 0x0009,
-        PropertyValueOutOfRange = 0x000A,
-        InsufficientMemory = 0x000B,
-        PartitionTooDeep = 0x000C,
-        InvalidPartitionId = 0x000D,
-        InvalidVpIndex = 0x000E,
-        NotFound = 0x0010,
-        InvalidPortId = 0x0011,
-        InvalidConnectionId = 0x0012,
-        InsufficientBuffers = 0x0013,
-        NotAcknowledged = 0x0014,
-        InvalidVpState = 0x0015,
-        Acknowledged = 0x0016,
-        InvalidSaveRestoreState = 0x0017,
-        InvalidSynicState = 0x0018,
-        ObjectInUse = 0x0019,
-        InvalidProximityDomainInfo = 0x001A,
-        NoData = 0x001B,
-        Inactive = 0x001C,
-        NoResources = 0x001D,
-        FeatureUnavailable = 0x001E,
-        PartialPacket = 0x001F,
-        ProcessorFeatureNotSupported = 0x0020,
-        ProcessorCacheLineFlushSizeIncompatible = 0x0030,
-        InsufficientBuffer = 0x0033,
-        IncompatibleProcessor = 0x0037,
-        InsufficientDeviceDomains = 0x0038,
-        CpuidFeatureValidationError = 0x003C,
-        CpuidXsaveFeatureValidationError = 0x003D,
-        ProcessorStartupTimeout = 0x003E,
-        SmxEnabled = 0x003F,
-        InvalidLpIndex = 0x0041,
-        InvalidRegisterValue = 0x0050,
-        InvalidVtlState = 0x0051,
-        NxNotDetected = 0x0055,
-        InvalidDeviceId = 0x0057,
-        InvalidDeviceState = 0x0058,
-        PendingPageRequests = 0x0059,
-        PageRequestInvalid = 0x0060,
-        KeyAlreadyExists = 0x0065,
-        DeviceAlreadyInDomain = 0x0066,
-        InvalidCpuGroupId = 0x006F,
-        InvalidCpuGroupState = 0x0070,
-        OperationFailed = 0x0071,
-        NotAllowedWithNestedVirtActive = 0x0072,
-        InsufficientRootMemory = 0x0073,
-        EventBufferAlreadyFreed = 0x0074,
-        Timeout = 0x0078,
-        VtlAlreadyEnabled = 0x0086,
-        UnknownRegisterName = 0x0087,
+impl HvStatus {
+    /// The success status code.
+    pub const SUCCESS: Self = Self(0);
+
+    /// Returns `Ok(())` if this is `HvStatus::SUCCESS`, otherwise returns an
+    /// `Err(err)` where `err` is the corresponding `HvError`.
+    pub fn result(self) -> HvResult<()> {
+        if let Ok(err) = self.0.try_into() {
+            Err(HvError(err))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Returns true if this is `HvStatus::SUCCESS`.
+    pub fn is_ok(self) -> bool {
+        self == Self::SUCCESS
+    }
+
+    /// Returns true if this is not `HvStatus::SUCCESS`.
+    pub fn is_err(self) -> bool {
+        self != Self::SUCCESS
+    }
+
+    const fn from_bits(bits: u16) -> Self {
+        Self(bits)
+    }
+
+    const fn into_bits(self) -> u16 {
+        self.0
+    }
+}
+
+impl From<Result<(), HvError>> for HvStatus {
+    fn from(err: Result<(), HvError>) -> Self {
+        err.err().map_or(Self::SUCCESS, |err| Self(err.0.get()))
+    }
+}
+
+impl Debug for HvStatus {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.result() {
+            Ok(()) => f.write_str("Success"),
+            Err(err) => Debug::fmt(&err, f),
+        }
+    }
+}
+
+/// An [`HvStatus`] value representing an error.
+//
+// DEVNOTE: use `NonZeroU16` to get a niche optimization, since 0 is reserved
+// for success.
+#[derive(Copy, Clone, PartialEq, Eq, IntoBytes, Immutable, KnownLayout)]
+#[repr(transparent)]
+pub struct HvError(core::num::NonZeroU16);
+
+impl From<core::num::NonZeroU16> for HvError {
+    fn from(err: core::num::NonZeroU16) -> Self {
+        Self(err)
+    }
+}
+
+impl Debug for HvError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.debug_name() {
+            Some(name) => f.pad(name),
+            None => Debug::fmt(&self.0.get(), f),
+        }
     }
 }
 
 impl core::fmt::Display for HvError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let error_str = match *self {
-            HvError::InvalidHypercallCode => "Invalid hypercall code",
-            HvError::InvalidHypercallInput => "Invalid hypercall input",
-            HvError::InvalidAlignment => "Invalid alignment",
-            HvError::InvalidParameter => "Invalid parameter",
-            HvError::AccessDenied => "Access denied",
-            HvError::InvalidPartitionState => "Invalid partition state",
-            HvError::OperationDenied => "Operation denied",
-            HvError::UnknownProperty => "Unknown property",
-            HvError::PropertyValueOutOfRange => "Property value out of range",
-            HvError::InsufficientMemory => "Insufficient memory",
-            HvError::PartitionTooDeep => "Partition too deep",
-            HvError::InvalidPartitionId => "Invalid partition ID",
-            HvError::InvalidVpIndex => "Invalid VP index",
-            HvError::NotFound => "Not found",
-            HvError::InvalidPortId => "Invalid port ID",
-            HvError::InvalidConnectionId => "Invalid connection ID",
-            HvError::InsufficientBuffers => "Insufficient buffers",
-            HvError::NotAcknowledged => "Not acknowledged",
-            HvError::InvalidVpState => "Invalid VP state",
-            HvError::Acknowledged => "Acknowledged",
-            HvError::InvalidSaveRestoreState => "Invalid save restore state",
-            HvError::InvalidSynicState => "Invalid SynIC state",
-            HvError::ObjectInUse => "Object in use",
-            HvError::InvalidProximityDomainInfo => "Invalid proximity domain info",
-            HvError::NoData => "No data",
-            HvError::Inactive => "Inactive",
-            HvError::NoResources => "No resources",
-            HvError::FeatureUnavailable => "Feature unavailable",
-            HvError::PartialPacket => "Partial packet",
-            HvError::ProcessorFeatureNotSupported => "Processor feature not supported",
-            HvError::ProcessorCacheLineFlushSizeIncompatible => {
-                "Processor cache line flush size incompatible"
-            }
-            HvError::InsufficientBuffer => "Insufficient buffer",
-            HvError::IncompatibleProcessor => "Incompatible processor",
-            HvError::InsufficientDeviceDomains => "Insufficient device domains",
-            HvError::CpuidFeatureValidationError => "CPUID feature validation error",
-            HvError::CpuidXsaveFeatureValidationError => "CPUID XSAVE feature validation error",
-            HvError::ProcessorStartupTimeout => "Processor startup timeout",
-            HvError::SmxEnabled => "SMX enabled",
-            HvError::InvalidLpIndex => "Invalid LP index",
-            HvError::InvalidRegisterValue => "Invalid register value",
-            HvError::InvalidVtlState => "Invalid VTL state",
-            HvError::NxNotDetected => "NX not detected",
-            HvError::InvalidDeviceId => "Invalid device ID",
-            HvError::InvalidDeviceState => "Invalid device state",
-            HvError::PendingPageRequests => "Pending page requests",
-            HvError::PageRequestInvalid => "Page request invalid",
-            HvError::KeyAlreadyExists => "Key already exists",
-            HvError::DeviceAlreadyInDomain => "Device already in domain",
-            HvError::InvalidCpuGroupId => "Invalid CPU group ID",
-            HvError::InvalidCpuGroupState => "Invalid CPU group state",
-            HvError::OperationFailed => "Operation failed",
-            HvError::NotAllowedWithNestedVirtActive => {
-                "Not allowed with nested virtualization active"
-            }
-            HvError::InsufficientRootMemory => "Insufficient root memory",
-            HvError::EventBufferAlreadyFreed => "Event buffer already freed",
-            HvError::Timeout => "The specified timeout expired before the operation completed.",
-            HvError::VtlAlreadyEnabled => {
-                "The VTL specified for the operation is already in an enabled state."
-            }
-            other => return write!(f, "Hypervisor error {:#06x}", other.0),
-        };
-        f.write_str(error_str)
+        match self.doc_str() {
+            Some(s) => f.write_str(s),
+            None => write!(f, "Hypervisor error {:#06x}", self.0),
+        }
     }
 }
 
 impl core::error::Error for HvError {}
 
-/// Hypervisor result type for simple hypercalls, or code where only an HV_STATUS is to be returned.
-/// The error is an `HvError` and the success value `T` is the output data of the hypercall.
-pub type HvResult<T> = Result<T, HvError>;
+macro_rules! hv_error {
+    ($ty:ty, $(#[doc = $doc:expr] $ident:ident = $val:expr),* $(,)?) => {
 
-/// Hypervisor result type for rep hypercalls. These hypercalls have either no or only rep output
-/// data, which is passed separately from the result. The error is an a tuple consisting of an
-/// `HvError` and the number of elements successfully processed prior to the error being returned.
-/// An `Ok` result implies that all input elements were processed successfully.
-pub type HvRepResult = Result<(), (HvError, usize)>;
+        #[allow(non_upper_case_globals)]
+        impl $ty {
+            $(
+                #[doc = $doc]
+                pub const $ident: Self = Self(core::num::NonZeroU16::new($val).unwrap());
+            )*
+
+            fn debug_name(&self) -> Option<&'static str> {
+                Some(match self.0.get() {
+                    $(
+                        $val => stringify!($ident),
+                    )*
+                    _ => return None,
+                })
+            }
+
+            fn doc_str(&self) -> Option<&'static str> {
+                Some(match self.0.get() {
+                    $(
+                        $val => $doc,
+                    )*
+                    _ => return None,
+                })
+            }
+        }
+    };
+}
+
+// DEVNOTE: the doc comments here are also used as the runtime error strings.
+hv_error! {
+    HvError,
+    /// Invalid hypercall code
+    InvalidHypercallCode = 0x0002,
+    /// Invalid hypercall input
+    InvalidHypercallInput = 0x0003,
+    /// Invalid alignment
+    InvalidAlignment = 0x0004,
+    /// Invalid parameter
+    InvalidParameter = 0x0005,
+    /// Access denied
+    AccessDenied = 0x0006,
+    /// Invalid partition state
+    InvalidPartitionState = 0x0007,
+    /// Operation denied
+    OperationDenied = 0x0008,
+    /// Unknown property
+    UnknownProperty = 0x0009,
+    /// Property value out of range
+    PropertyValueOutOfRange = 0x000A,
+    /// Insufficient memory
+    InsufficientMemory = 0x000B,
+    /// Partition too deep
+    PartitionTooDeep = 0x000C,
+    /// Invalid partition ID
+    InvalidPartitionId = 0x000D,
+    /// Invalid VP index
+    InvalidVpIndex = 0x000E,
+    /// Not found
+    NotFound = 0x0010,
+    /// Invalid port ID
+    InvalidPortId = 0x0011,
+    /// Invalid connection ID
+    InvalidConnectionId = 0x0012,
+    /// Insufficient buffers
+    InsufficientBuffers = 0x0013,
+    /// Not acknowledged
+    NotAcknowledged = 0x0014,
+    /// Invalid VP state
+    InvalidVpState = 0x0015,
+    /// Acknowledged
+    Acknowledged = 0x0016,
+    /// Invalid save restore state
+    InvalidSaveRestoreState = 0x0017,
+    /// Invalid SynIC state
+    InvalidSynicState = 0x0018,
+    /// Object in use
+    ObjectInUse = 0x0019,
+    /// Invalid proximity domain info
+    InvalidProximityDomainInfo = 0x001A,
+    /// No data
+    NoData = 0x001B,
+    /// Inactive
+    Inactive = 0x001C,
+    /// No resources
+    NoResources = 0x001D,
+    /// Feature unavailable
+    FeatureUnavailable = 0x001E,
+    /// Partial packet
+    PartialPacket = 0x001F,
+    /// Processor feature not supported
+    ProcessorFeatureNotSupported = 0x0020,
+    /// Processor cache line flush size incompatible
+    ProcessorCacheLineFlushSizeIncompatible = 0x0030,
+    /// Insufficient buffer
+    InsufficientBuffer = 0x0033,
+    /// Incompatible processor
+    IncompatibleProcessor = 0x0037,
+    /// Insufficient device domains
+    InsufficientDeviceDomains = 0x0038,
+    /// CPUID feature validation error
+    CpuidFeatureValidationError = 0x003C,
+    /// CPUID XSAVE feature validation error
+    CpuidXsaveFeatureValidationError = 0x003D,
+    /// Processor startup timeout
+    ProcessorStartupTimeout = 0x003E,
+    /// SMX enabled
+    SmxEnabled = 0x003F,
+    /// Invalid LP index
+    InvalidLpIndex = 0x0041,
+    /// Invalid register value
+    InvalidRegisterValue = 0x0050,
+    /// Invalid VTL state
+    InvalidVtlState = 0x0051,
+    /// NX not detected
+    NxNotDetected = 0x0055,
+    /// Invalid device ID
+    InvalidDeviceId = 0x0057,
+    /// Invalid device state
+    InvalidDeviceState = 0x0058,
+    /// Pending page requests
+    PendingPageRequests = 0x0059,
+    /// Page request invalid
+    PageRequestInvalid = 0x0060,
+    /// Key already exists
+    KeyAlreadyExists = 0x0065,
+    /// Device already in domain
+    DeviceAlreadyInDomain = 0x0066,
+    /// Invalid CPU group ID
+    InvalidCpuGroupId = 0x006F,
+    /// Invalid CPU group state
+    InvalidCpuGroupState = 0x0070,
+    /// Operation failed
+    OperationFailed = 0x0071,
+    /// Not allowed with nested virtualization active
+    NotAllowedWithNestedVirtActive = 0x0072,
+    /// Insufficient root memory
+    InsufficientRootMemory = 0x0073,
+    /// Event buffer already freed
+    EventBufferAlreadyFreed = 0x0074,
+    /// The specified timeout expired before the operation completed.
+    Timeout = 0x0078,
+    /// The VTL specified for the operation is already in an enabled state.
+    VtlAlreadyEnabled = 0x0086,
+    /// Unknown register name
+    UnknownRegisterName = 0x0087,
+}
+
+/// A useful result type for hypervisor operations.
+pub type HvResult<T> = Result<T, HvError>;
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -538,7 +635,7 @@ pub struct GuestCrashCtl {
 }
 
 #[repr(C, align(16))]
-#[derive(Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct AlignedU128([u8; 16]);
 
 impl AlignedU128 {
@@ -594,7 +691,7 @@ impl From<AlignedU128> for u128 {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvMessageType: u32 {
         #![allow(non_upper_case_globals)]
 
@@ -650,7 +747,7 @@ pub const NUM_SINTS: usize = 16;
 pub const NUM_TIMERS: usize = 4;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMessageHeader {
     pub typ: HvMessageType,
     pub len: u8,
@@ -660,7 +757,7 @@ pub struct HvMessageHeader {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMessageFlags {
     pub message_pending: bool,
     #[bits(7)]
@@ -672,7 +769,7 @@ const_assert!(HV_MESSAGE_SIZE == 256);
 pub const HV_MESSAGE_PAYLOAD_SIZE: usize = 240;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMessage {
     pub header: HvMessageHeader,
     pub payload_buffer: [u8; HV_MESSAGE_PAYLOAD_SIZE],
@@ -681,7 +778,7 @@ pub struct HvMessage {
 impl Default for HvMessage {
     fn default() -> Self {
         Self {
-            header: FromZeroes::new_zeroed(),
+            header: FromZeros::new_zeroed(),
             payload_buffer: [0; 240],
         }
     }
@@ -711,7 +808,7 @@ impl HvMessage {
 
     pub fn from_bytes(b: [u8; HV_MESSAGE_SIZE]) -> Self {
         let mut msg = Self::default();
-        msg.as_bytes_mut().copy_from_slice(&b);
+        msg.as_mut_bytes().copy_from_slice(&b);
         msg
     }
 
@@ -723,7 +820,7 @@ impl HvMessage {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TimerMessagePayload {
     pub timer_index: u32,
     pub reserved: u32,
@@ -745,42 +842,39 @@ pub mod hypercall {
         /// The variable header size, in qwords.
         #[bits(10)]
         pub variable_header_size: usize,
-        /// Reserved, must be zero.
         #[bits(4)]
-        pub _rsvd0: usize,
+        _rsvd0: u8,
         /// Specifies that the hypercall should be handled by the L0 hypervisor in a nested environment.
         pub nested: bool,
         /// The element count for rep hypercalls.
         #[bits(12)]
         pub rep_count: usize,
-        /// Reserved, must be zero.
         #[bits(4)]
-        pub _rsvd1: usize,
+        _rsvd1: u8,
         /// The first element to start processing in a rep hypercall.
         #[bits(12)]
         pub rep_start: usize,
-        /// Reserved, must be zero.
         #[bits(4)]
-        pub _rsvd2: usize,
+        _rsvd2: u8,
     }
 
     /// The hypercall output value returned to the guest.
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     #[must_use]
     pub struct HypercallOutput {
-        /// The HV_STATUS returned by the hypervisor.
-        pub call_status: u16,
+        #[bits(16)]
+        pub call_status: HvStatus,
         pub rsvd: u16,
         #[bits(12)]
-        pub elements_processed: u16,
+        pub elements_processed: usize,
         #[bits(20)]
         pub rsvd2: u32,
     }
 
     impl From<HvError> for HypercallOutput {
         fn from(e: HvError) -> Self {
-            Self::new().with_call_status(e.0)
+            Self::new().with_call_status(Err(e).into())
         }
     }
 
@@ -789,16 +883,12 @@ pub mod hypercall {
         pub const SUCCESS: Self = Self::new();
 
         pub fn result(&self) -> Result<(), HvError> {
-            if self.call_status() == 0 {
-                Ok(())
-            } else {
-                Err(HvError(self.call_status()))
-            }
+            self.call_status().result()
         }
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvRegisterAssoc {
         pub name: HvRegisterName,
         pub pad: [u32; 3],
@@ -828,7 +918,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct MsrHypercallContents {
         pub enable: bool,
         pub locked: bool,
@@ -839,7 +929,7 @@ pub mod hypercall {
     }
 
     #[repr(C, align(8))]
-    #[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct PostMessage {
         pub connection_id: u32,
         pub padding: u32,
@@ -849,7 +939,7 @@ pub mod hypercall {
     }
 
     #[repr(C, align(8))]
-    #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct SignalEvent {
         pub connection_id: u32,
         pub flag_number: u16,
@@ -857,7 +947,7 @@ pub mod hypercall {
     }
 
     #[repr(C, packed)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct PostMessageDirect {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -869,7 +959,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct SignalEventDirect {
         pub target_partition: u64,
         pub target_vp: u32,
@@ -879,14 +969,14 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct SignalEventDirectOutput {
         pub newly_signaled: u8,
         pub rsvd: [u8; 7],
     }
 
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct InterruptEntry {
         pub source: HvInterruptSource,
         pub rsvd: u32,
@@ -894,7 +984,7 @@ pub mod hypercall {
     }
 
     open_enum! {
-        #[derive(AsBytes, FromBytes, FromZeroes)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub enum HvInterruptSource: u32 {
             MSI = 1,
             IO_APIC = 2,
@@ -902,7 +992,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct InterruptTarget {
         pub vector: u32,
         pub flags: HvInterruptTargetFlags,
@@ -910,7 +1000,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u32)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvInterruptTargetFlags {
         pub multicast: bool,
         pub processor_set: bool,
@@ -925,7 +1015,7 @@ pub mod hypercall {
     pub const HV_GENERIC_SET_ALL: u64 = 1;
 
     #[repr(C)]
-    #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct RetargetDeviceInterrupt {
         pub partition_id: u64,
         pub device_id: u64,
@@ -935,7 +1025,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u8)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvInputVtl {
         #[bits(4)]
         pub target_vtl_value: u8,
@@ -975,7 +1065,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct GetSetVpRegisters {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -1060,7 +1150,7 @@ pub mod hypercall {
     pub const HV_INTERCEPT_ACCESS_MASK_EXECUTE: u32 = 0x04;
 
     open_enum::open_enum! {
-        #[derive(AsBytes, FromBytes, FromZeroes)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub enum HvInterceptType: u32 {
             #![allow(non_upper_case_globals)]
             HvInterceptTypeX64IoPort = 0x00000000,
@@ -1076,7 +1166,7 @@ pub mod hypercall {
     }
 
     #[repr(transparent)]
-    #[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes, Debug)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
     pub struct HvInterceptParameters(u64);
 
     impl HvInterceptParameters {
@@ -1114,7 +1204,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes, Debug)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
     pub struct InstallIntercept {
         pub partition_id: u64,
         pub access_type_mask: u32,
@@ -1123,7 +1213,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes, Debug)]
+    #[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, Debug)]
     pub struct AssertVirtualInterrupt {
         pub partition_id: u64,
         pub interrupt_control: HvInterruptControl,
@@ -1135,7 +1225,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct StartVirtualProcessorX64 {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -1146,7 +1236,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct InitialVpContextX64 {
         pub rip: u64,
         pub rsp: u64,
@@ -1169,7 +1259,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct StartVirtualProcessorArm64 {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -1180,7 +1270,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct InitialVpContextArm64 {
         pub pc: u64,
         pub sp_elh: u64,
@@ -1228,7 +1318,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateGvaControlFlagsX64 {
         /// Request data read access
         pub validate_read: bool,
@@ -1277,7 +1367,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateGvaControlFlagsArm64 {
         /// Request data read access
         pub validate_read: bool,
@@ -1322,7 +1412,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateVirtualAddressX64 {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -1333,7 +1423,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateVirtualAddressArm64 {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -1368,7 +1458,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateGvaResult {
         pub result_code: u32,
         pub cache_type: u8,
@@ -1378,14 +1468,14 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateVirtualAddressOutput {
         pub translation_result: TranslateGvaResult,
         pub gpa_page: u64,
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateGvaResultExX64 {
         pub result: TranslateGvaResult,
         pub reserved: u64,
@@ -1395,7 +1485,7 @@ pub mod hypercall {
     const_assert!(size_of::<TranslateGvaResultExX64>() == 0x30);
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateGvaResultExArm64 {
         pub result: TranslateGvaResult,
     }
@@ -1403,7 +1493,7 @@ pub mod hypercall {
     const_assert!(size_of::<TranslateGvaResultExArm64>() == 0x8);
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateVirtualAddressExOutputX64 {
         pub translation_result: TranslateGvaResultExX64,
         pub gpa_page: u64,
@@ -1414,7 +1504,7 @@ pub mod hypercall {
     const_assert!(size_of::<TranslateVirtualAddressExOutputX64>() == 0x40);
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct TranslateVirtualAddressExOutputArm64 {
         pub translation_result: TranslateGvaResultExArm64,
         pub gpa_page: u64,
@@ -1423,7 +1513,7 @@ pub mod hypercall {
     const_assert!(size_of::<TranslateVirtualAddressExOutputArm64>() == 0x10);
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct GetVpIndexFromApicId {
         pub partition_id: u64,
         pub target_vtl: u8,
@@ -1431,7 +1521,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct EnableVpVtlX64 {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -1441,7 +1531,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct EnableVpVtlArm64 {
         pub partition_id: u64,
         pub vp_index: u32,
@@ -1451,7 +1541,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ModifyVtlProtectionMask {
         pub partition_id: u64,
         pub map_flags: HvMapGpaFlags,
@@ -1460,7 +1550,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct CheckSparseGpaPageVtlAccess {
         pub partition_id: u64,
         pub target_vtl: HvInputVtl,
@@ -1471,7 +1561,7 @@ pub mod hypercall {
     const_assert!(size_of::<CheckSparseGpaPageVtlAccess>() == 0x10);
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct CheckSparseGpaPageVtlAccessOutput {
         pub result_code: u8,
         pub denied_access: u8,
@@ -1494,7 +1584,7 @@ pub mod hypercall {
     pub const HV_VTL_PERMISSION_SET_SIZE: usize = 2;
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct VtlPermissionSet {
         /// VTL permissions for the GPA page, starting from VTL 1.
         pub vtl_permission_from_1: [u16; HV_VTL_PERMISSION_SET_SIZE],
@@ -1514,7 +1604,7 @@ pub mod hypercall {
         /// read access and upper bit representing host write access, hardware
         /// platforms do not support that form of isolation. Only support
         /// private or full shared in this definition.
-        #[derive(AsBytes, FromBytes, FromZeroes)]
+        #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub enum HostVisibilityType: u8 {
             PRIVATE = 0,
             SHARED = 3,
@@ -1534,7 +1624,7 @@ pub mod hypercall {
 
     /// Attributes for accepting pages. See [`AcceptGpaPages`]
     #[bitfield(u32)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct AcceptPagesAttributes {
         #[bits(6)]
         /// Supplies the expected memory type [`AcceptMemoryType`].
@@ -1550,7 +1640,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct AcceptGpaPages {
         /// Supplies the partition ID of the partition this request is for.
         pub partition_id: u64,
@@ -1587,7 +1677,7 @@ pub mod hypercall {
     const_assert!(size_of::<UnacceptGpaPages>() == 0x18);
 
     #[bitfield(u32)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ModifyHostVisibility {
         #[bits(2)]
         pub host_visibility: HostVisibilityType,
@@ -1596,7 +1686,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct ModifySparsePageVisibility {
         pub partition_id: u64,
         pub host_visibility: ModifyHostVisibility,
@@ -1604,13 +1694,13 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct QuerySparsePageVisibility {
         pub partition_id: u64,
     }
 
     #[bitfield(u8)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct EnablePartitionVtlFlags {
         pub enable_mbec: bool,
         pub enable_supervisor_shadow_stack: bool,
@@ -1620,7 +1710,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct EnablePartitionVtl {
         pub partition_id: u64,
         pub target_vtl: u8,
@@ -1630,7 +1720,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct FlushVirtualAddressSpace {
         pub address_space: u64,
         pub flags: HvFlushFlags,
@@ -1638,7 +1728,7 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct FlushVirtualAddressSpaceEx {
         pub address_space: u64,
         pub flags: HvFlushFlags,
@@ -1646,13 +1736,13 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct PinUnpinGpaPageRangesHeader {
         pub reserved: u64,
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvFlushFlags {
         pub all_processors: bool,
         pub all_virtual_address_spaces: bool,
@@ -1670,7 +1760,7 @@ pub mod hypercall {
         _reserved2: u64,
     }
 
-    #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     #[repr(transparent)]
     pub struct HvGvaRange(pub u64);
 
@@ -1689,7 +1779,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvGvaRangeSimple {
         /// The number of pages beyond one.
         #[bits(12)]
@@ -1700,7 +1790,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvGvaRangeExtended {
         /// The number of pages beyond one.
         #[bits(11)]
@@ -1713,7 +1803,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvGvaRangeExtendedLargePage {
         /// The number of pages beyond one.
         #[bits(11)]
@@ -1731,7 +1821,7 @@ pub mod hypercall {
         pub gva_large_page_number: u64,
     }
 
-    #[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     #[repr(transparent)]
     pub struct HvGpaRange(pub u64);
 
@@ -1750,7 +1840,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvGpaRangeSimple {
         /// The number of pages beyond one.
         #[bits(12)]
@@ -1761,7 +1851,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvGpaRangeExtended {
         /// The number of pages beyond one.
         #[bits(11)]
@@ -1774,7 +1864,7 @@ pub mod hypercall {
     }
 
     #[bitfield(u64)]
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct HvGpaRangeExtendedLargePage {
         /// The number of pages beyond one.
         #[bits(11)]
@@ -1795,7 +1885,7 @@ pub mod hypercall {
     pub const HV_HYPERCALL_MMIO_MAX_DATA_LENGTH: usize = 64;
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct MemoryMappedIoRead {
         pub gpa: u64,
         pub access_width: u32,
@@ -1803,13 +1893,13 @@ pub mod hypercall {
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct MemoryMappedIoReadOutput {
         pub data: [u8; HV_HYPERCALL_MMIO_MAX_DATA_LENGTH],
     }
 
     #[repr(C)]
-    #[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct MemoryMappedIoWrite {
         pub gpa: u64,
         pub access_width: u32,
@@ -1827,7 +1917,7 @@ macro_rules! registers {
         $(,)?
     }) => {
         open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
             pub enum $name: u32 {
         #![allow(non_upper_case_globals)]
                 $($variant = $value,)*
@@ -1942,7 +2032,7 @@ macro_rules! registers {
 /// This exists only to pass registers through layers where the architecture
 /// type has been lost. In general, you should use the arch-specific registers.
 #[repr(C)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvRegisterName(pub u32);
 
 registers! {
@@ -2216,7 +2306,7 @@ registers! {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvRegisterValue(pub AlignedU128);
 
 impl HvRegisterValue {
@@ -2241,11 +2331,15 @@ impl HvRegisterValue {
     }
 
     pub fn as_table(&self) -> HvX64TableRegister {
-        HvX64TableRegister::read_from_prefix(self.as_bytes()).unwrap()
+        HvX64TableRegister::read_from_prefix(self.as_bytes())
+            .unwrap()
+            .0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 
     pub fn as_segment(&self) -> HvX64SegmentRegister {
-        HvX64SegmentRegister::read_from_prefix(self.as_bytes()).unwrap()
+        HvX64SegmentRegister::read_from_prefix(self.as_bytes())
+            .unwrap()
+            .0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 }
 
@@ -2280,7 +2374,7 @@ impl From<u128> for HvRegisterValue {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64TableRegister {
     pub pad: [u16; 3],
     pub limit: u16,
@@ -2289,18 +2383,18 @@ pub struct HvX64TableRegister {
 
 impl From<HvX64TableRegister> for HvRegisterValue {
     fn from(val: HvX64TableRegister) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap()
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 }
 
 impl From<HvRegisterValue> for HvX64TableRegister {
     fn from(val: HvRegisterValue) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap()
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, AsBytes, FromBytes, FromZeroes)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64SegmentRegister {
     pub base: u64,
     pub limit: u32,
@@ -2310,18 +2404,18 @@ pub struct HvX64SegmentRegister {
 
 impl From<HvX64SegmentRegister> for HvRegisterValue {
     fn from(val: HvX64SegmentRegister) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap()
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 }
 
 impl From<HvRegisterValue> for HvX64SegmentRegister {
     fn from(val: HvRegisterValue) -> Self {
-        Self::read_from_prefix(val.as_bytes()).unwrap()
+        Self::read_from_prefix(val.as_bytes()).unwrap().0 // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     }
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes, PartialEq, Eq)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
 pub struct HvDeliverabilityNotificationsRegister {
     /// x86_64 only.
     pub nmi_notification: bool,
@@ -2337,7 +2431,7 @@ pub struct HvDeliverabilityNotificationsRegister {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvVtlEntryReason: u32 {
         /// This reason is reserved and is not used.
         RESERVED = 0,
@@ -2354,7 +2448,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvVpVtlControl {
     //
     // The hypervisor updates the entry reason with an indication as to why the
@@ -2375,7 +2469,7 @@ pub struct HvVpVtlControl {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvRegisterVsmVina {
     pub vector: u8,
     pub enabled: bool,
@@ -2386,7 +2480,7 @@ pub struct HvRegisterVsmVina {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvVpAssistPage {
     /// APIC assist for optimized EOI processing.
     pub apic_assist: u32,
@@ -2408,7 +2502,7 @@ pub struct HvVpAssistPage {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvVpAssistPageActionSignalEvent {
     pub action_type: u64,
     pub target_vp: u32,
@@ -2418,7 +2512,7 @@ pub struct HvVpAssistPageActionSignalEvent {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvInterceptAccessType: u8 {
         READ = 0,
         WRITE = 1,
@@ -2427,7 +2521,7 @@ open_enum! {
 }
 
 #[bitfield(u16)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64VpExecutionState {
     #[bits(2)]
     pub cpl: u8,
@@ -2446,7 +2540,7 @@ pub struct HvX64VpExecutionState {
 }
 
 #[bitfield(u16)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvArm64VpExecutionState {
     #[bits(2)]
     pub cpl: u8,
@@ -2460,7 +2554,7 @@ pub struct HvArm64VpExecutionState {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64InterceptMessageHeader {
     pub vp_index: u32,
     pub instruction_length_and_cr8: u8,
@@ -2482,7 +2576,7 @@ impl HvX64InterceptMessageHeader {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvArm64InterceptMessageHeader {
     pub vp_index: u32,
     pub instruction_length: u8,
@@ -2494,7 +2588,7 @@ pub struct HvArm64InterceptMessageHeader {
 const_assert!(size_of::<HvArm64InterceptMessageHeader>() == 0x18);
 
 #[repr(transparent)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64IoPortAccessInfo(pub u8);
 
 impl HvX64IoPortAccessInfo {
@@ -2526,7 +2620,7 @@ impl HvX64IoPortAccessInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64IoPortInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub port_number: u16,
@@ -2543,7 +2637,7 @@ pub struct HvX64IoPortInterceptMessage {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64MemoryAccessInfo {
     pub gva_valid: bool,
     pub gva_gpa_valid: bool,
@@ -2555,7 +2649,7 @@ pub struct HvX64MemoryAccessInfo {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvArm64MemoryAccessInfo {
     pub gva_valid: bool,
     pub gva_gpa_valid: bool,
@@ -2565,7 +2659,7 @@ pub struct HvArm64MemoryAccessInfo {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvCacheType: u32 {
         #![allow(non_upper_case_globals)]
         HvCacheTypeUncached = 0,
@@ -2577,7 +2671,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64MemoryInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub cache_type: HvCacheType,
@@ -2592,7 +2686,7 @@ pub struct HvX64MemoryInterceptMessage {
 const_assert!(size_of::<HvX64MemoryInterceptMessage>() == 0x50);
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvArm64MemoryInterceptMessage {
     pub header: HvArm64InterceptMessageHeader,
     pub cache_type: HvCacheType,
@@ -2608,7 +2702,7 @@ pub struct HvArm64MemoryInterceptMessage {
 const_assert!(size_of::<HvArm64MemoryInterceptMessage>() == 0x40);
 
 #[repr(C)]
-#[derive(Debug, FromBytes, FromZeroes)]
+#[derive(Debug, FromBytes)]
 pub struct HvArm64MmioInterceptMessage {
     pub header: HvArm64InterceptMessageHeader,
     pub guest_physical_address: u64,
@@ -2618,7 +2712,7 @@ pub struct HvArm64MmioInterceptMessage {
 const_assert!(size_of::<HvArm64MmioInterceptMessage>() == 0x48);
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64MsrInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub msr_number: u32,
@@ -2628,7 +2722,7 @@ pub struct HvX64MsrInterceptMessage {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64SipiInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub target_vp_index: u32,
@@ -2636,7 +2730,7 @@ pub struct HvX64SipiInterceptMessage {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64SynicSintDeliverableMessage {
     pub header: HvX64InterceptMessageHeader,
     pub deliverable_sints: u16,
@@ -2645,7 +2739,7 @@ pub struct HvX64SynicSintDeliverableMessage {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvArm64SynicSintDeliverableMessage {
     pub header: HvArm64InterceptMessageHeader,
     pub deliverable_sints: u16,
@@ -2654,7 +2748,7 @@ pub struct HvArm64SynicSintDeliverableMessage {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64InterruptionDeliverableMessage {
     pub header: HvX64InterceptMessageHeader,
     pub deliverable_type: HvX64PendingInterruptionType,
@@ -2663,7 +2757,7 @@ pub struct HvX64InterruptionDeliverableMessage {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvX64PendingInterruptionType: u8 {
         HV_X64_PENDING_INTERRUPT = 0,
         HV_X64_PENDING_NMI = 2,
@@ -2675,7 +2769,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64HypercallInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub rax: u64,
@@ -2691,7 +2785,7 @@ pub struct HvX64HypercallInterceptMessage {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvArm64HypercallInterceptMessage {
     pub header: HvArm64InterceptMessageHeader,
     pub immediate: u16,
@@ -2701,7 +2795,7 @@ pub struct HvArm64HypercallInterceptMessage {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvHypercallInterceptMessageFlags {
     pub is_isolated: bool,
     #[bits(31)]
@@ -2709,7 +2803,7 @@ pub struct HvHypercallInterceptMessageFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64CpuidInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub rax: u64,
@@ -2723,7 +2817,7 @@ pub struct HvX64CpuidInterceptMessage {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64ExceptionInfo {
     pub error_code_valid: bool,
     pub software_exception: bool,
@@ -2732,7 +2826,7 @@ pub struct HvX64ExceptionInfo {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64ExceptionInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub vector: u16,
@@ -2763,33 +2857,33 @@ pub struct HvX64ExceptionInterceptMessage {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvInvalidVpRegisterMessage {
     pub vp_index: u32,
     pub reserved: u32,
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64ApicEoiMessage {
     pub vp_index: u32,
     pub interrupt_vector: u32,
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64UnrecoverableExceptionMessage {
     pub header: HvX64InterceptMessageHeader,
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64HaltMessage {
     pub header: HvX64InterceptMessageHeader,
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvArm64ResetInterceptMessage {
     pub header: HvArm64InterceptMessageHeader,
     pub reset_type: HvArm64ResetType,
@@ -2797,7 +2891,7 @@ pub struct HvArm64ResetInterceptMessage {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvArm64ResetType: u32 {
         POWER_OFF = 0,
         REBOOT = 1,
@@ -2805,7 +2899,7 @@ open_enum! {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvInterruptType : u32  {
         #![allow(non_upper_case_globals)]
         HvArm64InterruptTypeFixed = 0x0000,
@@ -2829,7 +2923,7 @@ open_enum! {
 /// checks as adding that will require `guest_arch` support and
 /// a large refactoring. To sum up, choosing expediency.
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvInterruptControl {
     interrupt_type_value: u32,
     pub x86_level_triggered: bool,
@@ -2950,7 +3044,7 @@ pub struct HvRegisterVsmCodePageOffsets {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvStimerState {
     pub undelivered_message_pending: u32,
     pub reserved: u32,
@@ -2961,7 +3055,7 @@ pub struct HvStimerState {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvSyntheticTimersState {
     pub timers: [HvStimerState; 4],
     pub reserved: [u64; 5],
@@ -3064,7 +3158,7 @@ pub struct HvX64PendingVirtualizationFaultEvent {
 
 /// Part of [`HvX64PendingEventMemoryIntercept`]
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64PendingEventMemoryInterceptPendingEventHeader {
     pub event_pending: bool,
     #[bits(3)]
@@ -3075,7 +3169,7 @@ pub struct HvX64PendingEventMemoryInterceptPendingEventHeader {
 
 /// Part of [`HvX64PendingEventMemoryIntercept`]
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64PendingEventMemoryInterceptAccessFlags {
     /// Indicates if the guest linear address is valid.
     pub guest_linear_address_valid: bool,
@@ -3088,7 +3182,7 @@ pub struct HvX64PendingEventMemoryInterceptAccessFlags {
 
 /// Provides information about a memory intercept.
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64PendingEventMemoryIntercept {
     pub event_header: HvX64PendingEventMemoryInterceptPendingEventHeader,
     /// VTL at which the memory intercept is targeted.
@@ -3157,7 +3251,7 @@ pub struct HvX64PendingShadowIptEvent {
 }
 
 #[bitfield(u128)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64PendingEventReg0 {
     pub event_pending: bool,
     #[bits(3)]
@@ -3169,7 +3263,7 @@ pub struct HvX64PendingEventReg0 {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64PendingEvent {
     pub reg_0: HvX64PendingEventReg0,
     pub reg_1: AlignedU128,
@@ -3186,7 +3280,7 @@ impl From<HvX64PendingExceptionEvent> for HvX64PendingEvent {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64PendingInterruptionRegister {
     pub interruption_pending: bool,
     #[bits(3)]
@@ -3202,7 +3296,7 @@ pub struct HvX64PendingInterruptionRegister {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64InterruptStateRegister {
     pub interrupt_shadow: bool,
     pub nmi_masked: bool,
@@ -3211,7 +3305,7 @@ pub struct HvX64InterruptStateRegister {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvInstructionEmulatorHintsRegister {
     /// Indicates whether any secure VTL is enabled for the partition.
     pub partition_secure_vtl_enabled: bool,
@@ -3223,7 +3317,7 @@ pub struct HvInstructionEmulatorHintsRegister {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvAarch64PendingEventType: u8 {
         EXCEPTION = 0,
         SYNTHETIC_EXCEPTION = 1,
@@ -3243,7 +3337,7 @@ impl HvAarch64PendingEventType {
 }
 
 #[bitfield[u8]]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvAarch64PendingEventHeader {
     #[bits(1)]
     pub event_pending: bool,
@@ -3254,7 +3348,7 @@ pub struct HvAarch64PendingEventHeader {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvAarch64PendingExceptionEvent {
     pub header: HvAarch64PendingEventHeader,
     pub _padding: [u8; 7],
@@ -3263,7 +3357,7 @@ pub struct HvAarch64PendingExceptionEvent {
 }
 
 #[bitfield[u8]]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvAarch64PendingHypercallOutputEventFlags {
     #[bits(1)]
     pub retired: u8,
@@ -3272,7 +3366,7 @@ pub struct HvAarch64PendingHypercallOutputEventFlags {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvAarch64PendingHypercallOutputEvent {
     pub header: HvAarch64PendingEventHeader,
     pub flags: HvAarch64PendingHypercallOutputEventFlags,
@@ -3282,7 +3376,7 @@ pub struct HvAarch64PendingHypercallOutputEvent {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvAarch64PendingEvent {
     pub header: HvAarch64PendingEventHeader,
     pub event_data: [u8; 15],
@@ -3290,7 +3384,7 @@ pub struct HvAarch64PendingEvent {
 }
 
 #[bitfield(u32)]
-#[derive(PartialEq, Eq, AsBytes, FromBytes, FromZeroes)]
+#[derive(PartialEq, Eq, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMapGpaFlags {
     pub readable: bool,
     pub writable: bool,
@@ -3315,7 +3409,7 @@ pub const HV_MAP_GPA_PERMISSIONS_ALL: HvMapGpaFlags = HvMapGpaFlags::new()
     .with_user_executable(true);
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMonitorPage {
     pub trigger_state: HvMonitorTriggerState,
     pub reserved1: u32,
@@ -3329,7 +3423,7 @@ pub struct HvMonitorPage {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMonitorPageSmall {
     pub trigger_state: HvMonitorTriggerState,
     pub reserved1: u32,
@@ -3337,14 +3431,14 @@ pub struct HvMonitorPageSmall {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMonitorTriggerGroup {
     pub pending: u32,
     pub armed: u32,
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMonitorParameter {
     pub connection_id: u32,
     pub flag_number: u16,
@@ -3352,7 +3446,7 @@ pub struct HvMonitorParameter {
 }
 
 #[bitfield(u32)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvMonitorTriggerState {
     #[bits(4)]
     pub group_enable: u32,
@@ -3361,7 +3455,7 @@ pub struct HvMonitorTriggerState {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvPmTimerInfo {
     #[bits(16)]
     pub port: u16,
@@ -3376,7 +3470,7 @@ pub struct HvPmTimerInfo {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64RegisterSevControl {
     pub enable_encrypted_state: bool,
     #[bits(11)]
@@ -3386,7 +3480,7 @@ pub struct HvX64RegisterSevControl {
 }
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvRegisterReferenceTsc {
     pub enable: bool,
     #[bits(11)]
@@ -3396,7 +3490,7 @@ pub struct HvRegisterReferenceTsc {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvReferenceTscPage {
     pub tsc_sequence: u32,
     pub reserved1: u32,
@@ -3410,7 +3504,7 @@ pub struct HvReferenceTscPage {
 pub const HV_REFERENCE_TSC_SEQUENCE_INVALID: u32 = 0;
 
 #[bitfield(u64)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64VmgexitInterceptMessageFlags {
     pub ghcb_page_valid: bool,
     pub ghcb_request_error: bool,
@@ -3419,7 +3513,7 @@ pub struct HvX64VmgexitInterceptMessageFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64VmgexitInterceptMessageGhcbPageStandard {
     pub ghcb_protocol_version: u16,
     _reserved: [u16; 3],
@@ -3430,7 +3524,7 @@ pub struct HvX64VmgexitInterceptMessageGhcbPageStandard {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64VmgexitInterceptMessageGhcbPage {
     pub ghcb_usage: u32,
     _reserved: u32,
@@ -3438,7 +3532,7 @@ pub struct HvX64VmgexitInterceptMessageGhcbPage {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64VmgexitInterceptMessage {
     pub header: HvX64InterceptMessageHeader,
     pub ghcb_msr: u64,
@@ -3462,7 +3556,7 @@ pub const HV_X64_REGISTER_CLASS_SEGMENT: u8 = 3;
 pub const HV_X64_REGISTER_CLASS_FLAGS: u8 = 4;
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64RegisterPage {
     pub version: u16,
     pub is_valid: u8,

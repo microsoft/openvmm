@@ -67,7 +67,9 @@ impl virt::Synic for WhpPartition {
                         // notification ports are not supported; TODO-remove once old Iron builds age out
                         None
                     }
-                    Err(e) => Some(Err(vmcore::synic::Error::Hypervisor(e.into()))),
+                    Err(e) => Some(Err(vmcore::synic::Error::Hypervisor(
+                        vmcore::synic::HypervisorError(e.into()),
+                    ))),
                 }
             })
             .collect::<Result<_, _>>()?;
@@ -208,7 +210,7 @@ impl GuestEventPort for OffloadedGuestEventPortNoTrigger {
                                 vpref.ensure_vtl_runnable(vtl);
                             }
                         }
-                        Err(err) => match err.hv_result().map(HvError) {
+                        Err(err) => match err.hv_result().map(HvError::from) {
                             Some(err @ HvError::InvalidSynicState) => {
                                 tracing::debug!(
                                     vp = vp.index(),
@@ -238,13 +240,20 @@ impl GuestEventPort for OffloadedGuestEventPortNoTrigger {
         *self.params.lock() = None;
     }
 
-    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) {
+    fn set(
+        &mut self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Result<(), vmcore::synic::HypervisorError> {
         *self.params.lock() = Some(WhpEventPortParams {
             vtl,
             vp: VpIndex::new(vp),
             sint,
             flag,
         });
+        Ok(())
     }
 }
 
@@ -279,7 +288,13 @@ impl GuestEventPort for OffloadedGuestEventPort {
         }
     }
 
-    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) {
+    fn set(
+        &mut self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Result<(), vmcore::synic::HypervisorError> {
         assert_eq!(vtl, Vtl::Vtl0);
         if let Some(partition) = self.partition.upgrade() {
             partition
@@ -295,6 +310,8 @@ impl GuestEventPort for OffloadedGuestEventPort {
                 )
                 .expect("cannot fail");
         }
+
+        Ok(())
     }
 }
 
@@ -348,13 +365,21 @@ impl GuestEventPort for EmulatedGuestEventPort {
         *self.params.lock() = None;
     }
 
-    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) {
+    fn set(
+        &mut self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Result<(), vmcore::synic::HypervisorError> {
         *self.params.lock() = Some(WhpEventPortParams {
             vtl,
             vp: VpIndex::new(vp),
             sint,
             flag,
         });
+
+        Ok(())
     }
 }
 

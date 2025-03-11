@@ -3,7 +3,7 @@
 
 [package]
 name = "ide"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -31,7 +31,6 @@ thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 disk_file.workspace = true
 

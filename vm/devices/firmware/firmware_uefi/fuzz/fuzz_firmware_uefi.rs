@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![no_main]
+#![expect(missing_docs)]
 #![cfg(all(target_os = "linux", target_env = "gnu"))]
 
 use arbitrary::Arbitrary;
@@ -101,9 +102,9 @@ fn do_fuzz(input: FuzzInput) {
 
     let var = ParsedAuthVar {
         name: &Ucs2LeVec::from(name),
-        vendor: Guid::read_from(&vendor).unwrap(),
+        vendor: Guid::read_from_bytes(&vendor).unwrap(),
         attr,
-        timestamp: EFI_TIME::read_from(&timestamp).unwrap(),
+        timestamp: EFI_TIME::read_from_bytes(&timestamp).unwrap(),
         pkcs7_data: &pkcs7_data,
         var_data: &var_data,
     };
@@ -157,7 +158,7 @@ fn test_signature_lists() -> Vec<u8> {
     buf
 }
 
-const VALID_OWNER: Guid = Guid::from_static_str("77fa9abd-0359-4d32-bd60-28f4e78f784b");
+const VALID_OWNER: Guid = guid::guid!("77fa9abd-0359-4d32-bd60-28f4e78f784b");
 
 fn test_valid_signature_lists() -> Vec<u8> {
     let lists = vec![

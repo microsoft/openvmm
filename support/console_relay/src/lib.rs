@@ -3,8 +3,6 @@
 
 //! Code to launch a terminal emulator for relaying input/output.
 
-#![warn(missing_docs)]
-
 mod unix;
 mod windows;
 
@@ -37,7 +35,7 @@ pub fn relay_console(path: &Path) -> anyhow::Result<()> {
     // But we use sync to read/write to stdio because it's quite challenging to
     // poll for stdio readiness, especially on Windows. So we use a separate
     // thread for input and output.
-    block_with_io(|driver| async move {
+    block_with_io(async |driver| {
         #[cfg(unix)]
         let (read, mut write) = {
             let pipe = pal_async::socket::PolledSocket::connect_unix(&driver, path)
@@ -99,7 +97,7 @@ fn choose_terminal_apps(app: Option<&Path>) -> Vec<App<'_>> {
 
     let mut apps = Vec::new();
 
-    let env_set = |key| std::env::var_os(key).map_or(false, |x| !x.is_empty());
+    let env_set = |key| std::env::var_os(key).is_some_and(|x| !x.is_empty());
 
     // If we're running in tmux, use tmux.
     if env_set("TMUX") {

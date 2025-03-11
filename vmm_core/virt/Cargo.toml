@@ -3,7 +3,7 @@
 
 [package]
 name = "virt"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -27,7 +27,6 @@ slab.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 
 [build-dependencies]

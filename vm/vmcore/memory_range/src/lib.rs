@@ -4,7 +4,6 @@
 //! The [`MemoryRange`] type, which represents a 4KB-page-aligned byte range of
 //! memory, plus algorithms operating on the type.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 #![no_std]
 
@@ -435,7 +434,7 @@ struct RangeWalkIter<I: Iterator, J: Iterator> {
 
 struct PeekableSorted<I: Iterator> {
     iter: I,
-    #[allow(clippy::option_option)] // `Some(None)` is used to remember that `iter` is empty.
+    #[expect(clippy::option_option)] // `Some(None)` is used to remember that `iter` is empty.
     item: Option<Option<I::Item>>,
 }
 

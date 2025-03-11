@@ -3,8 +3,6 @@
 
 //! Implementation of Generation ID services (shared across both PCAT and UEFI)
 
-#![warn(missing_docs)]
-
 use guestmem::GuestMemory;
 use inspect::InspectMut;
 use mesh::RecvError;
@@ -13,7 +11,7 @@ use std::task::Poll;
 use vmcore::line_interrupt::LineInterrupt;
 
 /// Various runtime objects used by the GenerationId device.
-#[allow(missing_docs)] // self-explanatory fields
+#[expect(missing_docs)] // self-explanatory fields
 pub struct GenerationIdRuntimeDeps {
     pub gm: GuestMemory,
     pub generation_id_recv: mesh::Receiver<[u8; 16]>,

@@ -13,7 +13,6 @@ use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use thiserror::Error;
 
-#[allow(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub(crate) enum GetKeysFromKeyProtectorError {
     #[error(
@@ -103,10 +102,10 @@ impl KeyProtectorExt for KeyProtector {
         // decrypted `wrapped_key` (using `ingress_kek`). Otherwise, VMGS structure should be old (2-blob)
         // where the `dek` is an RSA-wrapped key. The RSA-wrapped key can be unwrapped by the `ingress_kek`.
         let des_key = if found_ingress_dek || use_des_key {
-            if found_ingress_dek && !use_des_key {
-                // Validate the DEK format, which is expected to hold an RSA-wrapped key instead of an AES-wrapped key
-                // when `wrapped_des_key` is `None`.
-                if self.dek[ingress_idx].dek_buffer[AES_WRAPPED_AES_KEY_LENGTH..]
+            if found_ingress_dek && use_des_key {
+                // Validate the DEK format, which is expected to hold an AES-wrapped key
+                // when `wrapped_des_key` is `Some`.
+                if !self.dek[ingress_idx].dek_buffer[AES_WRAPPED_AES_KEY_LENGTH..]
                     .iter()
                     .all(|&x| x == 0)
                 {
@@ -311,8 +310,8 @@ mod tests {
         data[..rsa_wrapped_dek.len()].copy_from_slice(&rsa_wrapped_dek);
 
         let result = KeyProtector::read_from_prefix(&data);
-        assert!(result.is_some());
-        let mut key_protector = result.unwrap();
+        assert!(result.is_ok());
+        let mut key_protector = result.unwrap().0;
         assert_eq!(
             key_protector.dek[ingress_index]
                 .dek_buffer
@@ -393,8 +392,6 @@ mod tests {
 
     #[test]
     fn key_protector_with_wrapped_key() {
-        const DEK_EXTENDED_DATA_SIZE: usize = 384;
-
         // Test KEK (RSA-2K)
         let kek = generate_rsa_2k();
 
@@ -405,7 +402,7 @@ mod tests {
         let des = generate_aes_256();
         let result = crypto::aes_key_wrap_with_padding(&des, &dek);
         assert!(result.is_ok());
-        let mut aes_wrapped_dek = result.unwrap();
+        let aes_wrapped_dek = result.unwrap();
 
         // Test DES key wrapped by the test RSA KEK
         let result = crypto::rsa_oaep_encrypt(&kek, &des, crypto::RsaOaepHashAlgorithm::Sha256);
@@ -419,14 +416,11 @@ mod tests {
 
         let mut data = [0u8; openhcl_attestation_protocol::vmgs::KEY_PROTECTOR_SIZE];
 
-        // Test the scenario where DEK is larger than AES-wrapped key size.
-        aes_wrapped_dek.resize(DEK_EXTENDED_DATA_SIZE, 1);
-
         data[..aes_wrapped_dek.len()].copy_from_slice(&aes_wrapped_dek);
 
         let result = KeyProtector::read_from_prefix(&data);
-        assert!(result.is_some());
-        let mut key_protector = result.unwrap();
+        assert!(result.is_ok());
+        let mut key_protector = result.unwrap().0;
         assert_eq!(
             key_protector.dek[ingress_index]
                 .dek_buffer
@@ -521,5 +515,41 @@ mod tests {
         assert!(result.is_ok());
         let unwrapped_key = result.unwrap();
         assert_eq!(unwrapped_key, keys.egress);
+    }
+
+    #[test]
+    fn key_protector_with_wrapped_key_invalid_format() {
+        // Test KEK (RSA-2K)
+        let kek = generate_rsa_2k();
+
+        // Test DEK (AES-256)
+        let dek = generate_aes_256();
+
+        // Test DEK wrapped by the test DES key (AES-256)
+        let des = generate_aes_256();
+        let result = crypto::aes_key_wrap_with_padding(&des, &dek);
+        assert!(result.is_ok());
+        let mut aes_wrapped_dek = result.unwrap();
+
+        // Test DES key wrapped by the test RSA KEK
+        let result = crypto::rsa_oaep_encrypt(&kek, &des, crypto::RsaOaepHashAlgorithm::Sha256);
+        assert!(result.is_ok());
+        let rsa_wrapped_des = result.unwrap();
+
+        let mut data = [0u8; openhcl_attestation_protocol::vmgs::KEY_PROTECTOR_SIZE];
+
+        // Test the invalid DEK format whose size is larger than AES-wrapped key size.
+        aes_wrapped_dek.resize(AES_WRAPPED_AES_KEY_LENGTH + 1, 1);
+
+        data[..aes_wrapped_dek.len()].copy_from_slice(&aes_wrapped_dek);
+
+        let result = KeyProtector::read_from_prefix(&data);
+        assert!(result.is_ok());
+        let mut key_protector = result.unwrap().0;
+
+        let result =
+            key_protector.unwrap_and_rotate_keys(&kek, Some(rsa_wrapped_des.as_ref()), 0, 1);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "The DEK format expects to hold an RSA-WRAPPED AES key, but found an AES-WRAPPED AES key".to_string())
     }
 }

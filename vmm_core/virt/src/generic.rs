@@ -231,8 +231,6 @@ pub struct Vtl2Config {
     ///
     /// Accesses before memory is mapped is determined by the specified config.
     pub late_map_vtl0_memory: Option<LateMapVtl0MemoryConfig>,
-    /// Defer VTL0 APIC emulation to VTL2.
-    pub vtl2_emulates_apic: bool,
 }
 
 /// Hypervisor configuration.
@@ -410,7 +408,7 @@ pub trait Processor: InspectMut {
     ///
     /// Returns when an error occurs, the VP halts, or the VP is requested to
     /// stop via `stop`.
-    #[allow(async_fn_in_trait)] // don't or want Send bound
+    #[expect(async_fn_in_trait)] // don't need or want Send bound
     async fn run_vp(
         &mut self,
         stop: StopVp<'_>,

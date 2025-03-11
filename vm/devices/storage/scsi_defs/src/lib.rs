@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![allow(dead_code)]
 
 pub mod srb;
@@ -8,16 +9,17 @@ pub mod srb;
 use bitfield_struct::bitfield;
 use core::fmt::Debug;
 use open_enum::open_enum;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 type U16BE = zerocopy::byteorder::U16<zerocopy::byteorder::BigEndian>;
 type U32BE = zerocopy::byteorder::U32<zerocopy::byteorder::BigEndian>;
 type U64BE = zerocopy::byteorder::U64<zerocopy::byteorder::BigEndian>;
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum ScsiOp: u8 {
         TEST_UNIT_READY = 0x00,
         REZERO_UNIT = 0x01,
@@ -231,7 +233,7 @@ pub const MEDIUM_NOT_PRESENT_TRAY_CLOSED: u8 = 0x01;
 pub const MEDIUM_NOT_PRESENT_TRAY_OPEN: u8 = 0x02;
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbInquiry {
     pub operation_code: u8, // 0x12 - SCSIOP_INQUIRY
     pub flags: InquiryFlags,
@@ -241,7 +243,7 @@ pub struct CdbInquiry {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct InquiryFlags {
     #[bits(1)]
     pub vpd: bool,
@@ -332,7 +334,7 @@ struct InquiryData {
 */
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct InquiryDataHeader {
     /*
     UCHAR DeviceType : 5;
@@ -346,7 +348,7 @@ pub struct InquiryDataHeader {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct InquiryDataFlag2 {
     #[bits(7)]
     pub device_type_modifier: u8,
@@ -355,7 +357,7 @@ pub struct InquiryDataFlag2 {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct InquiryDataFlag3 {
     #[bits(4)]
     pub response_data_format: u8,
@@ -370,7 +372,7 @@ pub struct InquiryDataFlag3 {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct InquiryData {
     pub header: InquiryDataHeader,
     pub reserved: [u8; 2],
@@ -395,7 +397,7 @@ pub struct InquiryData {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpdPageHeader {
     /*
     UCHAR DeviceType : 5;
@@ -408,7 +410,7 @@ pub struct VpdPageHeader {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpdT10Id {
     pub header: VpdIdentificationDescriptor,
     pub vendor_id: [u8; 8],
@@ -419,7 +421,7 @@ pub struct VpdT10Id {
 /// => NAA = 6.
 ///
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpdNaaId {
     pub header: VpdIdentificationDescriptor,
     /*
@@ -437,7 +439,7 @@ pub struct VpdNaaId {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpdIdentificationDescriptor {
     pub code_set: u8,
     pub identifiertype: u8,
@@ -446,7 +448,7 @@ pub struct VpdIdentificationDescriptor {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpdBlockLimitsDescriptor {
     pub reserved0: u8,
     pub max_compare_and_write_length: u8,
@@ -467,14 +469,14 @@ pub struct VpdBlockLimitsDescriptor {
 
 /// VPD Page 0xB1, Block Device Characteristics
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpdBlockDeviceCharacteristicsPage {
     pub medium_rotation_rate: U16BE,
     pub data: [u8; 58], // Needn't know the details
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpdMsftVirtualDevicePropertiesPage {
     pub version: u8,
     /*
@@ -489,7 +491,7 @@ pub struct VpdMsftVirtualDevicePropertiesPage {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpdMsftPagingExtentPropertiesPage {
     pub version: u8,
     /*
@@ -507,7 +509,7 @@ pub const PROVISIONING_TYPE_RESOURCE: u8 = 0x1;
 pub const PROVISIONING_TYPE_THIN: u8 = 0x2;
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct VpdLogicalBlockProvisioningPage {
     pub threshold_exponent: u8,
     /*
@@ -529,7 +531,7 @@ pub struct VpdLogicalBlockProvisioningPage {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SenseDataHeader {
     /*
     UCHAR ErrorCode:7;
@@ -556,7 +558,7 @@ pub struct SenseDataHeader {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SenseData {
     pub header: SenseDataHeader,
     pub command_specific_information: [u8; 4],
@@ -594,7 +596,7 @@ impl SenseData {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum SenseKey: u8 {
         NO_SENSE = 0x00,
         RECOVERED_ERROR = 0x01,
@@ -616,7 +618,7 @@ open_enum! {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum SenseDataErrorCode: u8 {
         FIXED_CURRENT = 0x70,
         FIXED_DEFERRED = 0x71,
@@ -626,7 +628,7 @@ open_enum! {
 }
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum AdditionalSenseCode: u8 {
         NO_SENSE = 0x00,
         NO_SEEK_COMPLETE = 0x02,
@@ -712,7 +714,8 @@ pub const SCSI_SENSEQ_INCOMPATIBLE_FORMAT: u8 = 0x02;
 pub const SCSI_SENSEQ_OPERATING_DEFINITION_CHANGED: u8 = 0x02;
 
 open_enum! {
-    #[derive(AsBytes, FromBytes, FromZeroes)]
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub enum ScsiStatus: u8 {
         GOOD = 0x00,
         CHECK_CONDITION = 0x02,
@@ -728,14 +731,14 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReadCapacityData {
     pub logical_block_address: U32BE,
     pub bytes_per_block: U32BE,
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ModeSense {
     pub operation_code: ScsiOp,
     pub flags1: u8,
@@ -746,7 +749,7 @@ pub struct ModeSense {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ModeSense10 {
     pub operation_code: ScsiOp,
     pub flags1: u8,
@@ -758,7 +761,7 @@ pub struct ModeSense10 {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ModeSenseFlags {
     #[bits(6)]
     pub page_code: u8,
@@ -767,7 +770,7 @@ pub struct ModeSenseFlags {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ModeReadWriteRecoveryPage {
     /*
         UCHAR PageCode : 6;
@@ -794,7 +797,7 @@ pub struct ModeReadWriteRecoveryPage {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ModeSenseModePageTimeoutProtect {
     /*
        UCHAR PageCode : 6;
@@ -819,7 +822,7 @@ pub struct ModeSenseModePageTimeoutProtect {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PowerConditionPage {
     /*
        UCHAR PageCode : 6;
@@ -846,7 +849,7 @@ pub const LIST_OF_MODE_PAGES: [u8; 3] = [
 ];
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ModeSelect {
     pub operation_code: ScsiOp,
     pub flags: ModeSelectFlags,
@@ -856,7 +859,7 @@ pub struct ModeSelect {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ModeSelect10 {
     pub operation_code: ScsiOp,
     pub flags: ModeSelectFlags,
@@ -866,7 +869,7 @@ pub struct ModeSelect10 {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ModeSelectFlags {
     #[bits(1)]
     pub spbit: bool,
@@ -917,7 +920,7 @@ pub const MODE_SENSE_SAVED_VALUES: u8 = 0xc0;
 pub const MODE_SENSE_RETURN_ALL: u8 = 0x3f;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ModeParameterHeader {
     pub mode_data_length: u8,
     pub medium_type: u8,
@@ -926,7 +929,7 @@ pub struct ModeParameterHeader {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ModeParameterHeader10 {
     pub mode_data_length: U16BE,
     pub medium_type: u8,
@@ -936,7 +939,7 @@ pub struct ModeParameterHeader10 {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ModeCachingPage {
     /*
     UCHAR PageCode : 6;
@@ -970,18 +973,18 @@ pub const MODE_DSP_FUA_SUPPORTED: u8 = 0x10;
 pub const MODE_DSP_WRITE_PROTECT: u8 = 0x80;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct LunList {
     pub length: U32BE,
     pub reserved: [u8; 4],
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct LunListEntry(pub [u8; 8]);
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Cdb10 {
     pub operation_code: ScsiOp,
     pub flags: CdbFlags,
@@ -992,7 +995,7 @@ pub struct Cdb10 {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Cdb6ReadWrite {
     pub operation_code: u8, // 0x08, 0x0A - SCSIOP_READ, SCSIOP_WRITE
     pub logical_block: [u8; 3],
@@ -1001,7 +1004,7 @@ pub struct Cdb6ReadWrite {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Cdb12 {
     pub operation_code: ScsiOp,
     pub flags: CdbFlags,
@@ -1012,7 +1015,7 @@ pub struct Cdb12 {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Cdb16 {
     pub operation_code: ScsiOp,
     pub flags: Cdb16Flags,
@@ -1023,7 +1026,7 @@ pub struct Cdb16 {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbFlags {
     pub relative_address: bool,
     #[bits(2)]
@@ -1035,7 +1038,7 @@ pub struct CdbFlags {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Cdb16Flags {
     #[bits(3)]
     pub reserved1: u8,
@@ -1046,7 +1049,7 @@ pub struct Cdb16Flags {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ServiceActionIn16 {
     pub operation_code: ScsiOp,
     pub service_action: u8,
@@ -1062,14 +1065,14 @@ pub const SERVICE_ACTION_GET_PHYSICAL_ELEMENT_STATUS: u8 = 0x17;
 pub const SERVICE_ACTION_REMOVE_ELEMENT_AND_TRUNCATE: u8 = 0x18;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReadCapacityDataEx {
     pub logical_block_address: U64BE,
     pub bytes_per_block: U32BE,
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReadCapacity16Data {
     pub ex: ReadCapacityDataEx,
     /*
@@ -1112,7 +1115,7 @@ pub const SRB_FLAGS_CONSOLIDATEABLE_BLOCKS_ONLY: u32 = SRB_FLAGS_MS_SPECIAL_BEHA
 pub const SRB_FLAGS_BLOCK_LEVEL_ONLY: u32 = SRB_FLAGS_MS_SPECIAL_BEHAVIOR;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GetLbaStatus {
     pub operation_code: ScsiOp,
     /*
@@ -1127,7 +1130,7 @@ pub struct GetLbaStatus {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct LbaStatusDescriptor {
     pub start_lba: U64BE,
     pub logical_block_count: U32BE,
@@ -1140,7 +1143,7 @@ pub struct LbaStatusDescriptor {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct LbaStatusListHeader {
     pub parameter_length: U32BE,
     pub reserved: u32,
@@ -1151,7 +1154,7 @@ pub const LBA_STATUS_DEALLOCATED: u8 = 0x1;
 pub const LBA_STATUS_ANCHORED: u8 = 0x2;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Unmap {
     pub operation_code: ScsiOp,
     /*
@@ -1170,7 +1173,7 @@ pub struct Unmap {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct UnmapBlockDescriptor {
     pub start_lba: U64BE,
     pub lba_count: U32BE,
@@ -1178,14 +1181,14 @@ pub struct UnmapBlockDescriptor {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct UnmapListHeader {
     pub data_length: U16BE,
     pub block_descriptor_data_length: U16BE,
     pub reserved: [u8; 4],
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct StartStop {
     pub operation_code: ScsiOp,
     /*
@@ -1200,7 +1203,7 @@ pub struct StartStop {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct StartStopFlags {
     #[bits(1)]
     pub start: bool,
@@ -1214,7 +1217,7 @@ pub const IMMEDIATE_BIT: u8 = 1;
 pub const START_BIT: u8 = 1;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PersistentReserveIn {
     pub operation_code: ScsiOp,
     pub service_action: PersistentReserveServiceActionIn,
@@ -1224,7 +1227,7 @@ pub struct PersistentReserveIn {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PersistentReserveOut {
     pub operation_code: ScsiOp,
     pub service_action: PersistentReserveServiceActionOut,
@@ -1235,7 +1238,7 @@ pub struct PersistentReserveOut {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PersistentReserveTypeScope {
     #[bits(4)]
     reserve_type_bits: u8,
@@ -1261,7 +1264,7 @@ pub const RESERVATION_SCOPE_LU: u8 = 0x00;
 pub const RESERVATION_SCOPE_ELEMENT: u8 = 0x02;
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PersistentReserveServiceActionIn {
     #[bits(5)]
     service_action_bits: u8,
@@ -1284,7 +1287,7 @@ impl PersistentReserveServiceActionIn {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PersistentReserveServiceActionOut {
     #[bits(5)]
     service_action_bits: u8,
@@ -1344,7 +1347,7 @@ open_enum! {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ProParameterList {
     pub reservation_key: U64BE,
     pub service_action_reservation_key: U64BE,
@@ -1355,7 +1358,7 @@ pub struct ProParameterList {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ProParameterListFlags {
     pub aptpl: bool,
     pub reserved1: bool,
@@ -1366,7 +1369,7 @@ pub struct ProParameterListFlags {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SendDiagnosticFlags {
     pub unit_offline: bool,
     pub device_offline: bool,
@@ -1378,7 +1381,7 @@ pub struct SendDiagnosticFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SendDiagnostic {
     pub op_code: u8, // 0x1D - SCSIOP_SEND_DIAGNOSTIC
     pub flags: SendDiagnosticFlags,
@@ -1388,7 +1391,7 @@ pub struct SendDiagnostic {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PriReportCapabilities {
     pub length: U16BE,
     pub flags: PriReportCapabilitiesFlags,
@@ -1397,7 +1400,7 @@ pub struct PriReportCapabilities {
 }
 
 #[bitfield(u16)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PriReportCapabilitiesFlags {
     pub persist_through_power_loss_capable: bool,
     _reserved: bool,
@@ -1416,7 +1419,7 @@ pub struct PriReportCapabilitiesFlags {
 }
 
 #[bitfield(u16)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PriReportCapabilitiesTypeMask {
     _reserved: bool,
     pub write_exclusive: bool,
@@ -1432,28 +1435,28 @@ pub struct PriReportCapabilitiesTypeMask {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PriRegistrationListHeader {
     pub generation: U32BE,
     pub additional_length: U32BE,
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PriFullStatusListHeader {
     pub generation: U32BE,
     pub additional_length: U32BE,
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PriReservationListHeader {
     pub generation: U32BE,
     pub additional_length: U32BE,
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PriReservationDescriptor {
     pub reservation_key: U64BE,
     pub obsolete: [u8; 4],
@@ -1463,7 +1466,7 @@ pub struct PriReservationDescriptor {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PriFullStatusDescriptorHeader {
     pub reservation_key: U64BE,
     pub reserved: [u8; 4],
@@ -1475,7 +1478,7 @@ pub struct PriFullStatusDescriptorHeader {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct PriFullStatusDescriptorHeaderFlags {
     pub reservation_holder: bool,
     pub all_target_ports: bool,
@@ -1484,7 +1487,7 @@ pub struct PriFullStatusDescriptorHeaderFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IsoVpdIdentifiers {
     pub id_page: VpdIdentificationDescriptor,
     pub vendor_id: [u8; 8],
@@ -1492,7 +1495,7 @@ pub struct IsoVpdIdentifiers {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbGetEventStatusNotification {
     pub operation_code: ScsiOp,
     pub flags: GetEventStatusFlags,
@@ -1504,7 +1507,7 @@ pub struct CdbGetEventStatusNotification {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GetEventStatusFlags {
     #[bits(1)]
     pub immediate: bool,
@@ -1552,7 +1555,7 @@ pub const NOTIFICATION_BUSY_EVENT_NO_EVENT: u8 = 0x0;
 pub const NOTIFICATION_BUSY_STATUS_NO_EVENT: u8 = 0x0;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NotificationMediaStatus {
     /*
         UCHAR MediaEvent : 4;
@@ -1565,7 +1568,7 @@ pub struct NotificationMediaStatus {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MediaFlags {
     #[bits(1)]
     pub door_tray_open: bool,
@@ -1576,7 +1579,7 @@ pub struct MediaFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NotificationEventStatusHeader {
     pub event_data_length: U16BE,
     pub flags: EventStatusFlags,
@@ -1584,7 +1587,7 @@ pub struct NotificationEventStatusHeader {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct EventStatusFlags {
     #[bits(3)]
     pub notification_class: u8,
@@ -1595,7 +1598,7 @@ pub struct EventStatusFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NotificationOperationalStatus {
     /*
         UCHAR OperationalEvent : 4;
@@ -1607,7 +1610,7 @@ pub struct NotificationOperationalStatus {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct OperationalStatusFlags {
     #[bits(4)]
     pub operational_status: u8,
@@ -1618,7 +1621,7 @@ pub struct OperationalStatusFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NotificationPowerStatus {
     /*
        UCHAR PowerEvent : 4;
@@ -1630,7 +1633,7 @@ pub struct NotificationPowerStatus {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NotificationExternalStatus {
     /*
         UCHAR ExternalEvent : 4;
@@ -1642,7 +1645,7 @@ pub struct NotificationExternalStatus {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ExternalStatusFlags {
     #[bits(4)]
     pub external_status: u8,
@@ -1653,7 +1656,7 @@ pub struct ExternalStatusFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NotificationMultiHostStatus {
     /*
         UCHAR MultiHostEvent : 4;
@@ -1665,7 +1668,7 @@ pub struct NotificationMultiHostStatus {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MultiHostStatusFlags {
     #[bits(4)]
     pub multi_host_status: u8,
@@ -1676,7 +1679,7 @@ pub struct MultiHostStatusFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct NotificationBusyStatus {
     /*
         UCHAR DeviceBusyEvent : 4;
@@ -1785,7 +1788,7 @@ impl TryFrom<usize> for FeatureNumber {
     }
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GetConfigurationHeader {
     pub data_length: U32BE,
     pub reserved: [u8; 2],
@@ -1793,7 +1796,7 @@ pub struct GetConfigurationHeader {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbGetConfiguration {
     pub operation_code: ScsiOp,
     pub flags: GetConfigurationFlags,
@@ -1804,7 +1807,7 @@ pub struct CdbGetConfiguration {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GetConfigurationFlags {
     #[bits(2)]
     request_type_bits: u8,
@@ -1827,14 +1830,14 @@ impl GetConfigurationFlags {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GetConfigurationFeatureDataProfileList {
     pub header: FeatureHeader,
     pub profile: [FeatureDataProfileList; 2],
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FeatureDataProfileList {
     pub profile_number: U16BE,
     /*
@@ -1846,7 +1849,7 @@ pub struct FeatureDataProfileList {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FeatureHeader {
     pub feature_code: U16BE,
     pub flags: FeatureHeaderFlags,
@@ -1854,7 +1857,7 @@ pub struct FeatureHeader {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FeatureHeaderFlags {
     #[bits(1)]
     pub current: bool,
@@ -1867,7 +1870,7 @@ pub struct FeatureHeaderFlags {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FeatureDataRandomReadable {
     pub header: FeatureHeader,
     pub logical_block_size: U32BE,
@@ -1881,7 +1884,7 @@ pub struct FeatureDataRandomReadable {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FeatureDataDvdRead {
     pub header: FeatureHeader,
     /*
@@ -1899,7 +1902,7 @@ pub struct FeatureDataDvdRead {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct RealTimeStreamingFlags {
     #[bits(1)]
     pub stream_recording: bool,
@@ -1916,7 +1919,7 @@ pub struct RealTimeStreamingFlags {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FeatureDataRealTimeStreaming {
     pub header: FeatureHeader,
     pub flags: RealTimeStreamingFlags,
@@ -1924,7 +1927,7 @@ pub struct FeatureDataRealTimeStreaming {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FeatureDataCore {
     pub header: FeatureHeader,
     pub physical_interface: U32BE,
@@ -1938,7 +1941,7 @@ pub struct FeatureDataCore {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FeatureMorphingFlags {
     #[bits(1)]
     pub asynchronous: bool,
@@ -1949,7 +1952,7 @@ pub struct FeatureMorphingFlags {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FeatureDataMorphing {
     pub header: FeatureHeader,
     pub flags: FeatureMorphingFlags,
@@ -1957,7 +1960,7 @@ pub struct FeatureDataMorphing {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct RemovableMediumFlags {
     #[bits(1)]
     pub lockable: bool,
@@ -1974,7 +1977,7 @@ pub struct RemovableMediumFlags {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FeatureDataRemovableMedium {
     pub header: FeatureHeader,
     pub flags: RemovableMediumFlags,
@@ -1982,7 +1985,7 @@ pub struct FeatureDataRemovableMedium {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CDReadFlags {
     #[bits(1)]
     pub cd_text: bool,
@@ -1995,7 +1998,7 @@ pub struct CDReadFlags {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FeatureDataCdRead {
     pub header: FeatureHeader,
     pub flags: CDReadFlags,
@@ -2003,13 +2006,13 @@ pub struct FeatureDataCdRead {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FeatureDataPowerManagement {
     pub header: FeatureHeader,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct FeatureDataTimeout {
     pub header: FeatureHeader,
     /*
@@ -2028,7 +2031,7 @@ pub const CDROM_READ_TOC_EX_FORMAT_PMA: u8 = 0x03;
 pub const CDROM_READ_TOC_EX_FORMAT_ATIP: u8 = 0x04;
 pub const CDROM_READ_TOC_EX_FORMAT_CDTEXT: u8 = 0x05;
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbReadToc {
     pub operation_code: ScsiOp,
     /*
@@ -2053,7 +2056,7 @@ pub struct CdbReadToc {
     pub reserved1: u8,
 }
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReadTocFlag {
     #[bits(1)]
     pub reserved0: bool,
@@ -2065,7 +2068,7 @@ pub struct ReadTocFlag {
     pub location_unit_number: u8,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReadTocFormattedToc {
     pub length: U16BE,
     pub first_complete_session: u8,
@@ -2074,7 +2077,7 @@ pub struct ReadTocFormattedToc {
     pub trackaa: TrackData,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TrackData {
     pub reserved: u8,
     pub flag: TrackDataFlag,
@@ -2083,7 +2086,7 @@ pub struct TrackData {
     pub address: [u8; 4],
 }
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct TrackDataFlag {
     #[bits(4)]
     pub control: u8,
@@ -2091,7 +2094,7 @@ pub struct TrackDataFlag {
     pub adr: u8,
 }
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdromTocSessionData {
     // Header
     pub length: U16BE, // add two bytes for this field
@@ -2103,7 +2106,7 @@ pub struct CdromTocSessionData {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbRequestSense {
     pub operation_code: ScsiOp,
     pub desc: u8,
@@ -2113,7 +2116,7 @@ pub struct CdbRequestSense {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbMediaRemoval {
     pub operation_code: ScsiOp,
     /*
@@ -2126,7 +2129,7 @@ pub struct CdbMediaRemoval {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MediaRemovalFlags {
     #[bits(1)]
     pub prevent: bool,
@@ -2137,7 +2140,7 @@ pub struct MediaRemovalFlags {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReadTrackInfoFlag {
     #[bits(2)]
     pub number_type: u8,
@@ -2148,7 +2151,7 @@ pub struct ReadTrackInfoFlag {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, FromBytes, FromZeroes)]
+#[derive(Copy, Clone, FromBytes)]
 pub struct CdbReadTrackInformation {
     pub operation_code: ScsiOp,
     /*
@@ -2164,7 +2167,7 @@ pub struct CdbReadTrackInformation {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, FromBytes, FromZeroes, AsBytes)]
+#[derive(Copy, Clone, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct TrackInformation3 {
     pub length: U16BE,
     pub track_number_lsb: u8,
@@ -2211,7 +2214,7 @@ pub const DVD_FORMAT_BCA: u8 = 0x03;
 pub const DVD_FORMAT_MANUFACTURING: u8 = 0x04;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbReadDVDStructure {
     pub op: u8,
     /*
@@ -2233,7 +2236,7 @@ pub struct CdbReadDVDStructure {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReadDVDStructurePhysicalFormatInformation {
     pub length: U16BE,
     pub reserved: [u8; 2],
@@ -2273,7 +2276,7 @@ pub struct ReadDVDStructurePhysicalFormatInformation {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReadDVDStructureCopyrightInformation {
     pub data_length: U16BE,
     pub reserved: u8,
@@ -2283,7 +2286,7 @@ pub struct ReadDVDStructureCopyrightInformation {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReadDVDStructureManufacturingStructure {
     pub data_length: U16BE,
     pub reserved: [u8; 2],
@@ -2301,7 +2304,7 @@ pub const PERFORMANCE_EXCEPT_PERFORMANCE_EXCEPTIONS_ONLY: u8 = 0x2;
 pub const PERFORMANCE_1000_BYTES_PER_SECOND: u32 = 1350 * 24;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbGetPerformance {
     pub op: u8,
     pub flags: GetPerformanceFlags,
@@ -2313,7 +2316,7 @@ pub struct CdbGetPerformance {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GetPerformanceFlags {
     #[bits(2)]
     pub except: u8,
@@ -2326,7 +2329,7 @@ pub struct GetPerformanceFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GetPerformanceNominalPerformanceDescriptor {
     pub start_lba: U32BE,
     pub start_performance: U32BE,
@@ -2335,7 +2338,7 @@ pub struct GetPerformanceNominalPerformanceDescriptor {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct GetPerformanceHeader {
     pub total_data_length: U32BE,
     /*
@@ -2348,7 +2351,7 @@ pub struct GetPerformanceHeader {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbMechStatus {
     pub op: u8,
     /*
@@ -2363,7 +2366,7 @@ pub struct CdbMechStatus {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MechanismStatusHeader {
     /*
         UCHAR CurrentSlotLow5 : 5;
@@ -2378,7 +2381,7 @@ pub struct MechanismStatusHeader {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct MechanismStatusHeaderFlags {
     #[bits(3)]
     pub current_slot_high3: u8,
@@ -2391,7 +2394,7 @@ pub struct MechanismStatusHeaderFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbReadBufferCapacity {
     pub op: u8,
     pub flags: ReadBufferCapacityFlags,
@@ -2401,7 +2404,7 @@ pub struct CdbReadBufferCapacity {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReadBufferCapacityFlags {
     #[bits(1)]
     pub block_info: bool,
@@ -2410,7 +2413,7 @@ pub struct ReadBufferCapacityFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReadBufferCapacityData {
     pub data_length: U16BE,
     pub reserved1: u8,
@@ -2424,7 +2427,7 @@ pub struct ReadBufferCapacityData {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbReadDiscInformation {
     pub operation_code: ScsiOp,
     pub flags: ReadDiscFlags,
@@ -2434,7 +2437,7 @@ pub struct CdbReadDiscInformation {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReadDiscFlags {
     #[bits(3)]
     pub data_type: u8,
@@ -2443,7 +2446,7 @@ pub struct ReadDiscFlags {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct DiscInformation {
     pub length: U16BE,
     pub flags1: DiscInfoFlags1,
@@ -2472,7 +2475,7 @@ pub struct DiscInformation {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct DiscInfoFlags1 {
     #[bits(2)]
     pub disc_status: u8,
@@ -2485,7 +2488,7 @@ pub struct DiscInfoFlags1 {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct DiscInfoFlags2 {
     #[bits(2)]
     pub mrw_status: u8,
@@ -2502,7 +2505,7 @@ pub struct DiscInfoFlags2 {
 }
 
 #[repr(C)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbSetStreaming {
     pub operation_code: ScsiOp,
     pub reserved: [u8; 8],
@@ -2511,7 +2514,7 @@ pub struct CdbSetStreaming {
 }
 
 #[repr(C)]
-#[derive(Debug, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SetStreamingPerformanceDescriptor {
     pub flags: SetStreamingFlags,
     pub reserved2: [u8; 3],
@@ -2524,7 +2527,7 @@ pub struct SetStreamingPerformanceDescriptor {
 }
 
 #[bitfield(u8)]
-#[derive(AsBytes, FromBytes, FromZeroes)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct SetStreamingFlags {
     #[bits(1)]
     pub mrw: bool,
@@ -2541,7 +2544,7 @@ pub struct SetStreamingFlags {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, AsBytes, FromBytes, FromZeroes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct ReportLuns {
     pub operation_code: ScsiOp,
     pub reserved1: [u8; 5],

@@ -3,7 +3,7 @@
 
 [package]
 name = "mana_driver"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -25,7 +25,6 @@ getrandom.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 safe_intrinsics.workspace = true
 
 [dev-dependencies]

@@ -29,7 +29,7 @@ use scsi_core::Request;
 use scsi_core::ScsiSaveRestore;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 fn save_scsi_disk(scsi_disk: &SimpleScsiDisk) -> ScsiDiskSavedState {
     let saved_state = if let Some(ScsiSavedState::ScsiDisk(saved_state)) = scsi_disk.save().unwrap()

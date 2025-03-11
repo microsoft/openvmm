@@ -4,6 +4,7 @@
 //! Implements the [`DiskIo`] trait for virtual disks backed by multiple raw
 //! block devices.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 use async_trait::async_trait;
@@ -42,7 +43,7 @@ impl AsyncResolveResource<DiskHandleKind, StripedDiskHandle> for StripedDiskReso
         let disks = try_join_all(
             rsrc.devices
                 .into_iter()
-                .map(|device| async { resolver.resolve(device, input).await.map(|r| r.0) }),
+                .map(async |device| resolver.resolve(device, input).await.map(|r| r.0)),
         )
         .await?;
         Ok(ResolvedDisk::new(StripedDisk::new(

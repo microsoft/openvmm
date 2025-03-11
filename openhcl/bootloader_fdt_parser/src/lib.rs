@@ -5,7 +5,6 @@
 //! usermode. Unlike `host_fdt_parser`, this code requires std as it is intended
 //! to be only used in usermode.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use anyhow::bail;

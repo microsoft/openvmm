@@ -33,7 +33,6 @@ use inspect_proto::InspectResponse2;
 use inspect_proto::InspectService;
 use inspect_proto::UpdateResponse2;
 use mesh::error::RemoteError;
-use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use mesh::CancelReason;
 use mesh::MeshPayload;
@@ -124,7 +123,7 @@ impl Worker for TtrpcWorker {
     }
 
     fn run(self, recv: mesh::Receiver<WorkerRpc<Self::State>>) -> anyhow::Result<()> {
-        DefaultPool::run_with(|driver| async move {
+        DefaultPool::run_with(async |driver| {
             let mut service = VmService {
                 driver,
                 vm: None,
@@ -197,7 +196,7 @@ impl VmService {
                 },
                 request = recv.recv().fuse() => {
                     match request {
-                        Ok(WorkerRpc::Restart(response)) => response.send(Err(RemoteError::new(anyhow::anyhow!("not supported")))),
+                        Ok(WorkerRpc::Restart(rpc)) => rpc.complete(Err(RemoteError::new(anyhow::anyhow!("not supported")))),
                         Ok(WorkerRpc::Inspect(_)) => (),
                         Ok(WorkerRpc::Stop) => {
                             tracing::info!("ttrpc worker stopping");
@@ -365,7 +364,7 @@ impl VmService {
         &self,
         ctx: mesh::CancelContext,
         request: inspect_proto::InspectRequest,
-    ) -> impl Future<Output = anyhow::Result<InspectResponse2>> {
+    ) -> impl Future<Output = anyhow::Result<InspectResponse2>> + use<> {
         let mut inspection = InspectionBuilder::new(&request.path)
             .depth(Some(request.depth as usize))
             .inspect(inspect::adhoc(|req| {
@@ -388,7 +387,7 @@ impl VmService {
         &self,
         ctx: mesh::CancelContext,
         request: inspect_proto::UpdateRequest,
-    ) -> impl Future<Output = anyhow::Result<UpdateResponse2>> {
+    ) -> impl Future<Output = anyhow::Result<UpdateResponse2>> + use<> {
         let update = inspect::update(
             &request.path,
             &request.value,
@@ -487,7 +486,7 @@ impl VmService {
             },
             #[cfg(windows)]
             kernel_vmnics: vec![],
-            input: mesh::MpscReceiver::new(),
+            input: mesh::Receiver::new(),
             framebuffer: None,
             vga_firmware: None,
             vtl2_gfx: false,
@@ -520,7 +519,7 @@ impl VmService {
                 config.vmbus_devices.push((
                     DeviceVtl::Vtl0,
                     ScsiControllerHandle {
-                        instance_id: Guid::from_static_str("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f"),
+                        instance_id: guid::guid!("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f"),
                         max_sub_channel_count: 0,
                         devices,
                         io_queue_depth: None,
@@ -604,15 +603,13 @@ impl VmService {
         Ok(())
     }
 
-    fn pause_vm(&mut self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> {
-        let (send, recv) = mesh::oneshot();
-        vm.worker_rpc.send(VmRpc::Pause(Rpc((), send)));
+    fn pause_vm(&mut self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> + use<> {
+        let recv = vm.worker_rpc.call(VmRpc::Pause, ());
         async move { recv.await.map(drop).context("pause failed") }
     }
 
-    fn resume_vm(&mut self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> {
-        let (send, recv) = mesh::oneshot();
-        vm.worker_rpc.send(VmRpc::Resume(Rpc((), send)));
+    fn resume_vm(&mut self, vm: &Vm) -> impl Future<Output = anyhow::Result<()>> + use<> {
+        let recv = vm.worker_rpc.call(VmRpc::Resume, ());
         async move { recv.await.map(drop).context("resume failed") }
     }
 
@@ -620,7 +617,7 @@ impl VmService {
         &mut self,
         mut ctx: mesh::CancelContext,
         vm: Arc<Vm>,
-    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>>> {
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
         let mut notify_recv = vm
             .notify_recv
             .lock()
@@ -645,7 +642,7 @@ impl VmService {
         &mut self,
         vm: &Vm,
         request: vmservice::ModifyResourceRequest,
-    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>>> {
+    ) -> anyhow::Result<impl Future<Output = anyhow::Result<()>> + use<>> {
         use vmservice::modify_resource_request::Resource;
         match request.resource.context("missing resource")? {
             Resource::ScsiDisk(disk) => {

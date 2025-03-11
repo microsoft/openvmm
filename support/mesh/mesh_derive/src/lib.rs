@@ -3,6 +3,8 @@
 
 //! Derive macro for `mesh::MeshPayload` and `mesh_protobuf::Protobuf`.
 
+#![expect(missing_docs)]
+
 use heck::ToSnakeCase;
 use proc_macro2::Span;
 use proc_macro2::TokenStream;
@@ -917,7 +919,7 @@ fn derive_enum(
             });
 
             sizes.push(quote! {
-                #variant_destructured_ref => {
+                &mut #variant_destructured_ref => {
                     const NUMBERS: &[u32] = &[#(#field_number,)*];
                     let entries = const { &[#(<#field_encoding as #protobuf_mod::FieldEncode<#field_types, #resource_type>>::ENTRY.erase(),)*] };
                     // SAFETY: the fields are in the same object as `self`.

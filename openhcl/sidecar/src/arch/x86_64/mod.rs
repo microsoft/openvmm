@@ -19,8 +19,8 @@ use hvdef::HypercallCode;
 use minimal_rt::arch::msr::write_msr;
 use minimal_rt::arch::Serial;
 use x86defs::Exception;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 mod addr_space {
     use super::VpGlobals;
@@ -216,10 +216,10 @@ impl Write for CommandErrorWriter<'_> {
     }
 }
 
-fn hypercall(code: HypercallCode, rep_count: u16) -> Result<(), HvError> {
+fn hypercall(code: HypercallCode, rep_count: usize) -> Result<(), HvError> {
     let control = hvdef::hypercall::Control::new()
         .with_code(code.0)
-        .with_rep_count(rep_count.into());
+        .with_rep_count(rep_count);
 
     // SAFETY: the caller guarantees the safety of the hypercall, including that
     // the input and output pages are not concurrently accessed.
@@ -257,7 +257,7 @@ fn get_hv_vp_register(
     hypercall(HypercallCode::HvCallGetVpRegisters, 1)?;
     // SAFETY: the output is not concurrently accessed.
     let output = unsafe { &*addr_space::hypercall_output() };
-    Ok(HvRegisterValue::read_from_prefix(output).unwrap())
+    Ok(HvRegisterValue::read_from_prefix(output).unwrap().0) // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 }
 
 fn set_hv_vp_register(

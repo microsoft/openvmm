@@ -3,7 +3,7 @@
 
 [package]
 name = "sparse_mmap"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [build-dependencies]

@@ -4,9 +4,10 @@
 //! WHP implementation of the virt::generic interfaces.
 
 #![cfg(all(windows, guest_is_native))]
+#![expect(missing_docs)]
 // UNSAFETY: Calling WHP APIs and manually managing memory.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 mod apic;
 pub mod device;
@@ -28,6 +29,7 @@ use hv1_emulator::hv::GlobalHv;
 use hv1_emulator::hv::GlobalHvParams;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::message_queues::MessageQueues;
+use hv1_structs::VtlSet;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvMessage;
 use hvdef::HvMessageType;
@@ -68,7 +70,6 @@ use vmcore::vmtime::VmTimeAccess;
 use vmcore::vmtime::VmTimeSource;
 use vp::WhpRunVpError;
 use vp_state::WhpVpStateAccess;
-use vtl_array::VtlSet;
 use x86defs::cpuid::Vendor;
 
 #[derive(Debug)]
@@ -135,8 +136,6 @@ enum LocalApicKind {
     #[inspect(transparent)]
     Emulated(virt_support_apic::LocalApicSet),
     Offloaded,
-    #[cfg(guest_arch = "x86_64")]
-    InVtl2,
 }
 
 #[derive(Inspect)]
@@ -747,7 +746,7 @@ impl virt::Hypervisor for Whp {
         let vtl2 = if config
             .hv_config
             .as_ref()
-            .map_or(false, |cfg| cfg.vtl2.is_some())
+            .is_some_and(|cfg| cfg.vtl2.is_some())
         {
             Some(VtlPartition::new(&config, vendor, Vtl::Vtl2)?)
         } else {
@@ -922,7 +921,6 @@ impl WhpPartitionInner {
                 if !hv_config.offload_enlightenments || proto_config.user_mode_apic {
                     cpuid.extend(hv1_emulator::cpuid::hv_cpuid_leaves(
                         proto_config.processor_topology,
-                        proto_config.user_mode_apic,
                         IsolationType::None,
                         false,
                         [0; 4],
@@ -1132,23 +1130,14 @@ impl VtlPartition {
     fn new(config: &ProtoPartitionConfig<'_>, vendor: Vendor, vtl: Vtl) -> Result<Self, Error> {
         let mut hypervisor_enlightened = false;
 
-        let apic_in_vtl2 = vtl != Vtl::Vtl2
-            && config
-                .hv_config
-                .as_ref()
-                .and_then(|hv_config| hv_config.vtl2.as_ref())
-                .map_or(false, |cfg| cfg.vtl2_emulates_apic);
-
         let user_mode_apic = config.user_mode_apic
             || config
                 .hv_config
                 .as_ref()
-                .map_or(false, |cfg| !cfg.offload_enlightenments);
+                .is_some_and(|cfg| !cfg.offload_enlightenments);
 
         #[cfg(guest_arch = "x86_64")]
-        let lapic = if apic_in_vtl2 {
-            LocalApicKind::InVtl2
-        } else if user_mode_apic {
+        let lapic = if user_mode_apic {
             let x2apic_capable = !matches!(
                 config.processor_topology.apic_mode(),
                 vm_topology::processor::x86::ApicMode::XApic
@@ -1177,7 +1166,7 @@ impl VtlPartition {
         {
             use vm_topology::processor::x86::ApicMode;
 
-            let apic_mode = if !user_mode_apic && !apic_in_vtl2 {
+            let apic_mode = if !user_mode_apic {
                 match config.processor_topology.apic_mode() {
                     ApicMode::XApic => whp::abi::WHvX64LocalApicEmulationModeXApic,
                     ApicMode::X2ApicSupported | ApicMode::X2ApicEnabled => {
@@ -1193,7 +1182,7 @@ impl VtlPartition {
                 .for_op("set apic emulation mode")?;
 
             extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::X64MsrExit;
-            if user_mode_apic || apic_in_vtl2 {
+            if user_mode_apic {
                 whp_config
                     .set_property(whp::PartitionProperty::X64MsrExitBitmap(
                         whp::abi::WHV_X64_MSR_EXIT_BITMAP::ApicBaseMsrWrite
@@ -1254,7 +1243,6 @@ impl VtlPartition {
                 .for_op("get synth processor features")?;
             if hv_config.offload_enlightenments
                 && !user_mode_apic
-                && !apic_in_vtl2
                 && supported_synth_features
                     .bank0
                     .is_set(whp::abi::WHV_SYNTHETIC_PROCESSOR_FEATURES::HypervisorPresent)
@@ -1351,7 +1339,7 @@ impl VtlPartition {
             whp.create_vp(index).create().for_op("create vp")?;
         }
 
-        let hvstate = if config.hv_config.is_some() && !apic_in_vtl2 {
+        let hvstate = if config.hv_config.is_some() {
             if hypervisor_enlightened {
                 Hv1State::Offloaded
             } else {
@@ -1362,7 +1350,6 @@ impl VtlPartition {
                     vendor,
                     tsc_frequency,
                     ref_time,
-                    hypercall_page_protectors: vtl_array::VtlArray::from_fn(|_| None),
                 }))
             }
         } else {
@@ -1448,10 +1435,23 @@ impl VtlPartition {
     }
 }
 
+struct WhpNoVtlProtections;
+impl hv1_emulator::hv::VtlProtectHypercallOverlay for WhpNoVtlProtections {
+    fn change_overlay(&mut self, _gpn: u64) {}
+    fn disable_overlay(&mut self) {}
+}
+
 impl Hv1State {
     fn reset(&self) {
         match self {
-            Hv1State::Emulated(ref hv) => hv.reset(),
+            Hv1State::Emulated(hv) => hv.reset(
+                [
+                    &mut WhpNoVtlProtections
+                        as &mut dyn hv1_emulator::hv::VtlProtectHypercallOverlay,
+                    &mut WhpNoVtlProtections,
+                ]
+                .into(),
+            ),
             Hv1State::Offloaded => {}
             Hv1State::Disabled => {}
         }
@@ -1592,7 +1592,7 @@ mod x86 {
                             .wake()
                     });
                 }
-                LocalApicKind::Offloaded | LocalApicKind::InVtl2 => unreachable!(),
+                LocalApicKind::Offloaded => unreachable!(),
             }
         }
     }
@@ -1642,7 +1642,7 @@ mod aarch64 {
             &self,
             vp: VpIndex,
             vtl: Vtl,
-        ) -> impl hv1_emulator::RequestInterrupt {
+        ) -> impl hv1_emulator::RequestInterrupt + use<> {
             let _ = (vp, vtl);
             move |_vec, _auto_eoi| todo!("TODO-aarch64")
         }

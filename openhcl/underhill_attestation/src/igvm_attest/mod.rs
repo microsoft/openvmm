@@ -19,7 +19,8 @@ use tee_call::TeeType;
 use thiserror::Error;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 pub mod ak_cert;
 pub mod key_release;
@@ -27,7 +28,7 @@ pub mod wrapped_key;
 
 base64_serde_type!(Base64Url, base64::engine::general_purpose::URL_SAFE_NO_PAD);
 
-#[allow(missing_docs)] // self-explanatory fields
+#[expect(missing_docs)] // self-explanatory fields
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(

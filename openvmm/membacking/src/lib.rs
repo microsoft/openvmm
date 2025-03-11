@@ -64,8 +64,6 @@
 //!      unmapping it. The exact implications of this are not easy to reason
 //!      about.
 
-#![warn(missing_docs)]
-
 mod mapping_manager;
 mod memory_manager;
 mod partition_mapper;

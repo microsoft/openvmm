@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 use mesh::MeshPayload;
 use mesh_worker::WorkerId;
 use std::net::TcpListener;
@@ -13,7 +15,7 @@ pub struct VncParameters<T> {
     /// The framebuffer memory.
     pub framebuffer: framebuffer::FramebufferAccess,
     /// A channel to send input to.
-    pub input_send: mesh::MpscSender<input_core::InputData>,
+    pub input_send: mesh::Sender<input_core::InputData>,
 }
 
 pub const VNC_WORKER_TCP: WorkerId<VncParameters<TcpListener>> = WorkerId::new("VncWorkerTcp");

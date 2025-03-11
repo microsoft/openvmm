@@ -1,0 +1,35 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+disallowed-types = [
+    { path = "std::sync::Mutex",   reason = "use parking_lot::Mutex"   },
+    { path = "std::sync::Condvar", reason = "use parking_lot::Condvar" },
+    { path = "std::sync::RwLock",  reason = "use parking_lot::RwLock"  },
+
+    { path = "futures::stream::futures_unordered::FuturesUnordered", reason = "use unicycle::FuturesUnordered" },
+]
+
+disallowed-macros = [
+    { path = "futures::pin_mut", reason = "use std::pin::pin" },
+    { path = "futures::ready", reason = "use std::task::ready" },
+    { path = "openhcl_boot::boot_logger::debug_log", reason = "only use in local debugging, use log! if you want a production log message"},
+]
+
+disallowed-methods = [
+    { path = "futures::future::ready", reason = "use std::future::ready" },
+    { path = "futures::future::pending", reason = "use std::future::pending" },
+    # This is used by futures::select! and futures::join!, so leave it out for now.
+    # { path = "futures::future::poll_fn", reason = "use std::future::poll_fn" },
+
+    { path = "futures::task::noop_waker", reason = "use std::task::Waker::noop" },
+    { path = "futures::task::noop_waker_ref", reason = "use std::task::Waker::noop" },
+
+    { path = "futures::channel::mpsc::channel", reason = "use mesh or async-channel" },
+    { path = "futures::channel::mpsc::unbounded", reason = "use mesh or async-channel" },
+    { path = "futures::channel::oneshot::channel", reason = "use mesh or async-channel" },
+
+    { path = "std::fs::canonicalize", reason = "you likely want std::path::absolute" },
+    { path = "std::path::Path::canonicalize", reason = "you likely want std::path::absolute" },
+]
+
+avoid-breaking-exported-api = false

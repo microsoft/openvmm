@@ -3,6 +3,7 @@
 
 //! Builds and publishes an a set of OpenHCL IGVM files.
 
+use super::build_and_publish_openvmm_hcl_baseline;
 use crate::artifact_openhcl_igvm_from_recipe_extras::OpenhclIgvmExtras;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
@@ -27,6 +28,7 @@ flowey_request! {
         pub igvm_files: Vec<OpenhclIgvmBuildParams>,
         pub artifact_dir_openhcl_igvm: ReadVar<PathBuf>,
         pub artifact_dir_openhcl_igvm_extras: ReadVar<PathBuf>,
+        pub artifact_openhcl_verify_size_baseline: Option<ReadVar<PathBuf>>,
         pub done: WriteVar<SideEffect>,
     }
 }
@@ -39,7 +41,9 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe_extras::publish::Node>();
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe::publish::Node>();
+        ctx.import::<crate::artifact_openvmm_hcl_sizecheck::publish::Node>();
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
+        ctx.import::<build_and_publish_openvmm_hcl_baseline::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -47,6 +51,7 @@ impl SimpleFlowNode for Node {
             igvm_files,
             artifact_dir_openhcl_igvm,
             artifact_dir_openhcl_igvm_extras,
+            artifact_openhcl_verify_size_baseline,
             done,
         } = request;
 
@@ -111,6 +116,15 @@ impl SimpleFlowNode for Node {
                 done: v,
             }
         }));
+
+        if let Some(sizecheck_artifact) = artifact_openhcl_verify_size_baseline {
+            did_publish.push(
+                ctx.reqv(|v| build_and_publish_openvmm_hcl_baseline::Request {
+                    artifact_dir: sizecheck_artifact,
+                    done: v,
+                }),
+            );
+        }
 
         ctx.emit_side_effect_step(did_publish, [done]);
 

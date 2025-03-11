@@ -8,6 +8,7 @@ cfg_if::cfg_if! {
         pub use hvdef::HvX64RegisterName as HvArchRegisterName;
         use chipset_device_resources::BSP_LINT_LINE_SET;
         use virt::irqcon::MsiRequest;
+        use virt_mshv_vtl::HardwareIsolatedBacking;
         use vmm_core::acpi_builder::AcpiTablesBuilder;
     } else if #[cfg(guest_arch = "aarch64")] {
         pub use hvdef::HvArm64RegisterName as HvArchRegisterName;
@@ -41,6 +42,7 @@ use crate::loader::LoadKind;
 use crate::nvme_manager::NvmeDiskConfig;
 use crate::nvme_manager::NvmeDiskResolver;
 use crate::nvme_manager::NvmeManager;
+use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
 use crate::servicing::transposed::OptionServicingInitState;
@@ -81,7 +83,6 @@ use input_core::InputData;
 use input_core::MultiplexedInputHandle;
 use inspect::Inspect;
 use loader_defs::shim::MemoryVtlType;
-use lower_vtl_permissions_guard::LowerVtlMemorySpawner;
 use memory_range::MemoryRange;
 use mesh::rpc::RpcSend;
 use mesh::CancelContext;
@@ -91,7 +92,11 @@ use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
-use page_pool_alloc::PagePool;
+use openhcl_dma_manager::AllocationVisibility;
+use openhcl_dma_manager::DmaClientParameters;
+use openhcl_dma_manager::DmaClientSpawner;
+use openhcl_dma_manager::LowerVtlPermissionPolicy;
+use openhcl_dma_manager::OpenhclDmaManager;
 use pal_async::local::LocalDriver;
 use pal_async::task::Spawn;
 use pal_async::DefaultDriver;
@@ -104,6 +109,7 @@ use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
 use std::collections::HashMap;
 use std::ffi::CString;
+use std::future;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -118,8 +124,7 @@ use uevent::UeventListener;
 use underhill_attestation::AttestationType;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
-use user_driver::lockmem::LockedMemorySpawner;
-use user_driver::vfio::VfioDmaBuffer;
+use user_driver::DmaClient;
 use virt::state::HvRegisterState;
 use virt::Partition;
 use virt::VpIndex;
@@ -167,7 +172,7 @@ use vmotherboard::options::BaseChipsetFoundation;
 use vmotherboard::BaseChipsetBuilder;
 use vmotherboard::BaseChipsetBuilderOutput;
 use vmotherboard::ChipsetDeviceHandle;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 pub(crate) const PM_BASE: u16 = 0x400;
 pub(crate) const SYSTEM_IRQ_ACPI: u32 = 9;
@@ -177,20 +182,6 @@ pub const UNDERHILL_WORKER: WorkerId<UnderhillWorkerParameters> = WorkerId::new(
 
 const MAX_SUBCHANNELS_PER_VNIC: u16 = 32;
 
-/// Creates a thread to run GET and VMGS clients on.
-///
-/// This must be a separate thread from the thread pool because sometimes thread
-/// pool threads will block synchronously waiting on the GET or VMGS.
-fn new_get_thread() -> (JoinHandle<()>, DefaultDriver) {
-    let pool = DefaultPool::new();
-    let driver = pool.driver();
-    let thread = std::thread::Builder::new()
-        .name("get".into())
-        .spawn(move || pool.run())
-        .unwrap();
-    (thread, driver)
-}
-
 struct GuestEmulationTransportInfra {
     get_thread: JoinHandle<()>,
     get_spawner: DefaultDriver,
@@ -199,7 +190,11 @@ struct GuestEmulationTransportInfra {
 
 async fn construct_get(
 ) -> Result<(GuestEmulationTransportInfra, pal_async::task::Task<()>), anyhow::Error> {
-    let (get_thread, get_spawner) = new_get_thread();
+    // Create a thread to run GET and VMGS clients on.
+    //
+    // This must be a separate thread from the thread pool because sometimes
+    // thread pool threads will block synchronously waiting on the GET or VMGS.
+    let (get_thread, get_spawner) = DefaultPool::spawn_on_thread("get");
 
     let (get_client, get_task) = guest_emulation_transport::spawn_get_worker(get_spawner.clone())
         .await
@@ -222,18 +217,6 @@ async fn construct_get(
         },
         get_watchdog_task,
     ))
-}
-
-async fn attach_simple_intercept_channel<
-    T: vmbus_relay_intercept_device::SimpleVmbusClientDeviceAsync,
->(
-    driver_source: &VmTaskDriverSource,
-    relay: &VmbusRelayHandle,
-    device: SimpleVmbusClientDeviceWrapper<T>,
-) -> anyhow::Result<mesh::OneshotSender<()>> {
-    let (send, recv) = mesh::channel();
-    relay.intercept_channel(device.instance_id(), send).await?;
-    device.detach(driver_source.simple(), recv)
 }
 
 // Used for locating VM information in a debugger
@@ -282,11 +265,8 @@ pub struct UnderhillEnvCfg {
     // TODO MCR: support closed-source configuration logic for MCR device
     pub mcr: bool,
 
-    /// Enable an APIC emulator.
-    pub emulate_apic: bool,
     /// Enable the shared visibility pool. This is enabled by default on
-    /// hardware isolated platforms, but can be enabled for testing. Hardware
-    /// devices will use the shared pool for DMA if enabled.
+    /// hardware isolated platforms, but can be enabled for testing.
     pub enable_shared_visibility_pool: bool,
     /// Enable support for guest vsm in CVMs. This is disabled by default.
     pub cvm_guest_vsm: bool,
@@ -300,6 +280,9 @@ pub struct UnderhillEnvCfg {
     pub hide_isolation: bool,
     /// Enable nvme keep alive.
     pub nvme_keep_alive: bool,
+
+    /// test configuration
+    pub test_configuration: Option<TestScenarioConfig>,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -309,7 +292,7 @@ pub struct UnderhillRemoteConsoleCfg {
     pub synth_keyboard: bool,
     pub synth_mouse: bool,
     pub synth_video: bool,
-    pub input: mesh::MpscReceiver<InputData>,
+    pub input: mesh::Receiver<InputData>,
     pub framebuffer: Option<framebuffer::Framebuffer>,
 }
 
@@ -351,7 +334,7 @@ impl Worker for UnderhillVmWorker {
     const ID: WorkerId<Self::Parameters> = UNDERHILL_WORKER;
 
     fn new(params: Self::Parameters) -> anyhow::Result<Self> {
-        pal_async::local::block_with_io(|driver| async {
+        pal_async::local::block_with_io(async |driver| {
             let (get_infra, get_watchdog_task) = construct_get().await?;
             let get_client = get_infra.get_client.clone();
 
@@ -386,7 +369,7 @@ impl Worker for UnderhillVmWorker {
     }
 
     fn restart(state: Self::State) -> anyhow::Result<Self> {
-        pal_async::local::block_with_io(|driver| async {
+        pal_async::local::block_with_io(async |driver| {
             let (get_infra, get_watchdog_task) = construct_get().await?;
             let result = Self::new_or_restart(
                 get_infra,
@@ -421,7 +404,7 @@ impl Worker for UnderhillVmWorker {
                     synth_keyboard: false,
                     synth_mouse: false,
                     synth_video: false,
-                    input: mesh::MpscReceiver::new(),
+                    input: mesh::Receiver::new(),
                     framebuffer: None,
                 },
                 debugger_rpc: None,
@@ -430,7 +413,7 @@ impl Worker for UnderhillVmWorker {
             };
 
             tracing::info!("sending worker restart state");
-            state.restart_response.send(Ok(RestartState {
+            state.restart_rpc.complete(Ok(RestartState {
                 params,
                 servicing_state: state.servicing_state,
             }))
@@ -494,6 +477,13 @@ impl UnderhillVmWorker {
                 "cannot have saved state from two different sources"
             );
 
+            if let Some(TestScenarioConfig::RestoreStuck) = params.env_cfg.test_configuration {
+                tracing::info!(
+                    "Test configuration SERVICING_RESTORE_STUCK is set. Waiting indefinitely in restore."
+                );
+                future::pending::<()>().await;
+            }
+
             tracing::info!("VTL2 restart, getting servicing state from the host");
 
             let saved_state_buf = get_client
@@ -511,6 +501,12 @@ impl UnderhillVmWorker {
                 saved_state_len = saved_state_buf.len(),
                 "received servicing state from host"
             );
+        }
+
+        if let Some(state) = &mut servicing_state {
+            state
+                .fix_post_restore()
+                .context("failed to fix up servicing state on restore")?;
         }
 
         let is_post_servicing = servicing_state.is_some();
@@ -689,20 +685,19 @@ impl UhVmNetworkSettings {
         }
 
         // Close vmbus channels and drop all of the NICs.
-        let mut endpoints: Vec<_> = join_all(nic_channels.drain(..).map(
-            |(instance_id, channel)| async move {
+        let mut endpoints: Vec<_> =
+            join_all(nic_channels.drain(..).map(async |(instance_id, channel)| {
                 async {
                     let nic = channel.remove().await.revoke().await;
                     nic.shutdown()
                 }
                 .instrument(tracing::info_span!("nic_shutdown", %instance_id))
                 .await
-            },
-        ))
-        .await;
+            }))
+            .await;
 
         let shutdown_vfs = join_all(vf_managers.drain(..).map(
-            |(instance_id, mut manager)| async move {
+            async |(instance_id, mut manager)| {
                 manager
                     .complete(keep_vf_alive)
                     .instrument(tracing::info_span!("vf_manager_shutdown", %instance_id))
@@ -732,17 +727,29 @@ impl UhVmNetworkSettings {
         driver_source: &VmTaskDriverSource,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        shared_vis_pages_pool: &Option<PagePool>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         tp: &AffinitizedThreadpool,
         vmbus_server: &Option<VmbusServerHandle>,
+        dma_client_spawner: DmaClientSpawner,
+        is_isolated: bool,
     ) -> anyhow::Result<RuntimeSavedState> {
         let instance_id = nic_config.instance_id;
         let nic_max_sub_channels = nic_config
             .max_sub_channels
             .unwrap_or(MAX_SUBCHANNELS_PER_VNIC)
             .min(vps_count as u16);
+
+        let dma_client = dma_client_spawner.new_client(DmaClientParameters {
+            device_name: format!("nic_{}", nic_config.pci_id),
+            lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+            allocation_visibility: if is_isolated {
+                AllocationVisibility::Shared
+            } else {
+                AllocationVisibility::Private
+            },
+            persistent_allocations: false,
+        })?;
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
             nic_config.instance_id,
@@ -754,9 +761,8 @@ impl UhVmNetworkSettings {
             vps_count as u32,
             nic_max_sub_channels,
             servicing_netvsp_state,
-            vfio_dma_buffer(shared_vis_pages_pool, format!("nic_{}", instance_id))
-                .context("creating vfio dma buffer")?,
             self.dma_mode,
+            dma_client,
         )
         .await?;
 
@@ -787,7 +793,10 @@ impl UhVmNetworkSettings {
                 }
             };
             let p = partition.clone();
-            let get_guest_os_id = move || -> HvGuestOsId { p.vtl0_guest_os_id() };
+            let get_guest_os_id = move || -> HvGuestOsId {
+                p.vtl0_guest_os_id()
+                    .expect("cannot fail to query the guest OS ID")
+            };
 
             let mut nic_builder = netvsp::Nic::builder()
                 .limit_ring_buffer(true)
@@ -864,10 +873,11 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         threadpool: &AffinitizedThreadpool,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        shared_vis_pages_pool: &Option<PagePool>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
+        dma_client_spawner: DmaClientSpawner,
+        is_isolated: bool,
     ) -> anyhow::Result<RuntimeSavedState> {
         if self.vf_managers.contains_key(&instance_id) {
             return Err(NetworkSettingsError::VFManagerExists(instance_id).into());
@@ -895,11 +905,12 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
                 &driver_source,
                 uevent_listener,
                 servicing_netvsp_state,
-                shared_vis_pages_pool,
                 partition,
                 state_units,
                 threadpool,
                 vmbus_server,
+                dma_client_spawner,
+                is_isolated,
             )
             .await?;
 
@@ -1075,19 +1086,6 @@ fn round_up_to_2mb(bytes: u64) -> u64 {
     (bytes + (2 * 1024 * 1024) - 1) & !((2 * 1024 * 1024) - 1)
 }
 
-fn vfio_dma_buffer(
-    shared_vis_pages_pool: &Option<PagePool>,
-    device_name: String,
-) -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
-    shared_vis_pages_pool
-        .as_ref()
-        .map(|p| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
-            p.allocator(device_name)
-                .map(|alloc| Arc::new(alloc) as Arc<dyn VfioDmaBuffer>)
-        })
-        .unwrap_or(Ok(Arc::new(LockedMemorySpawner)))
-}
-
 #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 fn new_x86_topology(
     cpus: &[bootloader_fdt_parser::Cpu],
@@ -1242,7 +1240,7 @@ async fn new_underhill_vm(
         #[cfg(guest_arch = "x86_64")]
         virt::IsolationType::Snp => {
             let cpu_bytes = boot_info.cpus.len() as u64
-                * virt_mshv_vtl::snp_shared_pages_required_per_cpu()
+                * virt_mshv_vtl::SnpBacked::shared_pages_required_per_cpu()
                 * hvdef::HV_PAGE_SIZE;
 
             round_up_to_2mb(cpu_bytes + device_dma + attestation)
@@ -1250,7 +1248,7 @@ async fn new_underhill_vm(
         #[cfg(guest_arch = "x86_64")]
         virt::IsolationType::Tdx => {
             let cpu_bytes = boot_info.cpus.len() as u64
-                * virt_mshv_vtl::tdx_shared_pages_required_per_cpu()
+                * virt_mshv_vtl::TdxBacked::shared_pages_required_per_cpu()
                 * hvdef::HV_PAGE_SIZE;
 
             round_up_to_2mb(cpu_bytes + device_dma + attestation)
@@ -1503,54 +1501,26 @@ async fn new_underhill_vm(
             .expect("isolated VMs should have shared memory")
     };
 
-    let mut shared_vis_pages_pool = if shared_pool_size != 0 {
+    let mut dma_manager = OpenhclDmaManager::new(
+        &shared_pool.iter().map(|r| r.range).collect::<Vec<_>>(),
+        &runtime_params
+            .private_pool_ranges()
+            .iter()
+            .map(|r| r.range)
+            .collect::<Vec<_>>(),
+        measured_vtl2_info
+            .vtom_offset_bit
+            .map(|bit| 1 << bit)
+            .unwrap_or(0),
+    )
+    .context("failed to create global dma manager")?;
+
+    if let Some(dma_manager_state) = servicing_state.dma_manager_state.flatten() {
         use vmcore::save_restore::SaveRestore;
-
-        let mut pool = PagePool::new_shared_visibility_pool(
-            &shared_pool,
-            measured_vtl2_info
-                .vtom_offset_bit
-                .map(|bit| 1 << bit)
-                .unwrap_or(0),
-        )
-        .context("failed to create shared vis page pool")?;
-
-        if let Some(pool_state) = servicing_state.shared_pool_state.flatten() {
-            pool.restore(pool_state)
-                .context("failed to restore shared vis page pool")?;
-        }
-
-        Some(pool)
-    } else {
-        // There should be no saved state for the private pool. If there is, the
-        // memory layout & shared pool size did not match the previous openhcl
-        // instance.
-        if servicing_state.shared_pool_state.flatten().is_some() {
-            anyhow::bail!("shared pool state when shared pool was not configured");
-        }
-
-        None
-    };
-
-    // Enable the private pool which supports persisting ranges across servicing
-    // for DMA devices that support save restore. Today, this is only used for
-    // NVMe.
-    let mut private_pool = if !runtime_params.private_pool_ranges().is_empty() {
-        use vmcore::save_restore::SaveRestore;
-
-        let ranges = runtime_params.private_pool_ranges();
-        let mut pool =
-            PagePool::new_private_pool(ranges).context("failed to create private pool")?;
-
-        if let Some(pool_state) = servicing_state.private_pool_state.flatten() {
-            pool.restore(pool_state)
-                .context("failed to restore private pool")?;
-        }
-
-        Some(pool)
-    } else {
-        None
-    };
+        dma_manager
+            .restore(dma_manager_state)
+            .context("failed to restore global dma manager")?;
+    }
 
     // Test with the highest VTL for which we have a GuestMemory object
     let highest_vtl_gm = gm.vtl1().unwrap_or(gm.vtl0());
@@ -1588,27 +1558,23 @@ async fn new_underhill_vm(
 
     // Set the gpa allocator to GET that is required by the attestation message.
     //
-    // Note that the share visibility pool takes precedence, as when isolated
-    // shared memory must be used.
-    if let Some(allocator) = shared_vis_pages_pool
-        .as_ref()
-        .map(|p| p.allocator("get".into()))
-    {
-        get_client.set_gpa_allocator(Arc::new(allocator.context("get shared memory allocator")?));
-    } else if let Some(allocator) = private_pool.as_ref().map(|p| p.allocator("get".into())) {
-        // Private memory requires the pages have vtl protection removed before
-        // sending to the host. Unfortuantely, normally we would use the
-        // partition object that implements this trait but it's not available
-        // yet. Use a special crate just for the get that implements this trait.
-        //
-        // TODO: Remove this requirement in the future when we can fix the host
-        // to handle this packet differently.
-        let allocator = LowerVtlMemorySpawner::new(
-            allocator.context("get private memory allocator")?,
-            get_lower_vtl::GetLowerVtl::new().context("get lower vtl")?,
+    // TODO: VBS does not support attestation, so only do this on non-VBS
+    // platforms for now.
+    if !matches!(isolation, virt::IsolationType::Vbs) {
+        get_client.set_gpa_allocator(
+            dma_manager
+                .new_client(DmaClientParameters {
+                    device_name: "get".into(),
+                    lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
+                    allocation_visibility: if isolation.is_isolated() {
+                        AllocationVisibility::Shared
+                    } else {
+                        AllocationVisibility::Private
+                    },
+                    persistent_allocations: false,
+                })
+                .context("get dma client")?,
         );
-
-        get_client.set_gpa_allocator(Arc::new(allocator));
     }
 
     // Create the `AttestationVmConfig` from `dps`, which will be used in
@@ -1649,7 +1615,6 @@ async fn new_underhill_vm(
     // `agent_data` and `guest_secret_key` may also be used by vTPM
     // initialization.
     let platform_attestation_data = {
-        #[allow(clippy::if_same_then_else)] // clearer
         if is_restoring {
             // TODO CVM: Save and restore last returned data when live servicing is supported.
             // We also need to revisit what states should be saved and restored.
@@ -1738,8 +1703,6 @@ async fn new_underhill_vm(
         vmm_core::cpuid::hyperv_cpuid_leaves(extended_ioapic_rte).collect::<Vec<_>>()
     };
 
-    let emulate_apic = cfg!(guest_arch = "x86_64") && (env_cfg.emulate_apic || hardware_isolated);
-
     let (crash_notification_send, crash_notification_recv) = mesh::channel();
 
     let state_units = StateUnits::new();
@@ -1769,13 +1732,32 @@ async fn new_underhill_vm(
         #[cfg(guest_arch = "x86_64")]
         cpuid,
         crash_notification_send,
-        emulate_apic,
         vmtime: &vmtime_source,
         isolated_memory_protector: gm.isolated_memory_protector()?,
-        shared_vis_pages_pool: shared_vis_pages_pool.as_ref().map(|p| {
-            p.allocator("partition".into())
-                .expect("partition name should be unique")
-        }),
+        shared_dma_client: dma_manager
+            .new_client(DmaClientParameters {
+                device_name: "partition-shared".into(),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                allocation_visibility: AllocationVisibility::Shared,
+                persistent_allocations: false,
+            })
+            .ok()
+            .map(|client| {
+                let client: Arc<dyn DmaClient> = client;
+                client
+            }),
+        private_dma_client: dma_manager
+            .new_client(DmaClientParameters {
+                device_name: "partition-private".into(),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                allocation_visibility: AllocationVisibility::Private,
+                persistent_allocations: false,
+            })
+            .ok()
+            .map(|client| {
+                let client: Arc<dyn DmaClient> = client;
+                client
+            }),
     };
 
     let (partition, vps) = proto_partition
@@ -1807,7 +1789,7 @@ async fn new_underhill_vm(
     if env_cfg.mcr {
         use crate::dispatch::vtl2_settings_worker::UhVpciDeviceConfig;
         tracing::info!("Instantiating The MCR Device");
-        const MCR_INSTANCE_ID: Guid = Guid::from_static_str("07effd8f-7501-426c-a947-d8345f39113d");
+        const MCR_INSTANCE_ID: Guid = guid::guid!("07effd8f-7501-426c-a947-d8345f39113d");
 
         let res = UhVpciDeviceConfig {
             instance_id: MCR_INSTANCE_ID,
@@ -1864,41 +1846,18 @@ async fn new_underhill_vm(
     );
 
     let nvme_manager = if env_cfg.nvme_vfio {
-        let shared_vis_pool_spawner = shared_vis_pages_pool
-            .as_ref()
-            .map(|p| p.allocator_spawner());
-
-        let private_pool_spanwer = private_pool.as_ref().map(|p| p.allocator_spawner());
-
-        let save_restore_supported = env_cfg.nvme_keep_alive;
-        let vfio_dma_buffer_spawner = Box::new(
-            move |device_id: String| -> anyhow::Result<Arc<dyn VfioDmaBuffer>> {
-                shared_vis_pool_spawner
-                    .as_ref()
-                    .map(|spawner| {
-                        spawner
-                            .allocator(device_id.clone())
-                            .map(|alloc| Arc::new(alloc) as _)
-                    })
-                    .unwrap_or_else(|| {
-                        private_pool_spanwer
-                            .as_ref()
-                            .map(|spawner| {
-                                spawner
-                                    .allocator(device_id.clone())
-                                    .map(|alloc| Arc::new(alloc) as _)
-                            })
-                            .unwrap_or(Ok(Arc::new(LockedMemorySpawner) as _))
-                    })
-            },
-        );
+        // TODO: reevaluate enablement of nvme save restore when private pool
+        // save restore to bootshim is available.
+        let private_pool_available = !runtime_params.private_pool_ranges().is_empty();
+        let save_restore_supported = env_cfg.nvme_keep_alive && private_pool_available;
 
         let manager = NvmeManager::new(
             &driver_source,
             processor_topology.vp_count(),
-            vfio_dma_buffer_spawner,
             save_restore_supported,
+            isolation.is_isolated(),
             servicing_state.nvme_state.unwrap_or(None),
+            dma_manager.client_spawner(),
         );
 
         resolver.add_async_resolver::<DiskHandleKind, _, NvmeDiskConfig, _>(NvmeDiskResolver::new(
@@ -2176,7 +2135,7 @@ async fn new_underhill_vm(
 
     let input_distributor = state_units
         .add("input")
-        .spawn(&tp, |mut recv| async move {
+        .spawn(&tp, async |mut recv| {
             input_distributor.run(&mut recv).await;
             input_distributor
         })
@@ -2483,30 +2442,23 @@ async fn new_underhill_vm(
             )
         };
 
-        // AK cert request depends on the availability of the shared memory
-        //
         // TODO VBS: Removing the VBS check when VBS TeeCall is implemented.
-        //
-        // TODO: Remove the has_page_pool_available when private_pool is always
-        // available on non isolated.
-        let has_page_pool_available = shared_vis_pages_pool.is_some() || private_pool.is_some();
-        let ak_cert_type =
-            if !matches!(isolation, virt::IsolationType::Vbs) && has_page_pool_available {
-                let request_ak_cert = GetTpmRequestAkCertHelperHandle::new(
-                    attestation_type,
-                    attestation_vm_config,
-                    platform_attestation_data.agent_data,
-                )
-                .into_resource();
+        let ak_cert_type = if !matches!(isolation, virt::IsolationType::Vbs) {
+            let request_ak_cert = GetTpmRequestAkCertHelperHandle::new(
+                attestation_type,
+                attestation_vm_config,
+                platform_attestation_data.agent_data,
+            )
+            .into_resource();
 
-                if !matches!(attestation_type, AttestationType::Host) {
-                    TpmAkCertTypeResource::HwAttested(request_ak_cert)
-                } else {
-                    TpmAkCertTypeResource::Trusted(request_ak_cert)
-                }
+            if !matches!(attestation_type, AttestationType::Host) {
+                TpmAkCertTypeResource::HwAttested(request_ak_cert)
             } else {
-                TpmAkCertTypeResource::None
-            };
+                TpmAkCertTypeResource::Trusted(request_ak_cert)
+            }
+        } else {
+            TpmAkCertTypeResource::None
+        };
 
         let register_layout = if cfg!(guest_arch = "x86_64") {
             TpmRegisterLayout::IoPort
@@ -2572,15 +2524,19 @@ async fn new_underhill_vm(
         // If VTOM is present (CVM scenario), accesses to physical device and PCI config space may
         // occur below or above vTOM, but only within MMIO regions. Forward both to the host.
         let vtom = vtom.unwrap_or(0);
-        let mut untrusted_mmio_ranges: Vec<_> = mem_layout.mmio().to_vec();
-        if vtom > 0 {
-            untrusted_mmio_ranges.extend(
-                mem_layout
-                    .mmio()
-                    .iter()
-                    .map(|range| MemoryRange::new((range.start() + vtom)..(range.end() + vtom))),
-            );
-        }
+        let untrusted_mmio_ranges =
+            if cfg!(guest_arch = "aarch64") && vtom == 0 {
+                // By default on aarch64 send all MMIO accesses to the host.
+                None
+            } else {
+                let mut untrusted_mmio_ranges: Vec<_> = mem_layout.mmio().to_vec();
+                if vtom > 0 {
+                    untrusted_mmio_ranges.extend(mem_layout.mmio().iter().map(|range| {
+                        MemoryRange::new((range.start() + vtom)..(range.end() + vtom))
+                    }));
+                }
+                Some(untrusted_mmio_ranges)
+            };
 
         Arc::new(CloseableMutex::new(FallbackMmioDevice {
             partition: Arc::downgrade(&partition),
@@ -2639,9 +2595,18 @@ async fn new_underhill_vm(
         )),
     );
 
+    // TODO: Enable for isolated VMs.
+    // Intercept shutdown device from VTL0 when the vmbus relay is active.
+    // N.B. Skip enabling if restoring from a previous version that did not use
+    //      a shutdown relay, otherwise would have to rescind the host shutdown
+    //      channel from the lower-VTL guest before taking control.
+    let intercept_shutdown_ic = !hardware_isolated
+        && (!is_restoring || servicing_state.overlay_shutdown_device.unwrap_or(false));
+    let mut intercepted_shutdown_ic = None;
+
     let mut vmbus_server = None;
+    let mut vmbus_client = None;
     let mut host_vmbus_relay = None;
-    let mut vmbus_synic_client = None;
 
     // VMBus
     if with_vmbus {
@@ -2699,29 +2664,55 @@ async fn new_underhill_vm(
             .delay_max_version(delay_max_version)
             .enable_mnf(enable_mnf)
             .force_confidential_external_memory(env_cfg.vmbus_force_confidential_external_memory)
+            // For saved-state compat with release/2411.
+            .send_messages_while_stopped(true)
             .build()
             .context("failed to create vmbus server")?;
 
         let vmbus = VmbusServerHandle::new(&tp, state_units.add("vmbus"), vmbus)?;
         if let Some((relay_channel, hvsock_relay)) = relay_channels {
             let relay_driver = tp.driver(0);
-            let (synic, msg_source) =
-                vmbus_client_hcl::new_synic_client_and_messsage_source(relay_driver)
-                    .context("failed to create synic client and message source")?;
+            let builder = vmbus_client_hcl::vmbus_client_builder(relay_driver)
+                .context("failed to create synic client and message source")?;
 
-            let synic = Arc::new(synic);
+            let mut client = builder.build(tp);
+            let connection = if let Some(state) = servicing_state.vmbus_client.flatten() {
+                client.restore(state).await?
+            } else {
+                None
+            };
+            client.start();
+            let connection = if let Some(c) = connection {
+                c
+            } else {
+                // Unique ID used so that the host knows which client this is,
+                // for diagnosing failures.
+                const OPENHCL_CLIENT_ID: Guid = guid::guid!("ceb1cd55-6a3b-41c5-9473-4dd30624c3d8");
+                client
+                    .connect(0, None, OPENHCL_CLIENT_ID)
+                    .await
+                    .context("failed to connect to vmbus")?
+            };
+
+            let mut intercept_list = Vec::new();
+            if intercept_shutdown_ic {
+                let (send, recv) = mesh::channel();
+                intercept_list.push((hyperv_ic_guest::shutdown::INSTANCE_ID, send));
+                intercepted_shutdown_ic = Some(recv);
+            }
 
             let vmbus_relay = vmbus_relay::HostVmbusTransport::new(
                 relay_driver.clone(),
                 Arc::clone(vmbus.control()),
                 relay_channel,
                 hvsock_relay,
-                synic.clone(),
-                msg_source,
+                client.access().clone(),
+                connection,
+                intercept_list,
             )
+            .await
             .context("failed to create host vmbus transport")?;
 
-            vmbus_synic_client = Some(synic);
             host_vmbus_relay = Some(VmbusRelayHandle::new(
                 &tp,
                 state_units
@@ -2729,6 +2720,8 @@ async fn new_underhill_vm(
                     .depends_on(vmbus.unit_handle()),
                 vmbus_relay,
             )?);
+
+            vmbus_client = Some(client);
         };
 
         vmbus_server = Some(vmbus);
@@ -2831,10 +2824,11 @@ async fn new_underhill_vm(
                     tp,
                     &uevent_listener,
                     &servicing_state.emuplat.netvsp_state,
-                    &shared_vis_pages_pool,
                     partition.clone(),
                     &state_units,
                     &vmbus_server,
+                    dma_manager.client_spawner(),
+                    isolation.is_isolated(),
                 )
                 .await?;
 
@@ -2847,7 +2841,7 @@ async fn new_underhill_vm(
     if let Some(framebuffer) = remote_console_cfg.framebuffer {
         resolver.add_resolver(FramebufferRemoteControl {
             get: get_client.clone(),
-            format_send: Arc::new(framebuffer.format_send()),
+            format_send: framebuffer.format_send(),
         });
 
         vmbus_device_handles.push(
@@ -2872,16 +2866,7 @@ async fn new_underhill_vm(
 
     let mut vmbus_intercept_devices = Vec::new();
 
-    // TODO: Enable for isolated VMs.
-    // Intercept shutdown device from VTL0 when the vmbus relay is active.
-    // N.B. Skip enabling if restoring from a previous version that did not use
-    //      a shutdown relay, otherwise would have to rescind the host shutdown
-    //      channel from the lower-VTL guest before taking control.
-    let shutdown_relay = if host_vmbus_relay.is_some()
-        && !hardware_isolated
-        && (!is_restoring || servicing_state.overlay_shutdown_device.unwrap_or(false))
-    {
-        let relay = host_vmbus_relay.as_ref().unwrap();
+    let shutdown_relay = if let Some(recv) = intercepted_shutdown_ic {
         let mut shutdown_guest = ShutdownGuestIc::new();
         let recv_host_shutdown = shutdown_guest.get_shutdown_notifier();
         let (send_guest_shutdown, recv_guest_shutdown) = mesh::channel();
@@ -2896,15 +2881,17 @@ async fn new_underhill_vm(
 
         let shutdown_guest = SimpleVmbusClientDeviceWrapper::new(
             driver_source.simple(),
-            Arc::new(LowerVtlMemorySpawner::new(
-                LockedMemorySpawner,
-                partition.clone(),
-            )),
-            vmbus_synic_client.clone().unwrap(),
+            dma_manager
+                .new_client(DmaClientParameters {
+                    device_name: "shutdown-relay".into(),
+                    lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
+                    allocation_visibility: AllocationVisibility::Private,
+                    persistent_allocations: false,
+                })
+                .context("shutdown relay dma client")?,
             shutdown_guest,
         )?;
-        vmbus_intercept_devices
-            .push(attach_simple_intercept_channel(&driver_source, relay, shutdown_guest).await?);
+        vmbus_intercept_devices.push(shutdown_guest.detach(driver_source.simple(), recv)?);
 
         Some((recv_host_shutdown, send_guest_shutdown))
     } else {
@@ -2966,22 +2953,9 @@ async fn new_underhill_vm(
     )
     .context("failed to create partition unit")?;
 
-    // Finalize the shared visibility pool. For now, allow leaking as pool users
-    // do not support restoring allocations.
-    shared_vis_pages_pool
-        .as_mut()
-        .map(|pool| pool.validate_restore(true))
-        .transpose()
-        .context("failed to validate restore for shared visibility pool")?;
-
-    // Finalize the private pool. This should be only used by devices that
-    // support restoring their allocations, so there should be no unmatched
-    // allocations.
-    private_pool
-        .as_mut()
-        .map(|pool| pool.validate_restore(false))
-        .transpose()
-        .context("failed to validate restore for private pool")?;
+    dma_manager
+        .validate_restore()
+        .context("failed to validate restore for dma manager")?;
 
     // Start the VP tasks on the thread pool.
     crate::vp::spawn_vps(tp, vps, vp_runners, &chipset, isolation)
@@ -3029,6 +3003,7 @@ async fn new_underhill_vm(
             netvsp_state,
         },
         device_interfaces: Some(controllers.device_interfaces),
+        vmbus_client,
         vtl0_memory_map,
 
         vmbus_server,
@@ -3053,9 +3028,9 @@ async fn new_underhill_vm(
         control_send,
 
         _periodic_telemetry_task: periodic_telemetry_task,
-        shared_vis_pool: shared_vis_pages_pool,
-        private_pool,
         nvme_keep_alive: env_cfg.nvme_keep_alive,
+        test_configuration: env_cfg.test_configuration,
+        dma_manager,
     };
 
     Ok(loaded_vm)
@@ -3112,6 +3087,7 @@ fn validate_isolated_configuration(dps: &DevicePlatformSettings) -> Result<(), a
         nvdimm_count: _,
         watchdog_enabled: _,
         vtl2_settings: _,
+        cxl_memory_enabled: _,
     } = &dps.general;
 
     if *hibernation_enabled {
@@ -3185,7 +3161,7 @@ async fn halt_task(
     get_client: GuestEmulationTransportClient,
     halt_on_guest_halt: bool,
 ) {
-    let prepare_for_shutdown = || async {
+    let prepare_for_shutdown = async || {
         // Flush logs. Wait up to 5 seconds.
         let ctx = CancelContext::new().with_timeout(Duration::from_secs(5));
         let call = control_send
@@ -3365,30 +3341,42 @@ impl chipset::pm::PmTimerAssist for UnderhillPmTimerAssist {
 // MmioIntercept traits.
 struct FallbackMmioDevice {
     partition: std::sync::Weak<UhPartition>,
-    mmio_ranges: Vec<MemoryRange>,
+    mmio_ranges: Option<Vec<MemoryRange>>,
 }
 
 impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> chipset_device::io::IoResult {
-        data.fill(!0);
-        if let Some(partition) = self.partition.upgrade() {
-            if self.mmio_ranges.iter().any(|range| {
+        let Some(partition) = self.partition.upgrade() else {
+            return chipset_device::io::IoResult::Ok;
+        };
+
+        if let Some(mmio_ranges) = &self.mmio_ranges {
+            data.fill(!0);
+            if mmio_ranges.iter().any(|range| {
                 range.contains_addr(addr) && range.contains_addr(addr + data.len() as u64 - 1)
             }) {
                 partition.host_mmio_read(addr, data);
             }
+        } else {
+            partition.host_mmio_read(addr, data);
         }
 
         chipset_device::io::IoResult::Ok
     }
 
     fn mmio_write(&mut self, addr: u64, data: &[u8]) -> chipset_device::io::IoResult {
-        if let Some(partition) = self.partition.upgrade() {
-            if self.mmio_ranges.iter().any(|range| {
+        let Some(partition) = self.partition.upgrade() else {
+            return chipset_device::io::IoResult::Ok;
+        };
+
+        if let Some(mmio_ranges) = &self.mmio_ranges {
+            if mmio_ranges.iter().any(|range| {
                 range.contains_addr(addr) && range.contains_addr(addr + data.len() as u64 - 1)
             }) {
                 partition.host_mmio_write(addr, data);
             }
+        } else {
+            partition.host_mmio_write(addr, data);
         }
 
         chipset_device::io::IoResult::Ok

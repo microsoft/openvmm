@@ -3,7 +3,7 @@
 
 [package]
 name = "virt_mshv"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -33,7 +33,6 @@ thiserror.workspace = true
 tracing.workspace = true
 vmm-sys-util.workspace = true
 zerocopy.workspace = true
-
 [build-dependencies]
 build_rs_guest_arch.workspace = true
 

@@ -9,9 +9,11 @@ use super::synic::GlobalSynic;
 use super::synic::ProcessorSynic;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
+use hv1_structs::VtlArray;
 use hvdef::HvRegisterVpAssistPage;
 use hvdef::HvVpVtlControl;
 use hvdef::HvVtlEntryReason;
+use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HV_REFERENCE_TSC_SEQUENCE_INVALID;
@@ -22,9 +24,8 @@ use std::sync::Arc;
 use virt::x86::MsrError;
 use vm_topology::processor::VpIndex;
 use vmcore::reference_time_source::ReferenceTimeSource;
-use vtl_array::VtlArray;
 use x86defs::cpuid::Vendor;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 /// The partition-wide hypervisor state.
 #[derive(Inspect)]
@@ -51,8 +52,6 @@ struct GlobalHvState {
 struct MutableHvState {
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
     hypercall: hvdef::hypercall::MsrHypercallContents,
-    #[inspect(skip)]
-    hypercall_protector: Option<Box<dyn VtlProtectHypercallOverlay>>,
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
     guest_os_id: hvdef::hypercall::HvGuestOsId,
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
@@ -61,10 +60,9 @@ struct MutableHvState {
 }
 
 impl MutableHvState {
-    fn new(protector: Option<Box<dyn VtlProtectHypercallOverlay>>) -> Self {
+    fn new() -> Self {
         Self {
             hypercall: hvdef::hypercall::MsrHypercallContents::new(),
-            hypercall_protector: protector,
 
             guest_os_id: hvdef::hypercall::HvGuestOsId::new(),
             reference_tsc: hvdef::HvRegisterReferenceTsc::new(),
@@ -72,10 +70,9 @@ impl MutableHvState {
         }
     }
 
-    fn reset(&mut self) {
-        if let Some(p) = self.hypercall_protector.as_mut() {
-            p.disable_overlay();
-        }
+    fn reset(&mut self, overlay_access: &mut dyn VtlProtectHypercallOverlay) {
+        overlay_access.disable_overlay();
+
         self.hypercall = hvdef::hypercall::MsrHypercallContents::new();
         self.guest_os_id = hvdef::hypercall::HvGuestOsId::new();
         self.reference_tsc = hvdef::HvRegisterReferenceTsc::new();
@@ -93,8 +90,6 @@ pub struct GlobalHvParams {
     pub tsc_frequency: u64,
     /// The reference time system to use.
     pub ref_time: Box<dyn ReferenceTimeSource>,
-    /// Manages VTL protections on the VTL0 hypercall overlay page
-    pub hypercall_page_protectors: VtlArray<Option<Box<dyn VtlProtectHypercallOverlay>>, 2>,
 }
 
 impl GlobalHv {
@@ -107,20 +102,13 @@ impl GlobalHv {
                 is_ref_time_backed_by_tsc: params.ref_time.is_backed_by_tsc(),
                 ref_time: params.ref_time,
             }),
-            vtl_mutable_state: params
-                .hypercall_page_protectors
-                .map(|protector| Arc::new(Mutex::new(MutableHvState::new(protector)))),
+            vtl_mutable_state: VtlArray::from_fn(|_| Arc::new(Mutex::new(MutableHvState::new()))),
             synic: VtlArray::from_fn(|_| GlobalSynic::new(params.max_vp_count)),
         }
     }
 
     /// Adds a virtual processor to the vtl.
-    pub fn add_vp(
-        &self,
-        guest_memory: GuestMemory,
-        vp_index: VpIndex,
-        vtl: hvdef::Vtl,
-    ) -> ProcessorVtlHv {
+    pub fn add_vp(&self, guest_memory: GuestMemory, vp_index: VpIndex, vtl: Vtl) -> ProcessorVtlHv {
         ProcessorVtlHv {
             vp_index,
             partition_state: self.partition_state.clone(),
@@ -132,15 +120,16 @@ impl GlobalHv {
     }
 
     /// Resets the global (but not per-processor) state.
-    pub fn reset(&self) {
-        for state in self.vtl_mutable_state.iter() {
-            state.lock().reset();
+    pub fn reset(&self, mut overlay_access: VtlArray<&mut dyn VtlProtectHypercallOverlay, 2>) {
+        for (state, overlay_access) in self.vtl_mutable_state.iter().zip(overlay_access.iter_mut())
+        {
+            state.lock().reset(*overlay_access);
         }
         // There is no global synic state to reset, since the synic is per-VP.
     }
 
     /// The current guest_os_id value.
-    pub fn guest_os_id(&self, vtl: hvdef::Vtl) -> hvdef::hypercall::HvGuestOsId {
+    pub fn guest_os_id(&self, vtl: Vtl) -> hvdef::hypercall::HvGuestOsId {
         self.vtl_mutable_state[vtl].lock().guest_os_id
     }
 }
@@ -180,11 +169,52 @@ impl ProcessorVtlHv {
         *vp_assist_page = Default::default();
     }
 
+    /// Emulates an MSR write for the guest OS ID MSR.
+    pub fn msr_write_guest_os_id(&mut self, v: u64) {
+        self.vtl_state.lock().guest_os_id = v.into();
+    }
+
+    /// Emulates an MSR write for the VP assist page MSR.
+    pub fn msr_write_vp_assist_page(&mut self, v: u64) -> Result<(), MsrError> {
+        if v & !u64::from(
+            HvRegisterVpAssistPage::new()
+                .with_enabled(true)
+                .with_gpa_page_number(!0 >> 12),
+        ) != 0
+        {
+            return Err(MsrError::InvalidAccess);
+        }
+        let vp_assist_page = HvRegisterVpAssistPage::from(v);
+
+        // Clear the target page if it is being enabled or moved.
+        if vp_assist_page.enabled()
+            && (!self.vp_assist_page.enabled()
+                || vp_assist_page.gpa_page_number() != self.vp_assist_page.gpa_page_number())
+        {
+            let gpa = vp_assist_page.gpa_page_number() * HV_PAGE_SIZE;
+            if let Err(err) = self.guest_memory.fill_at(gpa, 0, HV_PAGE_SIZE_USIZE) {
+                tracelimit::warn_ratelimited!(
+                    gpa,
+                    error = &err as &dyn std::error::Error,
+                    "failed to clear vp assist page"
+                );
+                return Err(MsrError::InvalidAccess);
+            }
+        }
+        self.vp_assist_page = vp_assist_page;
+        Ok(())
+    }
+
     /// Emulates an MSR write for an HV#1 synthetic MSR.
-    pub fn msr_write(&mut self, n: u32, v: u64) -> Result<(), MsrError> {
+    pub fn msr_write(
+        &mut self,
+        n: u32,
+        v: u64,
+        overlay_access: &mut dyn VtlProtectHypercallOverlay,
+    ) -> Result<(), MsrError> {
         match n {
             hvdef::HV_X64_MSR_GUEST_OS_ID => {
-                self.vtl_state.lock().guest_os_id = v.into();
+                self.msr_write_guest_os_id(v);
             }
             hvdef::HV_X64_MSR_HYPERCALL => {
                 let mut mutable = self.vtl_state.lock();
@@ -208,13 +238,9 @@ impl ProcessorVtlHv {
                         return Err(MsrError::InvalidAccess);
                     }
 
-                    if let Some(p) = mutable.hypercall_protector.as_mut() {
-                        p.change_overlay(hc.gpn());
-                    }
+                    overlay_access.change_overlay(hc.gpn());
                 } else if !hc.enable() {
-                    if let Some(p) = mutable.hypercall_protector.as_mut() {
-                        p.disable_overlay();
-                    }
+                    overlay_access.disable_overlay();
                 }
                 mutable.hypercall = hc;
             }
@@ -244,7 +270,7 @@ impl ProcessorVtlHv {
                             as u64;
                         let reference_page = hvdef::HvReferenceTscPage {
                             tsc_scale,
-                            ..FromZeroes::new_zeroed()
+                            ..FromZeros::new_zeroed()
                         };
                         if let Err(err) = gm.write_plain(gpa, &reference_page) {
                             tracelimit::warn_ratelimited!(
@@ -272,35 +298,7 @@ impl ProcessorVtlHv {
                 mutable.reference_tsc = v;
             }
             hvdef::HV_X64_MSR_TSC_FREQUENCY => return Err(MsrError::InvalidAccess),
-            hvdef::HV_X64_MSR_VP_ASSIST_PAGE => {
-                if v & !u64::from(
-                    HvRegisterVpAssistPage::new()
-                        .with_enabled(true)
-                        .with_gpa_page_number(!0 >> 12),
-                ) != 0
-                {
-                    return Err(MsrError::InvalidAccess);
-                }
-                let vp_assist_page = HvRegisterVpAssistPage::from(v);
-
-                // Clear the target page if it is being enabled or moved.
-                if vp_assist_page.enabled()
-                    && (!self.vp_assist_page.enabled()
-                        || vp_assist_page.gpa_page_number()
-                            != self.vp_assist_page.gpa_page_number())
-                {
-                    let gpa = vp_assist_page.gpa_page_number() * HV_PAGE_SIZE;
-                    if let Err(err) = self.guest_memory.fill_at(gpa, 0, HV_PAGE_SIZE_USIZE) {
-                        tracelimit::warn_ratelimited!(
-                            gpa,
-                            error = &err as &dyn std::error::Error,
-                            "failed to clear vp assist page"
-                        );
-                        return Err(MsrError::InvalidAccess);
-                    }
-                }
-                self.vp_assist_page = vp_assist_page;
-            }
+            hvdef::HV_X64_MSR_VP_ASSIST_PAGE => self.msr_write_vp_assist_page(v)?,
             msr @ hvdef::HV_X64_MSR_SCONTROL..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
                 self.synic.write_msr(&self.guest_memory, msr, v)?
             }
@@ -534,9 +532,9 @@ const INTEL_HYPERCALL_PAGE: HypercallPage = hypercall_page(false);
 
 /// A trait for managing the hypercall code page overlay, including its location
 /// and vtl protections.
-pub trait VtlProtectHypercallOverlay: Send + Sync {
+pub trait VtlProtectHypercallOverlay {
     /// Change the location of the overlay.
-    fn change_overlay(&self, gpn: u64);
+    fn change_overlay(&mut self, gpn: u64);
     /// Disable the overlay.
-    fn disable_overlay(&self);
+    fn disable_overlay(&mut self);
 }

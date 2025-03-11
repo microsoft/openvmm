@@ -5,26 +5,25 @@
 
 // UNSAFETY: Manual memory management around buffers and mmap.
 #![expect(unsafe_code)]
+#![expect(missing_docs)]
 
 use inspect::Inspect;
 use interrupt::DeviceInterrupt;
 use memory::MemoryBlock;
+use std::sync::Arc;
 
 pub mod backoff;
 pub mod emulated;
 pub mod interrupt;
 pub mod lockmem;
 pub mod memory;
+pub mod page_allocator;
 pub mod vfio;
-
-pub type DmaAllocator<T> = <T as DeviceBacking>::DmaAllocator;
 
 /// An interface to access device hardware.
 pub trait DeviceBacking: 'static + Send + Inspect {
     /// An object for accessing device registers.
     type Registers: 'static + DeviceRegisterIo + Inspect;
-    /// An object for allocating host memory to share with the device.
-    type DmaAllocator: 'static + HostDmaAllocator;
 
     /// Returns a device ID for diagnostics.
     fn id(&self) -> &str;
@@ -32,8 +31,8 @@ pub trait DeviceBacking: 'static + Send + Inspect {
     /// Maps a BAR.
     fn map_bar(&mut self, n: u8) -> anyhow::Result<Self::Registers>;
 
-    /// Returns an object that can allocate host memory to be shared with the device.
-    fn host_allocator(&self) -> Self::DmaAllocator;
+    /// DMA Client for the device.
+    fn dma_client(&self) -> Arc<dyn DmaClient>;
 
     /// Returns the maximum number of interrupts that can be mapped.
     fn max_interrupt_count(&self) -> u32;
@@ -50,6 +49,8 @@ pub trait DeviceBacking: 'static + Send + Inspect {
 
 /// Access to device registers.
 pub trait DeviceRegisterIo: Send + Sync {
+    /// Returns the length of the register space.
+    fn len(&self) -> usize;
     /// Reads a `u32` register.
     fn read_u32(&self, offset: usize) -> u32;
     /// Reads a `u64` register.
@@ -60,9 +61,13 @@ pub trait DeviceRegisterIo: Send + Sync {
     fn write_u64(&self, offset: usize, data: u64);
 }
 
-pub trait HostDmaAllocator: Send + Sync {
-    /// Allocate a new block using default allocation strategy.
-    fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock>;
-    /// Attach to a previously allocated memory block with contiguous PFNs.
+/// Device interfaces for DMA.
+pub trait DmaClient: Send + Sync + Inspect {
+    /// Allocate a new DMA buffer. This buffer must be zero initialized.
+    ///
+    /// TODO: string tag for allocation?
+    fn allocate_dma_buffer(&self, total_size: usize) -> anyhow::Result<MemoryBlock>;
+
+    /// Attach to a previously allocated memory block.
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 }

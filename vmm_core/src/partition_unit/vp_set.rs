@@ -20,8 +20,8 @@ use guestmem::GuestMemory;
 use hvdef::Vtl;
 use inspect::Inspect;
 use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use pal_async::local::block_with_io;
 use parking_lot::Mutex;
 use slab::Slab;
 use std::future::Future;
@@ -744,7 +744,7 @@ impl VpSet {
             recv,
             _done: done_send,
             cancel_recv,
-            cancel_send: Arc::new(cancel_send),
+            cancel_send,
             inner: RunnerInner {
                 vp: vp.as_ref().vp_index,
                 inner: self.inner.clone(),
@@ -799,7 +799,7 @@ impl VpSet {
         self.vps
             .iter()
             .enumerate()
-            .map(|(index, vp)| async move {
+            .map(async |(index, vp)| {
                 let data = vp
                     .send
                     .call(|x| VpEvent::State(StateEvent::Save(x)), ())
@@ -890,7 +890,7 @@ pub struct RegisterSetError(&'static str, #[source] anyhow::Error);
 
 #[derive(Debug, Error)]
 #[error("the vp runner was dropped")]
-struct RunnerGoneError(#[source] mesh::RecvError);
+struct RunnerGoneError(#[source] RpcError);
 
 #[cfg(feature = "gdb")]
 impl VpSet {
@@ -1014,14 +1014,14 @@ enum DebugEvent {
 #[must_use]
 pub struct VpRunner {
     recv: mesh::Receiver<VpEvent>,
-    cancel_send: Arc<mesh::Sender<()>>,
+    cancel_send: mesh::Sender<()>,
     cancel_recv: mesh::Receiver<()>,
     _done: mesh::OneshotSender<()>,
     inner: RunnerInner,
 }
 
 /// An object that can cancel a pending call into [`VpRunner::run`].
-pub struct RunnerCanceller(Arc<mesh::Sender<()>>);
+pub struct RunnerCanceller(mesh::Sender<()>);
 
 impl RunnerCanceller {
     /// Requests that the current or next call to [`VpRunner::run`] return as
@@ -1499,11 +1499,9 @@ impl<T: virt::Partition> RequestYield for T {
 /// waker needs to ask the VP to yield).
 pub fn block_on_vp<F: Future>(partition: Arc<dyn RequestYield>, vp: VpIndex, fut: F) -> F::Output {
     let mut fut = pin!(fut);
-    block_with_io(|_| {
-        std::future::poll_fn(|cx| {
-            let waker = Arc::new(VpWaker::new(partition.clone(), vp, cx.waker().clone())).into();
-            let mut cx = Context::from_waker(&waker);
-            fut.poll_unpin(&mut cx)
-        })
-    })
+    pal_async::local::block_on(std::future::poll_fn(|cx| {
+        let waker = Arc::new(VpWaker::new(partition.clone(), vp, cx.waker().clone())).into();
+        let mut cx = Context::from_waker(&waker);
+        fut.poll_unpin(&mut cx)
+    }))
 }

@@ -3,7 +3,7 @@
 
 [package]
 name = "vmbus_async"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -20,6 +20,5 @@ pal_async.workspace = true
 futures.workspace = true
 thiserror.workspace = true
 zerocopy.workspace = true
-
 [lints]
 workspace = true

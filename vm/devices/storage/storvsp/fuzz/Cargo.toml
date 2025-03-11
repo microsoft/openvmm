@@ -1,0 +1,47 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "fuzz_storvsp"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+arbitrary = { workspace = true, features = ["derive"] }
+disklayer_ram.workspace = true
+futures.workspace = true
+guestmem.workspace = true
+pal_async.workspace = true
+scsi_defs = {workspace = true, features = ["arbitrary"]}
+scsidisk.workspace = true
+storvsp = {workspace = true, features = ["arbitrary", "fuzz_helpers"]}
+storvsp_resources = {workspace = true, features = ["arbitrary"]}
+vmbus_async.workspace = true
+vmbus_channel.workspace = true
+vmbus_ring.workspace = true
+xtask_fuzz.workspace = true
+zerocopy.workspace = true
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libfuzzer-sys.workspace = true
+
+[package.metadata]
+cargo-fuzz = true
+
+[package.metadata.xtask.fuzz.onefuzz-allowlist]
+fuzz_storvsp = ["**/*.rs", "../src/**/*.rs"]
+
+[package.metadata.xtask.unused-deps]
+# required for the xtask_fuzz macro, but unused_deps doesn't know that
+ignored = ["libfuzzer-sys"]
+
+[[bin]]
+name = "fuzz_storvsp"
+path = "fuzz_storvsp.rs"
+test = false
+doc = false
+doctest = false
+
+[lints]
+workspace = true

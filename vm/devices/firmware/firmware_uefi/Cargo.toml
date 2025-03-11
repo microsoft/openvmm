@@ -3,7 +3,7 @@
 
 [package]
 name = "firmware_uefi"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -51,7 +51,6 @@ tracelimit.workspace = true
 tracing.workspace = true
 wchar.workspace = true
 zerocopy.workspace = true
-
 [dev-dependencies]
 test_with_tracing.workspace = true
 

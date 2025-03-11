@@ -3,22 +3,29 @@
 
 // UNSAFETY: Calling into lxutil external dll.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
+
+mod macros;
 
 pub(crate) mod api;
+pub(crate) mod fs;
 pub(crate) mod path;
+mod readdir;
+mod symlink;
 mod util;
 
 use super::PathExt;
 use super::SetAttributes;
+use ::windows::Wdk::Storage::FileSystem;
+use ::windows::Wdk::System::SystemServices;
+use ::windows::Win32::Foundation;
 use ntapi::ntioapi;
 use pal::windows;
+use pal::windows::UnicodeString;
 use parking_lot::Mutex;
-use std::any::Any;
 use std::ffi;
 use std::mem;
 use std::os::windows::prelude::*;
-use std::panic;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
@@ -26,33 +33,26 @@ use std::ptr;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use widestring::U16CString;
 use winapi::shared::basetsd;
 use winapi::shared::ntdef;
-use winapi::shared::ntstatus;
 use winapi::um::winnt;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 const DOT_ENTRY_COUNT: lx::off_t = 2;
 
-// Callbacks must be global because lxutil keeps a pointer to it, so it may never be moved.
-const CALLBACKS: api::LX_UTIL_FS_CALLBACKS = api::LX_UTIL_FS_CALLBACKS {
-    WriteDirentryMethod: Some(LxFile::process_dir_entry_callback),
-    TranslateAbsoluteSymlinkMethod: Some(VolumeState::translate_absolute_symlink_callback),
-};
-
 // State that LxVolume can share with LxFiles.
 pub struct VolumeState {
-    fs_context: api::LX_UTIL_FS_CONTEXT,
+    fs_context: fs::FsContext,
     options: super::LxVolumeOptions,
     block_size: ntdef::ULONG,
 }
 
 impl VolumeState {
     pub fn new(
-        fs_context: api::LX_UTIL_FS_CONTEXT,
+        fs_context: fs::FsContext,
         options: super::LxVolumeOptions,
         block_size: ntdef::ULONG,
     ) -> Arc<Self> {
@@ -67,11 +67,7 @@ impl VolumeState {
         &self,
         handle: &OwnedHandle,
     ) -> lx::Result<util::LxStatInformation> {
-        util::get_attributes_by_handle(
-            &self.fs_context,
-            ptr::from_ref(self) as ntdef::PVOID,
-            handle,
-        )
+        util::get_attributes_by_handle(&self.fs_context, self, handle)
     }
 
     pub fn get_attributes(
@@ -80,110 +76,11 @@ impl VolumeState {
         path: &Path,
         existing_handle: Option<&OwnedHandle>,
     ) -> lx::Result<util::LxStatInformation> {
-        util::get_attributes(
-            &self.fs_context,
-            ptr::from_ref(self) as ntdef::PVOID,
-            root_handle,
-            path,
-            existing_handle,
-        )
+        util::get_attributes(&self.fs_context, self, root_handle, path, existing_handle)
     }
 
-    pub fn read_reparse_link(
-        &self,
-        handle: &OwnedHandle,
-        target: &mut windows::UnicodeString,
-    ) -> lx::Result<()> {
-        util::check_lx_error(unsafe {
-            api::LxUtilFsReadReparseLink(
-                &self.fs_context,
-                handle.as_raw_handle(),
-                ptr::from_ref(self) as ntdef::PVOID,
-                target.as_mut_ptr(),
-            )
-        })
-    }
-
-    // Callback for LxUtilFsReadReparseLink when a Windows symlink/junction is encountered.
-    // If a symlink_root is associated with the volume, the absolute path will be prepended with the root so that
-    // Windows symlinks will work from within a linux guest. For example a windows symlink pointing at c:\my\target
-    // will likely make more sense in the guest as /mnt/c/my/target.
-    unsafe extern "C" fn translate_absolute_symlink_callback(
-        context: ntdef::PVOID,
-        substitute_name: &ntdef::UNICODE_STRING,
-        link_target: &mut ntdef::UNICODE_STRING,
-    ) -> i32 {
-        let state = unsafe { &*(context as *const VolumeState) };
-        if state.options.sandbox || state.options.symlink_root.is_empty() {
-            // EPERM is the default return value if no callback is provided
-            return -lx::EPERM;
-        }
-
-        // It's not safe to unwind across a C boundary, so catch any panics that happens in the
-        // user's closure.
-        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-            // Convert from UTF-16 UNICODE_STRING to String
-            let name = unsafe {
-                std::slice::from_raw_parts(
-                    substitute_name.Buffer,
-                    (substitute_name.Length as usize) / 2,
-                )
-            };
-            if name.len() < 6 {
-                return -lx::EIO;
-            }
-            let name_length = (substitute_name.Length as usize) / 2;
-            let name = if name[name_length - 1] == 0 {
-                &name[..name_length - 1]
-            } else {
-                &name[..name_length]
-            };
-            let name = match String::from_utf16(name) {
-                Ok(name) => name,
-                Err(_) => return -lx::EIO,
-            };
-
-            // If the symlink does not start with \??\, it is malformed.
-            if !name.starts_with("\\??\\") {
-                return -lx::EIO;
-            }
-
-            // Next must be a drive letter, a colon, and another separator.
-            // N.B. Mount-point junctions, which use a volume GUID style path, are not supported.
-            let (_, name) = name.split_at(4);
-            let mut name_as_chars = name.chars();
-            let drive_letter = match name_as_chars.next() {
-                Some(val) => val,
-                None => return -lx::EIO,
-            };
-            if name_as_chars.next() != Some(':') || name_as_chars.next() != Some('\\') {
-                return -lx::EIO;
-            };
-            let drive_letter = match drive_letter {
-                'a'..='z' => drive_letter,
-                'A'..='Z' => ((drive_letter as u8) - b'A' + b'a') as char,
-                _ => return -lx::EIO,
-            };
-
-            let (_, name) = name.split_at(2);
-            let name = name.replace('\\', "/");
-            let target = format!("{}{}{}", &state.options.symlink_root, drive_letter, name);
-            let target = match U16CString::from_str(target) {
-                Ok(val) => val,
-                Err(_) => return -lx::EIO,
-            };
-            let target = match windows::UnicodeString::new(target.as_ref()) {
-                Ok(val) => val,
-                Err(_) => return -lx::EIO,
-            };
-            *link_target = target.into_raw();
-            0
-        }));
-
-        match result {
-            Ok(val) => val,
-            Err(_) => -lx::EIO,
-        }
+    pub fn read_reparse_link(&self, handle: &OwnedHandle) -> lx::Result<Option<String>> {
+        fs::read_reparse_link(handle, self)
     }
 }
 
@@ -212,23 +109,14 @@ impl LxVolume {
             )?;
 
             // Determine the capabilities of the file system.
-            let mut fs_context = mem::zeroed();
-            let mut info = mem::zeroed();
-            util::check_lx_error(api::LxUtilFsInitialize(
-                root.as_raw_handle(),
-                api::LX_DRVFS_DISABLE_NONE,
-                ntdef::FALSE,
-                &CALLBACKS,
-                &mut fs_context,
-                &mut info,
-            ))?;
+            let fs_context = fs::FsContext::new(&root, fs::LX_DRVFS_DISABLE_NONE, false)?;
 
             let mut options = options.clone();
-            if fs_context.CompatibilityFlags & api::FS_CONTEXT_SUPPORTS_METADATA == 0 {
+            if !fs_context.compatibility_flags.supports_metadata() {
                 options.metadata = false;
             }
 
-            if fs_context.CompatibilityFlags & api::FS_CONTEXT_SUPPORTS_CASE_SENSITIVE_DIR == 0 {
+            if !fs_context.compatibility_flags.supports_case_sensitive_dir() {
                 options.create_case_sensitive_dirs = false;
             }
 
@@ -238,7 +126,7 @@ impl LxVolume {
             let block_size = api::LxUtilFsGetFileSystemBlockSize(root.as_raw_handle());
             Ok(Self {
                 root,
-                #[allow(clippy::disallowed_methods)] // need actual canonical path here
+                #[expect(clippy::disallowed_methods, reason = "need actual canonical path here")]
                 root_path: root_path.canonicalize()?,
                 state: VolumeState::new(fs_context, options, block_size),
             })
@@ -246,7 +134,10 @@ impl LxVolume {
     }
 
     pub fn supports_stable_file_id(&self) -> bool {
-        self.state.fs_context.CompatibilityFlags & api::FS_CONTEXT_SUPPORTS_STABLE_FILE_ID != 0
+        self.state
+            .fs_context
+            .compatibility_flags
+            .supports_stable_file_id()
     }
 
     fn check_sandbox_enforcement(&self, path: &Path) -> lx::Result<()> {
@@ -426,10 +317,14 @@ impl LxVolume {
 
         // Open the file to read its reparse data.
         let mut handle = self.open_file(path, winnt::FILE_READ_ATTRIBUTES, 0)?;
-        let mut target = windows::UnicodeString::empty();
+        let mut target = String::new();
         unsafe {
             // Try to read the link target from the reparse data.
-            self.state.read_reparse_link(&handle, &mut target)?;
+            let target_string = self.state.read_reparse_link(&handle)?;
+            // TODO: Remove this once LxUtilSymlinkRead is implemented and re-work to just use the Option
+            if target_string.is_some() {
+                target = target_string.unwrap();
+            }
 
             // If the function succeeded but returned a NULL buffer, this is a V1 LX symlink which must be
             // opened for read to read the target.
@@ -442,18 +337,18 @@ impl LxVolume {
                     winnt::FILE_READ_ATTRIBUTES | winnt::FILE_READ_DATA,
                 )?;
 
+                let mut wide_target = UnicodeString::empty();
+
                 util::check_lx_error(api::LxUtilSymlinkRead(
                     handle.as_raw_handle(),
-                    target.as_mut_ptr(),
+                    wide_target.as_mut_ptr(),
                 ))?;
+
+                target = String::from_utf16(wide_target.as_slice()).map_err(|_| lx::Error::EIO)?;
             }
         }
 
-        let target = String::from_utf16(target.as_slice())
-            .map_err(|_| lx::Error::EINVAL)?
-            .into();
-
-        Ok(target)
+        Ok(target.into())
     }
 
     pub fn unlink(&self, path: &Path, flags: i32) -> lx::Result<()> {
@@ -475,7 +370,7 @@ impl LxVolume {
         )?;
 
         // Query file attributes to check if it matches what AT_REMOVEDIR wants.
-        let info: ntioapi::FILE_BASIC_INFORMATION = util::query_information_file(&handle)?;
+        let info: FileSystem::FILE_BASIC_INFORMATION = util::query_information_file(&handle)?;
         if flags & lx::AT_REMOVEDIR != 0 {
             // Must be a directory and not a reparse point (NT directory symlinks are treated
             // as files).
@@ -530,12 +425,9 @@ impl LxVolume {
         }
 
         let handle = self.open_file(path, winnt::FILE_READ_ATTRIBUTES | winnt::DELETE, 0)?;
-        let target: windows::UnicodeString = new_path
-            .as_os_str()
-            .try_into()
-            .map_err(|_| lx::Error::EINVAL)?;
 
-        let error = match util::rename(&handle, &self.root, &target, &self.state.fs_context) {
+        let flags = fs::RenameFlags::default();
+        let error = match fs::rename(&handle, &self.root, new_path, &self.state.fs_context, flags) {
             Ok(_) => return Ok(()),
             Err(error) => error,
         };
@@ -548,9 +440,11 @@ impl LxVolume {
         if (error.value() == lx::EPERM
             || error.value() == lx::EACCES
             || error.value() == lx::EEXIST)
-            && self.state.fs_context.CompatibilityFlags
-                & api::FS_CONTEXT_SUPPORTS_POSIX_UNLINK_RENAME
-                == 0
+            && !self
+                .state
+                .fs_context
+                .compatibility_flags
+                .supports_posix_unlink_rename()
         {
             match self.open_file(new_path, winnt::DELETE, 0) {
                 Ok(target_handle) => self.delete_file(&target_handle)?,
@@ -563,7 +457,7 @@ impl LxVolume {
             }
 
             // Retry the rename.
-            util::rename(&handle, &self.root, &target, &self.state.fs_context)?;
+            fs::rename(&handle, &self.root, new_path, &self.state.fs_context, flags)?;
         } else {
             return Err(error);
         }
@@ -780,8 +674,9 @@ impl LxVolume {
             // If the file system supports case sensitive directories, and this is a directory,
             // include the "system.wsl_case_sensitive" attribute in the list.
             if self.supports_case_sensitive_dir() {
-                let result =
-                    util::query_information_file::<ntioapi::FILE_ATTRIBUTE_TAG_INFORMATION>(&file);
+                let result = util::query_information_file::<
+                    SystemServices::FILE_ATTRIBUTE_TAG_INFORMATION,
+                >(&file);
 
                 if let Ok(info) = result {
                     if info.FileAttributes & winnt::FILE_ATTRIBUTE_DIRECTORY != 0
@@ -834,11 +729,14 @@ impl LxVolume {
     }
 
     fn supports_xattr(&self) -> bool {
-        self.state.fs_context.CompatibilityFlags & api::FS_CONTEXT_SUPPORTS_XATTR != 0
+        self.state.fs_context.compatibility_flags.supports_xattr()
     }
 
     fn supports_case_sensitive_dir(&self) -> bool {
-        self.state.fs_context.CompatibilityFlags & api::FS_CONTEXT_SUPPORTS_CASE_SENSITIVE_DIR != 0
+        self.state
+            .fs_context
+            .compatibility_flags
+            .supports_case_sensitive_dir()
     }
 
     fn mkdir_helper(
@@ -868,11 +766,11 @@ impl LxVolume {
 
         if self.state.options.create_case_sensitive_dirs {
             // If setting case sensitive info fails, the file should be deleted.
-            let delete_on_failure = pal::ScopeExit::new(|| unsafe {
-                api::LxUtilFsDeleteFile(handle.as_raw_handle(), &self.state.fs_context);
+            let delete_on_failure = pal::ScopeExit::new(|| {
+                let _ = fs::delete_file(&self.state.fs_context, &handle);
             });
 
-            let info = ntioapi::FILE_CASE_SENSITIVE_INFORMATION {
+            let info = FileSystem::FILE_CASE_SENSITIVE_INFORMATION {
                 Flags: api::FILE_CS_FLAG_CASE_SENSITIVE_DIR,
             };
 
@@ -930,8 +828,8 @@ impl LxVolume {
         )?;
 
         // If setting the reparse point fails, the file should be deleted.
-        let delete_on_failure = pal::ScopeExit::new(|| unsafe {
-            api::LxUtilFsDeleteFile(handle.as_raw_handle(), &self.state.fs_context);
+        let delete_on_failure = pal::ScopeExit::new(|| {
+            let _ = fs::delete_file(&self.state.fs_context, &handle);
         });
 
         // Try to set the reparse point.
@@ -958,7 +856,12 @@ impl LxVolume {
         self.check_sandbox_enforcement(path)?;
         self.check_sandbox_enforcement(new_path)?;
 
-        if self.state.fs_context.CompatibilityFlags & api::FS_CONTEXT_SUPPORTS_HARD_LINKS == 0 {
+        if !self
+            .state
+            .fs_context
+            .compatibility_flags
+            .supports_hard_links()
+        {
             return Err(lx::Error::EPERM);
         }
 
@@ -1030,23 +933,22 @@ impl LxVolume {
 
         if !lx::s_isreg(mode) {
             // If setting the reparse point fails, the file should be deleted.
-            let delete_on_failure = pal::ScopeExit::new(|| unsafe {
-                api::LxUtilFsDeleteFile(handle.as_raw_handle(), &self.state.fs_context);
+            let delete_on_failure = pal::ScopeExit::new(|| {
+                let _ = fs::delete_file(&self.state.fs_context, &handle);
             });
 
             /// Only the required header for FSCTL_SET_REPARSE_POINT, with data length of zero.
             /// See ntifs.h REPARSE_DATA_BUFFER.
-            #[allow(non_snake_case)]
+            #[allow(non_camel_case_types, non_snake_case)]
             #[repr(C)]
-            #[derive(Clone, Copy, AsBytes, FromBytes, FromZeroes)]
+            #[derive(Clone, Copy, IntoBytes, Immutable, KnownLayout, FromBytes)]
             struct REPARSE_DATA_BUFFER {
                 ReparseTag: u32,
                 ReparseDataLength: u16,
                 Reserved: u16,
             }
 
-            // SAFETY: Calling C API as documented.
-            let reparse_tag = unsafe { api::LxUtilFsFileModeToReparseTag(mode) };
+            let reparse_tag = util::file_mode_to_reparse_tag(mode);
 
             let reparse_buffer = REPARSE_DATA_BUFFER {
                 ReparseTag: reparse_tag,
@@ -1158,33 +1060,28 @@ impl LxVolume {
 
     /// Deletes a file, clearing the read-only attribute if necessary.
     fn delete_file(&self, handle: &OwnedHandle) -> lx::Result<()> {
-        unsafe {
-            let status =
-                api::LxUtilFsDeleteFileCore(&self.state.fs_context, handle.as_raw_handle());
+        let result = fs::delete_file_core(&self.state.fs_context, handle);
 
-            if status < 0 {
-                // Read-only files can fail to be deleted with STATUS_CANNOT_DELETE if:
+        match result {
+            Ok(_) => result,
+            Err(e) => {
+                // Read-only files can fail to be deleted with EIO if:
                 // - The file system didn't support FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE.
                 // - The file system's permission check for that flag failed.
-                if status != ntstatus::STATUS_CANNOT_DELETE {
-                    return Err(util::nt_status_to_lx(status));
+                if e.value() == lx::EIO {
+                    result
+                } else {
+                    // Reopen with the correct permissions to query and clear the read-only attribute,
+                    // and try again.
+                    let handle = util::reopen_file(
+                        handle,
+                        winnt::DELETE | winnt::FILE_READ_ATTRIBUTES | winnt::FILE_WRITE_ATTRIBUTES,
+                    )?;
+
+                    fs::delete_read_only_file(&self.state.fs_context, &handle)
                 }
-
-                // Reopen with the correct permissions to query and clear the read-only attribute,
-                // and try again.
-                let handle = util::reopen_file(
-                    handle,
-                    winnt::DELETE | winnt::FILE_READ_ATTRIBUTES | winnt::FILE_WRITE_ATTRIBUTES,
-                )?;
-
-                util::check_status(api::LxUtilFsDeleteReadOnlyFile(
-                    &self.state.fs_context,
-                    handle.as_raw_handle(),
-                ))?;
             }
         }
-
-        Ok(())
     }
 
     // Determines whether the mode and gid must be changed based on the parent's set-group-id bit.
@@ -1203,14 +1100,12 @@ impl LxVolume {
         };
 
         let info = self.state.get_attributes(Some(&self.root), dir, None)?;
-        unsafe {
-            // If the parent doesn't have explicit mode metadata, it can't have the set-group-id bit.
-            if info.stat.LxFlags & api::LX_FILE_METADATA_HAS_MODE != 0 {
-                api::LxUtilFsDetermineCreationInfo(info.stat.LxMode, info.stat.LxGid, mode, gid);
-            }
-
-            Ok(())
+        // If the parent doesn't have explicit mode metadata, it can't have the set-group-id bit.
+        if info.stat.LxFlags & api::LX_FILE_METADATA_HAS_MODE != 0 {
+            util::determine_creation_info(info.stat.LxMode, info.stat.LxGid, mode, gid);
         }
+
+        Ok(())
     }
 
     // Determines what kind of symlink to create for a given target.
@@ -1227,7 +1122,7 @@ impl LxVolume {
         path.push(symlink_parent);
         path.push(target);
         path = {
-            #[allow(clippy::disallowed_methods)] // need actual canonical path here
+            #[expect(clippy::disallowed_methods)] // need actual canonical path here
             match path.canonicalize() {
                 Ok(p) => p,
                 Err(_) => return SymlinkType::Lx,
@@ -1276,7 +1171,7 @@ impl LxVolume {
 pub struct LxFile {
     handle: OwnedHandle,
     state: Arc<VolumeState>,
-    enumerator: Option<util::LxUtilDirEnum>,
+    enumerator: Option<readdir::DirectoryEnumerator>,
     access: winnt::ACCESS_MASK,
     kill_priv: AtomicBool,
     is_app_exec_alias: Mutex<bool>,
@@ -1421,43 +1316,26 @@ impl LxFile {
         F: FnMut(lx::DirEntry) -> lx::Result<bool>,
     {
         if self.enumerator.is_none() {
-            self.enumerator = Some(util::LxUtilDirEnum::new());
+            self.enumerator = Some(readdir::DirectoryEnumerator::new(false)?);
         }
 
         let enumerator = self.enumerator.as_mut().unwrap();
-        let mut context = DirEnumContext {
-            offset,
-            callback: &mut callback,
-            panic: None,
-        };
+        let mut local_offset = offset;
 
         // Write the . and .. entries, since lxutil doesn't return them.
-        if !Self::process_dot_entries(&mut context)? {
+        if !Self::process_dot_entries(&mut local_offset, &mut callback)? {
             return Ok(());
         }
 
-        assert!(context.offset >= DOT_ENTRY_COUNT);
+        assert!(local_offset >= DOT_ENTRY_COUNT);
 
-        let mut offset = context.offset - DOT_ENTRY_COUNT;
-        let result = unsafe {
-            util::check_lx_error(api::LxUtilFsReadDir(
-                &self.state.fs_context,
-                self.handle.as_raw_handle(),
-                &mut enumerator.enumerator,
-                &mut offset,
-                ptr::from_mut::<DirEnumContext<'_>>(&mut context).cast::<ffi::c_void>(),
-            ))
-        };
-
-        // If the closure panicked, resume it now.
-        if let Some(payload) = context.panic {
-            panic::resume_unwind(payload);
-        }
-
-        // Check the return value only after checking for a panic.
-        result?;
-
-        assert!(context.offset == offset + DOT_ENTRY_COUNT);
+        let mut offset = local_offset - DOT_ENTRY_COUNT;
+        enumerator.read_dir(
+            &self.handle,
+            &self.state.fs_context,
+            &mut offset,
+            &mut callback,
+        )?;
 
         Ok(())
     }
@@ -1499,76 +1377,31 @@ impl LxFile {
 
         unsafe {
             let mut iosb = mem::zeroed();
-            util::check_status(ntioapi::NtFlushBuffersFileEx(
+            let _ = util::check_status(Foundation::NTSTATUS(ntioapi::NtFlushBuffersFileEx(
                 handle.as_raw_handle(),
                 flags,
                 ptr::null_mut(),
                 0,
                 &mut iosb,
-            ))?;
+            )))?;
         }
 
         Ok(())
     }
 
-    // Callback for LxUtilFsReadDir.
-    unsafe extern "C" fn process_dir_entry_callback(
-        context: ntdef::PVOID,
-        file_id: ntdef::ULONGLONG,
-        name: &windows::UnicodeStringRef<'_>,
-        entry_type: i32,
-        buffer_full: &mut ntdef::BOOLEAN,
-    ) -> i32 {
-        let context = unsafe { context.cast::<DirEnumContext<'_>>().as_mut() }.unwrap();
-
-        // It's not safe to unwind across a C boundary, so catch any panics that happens in the
-        // user's closure.
-        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-            let name = match String::from_utf16(name.as_slice()) {
-                Ok(name) => name,
-                // If the name is not valid utf-16, skip this entry.
-                Err(_) => return Ok(true),
-            };
-
-            Self::process_dir_entry(
-                context,
-                file_id,
-                name.into(),
-                entry_type.try_into().unwrap(),
-            )
-        }));
-
-        match result {
-            Ok(Ok(value)) => {
-                // Use buffer_full to propagate the closure's return value.
-                if value {
-                    *buffer_full = ntdef::FALSE;
-                } else {
-                    *buffer_full = ntdef::TRUE;
-                }
-
-                0
-            }
-            // The closure returned an error.
-            Ok(Err(e)) => -e.value(),
-            // The closure panicked, so store it so it can be resumed.
-            Err(e) => {
-                context.panic = Some(e);
-                -lx::EIO
-            }
-        }
-    }
-
     // Helper to emit the . and .. entries.
-    fn process_dot_entries(context: &mut DirEnumContext<'_>) -> lx::Result<bool> {
-        if context.offset == 0
-            && !Self::process_dir_entry(context, 0, lx::LxString::from("."), lx::DT_DIR)?
+    fn process_dot_entries<F>(offset: &mut lx::off_t, callback: &mut F) -> lx::Result<bool>
+    where
+        F: FnMut(lx::DirEntry) -> lx::Result<bool>,
+    {
+        if *offset == 0
+            && !Self::process_dir_entry(offset, callback, 0, lx::LxString::from("."), lx::DT_DIR)?
         {
             return Ok(false);
         }
 
-        if context.offset == 1
-            && !Self::process_dir_entry(context, 0, lx::LxString::from(".."), lx::DT_DIR)?
+        if *offset == 1
+            && !Self::process_dir_entry(offset, callback, 0, lx::LxString::from(".."), lx::DT_DIR)?
         {
             return Ok(false);
         }
@@ -1577,35 +1410,32 @@ impl LxFile {
     }
 
     // Helper to call the user's closure for a directory
-    fn process_dir_entry(
-        context: &mut DirEnumContext<'_>,
+    fn process_dir_entry<F>(
+        offset: &mut lx::off_t,
+        callback: &mut F,
         inode_nr: ntdef::ULONGLONG,
         name: lx::LxString,
         file_type: u8,
-    ) -> lx::Result<bool> {
+    ) -> lx::Result<bool>
+    where
+        F: FnMut(lx::DirEntry) -> lx::Result<bool>,
+    {
         let entry = lx::DirEntry {
             name,
             inode_nr,
-            offset: context.offset + 1, // Pass the offset of the next entry.
+            offset: *offset + 1, // Pass the offset of the next entry.
             file_type,
         };
 
-        let result = (context.callback)(entry)?;
+        let result = (callback)(entry)?;
 
         // Update the offset only if the user wants to continue.
         if result {
-            context.offset += 1;
+            *offset += 1;
         }
 
         Ok(result)
     }
-}
-
-// Context to pass to the LxUtilFsReadDir callback.
-pub struct DirEnumContext<'a> {
-    offset: lx::off_t,
-    callback: &'a mut dyn FnMut(lx::DirEntry) -> lx::Result<bool>,
-    panic: Option<Box<dyn Any + Send>>,
 }
 
 // Symbolic link type.

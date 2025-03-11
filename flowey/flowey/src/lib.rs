@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 //! The user-facing flowey API.
 //!
 //! Relying on `flowey_core` directly is not advised, as many APIs exposed at

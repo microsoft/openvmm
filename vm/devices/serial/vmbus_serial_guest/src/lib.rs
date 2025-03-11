@@ -3,8 +3,6 @@
 
 //! Implements a UART backend that communicates with the host over a VMBUS pipe.
 
-#![warn(missing_docs)]
-
 pub use vmbus_serial_protocol::UART_INTERFACE_INSTANCE_COM1;
 pub use vmbus_serial_protocol::UART_INTERFACE_INSTANCE_COM2;
 pub use vmbus_serial_protocol::UART_INTERFACE_INSTANCE_COM3;
@@ -44,8 +42,8 @@ use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::async_dgram::AsyncSend;
 use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_serial_protocol as protocol;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 /// Configuration for an open vmbus serial port resource.
 #[derive(MeshPayload)]
@@ -226,7 +224,8 @@ impl VmbusSerialDriver {
         let mut buf = [0; MAX_MESSAGE_SIZE];
         let n = self.pipe.as_mut().recv(&mut buf).await?;
         let response = protocol::VersionRequestResponse::read_from_prefix(&buf[..n])
-            .ok_or(ErrorInner::TruncatedMessage)?;
+            .map_err(|_| ErrorInner::TruncatedMessage)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let host_response = response
             .header
@@ -302,7 +301,9 @@ impl VmbusSerialDriver {
     }
 
     fn handle_message(&mut self, buf: &[u8]) -> Result<(), ErrorInner> {
-        let header = protocol::Header::read_from_prefix(buf).ok_or(ErrorInner::TruncatedMessage)?;
+        let header = protocol::Header::read_from_prefix(buf)
+            .map_err(|_| ErrorInner::TruncatedMessage)?
+            .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         if header.message_version != MessageVersions::HEADER_VERSION_1 {
             return Err(ErrorInner::InvalidMessageVersion(header.message_version));
         }
@@ -310,7 +311,8 @@ impl VmbusSerialDriver {
             match req {
                 HostRequests::GET_RX_DATA => {
                     let response = protocol::RxDataResponse::read_from_prefix(buf)
-                        .ok_or(ErrorInner::TruncatedMessage)?;
+                        .map_err(|_| ErrorInner::TruncatedMessage)?
+                        .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                     let b = response
                         .buffer
@@ -334,7 +336,8 @@ impl VmbusSerialDriver {
                 GuestNotifications::RX_DATA_AVAILABLE => self.rx_avail = true,
                 GuestNotifications::SET_MODEM_STATUS => {
                     let status = protocol::SetModumStatusMessage::read_from_prefix(buf)
-                        .ok_or(ErrorInner::TruncatedMessage)?;
+                        .map_err(|_| ErrorInner::TruncatedMessage)?
+                        .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
                     self.connected = status.is_connected != 0;
                 }
@@ -454,7 +457,7 @@ mod tests {
     use vmbus_serial_host::Serial;
     use vmbus_serial_host::SerialChannel;
     use vmbus_serial_protocol::*;
-    use zerocopy::AsBytes;
+    use zerocopy::IntoBytes;
 
     #[async_test]
     async fn test_version_negotiation_failed(driver: DefaultDriver) {
@@ -463,7 +466,7 @@ mod tests {
         let host_task = driver.spawn("test", async move {
             let mut version_request = VersionRequestMessage::default();
             let len = host_vmbus
-                .recv(version_request.as_bytes_mut())
+                .recv(version_request.as_mut_bytes())
                 .await
                 .unwrap();
 

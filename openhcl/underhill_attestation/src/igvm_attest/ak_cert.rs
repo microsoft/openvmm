@@ -10,8 +10,8 @@ use thiserror::Error;
 /// AkCertError is returned by parse_ak_cert_response() in emuplat/tpm.rs
 #[derive(Debug, Error)]
 pub enum AkCertError {
-    #[error("AK cert response size is too small to parse")]
-    SizeTooSmall,
+    #[error("AK cert response is too small to parse. Found {size} bytes but expected at least {minimum_size}")]
+    SizeTooSmall { size: usize, minimum_size: usize },
     #[error(
         "AK cert response size {specified_size} specified in the header is larger then the actual size {size}"
     )]
@@ -50,7 +50,8 @@ mod tests {
     use zerocopy::FromBytes;
 
     #[test]
-    fn test_empty_response() {
+    fn test_undersized_response() {
+        // Empty response counts as an undersized response
         let result = parse_response(&[]);
         assert!(result.is_err());
         assert_eq!(
@@ -71,7 +72,7 @@ mod tests {
 
         const HEADER_SIZE: usize = size_of::<IgvmAttestCommonResponseHeader>();
         let result = IgvmAttestAkCertResponseHeader::read_from_prefix(&VALID_RESPONSE);
-        assert!(result.is_some());
+        assert!(result.is_ok());
 
         let result = parse_response(&VALID_RESPONSE);
         assert!(result.is_ok());
@@ -96,7 +97,7 @@ mod tests {
         const HEADER_SIZE: usize = size_of::<IgvmAttestCommonResponseHeader>();
 
         let result = IgvmAttestAkCertResponseHeader::read_from_prefix(&VALID_RESPONSE);
-        assert!(result.is_some());
+        assert!(result.is_ok());
 
         let result = parse_response(&VALID_RESPONSE);
         assert!(result.is_ok());

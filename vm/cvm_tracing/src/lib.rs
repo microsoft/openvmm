@@ -10,7 +10,6 @@
 // metadata tag on individual events without polluting the output.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use tracing::field::Empty;
 use tracing::Subscriber;

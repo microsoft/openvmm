@@ -25,7 +25,7 @@ use virt::io::CpuIo;
 use virt::vp::AccessVpState;
 use virt::StopVp;
 use virt::VpHaltReason;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
 pub enum WhpRunVpError {
@@ -121,8 +121,6 @@ impl<'a> WhpProcessor<'a> {
         if old_vtl != new_vtl {
             tracing::trace!(?old_vtl, ?new_vtl, "switching vtl");
 
-            // TODO: This allow shouldn't be necessary once VTL2 emulation is supported on ARM
-            #[cfg_attr(guest_arch = "aarch64", allow(clippy::zero_repeat_side_effects))]
             let mut regs =
                 [whp::abi::WHV_REGISTER_VALUE::default(); Self::VTL_SHARED_REGISTERS.len()];
             self.vp
@@ -234,7 +232,10 @@ impl<'a> WhpProcessor<'a> {
             self.vp
                 .whp(vtl)
                 .post_synic_message(sint, message.as_bytes())
-                .map_err(|err| err.hv_result().map_or(HvError::InvalidParameter, HvError))
+                .map_err(|err| {
+                    err.hv_result()
+                        .map_or(HvError::InvalidParameter, HvError::from)
+                })
         }
     }
 
@@ -269,7 +270,7 @@ impl<'a> WhpProcessor<'a> {
                 // Ensure the waker is set.
                 if !last_waker
                     .as_ref()
-                    .map_or(false, |waker| cx.waker().will_wake(waker))
+                    .is_some_and(|waker| cx.waker().will_wake(waker))
                 {
                     last_waker = Some(cx.waker().clone());
                     self.inner.waker.write().clone_from(&last_waker);
@@ -594,8 +595,8 @@ mod x86 {
     use x86defs::apic::X2APIC_MSR_END;
     use x86defs::cpuid::CpuidFunction;
     use x86defs::X86X_MSR_APIC_BASE;
-    use zerocopy::AsBytes;
-    use zerocopy::FromZeroes;
+    use zerocopy::FromZeros;
+    use zerocopy::IntoBytes;
 
     // HACK: on certain machines, Windows booting from the PCAT BIOS spams these
     // MSRs during boot.
@@ -604,7 +605,7 @@ mod x86 {
     // to the bottom of what's going on here.
     const MYSTERY_MSRS: &[u32] = &[0x88, 0x89, 0x8a, 0x116, 0x118, 0x119, 0x11a, 0x11b, 0x11e];
 
-    impl<'a> WhpProcessor<'a> {
+    impl WhpProcessor<'_> {
         pub(super) async fn handle_exit(
             &mut self,
             dev: &impl CpuIo,
@@ -804,12 +805,12 @@ mod x86 {
             if self.intercept_state().is_some()
                 && self.state.active_vtl == Vtl::Vtl0
                 && !dev.is_mmio(access.Gpa)
-                && !self
+                && self
                     .state
                     .vtls
                     .lapic(self.state.active_vtl)
                     .and_then(|lapic| lapic.apic.base_address())
-                    .map_or(false, |base| access.Gpa & !0xfff == base)
+                    .is_none_or(|base| access.Gpa & !0xfff != base)
             {
                 let access_type = match access.AccessInfo.AccessType() {
                     whp::abi::WHvMemoryAccessRead => HvInterceptAccessType::READ,
@@ -909,15 +910,18 @@ mod x86 {
                     == self.vp.partition.monitor_page.gpa()
                     && access.AccessInfo.AccessType() == whp::abi::WHvMemoryAccessWrite
                 {
-                    let mut state = self.emulator_state().map_err(VpHaltReason::Hypervisor)?;
+                    let guest_memory = &self.vp.partition.gm;
+                    let interruption_pending = exit.vp_context.ExecutionState.InterruptionPending();
+                    let gva_valid = access.AccessInfo.GvaValid();
+                    let access = &WhpVpRefEmulation::MemoryAccessContext(access);
+                    let mut state = emu::WhpEmulationState::new(access, self, &exit, dev);
                     if let Some(bit) = virt_support_x86emu::emulate::emulate_mnf_write_fast_path(
-                        &access.InstructionBytes[..access.InstructionByteCount as usize],
                         &mut state,
-                        exit.vp_context.ExecutionState.InterruptionPending(),
-                        access.AccessInfo.GvaValid(),
-                    ) {
-                        self.set_emulator_state(&state)
-                            .map_err(VpHaltReason::Hypervisor)?;
+                        guest_memory,
+                        dev,
+                        interruption_pending,
+                        gva_valid,
+                    )? {
                         if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
                             self.signal_mnf(dev, connection_id);
                         }
@@ -968,7 +972,7 @@ mod x86 {
                         deliverable_type: hvdef::HvX64PendingInterruptionType(
                             info.DeliverableType.0 as u8,
                         ),
-                        ..FromZeroes::new_zeroed()
+                        ..FromZeros::new_zeroed()
                     };
 
                     self.vtl2_intercept(
@@ -1320,7 +1324,7 @@ mod x86 {
                     }
                     0x40000000..=0x4fffffff => {
                         if let Some(hv) = &mut self.state.vtls[self.state.active_vtl].hv {
-                            hv.msr_write(msr, v)
+                            hv.msr_write(msr, v, &mut crate::WhpNoVtlProtections)
                         } else {
                             match msr {
                                 hvdef::HV_X64_MSR_VP_ASSIST_PAGE
@@ -1731,7 +1735,7 @@ mod aarch64 {
     use virt::io::CpuIo;
     use virt::VpHaltReason;
 
-    impl<'a> WhpProcessor<'a> {
+    impl WhpProcessor<'_> {
         pub(super) fn process_apic(&mut self, _dev: &impl CpuIo) -> Result<bool, WhpRunVpError> {
             Ok(true)
         }
@@ -1790,29 +1794,33 @@ mod aarch64 {
                     | HvMessageType::HvMessageTypeGpaIntercept => {
                         self.handle_memory_access(
                             dev,
-                            FromBytes::ref_from_prefix(message).unwrap(),
+                            FromBytes::ref_from_prefix(message).unwrap().0, // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                             exit,
                         )
                         .await?;
                         &mut self.state.exits.memory
                     }
                     HvMessageType::HvMessageTypeSynicSintDeliverable => {
-                        self.handle_sint_deliverable(FromBytes::ref_from_prefix(message).unwrap());
+                        self.handle_sint_deliverable(
+                            FromBytes::ref_from_prefix(message).unwrap().0,
+                        ); // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                         &mut self.state.exits.sint_deliverable
                     }
                     HvMessageType::HvMessageTypeHypercallIntercept => {
                         crate::hypercalls::WhpHypercallExit::handle(
                             self,
                             dev,
-                            FromBytes::ref_from_prefix(message).unwrap(),
+                            FromBytes::ref_from_prefix(message).unwrap().0, // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                         );
                         &mut self.state.exits.hypercall
                     }
                     HvMessageType::HvMessageTypeArm64ResetIntercept => {
-                        return Err(self.handle_reset(FromBytes::ref_from_prefix(message).unwrap()));
+                        return Err(
+                            self.handle_reset(FromBytes::ref_from_prefix(message).unwrap().0)
+                        ); // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
                     }
                     reason => {
-                        return Err(VpHaltReason::Hypervisor(WhpRunVpError::UnknownExit(reason)))
+                        return Err(VpHaltReason::Hypervisor(WhpRunVpError::UnknownExit(reason)));
                     }
                 },
             };

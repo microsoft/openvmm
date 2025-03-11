@@ -5,7 +5,8 @@ use crate::tests::common::run_lockable_test;
 use crate::tests::common::LockTestBehavior;
 use crate::tests::common::RFLAGS_ARITH_MASK;
 use iced_x86::code_asm::*;
-use x86emu::CpuState;
+use x86emu::Cpu;
+use x86emu::Gp;
 
 #[test]
 fn xadd_regvalue_to_memory() {
@@ -31,20 +32,20 @@ fn xadd_regvalue_to_memory() {
     ];
 
     for (left, right, result, rflags) in variations {
-        let (state, cpu) = run_lockable_test::<u64>(
+        let mut cpu = run_lockable_test::<u64>(
             RFLAGS_ARITH_MASK,
             LockTestBehavior::Fail,
             |asm| asm.xadd(dword_ptr(512), eax),
-            |state, cpu| {
-                state.gps[CpuState::RAX] = right;
+            |cpu| {
+                cpu.set_gp(Gp::RAX.into(), right);
                 cpu.valid_gva = 512;
                 cpu.mem_val = left;
             },
         );
 
-        assert_eq!(state.gps[CpuState::RAX], left as u32 as u64);
+        assert_eq!(cpu.gp(Gp::RAX.into()), left as u32 as u64);
         assert_eq!(cpu.mem_val as u32 as u64, result);
-        assert_eq!(state.rflags & RFLAGS_ARITH_MASK, rflags.into());
+        assert_eq!(cpu.rflags() & RFLAGS_ARITH_MASK, rflags.into());
     }
 }
 
@@ -54,8 +55,8 @@ fn xadd_to_same_reg() {
         RFLAGS_ARITH_MASK,
         LockTestBehavior::Fail,
         |asm| asm.xadd(dword_ptr(rax), eax),
-        |state, cpu| {
-            state.gps[CpuState::RAX] = 0x100;
+        |cpu| {
+            cpu.set_gp(Gp::RAX.into(), 0x100);
             cpu.valid_gva = 0x100;
             cpu.mem_val = 0x200u64;
         },

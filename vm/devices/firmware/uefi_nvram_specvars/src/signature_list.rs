@@ -14,8 +14,8 @@ use uefi_specs::uefi::nvram::signature_list::EFI_CERT_SHA256_GUID;
 use uefi_specs::uefi::nvram::signature_list::EFI_CERT_X509_GUID;
 use uefi_specs::uefi::nvram::signature_list::EFI_SIGNATURE_DATA;
 use uefi_specs::uefi::nvram::signature_list::EFI_SIGNATURE_LIST;
-use zerocopy::AsBytes;
-use zerocopy_helpers::FromBytesExt;
+use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct X509Data<'a>(pub Cow<'a, [u8]>);
@@ -249,8 +249,8 @@ impl<'a> ParseSignatureLists<'a> {
                 signature_size,
             },
             buf,
-        ) = EFI_SIGNATURE_LIST::read_from_prefix_split(self.buf)
-            .ok_or(ParseError::InvalidHeader)?;
+        ) = EFI_SIGNATURE_LIST::read_from_prefix(self.buf)
+            .map_err(|_| ParseError::InvalidHeader)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let expected_data_len = signature_list_size as usize - size_of::<EFI_SIGNATURE_LIST>();
         if buf.len() < expected_data_len {
@@ -313,8 +313,8 @@ impl<'a> ParseSignatureX509<'a> {
             return Ok(None);
         }
 
-        let (header, buf) = EFI_SIGNATURE_DATA::read_from_prefix_split(self.buf)
-            .ok_or(ParseError::X509InvalidHeader)?;
+        let (header, buf) = EFI_SIGNATURE_DATA::read_from_prefix(self.buf)
+            .map_err(|_| ParseError::X509InvalidHeader)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let val: Cow<'a, [u8]> = buf.into();
         let res = SignatureData::new_x509(header.signature_owner, val);
@@ -359,8 +359,8 @@ impl<'a> ParseSignatureSha256<'a> {
             return Ok(None);
         }
 
-        let (header, buf) = EFI_SIGNATURE_DATA::read_from_prefix_split(self.buf)
-            .expect("buf size validated in `new`");
+        let (header, buf) =
+            EFI_SIGNATURE_DATA::read_from_prefix(self.buf).expect("buf size validated in `new`"); // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let expected_data_len = 32;
         assert!(buf.len() >= expected_data_len, "validated in new()");

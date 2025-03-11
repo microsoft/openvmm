@@ -3,7 +3,7 @@
 
 [package]
 name = "vmgs"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -35,7 +35,6 @@ openssl = { optional = true, features = ["vendored"], workspace = true }
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [target.'cfg(windows)'.dependencies.windows]
 workspace = true
 optional = true

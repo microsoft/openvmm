@@ -5,7 +5,6 @@
 //! what VMM backend is being used.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 /// Artifact declarations
 pub mod artifacts {
@@ -32,7 +31,7 @@ pub mod tags {
     /// A coarse-grained label used to differentiate between different OS
     /// environments.
     #[derive(Debug, Clone, Copy)]
-    #[allow(missing_docs)] // Self-describing names.
+    #[expect(missing_docs)] // Self-describing names.
     pub enum OsFlavor {
         Windows,
         Linux,
@@ -42,7 +41,7 @@ pub mod tags {
 
     /// The machine architecture supported by the artifact or VM.
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    #[allow(missing_docs)] // Self describing names
+    #[expect(missing_docs)] // Self describing names
     pub enum MachineArch {
         X86_64,
         Aarch64,

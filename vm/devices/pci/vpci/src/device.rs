@@ -43,9 +43,11 @@ use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vmcore::vpci_msi::VpciInterruptParameters;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 use zerocopy::Ref;
 
 const PCI_MAX_MSI_VECTOR_COUNT: u16 = 32;
@@ -85,7 +87,7 @@ impl MmioResource {
         let len = self.len;
         let mut flags = protocol::ResourceFlags::new();
         let (resource_type, shift) = if len == 0 {
-            return FromZeroes::new_zeroed();
+            return FromZeros::new_zeroed();
         } else if len < 1 << 32 {
             (protocol::ResourceType::MEMORY, 0)
         } else if len < 1 << 40 {
@@ -260,19 +262,20 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
     let mut reader = packet.reader();
     let len = reader.len();
     let buf = buf
-        .as_bytes_mut()
+        .as_mut_bytes()
         .get_mut(..len)
         .ok_or(PacketError::PacketTooLarge)?;
 
     reader.read(buf).map_err(PacketError::Access)?;
     let buf = &*buf;
     let message_type = protocol::MessageType::read_from_prefix(buf)
-        .ok_or(PacketError::PacketTooSmall("header"))?;
+        .map_err(|_| PacketError::PacketTooSmall("header"))?
+        .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
     let data = match message_type {
         protocol::MessageType::ASSIGNED_RESOURCES | protocol::MessageType::ASSIGNED_RESOURCES2 => {
-            let (msg, rest) = Ref::<_, protocol::DeviceTranslate>::new_from_prefix(buf)
-                .ok_or(PacketError::PacketTooSmall("translate"))?;
+            let (msg, rest) = Ref::<_, protocol::DeviceTranslate>::from_prefix(buf)
+                .map_err(|_| PacketError::PacketTooSmall("translate"))?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
             if msg.msi_resource_count > protocol::MAX_SUPPORTED_INTERRUPT_MESSAGES {
                 return Err(PacketError::TooManyMsis(msg.msi_resource_count));
@@ -287,20 +290,23 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
             let (reply_type, interrupts) = match message_type {
                 protocol::MessageType::ASSIGNED_RESOURCES => (
                     AssignedResourcesReplyType::V1,
-                    protocol::MsiResource::slice_from_prefix(rest, msg.msi_resource_count as usize)
-                        .ok_or(PacketError::PacketTooSmall("msi"))?
-                        .0
-                        .iter()
-                        .map(|rsrc| InterruptResourceRequest::from_protocol(rsrc.descriptor()))
-                        .collect::<Result<Vec<_>, _>>()?,
-                ),
-                protocol::MessageType::ASSIGNED_RESOURCES2 => (
-                    AssignedResourcesReplyType::V2,
-                    protocol::MsiResource2::slice_from_prefix(
+                    <[protocol::MsiResource]>::ref_from_prefix_with_elems(
                         rest,
                         msg.msi_resource_count as usize,
                     )
-                    .ok_or(PacketError::PacketTooSmall("msi2"))?
+                    .map_err(|_| PacketError::PacketTooSmall("msi"))? // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+                    .0
+                    .iter()
+                    .map(|rsrc| InterruptResourceRequest::from_protocol(rsrc.descriptor()))
+                    .collect::<Result<Vec<_>, _>>()?,
+                ),
+                protocol::MessageType::ASSIGNED_RESOURCES2 => (
+                    AssignedResourcesReplyType::V2,
+                    <[protocol::MsiResource2]>::ref_from_prefix_with_elems(
+                        rest,
+                        msg.msi_resource_count as usize,
+                    )
+                    .map_err(|_| PacketError::PacketTooSmall("msi2"))? // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
                     .0
                     .iter()
                     .map(|rsrc| InterruptResourceRequest::from_protocol2(rsrc.descriptor()))
@@ -322,7 +328,8 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
         }
         protocol::MessageType::RELEASE_RESOURCES => {
             let msg = protocol::PdoMessage::read_from_prefix(buf)
-                .ok_or(PacketError::PacketTooSmall("release"))?;
+                .map_err(|_| PacketError::PacketTooSmall("release"))?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
             PacketData::DeviceRequest {
                 slot: msg.slot,
@@ -331,7 +338,8 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
         }
         protocol::MessageType::CREATE_INTERRUPT => {
             let msg = protocol::CreateInterrupt::read_from_prefix(buf)
-                .ok_or(PacketError::PacketTooSmall("interrupt"))?;
+                .map_err(|_| PacketError::PacketTooSmall("interrupt"))?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             PacketData::DeviceRequest {
                 slot: msg.slot,
                 request: DeviceRequest::CreateInterrupt {
@@ -341,7 +349,8 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
         }
         protocol::MessageType::CREATE_INTERRUPT2 => {
             let msg = protocol::CreateInterrupt2::read_from_prefix(buf)
-                .ok_or(PacketError::PacketTooSmall("interrupt2"))?;
+                .map_err(|_| PacketError::PacketTooSmall("interrupt2"))?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             PacketData::DeviceRequest {
                 slot: msg.slot,
                 request: DeviceRequest::CreateInterrupt {
@@ -351,7 +360,8 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
         }
         protocol::MessageType::DELETE_INTERRUPT | protocol::MessageType::DELETE_INTERRUPT2 => {
             let msg = protocol::DeleteInterrupt::read_from_prefix(buf)
-                .ok_or(PacketError::PacketTooSmall("delete_interrupt"))?;
+                .map_err(|_| PacketError::PacketTooSmall("delete_interrupt"))?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             PacketData::DeviceRequest {
                 slot: msg.slot,
                 request: DeviceRequest::DeleteInterrupt {
@@ -361,7 +371,8 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
         }
         protocol::MessageType::CURRENT_RESOURCE_REQUIREMENTS => {
             let msg = protocol::QueryResourceRequirements::read_from_prefix(buf)
-                .ok_or(PacketError::PacketTooSmall("query_req"))?;
+                .map_err(|_| PacketError::PacketTooSmall("query_req"))?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             PacketData::DeviceRequest {
                 slot: msg.slot,
                 request: DeviceRequest::QueryResources,
@@ -369,7 +380,8 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
         }
         protocol::MessageType::GET_RESOURCES => {
             let msg = protocol::GetResources::read_from_prefix(buf)
-                .ok_or(PacketError::PacketTooSmall("get_resources"))?;
+                .map_err(|_| PacketError::PacketTooSmall("get_resources"))?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             PacketData::DeviceRequest {
                 slot: msg.slot,
                 request: DeviceRequest::GetResources,
@@ -377,7 +389,8 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
         }
         protocol::MessageType::FDO_D0_ENTRY => {
             let msg = protocol::FdoD0Entry::read_from_prefix(buf)
-                .ok_or(PacketError::PacketTooSmall("power_on"))?;
+                .map_err(|_| PacketError::PacketTooSmall("power_on"))?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             PacketData::FdoD0Entry {
                 mmio_start: msg.mmio_start,
             }
@@ -386,14 +399,16 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
         protocol::MessageType::QUERY_BUS_RELATIONS => PacketData::QueryRelations,
         protocol::MessageType::QUERY_PROTOCOL_VERSION => {
             let msg = protocol::QueryProtocolVersion::read_from_prefix(buf)
-                .ok_or(PacketError::PacketTooSmall("query_version"))?;
+                .map_err(|_| PacketError::PacketTooSmall("query_version"))?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             PacketData::QueryProtocolVersion {
                 version: msg.protocol_version,
             }
         }
         protocol::MessageType::DEVICE_POWER_STATE_CHANGE => {
             let msg = protocol::DevicePowerChange::read_from_prefix(buf)
-                .ok_or(PacketError::PacketTooSmall("device_power_state"))?;
+                .map_err(|_| PacketError::PacketTooSmall("device_power_state"))?
+                .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
             PacketData::DeviceRequest {
                 slot: msg.slot,
                 request: DeviceRequest::DevicePowerChange {
@@ -421,7 +436,10 @@ enum WorkerError {
 }
 
 impl<T: RingMem> Connection<T> {
-    async fn send_packet<P: AsBytes + Debug>(&mut self, payload: &P) -> Result<(), WorkerError> {
+    async fn send_packet<P: IntoBytes + Debug + Immutable + KnownLayout>(
+        &mut self,
+        payload: &P,
+    ) -> Result<(), WorkerError> {
         tracing::trace!(?payload, "send packet");
         self.queue
             .split()
@@ -442,7 +460,7 @@ impl<T: RingMem> Connection<T> {
         write.wait_ready(len).await.map_err(WorkerError::Queue)
     }
 
-    fn send_completion<P: AsBytes + Debug>(
+    fn send_completion<P: IntoBytes + Debug + Immutable + KnownLayout>(
         &mut self,
         transaction_id: Option<u64>,
         payload: &P,
@@ -719,7 +737,7 @@ impl ReadyState {
                         conn.send_completion(transaction_id, &protocol::Status::SUCCESS, &[])?;
                     }
                     DeviceRequest::CreateInterrupt { interrupt } => {
-                        let mut resource = FromZeroes::new_zeroed();
+                        let mut resource = FromZeros::new_zeroed();
                         dev.map_interrupts(&[interrupt], &mut |r| resource = r)?;
                         conn.send_completion(
                             transaction_id,
@@ -1197,8 +1215,11 @@ mod tests {
     use vmbus_async::queue::Queue;
     use vmbus_ring as ring;
     use vmcore::vpci_msi::VpciInterruptMapper;
-    use zerocopy::AsBytes;
     use zerocopy::FromBytes;
+
+    use zerocopy::Immutable;
+    use zerocopy::IntoBytes;
+    use zerocopy::KnownLayout;
 
     enum ReadPacketInfo {
         None,
@@ -1268,7 +1289,7 @@ mod tests {
             }
         }
 
-        async fn read_packet<T: AsBytes + FromBytes>(
+        async fn read_packet<T: IntoBytes + FromBytes + Immutable + KnownLayout>(
             &mut self,
             pkt_info: &mut ReadPacketInfo,
         ) -> Result<T, GuestError> {
@@ -1291,7 +1312,7 @@ mod tests {
             }
         }
 
-        async fn write_packet<T: AsBytes>(
+        async fn write_packet<T: IntoBytes + Immutable + KnownLayout>(
             &mut self,
             transaction_id: Option<u64>,
             payload: &T,

@@ -43,6 +43,7 @@
   - [hypestv](./dev_guide/dev_tools/hypestv.md)
 - [Contributing](./dev_guide/contrib.md)
   - [Coding Conventions](./dev_guide/contrib/code.md)
+  - [Releases & Code Flow](./dev_guide/contrib/release.md)
   - [Submitting Changes](./dev_guide/contrib/pr.md)
   - [Guide Updates](./dev_guide/contrib/guide.md)
 

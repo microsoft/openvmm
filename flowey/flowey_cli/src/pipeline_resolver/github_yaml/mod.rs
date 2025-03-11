@@ -337,6 +337,7 @@ echo "{RUNNER_TEMP}/work" | {var_db_insert_working_dir}
 "###
             )
             .trim_start()
+            .to_owned()
         })?;
 
         // import pipeline vars being used by the job into flowey
@@ -365,10 +366,12 @@ echo "{RUNNER_TEMP}/work" | {var_db_insert_working_dir}
 
             let var_db_inject_cmd = bootstrap_bash_var_db_inject(flowey_var, is_string);
 
+            let name = parameters[*pipeline_param_idx].name();
+
             let cmd = format!(
                 r#"
 cat <<'EOF' | {var_db_inject_cmd}
-${{{{ inputs.param{pipeline_param_idx} != '' && inputs.param{pipeline_param_idx} || '{default}' }}}}
+${{{{ inputs.{name} != '' && inputs.{name} || '{default}' }}}}
 EOF
 "#
             )
@@ -587,13 +590,14 @@ EOF
             inputs: github_yaml_defs::Inputs {
                 inputs: parameters
                     .into_iter()
-                    .enumerate()
-                    .map(|(idx, param)| {
+                    .map(|param| {
                         (
-                            format!("param{idx}"),
+                            param.name().to_string(),
                             match param {
                                 flowey_core::pipeline::internal::Parameter::Bool {
+                                    name: _,
                                     description,
+                                    kind: _,
                                     default,
                                 } => github_yaml_defs::Input {
                                     description: Some(description.clone()),
@@ -602,7 +606,9 @@ EOF
                                     ty: github_yaml_defs::InputType::Boolean,
                                 },
                                 flowey_core::pipeline::internal::Parameter::String {
+                                    name: _,
                                     description,
+                                    kind: _,
                                     default,
                                     possible_values: _,
                                 } => github_yaml_defs::Input {
@@ -614,7 +620,9 @@ EOF
                                     ty: github_yaml_defs::InputType::String,
                                 },
                                 flowey_core::pipeline::internal::Parameter::Num {
+                                    name: _,
                                     description,
+                                    kind: _,
                                     default,
                                     possible_values: _,
                                 } => github_yaml_defs::Input {
@@ -829,12 +837,16 @@ fn resolve_flow_as_github_yaml_steps(
                     output_steps.push(map.into());
                 }
 
-                for (rust_var, gh_var, is_secret) in rust_to_gh {
+                for gh_var_state in rust_to_gh {
                     let mut cmd = String::new();
 
-                    // flowey considers all GitHub vars to be typed as raw strings
-                    let set_gh_env_var =
-                        var_db_cmd(&rust_var, is_secret, None, true, Some(gh_var.clone()));
+                    let set_gh_env_var = var_db_cmd(
+                        &gh_var_state.backing_var,
+                        gh_var_state.is_secret,
+                        None,
+                        !gh_var_state.is_object,
+                        gh_var_state.raw_name.clone(),
+                    );
                     writeln!(cmd, r#"{set_gh_env_var}"#)?;
 
                     let mut map = serde_yaml::Mapping::new();
@@ -842,7 +854,12 @@ fn resolve_flow_as_github_yaml_steps(
                     map.insert("shell".into(), "bash".into());
                     map.insert(
                         "name".into(),
-                        serde_yaml::Value::String(format!("🌼 Write to '{gh_var}'")),
+                        serde_yaml::Value::String(format!(
+                            "🌼 Write to '{}'",
+                            gh_var_state
+                                .raw_name
+                                .expect("couldn't get raw_name for variable")
+                        )),
                     );
 
                     if condvar.is_some() {
@@ -871,17 +888,31 @@ fn resolve_flow_as_github_yaml_steps(
                     output_steps.push(step);
                 }
 
-                for (gh_var, rust_var, is_secret) in gh_to_rust {
-                    // flowey considers all GitHub vars to be typed as raw strings
-                    let write_rust_var = var_db_cmd(&rust_var, is_secret, Some("{0}"), true, None);
-                    let cmd = format!(r#"${{{{ {gh_var} }}}}"#);
+                for gh_var_state in gh_to_rust {
+                    let write_rust_var = var_db_cmd(
+                        &gh_var_state.backing_var,
+                        gh_var_state.is_secret,
+                        Some("{0}"),
+                        !gh_var_state.is_object,
+                        None,
+                    );
+
+                    let raw_name = gh_var_state
+                        .raw_name
+                        .expect("couldn't get raw name for variable");
+
+                    let cmd = if gh_var_state.is_object {
+                        format!(r#"${{{{ toJSON({}) }}}}"#, raw_name)
+                    } else {
+                        format!(r#"${{{{ {} }}}}"#, raw_name)
+                    };
 
                     let mut map = serde_yaml::Mapping::new();
                     map.insert("run".into(), serde_yaml::Value::String(cmd));
                     map.insert("shell".into(), write_rust_var.into());
                     map.insert(
                         "name".into(),
-                        serde_yaml::Value::String(format!("🌼 Read from '{gh_var}'")),
+                        serde_yaml::Value::String(format!("🌼 Read from '{}'", raw_name)),
                     );
                     if condvar.is_some() {
                         map.insert("if".into(), "${{ fromJSON(env.FLOWEY_CONDITION) }}".into());

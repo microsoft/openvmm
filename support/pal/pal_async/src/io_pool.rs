@@ -65,25 +65,37 @@ impl<T: IoBackend + Default> IoPool<T> {
 
     /// Creates and runs a task pool, seeding it with an initial future
     /// `f(driver)`, until all tasks have completed.
-    pub fn run_with<F, Fut>(f: F) -> Fut::Output
+    pub fn run_with<F, R>(f: F) -> R
     where
-        F: FnOnce(IoDriver<T>) -> Fut,
-        Fut: Future + Send,
-        Fut::Output: 'static + Send,
+        F: AsyncFnOnce(IoDriver<T>) -> R,
     {
         let mut pool = Self::named(std::thread::current().name().unwrap_or_else(|| T::name()));
-        let fut = f(pool.driver());
+        let fut = f(pool.driver.clone());
         drop(pool.driver.scheduler);
         pool.driver
             .inner
             .run(async { futures::future::join(fut, pool.tasks.run()).await.0 })
+    }
+
+    /// Creates a new pool and runs it on a newly spawned thread with the given
+    /// name. Returns the thread handle and the pool's driver.
+    pub fn spawn_on_thread(name: impl Into<String>) -> (std::thread::JoinHandle<()>, IoDriver<T>)
+    where
+        T: 'static,
+    {
+        let pool = Self::new();
+        let driver = pool.driver.clone();
+        let thread = std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || pool.run())
+            .unwrap();
+        (thread, driver)
     }
 }
 
 impl<T: IoBackend> IoPool<T> {
     /// Returns the IO driver.
     pub fn driver(&self) -> IoDriver<T> {
-        // TODO: return by reference?
         self.driver.clone()
     }
 

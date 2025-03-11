@@ -4,7 +4,6 @@
 //! An implementation of an NVMe controller emulator.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 mod error;
 mod namespace;
@@ -39,5 +38,4 @@ const PAGE_SIZE: usize = 4096;
 const PAGE_SIZE64: u64 = 4096;
 const PAGE_MASK: u64 = !(PAGE_SIZE64 - 1);
 const PAGE_SHIFT: u32 = PAGE_SIZE.trailing_zeros();
-#[allow(clippy::assertions_on_constants)]
 const _: () = assert!(PAGE_SIZE == PagedRange::PAGE_SIZE);

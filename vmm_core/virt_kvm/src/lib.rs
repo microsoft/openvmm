@@ -4,9 +4,10 @@
 //! KVM implementation of the virt::generic interfaces.
 
 #![cfg(all(target_os = "linux", guest_is_native))]
+#![expect(missing_docs)]
 // UNSAFETY: Calling KVM APIs and manually managing memory.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
 use guestmem::GuestMemory;
 use inspect::Inspect;

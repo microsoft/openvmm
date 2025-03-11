@@ -36,7 +36,6 @@ use slab::Slab;
 use std::borrow::Cow;
 use std::ffi::OsString;
 use std::fs::File;
-use std::future::Future;
 #[cfg(unix)]
 use std::os::unix::prelude::*;
 #[cfg(windows)]
@@ -82,11 +81,10 @@ static PROCESS_NAME: DebugPtr<String> = DebugPtr::new();
 /// If a mesh invitation is available, this function joins the mesh and runs the
 /// future returned by `f` until `f` returns or the parent process shuts down
 /// the mesh.
-pub fn try_run_mesh_host<U, Fut, F, T>(base_name: &str, f: F) -> anyhow::Result<()>
+pub fn try_run_mesh_host<U, F, T>(base_name: &str, f: F) -> anyhow::Result<()>
 where
     U: 'static + MeshPayload + Send,
-    F: FnOnce(U) -> Fut,
-    Fut: Future<Output = anyhow::Result<T>>,
+    F: AsyncFnOnce(U) -> anyhow::Result<T>,
 {
     block_on(async {
         if let Some(r) = node_from_environment().await? {
@@ -161,6 +159,7 @@ async fn node_from_environment() -> anyhow::Result<Option<NodeResult>> {
     // current edition), either this function and its callers need to become
     // `unsafe`, or we need to avoid using the environment to propagate the
     // invitation so that we can avoid this call.
+    #[expect(deprecated_safe_2024)]
     std::env::remove_var(INVITATION_ENV_NAME);
 
     let invitation: Invitation = mesh::payload::decode(
@@ -207,13 +206,7 @@ async fn node_from_environment() -> anyhow::Result<Option<NodeResult>> {
         };
 
         // FUTURE: use pool provided by the caller.
-        let pool = DefaultPool::new();
-        let driver = pool.driver();
-        thread::Builder::new()
-            .name("mesh-worker-pool".to_owned())
-            .spawn(|| pool.run())
-            .unwrap();
-
+        let (_, driver) = DefaultPool::spawn_on_thread("mesh-worker-pool");
         node = mesh_remote::unix::UnixNode::join(driver, invitation, left)
             .await
             .context("failed to join mesh")?;
@@ -400,13 +393,7 @@ impl Mesh {
         #[cfg(unix)]
         let node = {
             // FUTURE: use pool provided by the caller.
-            let pool = DefaultPool::new();
-            let driver = pool.driver();
-            thread::Builder::new()
-                .name("mesh-worker-pool".to_owned())
-                .spawn(|| pool.run())
-                .unwrap();
-
+            let (_, driver) = DefaultPool::spawn_on_thread("mesh-worker-pool");
             mesh_remote::unix::UnixNode::new(driver)
         };
 
@@ -423,15 +410,11 @@ impl Mesh {
 
         // Spawn a separate thread for launching mesh processes to avoid bad
         // interactions with any other pools.
-        let pool = DefaultPool::new();
-        let task = pool.driver().spawn(
+        let (_, driver) = DefaultPool::spawn_on_thread("mesh");
+        let task = driver.spawn(
             format!("mesh-{}", &mesh_name),
             async move { inner.run().await },
         );
-        thread::Builder::new()
-            .name("mesh".to_owned())
-            .spawn(|| pool.run())
-            .unwrap();
 
         Ok(Self {
             request,
@@ -540,7 +523,8 @@ impl MeshInner {
             match event {
                 Event::Request(request) => match request {
                     MeshRequest::NewHost(rpc) => {
-                        rpc.handle(|params| self.spawn_process(params)).await
+                        rpc.handle(async |params| self.spawn_process(params).await)
+                            .await
                     }
                     MeshRequest::Inspect(deferred) => {
                         deferred.respond(|resp| {

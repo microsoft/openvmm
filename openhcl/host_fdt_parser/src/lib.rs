@@ -10,7 +10,6 @@
 
 #![no_std]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
@@ -234,6 +233,10 @@ pub struct ParsedDeviceTree<
     /// This is used to allocate a persistent VTL2 pool on non-isolated guests,
     /// to allow devices to stay alive during a servicing operation.
     pub device_dma_page_count: Option<u64>,
+    /// Indicates that Host does support NVMe keep-alive.
+    pub nvme_keepalive: bool,
+    /// The physical address of the VTL0 alias mapping, if one is configured.
+    pub vtl0_alias_map: Option<u64>,
 }
 
 /// The memory allocation mode provided by the host. This determines how OpenHCL
@@ -313,6 +316,8 @@ impl<
             memory_allocation_mode: MemoryAllocationMode::Host,
             entropy: None,
             device_dma_page_count: None,
+            nvme_keepalive: false,
+            vtl0_alias_map: None,
         }
     }
 
@@ -480,13 +485,19 @@ impl<
                         }
                     }
 
+                    storage.vtl0_alias_map = child
+                        .find_property("vtl0-alias-map")
+                        .map_err(ErrorKind::Prop)?
+                        .map(|p| p.read_u64(0))
+                        .transpose()
+                        .map_err(ErrorKind::Prop)?;
+
                     for openhcl_child in child.children() {
                         let openhcl_child = openhcl_child.map_err(|error| ErrorKind::Node {
                             parent_name: root.name,
                             error,
                         })?;
 
-                        #[allow(clippy::single_match)]
                         match openhcl_child.name {
                             "entropy" => {
                                 let host_entropy = openhcl_child
@@ -513,9 +524,18 @@ impl<
                                 storage.entropy = Some(entropy);
                             }
                             // These parameters may not be present so it is not an error if they are missing.
-                            "servicing" => {
+                            "keep-alive" => {
+                                storage.nvme_keepalive = openhcl_child
+                                    .find_property("device-types")
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|p| p.read_str().ok())
+                                    == Some("nvme");
+                            }
+                            "device-dma" => {
+                                // DMA reserved page count hint.
                                 storage.device_dma_page_count = openhcl_child
-                                    .find_property("dma-preserve-pages")
+                                    .find_property("total-pages")
                                     .ok()
                                     .flatten()
                                     .and_then(|p| p.read_u64(0).ok());
@@ -527,6 +547,7 @@ impl<
                         }
                     }
                 }
+
                 _ if child.name.starts_with("memory@") => {
                     let igvm_type = if let Some(igvm_type) = child
                         .find_property(igvm_defs::dt::IGVM_DT_IGVM_TYPE_PROPERTY)
@@ -713,6 +734,8 @@ impl<
             memory_allocation_mode: _,
             entropy: _,
             device_dma_page_count: _,
+            nvme_keepalive: _,
+            vtl0_alias_map: _,
         } = storage;
 
         *device_tree_size = parser.total_size;
@@ -1358,7 +1381,7 @@ mod tests {
         let p_memory_allocation_mode = root.add_string("memory-allocation-mode").unwrap();
         let p_memory_allocation_size = root.add_string("memory-size").unwrap();
         let p_mmio_allocation_size = root.add_string("mmio-size").unwrap();
-        let p_device_dma_page_count = root.add_string("dma-preserve-pages").unwrap();
+        let p_device_dma_page_count = root.add_string("total-pages").unwrap();
         let mut openhcl = root.start_node("openhcl").unwrap();
 
         let memory_alloc_str = match context.memory_allocation_mode {
@@ -1387,7 +1410,7 @@ mod tests {
         // add device_dma_page_count
         if let Some(device_dma_page_count) = context.device_dma_page_count {
             openhcl = openhcl
-                .start_node("servicing")
+                .start_node("device-dma")
                 .unwrap()
                 .add_u64(p_device_dma_page_count, device_dma_page_count)
                 .unwrap()

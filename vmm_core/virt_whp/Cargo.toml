@@ -3,7 +3,7 @@
 
 [package]
 name = "virt_whp"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -14,6 +14,7 @@ aarch64defs.workspace = true
 chipset_device.workspace = true
 hv1_emulator.workspace = true
 hv1_hypercall.workspace = true
+hv1_structs.workspace = true
 hvdef.workspace = true
 pci_core.workspace = true
 memory_range = { workspace = true, features = ["inspect"] }
@@ -24,7 +25,6 @@ virt.workspace = true
 virt_support_aarch64emu.workspace = true
 virt_support_apic.workspace = true
 virt_support_x86emu.workspace = true
-vtl_array.workspace = true
 whp.workspace = true
 x86defs.workspace = true
 x86emu.workspace = true
@@ -45,7 +45,6 @@ thiserror.workspace = true
 tracing.workspace = true
 winapi.workspace = true
 zerocopy.workspace = true
-
 [build-dependencies]
 build_rs_guest_arch.workspace = true
 

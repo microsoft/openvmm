@@ -5,6 +5,7 @@
 //!
 //! This crate provides cross-process message-based communication over channels.
 
+#![expect(missing_docs)]
 #[allow(unused_extern_crates)]
 extern crate self as mesh;
 
@@ -29,8 +30,6 @@ pub use mesh_channel::pipe;
 pub use mesh_channel::rpc;
 pub use mesh_channel::ChannelError;
 pub use mesh_channel::ChannelErrorKind;
-pub use mesh_channel::MpscReceiver;
-pub use mesh_channel::MpscSender;
 pub use mesh_channel::OneshotReceiver;
 pub use mesh_channel::OneshotSender;
 pub use mesh_channel::Receiver;
@@ -46,4 +45,5 @@ pub use mesh_node::local_node;
 pub use mesh_node::message;
 pub use mesh_node::message::MeshPayload;
 pub use mesh_node::message::Message;
+pub use mesh_node::message::OwnedMessage;
 pub use mesh_node::resource;

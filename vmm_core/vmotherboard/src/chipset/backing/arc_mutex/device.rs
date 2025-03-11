@@ -12,7 +12,6 @@ use arc_cyclic_builder::ArcCyclicBuilderExt;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use closeable_mutex::CloseableMutex;
-use std::future::Future;
 use std::sync::Arc;
 use std::sync::Weak;
 use thiserror::Error;
@@ -52,8 +51,7 @@ pub struct AddDeviceError {
 /// constructed `Arc<CloseableMutex<T: ChipsetDevice>>`.
 ///
 /// This is a separate trait from [`ChipsetServices`] because it is specific to
-/// the ArcMutex infrastructure, and because these trait methods should not be
-/// exposed via [`ArcMutexChipsetDeviceBuilder::services()`].
+/// the ArcMutex infrastructure.
 pub trait ArcMutexChipsetServicesFinalize<T> {
     /// The error type returned by the `finalize` method.
     type Error;
@@ -206,7 +204,6 @@ where
     /// Includes some basic validation that returns an error if a device
     /// attempts to use a service without also implementing the service's
     /// corresponding `ChipsetDevice::supports_` method.
-    #[allow(clippy::should_implement_trait)] // obviously not std::ops::Add
     #[instrument(name = "add_device", skip_all, fields(device = self.dev_name.as_ref()))]
     pub fn add<F>(mut self, f: F) -> Result<Arc<CloseableMutex<T>>, AddDeviceError>
     where
@@ -218,10 +215,9 @@ where
 
     /// Just like [`add`](Self::add), except async.
     #[instrument(name = "add_device", skip_all, fields(device = self.dev_name.as_ref()))]
-    pub async fn add_async<F, Fut>(mut self, f: F) -> Result<Arc<CloseableMutex<T>>, AddDeviceError>
+    pub async fn add_async<F>(mut self, f: F) -> Result<Arc<CloseableMutex<T>>, AddDeviceError>
     where
-        F: for<'c> FnOnce(&'c mut ArcMutexChipsetServices<'a, 'b>) -> Fut,
-        Fut: Future<Output = T>,
+        F: AsyncFnOnce(&mut ArcMutexChipsetServices<'a, 'b>) -> T,
     {
         let dev = (f)(&mut self.services).await;
         self.inner_add(Ok(dev))
@@ -245,13 +241,12 @@ where
 
     /// Just like [`try_add`](Self::try_add), except async.
     #[instrument(name = "add_device", skip_all, fields(device = self.dev_name.as_ref()))]
-    pub async fn try_add_async<F, Fut, E>(
+    pub async fn try_add_async<F, E>(
         mut self,
         f: F,
     ) -> Result<Arc<CloseableMutex<T>>, AddDeviceError>
     where
-        F: for<'c> FnOnce(&'c mut ArcMutexChipsetServices<'a, 'b>) -> Fut,
-        Fut: Future<Output = Result<T, E>>,
+        F: AsyncFnOnce(&mut ArcMutexChipsetServices<'a, 'b>) -> Result<T, E>,
         E: Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
     {
         let dev = match (f)(&mut self.services).await {
@@ -261,10 +256,5 @@ where
             }
         };
         self.inner_add(Ok(dev))
-    }
-
-    /// Get a mutable reference to the device's services.
-    pub fn services(&mut self) -> &mut ArcMutexChipsetServices<'a, 'b> {
-        &mut self.services
     }
 }

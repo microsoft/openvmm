@@ -3,7 +3,7 @@
 
 [package]
 name = "xtask"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -21,6 +21,7 @@ grep-regex.workspace = true
 grep-searcher.workspace = true
 ignore.workspace = true
 log.workspace = true
+object = { workspace = true, features = ["read_core", "elf", "std"] }
 mbrman.workspace = true
 rayon.workspace = true
 serde_json.workspace = true
@@ -30,7 +31,6 @@ walkdir.workspace = true
 which.workspace = true
 xshell.workspace = true
 zerocopy.workspace = true
-
 ci_logger.workspace = true
 clap_dyn_complete.workspace = true
 guid.workspace = true

@@ -3,7 +3,7 @@
 
 [package]
 name = "underhill_crash"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -21,7 +21,6 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zerocopy.workspace = true
-
 [build-dependencies]
 vergen = { workspace = true, features = ["git", "gitcl"] }
 

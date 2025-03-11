@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 use anyhow::Context;
 use futures::executor::block_on;
 use futures::StreamExt;
@@ -32,9 +34,7 @@ fn server(path: &str) -> anyhow::Result<()> {
     let (_s, stop_listening) = mesh::oneshot();
     let mut recv = server.add_service();
     let thread = std::thread::spawn(move || {
-        block_with_io(
-            |driver| async move { drop(server.run(&driver, listener, stop_listening).await) },
-        )
+        block_with_io(async |driver| drop(server.run(&driver, listener, stop_listening).await))
     });
     block_on(async {
         while let Some((_, message)) = recv.next().await {

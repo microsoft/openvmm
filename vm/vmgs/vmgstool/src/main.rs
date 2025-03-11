@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 mod storage_backend;
 mod uefi_nvram;
 mod vmgs_json;
@@ -81,6 +83,8 @@ enum Error {
     Json(String),
     #[error("File ID {0:?} already exists. Use `--allow-overwrite` to ignore.")]
     FileIdExists(FileId),
+    #[error("VMGS file is encrypted using GspById")]
+    GspByIdEncryption,
 }
 
 /// Automation requires certain exit codes to be guaranteed
@@ -98,6 +102,14 @@ enum ExitCode {
     ErrorEmpty = 3,
     ErrorNotFound = 4,
     ErrorV1 = 5,
+    ErrorGspById = 6,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum VmgsEncryptionScheme {
+    GspKey,
+    GspById,
+    None,
 }
 
 #[derive(Args)]
@@ -319,7 +331,7 @@ fn parse_legacy_args() -> Vec<String> {
 }
 
 fn main() {
-    DefaultPool::run_with(|_| async move {
+    DefaultPool::run_with(async |_| {
         if let Err(e) = do_main().await {
             let exit_code = match e {
                 Error::NotEncrypted => ExitCode::ErrorNotEncrypted,
@@ -327,6 +339,7 @@ fn main() {
                 Error::ZeroSize => ExitCode::ErrorEmpty,
                 Error::Vmgs(VmgsError::FileInfoAllocated) => ExitCode::ErrorNotFound,
                 Error::V1Format => ExitCode::ErrorV1,
+                Error::GspByIdEncryption => ExitCode::ErrorGspById,
                 _ => ExitCode::Error,
             };
 
@@ -587,7 +600,6 @@ async fn vmgs_file_write(
 
     // manually allow, since we want to differentiate between the file not being
     // accessible, and a read operation failing
-    #[allow(clippy::verbose_file_reads)]
     file.read_to_end(&mut buf).map_err(Error::DataFile)?;
 
     println!("Size: {} bytes", buf.len());
@@ -973,7 +985,7 @@ async fn vmgs_file_query_file_size(
 ) -> Result<(), Error> {
     let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnly, true).await?;
 
-    let file_size = vmgs_query_file_size(&vmgs, file_id).await?;
+    let file_size = vmgs_query_file_size(&vmgs, file_id)?;
 
     println!(
         "File ID {} ({:?}) has a size of {}",
@@ -983,7 +995,7 @@ async fn vmgs_file_query_file_size(
     Ok(())
 }
 
-async fn vmgs_query_file_size(vmgs: &Vmgs, file_id: FileId) -> Result<u64, Error> {
+fn vmgs_query_file_size(vmgs: &Vmgs, file_id: FileId) -> Result<u64, Error> {
     Ok(vmgs.get_file_info(file_id)?.valid_bytes)
 }
 
@@ -992,21 +1004,37 @@ async fn vmgs_file_query_encryption(file_path: impl AsRef<Path>) -> Result<(), E
 
     let vmgs = vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnly, true).await?;
 
-    match vmgs.get_encryption_algorithm() {
-        EncryptionAlgorithm::NONE => {
+    match (
+        vmgs.get_encryption_algorithm(),
+        vmgs_get_encryption_scheme(&vmgs),
+    ) {
+        (EncryptionAlgorithm::NONE, VmgsEncryptionScheme::None) => {
             println!("not encrypted");
             // Returning an error for HA to easily parse
-            return Err(Error::NotEncrypted);
+            Err(Error::NotEncrypted)
         }
-        EncryptionAlgorithm::AES_GCM => {
-            println!("encrypted with AES GCM encryption algorithm");
+        (EncryptionAlgorithm::AES_GCM, VmgsEncryptionScheme::GspKey) => {
+            println!("encrypted with AES GCM encryption algorithm using GspKey");
+            Ok(())
         }
-        _ => {
-            unreachable!("Invalid encryption algorithm");
+        (EncryptionAlgorithm::AES_GCM, VmgsEncryptionScheme::GspById) => {
+            println!("encrypted with AES GCM encryption algorithm using GspById");
+            Err(Error::GspByIdEncryption)
+        }
+        (alg, scheme) => {
+            unreachable!("Invalid encryption algorithm ({alg:?}) / scheme ({scheme:?})");
         }
     }
+}
 
-    Ok(())
+fn vmgs_get_encryption_scheme(vmgs: &Vmgs) -> VmgsEncryptionScheme {
+    if vmgs_query_file_size(vmgs, FileId::KEY_PROTECTOR).is_ok() {
+        VmgsEncryptionScheme::GspKey
+    } else if vmgs_query_file_size(vmgs, FileId::VM_UNIQUE_ID).is_ok() {
+        VmgsEncryptionScheme::GspById
+    } else {
+        VmgsEncryptionScheme::None
+    }
 }
 
 fn vmgs_file_validate(file: &File) -> Result<(), Error> {
@@ -1137,7 +1165,7 @@ mod tests {
         let vmgs =
             vmgs_file_open(file_path, None as Option<PathBuf>, OpenMode::ReadOnly, true).await?;
 
-        vmgs_query_file_size(&vmgs, file_id).await
+        vmgs_query_file_size(&vmgs, file_id)
     }
 
     #[cfg(with_encryption)]

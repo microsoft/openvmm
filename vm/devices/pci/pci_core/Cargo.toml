@@ -3,7 +3,7 @@
 
 [package]
 name = "pci_core"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
@@ -20,6 +20,5 @@ thiserror.workspace = true
 tracelimit.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-
 [lints]
 workspace = true

@@ -3,13 +3,12 @@
 
 [package]
 name = "vhd1_defs"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 guid.workspace = true
 
 zerocopy.workspace = true
-
 [lints]
 workspace = true

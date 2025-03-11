@@ -3,16 +3,12 @@
 
 [package]
 name = "x86emu"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
-
-[features]
-arbitrary = ["dep:arbitrary", "x86defs/arbitrary"]
 
 [dependencies]
 x86defs.workspace = true
 
-arbitrary = { workspace = true, optional = true, features = ["derive"] }
 iced-x86 = { workspace = true, features = ["std", "decoder", "instr_info"] }
 thiserror.workspace = true
 tracing.workspace = true

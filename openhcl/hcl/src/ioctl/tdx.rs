@@ -5,6 +5,7 @@
 
 use super::hcl_tdcall;
 use super::mshv_tdcall;
+use super::Hcl;
 use super::HclVp;
 use super::MshvVtl;
 use super::NoRunner;
@@ -12,15 +13,15 @@ use super::ProcessorRunner;
 use crate::protocol::tdx_tdg_vp_enter_exit_info;
 use crate::protocol::tdx_vp_context;
 use crate::protocol::tdx_vp_state;
+use crate::protocol::tdx_vp_state_flags;
 use crate::GuestVtl;
+use hv1_structs::VtlArray;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use memory_range::MemoryRange;
 use sidecar_client::SidecarVp;
+use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
-use std::ptr::addr_of;
-use std::ptr::addr_of_mut;
-use std::ptr::NonNull;
 use tdcall::tdcall_vp_invgla;
 use tdcall::tdcall_vp_rd;
 use tdcall::tdcall_vp_wr;
@@ -37,11 +38,12 @@ use x86defs::tdx::TdxGlaListInfo;
 use x86defs::tdx::TdxL2Ctls;
 use x86defs::tdx::TdxL2EnterGuestState;
 use x86defs::tdx::TdxVmFlags;
+use x86defs::vmx::ApicPage;
 use x86defs::vmx::VmcsField;
 
 /// Runner backing for TDX partitions.
-pub struct Tdx {
-    apic: NonNull<[u32; 1024]>,
+pub struct Tdx<'a> {
+    apic_pages: VtlArray<&'a UnsafeCell<ApicPage>, 2>,
 }
 
 impl MshvVtl {
@@ -75,14 +77,14 @@ impl MshvVtl {
     }
 }
 
-impl ProcessorRunner<'_, Tdx> {
+impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     /// Gets a reference to the TDX VP context that is unioned inside the run
     /// page.
     fn tdx_vp_context(&self) -> &tdx_vp_context {
         // SAFETY: the VP context will not be concurrently accessed by the
         // processor while this VP is in VTL2. This is a TDX partition so the
         // context union should be interpreted as a `tdx_vp_context`.
-        unsafe { &*addr_of!((*self.run.as_ptr()).context).cast() }
+        unsafe { &*(&raw mut (*self.run.get()).context).cast() }
     }
 
     /// Gets a mutable reference to the TDX VP context that is unioned inside
@@ -91,17 +93,27 @@ impl ProcessorRunner<'_, Tdx> {
         // SAFETY: the VP context will not be concurrently accessed by the
         // processor while this VP is in VTL2. This is a TDX partition so the
         // context union should be interpreted as a `tdx_vp_context`.
-        unsafe { &mut *addr_of_mut!((*self.run.as_ptr()).context).cast() }
+        unsafe { &mut *(&raw mut (*self.run.get()).context).cast() }
     }
 
     /// Gets a reference to the TDX enter guest state.
-    pub fn tdx_enter_guest_state(&self) -> &TdxL2EnterGuestState {
+    fn tdx_enter_guest_state(&self) -> &TdxL2EnterGuestState {
         &self.tdx_vp_context().gpr_list
     }
 
     /// Gets a mutable reference to the TDX enter guest state.
-    pub fn tdx_enter_guest_state_mut(&mut self) -> &mut TdxL2EnterGuestState {
+    fn tdx_enter_guest_state_mut(&mut self) -> &mut TdxL2EnterGuestState {
         &mut self.tdx_vp_context_mut().gpr_list
+    }
+
+    /// Gets a reference to the TDX enter guest state's GP list.
+    pub fn tdx_enter_guest_gps(&self) -> &[u64; 16] {
+        &self.tdx_enter_guest_state().gps
+    }
+
+    /// Gets a mutable reference to the TDX enter guest state's GP list.
+    pub fn tdx_enter_guest_gps_mut(&mut self) -> &mut [u64; 16] {
+        &mut self.tdx_enter_guest_state_mut().gps
     }
 
     /// Gets a reference to the tdx exit info from a VP.ENTER call.
@@ -109,62 +121,133 @@ impl ProcessorRunner<'_, Tdx> {
         &self.tdx_vp_context().exit_info
     }
 
-    /// Gets a reference to the tdx APIC page.
-    pub fn tdx_apic_page(&self) -> &[u32; 1024] {
-        // SAFETY: the APIC page will not be concurrently accessed by the processor
+    /// Gets a reference to the tdx APIC page for the given VTL.
+    pub fn tdx_apic_page(&self, vtl: GuestVtl) -> &ApicPage {
+        // SAFETY: the APIC pages will not be concurrently accessed by the processor
         // while this VP is in VTL2.
-        unsafe { &*self.state.apic.as_ptr() }
+        unsafe { &*self.state.apic_pages[vtl].get() }
     }
 
-    /// Gets a mutable reference to the tdx APIC page.
-    pub fn tdx_apic_page_mut(&mut self) -> &mut [u32; 1024] {
-        // SAFETY: the APIC page will not be concurrently accessed by the processor
+    /// Gets a mutable reference to the tdx APIC page for the given VTL.
+    pub fn tdx_apic_page_mut(&mut self, vtl: GuestVtl) -> &mut ApicPage {
+        // SAFETY: the APIC pages will not be concurrently accessed by the processor
         // while this VP is in VTL2.
-        unsafe { &mut *self.state.apic.as_ptr() }
+        unsafe { &mut *self.state.apic_pages[vtl].get() }
     }
 
     /// Gets a reference to TDX VP specific state.
-    pub fn tdx_vp_state(&self) -> &tdx_vp_state {
+    fn tdx_vp_state(&self) -> &tdx_vp_state {
         &self.tdx_vp_context().vp_state
     }
 
     /// Gets a mutable reference to TDX VP specific state
-    pub fn tdx_vp_state_mut(&mut self) -> &mut tdx_vp_state {
+    fn tdx_vp_state_mut(&mut self) -> &mut tdx_vp_state {
         &mut self.tdx_vp_context_mut().vp_state
     }
 
+    /// Gets the value of CR2 from the shared kernel state.
+    pub fn cr2(&self) -> u64 {
+        self.tdx_vp_state().cr2
+    }
+
+    /// Gets the value of CR2 from the shared kernel state.
+    pub fn set_cr2(&mut self, value: u64) {
+        self.tdx_vp_state_mut().cr2 = value;
+    }
+
+    /// Gets a mutable reference to TDX specific VP flags.
+    pub fn tdx_vp_state_flags_mut(&mut self) -> &mut tdx_vp_state_flags {
+        &mut self.tdx_vp_state_mut().flags
+    }
+
     /// Gets a reference to the TDX VP entry flags.
-    pub fn tdx_vp_entry_flags(&self) -> &TdxVmFlags {
+    fn tdx_vp_entry_flags(&self) -> &TdxVmFlags {
         &self.tdx_vp_context().entry_rcx
     }
 
     /// Gets a mutable reference to the TDX VP entry flags.
-    pub fn tdx_vp_entry_flags_mut(&mut self) -> &mut TdxVmFlags {
+    fn tdx_vp_entry_flags_mut(&mut self) -> &mut TdxVmFlags {
         &mut self.tdx_vp_context_mut().entry_rcx
     }
 
-    fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {
-        let class_code = match vtl {
-            GuestVtl::Vtl0 => TdVpsClassCode::VMCS_1,
-            GuestVtl::Vtl1 => TdVpsClassCode::VMCS_2,
-        };
-        let field_size = match field.field_width() {
-            x86defs::vmx::FieldWidth::Width16 => x86defs::tdx::FieldSize::Size16Bit,
-            x86defs::vmx::FieldWidth::Width32 => x86defs::tdx::FieldSize::Size32Bit,
-            x86defs::vmx::FieldWidth::Width64 => x86defs::tdx::FieldSize::Size64Bit,
-            x86defs::vmx::FieldWidth::WidthNatural => x86defs::tdx::FieldSize::Size64Bit,
-        };
-        TdxExtendedFieldCode::new()
-            .with_context_code(TdxContextCode::TD_VCPU)
-            .with_class_code(class_code.0)
-            .with_field_code(field.into())
-            .with_field_size(field_size)
+    /// Reads the private registers from the kernel's shared run page into
+    /// the given [`TdxPrivateRegs`].
+    pub fn read_private_regs(&self, regs: &mut TdxPrivateRegs) {
+        let TdxL2EnterGuestState {
+            gps: _gps, // Shared between VTLs
+            rflags,
+            rip,
+            ssp,
+            rvi,
+            svi,
+            reserved: _reserved,
+        } = self.tdx_enter_guest_state();
+        regs.rflags = *rflags;
+        regs.rip = *rip;
+        regs.ssp = *ssp;
+        regs.rvi = *rvi;
+        regs.svi = *svi;
+
+        let tdx_vp_state {
+            msr_kernel_gs_base,
+            msr_star,
+            msr_lstar,
+            msr_sfmask,
+            msr_xss,
+            cr2: _cr2, // Shared between VTLs
+            msr_tsc_aux,
+            flags: _flags, // Global flags
+        } = self.tdx_vp_state();
+        regs.msr_kernel_gs_base = *msr_kernel_gs_base;
+        regs.msr_star = *msr_star;
+        regs.msr_lstar = *msr_lstar;
+        regs.msr_sfmask = *msr_sfmask;
+        regs.msr_xss = *msr_xss;
+        regs.msr_tsc_aux = *msr_tsc_aux;
+
+        regs.vp_entry_flags = *self.tdx_vp_entry_flags();
+    }
+
+    /// Writes the private registers from the given [`TdxPrivateRegs`] to the
+    /// kernel's shared run page.
+    pub fn write_private_regs(&mut self, regs: &TdxPrivateRegs) {
+        let TdxPrivateRegs {
+            rflags,
+            rip,
+            ssp,
+            rvi,
+            svi,
+            msr_kernel_gs_base,
+            msr_star,
+            msr_lstar,
+            msr_sfmask,
+            msr_xss,
+            msr_tsc_aux,
+            vp_entry_flags,
+        } = regs;
+
+        let enter_guest_state = self.tdx_enter_guest_state_mut();
+        enter_guest_state.rflags = *rflags;
+        enter_guest_state.rip = *rip;
+        enter_guest_state.ssp = *ssp;
+        enter_guest_state.rvi = *rvi;
+        enter_guest_state.svi = *svi;
+
+        let vp_state = self.tdx_vp_state_mut();
+        vp_state.msr_kernel_gs_base = *msr_kernel_gs_base;
+        vp_state.msr_star = *msr_star;
+        vp_state.msr_lstar = *msr_lstar;
+        vp_state.msr_sfmask = *msr_sfmask;
+        vp_state.msr_xss = *msr_xss;
+        vp_state.msr_tsc_aux = *msr_tsc_aux;
+
+        *self.tdx_vp_entry_flags_mut() = *vp_entry_flags;
     }
 
     fn write_vmcs(&mut self, vtl: GuestVtl, field: VmcsField, mask: u64, value: u64) -> u64 {
         tdcall_vp_wr(
             &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
-            Self::vmcs_field_code(field, vtl),
+            vmcs_field_code(field, vtl),
             value,
             mask,
         )
@@ -174,7 +257,7 @@ impl ProcessorRunner<'_, Tdx> {
     fn read_vmcs(&self, vtl: GuestVtl, field: VmcsField) -> u64 {
         tdcall_vp_rd(
             &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
-            Self::vmcs_field_code(field, vtl),
+            vmcs_field_code(field, vtl),
         )
         .expect("fatal vmcs access failure")
     }
@@ -285,8 +368,8 @@ impl ProcessorRunner<'_, Tdx> {
         tdcall_vp_wr(
             &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
             field_code,
-            !0,
             value.into(),
+            !0,
         )
         .map(Into::into)
     }
@@ -298,7 +381,6 @@ impl ProcessorRunner<'_, Tdx> {
         gla_info: TdxGlaListInfo,
     ) -> Result<(), TdCallResult> {
         tdcall_vp_invgla(&mut MshvVtlTdcall(&self.hcl.mshv_vtl), gla_flags, gla_info)
-            .map(Into::into)
     }
 
     /// Gets the FPU state for the VP.
@@ -312,13 +394,53 @@ impl ProcessorRunner<'_, Tdx> {
     }
 }
 
-impl super::private::BackingPrivate for Tdx {
-    fn new(vp: &HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
+fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {
+    let class_code = match vtl {
+        GuestVtl::Vtl0 => TdVpsClassCode::VMCS_1,
+        GuestVtl::Vtl1 => TdVpsClassCode::VMCS_2,
+    };
+    let field_size = match field.field_width() {
+        x86defs::vmx::FieldWidth::Width16 => x86defs::tdx::FieldSize::Size16Bit,
+        x86defs::vmx::FieldWidth::Width32 => x86defs::tdx::FieldSize::Size32Bit,
+        x86defs::vmx::FieldWidth::Width64 => x86defs::tdx::FieldSize::Size64Bit,
+        x86defs::vmx::FieldWidth::WidthNatural => x86defs::tdx::FieldSize::Size64Bit,
+    };
+    TdxExtendedFieldCode::new()
+        .with_context_code(TdxContextCode::TD_VCPU)
+        .with_class_code(class_code.0)
+        .with_field_code(field.into())
+        .with_field_size(field_size)
+}
+
+impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
+    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>, hcl: &Hcl) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
-        let super::BackingState::Tdx { apic_page } = &vp.backing else {
+        let super::BackingState::Tdx {
+            vtl0_apic_page,
+            vtl1_apic_page,
+        } = &vp.backing
+        else {
             return Err(NoRunner::MismatchedIsolation);
         };
-        Ok(Self { apic: apic_page.0 })
+
+        // Register the VTL 1 APIC page with the TD module.
+        // The VTL 0 APIC page is registered by the kernel.
+        let vtl1_apic_page_addr = vtl1_apic_page.pfns()[0] * user_driver::memory::PAGE_SIZE64;
+        tdcall_vp_wr(
+            &mut MshvVtlTdcall(&hcl.mshv_vtl),
+            vmcs_field_code(VmcsField::VMX_VMCS_VIRTUAL_APIC_PAGE, GuestVtl::Vtl1),
+            vtl1_apic_page_addr,
+            !0,
+        )
+        .expect("failed registering VTL1 APIC page");
+
+        // SAFETY: The mapping is held for the appropriate lifetime, and the
+        // APIC page is never accessed as any other type, or by any other location.
+        let vtl1_apic_page = unsafe { &*vtl1_apic_page.base().cast() };
+
+        Ok(Self {
+            apic_pages: [vtl0_apic_page.as_ref(), vtl1_apic_page].into(),
+        })
     }
 
     fn try_set_reg(
@@ -340,6 +462,55 @@ impl super::private::BackingPrivate for Tdx {
         _name: HvRegisterName,
     ) -> Result<Option<HvRegisterValue>, super::Error> {
         Ok(None)
+    }
+}
+
+/// Private registers that are copied to/from the kernel's shared run page.
+#[derive(inspect::InspectMut)]
+#[expect(missing_docs, reason = "Self-describing field names")]
+pub struct TdxPrivateRegs {
+    // Registers on [`TdxL2EnterGuestState`].
+    pub rflags: u64,
+    pub rip: u64,
+    pub ssp: u64,
+    pub rvi: u8,
+    pub svi: u8,
+    // Registers on [`tdx_vp_state`].
+    pub msr_kernel_gs_base: u64,
+    pub msr_star: u64,
+    pub msr_lstar: u64,
+    pub msr_sfmask: u64,
+    pub msr_xss: u64,
+    pub msr_tsc_aux: u64,
+    // VP Entry flags
+    #[inspect(with = "|x| inspect::AsHex(x.into_bits())")]
+    pub vp_entry_flags: TdxVmFlags,
+}
+
+impl TdxPrivateRegs {
+    /// Creates a new register set with the given values.
+    /// Other values are initialized to zero.
+    pub fn new(rflags: u64, rip: u64, vtl: GuestVtl) -> Self {
+        Self {
+            rflags,
+            rip,
+            ssp: 0,
+            rvi: 0,
+            svi: 0,
+            msr_kernel_gs_base: 0,
+            msr_star: 0,
+            msr_lstar: 0,
+            msr_sfmask: 0,
+            msr_xss: 0,
+            msr_tsc_aux: 0,
+            // We initialize with a TLB flush pending so that save/restore/reset
+            // operations (not supported yet, but maybe someday) will start with
+            // a clear TLB. During regular boots this won't matter, as the TLB
+            // will already be empty.
+            vp_entry_flags: TdxVmFlags::new()
+                .with_vm_index(vtl as u8 + 1)
+                .with_invd_translations(x86defs::tdx::TDX_VP_ENTER_INVD_INVEPT),
+        }
     }
 }
 

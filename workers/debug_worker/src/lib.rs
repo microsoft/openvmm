@@ -7,6 +7,8 @@
 //! Remote Serial Protocol. This is used to debug the VM's execution when a
 //! guest debugger is not available or practical.
 
+#![expect(missing_docs)]
+
 mod gdb;
 
 use anyhow::Context;
@@ -96,7 +98,7 @@ where
     }
 
     fn run(self, mut rpc_recv: mesh::Receiver<WorkerRpc<Self::Parameters>>) -> anyhow::Result<()> {
-        block_with_io(|driver| async move {
+        block_with_io(async |driver| {
             tracing::info!(
                 address = %self.listener.local_addr().unwrap(),
                 "gdbstub listening",
@@ -121,7 +123,7 @@ where
                     Ok(message) => match message {
                         WorkerRpc::Stop => return Ok(()),
                         WorkerRpc::Inspect(deferred) => deferred.inspect(&mut server),
-                        WorkerRpc::Restart(response) => {
+                        WorkerRpc::Restart(rpc) => {
                             let vm_proxy = match server.state {
                                 State::Listening { vm_proxy } => vm_proxy,
                                 State::Connected { task, abort, .. } => {
@@ -148,7 +150,7 @@ where
                                     },
                                 }
                             };
-                            response.send(Ok(state));
+                            rpc.complete(Ok(state));
                             return Ok(());
                         }
                     },

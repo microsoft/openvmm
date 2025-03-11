@@ -3,8 +3,6 @@
 
 //! Core types shared by serial port implementations and users.
 
-#![warn(missing_docs)]
-
 pub mod disconnected;
 pub mod resources;
 pub mod serial_io;

@@ -19,6 +19,7 @@ use ide_resources::IdeControllerConfig;
 use ide_resources::IdeDeviceConfig;
 use ide_resources::IdePath;
 use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh::CancelContext;
 use nvme_resources::NamespaceDefinition;
@@ -61,7 +62,7 @@ use vm_resource::ResourceResolver;
 #[derive(Error, Debug)]
 enum Error<'a> {
     #[error("RPC error")]
-    Rpc(#[source] mesh::RecvError),
+    Rpc(#[source] RpcError),
     #[error("cannot add/remove storage controllers at runtime")]
     StorageCannotAddRemoveControllerAtRuntime,
     #[error("Striping devices don't support runtime change")]
@@ -260,7 +261,7 @@ impl Vtl2SettingsWorker {
 
         while let Some(req) = settings_recv.next().await {
             req.0
-                .handle(|buf| async {
+                .handle(async |buf| {
                     self.handle_modify_vtl2_settings(uevent_listener, &{ buf })
                         .await
                 })
@@ -515,32 +516,31 @@ pub(crate) async fn handle_vtl2_config_rpc(
 ) {
     match message {
         Vtl2ConfigNicRpc::Modify(rpc) => {
-            rpc.handle(|nic_settings| {
+            rpc.handle(async |nic_settings| {
                 let modify_settings = vm.network_settings.as_mut().map(|settings| {
                     settings.modify_network_settings(nic_settings.0, nic_settings.1)
                 });
-                async {
-                    modify_settings
-                        .context("network modifications not supported for this VM")?
-                        .await
-                }
+                modify_settings
+                    .context("network modifications not supported for this VM")?
+                    .await
             })
             .await
         }
         Vtl2ConfigNicRpc::Add(rpc) => {
-            rpc.handle(|nic_settings| {
+            rpc.handle(async |nic_settings| {
                 vm.add_vf_manager(threadpool, nic_settings.0, nic_settings.1, nic_settings.2)
+                    .await
             })
             .await
         }
         Vtl2ConfigNicRpc::Remove(rpc) => {
-            rpc.handle(|instance_id| vm.remove_vf_manager(instance_id))
+            rpc.handle(async |instance_id| vm.remove_vf_manager(instance_id).await)
                 .await
         }
     }
 }
 
-pub async fn disk_from_disk_type<'a>(
+pub async fn disk_from_disk_type(
     disk_type: Resource<DiskHandleKind>,
     read_only: bool,
     resolver: &ResourceResolver,
@@ -1530,24 +1530,21 @@ async fn get_nvme_namespace_devname(
 
     // Look for a child node with the correct namespace ID.
     let devname = uevent_listener
-        .wait_for_matching_child(&nvme_devpath, move |path, uevent| {
-            let prefix = prefix.clone();
-            async move {
-                let name = path.file_name()?.to_str()?;
-                if !name.starts_with(&prefix) {
-                    return None;
-                }
-                match nsid_matches(&path, nsid) {
-                    Ok(true) => {
-                        if uevent || check_block_sysfs_ready(name).await {
-                            Some(Ok(name.to_string()))
-                        } else {
-                            None
-                        }
+        .wait_for_matching_child(&nvme_devpath, async |path, uevent| {
+            let name = path.file_name()?.to_str()?;
+            if !name.starts_with(&prefix) {
+                return None;
+            }
+            match nsid_matches(&path, nsid) {
+                Ok(true) => {
+                    if uevent || check_block_sysfs_ready(name).await {
+                        Some(Ok(name.to_string()))
+                    } else {
+                        None
                     }
-                    Ok(false) => None,
-                    Err(err) => Some(Err(err)),
                 }
+                Ok(false) => None,
+                Err(err) => Some(Err(err)),
             }
         })
         .await??;
@@ -1562,7 +1559,7 @@ async fn get_scsi_host_number(
     // Wait for a node of the name host<n> to show up.
     let controller_path = PathBuf::from(format!("/sys/bus/vmbus/devices/{instance_id}"));
     let host_number = uevent_listener
-        .wait_for_matching_child(&controller_path, move |name, _uevent| async move {
+        .wait_for_matching_child(&controller_path, async |name, _uevent| {
             name.file_name()?
                 .to_str()?
                 .strip_prefix("host")?
@@ -1588,7 +1585,7 @@ async fn get_vscsi_devname(
     ));
 
     uevent_listener
-        .wait_for_matching_child(&block_devpath, |path, uevent| async move {
+        .wait_for_matching_child(&block_devpath, async |path, uevent| {
             let name = path.file_name()?.to_str()?;
             if uevent || check_block_sysfs_ready(name).await {
                 Some(name.to_string())
@@ -1609,7 +1606,7 @@ async fn nvme_controller_path_from_vmbus_instance_id(
     let (pci_id, mut devpath) = vpci_path(instance_id);
     devpath.push("nvme");
     let devpath = uevent_listener
-        .wait_for_matching_child(&devpath, move |path, _uevent| async move { Some(path) })
+        .wait_for_matching_child(&devpath, async |path, _uevent| Some(path))
         .await?;
     wait_for_pci_path(&pci_id).await;
     Ok(devpath)

@@ -4,7 +4,6 @@
 //! A simple asynchronous task model for execution that needs to be started,
 //! stopped, mutated, and inspected.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use fast_select::FastSelect;
@@ -74,10 +73,10 @@ impl<T: AsyncRun<S>, S> PollReady for StopTaskInner<'_, T, S> {
         if !shared.calls.is_empty() || shared.stop {
             return Poll::Ready(());
         }
-        if !shared
+        if shared
             .inner_waker
             .as_ref()
-            .map_or(false, |waker| cx.waker().will_wake(waker))
+            .is_none_or(|waker| !cx.waker().will_wake(waker))
         {
             shared.inner_waker = Some(cx.waker().clone());
         }
@@ -468,9 +467,10 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
         loop {
             let (mut task_and_state, stop) = poll_fn(|cx| {
                 let mut shared = shared.lock();
-                let has_work = shared.task_and_state.as_ref().map_or(false, |ts| {
-                    !shared.calls.is_empty() || (!shared.stop && !ts.done)
-                });
+                let has_work = shared
+                    .task_and_state
+                    .as_ref()
+                    .is_some_and(|ts| !shared.calls.is_empty() || (!shared.stop && !ts.done));
                 if !has_work {
                     shared.inner_waker = Some(cx.waker().clone());
                     return Poll::Pending;

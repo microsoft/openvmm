@@ -4,6 +4,8 @@
 //! A "move fast, break things" tool, that provides no long-term CLI stability
 //! guarantees.
 
+#![expect(missing_docs)]
+
 mod completions;
 
 use anyhow::Context;
@@ -419,7 +421,7 @@ pub fn main() -> anyhow::Result<()> {
         .init();
 
     term::enable_vt_and_utf8();
-    DefaultPool::run_with(|driver| async move {
+    DefaultPool::run_with(async |driver| {
         let Options { vm, command } = Options::parse();
 
         match command {
@@ -502,7 +504,7 @@ pub fn main() -> anyhow::Result<()> {
                     } else {
                         Some(Duration::from_secs(timeout))
                     };
-                    let query = || async {
+                    let query = async || {
                         client
                             .inspect(
                                 path.as_deref().unwrap_or(""),
@@ -586,15 +588,14 @@ pub fn main() -> anyhow::Result<()> {
                         _ => anyhow::bail!("--serial is only supported for Hyper-V VMs"),
                     };
 
-                    let port_access_info = if let Some(pipe_path) = pipe_path {
+                    let port_access_info = if let Some(pipe_path) = pipe_path.as_ref() {
                         ComPortAccessInfo::PortPipePath(pipe_path)
                     } else {
-                        ComPortAccessInfo::PortNumber(3)
+                        ComPortAccessInfo::NameAndPortNumber(vm_name, 3)
                     };
 
                     let pipe =
-                        diag_client::hyperv::open_serial_port(&driver, vm_name, port_access_info)
-                            .await?;
+                        diag_client::hyperv::open_serial_port(&driver, port_access_info).await?;
                     let pipe = pal_async::pipe::PolledPipe::new(&driver, pipe)
                         .context("failed to make a polled pipe")?;
                     let pipe = futures::io::BufReader::new(pipe);

@@ -10,7 +10,6 @@
 //! configuration, along with hooks into various VMM runtime services (e.g:
 //! event logging, efficient busy-waiting, generation ID, etc...).
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod bios_boot_order;
@@ -46,7 +45,7 @@ use vm_topology::processor::VpIndex;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::vmtime::VmTimeAccess;
 use vmcore::vmtime::VmTimeSource;
-use zerocopy::AsBytes;
+use zerocopy::IntoBytes;
 
 /// Static config info which gets queried by the PCAT BIOS.
 pub mod config {
@@ -58,7 +57,7 @@ pub mod config {
 
     /// Subset of SMBIOS v2.4 CPU Information structure.
     #[derive(Debug, Inspect)]
-    #[allow(missing_docs)] // self-explanatory fields
+    #[expect(missing_docs)] // self-explanatory fields
     pub struct SmbiosProcessorInfoBundle {
         pub processor_family: u8,
         pub voltage: u8,
@@ -71,7 +70,7 @@ pub mod config {
     ///
     /// There is a lot of info here, but empirically, it's not _super_ important
     /// to make these values 100% accurate...
-    #[allow(missing_docs)] // self-explanatory fields
+    #[expect(missing_docs)] // self-explanatory fields
     #[derive(Debug, Inspect)]
     pub struct SmbiosConstants {
         pub bios_guid: Guid,
@@ -95,7 +94,7 @@ pub mod config {
 
     /// A particular kind of boot device PCAT understands.
     #[derive(Debug, Clone, Copy, Inspect)]
-    #[allow(missing_docs)] // self-explanatory variants
+    #[expect(missing_docs)] // self-explanatory variants
     pub enum BootDevice {
         Floppy = 0,
         Optical = 1,
@@ -187,7 +186,7 @@ impl PcatBiosState {
 }
 
 /// PCAT device runtime dependencies.
-#[allow(missing_docs)] // self-explanatory fields
+#[expect(missing_docs)] // self-explanatory fields
 pub struct PcatBiosRuntimeDeps<'a> {
     pub gm: GuestMemory,
     pub logger: Box<dyn PcatLogger>,
@@ -242,7 +241,7 @@ const POST_IO_PORT: u16 = 0x80;
 
 /// Errors which may occur during PCAT BIOS helper device initialization.
 #[derive(Debug, Error)]
-#[allow(missing_docs)] // self-explanatory variants
+#[expect(missing_docs)] // self-explanatory variants
 pub enum PcatBiosDeviceInitError {
     #[error("expected exactly 2 mmio holes, found {0}")]
     IncorrectMmioHoles(usize),

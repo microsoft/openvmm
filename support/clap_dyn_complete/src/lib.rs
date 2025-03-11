@@ -25,7 +25,6 @@
 //! requiring the binary to include its own completion engine.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use clap::Parser;
 use futures::future::BoxFuture;

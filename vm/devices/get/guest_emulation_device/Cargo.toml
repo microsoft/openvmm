@@ -3,7 +3,7 @@
 
 [package]
 name = "guest_emulation_device"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [features]
@@ -40,8 +40,6 @@ thiserror.workspace = true
 time = { workspace = true, features = ["local-offset", "macros"] }
 tracing.workspace = true
 zerocopy.workspace = true
-zerocopy_helpers.workspace = true
-
 guid.workspace = true
 
 [lints]

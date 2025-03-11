@@ -8,12 +8,12 @@
 //! As a convenience, it also exports some OS-specific functionality and some
 //! general library functionality.
 
-mod headervec;
+#![expect(missing_docs)]
+
 pub mod process;
 pub mod unix;
 pub mod windows;
 
-pub use headervec::HeaderVec;
 pub use sys::close_stdout;
 pub use sys::pipe::pair as pipe_pair;
 

@@ -4,6 +4,7 @@
 //! Types and methods for defining and layering sets of custom UEFI nvram
 //! variables
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 use guid::Guid;

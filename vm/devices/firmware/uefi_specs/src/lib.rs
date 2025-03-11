@@ -9,6 +9,7 @@
 //! - `hyperv`: types specific to the Hyper-V UEFI implementation
 //! - `linux`: types specific to UEFI on Linux
 
+#![expect(missing_docs)]
 #![no_std]
 
 // TODO: find a nice way to create const `Ucs2LeSlice` instances, and use proper
@@ -18,7 +19,7 @@ macro_rules! defn_nvram_var {
         #[allow(non_snake_case)]
         pub fn $varname() -> (Guid, &'static ucs2::Ucs2LeSlice) {
             use ucs2::Ucs2LeSlice;
-            use zerocopy::AsBytes;
+            use zerocopy::IntoBytes;
 
             (
                 $guid,

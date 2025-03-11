@@ -30,9 +30,9 @@ use vmgs_format::VMGS_FILE_TABLE_BLOCK_SIZE;
 use vmgs_format::VMGS_MIN_FILE_BLOCK_OFFSET;
 use vmgs_format::VMGS_SIGNATURE;
 use vmgs_format::VMGS_VERSION_3_0;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 /// Info about a specific VMGS file.
 #[derive(Debug)]
@@ -229,7 +229,9 @@ impl Vmgs {
             )));
         }
 
-        let file_table = VmgsFileTable::ref_from_prefix(&file_table_buffer).unwrap();
+        let file_table = VmgsFileTable::ref_from_prefix(&file_table_buffer)
+            .unwrap()
+            .0; // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
 
         let file_control_blocks =
             initialize_file_metadata(file_table, version, storage.block_capacity())?;
@@ -1064,8 +1066,9 @@ impl Vmgs {
 
         // Update the cached extended file table
         let extended_file_table =
-            VmgsExtendedFileTable::read_from_prefix(&extended_file_table_buffer[..])
-                .context("Invalid decrypted extended file table")?;
+            VmgsExtendedFileTable::read_from_prefix(extended_file_table_buffer.as_bytes())
+                .map_err(|_| anyhow!("Invalid decrypted extended file table"))? // TODO: zerocopy: use result (https://github.com/microsoft/openvmm/issues/759)
+                .0;
         for (file_id, fcb) in self.fcbs.iter_mut() {
             fcb.attributes = extended_file_table.entries[*file_id].attributes;
             fcb.encryption_key = extended_file_table.entries[*file_id].encryption_key;
@@ -1217,7 +1220,7 @@ impl Vmgs {
 
             // Initialize a new extended file table.
             let new_extended_file_table = VmgsExtendedFileTable::new_zeroed();
-            // Write the extende file table to the newly allocated space
+            // Write the extended file table to the newly allocated space
             self.write_file_internal(
                 FileId::EXTENDED_FILE_TABLE,
                 new_extended_file_table.as_bytes(),
@@ -1382,11 +1385,11 @@ async fn read_headers_inner(storage: &mut VmgsStorage) -> Result<(VmgsHeader, Vm
         .map_err(Error::ReadDisk)?;
 
     // first_two_blocks will contain enough bytes to read the first two headers
-    let header_1 = VmgsHeader::read_from_prefix(&first_two_blocks).unwrap();
+    let header_1 = VmgsHeader::read_from_prefix(&first_two_blocks).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     let header_2 =
         VmgsHeader::read_from_prefix(&first_two_blocks[storage.aligned_header_size() as usize..])
-            .unwrap();
-
+            .unwrap()
+            .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     Ok((header_1, header_2))
 }
 
@@ -1625,7 +1628,7 @@ fn compute_crc32(buf: &[u8]) -> u32 {
 }
 
 #[cfg(feature = "save_restore")]
-#[allow(missing_docs)]
+#[expect(missing_docs)]
 pub mod save_restore {
     use super::*;
 

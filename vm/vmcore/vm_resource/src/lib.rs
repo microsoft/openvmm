@@ -10,7 +10,6 @@
 //! link in different resource resolvers to support different resource types
 //! depending on compile-time configuration.
 
-#![warn(missing_docs)]
 // UNSAFETY: Uses transmute to allow for type erasure.
 #![expect(unsafe_code)]
 
@@ -19,7 +18,7 @@ pub mod kind;
 use async_trait::async_trait;
 use inspect::Inspect;
 use mesh::MeshPayload;
-use mesh::Message;
+use mesh::OwnedMessage;
 use std::any::Any;
 use std::borrow::Cow;
 use std::fmt::Display;
@@ -76,7 +75,7 @@ pub trait CanResolveTo<O>: ResourceKind {
 pub struct Resource<K: ResourceKind> {
     #[mesh(encoding = "mesh::payload::encoding::OwningCowField")]
     id: Cow<'static, str>,
-    message: Message,
+    message: OwnedMessage,
     _phantom: PhantomData<fn(K) -> K>,
 }
 
@@ -97,7 +96,7 @@ impl<K: ResourceKind> Resource<K> {
     pub fn new<T: 'static + ResourceId<K> + MeshPayload + Send>(value: T) -> Self {
         Self {
             id: Cow::Borrowed(T::ID),
-            message: Message::new(value),
+            message: OwnedMessage::new(value),
             _phantom: PhantomData,
         }
     }

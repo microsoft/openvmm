@@ -17,6 +17,7 @@ use nvme_spec::nvm::DsmRange;
 use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
+use std::convert::TryFrom;
 use user_driver::emulated::DeviceSharedMemory;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -26,11 +27,13 @@ pub struct FuzzNvmeDriver {
     driver: Option<NvmeDriver<FuzzEmulatedDevice<NvmeController>>>,
     namespace: Namespace,
     payload_mem: GuestMemory,
+    cpu_count: u32,
 }
 
 impl FuzzNvmeDriver {
     /// Setup a new nvme driver with a fuzz-enabled backend device.
-    pub async fn new(driver: DefaultDriver) -> Result<Self, arbitrary::Error> {
+    pub async fn new(driver: DefaultDriver) -> Result<Self, anyhow::Error> {
+        let cpu_count = 64; // TODO: [use-arbitrary-input]
         let base_len = 64 << 20; // 64MB TODO: [use-arbitrary-input]
         let payload_len = 1 << 20; // 1MB TODO: [use-arbitrary-input]
         let mem = DeviceSharedMemory::new(base_len, payload_len);
@@ -64,13 +67,14 @@ impl FuzzNvmeDriver {
             .unwrap();
 
         let device = FuzzEmulatedDevice::new(nvme, msi_set, mem);
-        let nvme_driver = NvmeDriver::new(&driver_source, 64, device).await.unwrap(); // TODO: [use-arbitrary-input]
-        let namespace = nvme_driver.namespace(1).await.unwrap(); // TODO: [use-arbitrary-input]
+        let nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device).await?; // TODO: [use-arbitrary-input]
+        let namespace = nvme_driver.namespace(1).await?; // TODO: [use-arbitrary-input]
 
         Ok(Self {
             driver: Some(nvme_driver),
             namespace,
             payload_mem,
+            cpu_count,
         })
     }
 
@@ -98,8 +102,18 @@ impl FuzzNvmeDriver {
         self.driver.take().unwrap().shutdown().await;
     }
 
-    /// Generates and executes an arbitrary NvmeDriverAction. Returns either an arbitrary error or the executed action.
-    pub async fn execute_arbitrary_action(&mut self) -> Result<(), arbitrary::Error> {
+    /// Generates and executes an arbitrary NvmeDriverAction. `NvmeDriver` is not intended to be an interface
+    /// consumed by anything ther than `NvmeDisk`, yet the fuzzer targets the driver directly.
+    /// In addition, the `NvmeDriver` is not at any trust boundary. This is done to allow
+    /// for providing arbitrary data in more places. However, you'll notice that many
+    /// of these actions do sanitize the arbitrary data to some degree, to get past
+    /// contract-checking `assert!`s in the driver. This does not break the goal of fuzzing,
+    /// since these contract checks imply programmer error and the primary goal of this is
+    /// to drive actions to get invalid data back from the underlying PCI & NVMe emulators.
+    ///
+    /// All that being said, be careful when deciding to sanitize inputs here: consider
+    /// and explicitly rule out adding graceful error handling in the `NvmeDriver` itself.
+    pub async fn execute_arbitrary_action(&mut self) -> Result<(), anyhow::Error> {
         let action = arbitrary_data::<NvmeDriverAction>()?;
 
         match action {
@@ -111,14 +125,18 @@ impl FuzzNvmeDriver {
                 let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // TODO: [use-arbitrary-input]
                 self.namespace
                     .read(
-                        target_cpu,
+                        // TODO: [panic-or-bail-on-fuzz]
+                        target_cpu % self.cpu_count,
                         lba,
-                        block_count,
+                        // TODO: [panic-or-bail-on-fuzz]
+                        block_count
+                            % (u32::try_from(buf_range.len()).unwrap()
+                                >> self.namespace.block_size().trailing_zeros())
+                            % self.namespace.max_transfer_block_count(),
                         &self.payload_mem,
                         buf_range.buffer(&self.payload_mem).range(),
                     )
-                    .await
-                    .unwrap();
+                    .await?;
             }
 
             NvmeDriverAction::Write {
@@ -129,19 +147,23 @@ impl FuzzNvmeDriver {
                 let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // TODO: [use-arbitrary-input]
                 self.namespace
                     .write(
-                        target_cpu,
+                        // TODO: [panic-or-bail-on-fuzz]
+                        target_cpu % self.cpu_count,
                         lba,
-                        block_count,
+                        // TODO: [panic-or-bail-on-fuzz]
+                        block_count
+                            % (u32::try_from(buf_range.len()).unwrap()
+                                >> self.namespace.block_size().trailing_zeros())
+                            % self.namespace.max_transfer_block_count(),
                         false,
                         &self.payload_mem,
                         buf_range.buffer(&self.payload_mem).range(),
                     )
-                    .await
-                    .unwrap();
+                    .await?;
             }
 
             NvmeDriverAction::Flush { target_cpu } => {
-                self.namespace.flush(target_cpu).await.unwrap();
+                self.namespace.flush(target_cpu % self.cpu_count).await?; // TODO: [panic-or-bail-on-fuzz]
             }
 
             NvmeDriverAction::UpdateServicingFlags { nvme_keepalive } => {

@@ -9,9 +9,11 @@ use pal_async::async_test;
 use virt_support_x86emu::emulate::*;
 use vm_topology::processor::VpIndex;
 use x86defs::cpuid::Vendor;
-use x86emu::CpuState;
-use zerocopy::AsBytes;
+use x86defs::RFlags;
+use x86emu::Gp;
+use x86emu::Segment;
 use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
 
 /// Implements [`EmulatorSupport`] with some features for deliberately
 /// failing vtl permissions checks and checking the resulting injected
@@ -34,12 +36,42 @@ impl EmulatorSupport for MockSupport {
         Vendor::INTEL
     }
 
-    fn state(&mut self) -> Result<CpuState, Self::Error> {
-        Ok(self.state.clone())
+    fn gp(&mut self, reg: Gp) -> u64 {
+        self.state.gps[reg as usize]
+    }
+    fn set_gp(&mut self, reg: Gp, v: u64) {
+        self.state.gps[reg as usize] = v;
+    }
+    fn rip(&mut self) -> u64 {
+        self.state.rip
+    }
+    fn set_rip(&mut self, v: u64) {
+        self.state.rip = v;
     }
 
-    fn set_state(&mut self, state: CpuState) -> Result<(), Self::Error> {
-        self.state = state;
+    fn segment(&mut self, reg: Segment) -> x86defs::SegmentRegister {
+        self.state.segs[reg as usize]
+    }
+
+    fn efer(&mut self) -> u64 {
+        self.state.efer
+    }
+    fn cr0(&mut self) -> u64 {
+        self.state.cr0
+    }
+    fn rflags(&mut self) -> RFlags {
+        self.state.rflags
+    }
+    fn set_rflags(&mut self, v: RFlags) {
+        self.state.rflags = v;
+    }
+    fn xmm(&mut self, _reg: usize) -> u128 {
+        todo!()
+    }
+    fn set_xmm(&mut self, _reg: usize, _v: u128) -> Result<(), Self::Error> {
+        todo!()
+    }
+    fn flush(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
 
@@ -99,14 +131,6 @@ impl EmulatorSupport for MockSupport {
         self.injected_event = Some(event_info);
     }
 
-    fn get_xmm(&mut self, _reg: usize) -> Result<u128, Self::Error> {
-        todo!()
-    }
-
-    fn set_xmm(&mut self, _reg: usize, _value: u128) -> Result<(), Self::Error> {
-        todo!()
-    }
-
     fn is_gpa_mapped(&self, _gpa: u64, _write: bool) -> bool {
         true
     }
@@ -160,7 +184,7 @@ async fn run_emulation(
     emulate(&mut support, &gm, &MockCpu).await.unwrap();
 
     if fail_vtl_access.is_none() {
-        assert_eq!(support.state.gps[CpuState::RAX], TEST_VALUE);
+        assert_eq!(support.gp(Gp::RAX), TEST_VALUE);
     }
 
     support.injected_event
@@ -205,7 +229,7 @@ fn validate_vtl_access_event(
     expected_vtl: Vtl,
 ) {
     let event =
-        hvdef::HvX64PendingEventMemoryIntercept::read_from(pending_event.as_bytes()).unwrap();
+        hvdef::HvX64PendingEventMemoryIntercept::read_from_bytes(pending_event.as_bytes()).unwrap();
 
     assert!(event.event_header.event_pending());
 

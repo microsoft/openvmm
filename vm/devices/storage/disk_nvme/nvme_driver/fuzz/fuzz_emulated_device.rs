@@ -2,6 +2,11 @@
 // Licensed under the MIT License.
 
 //! A shim layer to fuzz responses from an emulated device.
+//! This is the primary fuzzer for the host (a.k.a device) ->
+//! openhcl attack surface. Do not sanitize any arbitrary data
+//! responses in this routine.
+use std::sync::Arc;
+
 use crate::arbitrary_data;
 
 use chipset_device::mmio::MmioIntercept;
@@ -11,10 +16,10 @@ use inspect::InspectMut;
 use pci_core::msi::MsiInterruptSet;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
-use user_driver::emulated::EmulatedDmaAllocator;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::DeviceBacking;
+use user_driver::DmaClient;
 
 /// An EmulatedDevice fuzzer that requires a working EmulatedDevice backend.
 #[derive(Inspect)]
@@ -34,7 +39,6 @@ impl<T: PciConfigSpace + MmioIntercept + InspectMut> FuzzEmulatedDevice<T> {
 /// Implementation for DeviceBacking trait.
 impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmulatedDevice<T> {
     type Registers = Mapping<T>;
-    type DmaAllocator = EmulatedDmaAllocator;
 
     fn id(&self) -> &str {
         self.device.id()
@@ -44,8 +48,8 @@ impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmula
         self.device.map_bar(n)
     }
 
-    fn host_allocator(&self) -> Self::DmaAllocator {
-        self.device.host_allocator()
+    fn dma_client(&self) -> Arc<dyn DmaClient> {
+        self.device.dma_client()
     }
 
     /// Arbitrarily decide to passthrough or return arbitrary value.

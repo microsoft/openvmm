@@ -3,6 +3,7 @@
 
 //! flowey nodes specific to the HvLite project.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 // #![warn(missing_docs)] // TODO: lots to do here
 
@@ -18,6 +19,7 @@ pub mod artifact_openhcl_boot;
 pub mod artifact_openhcl_igvm_from_recipe;
 pub mod artifact_openhcl_igvm_from_recipe_extras;
 pub mod artifact_openvmm;
+pub mod artifact_openvmm_hcl_sizecheck;
 pub mod artifact_pipette;
 pub mod artifact_rustdoc;
 pub mod artifact_vmgs_lib;
@@ -49,6 +51,7 @@ pub mod download_openvmm_vmm_tests_vhds;
 pub mod download_uefi_mu_msvm;
 pub mod git_checkout_openvmm_repo;
 pub mod init_cross_build;
+pub mod init_hyperv_tests;
 pub mod init_openvmm_cargo_config_deny_warnings;
 pub mod init_openvmm_magicpath_linux_test_kernel;
 pub mod init_openvmm_magicpath_lxutil;

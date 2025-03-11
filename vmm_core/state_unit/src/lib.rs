@@ -28,18 +28,17 @@
 //! This model allows for asynchronous, highly concurrent state changes, and it
 //! works across process boundaries thanks to `mesh`.
 
-#![warn(missing_docs)]
-
 use futures::future::join_all;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
 use inspect::Inspect;
 use inspect::InspectMut;
-use mesh::oneshot;
 use mesh::payload::Protobuf;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
+use mesh::rpc::RpcSend;
 use mesh::MeshPayload;
 use mesh::Receiver;
 use mesh::Sender;
@@ -96,7 +95,7 @@ pub enum StateRequest {
 /// Implementing this is optional, to be used with [`UnitBuilder::spawn`] or
 /// [`StateRequest::apply`]; state units can also directly process incoming
 /// [`StateRequest`]s.
-#[allow(async_fn_in_trait)] // Don't need Send bounds
+#[expect(async_fn_in_trait)] // Don't need Send bounds
 pub trait StateUnit: InspectMut {
     /// Start asynchronous processing.
     async fn start(&mut self);
@@ -201,12 +200,18 @@ impl StateRequest {
     /// Runs this state request against `unit`.
     pub async fn apply(self, unit: &mut impl StateUnit) {
         match self {
-            StateRequest::Start(rpc) => rpc.handle(|()| async { unit.start().await }).await,
-            StateRequest::Stop(rpc) => rpc.handle(|()| async { unit.stop().await }).await,
-            StateRequest::Reset(rpc) => rpc.handle_failable(|()| unit.reset()).await,
-            StateRequest::Save(rpc) => rpc.handle_failable(|()| unit.save()).await,
-            StateRequest::Restore(rpc) => rpc.handle_failable(|buffer| unit.restore(buffer)).await,
-            StateRequest::PostRestore(rpc) => rpc.handle_failable(|()| unit.post_restore()).await,
+            StateRequest::Start(rpc) => rpc.handle(async |()| unit.start().await).await,
+            StateRequest::Stop(rpc) => rpc.handle(async |()| unit.stop().await).await,
+            StateRequest::Reset(rpc) => rpc.handle_failable(async |()| unit.reset().await).await,
+            StateRequest::Save(rpc) => rpc.handle_failable(async |()| unit.save().await).await,
+            StateRequest::Restore(rpc) => {
+                rpc.handle_failable(async |buffer| unit.restore(buffer).await)
+                    .await
+            }
+            StateRequest::PostRestore(rpc) => {
+                rpc.handle_failable(async |()| unit.post_restore().await)
+                    .await
+            }
             StateRequest::Inspect(req) => req.inspect(unit),
         }
     }
@@ -241,7 +246,7 @@ struct Inner {
 #[derive(Debug)]
 struct Unit {
     name: Arc<str>,
-    send: Arc<Sender<StateRequest>>,
+    send: Sender<StateRequest>,
     dependencies: Vec<u64>,
     dependents: Vec<u64>,
     state: State,
@@ -257,7 +262,7 @@ pub struct NameInUse(Arc<str>);
 struct UnitRecvError {
     name: Arc<str>,
     #[source]
-    source: mesh::RecvError,
+    source: RpcError,
 }
 
 #[derive(Debug, Clone)]
@@ -356,10 +361,12 @@ impl Inspect for Inner {
 #[derive(Protobuf)]
 #[mesh(package = "state_unit")]
 pub struct SavedStateUnit {
+    /// The name of the state unit.
     #[mesh(1)]
-    name: String,
+    pub name: String,
+    /// The opaque saved state blob.
     #[mesh(2)]
-    state: SavedStateBlob,
+    pub state: SavedStateBlob,
 }
 
 /// An error from a state transition.
@@ -887,13 +894,12 @@ impl ReadySet {
 /// future with a span, and wrapping its error with something more informative.
 ///
 /// `operation` and `name` are used in tracing and error construction.
-fn state_change<I: 'static, R: 'static + Send>(
+fn state_change<I: 'static, R: 'static + Send, Req: FnOnce(Rpc<I, R>) -> StateRequest>(
     name: Arc<str>,
     unit: &Unit,
-    request: impl FnOnce(Rpc<I, R>) -> StateRequest,
+    request: Req,
     input: Option<I>,
-) -> impl Future<Output = Result<Option<R>, UnitRecvError>> {
-    let (response_send, response_recv) = oneshot();
+) -> impl Future<Output = Result<Option<R>, UnitRecvError>> + use<I, R, Req> {
     let send = unit.send.clone();
 
     async move {
@@ -901,8 +907,8 @@ fn state_change<I: 'static, R: 'static + Send>(
         let span = tracing::info_span!("device_state_change", device = name.as_ref());
         async move {
             let start = Instant::now();
-            send.send((request)(Rpc(input, response_send)));
-            let r = response_recv
+            let r = send
+                .call(request, input)
                 .await
                 .map_err(|err| UnitRecvError { name, source: err });
             tracing::debug!(duration = ?Instant::now() - start, "device state change complete");
@@ -981,7 +987,7 @@ impl UnitBuilder<'_> {
                 id,
                 Unit {
                     name: self.name.clone(),
-                    send: Arc::new(send),
+                    send,
                     dependencies: self.dependencies,
                     dependents: self.dependents,
                     state: State::Stopped,
@@ -1135,10 +1141,7 @@ mod tests {
         }
 
         async fn restore(&mut self, state: SavedStateBlob) -> Result<(), RestoreError> {
-            assert!(self
-                .dep
-                .as_ref()
-                .map_or(true, |v| v.load(Ordering::Relaxed)));
+            assert!(self.dep.as_ref().is_none_or(|v| v.load(Ordering::Relaxed)));
 
             if self.support_saved_state {
                 let state: SavedState = state.parse()?;

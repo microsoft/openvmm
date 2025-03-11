@@ -30,7 +30,7 @@ use uefi_specs::uefi::common::EfiStatus;
 use uefi_specs::uefi::nvram::EfiVariableAttributes;
 use uefi_specs::uefi::time::EFI_TIME;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
 
 #[cfg(feature = "fuzzing")]
 pub mod auth_var_crypto;
@@ -710,9 +710,10 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                 };
 
                 // extract EFI_VARIABLE_AUTHENTICATION_2 header
+                // TODO: zerocopy: err (https://github.com/microsoft/openvmm/issues/759)
                 let auth_hdr =
-                    match EFI_VARIABLE_AUTHENTICATION_2::read_from_prefix(data.as_slice()) {
-                        Some(hdr) => hdr,
+                    match EFI_VARIABLE_AUTHENTICATION_2::read_from_prefix(data.as_slice()).ok() {
+                        Some((hdr, _)) => hdr,
                         None => {
                             return NvramResult(
                                 (),
@@ -1507,7 +1508,8 @@ mod test {
     // represented in UCS-2).
     use pal_async::async_test;
     use wchar::wchz;
-    use zerocopy::AsBytes;
+
+    use zerocopy::IntoBytes;
 
     /// Extension trait around `NvramServices` that makes it easier to use the
     /// API outside the context of the UEFI device

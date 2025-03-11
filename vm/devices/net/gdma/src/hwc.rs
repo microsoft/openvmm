@@ -54,9 +54,9 @@ use std::sync::Arc;
 use task_control::AsyncRun;
 use task_control::InspectTaskMut;
 use task_control::StopTask;
-use zerocopy::AsBytes;
 use zerocopy::FromBytes;
-use zerocopy::FromZeroes;
+use zerocopy::FromZeros;
+use zerocopy::IntoBytes;
 
 const BNIC_DEV_ID: GdmaDevId = GdmaDevId {
     ty: GdmaDevType::GDMA_DEVICE_MANA,
@@ -200,7 +200,9 @@ impl HwControl {
             let (rqe_offset, rqe) = poll_fn(|cx| self.state.queues.poll_rq(self.rq_id, cx)).await;
 
             let queues = self.state.queues.clone();
-            let tx_oob = HwcTxOob::read_from_prefix(sqe.oob()).context("reading tx oob")?;
+            let tx_oob = HwcTxOob::read_from_prefix(sqe.oob())
+                .map_err(|_| anyhow!("reading tx oob"))?
+                .0; // TODO: zerocopy: map_err, use-rest-of-range, use error details in the returned `anyhow!` (https://github.com/microsoft/openvmm/issues/759)
             if tx_oob.flags3.vscq_id() != self.cq_id {
                 anyhow::bail!(
                     "mismatched cq id: {} != {}",
@@ -273,7 +275,7 @@ impl HwControl {
             let rx_oob = HwcRxOob {
                 wqe_addr_low_or_offset: rqe_offset,
                 tx_oob_data_size: (size_of_val(&resp) + response_len) as u32,
-                ..FromZeroes::new_zeroed()
+                ..FromZeros::new_zeroed()
             };
 
             self.state
@@ -339,7 +341,7 @@ impl HwControl {
             GdmaRequestType::GDMA_LIST_DEVICES => {
                 let mut resp = GdmaListDevicesResp {
                     num_of_devs: 2,
-                    ..FromZeroes::new_zeroed()
+                    ..FromZeros::new_zeroed()
                 };
                 resp.devs[0] = HWC_DEV_ID;
                 resp.devs[1] = BNIC_DEV_ID;
@@ -437,6 +439,18 @@ impl HwControl {
                 self.state
                     .queues
                     .update_eq_msix(req.queue_index, req.msix)?;
+                0
+            }
+            GdmaRequestType::GDMA_DEREGISTER_DEVICE => {
+                if hdr.dev_id != BNIC_DEV_ID {
+                    anyhow::bail!("invalid device id: {:?}", hdr.dev_id);
+                }
+
+                if !self.bnic_enabled {
+                    anyhow::bail!("bnic not enabled");
+                }
+
+                self.bnic_enabled = false;
                 0
             }
             ty => {

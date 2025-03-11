@@ -3,7 +3,7 @@
 
 [package]
 name = "vmswitch"
-edition = "2021"
+edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(windows)'.dependencies]
@@ -18,8 +18,6 @@ thiserror.workspace = true
 tracing.workspace = true
 widestring.workspace = true
 zerocopy.workspace = true
-zerocopy_helpers.workspace = true
-
 [target.'cfg(windows)'.dependencies.winapi]
 features = [
   "consoleapi",
