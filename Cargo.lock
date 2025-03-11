@@ -4777,7 +4777,6 @@ version = "0.0.0"
 dependencies = [
  "openvmm_entry",
  "openvmm_resources",
- "win_prng_support",
 ]
 
 [[package]]
@@ -8962,14 +8961,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "cc",
-]
-
-[[package]]
-name = "win_prng_support"
-version = "0.0.0"
-dependencies = [
- "widestring",
- "win_import_lib",
 ]
 
 [[package]]

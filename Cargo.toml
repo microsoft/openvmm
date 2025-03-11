@@ -143,7 +143,6 @@ uevent = { path = "support/uevent" }
 unix_socket = { path = "support/unix_socket" }
 vmsocket = { path = "support/vmsocket" }
 win_import_lib = { path = "support/win_import_lib" }
-win_prng_support = { path = "support/win_prng_support" }
 
 azure_profiler_proto = { path = "openhcl/azure_profiler_proto" }
 bootloader_fdt_parser = { path = "openhcl/bootloader_fdt_parser" }
