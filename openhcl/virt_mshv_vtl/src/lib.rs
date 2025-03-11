@@ -654,7 +654,8 @@ struct UhVpInner {
     message_queues: VtlArray<MessageQueues, 2>,
     #[inspect(skip)]
     vp_info: TargetVpInfo,
-    /// The Linux kernel's CPU index for this VP.
+    /// The Linux kernel's CPU index for this VP. This should be used instead of VpIndex
+    /// when interacting with non-MSHV kernel interfaces.
     cpu_index: u32,
     #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
     hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<VpStartEnableVtl>>>, 2>,
