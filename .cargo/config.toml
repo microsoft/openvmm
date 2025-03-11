@@ -85,6 +85,12 @@ rustflags = [
   "-Ctarget-feature=+lse,+neon",
 ]
 
+[target.'cfg(target_arch = "x86_64")']
+rustflags = [
+  # Target newer cpu features, since all our x86_64 machines have them.
+  "-Ctarget-cpu=x86-64-v3",
+]
+
 [target.'cfg(target_env = "musl")']
 rustflags = [
   # Use the musl from the sysroot, not from the Rust distribution.
