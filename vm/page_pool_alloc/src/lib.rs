@@ -10,6 +10,7 @@ pub use device_dma::PagePoolDmaBuffer;
 
 use anyhow::Context;
 use guestmem::GuestMemory;
+use guestmem::GuestMemoryAccess;
 use inspect::Inspect;
 use inspect::Response;
 use memory_range::MemoryRange;
@@ -21,8 +22,9 @@ use sparse_mmap::SparseMapping;
 use sparse_mmap::alloc_shared_memory;
 use std::fmt::Debug;
 use std::num::NonZeroU64;
-use std::sync::Arc;
+use std::ptr::NonNull;
 use std::sync::atomic::AtomicU8;
+use std::sync::Arc;
 use thiserror::Error;
 
 const PAGE_SIZE: u64 = 4096;
@@ -448,6 +450,25 @@ pub struct TestMapper {
     #[inspect(skip)]
     mem: Mappable,
     len: usize,
+}
+
+pub struct TestBacking {
+    sparse_map: SparseMapping,
+    allow_dma: bool
+}
+
+unsafe impl GuestMemoryAccess for TestBacking {
+    fn mapping(&self) -> Option<NonNull<u8>> {
+        self.sparse_map.mapping()
+    }
+
+    fn base_iova(&self) -> Option<u64> {
+        self.allow_dma.then_some(0)
+    }
+
+    fn max_address(&self) -> u64 {
+        self.sparse_map.max_address()
+    }
 }
 
 impl TestMapper {
