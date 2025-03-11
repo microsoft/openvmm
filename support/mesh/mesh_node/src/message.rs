@@ -445,12 +445,14 @@ impl MessageEncode<Message<'_>, Resource> for MessageEncoder {
 /// in place on the stack.
 macro_rules! stack_message {
     ($v:expr) => {
-        // UNSAFETY: required to call unsafe function.
-        #[expect(unsafe_code)]
-        {
+        (|v| {
+            // UNSAFETY: required to call unsafe function.
+            #[expect(unsafe_code)]
             // SAFETY: The value is initialized and never used again.
-            unsafe { $crate::message::Message::new_stack(&mut ::core::mem::MaybeUninit::new($v)) }
-        }
+            unsafe {
+                $crate::message::Message::new_stack(v)
+            }
+        })(&mut ::core::mem::MaybeUninit::new($v))
     };
 }
 pub(crate) use stack_message;
