@@ -488,13 +488,35 @@ impl ProxyTask {
         }
     }
 
-    fn handle_hvsock_request(&self, spawner: &impl Spawn, request: HvsockConnectRequest, vtl: u8) {
+    fn handle_hvsock_request(
+        &self,
+        spawner: &impl Spawn,
+        request: Result<HvsockConnectRequest, mesh::RecvError>,
+        vtl: u8,
+    ) -> bool {
+        let request = match request {
+            Ok(request) => request,
+            Err(e) => {
+                // Closed can happen normally during shutdown, so does not need to be logged.
+                if !matches!(e, mesh::RecvError::Closed) {
+                    tracing::error!(
+                        error = ?&e as &dyn std::error::Error,
+                        "hvsock request receive failed"
+                    );
+                }
+
+                return false;
+            }
+        };
+
         let proxy = self.proxy.clone();
         spawner
             .spawn("vmbus-proxy-hvsock-req", async move {
                 proxy.tl_connect_request(&request, vtl).await
             })
             .detach();
+
+        true
     }
 
     async fn run_server_requests(
@@ -526,10 +548,14 @@ impl ProxyTask {
                     }
                     r = channel_requests.select_next_some() => break r,
                     r = hvsock_requests => {
-                        self.handle_hvsock_request(&spawner, r.unwrap().unwrap(), 0);
+                        if !self.handle_hvsock_request(&spawner, r.unwrap(), 0) {
+                            hvsock_request_recv = None;
+                        }
                     }
                     r = vtl2_hvsock_requests => {
-                        self.handle_hvsock_request(&spawner, r.unwrap().unwrap(), 2);
+                        if !self.handle_hvsock_request(&spawner, r.unwrap(), 2) {
+                            vtl2_hvsock_request_recv = None;
+                        }
                     }
                     complete => break 'outer,
                 }
