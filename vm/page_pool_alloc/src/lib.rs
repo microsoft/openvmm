@@ -9,8 +9,6 @@ mod device_dma;
 pub use device_dma::PagePoolDmaBuffer;
 
 use anyhow::Context;
-use guestmem::GuestMemory;
-use guestmem::GuestMemoryAccess;
 use inspect::Inspect;
 use inspect::Response;
 use memory_range::MemoryRange;
@@ -22,7 +20,6 @@ use sparse_mmap::SparseMapping;
 use sparse_mmap::alloc_shared_memory;
 use std::fmt::Debug;
 use std::num::NonZeroU64;
-use std::ptr::NonNull;
 use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
 use thiserror::Error;
@@ -452,25 +449,6 @@ pub struct TestMapper {
     len: usize,
 }
 
-pub struct TestBacking {
-    sparse_map: SparseMapping,
-    allow_dma: bool
-}
-
-unsafe impl GuestMemoryAccess for TestBacking {
-    fn mapping(&self) -> Option<NonNull<u8>> {
-        self.sparse_map.mapping()
-    }
-
-    fn base_iova(&self) -> Option<u64> {
-        self.allow_dma.then_some(0)
-    }
-
-    fn max_address(&self) -> u64 {
-        self.sparse_map.max_address()
-    }
-}
-
 impl TestMapper {
     /// Create a new test mapper that holds an internal buffer of `size_pages`.
     pub fn new(size_pages: u64) -> anyhow::Result<Self> {
@@ -481,13 +459,13 @@ impl TestMapper {
     }
 
     /// Creates guest memory over the entirity of the TestMapper object
-    pub fn create_guest_memory(&self) -> GuestMemory {
+    pub fn get_sparse_mapping(&self) -> SparseMapping {
         let mappable = self.mappable();
         let mapping = SparseMapping::new(self.len).unwrap();
         mapping
             .map_file(0, self.len, mappable, 0, true)
             .unwrap();
-        GuestMemory::new("test mapper guest memory", mapping)
+        return mapping;
     }
 
     fn inspect_extra(&self, resp: &mut Response<'_>) {
