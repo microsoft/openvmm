@@ -1977,6 +1977,20 @@ mod tests {
             })
             .await
         }
+
+        async fn stop_client(&mut self, client: &mut VmbusClient) {
+            let client_stop = client.stop();
+            let server_stop = async {
+                check_message(self.next().await.unwrap(), protocol::Pause);
+                self.send(in_msg(MessageType::PAUSE_RESPONSE, protocol::PauseResponse));
+            };
+            (client_stop, server_stop).join().await;
+        }
+
+        async fn start_client(&mut self, client: &mut VmbusClient) {
+            client.start();
+            check_message(self.next().await.unwrap(), protocol::Resume);
+        }
     }
 
     struct TestServerClient {
@@ -2008,8 +2022,12 @@ mod tests {
                     self.deadline =
                         Some(pal_async::timer::Instant::now() + Duration::from_millis(10));
                 } else {
-                    self.sender
-                        .send(OutgoingMessage::from_message(msg).unwrap());
+                    let msg = OutgoingMessage::from_message(msg).unwrap();
+                    tracing::info!(
+                        msg = ?MessageHeader::read_from_prefix(msg.data()),
+                        "sending message"
+                    );
+                    self.sender.send(msg);
                     break Poll::Ready(());
                 }
             }
@@ -2463,7 +2481,7 @@ mod tests {
     async fn test_save_restore_connected(driver: DefaultDriver) {
         let (mut server, mut client) = test_init(&driver);
         server.connect(&mut client).await;
-        client.stop().await;
+        server.stop_client(&mut client).await;
         let s0 = client.save().await;
         let builder = client.sever().await;
         let mut client = builder.build(&driver);
@@ -2478,7 +2496,7 @@ mod tests {
     async fn test_save_restore_connected_with_channel(driver: DefaultDriver) {
         let (mut server, mut client) = test_init(&driver);
         let c0 = server.get_channel(&mut client).await;
-        client.stop().await;
+        server.stop_client(&mut client).await;
         let s0 = client.save().await;
         let builder = client.sever().await;
         let mut client = builder.build(&driver);
@@ -2499,7 +2517,7 @@ mod tests {
             },
         ));
         c0.revoke_recv.await.unwrap();
-        client.stop().await;
+        server.stop_client(&mut client).await;
         let s0 = client.save().await;
         let builder = client.sever().await;
         let mut client = builder.build(&driver);
@@ -2507,7 +2525,7 @@ mod tests {
         let s1 = client.save().await;
         assert_eq!(s0, s1);
         assert!(connection.offers.is_empty());
-        client.start();
+        server.start_client(&mut client).await;
         check_message(
             server.next().await.unwrap(),
             protocol::RelIdReleased {
