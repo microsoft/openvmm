@@ -51,7 +51,6 @@ struct Cli {
     command: Option<Commands>,
 }
 
-#[expect(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Commands {
     CargoToml(tasks::CargoToml),

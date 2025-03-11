@@ -12,16 +12,16 @@ edition = "2021"
 
 [workspace.dependencies]
 anyhow = "1.0"
-cargo_toml = "0.20"
-cargo-lock = "10.0.0"
-clap = "4.2"
-dunce = "1.0.5"
-fs-err = "2.9"
+cargo_toml = "0.22"
+cargo-lock = "10.1"
+clap = "4.5"
+dunce = "1.0"
+fs-err = "3.1"
 log = "0.4"
-pathdiff = "0.2.1"
+pathdiff = "0.2"
 semver = "1.0"
 serde = "1.0.185"
-toml_edit = "0.21"
+toml_edit = "0.22"
 
 # HACK: this is exactly the kind of dependency we _don't_ want to have in this
 # tooling, since the moment ci_logger moves on the filesystem / has an
