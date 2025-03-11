@@ -88,8 +88,7 @@ rustflags = [
 [target.'cfg(target_arch = "x86_64")']
 rustflags = [
   # Target newer cpu features, since all our x86_64 machines have them.
-  # We can't target v3 due to disabling XSAVE in OpenHCL.
-  "-Ctarget-cpu=x86-64-v2",
+  "-Ctarget-cpu=x86-64-v3",
 ]
 
 [target.'cfg(target_env = "musl")']
