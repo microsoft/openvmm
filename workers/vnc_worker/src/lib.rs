@@ -3,8 +3,8 @@
 
 //! A worker for running a VNC server.
 
-use anyhow::anyhow;
 use anyhow::Context;
+use anyhow::anyhow;
 use futures::FutureExt;
 use input_core::InputData;
 use input_core::KeyboardData;
@@ -13,8 +13,8 @@ use mesh::message::MeshField;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
-use pal_async::local::block_with_io;
 use pal_async::local::LocalDriver;
+use pal_async::local::block_with_io;
 use pal_async::socket::Listener;
 use pal_async::socket::PolledSocket;
 use pal_async::timer::PolledTimer;

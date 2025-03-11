@@ -14,12 +14,12 @@ mod trycopy_windows_x64;
 pub mod unix;
 pub mod windows;
 
-pub use sys::alloc_shared_memory;
-pub use sys::new_mappable_from_file;
 pub use sys::AsMappableRef;
 pub use sys::Mappable;
 pub use sys::MappableRef;
 pub use sys::SparseMapping;
+pub use sys::alloc_shared_memory;
+pub use sys::new_mappable_from_file;
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicU8;

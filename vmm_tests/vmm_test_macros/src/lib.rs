@@ -9,17 +9,17 @@ use petri_artifacts_common::tags::MachineArch;
 use proc_macro2::Ident;
 use proc_macro2::Span;
 use proc_macro2::TokenStream;
-use quote::quote;
 use quote::ToTokens;
+use quote::quote;
 use std::collections::HashSet;
-use syn::parse::Parse;
-use syn::parse::ParseStream;
-use syn::parse_macro_input;
-use syn::spanned::Spanned;
 use syn::Error;
 use syn::ItemFn;
 use syn::Path;
 use syn::Token;
+use syn::parse::Parse;
+use syn::parse::ParseStream;
+use syn::parse_macro_input;
+use syn::spanned::Spanned;
 
 struct Config {
     vmm: Option<Vmm>,
@@ -594,16 +594,17 @@ pub fn hyperv_test(
 }
 
 fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Result<TokenStream> {
-    let original_args =
-        match item.sig.inputs.len() {
-            1 => quote! {config},
-            2 => quote! {config, extra_deps},
-            3 => quote! {config, extra_deps, driver },
-            _ => return Err(Error::new(
+    let original_args = match item.sig.inputs.len() {
+        1 => quote! {config},
+        2 => quote! {config, extra_deps},
+        3 => quote! {config, extra_deps, driver },
+        _ => {
+            return Err(Error::new(
                 item.sig.inputs.span(),
                 "expected 1, 2, or 3 arguments (the PetriVmConfig, ArtifactResolver, and Driver)",
-            )),
-        };
+            ));
+        }
+    };
 
     let original_name = &item.sig.ident;
     let mut tests = TokenStream::new();

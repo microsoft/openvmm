@@ -8,8 +8,8 @@ use core::arch::asm;
 use memory_range::MemoryRange;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
-use x86defs::snp::GhcbInfo;
 use x86defs::X86X_AMD_MSR_GHCB;
+use x86defs::snp::GhcbInfo;
 
 pub struct Ghcb;
 

@@ -7,18 +7,18 @@ use guid::Guid;
 use hvlite_pcat_locator::RomFileLocation;
 use input_core::InputData;
 use memory_range::MemoryRange;
-use mesh::payload::Protobuf;
 use mesh::MeshPayload;
+use mesh::payload::Protobuf;
 use net_backend_resources::mac_address::MacAddress;
 use std::fmt;
 use std::fs::File;
+use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
-use vm_resource::Resource;
-use vmotherboard::options::BaseChipsetManifest;
 use vmotherboard::ChipsetDeviceHandle;
+use vmotherboard::options::BaseChipsetManifest;
 
 #[derive(MeshPayload, Debug)]
 pub struct Config {

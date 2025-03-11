@@ -15,9 +15,9 @@ use thiserror::Error;
 use time::OffsetDateTime;
 use uefi_specs::hyperv::time::VmEfiTime;
 use uefi_specs::uefi::common::EfiStatus;
+use uefi_specs::uefi::time::EFI_TIME;
 use uefi_specs::uefi::time::EfiDaylight;
 use uefi_specs::uefi::time::EfiTimezone;
-use uefi_specs::uefi::time::EFI_TIME;
 
 #[derive(Debug, Error)]
 pub enum TimeServiceError {

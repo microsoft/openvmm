@@ -3,17 +3,17 @@
 
 //! Wrapper around x86emu for emulating single instructions to handle VM exits.
 
-use crate::translate::translate_gva_to_gpa;
 use crate::translate::TranslateFlags;
 use crate::translate::TranslatePrivilegeCheck;
+use crate::translate::translate_gva_to_gpa;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
+use hvdef::HV_PAGE_SIZE;
 use hvdef::HvInterceptAccessType;
 use hvdef::HvMapGpaFlags;
-use hvdef::HV_PAGE_SIZE;
 use thiserror::Error;
-use virt::io::CpuIo;
 use virt::VpHaltReason;
+use virt::io::CpuIo;
 use vm_topology::processor::VpIndex;
 use x86defs::Exception;
 use x86defs::RFlags;

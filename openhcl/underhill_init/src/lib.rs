@@ -16,10 +16,10 @@ mod syslog;
 pub use options::Options;
 
 use anyhow::Context;
-use libc::c_void;
 use libc::STDERR_FILENO;
 use libc::STDIN_FILENO;
 use libc::STDOUT_FILENO;
+use libc::c_void;
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::ffi::OsStr;

@@ -10,18 +10,18 @@
 use anyhow::Context;
 use base64::Engine;
 use debug_ptr::DebugPtr;
-use futures::executor::block_on;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::executor::block_on;
 use futures_concurrency::future::Race;
 use inspect::Inspect;
 use inspect::SensitivityLevel;
+use mesh::MeshPayload;
+use mesh::OneshotReceiver;
 use mesh::message::MeshField;
 use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use mesh::MeshPayload;
-use mesh::OneshotReceiver;
 use mesh_remote::InvitationAddress;
 #[cfg(unix)]
 use pal::unix::process::Builder as ProcessBuilder;
@@ -29,9 +29,9 @@ use pal::unix::process::Builder as ProcessBuilder;
 use pal::windows::process;
 #[cfg(windows)]
 use pal::windows::process::Builder as ProcessBuilder;
+use pal_async::DefaultPool;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use pal_async::DefaultPool;
 use slab::Slab;
 use std::borrow::Cow;
 use std::ffi::OsString;
@@ -42,8 +42,8 @@ use std::os::unix::prelude::*;
 use std::os::windows::prelude::*;
 use std::path::PathBuf;
 use std::thread;
-use tracing::instrument;
 use tracing::Instrument;
+use tracing::instrument;
 use unicycle::FuturesUnordered;
 
 #[cfg(windows)]

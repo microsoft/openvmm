@@ -3,9 +3,9 @@
 
 #![cfg(windows)]
 
-use super::chk_status;
 use super::IoCompletionPort;
 use super::ObjectAttributes;
+use super::chk_status;
 use headervec::HeaderVec;
 use ntlpcapi::*;
 use std::cmp::min;
@@ -15,8 +15,8 @@ use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::os::windows::prelude::*;
-use std::ptr::null_mut;
 use std::ptr::NonNull;
+use std::ptr::null_mut;
 use std::time::Duration;
 use winapi::shared::ntstatus::STATUS_TIMEOUT;
 

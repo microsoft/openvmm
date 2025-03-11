@@ -59,7 +59,9 @@ fn main() {
         && std::env::var_os("UH_PATCH").is_none()
         && std::env::var_os("UH_REVISION").is_none()
     {
-        println!("cargo::warning=Attempted to build without setting UH_IGVM_PATH - resulting DLL will be empty!");
+        println!(
+            "cargo::warning=Attempted to build without setting UH_IGVM_PATH - resulting DLL will be empty!"
+        );
         return;
     }
 

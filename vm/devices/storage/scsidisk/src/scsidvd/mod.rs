@@ -1,11 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::scsi;
 use super::AsyncScsiDisk;
 use super::SavedSenseData;
 use super::ScsiResult;
 use super::ScsiSaveRestore;
+use super::scsi;
 use crate::Request;
 use crate::ScsiSavedState;
 use crate::SenseDataSlot;
@@ -16,13 +16,13 @@ use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
-use scsi::srb::SrbStatus;
 use scsi::AdditionalSenseCode;
 use scsi::FeatureNumber::{FeaturePowerManagement, FeatureRealTimeStreaming, FeatureTimeout};
 use scsi::ScsiOp;
 use scsi::ScsiStatus;
 use scsi::SenseData;
 use scsi::SenseKey;
+use scsi::srb::SrbStatus;
 use scsi_buffers::RequestBuffers;
 use scsi_core::save_restore::DriveState;
 use scsi_core::save_restore::IsoMediumEvent;
@@ -2373,12 +2373,12 @@ fn illegal_request_sense_iso(sense_code: AdditionalSenseCode, sense_qualifier: u
 #[cfg(test)]
 mod tests {
     use super::Media;
-    use crate::scsi;
-    use crate::scsidvd::SimpleScsiDvd;
-    use crate::scsidvd::ISO_SECTOR_SIZE;
     use crate::SavedSenseData;
     use crate::ScsiSaveRestore;
     use crate::ScsiSavedState;
+    use crate::scsi;
+    use crate::scsidvd::ISO_SECTOR_SIZE;
+    use crate::scsidvd::SimpleScsiDvd;
     use disk_backend::Disk;
     use disk_backend::DiskError;
     use disk_backend::DiskIo;
@@ -2391,9 +2391,9 @@ mod tests {
     use scsi::SenseKey;
     use scsi_buffers::OwnedRequestBuffers;
     use scsi_buffers::RequestBuffers;
-    use scsi_core::save_restore::ScsiDvdSavedState;
     use scsi_core::AsyncScsiDisk;
     use scsi_core::Request;
+    use scsi_core::save_restore::ScsiDvdSavedState;
 
     use zerocopy::IntoBytes;
 

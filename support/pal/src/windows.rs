@@ -18,13 +18,13 @@ pub mod tp;
 
 use self::security::SecurityDescriptor;
 use handleapi::INVALID_HANDLE_VALUE;
+use ntapi::ntioapi::FILE_COMPLETION_INFORMATION;
 use ntapi::ntioapi::FileReplaceCompletionInformation;
+use ntapi::ntioapi::IO_STATUS_BLOCK;
 use ntapi::ntioapi::NtAssociateWaitCompletionPacket;
 use ntapi::ntioapi::NtCancelWaitCompletionPacket;
 use ntapi::ntioapi::NtCreateWaitCompletionPacket;
 use ntapi::ntioapi::NtSetInformationFile;
-use ntapi::ntioapi::FILE_COMPLETION_INFORMATION;
-use ntapi::ntioapi::IO_STATUS_BLOCK;
 use ntapi::ntobapi::NtCreateDirectoryObject;
 use ntapi::ntobapi::NtOpenDirectoryObject;
 use ntapi::ntrtl;
@@ -36,8 +36,8 @@ use ntrtl::RtlFreeUnicodeString;
 use ntrtl::RtlNtStatusToDosErrorNoTeb;
 use processthreadsapi::GetExitCodeProcess;
 use std::cell::UnsafeCell;
-use std::ffi::c_void;
 use std::ffi::OsStr;
+use std::ffi::c_void;
 use std::fs::File;
 use std::io;
 use std::io::Error;
@@ -46,12 +46,12 @@ use std::marker::PhantomData;
 use std::mem::zeroed;
 use std::os::windows::prelude::*;
 use std::path::Path;
+use std::ptr::NonNull;
 use std::ptr::addr_of;
 use std::ptr::null_mut;
-use std::ptr::NonNull;
+use std::sync::Once;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::Once;
 use std::time::Duration;
 use widestring::U16CString;
 use widestring::Utf16Str;
@@ -75,10 +75,10 @@ use winapi::um::processenv::SetStdHandle;
 use winapi::um::processthreadsapi;
 use winapi::um::processthreadsapi::TerminateProcess;
 use winapi::um::synchapi;
-use winapi::um::winbase::SetFileCompletionNotificationModes;
 use winapi::um::winbase::INFINITE;
 use winapi::um::winbase::SEM_FAILCRITICALERRORS;
 use winapi::um::winbase::STD_OUTPUT_HANDLE;
+use winapi::um::winbase::SetFileCompletionNotificationModes;
 use winapi::um::winnt;
 use winapi::um::winsock2;
 
@@ -1120,11 +1120,13 @@ mod tests {
     #[test]
     fn test_dos_to_nt_path() {
         let pathu = dos_to_nt_path("c:\\foo").unwrap();
-        assert!(pathu
-            .as_slice()
-            .iter()
-            .copied()
-            .eq("\\??\\c:\\foo".encode_utf16()));
+        assert!(
+            pathu
+                .as_slice()
+                .iter()
+                .copied()
+                .eq("\\??\\c:\\foo".encode_utf16())
+        );
     }
 
     #[test]

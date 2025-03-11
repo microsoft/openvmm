@@ -3,18 +3,18 @@
 
 //! Backing for TDX partitions.
 
-use super::hcl_tdcall;
-use super::mshv_tdcall;
 use super::Hcl;
 use super::HclVp;
 use super::MshvVtl;
 use super::NoRunner;
 use super::ProcessorRunner;
+use super::hcl_tdcall;
+use super::mshv_tdcall;
+use crate::GuestVtl;
 use crate::protocol::tdx_tdg_vp_enter_exit_info;
 use crate::protocol::tdx_vp_context;
 use crate::protocol::tdx_vp_state;
 use crate::protocol::tdx_vp_state_flags;
-use crate::GuestVtl;
 use hv1_structs::VtlArray;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
@@ -22,10 +22,10 @@ use memory_range::MemoryRange;
 use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
+use tdcall::Tdcall;
 use tdcall::tdcall_vp_invgla;
 use tdcall::tdcall_vp_rd;
 use tdcall::tdcall_vp_wr;
-use tdcall::Tdcall;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
 use x86defs::tdx::TdGlaVmAndFlags;

@@ -14,15 +14,15 @@ mod hypercall;
 mod vp_state;
 
 use crate::hypercall::HvfHypercallHandler;
-use aarch64defs::psci::FastCall;
-use aarch64defs::psci::PsciCall;
-use aarch64defs::psci::PsciError;
-use aarch64defs::psci::PSCI;
 use aarch64defs::Cpsr64;
 use aarch64defs::ExceptionClass;
 use aarch64defs::IssDataAbort;
 use aarch64defs::IssSystem;
 use aarch64defs::MpidrEl1;
+use aarch64defs::psci::FastCall;
+use aarch64defs::psci::PSCI;
+use aarch64defs::psci::PsciCall;
+use aarch64defs::psci::PsciError;
 use abi::HvfError;
 use anyhow::Context;
 use guestmem::GuestMemory;
@@ -41,26 +41,26 @@ use std::future::poll_fn;
 use std::ops::Deref;
 use std::ops::Range;
 use std::ptr::null_mut;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Weak;
-use std::task::ready;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::task::Waker;
+use std::task::ready;
 use std::time::Duration;
 use thiserror::Error;
-use virt::aarch64::vm::AccessVmState;
-use virt::aarch64::Aarch64PartitionCapabilities;
-use virt::io::CpuIo;
-use virt::state::StateElement;
-use virt::vp::AccessVpState;
 use virt::BindProcessor;
 use virt::NeedsYield;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use virt::aarch64::Aarch64PartitionCapabilities;
+use virt::aarch64::vm::AccessVmState;
+use virt::io::CpuIo;
+use virt::state::StateElement;
+use virt::vp::AccessVpState;
 use virt_support_gic as gic;
 use vm_topology::processor::aarch64::Aarch64VpInfo;
 use vmcore::interrupt::Interrupt;
@@ -775,87 +775,89 @@ impl<'p> Processor for HvfProcessor<'p> {
         loop {
             self.inner.needs_yield.maybe_yield().await;
 
-            poll_fn(|cx| loop {
-                stop.check()?;
+            poll_fn(|cx| {
+                loop {
+                    stop.check()?;
 
-                if !last_waker
-                    .as_ref()
-                    .is_some_and(|waker| cx.waker().will_wake(waker))
-                {
-                    last_waker = Some(cx.waker().clone());
-                    self.inner.waker.write().clone_from(&last_waker);
-                }
-
-                if let Some(cpu_on) = self.inner.cpu_on.lock().take() {
-                    if self.on {
-                        todo!("block this");
-                    } else {
-                        tracing::debug!(x0 = cpu_on.x0, pc = cpu_on.pc, "cpu on");
-                        self.vcpu.set_gp(0, cpu_on.x0).unwrap();
-                        self.vcpu.set_reg(abi::HvReg::PC, cpu_on.pc).unwrap();
-                        self.on = true;
+                    if !last_waker
+                        .as_ref()
+                        .is_some_and(|waker| cx.waker().will_wake(waker))
+                    {
+                        last_waker = Some(cx.waker().clone());
+                        self.inner.waker.write().clone_from(&last_waker);
                     }
-                }
 
-                if !self.on {
-                    break Poll::Pending;
-                }
-
-                self.hv1
-                    .request_sint_readiness(self.inner.message_queues.pending_sints());
-
-                let ref_time_now = self.vmtime.now().as_100ns();
-                let (ready_sints, next_ref_time) = self.hv1.scan(
-                    ref_time_now,
-                    &self.partition.guest_memory,
-                    &mut |ppi, _auto_eoi| {
-                        tracing::debug!(ppi, "ppi from message");
-                        self.gicr.raise(ppi);
-                    },
-                );
-
-                if let Some(next_ref_time) = next_ref_time {
-                    // Convert from reference timer basis to vmtime basis via
-                    // difference of programmed timer and current reference time.
-                    const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
-                    let ref_diff = next_ref_time.saturating_sub(ref_time_now);
-                    let ref_duration = Duration::new(
-                        ref_diff / NUM_100NS_IN_SEC,
-                        (ref_diff % NUM_100NS_IN_SEC) as u32 * 100,
-                    );
-                    let timeout = self.vmtime.now().wrapping_add(ref_duration);
-                    self.vmtime.set_timeout_if_before(timeout);
-                }
-
-                if ready_sints != 0 {
-                    self.deliver_sints(ready_sints);
-                    continue;
-                }
-
-                if self.partition.gicd.irq_pending(&self.gicr) {
-                    // SAFETY: no requirements.
-                    unsafe {
-                        abi::hv_vcpu_set_pending_interrupt(
-                            self.vcpu.vcpu,
-                            abi::HvInterruptType::IRQ,
-                            true,
-                        )
+                    if let Some(cpu_on) = self.inner.cpu_on.lock().take() {
+                        if self.on {
+                            todo!("block this");
+                        } else {
+                            tracing::debug!(x0 = cpu_on.x0, pc = cpu_on.pc, "cpu on");
+                            self.vcpu.set_gp(0, cpu_on.x0).unwrap();
+                            self.vcpu.set_reg(abi::HvReg::PC, cpu_on.pc).unwrap();
+                            self.on = true;
+                        }
                     }
-                    .chk()
-                    .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
-                    self.wfi = false;
-                }
 
-                if self.wfi {
-                    self.vmtime.set_timeout_if_before(
-                        self.vmtime.now().wrapping_add(Duration::from_millis(2)),
+                    if !self.on {
+                        break Poll::Pending;
+                    }
+
+                    self.hv1
+                        .request_sint_readiness(self.inner.message_queues.pending_sints());
+
+                    let ref_time_now = self.vmtime.now().as_100ns();
+                    let (ready_sints, next_ref_time) = self.hv1.scan(
+                        ref_time_now,
+                        &self.partition.guest_memory,
+                        &mut |ppi, _auto_eoi| {
+                            tracing::debug!(ppi, "ppi from message");
+                            self.gicr.raise(ppi);
+                        },
                     );
-                    ready!(self.vmtime.poll_timeout(cx));
-                    self.gicr.raise(PPI_VTIMER);
-                    continue;
-                }
 
-                break Poll::Ready(Result::<_, VpHaltReason<_>>::Ok(()));
+                    if let Some(next_ref_time) = next_ref_time {
+                        // Convert from reference timer basis to vmtime basis via
+                        // difference of programmed timer and current reference time.
+                        const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
+                        let ref_diff = next_ref_time.saturating_sub(ref_time_now);
+                        let ref_duration = Duration::new(
+                            ref_diff / NUM_100NS_IN_SEC,
+                            (ref_diff % NUM_100NS_IN_SEC) as u32 * 100,
+                        );
+                        let timeout = self.vmtime.now().wrapping_add(ref_duration);
+                        self.vmtime.set_timeout_if_before(timeout);
+                    }
+
+                    if ready_sints != 0 {
+                        self.deliver_sints(ready_sints);
+                        continue;
+                    }
+
+                    if self.partition.gicd.irq_pending(&self.gicr) {
+                        // SAFETY: no requirements.
+                        unsafe {
+                            abi::hv_vcpu_set_pending_interrupt(
+                                self.vcpu.vcpu,
+                                abi::HvInterruptType::IRQ,
+                                true,
+                            )
+                        }
+                        .chk()
+                        .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
+                        self.wfi = false;
+                    }
+
+                    if self.wfi {
+                        self.vmtime.set_timeout_if_before(
+                            self.vmtime.now().wrapping_add(Duration::from_millis(2)),
+                        );
+                        ready!(self.vmtime.poll_timeout(cx));
+                        self.gicr.raise(PPI_VTIMER);
+                        continue;
+                    }
+
+                    break Poll::Ready(Result::<_, VpHaltReason<_>>::Ok(()));
+                }
             })
             .await?;
 

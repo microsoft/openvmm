@@ -6,9 +6,9 @@
 use crate::HypervisorBacked;
 use crate::UhProcessor;
 use hcl::GuestVtl;
-use hvdef::hypercall::HvInputVtl;
 use hvdef::HvAllArchRegisterName;
 use hvdef::Vtl;
+use hvdef::hypercall::HvInputVtl;
 
 impl UhProcessor<'_, HypervisorBacked> {
     /// Causes the specified VTL on the current VP to wait on all TLB locks.

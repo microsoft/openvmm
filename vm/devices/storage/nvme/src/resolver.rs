@@ -13,11 +13,11 @@ use nvme_resources::NvmeControllerHandle;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
 use thiserror::Error;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::PciDeviceHandleKind;
 
 /// Resource resolver for [`NvmeControllerHandle`].
 pub struct NvmeControllerResolver;

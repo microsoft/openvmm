@@ -3,9 +3,9 @@
 
 //! TLB lock infrastructure support for hardware-isolated partitions.
 
-use crate::processor::HardwareIsolatedBacking;
 use crate::UhCvmPartitionState;
 use crate::UhProcessor;
+use crate::processor::HardwareIsolatedBacking;
 use hcl::GuestVtl;
 use hvdef::Vtl;
 use std::sync::atomic::Ordering;

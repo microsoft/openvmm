@@ -12,8 +12,8 @@ use std::os::windows::io::AsRawHandle;
 use std::path::Path;
 use std::ptr::null_mut;
 use widestring::U16CString;
-use winapi::shared::ntdef::OBJECT_ATTRIBUTES;
 use winapi::shared::ntdef::OBJ_CASE_INSENSITIVE;
+use winapi::shared::ntdef::OBJECT_ATTRIBUTES;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::minwinbase::WIN32_FIND_DATAW;
 

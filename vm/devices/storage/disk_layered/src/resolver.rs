@@ -3,26 +3,26 @@
 
 //! Resolvers for layered disks.
 
-use super::resolve::ResolveDiskLayerParameters;
-use super::resolve::ResolvedDiskLayer;
 use super::InvalidLayeredDisk;
 use super::LayerConfiguration;
 use super::LayeredDisk;
+use super::resolve::ResolveDiskLayerParameters;
+use super::resolve::ResolvedDiskLayer;
 use crate::DiskLayer;
 use async_trait::async_trait;
+use disk_backend::InvalidDisk;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;
-use disk_backend::InvalidDisk;
-use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::LayeredDiskHandle;
+use disk_backend_resources::layer::DiskLayerHandle;
 use futures::future::TryJoinAll;
 use thiserror::Error;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::DiskHandleKind;
-use vm_resource::kind::DiskLayerHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::DiskLayerHandleKind;
 
 declare_static_async_resolver! {
     LayeredDiskResolver,

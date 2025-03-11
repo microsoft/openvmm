@@ -6,8 +6,8 @@
 #![forbid(unsafe_code)]
 
 use mesh::MeshPayload;
-use vm_resource::kind::NonVolatileStoreKind;
 use vm_resource::ResourceId;
+use vm_resource::kind::NonVolatileStoreKind;
 use vmgs_format::FileId;
 
 /// A handle to an individual file within a VMGS file.

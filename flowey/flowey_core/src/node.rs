@@ -17,9 +17,9 @@ use self::user_facing::GhPermission;
 use self::user_facing::GhPermissionValue;
 use crate::node::github_context::GhContextVarReader;
 use github_context::state::Root;
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -29,14 +29,6 @@ use user_facing::GhParam;
 /// Node types which are considered "user facing", and re-exported in the
 /// `flowey` crate.
 pub mod user_facing {
-    pub use super::steps::ado::AdoResourcesRepositoryId;
-    pub use super::steps::ado::AdoRuntimeVar;
-    pub use super::steps::ado::AdoStepServices;
-    pub use super::steps::github::ClaimedGhParam;
-    pub use super::steps::github::GhParam;
-    pub use super::steps::github::GhPermission;
-    pub use super::steps::github::GhPermissionValue;
-    pub use super::steps::rust::RustRuntimeServices;
     pub use super::ClaimVar;
     pub use super::ClaimedReadVar;
     pub use super::ClaimedWriteVar;
@@ -57,6 +49,14 @@ pub mod user_facing {
     pub use super::VarEqBacking;
     pub use super::VarNotClaimed;
     pub use super::WriteVar;
+    pub use super::steps::ado::AdoResourcesRepositoryId;
+    pub use super::steps::ado::AdoRuntimeVar;
+    pub use super::steps::ado::AdoStepServices;
+    pub use super::steps::github::ClaimedGhParam;
+    pub use super::steps::github::GhParam;
+    pub use super::steps::github::GhPermission;
+    pub use super::steps::github::GhPermissionValue;
+    pub use super::steps::rust::RustRuntimeServices;
     pub use crate::flowey_request;
     pub use crate::new_flow_node;
     pub use crate::new_simple_flow_node;
@@ -781,11 +781,7 @@ impl FlowPlatform {
 
     /// The suffix to use for executables on this platform.
     pub fn exe_suffix(&self) -> &'static str {
-        if self == &Self::Windows {
-            ".exe"
-        } else {
-            ""
-        }
+        if self == &Self::Windows { ".exe" } else { "" }
     }
 
     /// The full name for a binary on this platform (i.e. `name + self.exe_suffix()`).
@@ -1855,8 +1851,8 @@ pub mod steps {
         use crate::node::FlowBackend;
         use crate::node::FlowPlatform;
         use crate::node::RuntimeVarDb;
-        use serde::de::DeserializeOwned;
         use serde::Serialize;
+        use serde::de::DeserializeOwned;
 
         pub fn new_rust_runtime_services(
             runtime_var_db: &mut dyn RuntimeVarDb,
@@ -1989,9 +1985,9 @@ pub trait FlowNodeBase {
 }
 
 pub mod erased {
-    use crate::node::user_facing::*;
     use crate::node::FlowNodeBase;
     use crate::node::NodeCtx;
+    use crate::node::user_facing::*;
 
     pub struct ErasedNode<N: FlowNodeBase>(pub N);
 
@@ -2134,8 +2130,8 @@ mod node_luts {
         lookup
     }
 
-    pub(super) fn erased_node_by_typeid(
-    ) -> &'static HashMap<NodeHandle, fn() -> Box<dyn FlowNodeBase<Request = Box<[u8]>>>> {
+    pub(super) fn erased_node_by_typeid()
+    -> &'static HashMap<NodeHandle, fn() -> Box<dyn FlowNodeBase<Request = Box<[u8]>>>> {
         static LOOKUP: OnceLock<
             HashMap<NodeHandle, fn() -> Box<dyn FlowNodeBase<Request = Box<[u8]>>>>,
         > = OnceLock::new();

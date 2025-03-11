@@ -4,9 +4,9 @@
 //! The shutdown IC.
 
 use async_trait::async_trait;
-use futures::stream::once;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::stream::once;
 use futures_concurrency::stream::Merge;
 use hyperv_ic_protocol::shutdown::FRAMEWORK_VERSIONS;
 use hyperv_ic_protocol::shutdown::SHUTDOWN_VERSIONS;
@@ -25,13 +25,13 @@ use thiserror::Error;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_async::pipe::MessagePipe;
+use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
-use vmbus_channel::RawAsyncChannel;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -126,14 +126,16 @@ impl ShutdownChannel {
         }
 
         loop {
-            let event = pin!((
-                once(
-                    self.process_state_machine(&mut ic.wait_ready)
-                        .map(Event::StateMachine)
-                ),
-                (&mut ic.recv).map(Event::Request),
+            let event = pin!(
+                (
+                    once(
+                        self.process_state_machine(&mut ic.wait_ready)
+                            .map(Event::StateMachine)
+                    ),
+                    (&mut ic.recv).map(Event::Request),
+                )
+                    .merge()
             )
-                .merge())
             .next()
             .await
             .unwrap();

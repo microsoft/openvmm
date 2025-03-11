@@ -4,18 +4,18 @@
 //! A flexible chipset builder that pre-populates a [`Chipset`](super::Chipset)
 //! with a customizable configuration of semi-standardized device.
 
-use crate::chipset::backing::arc_mutex::device::AddDeviceError;
-use crate::chipset::backing::arc_mutex::services::ArcMutexChipsetServices;
-use crate::chipset::ChipsetBuilder;
 use crate::ChipsetDeviceHandle;
 use crate::PowerEvent;
+use crate::chipset::ChipsetBuilder;
+use crate::chipset::backing::arc_mutex::device::AddDeviceError;
+use crate::chipset::backing::arc_mutex::services::ArcMutexChipsetServices;
 use chipset::*;
 use chipset_device::interrupt::LineInterruptTarget;
-use chipset_device_resources::ConfigureChipsetDevice;
-use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::BSP_LINT_LINE_SET;
+use chipset_device_resources::ConfigureChipsetDevice;
 use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
+use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use closeable_mutex::CloseableMutex;
 use firmware_uefi::UefiCommandSet;
 use framebuffer::Framebuffer;
@@ -716,8 +716,7 @@ impl<'a> BaseChipsetBuilder<'a> {
         macro_rules! feature_gate_check {
             ($feature:literal, $dep:ident) => {
                 #[cfg(not(feature = $feature))]
-                let None::<()> = $dep
-                else {
+                let None::<()> = $dep else {
                     return Err(BaseChipsetBuilderError::FeatureGatedDevice($feature));
                 };
             };
@@ -792,11 +791,11 @@ impl ConfigureChipsetDevice for ArcMutexChipsetServices<'_, '_> {
 }
 
 mod weak_mutex_pci {
-    use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPci;
     use crate::chipset::PciConflict;
     use crate::chipset::PciConflictReason;
-    use chipset_device::io::IoResult;
+    use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPci;
     use chipset_device::ChipsetDevice;
+    use chipset_device::io::IoResult;
     use closeable_mutex::CloseableMutex;
     use pci_bus::GenericPciBusDevice;
     use std::sync::Arc;

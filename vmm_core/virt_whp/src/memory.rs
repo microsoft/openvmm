@@ -386,9 +386,11 @@ impl VtlPartition {
     ) -> Result<(), virt::Error> {
         let range = MemoryRange::new(addr..addr + size as u64);
         let mut ranges = self.ranges.write();
-        assert!(ranges
-            .iter()
-            .all(|r| range.contains(&r.range) || !range.overlaps(&r.range)));
+        assert!(
+            ranges
+                .iter()
+                .all(|r| range.contains(&r.range) || !range.overlaps(&r.range))
+        );
 
         // SAFETY: Caller must past valid arguments.
         unsafe {
@@ -775,8 +777,8 @@ pub(crate) mod x86 {
     use super::VtlAccess;
     use crate::VtlPartition;
     use crate::WhpPartitionInner;
-    use hvdef::Vtl;
     use hvdef::HV_PAGE_SIZE;
+    use hvdef::Vtl;
 
     /// Different backing types for a given GPA.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

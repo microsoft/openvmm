@@ -17,25 +17,25 @@ mod test;
 use crate::buffers::GuestBuffers;
 use crate::protocol::Message1RevokeReceiveBuffer;
 use crate::protocol::Message1RevokeSendBuffer;
-use crate::protocol::Version;
 use crate::protocol::VMS_SWITCH_RSS_MAX_SEND_INDIRECTION_TABLE_ENTRIES;
+use crate::protocol::Version;
 use crate::rndisprot::NDIS_HASH_FUNCTION_MASK;
 use crate::rndisprot::NDIS_RSS_PARAM_FLAG_DISABLE_RSS;
 use async_trait::async_trait;
-use buffers::sub_allocation_size_for_mtu;
 pub use buffers::BufferPool;
-use futures::channel::mpsc;
+use buffers::sub_allocation_size_for_mtu;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::channel::mpsc;
 use futures_concurrency::future::Race;
-use guestmem::ranges::PagedRange;
-use guestmem::ranges::PagedRanges;
-use guestmem::ranges::PagedRangesReader;
 use guestmem::AccessError;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::PagedRange;
+use guestmem::ranges::PagedRanges;
+use guestmem::ranges::PagedRangesReader;
 use guid::Guid;
 use hvdef::hypercall::HvGuestOsId;
 use hvdef::hypercall::HvGuestOsMicrosoft;
@@ -66,9 +66,9 @@ use std::fmt::Debug;
 use std::future::pending;
 use std::mem::offset_of;
 use std::ops::Range;
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 use task_control::AsyncRun;
@@ -93,13 +93,13 @@ use vmbus_channel::gpadl::GpadlId;
 use vmbus_channel::gpadl::GpadlMapView;
 use vmbus_channel::gpadl::GpadlView;
 use vmbus_channel::gpadl::UnknownGpadlId;
-use vmbus_channel::gpadl_ring::gpadl_channel;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
+use vmbus_channel::gpadl_ring::gpadl_channel;
 use vmbus_ring as ring;
-use vmbus_ring::gparange::GpnList;
-use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmbus_ring::OutgoingPacketType;
 use vmbus_ring::RingMem;
+use vmbus_ring::gparange::GpnList;
+use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -488,24 +488,34 @@ impl std::fmt::Display for PrimaryChannelGuestVfState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PrimaryChannelGuestVfState::Initializing => write!(f, "initializing"),
-            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::NoState) => write!(f, "restoring"),
-            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::AvailableAdvertised) => write!(f, "restoring from guest notified of vfid"),
-            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::Ready) => write!(f, "restoring from vf present"),
-            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::DataPathSwitchPending{to_guest, result, ..}) => {
-                write!(f, "restoring from client requested data path switch: to {} {}",
+            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::NoState) => {
+                write!(f, "restoring")
+            }
+            PrimaryChannelGuestVfState::Restoring(
+                saved_state::GuestVfState::AvailableAdvertised,
+            ) => write!(f, "restoring from guest notified of vfid"),
+            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::Ready) => {
+                write!(f, "restoring from vf present")
+            }
+            PrimaryChannelGuestVfState::Restoring(
+                saved_state::GuestVfState::DataPathSwitchPending {
+                    to_guest, result, ..
+                },
+            ) => {
+                write!(
+                    f,
+                    "restoring from client requested data path switch: to {} {}",
                     if *to_guest { "guest" } else { "synthetic" },
                     if let Some(result) = result {
-                        if *result {
-                            "succeeded\""
-                        } else {
-                            "failed\""
-                        }
+                        if *result { "succeeded\"" } else { "failed\"" }
                     } else {
                         "in progress\""
                     }
                 )
             }
-            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::DataPathSwitched) => write!(f, "restoring from data path in guest"),
+            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::DataPathSwitched) => {
+                write!(f, "restoring from data path in guest")
+            }
             PrimaryChannelGuestVfState::Unavailable => write!(f, "unavailable"),
             PrimaryChannelGuestVfState::UnavailableFromAvailable => {
                 write!(f, "\"unavailable (previously available)\"")
@@ -516,8 +526,10 @@ impl std::fmt::Display for PrimaryChannelGuestVfState {
             PrimaryChannelGuestVfState::UnavailableFromDataPathSwitched => {
                 write!(f, "\"unavailable (previously using guest VF)\"")
             }
-            PrimaryChannelGuestVfState::Available{vfid} => write!(f, "available vfid: {}", vfid),
-            PrimaryChannelGuestVfState::AvailableAdvertised => write!(f, "\"available, guest notified\""),
+            PrimaryChannelGuestVfState::Available { vfid } => write!(f, "available vfid: {}", vfid),
+            PrimaryChannelGuestVfState::AvailableAdvertised => {
+                write!(f, "\"available, guest notified\"")
+            }
             PrimaryChannelGuestVfState::Ready => write!(f, "\"available and present in guest\""),
             PrimaryChannelGuestVfState::DataPathSwitchPending {
                 to_guest, result, ..
@@ -527,11 +539,7 @@ impl std::fmt::Display for PrimaryChannelGuestVfState {
                     "\"switching to {} {}",
                     if *to_guest { "guest" } else { "synthetic" },
                     if let Some(result) = result {
-                        if *result {
-                            "succeeded\""
-                        } else {
-                            "failed\""
-                        }
+                        if *result { "succeeded\"" } else { "failed\"" }
                     } else {
                         "in progress\""
                     }
@@ -2561,7 +2569,9 @@ impl<T: RingMem> NetChannel<T> {
                     primary.guest_vf_state = PrimaryChannelGuestVfState::AvailableAdvertised;
                     return Ok(Some(CoordinatorMessage::UpdateGuestVfState));
                 } else if let Some(true) = primary.is_data_path_switched {
-                    tracing::error!("Data path switched, but current guest negotiation does not support VTL0 VF");
+                    tracing::error!(
+                        "Data path switched, but current guest negotiation does not support VTL0 VF"
+                    );
                 }
             }
             return Ok(None);
@@ -2702,7 +2712,9 @@ impl<T: RingMem> NetChannel<T> {
                             self.restart = Some(CoordinatorMessage::UpdateGuestVfState);
                         }
                     } else if let Some(true) = primary.is_data_path_switched {
-                        tracing::error!("Data path switched, but current guest negotiation does not support VTL0 VF");
+                        tracing::error!(
+                            "Data path switched, but current guest negotiation does not support VTL0 VF"
+                        );
                     }
                 }
             }
@@ -2772,10 +2784,10 @@ impl<T: RingMem> NetChannel<T> {
                 self.send_rndis_control_message(buffers, id, message_length)?;
             }
             rndisprot::MESSAGE_TYPE_RESET_MSG => {
-                return Err(WorkerError::RndisMessageTypeNotImplemented)
+                return Err(WorkerError::RndisMessageTypeNotImplemented);
             }
             rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG => {
-                return Err(WorkerError::RndisMessageTypeNotImplemented)
+                return Err(WorkerError::RndisMessageTypeNotImplemented);
             }
             rndisprot::MESSAGE_TYPE_KEEPALIVE_MSG => {
                 let request: rndisprot::KeepaliveRequest = reader.read_plain()?;
@@ -2797,7 +2809,7 @@ impl<T: RingMem> NetChannel<T> {
                 self.send_rndis_control_message(buffers, id, message_length)?;
             }
             rndisprot::MESSAGE_TYPE_SET_EX_MSG => {
-                return Err(WorkerError::RndisMessageTypeNotImplemented)
+                return Err(WorkerError::RndisMessageTypeNotImplemented);
             }
             _ => return Err(WorkerError::UnknownRndisMessageType(message_type)),
         };
@@ -4695,7 +4707,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     PendingLinkAction::Delay(_) => {
                         return Ok(CoordinatorMessage::StartTimer(
                             Instant::now() + LINK_DELAY_DURATION,
-                        ))
+                        ));
                     }
                     PendingLinkAction::Active(_) => panic!("State should not be Active"),
                     _ => {}

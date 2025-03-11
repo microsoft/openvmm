@@ -3,9 +3,9 @@
 
 //! Integration tests for Generation 2 UEFI x86_64 guests with OpenHCL.
 
-use petri::openvmm::PetriVmConfigOpenVmm;
 use petri::OpenHclServicingFlags;
 use petri::ResolvedArtifact;
+use petri::openvmm::PetriVmConfigOpenVmm;
 #[cfg(guest_arch = "x86_64")]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use vmm_core_defs::HaltReason;

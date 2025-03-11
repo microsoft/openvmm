@@ -5,7 +5,6 @@
 
 use self::state::Drive;
 use self::state::DriveSavedState;
-use crate::protocol;
 use crate::Range;
 use crate::ScsiPath;
 use crate::ScsiRequestAndRange;
@@ -13,6 +12,7 @@ use crate::ScsiRequestState;
 use crate::StorageDevice;
 use crate::UnsupportedVersion;
 use crate::Version;
+use crate::protocol;
 use scsi_core::save_restore::ScsiSavedState;
 use std::sync::Arc;
 use thiserror::Error;

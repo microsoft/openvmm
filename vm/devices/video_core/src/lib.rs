@@ -6,11 +6,11 @@
 #![forbid(unsafe_code)]
 
 use inspect::Inspect;
-use mesh::payload::Protobuf;
 use mesh::MeshPayload;
-use vm_resource::kind::FramebufferHandleKind;
+use mesh::payload::Protobuf;
 use vm_resource::CanResolveTo;
 use vm_resource::ResourceId;
+use vm_resource::kind::FramebufferHandleKind;
 
 impl CanResolveTo<ResolvedFramebuffer> for FramebufferHandleKind {
     type Input<'a> = ();

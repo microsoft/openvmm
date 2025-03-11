@@ -20,11 +20,11 @@ use guid::Guid;
 use std::fmt::Debug;
 use storage_backend::StorageBackend;
 use ucs2::Ucs2LeSlice;
-use uefi_nvram_storage::in_memory;
+use uefi_nvram_storage::EFI_TIME;
 use uefi_nvram_storage::NextVariable;
 use uefi_nvram_storage::NvramStorage;
 use uefi_nvram_storage::NvramStorageError;
-use uefi_nvram_storage::EFI_TIME;
+use uefi_nvram_storage::in_memory;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -190,7 +190,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
                 _ => {
                     return Err(NvramStorageError::Load(
                         format!("unknown header type: {:?}", header.header_type).into(),
-                    ))
+                    ));
                 }
             }
 

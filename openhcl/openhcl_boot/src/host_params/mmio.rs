@@ -3,8 +3,8 @@
 
 //! Manages MMIO range partitioning between VTLs.
 
-use super::dt::DtError;
 use super::PartitionInfo;
+use super::dt::DtError;
 use memory_range::MemoryRange;
 
 /// The start address of MMIO high range.

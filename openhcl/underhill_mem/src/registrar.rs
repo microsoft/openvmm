@@ -20,8 +20,8 @@
 //! been registered via a small bitmap.
 
 use inspect::Inspect;
-use memory_range::overlapping_ranges;
 use memory_range::MemoryRange;
+use memory_range::overlapping_ranges;
 use parking_lot::Mutex;
 use std::ops::Range;
 use std::sync::atomic::AtomicU64;

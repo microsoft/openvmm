@@ -6,8 +6,8 @@
 use super::protocol;
 use crate::protocol::SlotNumber;
 use async_trait::async_trait;
-use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::ChipsetDevice;
+use chipset_device::mmio::ControlMmioIntercept;
 use closeable_mutex::CloseableMutex;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
@@ -20,9 +20,9 @@ use pci_core::spec::cfg_space;
 use pci_core::spec::hwid::HardwareIds;
 use ring::OutgoingPacketType;
 use std::fmt::Debug;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use task_control::Cancelled;
 use task_control::StopTask;
 use thiserror::Error;
@@ -30,12 +30,12 @@ use vmbus_async::queue;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
 use vmbus_async::queue::Queue;
+use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
-use vmbus_channel::RawAsyncChannel;
 use vmbus_ring as ring;
 use vmbus_ring::RingMem;
 use vmcore::save_restore::NoSavedState;
@@ -1174,25 +1174,25 @@ mod tests {
     use crate::test_helpers::TestVpciInterruptController;
     use chipset_arc_mutex_device::services::MmioInterceptServices;
     use chipset_arc_mutex_device::test_chipset::TestChipset;
+    use chipset_device::ChipsetDevice;
     use chipset_device::io::IoResult;
     use chipset_device::mmio::ExternallyManagedMmioIntercepts;
     use chipset_device::mmio::MmioIntercept;
     use chipset_device::mmio::RegisterMmioIntercept;
     use chipset_device::pci::PciConfigSpace;
-    use chipset_device::ChipsetDevice;
     use closeable_mutex::CloseableMutex;
+    use device_emulators::ReadWriteRequestType;
     use device_emulators::read_as_u32_chunks;
     use device_emulators::write_as_u32_chunks;
-    use device_emulators::ReadWriteRequestType;
     use guestmem::AccessError;
     use guestmem::MemoryRead;
     use guid::Guid;
     use hvdef::HV_PAGE_SIZE;
     use inspect::Inspect;
     use inspect::InspectMut;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
-    use pal_async::DefaultDriver;
     use pci_core::cfg_space_emu::BarMemoryKind;
     use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
     use pci_core::cfg_space_emu::DeviceBars;
@@ -1204,15 +1204,15 @@ mod tests {
     use pci_core::spec::hwid::Subclass;
     use ring::FlatRingMem;
     use ring::OutgoingPacketType;
+    use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
-    use std::sync::Arc;
     use test_with_tracing::test;
     use thiserror::Error;
-    use vmbus_async::queue::connected_queues;
     use vmbus_async::queue::IncomingPacket;
     use vmbus_async::queue::OutgoingPacket;
     use vmbus_async::queue::Queue;
+    use vmbus_async::queue::connected_queues;
     use vmbus_ring as ring;
     use vmcore::vpci_msi::VpciInterruptMapper;
     use zerocopy::FromBytes;
@@ -1787,9 +1787,11 @@ mod tests {
         guest_driver.start_device(base_address).await;
 
         let write_u32 = |address, value: u32| {
-            assert!(vm_chipset
-                .mmio_write(address, &value.to_ne_bytes())
-                .is_some());
+            assert!(
+                vm_chipset
+                    .mmio_write(address, &value.to_ne_bytes())
+                    .is_some()
+            );
         };
         let read_u32 = |address| {
             let mut value = [0; 4];

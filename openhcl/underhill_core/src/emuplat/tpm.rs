@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 use guest_emulation_transport::GuestEmulationTransportClient;
-use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_BUFFER_SIZE;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use std::sync::Arc;
 use thiserror::Error;
 use tpm::ak_cert::RequestAkCert;
@@ -112,13 +112,13 @@ pub mod resources {
     use tpm::ak_cert::ResolvedRequestAkCert;
     use tpm_resources::RequestAkCertKind;
     use underhill_attestation::AttestationType;
-    use vm_resource::declare_static_async_resolver;
     use vm_resource::AsyncResolveResource;
     use vm_resource::IntoResource;
     use vm_resource::PlatformResource;
     use vm_resource::ResolveError;
     use vm_resource::ResourceId;
     use vm_resource::ResourceResolver;
+    use vm_resource::declare_static_async_resolver;
 
     #[derive(MeshPayload)]
     pub struct GetTpmRequestAkCertHelperHandle {

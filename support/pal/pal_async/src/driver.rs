@@ -21,8 +21,8 @@ use crate::timer::PollTimer;
 use crate::timer::TimerDriver;
 use crate::wait::PollWait;
 use crate::wait::WaitDriver;
-use smallbox::space::S4;
 use smallbox::SmallBox;
+use smallbox::space::S4;
 use std::io;
 #[cfg(unix)]
 use std::os::unix::prelude::*;

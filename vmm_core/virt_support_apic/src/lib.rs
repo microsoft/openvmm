@@ -12,17 +12,19 @@ use bitfield_struct::bitfield;
 use inspect::Inspect;
 use inspect_counters::Counter;
 use parking_lot::RwLock;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
-use virt::x86::vp::ApicRegisters;
 use virt::x86::MsrError;
-use vm_topology::processor::x86::X86VpInfo;
+use virt::x86::vp::ApicRegisters;
 use vm_topology::processor::VpIndex;
+use vm_topology::processor::x86::X86VpInfo;
 use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeAccess;
+use x86defs::X86X_MSR_APIC_BASE;
+use x86defs::apic::APIC_BASE_PAGE;
 use x86defs::apic::ApicBase;
 use x86defs::apic::ApicRegister;
 use x86defs::apic::Dcr;
@@ -33,14 +35,12 @@ use x86defs::apic::Icr;
 use x86defs::apic::Lvt;
 use x86defs::apic::Svr;
 use x86defs::apic::TimerMode;
-use x86defs::apic::X2ApicLogicalId;
-use x86defs::apic::XApicClusterLogicalId;
-use x86defs::apic::APIC_BASE_PAGE;
 use x86defs::apic::X2APIC_MSR_BASE;
 use x86defs::apic::X2APIC_MSR_END;
+use x86defs::apic::X2ApicLogicalId;
+use x86defs::apic::XApicClusterLogicalId;
 use x86defs::msi::MsiAddress;
 use x86defs::msi::MsiData;
-use x86defs::X86X_MSR_APIC_BASE;
 
 const NANOS_PER_TICK: u64 = 5; // 200Mhz
 const TIMER_FREQUENCY: u64 = 1_000_000_000 / NANOS_PER_TICK;
@@ -771,7 +771,7 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
                 TIMER_FREQUENCY
             }
             hvdef::HV_X64_MSR_EOI if self.apic.global.hyperv_enlightenments => {
-                return Err(MsrError::InvalidAccess)
+                return Err(MsrError::InvalidAccess);
             }
             hvdef::HV_X64_MSR_ICR if self.apic.global.hyperv_enlightenments => {
                 if !self.apic.hardware_enabled() {
@@ -813,7 +813,7 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
                 }
             }
             hvdef::HV_X64_MSR_APIC_FREQUENCY if self.apic.global.hyperv_enlightenments => {
-                return Err(MsrError::InvalidAccess)
+                return Err(MsrError::InvalidAccess);
             }
             hvdef::HV_X64_MSR_EOI if self.apic.global.hyperv_enlightenments => {
                 if !self.apic.hardware_enabled() {

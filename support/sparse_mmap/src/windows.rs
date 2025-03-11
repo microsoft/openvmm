@@ -5,6 +5,25 @@
 
 #![cfg(windows)]
 
+use Memory::CreateFileMappingW;
+use Memory::MEM_COMMIT;
+use Memory::MEM_RELEASE;
+use Memory::MEM_RESERVE;
+use Memory::MEMORY_MAPPED_VIEW_ADDRESS;
+use Memory::MapViewOfFile3;
+use Memory::PAGE_EXECUTE;
+use Memory::PAGE_EXECUTE_READ;
+use Memory::PAGE_EXECUTE_READWRITE;
+use Memory::PAGE_EXECUTE_WRITECOPY;
+use Memory::PAGE_NOACCESS;
+use Memory::PAGE_READONLY;
+use Memory::PAGE_READWRITE;
+use Memory::PAGE_WRITECOPY;
+use Memory::SECTION_MAP_READ;
+use Memory::SECTION_MAP_WRITE;
+use Memory::UnmapViewOfFile2;
+use Memory::VirtualAlloc2;
+use Memory::VirtualFreeEx;
 use pal::windows::BorrowedHandleExt;
 use pal::windows::Process;
 use parking_lot::Mutex;
@@ -17,25 +36,6 @@ use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::System::Memory;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
-use Memory::CreateFileMappingW;
-use Memory::MapViewOfFile3;
-use Memory::UnmapViewOfFile2;
-use Memory::VirtualAlloc2;
-use Memory::VirtualFreeEx;
-use Memory::MEMORY_MAPPED_VIEW_ADDRESS;
-use Memory::MEM_COMMIT;
-use Memory::MEM_RELEASE;
-use Memory::MEM_RESERVE;
-use Memory::PAGE_EXECUTE;
-use Memory::PAGE_EXECUTE_READ;
-use Memory::PAGE_EXECUTE_READWRITE;
-use Memory::PAGE_EXECUTE_WRITECOPY;
-use Memory::PAGE_NOACCESS;
-use Memory::PAGE_READONLY;
-use Memory::PAGE_READWRITE;
-use Memory::PAGE_WRITECOPY;
-use Memory::SECTION_MAP_READ;
-use Memory::SECTION_MAP_WRITE;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -693,8 +693,8 @@ pub fn alloc_shared_memory(size: usize) -> io::Result<OwnedHandle> {
 
 #[cfg(test)]
 mod tests {
-    use super::alloc_shared_memory;
     use super::SparseMapping;
+    use super::alloc_shared_memory;
     use crate::initialize_try_copy;
     use crate::try_copy;
     use windows_sys::Win32::System::Memory::PAGE_READWRITE;

@@ -10,9 +10,9 @@
 
 use inspect::Inspect;
 use mesh::MeshPayload;
+use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::ScsiDeviceHandleKind;
-use vm_resource::Resource;
 
 /// The location of an IDE device on a controller.
 #[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Hash, MeshPayload, Inspect)]

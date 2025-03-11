@@ -16,8 +16,8 @@ pub use spec_services::NvramResult;
 pub use spec_services::NvramServicesExt;
 pub use spec_services::NvramSpecServices;
 
-use crate::platform::nvram::VsmConfig;
 use crate::UefiDevice;
+use crate::platform::nvram::VsmConfig;
 use firmware_uefi_custom_vars::CustomVars;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;

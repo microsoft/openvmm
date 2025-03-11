@@ -34,8 +34,8 @@ use std::fmt::Debug;
 use std::future::poll_fn;
 use std::io;
 use std::os::unix::prelude::*;
-use std::pin::pin;
 use std::pin::Pin;
+use std::pin::pin;
 use std::process::abort;
 use std::sync::Arc;
 use std::task::Context;
@@ -623,7 +623,7 @@ mod tests {
     use io_uring::types;
     use pal_async::task::Spawn;
     use parking_lot::Mutex;
-        use std::os::unix::prelude::*;
+    use std::os::unix::prelude::*;
     use std::pin::Pin;
     use std::sync::Arc;
     use std::task::Context;

@@ -3,15 +3,15 @@
 
 //! GPADL-backed ring buffers.
 
+use crate::ChannelClosed;
+use crate::RawAsyncChannel;
+use crate::SignalVmbusChannel;
 use crate::bus::OpenData;
 use crate::bus::OpenRequest;
 use crate::channel::DeviceResources;
 use crate::gpadl::GpadlMapView;
 use crate::gpadl::GpadlView;
 use crate::gpadl::UnknownGpadlId;
-use crate::ChannelClosed;
-use crate::RawAsyncChannel;
-use crate::SignalVmbusChannel;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use guestmem::LockedPages;
@@ -19,8 +19,8 @@ use pal_async::driver::Driver;
 use ring::IncomingRing;
 use ring::OutgoingRing;
 use std::fmt::Debug;
-use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicU32;
 use vmbus_ring as ring;
 use vmcore::interrupt::Interrupt;
 use vmcore::notify::PolledNotify;

@@ -6,6 +6,9 @@
 //! In the future, this should be generalized and move to `mesh_channel`.
 
 use futures::Stream;
+use mesh::Message;
+use mesh::OwnedMessage;
+use mesh::RecvError;
 use mesh::local_node::HandleMessageError;
 use mesh::local_node::HandlePortEvent;
 use mesh::local_node::NodeError;
@@ -16,16 +19,13 @@ use mesh::local_node::PortWithHandler;
 use mesh::message::MeshField;
 use mesh::payload::Protobuf;
 use mesh::resource::Resource;
-use mesh::Message;
-use mesh::OwnedMessage;
-use mesh::RecvError;
 use std::collections::VecDeque;
 use std::future::poll_fn;
 use std::marker::PhantomData;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
+use std::task::ready;
 
 pub struct BoundedReceiver<T> {
     port: PortWithHandler<ReceiverState>,
@@ -265,12 +265,12 @@ mod encoding {
     use super::ReceiverState;
     use mesh::local_node::Port;
     use mesh::message::MeshField;
-    use mesh::payload::encoding::MessageEncoding;
-    use mesh::payload::inplace_none;
     use mesh::payload::DefaultEncoding;
     use mesh::payload::MessageDecode;
     use mesh::payload::MessageEncode;
     use mesh::payload::Protobuf;
+    use mesh::payload::encoding::MessageEncoding;
+    use mesh::payload::inplace_none;
     use mesh::resource::Resource;
     use std::collections::VecDeque;
     use std::marker::PhantomData;

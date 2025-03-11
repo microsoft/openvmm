@@ -3,17 +3,17 @@
 
 #![expect(missing_docs)]
 
-use crate::mapping::GuestMemoryMapping;
 use crate::HardwareIsolatedMemoryProtector;
 use crate::MemoryAcceptor;
+use crate::mapping::GuestMemoryMapping;
 use anyhow::Context;
 use futures::future::try_join_all;
 use guestmem::GuestMemory;
 use hcl::ioctl::MshvHvcall;
 use hcl::ioctl::MshvVtlLow;
-use hvdef::hypercall::HvInputVtl;
 use hvdef::HypercallCode;
 use hvdef::Vtl;
+use hvdef::hypercall::HvInputVtl;
 use inspect::Inspect;
 use memory_range::AlignedSubranges;
 use memory_range::MemoryRange;
@@ -395,7 +395,9 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 } else {
                     // On ARM, the alias map is not exposed: see
                     // underhill_core::init::vtl0_alias_map_bit.
-                    tracing::warn!("cannot safely support VTL 1 without using the alias map; Guest VSM not supported");
+                    tracing::warn!(
+                        "cannot safely support VTL 1 without using the alias map; Guest VSM not supported"
+                    );
                     None
                 }
             } else {

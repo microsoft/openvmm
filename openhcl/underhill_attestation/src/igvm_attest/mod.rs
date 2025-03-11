@@ -6,10 +6,10 @@
 //! `IGVM_ATTEST` host request.
 
 use base64_serde::base64_serde_type;
-use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestHashType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestReportType;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use tee_call::TeeType;
 use thiserror::Error;
 use zerocopy::FromZeros;

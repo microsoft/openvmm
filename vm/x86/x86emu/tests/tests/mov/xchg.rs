@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::tests::common::run_lockable_test;
 use crate::tests::common::LockTestBehavior;
+use crate::tests::common::run_lockable_test;
 use iced_x86::code_asm::dword_ptr;
 use iced_x86::code_asm::ebx;
 use x86emu::Cpu;

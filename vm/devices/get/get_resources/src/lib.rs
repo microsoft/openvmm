@@ -8,8 +8,8 @@
 /// Guest Emulation Log device resources.
 pub mod gel {
     use mesh::MeshPayload;
-    use vm_resource::kind::VmbusDeviceHandleKind;
     use vm_resource::ResourceId;
+    use vm_resource::kind::VmbusDeviceHandleKind;
 
     /// Handle to a guest emulation log device.
     #[derive(MeshPayload)]
@@ -22,11 +22,11 @@ pub mod gel {
 
 /// Guest crash device resources.
 pub mod crash {
-    use mesh::rpc::FailableRpc;
     use mesh::MeshPayload;
+    use mesh::rpc::FailableRpc;
     use std::fs::File;
-    use vm_resource::kind::VmbusDeviceHandleKind;
     use vm_resource::ResourceId;
+    use vm_resource::kind::VmbusDeviceHandleKind;
 
     /// Handle to a guest crash dump device.
     #[derive(MeshPayload)]
@@ -44,16 +44,16 @@ pub mod crash {
 
 /// Guest Emulation Device resources.
 pub mod ged {
+    use mesh::MeshPayload;
     use mesh::error::RemoteError;
     use mesh::payload::Protobuf;
     use mesh::rpc::Rpc;
-    use mesh::MeshPayload;
     use thiserror::Error;
+    use vm_resource::Resource;
+    use vm_resource::ResourceId;
     use vm_resource::kind::DiskHandleKind;
     use vm_resource::kind::FramebufferHandleKind;
     use vm_resource::kind::VmbusDeviceHandleKind;
-    use vm_resource::Resource;
-    use vm_resource::ResourceId;
 
     /// A resource handle for a guest emulation device.
     #[derive(MeshPayload)]

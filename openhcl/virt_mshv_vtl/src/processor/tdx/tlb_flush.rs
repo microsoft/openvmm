@@ -5,9 +5,9 @@
 
 use crate::TdxBacked;
 use crate::UhProcessor;
-use hcl::ioctl::tdx::Tdx;
-use hcl::ioctl::ProcessorRunner;
 use hcl::GuestVtl;
+use hcl::ioctl::ProcessorRunner;
+use hcl::ioctl::tdx::Tdx;
 use hvdef::hypercall::HvGvaRange;
 use inspect::Inspect;
 use safeatomic::AtomicSliceOps;

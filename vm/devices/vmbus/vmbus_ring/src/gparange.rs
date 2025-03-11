@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 use guestmem::ranges::PagedRange;
-use smallvec::smallvec;
 use smallvec::SmallVec;
+use smallvec::smallvec;
 use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;

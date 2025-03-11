@@ -13,12 +13,12 @@ use fid::*;
 use lxutil::LxVolume;
 use parking_lot::RwLock;
 use protocol::*;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::str;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 
 const MINIMUM_REQUEST_BUFFER_SIZE: u32 = 4096;
 const MAXIMUM_REQUEST_BUFFER_SIZE: u32 = 256 * 1024;

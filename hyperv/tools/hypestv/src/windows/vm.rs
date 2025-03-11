@@ -3,30 +3,30 @@
 
 //! VM command handling.
 
-use super::hyperv::hvc_output;
-use super::hyperv::powershell_script;
-use super::hyperv::run_hcsdiag;
-use super::hyperv::run_hvc;
-use super::rustyline_printer::Printer;
 use super::InspectArgs;
 use super::InspectTarget;
 use super::LogMode;
 use super::ParavisorCommand;
 use super::SerialMode;
 use super::VmCommand;
+use super::hyperv::hvc_output;
+use super::hyperv::powershell_script;
+use super::hyperv::run_hcsdiag;
+use super::hyperv::run_hvc;
+use super::rustyline_printer::Printer;
 use anyhow::Context as _;
 use diag_client::DiagClient;
-use futures::io::BufReader;
 use futures::AsyncBufReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::io::BufReader;
 use futures_concurrency::future::Race;
 use guid::Guid;
+use pal_async::DefaultDriver;
 use pal_async::pipe::PolledPipe;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use pal_async::DefaultDriver;
 use std::sync::Arc;
 use std::time::Duration;
 

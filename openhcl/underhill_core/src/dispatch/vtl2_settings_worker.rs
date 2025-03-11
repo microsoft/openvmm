@@ -7,8 +7,8 @@ use super::LoadedVm;
 use crate::nvme_manager::NvmeDiskConfig;
 use crate::worker::NicConfig;
 use anyhow::Context;
-use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::Disk;
+use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend_resources::AutoFormattedDiskHandle;
 use disk_blockdevice::OpenBlockDeviceConfig;
 use futures::StreamExt;
@@ -18,10 +18,10 @@ use ide_resources::GuestMedia;
 use ide_resources::IdeControllerConfig;
 use ide_resources::IdeDeviceConfig;
 use ide_resources::IdePath;
+use mesh::CancelContext;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use mesh::CancelContext;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use scsidisk_resources::SimpleScsiDiskHandle;
@@ -38,8 +38,8 @@ use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiControllerRequest;
 use storvsp_resources::ScsiDeviceAndPath;
 use thiserror::Error;
-use tracing::instrument;
 use tracing::Instrument;
+use tracing::instrument;
 use uevent::UeventListener;
 use underhill_config::DiskParameters;
 use underhill_config::NicDevice;
@@ -51,13 +51,13 @@ use underhill_config::Vtl2SettingsDynamic;
 use underhill_config::Vtl2SettingsErrorCode;
 use underhill_config::Vtl2SettingsErrorInfo;
 use underhill_threadpool::AffinitizedThreadpool;
-use vm_resource::kind::DiskHandleKind;
-use vm_resource::kind::PciDeviceHandleKind;
-use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::IntoResource;
 use vm_resource::ResolveError;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
+use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::PciDeviceHandleKind;
+use vm_resource::kind::VmbusDeviceHandleKind;
 
 #[derive(Error, Debug)]
 enum Error<'a> {
@@ -122,7 +122,9 @@ enum Error<'a> {
     },
     #[error("failed to parse Device ID: LUN = {lun:?}, device_id = {device_id:?}")]
     StorageBadDeviceId { lun: u8, device_id: &'a str },
-    #[error("failed to parse Product Revision Level: LUN = {lun:?}, product_revision_level = {product_revision_level:?}")]
+    #[error(
+        "failed to parse Product Revision Level: LUN = {lun:?}, product_revision_level = {product_revision_level:?}"
+    )]
     StorageBadProductRevisionLevel {
         lun: u8,
         product_revision_level: &'a str,
@@ -429,11 +431,12 @@ impl Vtl2SettingsWorker {
                         })?;
 
                     if let Some(dvd) = dvd {
-                        assert!(self
-                            .interfaces
-                            .scsi_dvds
-                            .insert(StorageDevicePath::Scsi(scsi_path), dvd)
-                            .is_none());
+                        assert!(
+                            self.interfaces
+                                .scsi_dvds
+                                .insert(StorageDevicePath::Scsi(scsi_path), dvd)
+                                .is_none()
+                        );
                     }
                 }
                 Vtl2ConfigCommit::RmDisk(controller_id, scsi_path) => {

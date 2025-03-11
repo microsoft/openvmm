@@ -7,27 +7,26 @@
 
 type VpRegisterName = HvArm64RegisterName;
 
+use super::super::BackingPrivate;
+use super::super::UhRunVpError;
 use super::super::private::BackingParams;
 use super::super::signal_mnf;
 use super::super::vp_state;
 use super::super::vp_state::UhVpStateAccess;
-use super::super::BackingPrivate;
-use super::super::UhRunVpError;
+use crate::BackingShared;
+use crate::Error;
 use crate::processor::UhEmulationState;
 use crate::processor::UhHypercallHandler;
 use crate::processor::UhProcessor;
-use crate::BackingShared;
-use crate::Error;
 use aarch64defs::Cpsr64;
 use aarch64emu::AccessCpuState;
 use aarch64emu::InterceptState;
-use hcl::ioctl;
-use hcl::ioctl::aarch64::MshvArm64;
 use hcl::GuestVtl;
 use hcl::UnsupportedGuestVtl;
+use hcl::ioctl;
+use hcl::ioctl::aarch64::MshvArm64;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
-use hvdef::hypercall;
 use hvdef::HvAarch64PendingEvent;
 use hvdef::HvArm64RegisterName;
 use hvdef::HvArm64ResetType;
@@ -36,16 +35,17 @@ use hvdef::HvMapGpaFlags;
 use hvdef::HvMessageType;
 use hvdef::HvRegisterValue;
 use hvdef::Vtl;
+use hvdef::hypercall;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use virt::VpHaltReason;
+use virt::VpIndex;
 use virt::aarch64::vp;
 use virt::aarch64::vp::AccessVpState;
 use virt::io::CpuIo;
 use virt::state::HvRegisterState;
 use virt::state::StateElement;
-use virt::VpHaltReason;
-use virt::VpIndex;
 use virt_support_aarch64emu::emulate;
 use virt_support_aarch64emu::emulate::EmuCheckVtlAccessError;
 use virt_support_aarch64emu::emulate::EmuTranslateError;
@@ -308,7 +308,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
         )
         .unwrap()
         .0; // TODO: zerocopy: err, use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-            // tracing::trace!(msg = %format_args!("{:x?}", message), "mmio");
+        // tracing::trace!(msg = %format_args!("{:x?}", message), "mmio");
 
         let intercept_state = InterceptState {
             instruction_bytes: message.instruction_bytes,

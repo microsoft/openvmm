@@ -4,8 +4,8 @@
 //! Resource definitions related to vmbus.
 
 use crate::channel::VmbusDevice;
-use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::CanResolveTo;
+use vm_resource::kind::VmbusDeviceHandleKind;
 use vmcore::vm_task::VmTaskDriverSource;
 
 impl CanResolveTo<ResolvedVmbusDevice> for VmbusDeviceHandleKind {

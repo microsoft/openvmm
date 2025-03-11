@@ -140,7 +140,9 @@ impl FlowNode for Node {
                     // way to detect this...
                     if stderr.contains("does not support components") {
                         log::warn!("Detected a non-standard `rustup default` toolchain!");
-                        log::warn!("Will not be able to double-check that all required target-triples are available.");
+                        log::warn!(
+                            "Will not be able to double-check that all required target-triples are available."
+                        );
                     } else {
                         let mut installed_target_triples = BTreeSet::new();
 
@@ -151,7 +153,9 @@ impl FlowNode for Node {
 
                         for expected_target in additional_target_triples {
                             if !installed_target_triples.contains(expected_target.as_str()) {
-                                anyhow::bail!("missing required target-triple: {expected_target}; to intsall: `rustup target add {expected_target}`")
+                                anyhow::bail!(
+                                    "missing required target-triple: {expected_target}; to intsall: `rustup target add {expected_target}`"
+                                )
                             }
                         }
                     }

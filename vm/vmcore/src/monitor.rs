@@ -1,15 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use hvdef::HV_PAGE_SIZE;
 use hvdef::HvMonitorPage;
 use hvdef::HvMonitorPageSmall;
-use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use std::mem::offset_of;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 

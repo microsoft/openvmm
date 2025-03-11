@@ -45,24 +45,16 @@ use bitfield_struct::bitfield;
 use bitvec::boxed::BitBox;
 use bitvec::vec::BitVec;
 use guestmem::GuestMemory;
+use hcl::GuestVtl;
 use hcl::ioctl::Hcl;
 use hcl::ioctl::SetVsmPartitionConfigError;
-use hcl::GuestVtl;
 use hv1_emulator::hv::GlobalHv;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_emulator::synic::GlobalSynic;
 use hv1_emulator::synic::SintProxied;
 use hv1_structs::VtlArray;
-use hvdef::hypercall::HostVisibilityType;
-use hvdef::hypercall::HvGuestOsId;
-use hvdef::hypercall::HvInputVtl;
-use hvdef::hypercall::HvInterceptParameters;
-use hvdef::hypercall::HvInterceptType;
-use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_EXECUTE;
-use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_NONE;
-use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_READ_WRITE;
-use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_WRITE;
 use hvdef::GuestCrashCtl;
+use hvdef::HV_PAGE_SIZE;
 use hvdef::HvAllArchRegisterName;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
@@ -70,7 +62,15 @@ use hvdef::HvRegisterName;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmPartitionStatus;
 use hvdef::Vtl;
-use hvdef::HV_PAGE_SIZE;
+use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_EXECUTE;
+use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_NONE;
+use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_READ_WRITE;
+use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_WRITE;
+use hvdef::hypercall::HostVisibilityType;
+use hvdef::hypercall::HvGuestOsId;
+use hvdef::hypercall::HvInputVtl;
+use hvdef::hypercall::HvInterceptParameters;
+use hvdef::hypercall::HvInterceptType;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
@@ -86,23 +86,23 @@ use processor::SidecarExitReason;
 use sidecar_client::NewSidecarClientError;
 use std::ops::RangeInclusive;
 use std::os::fd::AsRawFd;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::AtomicU8;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::task::Waker;
 use thiserror::Error;
 use user_driver::DmaClient;
-use virt::irqcon::IoApicRouting;
-use virt::irqcon::MsiRequest;
-use virt::x86::apic_software_device::ApicSoftwareDevices;
 use virt::CpuidLeafSet;
 use virt::IsolationType;
 use virt::PartitionCapabilities;
 use virt::VpIndex;
+use virt::irqcon::IoApicRouting;
+use virt::irqcon::MsiRequest;
+use virt::x86::apic_software_device::ApicSoftwareDevices;
 use virt_support_apic::LocalApicSet;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::ProcessorTopology;
@@ -152,7 +152,9 @@ pub enum Error {
     BadCpuidTsc,
     #[error("failed to read tsc frequency")]
     ReadTscFrequency(#[source] std::io::Error),
-    #[error("tsc frequency mismatch between hypervisor ({hv}) and hardware {hw}, exceeds allowed error {allowed_error}")]
+    #[error(
+        "tsc frequency mismatch between hypervisor ({hv}) and hardware {hw}, exceeds allowed error {allowed_error}"
+    )]
     TscFrequencyMismatch {
         hv: u64,
         hw: u64,
@@ -1636,7 +1638,9 @@ impl<'a> UhProtoPartition<'a> {
 
         let vsm_state = if guest_vsm_available {
             if is_hardware_isolated {
-                tracing::warn!("Advertising guest vsm as being supported to the guest. This feature is in development, so the guest might crash.");
+                tracing::warn!(
+                    "Advertising guest vsm as being supported to the guest. This feature is in development, so the guest might crash."
+                );
             }
             GuestVsmState::NotGuestEnabled
         } else {

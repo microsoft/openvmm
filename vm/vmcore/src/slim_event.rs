@@ -89,8 +89,8 @@ impl Stream for SlimEventStream<'_> {
 #[cfg(test)]
 mod tests {
     use crate::slim_event::SlimEvent;
-    use futures::executor::block_on;
     use futures::FutureExt;
+    use futures::executor::block_on;
 
     #[test]
     fn test() {

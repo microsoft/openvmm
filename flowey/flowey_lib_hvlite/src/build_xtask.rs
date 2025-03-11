@@ -3,8 +3,8 @@
 
 //! Build `xtask` binary
 
-use crate::run_cargo_build::common::CommonTriple;
 use crate::run_cargo_build::BuildProfile;
+use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
 

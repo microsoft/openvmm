@@ -8,14 +8,14 @@
 
 use crate::driver::Driver;
 use crate::socket::PolledSocket;
-use crate::task::with_current_task_metadata;
 use crate::task::Spawn;
+use crate::task::with_current_task_metadata;
 use crate::timer::Instant;
-use futures::channel::oneshot;
-use futures::executor::block_on;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
+use futures::channel::oneshot;
+use futures::executor::block_on;
 use pal_event::Event;
 use parking_lot::Mutex;
 use std::future::poll_fn;

@@ -1,19 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::queue::QueueParams;
-use crate::spec::*;
+use crate::QUEUE_MAX_SIZE;
 use crate::QueueResources;
 use crate::Resources;
 use crate::VirtioDevice;
 use crate::VirtioDoorbells;
-use crate::QUEUE_MAX_SIZE;
+use crate::queue::QueueParams;
+use crate::spec::*;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
-use chipset_device::ChipsetDevice;
+use device_emulators::ReadWriteRequestType;
 use device_emulators::read_as_u32_chunks;
 use device_emulators::write_as_u32_chunks;
-use device_emulators::ReadWriteRequestType;
 use guestmem::DoorbellRegistration;
 use inspect::InspectMut;
 use parking_lot::Mutex;

@@ -11,9 +11,9 @@ use futures::StreamExt;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
+use mesh::MeshPayload;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use mesh::MeshPayload;
 use pal_async::task::Spawn;
 use std::cmp::Ordering;
 use thiserror::Error;
@@ -387,10 +387,12 @@ impl RegionManagerTask {
 
         // TODO: split and remove existing mappings, atomically. This is
         // technically required by virtiofs DAX support.
-        assert!(!region
-            .mappings
-            .iter()
-            .any(|m| m.params.range_in_region.overlaps(&params.range_in_region)));
+        assert!(
+            !region
+                .mappings
+                .iter()
+                .any(|m| m.params.range_in_region.overlaps(&params.range_in_region))
+        );
 
         if let Some(region_range) = region.active_range() {
             let range = range_within(region_range, params.range_in_region);

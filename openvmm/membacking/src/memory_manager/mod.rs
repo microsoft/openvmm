@@ -7,6 +7,7 @@ mod device_memory;
 
 pub use device_memory::DeviceMemoryMapper;
 
+use crate::RemoteProcess;
 use crate::mapping_manager::Mappable;
 use crate::mapping_manager::MappingManager;
 use crate::mapping_manager::MappingManagerClient;
@@ -16,7 +17,6 @@ use crate::partition_mapper::PartitionMapper;
 use crate::region_manager::MapParams;
 use crate::region_manager::RegionHandle;
 use crate::region_manager::RegionManager;
-use crate::RemoteProcess;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
 use inspect::Inspect;

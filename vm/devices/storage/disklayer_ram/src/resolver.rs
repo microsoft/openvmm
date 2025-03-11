@@ -9,9 +9,9 @@ use crate::LazyRamDiskLayer;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use disk_layered::resolve::ResolveDiskLayerParameters;
 use disk_layered::resolve::ResolvedDiskLayer;
+use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::DiskLayerHandleKind;
-use vm_resource::ResolveResource;
 
 /// Resolver for a [`RamDiskLayerHandle`].
 pub struct RamDiskLayerResolver;

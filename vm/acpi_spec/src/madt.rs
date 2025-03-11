@@ -13,11 +13,11 @@ use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
-use zerocopy::Unaligned;
 use zerocopy::LE;
 use zerocopy::U16;
 use zerocopy::U32;
 use zerocopy::U64;
+use zerocopy::Unaligned;
 
 #[repr(C, packed)]
 #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes, Unaligned)]

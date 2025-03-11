@@ -19,9 +19,9 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::ops::Range;
 use std::ptr::NonNull;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
@@ -970,7 +970,9 @@ pub enum MultiRegionError {
     NotPowerOfTwo(u64),
     #[error("region size {0:#x} is smaller than a page")]
     RegionSizeTooSmall(u64),
-    #[error("too many regions ({region_count}) for region size {region_size:#x}; max is {max_region_count}")]
+    #[error(
+        "too many regions ({region_count}) for region size {region_size:#x}; max is {max_region_count}"
+    )]
     TooManyRegions {
         region_count: usize,
         max_region_count: usize,
@@ -1251,7 +1253,7 @@ impl GuestMemory {
                     true,
                 ) {
                     PageFaultAction::Fail(err) => {
-                        return Err(GuestMemoryBackingError::new(gpa + fault_offset, err))
+                        return Err(GuestMemoryBackingError::new(gpa + fault_offset, err));
                     }
                     PageFaultAction::Retry => {}
                     PageFaultAction::Fallback => break,
@@ -1295,7 +1297,7 @@ impl GuestMemory {
                             return Err(GuestMemoryBackingError::new(
                                 gpa + fault.offset() as u64,
                                 err,
-                            ))
+                            ));
                         }
                         PageFaultAction::Retry => {}
                         PageFaultAction::Fallback => return fallback(&mut param),
@@ -2206,8 +2208,8 @@ pub trait UnmapRom: Send + Sync {
 mod tests {
     use crate::BitmapInfo;
     use crate::GuestMemory;
-    use crate::PageFaultAction;
     use crate::PAGE_SIZE64;
+    use crate::PageFaultAction;
     use sparse_mmap::SparseMapping;
     use std::ptr::NonNull;
     use std::sync::Arc;

@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-
 pub trait Cpu: AccessCpuState {
     /// The error type for IO access failures.
     type Error;

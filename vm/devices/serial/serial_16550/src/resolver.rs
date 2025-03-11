@@ -5,17 +5,17 @@
 
 use crate::Serial16550;
 use async_trait::async_trait;
+use chipset_device_resources::IRQ_LINE_SET;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
-use chipset_device_resources::IRQ_LINE_SET;
 use serial_16550_resources::Serial16550DeviceHandle;
 use serial_core::resources::ResolveSerialBackendParams;
 use thiserror::Error;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::ChipsetDeviceHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::ChipsetDeviceHandleKind;
 
 /// The resource resolver for [`Serial16550`].
 pub struct Serial16550Resolver;

@@ -8,12 +8,12 @@ use crate::pipeline_resolver::generic::ResolvedJobArtifact;
 use crate::pipeline_resolver::generic::ResolvedJobUseParameter;
 use crate::pipeline_resolver::generic::ResolvedPipeline;
 use crate::pipeline_resolver::generic::ResolvedPipelineJob;
-use flowey_core::node::steps::rust::RustRuntimeServices;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
 use flowey_core::node::NodeHandle;
 use flowey_core::node::RuntimeVarDb;
+use flowey_core::node::steps::rust::RustRuntimeServices;
 use flowey_core::pipeline::internal::Parameter;
 use petgraph::prelude::NodeIndex;
 use petgraph::visit::EdgeRef;
@@ -198,10 +198,16 @@ fn direct_run_do_work(
                     Step::Anchor { .. } => continue,
                     Step::Rust { label, code, idx } => (label, code, idx),
                     Step::AdoYaml { .. } => {
-                        anyhow::bail!("{} emitted ADO YAML. Fix the node by checking `ctx.backend()` appropriately", node_handle.modpath())
+                        anyhow::bail!(
+                            "{} emitted ADO YAML. Fix the node by checking `ctx.backend()` appropriately",
+                            node_handle.modpath()
+                        )
                     }
                     Step::GitHubYaml { .. } => {
-                        anyhow::bail!("{} emitted GitHub YAML. Fix the node by checking `ctx.backend()` appropriately", node_handle.modpath())
+                        anyhow::bail!(
+                            "{} emitted GitHub YAML. Fix the node by checking `ctx.backend()` appropriately",
+                            node_handle.modpath()
+                        )
                     }
                 };
                 steps.push((idx, label, code.lock().take().unwrap()));

@@ -16,30 +16,22 @@ pub mod x64;
 use self::deferred::DeferredActionSlots;
 use self::deferred::DeferredActions;
 use self::ioctls::*;
+use crate::GuestVtl;
 use crate::ioctl::deferred::DeferredAction;
 use crate::mapped_page::MappedPage;
 use crate::protocol;
-use crate::protocol::hcl_intr_offload_flags;
-use crate::protocol::hcl_run;
 use crate::protocol::EnterModes;
 use crate::protocol::HCL_REG_PAGE_OFFSET;
 use crate::protocol::HCL_VMSA_GUEST_VSM_PAGE_OFFSET;
 use crate::protocol::HCL_VMSA_PAGE_OFFSET;
 use crate::protocol::MSHV_APIC_PAGE_OFFSET;
-use crate::GuestVtl;
+use crate::protocol::hcl_intr_offload_flags;
+use crate::protocol::hcl_run;
 use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
-use hvdef::hypercall::AssertVirtualInterrupt;
-use hvdef::hypercall::HostVisibilityType;
-use hvdef::hypercall::HvGpaRange;
-use hvdef::hypercall::HvGpaRangeExtended;
-use hvdef::hypercall::HvInputVtl;
-use hvdef::hypercall::HvInterceptParameters;
-use hvdef::hypercall::HvInterceptType;
-use hvdef::hypercall::HvRegisterAssoc;
-use hvdef::hypercall::HypercallOutput;
-use hvdef::hypercall::InitialVpContextX64;
-use hvdef::hypercall::ModifyHostVisibility;
+use hvdef::HV_PAGE_SIZE;
+use hvdef::HV_PARTITION_ID_SELF;
+use hvdef::HV_VP_INDEX_SELF;
 use hvdef::HvAllArchRegisterName;
 #[cfg(guest_arch = "aarch64")]
 use hvdef::HvArm64RegisterName;
@@ -54,9 +46,17 @@ use hvdef::HvX64RegisterName;
 use hvdef::HvX64RegisterPage;
 use hvdef::HypercallCode;
 use hvdef::Vtl;
-use hvdef::HV_PAGE_SIZE;
-use hvdef::HV_PARTITION_ID_SELF;
-use hvdef::HV_VP_INDEX_SELF;
+use hvdef::hypercall::AssertVirtualInterrupt;
+use hvdef::hypercall::HostVisibilityType;
+use hvdef::hypercall::HvGpaRange;
+use hvdef::hypercall::HvGpaRangeExtended;
+use hvdef::hypercall::HvInputVtl;
+use hvdef::hypercall::HvInterceptParameters;
+use hvdef::hypercall::HvInterceptType;
+use hvdef::hypercall::HvRegisterAssoc;
+use hvdef::hypercall::HypercallOutput;
+use hvdef::hypercall::InitialVpContextX64;
+use hvdef::hypercall::ModifyHostVisibility;
 use memory_range::MemoryRange;
 use pal::unix::pthread::*;
 use parking_lot::Mutex;
@@ -71,14 +71,14 @@ use std::fmt::Debug;
 use std::fs::File;
 use std::io;
 use std::os::unix::prelude::*;
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::AtomicU8;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Once;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use thiserror::Error;
-use user_driver::memory::MemoryBlock;
 use user_driver::DmaClient;
+use user_driver::memory::MemoryBlock;
 use x86defs::snp::SevVmsa;
 use x86defs::tdx::TdCallResultCode;
 use x86defs::vmx::ApicPage;
@@ -153,7 +153,9 @@ pub enum Error {
     Sidecar(#[source] sidecar_client::SidecarError),
     #[error("failed to open sidecar")]
     OpenSidecar(#[source] NewSidecarClientError),
-    #[error("mismatch between requested isolation type {requested:?} and supported isolation type {supported:?}")]
+    #[error(
+        "mismatch between requested isolation type {requested:?} and supported isolation type {supported:?}"
+    )]
     MismatchedIsolation {
         supported: IsolationType,
         requested: IsolationType,
@@ -194,7 +196,9 @@ impl HypercallError {
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum HvcallError {
-    #[error("kernel rejected the hypercall, most likely due to the hypercall code not being allowed via set_allowed_hypercalls")]
+    #[error(
+        "kernel rejected the hypercall, most likely due to the hypercall code not being allowed via set_allowed_hypercalls"
+    )]
     HypercallIoctlFailed(#[source] nix::Error),
     #[error("input parameters are larger than a page")]
     InputParametersTooLarge,
@@ -229,7 +233,9 @@ pub enum ApplyVtlProtectionsError {
         permissions: x86defs::snp::SevRmpAdjust,
         vtl: HvInputVtl,
     },
-    #[error("tdcall failed with {error:?} when protecting pages {range} with permissions {permissions:x?} for vtl {vtl:?}")]
+    #[error(
+        "tdcall failed with {error:?} when protecting pages {range} with permissions {permissions:x?} for vtl {vtl:?}"
+    )]
     Tdx {
         error: TdCallResultCode,
         range: MemoryRange,
@@ -1654,7 +1660,7 @@ mod private {
 
     pub trait BackingPrivate<'a>: Sized {
         fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>, hcl: &Hcl)
-            -> Result<Self, NoRunner>;
+        -> Result<Self, NoRunner>;
 
         fn try_set_reg(
             runner: &mut ProcessorRunner<'_, Self>,

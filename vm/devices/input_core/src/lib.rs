@@ -9,10 +9,10 @@ pub mod mesh_input;
 
 use mesh::MeshPayload;
 use std::pin::Pin;
-use vm_resource::kind::KeyboardInputHandleKind;
-use vm_resource::kind::MouseInputHandleKind;
 use vm_resource::CanResolveTo;
 use vm_resource::ResourceId;
+use vm_resource::kind::KeyboardInputHandleKind;
+use vm_resource::kind::MouseInputHandleKind;
 
 /// Keyboard or mouse input data.
 #[derive(Debug, Copy, Clone, MeshPayload)]
@@ -47,10 +47,7 @@ pub struct KeyboardData {
 pub trait InputSource<T>: futures::Stream<Item = T> + Unpin + Send {
     /// Sets this input source active, so that the sending side can choose which
     /// device to send input to.
-    fn set_active(
-        &mut self,
-        active: bool,
-    ) -> Pin<Box<dyn '_ + Future<Output = ()> + Send>>;
+    fn set_active(&mut self, active: bool) -> Pin<Box<dyn '_ + Future<Output = ()> + Send>>;
 }
 
 /// A resolved [`InputSource`].

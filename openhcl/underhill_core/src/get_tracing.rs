@@ -29,10 +29,10 @@ use futures::FutureExt;
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
 use get_helpers::build_tracelogging_notification_buffer;
+use get_protocol::GET_LOG_INTERFACE_GUID;
 use get_protocol::LogFlags;
 use get_protocol::LogLevel;
 use get_protocol::LogType;
-use get_protocol::GET_LOG_INTERFACE_GUID;
 use mesh::rpc::Rpc;
 use mesh_tracing::Level;
 use mesh_tracing::RemoteTracer;
@@ -42,11 +42,11 @@ use mesh_tracing::Type;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
 use tracing_helpers::formatter::FieldFormatter;
+use tracing_subscriber::Layer;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::format::Format;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::Layer;
 use vmbus_async::async_dgram::AsyncSendExt;
 
 fn tracing_log_level(level: Level) -> LogLevel {

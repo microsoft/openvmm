@@ -16,11 +16,13 @@ cfg_if::cfg_if! {
     }
 }
 
-use crate::dispatch::vtl2_settings_worker::disk_from_disk_type;
-use crate::dispatch::vtl2_settings_worker::wait_for_mana;
-use crate::dispatch::vtl2_settings_worker::InitialControllers;
+use crate::ControlRequest;
 use crate::dispatch::LoadedVm;
 use crate::dispatch::LoadedVmNetworkSettings;
+use crate::dispatch::vtl2_settings_worker::InitialControllers;
+use crate::dispatch::vtl2_settings_worker::disk_from_disk_type;
+use crate::dispatch::vtl2_settings_worker::wait_for_mana;
+use crate::emuplat::EmuplatServicing;
 use crate::emuplat::firmware::UnderhillLogger;
 use crate::emuplat::firmware::UnderhillVsmConfig;
 use crate::emuplat::framebuffer::FramebufferRemoteControl;
@@ -35,22 +37,20 @@ use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::emuplat::non_volatile_store::VmbsBrokerNonVolatileStore;
 use crate::emuplat::tpm::resources::GetTpmRequestAkCertHelperHandle;
 use crate::emuplat::vga_proxy::UhRegisterHostIoFastPath;
-use crate::emuplat::EmuplatServicing;
+use crate::loader::LoadKind;
 use crate::loader::vtl0_config::MeasuredVtl0Info;
 use crate::loader::vtl2_config::RuntimeParameters;
-use crate::loader::LoadKind;
 use crate::nvme_manager::NvmeDiskConfig;
 use crate::nvme_manager::NvmeDiskResolver;
 use crate::nvme_manager::NvmeManager;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
 use crate::servicing;
-use crate::servicing::transposed::OptionServicingInitState;
 use crate::servicing::ServicingState;
+use crate::servicing::transposed::OptionServicingInitState;
 use crate::threadpool_vm_task_backend::ThreadpoolBackend;
 use crate::vmbus_relay_unit::VmbusRelayHandle;
 use crate::wrapped_partition::WrappedPartition;
-use crate::ControlRequest;
 use anyhow::Context;
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
@@ -66,15 +66,15 @@ use futures_concurrency::future::Race;
 use get_protocol::EventLogId;
 use get_protocol::RegisterState;
 use get_protocol::TripleFaultType;
+use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::platform_settings::DevicePlatformSettings;
 use guest_emulation_transport::api::platform_settings::General;
-use guest_emulation_transport::GuestEmulationTransportClient;
 use guestmem::GuestMemory;
 use guid::Guid;
 use hcl_compat_uefi_nvram_storage::HclCompatNvramQuirks;
-use hvdef::hypercall::HvGuestOsId;
 use hvdef::HvRegisterValue;
 use hvdef::Vtl;
+use hvdef::hypercall::HvGuestOsId;
 use hyperv_ic_guest::ShutdownGuestIc;
 use ide_resources::GuestMedia;
 use ide_resources::IdePath;
@@ -84,9 +84,9 @@ use input_core::MultiplexedInputHandle;
 use inspect::Inspect;
 use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
-use mesh::rpc::RpcSend;
 use mesh::CancelContext;
 use mesh::MeshPayload;
+use mesh::rpc::RpcSend;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
@@ -97,10 +97,10 @@ use openhcl_dma_manager::DmaClientParameters;
 use openhcl_dma_manager::DmaClientSpawner;
 use openhcl_dma_manager::LowerVtlPermissionPolicy;
 use openhcl_dma_manager::OpenhclDmaManager;
-use pal_async::local::LocalDriver;
-use pal_async::task::Spawn;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
+use pal_async::local::LocalDriver;
+use pal_async::task::Spawn;
 use parking_lot::Mutex;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
@@ -118,37 +118,37 @@ use thiserror::Error;
 use tpm_resources::TpmAkCertTypeResource;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
-use tracing::instrument;
 use tracing::Instrument;
+use tracing::instrument;
 use uevent::UeventListener;
 use underhill_attestation::AttestationType;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
 use user_driver::DmaClient;
-use virt::state::HvRegisterState;
 use virt::Partition;
 use virt::VpIndex;
 use virt::X86Partition;
+use virt::state::HvRegisterState;
 use virt_mshv_vtl::UhPartition;
 use virt_mshv_vtl::UhPartitionNewParams;
 use virt_mshv_vtl::UhProtoPartition;
 use vm_loader::initial_regs::initial_regs;
-use vm_resource::kind::DiskHandleKind;
-use vm_resource::kind::KeyboardInputHandleKind;
-use vm_resource::kind::MouseInputHandleKind;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
+use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::KeyboardInputHandleKind;
+use vm_resource::kind::MouseInputHandleKind;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
-use vm_topology::processor::aarch64::GicInfo;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
 use vm_topology::processor::VpInfo;
+use vm_topology::processor::aarch64::GicInfo;
 use vmbus_relay_intercept_device::SimpleVmbusClientDeviceWrapper;
 use vmbus_server::VmbusServer;
-use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
 use vmcore::non_volatile_store::EphemeralNonVolatileStore;
+use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
@@ -161,17 +161,17 @@ use vmm_core::partition_unit::Halt;
 use vmm_core::partition_unit::PartitionUnit;
 use vmm_core::partition_unit::PartitionUnitParams;
 use vmm_core::synic::SynicPorts;
-use vmm_core::vmbus_unit::offer_channel_unit;
-use vmm_core::vmbus_unit::offer_vmbus_device_handle_unit;
 use vmm_core::vmbus_unit::ChannelUnit;
 use vmm_core::vmbus_unit::VmbusServerHandle;
+use vmm_core::vmbus_unit::offer_channel_unit;
+use vmm_core::vmbus_unit::offer_vmbus_device_handle_unit;
 use vmm_core::vmtime_unit::run_vmtime;
 use vmm_core_defs::HaltReason;
-use vmotherboard::options::BaseChipsetDevices;
-use vmotherboard::options::BaseChipsetFoundation;
 use vmotherboard::BaseChipsetBuilder;
 use vmotherboard::BaseChipsetBuilderOutput;
 use vmotherboard::ChipsetDeviceHandle;
+use vmotherboard::options::BaseChipsetDevices;
+use vmotherboard::options::BaseChipsetFoundation;
 use zerocopy::FromZeros;
 
 pub(crate) const PM_BASE: u16 = 0x400;
@@ -188,8 +188,8 @@ struct GuestEmulationTransportInfra {
     get_client: GuestEmulationTransportClient,
 }
 
-async fn construct_get(
-) -> Result<(GuestEmulationTransportInfra, pal_async::task::Task<()>), anyhow::Error> {
+async fn construct_get()
+-> Result<(GuestEmulationTransportInfra, pal_async::task::Task<()>), anyhow::Error> {
     // Create a thread to run GET and VMGS clients on.
     //
     // This must be a separate thread from the thread pool because sometimes

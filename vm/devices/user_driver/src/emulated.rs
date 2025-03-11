@@ -4,14 +4,14 @@
 //! This implements the user-mode driver device traits using an emulated PCI
 //! device.
 
+use crate::DeviceBacking;
+use crate::DeviceRegisterIo;
+use crate::DmaClient;
 use crate::interrupt::DeviceInterrupt;
 use crate::interrupt::DeviceInterruptSource;
 use crate::memory::MappedDmaTarget;
 use crate::memory::MemoryBlock;
 use crate::memory::PAGE_SIZE;
-use crate::DeviceBacking;
-use crate::DeviceRegisterIo;
-use crate::DmaClient;
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
@@ -27,8 +27,8 @@ use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
 use safeatomic::AtomicSliceOps;
 use std::ptr::NonNull;
-use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 
 /// An emulated device.
 pub struct EmulatedDevice<T> {

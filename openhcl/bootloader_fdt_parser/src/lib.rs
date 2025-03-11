@@ -7,13 +7,13 @@
 
 #![forbid(unsafe_code)]
 
-use anyhow::bail;
 use anyhow::Context;
+use anyhow::bail;
 use fdt::parser::Node;
 use fdt::parser::Parser;
 use fdt::parser::Property;
-use igvm_defs::dt::IGVM_DT_IGVM_TYPE_PROPERTY;
 use igvm_defs::MemoryMapEntryType;
+use igvm_defs::dt::IGVM_DT_IGVM_TYPE_PROPERTY;
 use inspect::Inspect;
 use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;

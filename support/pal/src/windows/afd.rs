@@ -6,9 +6,9 @@
 
 //! Code to interact with the Windows AFD (socket) driver.
 
-use super::chk_status;
 use super::SendSyncRawHandle;
 use super::UnicodeString;
+use super::chk_status;
 use ioapiset::DeviceIoControl;
 use minwinbase::OVERLAPPED;
 use ntapi::ntioapi::NtOpenFile;

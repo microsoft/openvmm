@@ -3,9 +3,9 @@
 
 //! Setting up memory
 
-use crate::hvcall;
 use crate::PartitionInfo;
 use crate::ShimParams;
+use crate::hvcall;
 use aarch64defs::IntermPhysAddrSize;
 
 pub fn setup_vtl2_memory(_shim_params: &ShimParams, _partition_info: &PartitionInfo) {

@@ -4,10 +4,10 @@
 //! Test attribute macro for `test_with_tracing` crate.
 
 use quote::quote;
-use syn::parse_macro_input;
-use syn::spanned::Spanned;
 use syn::Error;
 use syn::ItemFn;
+use syn::parse_macro_input;
+use syn::spanned::Spanned;
 
 /// Attribute macro on tests that have tracing output.
 ///

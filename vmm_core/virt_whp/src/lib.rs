@@ -44,14 +44,11 @@ use range_map_vec::RangeMap;
 use std::convert::Infallible;
 use std::ops::Index;
 use std::ops::IndexMut;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::task::Waker;
 use thiserror::Error;
-use virt::io::CpuIo;
-use virt::irqcon::MsiRequest;
-use virt::vm::AccessVmState;
 use virt::IsolationType;
 use virt::NeedsYield;
 use virt::PageVisibility;
@@ -62,6 +59,9 @@ use virt::ProtoPartitionConfig;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use virt::io::CpuIo;
+use virt::irqcon::MsiRequest;
+use virt::vm::AccessVmState;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::monitor::MonitorPage;
@@ -1575,8 +1575,8 @@ mod x86 {
     use crate::WhpPartition;
     use crate::WhpPartitionInner;
     use hvdef::Vtl;
-    use virt::irqcon::MsiRequest;
     use virt::VpIndex;
+    use virt::irqcon::MsiRequest;
 
     impl WhpPartitionInner {
         pub(crate) fn synic_interrupt(
@@ -1634,8 +1634,8 @@ mod aarch64 {
     use crate::WhpPartitionAndVtl;
     use crate::WhpPartitionInner;
     use hvdef::Vtl;
-    use virt::irqcon::MsiRequest;
     use virt::VpIndex;
+    use virt::irqcon::MsiRequest;
 
     impl WhpPartitionInner {
         pub(crate) fn synic_interrupt(

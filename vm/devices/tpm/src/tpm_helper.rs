@@ -3,8 +3,27 @@
 
 //! The module includes the helper functions for sending TPM commands.
 
+use crate::TPM_AZURE_AIK_HANDLE;
+use crate::TPM_GUEST_SECRET_HANDLE;
+use crate::TPM_NV_INDEX_AIK_CERT;
+use crate::TPM_NV_INDEX_ATTESTATION_REPORT;
+use crate::TPM_RSA_SRK_HANDLE;
+use crate::TpmRsa2kPublic;
 use crate::tpm20proto;
-use crate::tpm20proto::protocol::common::CmdAuth;
+use crate::tpm20proto::AlgIdEnum;
+use crate::tpm20proto::CommandCodeEnum;
+use crate::tpm20proto::MAX_DIGEST_BUFFER_SIZE;
+use crate::tpm20proto::ReservedHandle;
+use crate::tpm20proto::ResponseCode;
+use crate::tpm20proto::ResponseValidationError;
+use crate::tpm20proto::SessionTagEnum;
+use crate::tpm20proto::TPM20_RH_ENDORSEMENT;
+use crate::tpm20proto::TPM20_RH_OWNER;
+use crate::tpm20proto::TPM20_RH_PLATFORM;
+use crate::tpm20proto::TPM20_RS_PW;
+use crate::tpm20proto::TpmProtoError;
+use crate::tpm20proto::TpmaNvBits;
+use crate::tpm20proto::TpmaObjectBits;
 use crate::tpm20proto::protocol::CreatePrimaryReply;
 use crate::tpm20proto::protocol::ImportReply;
 use crate::tpm20proto::protocol::LoadReply;
@@ -20,26 +39,7 @@ use crate::tpm20proto::protocol::TpmsRsaParams;
 use crate::tpm20proto::protocol::TpmtPublic;
 use crate::tpm20proto::protocol::TpmtRsaScheme;
 use crate::tpm20proto::protocol::TpmtSymDefObject;
-use crate::tpm20proto::AlgIdEnum;
-use crate::tpm20proto::CommandCodeEnum;
-use crate::tpm20proto::ReservedHandle;
-use crate::tpm20proto::ResponseCode;
-use crate::tpm20proto::ResponseValidationError;
-use crate::tpm20proto::SessionTagEnum;
-use crate::tpm20proto::TpmProtoError;
-use crate::tpm20proto::TpmaNvBits;
-use crate::tpm20proto::TpmaObjectBits;
-use crate::tpm20proto::MAX_DIGEST_BUFFER_SIZE;
-use crate::tpm20proto::TPM20_RH_ENDORSEMENT;
-use crate::tpm20proto::TPM20_RH_OWNER;
-use crate::tpm20proto::TPM20_RH_PLATFORM;
-use crate::tpm20proto::TPM20_RS_PW;
-use crate::TpmRsa2kPublic;
-use crate::TPM_AZURE_AIK_HANDLE;
-use crate::TPM_GUEST_SECRET_HANDLE;
-use crate::TPM_NV_INDEX_AIK_CERT;
-use crate::TPM_NV_INDEX_ATTESTATION_REPORT;
-use crate::TPM_RSA_SRK_HANDLE;
+use crate::tpm20proto::protocol::common::CmdAuth;
 use inspect::InspectMut;
 use ms_tpm_20_ref::MsTpm20RefPlatform;
 use thiserror::Error;
@@ -96,7 +96,9 @@ pub enum TpmHelperError {
     NoOwnerReadFlag(u32),
     #[error("nv index {0:#x} with invalid write permission")]
     InvalidWritePermission(u32),
-    #[error("input size {input_size} to nv write exceeds the allocated size {allocated_size} of nv index {nv_index:#x}")]
+    #[error(
+        "input size {input_size} to nv write exceeds the allocated size {allocated_size} of nv index {nv_index:#x}"
+    )]
     NvWriteInputTooLarge {
         nv_index: u32,
         input_size: usize,
@@ -1604,14 +1606,14 @@ fn export_rsa_public(public: &Tpm2bPublic) -> Result<TpmRsa2kPublic, TpmHelperUt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TPM_AZURE_AIK_HANDLE;
+    use crate::TPM_NV_INDEX_AIK_CERT;
+    use crate::TPM_NV_INDEX_ATTESTATION_REPORT;
     use crate::tpm20proto::ResponseCode;
     use crate::tpm20proto::TPM20_HT_PERSISTENT;
     use crate::tpm20proto::TPM20_RH_ENDORSEMENT;
     use crate::tpm20proto::TPM20_RH_OWNER;
     use crate::tpm20proto::TPM20_RH_PLATFORM;
-    use crate::TPM_AZURE_AIK_HANDLE;
-    use crate::TPM_NV_INDEX_AIK_CERT;
-    use crate::TPM_NV_INDEX_ATTESTATION_REPORT;
     use ms_tpm_20_ref::DynResult;
     use std::time::Instant;
     use tpm20proto::AlgId;
@@ -1692,14 +1694,18 @@ mod tests {
         // Test creating AK and EK
 
         // Ensure nothing present
-        assert!(tpm_engine_helper
-            .find_object(TPM_AZURE_AIK_HANDLE)
-            .unwrap()
-            .is_none());
-        assert!(tpm_engine_helper
-            .find_object(TPM_AZURE_EK_HANDLE)
-            .unwrap()
-            .is_none());
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_AZURE_AIK_HANDLE)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_AZURE_EK_HANDLE)
+                .unwrap()
+                .is_none()
+        );
 
         let (ak_pub_first, ek_pub_first) = create_ak_ek_pub(&mut tpm_engine_helper);
 
@@ -1708,14 +1714,18 @@ mod tests {
         restart_tpm_engine(&mut tpm_engine_helper, true, true);
 
         // Ensure nothing present after context is cleared and tpm reset
-        assert!(tpm_engine_helper
-            .find_object(TPM_AZURE_AIK_HANDLE)
-            .unwrap()
-            .is_none());
-        assert!(tpm_engine_helper
-            .find_object(TPM_AZURE_EK_HANDLE)
-            .unwrap()
-            .is_none());
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_AZURE_AIK_HANDLE)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_AZURE_EK_HANDLE)
+                .unwrap()
+                .is_none()
+        );
 
         let (ak_pub_second, ek_pub_second) = create_ak_ek_pub(&mut tpm_engine_helper);
 
@@ -1728,14 +1738,18 @@ mod tests {
         restart_tpm_engine(&mut tpm_engine_helper, false, true);
 
         // Ensure that AK is persisted across reset without clearing context
-        assert!(tpm_engine_helper
-            .find_object(TPM_AZURE_AIK_HANDLE)
-            .unwrap()
-            .is_some());
-        assert!(tpm_engine_helper
-            .find_object(TPM_AZURE_EK_HANDLE)
-            .unwrap()
-            .is_none());
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_AZURE_AIK_HANDLE)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_AZURE_EK_HANDLE)
+                .unwrap()
+                .is_none()
+        );
 
         let (ak_pub_third, ek_pub_third) = create_ak_ek_pub(&mut tpm_engine_helper);
 
@@ -1748,14 +1762,18 @@ mod tests {
         restart_tpm_engine(&mut tpm_engine_helper, false, true);
 
         // Ensure that AK is persisted across reset without clearing context
-        assert!(tpm_engine_helper
-            .find_object(TPM_AZURE_AIK_HANDLE)
-            .unwrap()
-            .is_some());
-        assert!(tpm_engine_helper
-            .find_object(TPM_AZURE_EK_HANDLE)
-            .unwrap()
-            .is_none());
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_AZURE_AIK_HANDLE)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_AZURE_EK_HANDLE)
+                .unwrap()
+                .is_none()
+        );
 
         let (ak_pub_fourth, ek_pub_fourth) = create_ak_ek_pub(&mut tpm_engine_helper);
 
@@ -1771,14 +1789,18 @@ mod tests {
         assert!(result.is_ok());
 
         // Ensure nothing present after seeds refreshment
-        assert!(tpm_engine_helper
-            .find_object(TPM_AZURE_AIK_HANDLE)
-            .unwrap()
-            .is_none());
-        assert!(tpm_engine_helper
-            .find_object(TPM_AZURE_EK_HANDLE)
-            .unwrap()
-            .is_none());
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_AZURE_AIK_HANDLE)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_AZURE_EK_HANDLE)
+                .unwrap()
+                .is_none()
+        );
 
         let (ak_pub_fifth, ek_pub_fifth) = create_ak_ek_pub(&mut tpm_engine_helper);
 
@@ -1795,28 +1817,36 @@ mod tests {
         let ak_pub = result.unwrap();
 
         // Ensure `create_ak_pub` persists AK
-        assert!(tpm_engine_helper
-            .find_object(TPM_AZURE_AIK_HANDLE)
-            .unwrap()
-            .is_some());
-        assert!(tpm_engine_helper
-            .find_object(TPM_AZURE_EK_HANDLE)
-            .unwrap()
-            .is_none());
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_AZURE_AIK_HANDLE)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_AZURE_EK_HANDLE)
+                .unwrap()
+                .is_none()
+        );
 
         let result = tpm_engine_helper.create_ek_pub();
         assert!(result.is_ok());
         let ek_pub = result.unwrap();
 
         // Ensure `create_ek_pub` does not persist anything
-        assert!(tpm_engine_helper
-            .find_object(TPM_AZURE_AIK_HANDLE)
-            .unwrap()
-            .is_some());
-        assert!(tpm_engine_helper
-            .find_object(TPM_AZURE_EK_HANDLE)
-            .unwrap()
-            .is_none());
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_AZURE_AIK_HANDLE)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_AZURE_EK_HANDLE)
+                .unwrap()
+                .is_none()
+        );
 
         (ak_pub, ek_pub)
     }
@@ -2285,10 +2315,12 @@ mod tests {
         assert!(nv_read_public_reply.nv_public.nv_public.data_size.get() < MAX_NV_INDEX_SIZE);
 
         // Ensure AK is provisioned
-        assert!(tpm_engine_helper
-            .find_object(TPM_AZURE_AIK_HANDLE)
-            .unwrap()
-            .is_some());
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_AZURE_AIK_HANDLE)
+                .unwrap()
+                .is_some()
+        );
 
         let mut provisioned_ak_cert = [0u8; MAX_NV_INDEX_SIZE as usize];
         let result =
@@ -2399,16 +2431,20 @@ mod tests {
         assert!(result.is_ok());
 
         // Ensure SRK is provisioned
-        assert!(tpm_engine_helper
-            .find_object(TPM_RSA_SRK_HANDLE)
-            .unwrap()
-            .is_some());
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_RSA_SRK_HANDLE)
+                .unwrap()
+                .is_some()
+        );
 
         // Ensure guest secret key is not initialized yet
-        assert!(tpm_engine_helper
-            .find_object(TPM_GUEST_SECRET_HANDLE)
-            .unwrap()
-            .is_none());
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_GUEST_SECRET_HANDLE)
+                .unwrap()
+                .is_none()
+        );
 
         // Negative test: invalid data blob
         let result = tpm_engine_helper.initialize_guest_secret_key(&[]);
@@ -2448,16 +2484,20 @@ mod tests {
         restart_tpm_engine(&mut tpm_engine_helper, true, true);
 
         // Ensure SRK is not provisioned
-        assert!(tpm_engine_helper
-            .find_object(TPM_RSA_SRK_HANDLE)
-            .unwrap()
-            .is_none());
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_RSA_SRK_HANDLE)
+                .unwrap()
+                .is_none()
+        );
 
         // Ensure guest secret key is not initialized yet
-        assert!(tpm_engine_helper
-            .find_object(TPM_GUEST_SECRET_HANDLE)
-            .unwrap()
-            .is_none());
+        assert!(
+            tpm_engine_helper
+                .find_object(TPM_GUEST_SECRET_HANDLE)
+                .unwrap()
+                .is_none()
+        );
 
         // Expect to fail due to SRK not found
         let result = tpm_engine_helper.initialize_guest_secret_key(&GUEST_SECRET_KEY_BLOB);

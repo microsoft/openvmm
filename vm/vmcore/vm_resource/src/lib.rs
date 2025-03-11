@@ -635,8 +635,8 @@ mod tests {
     use super::ResourceKind;
     use super::ResourceResolver;
     use crate::CanResolveTo;
-    use mesh::payload::Protobuf;
     use mesh::MeshPayload;
+    use mesh::payload::Protobuf;
     use pal_async::async_test;
     use std::convert::Infallible;
 

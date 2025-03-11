@@ -16,10 +16,10 @@ use std::fs::File;
 use std::io;
 use std::marker::PhantomData;
 use std::os::unix::prelude::*;
+use std::sync::Once;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::Once;
 use thiserror::Error;
 
 mod ioctl {
@@ -1128,12 +1128,13 @@ impl<'a> Processor<'a> {
     pub fn runner(&self) -> VpRunner<'a> {
         // Ensure this thread is uniquely running the VP, and store the thread
         // ID to support cancellation.
-        assert!(self
-            .get()
-            .thread
-            .write()
-            .replace(Pthread::current())
-            .is_none());
+        assert!(
+            self.get()
+                .thread
+                .write()
+                .replace(Pthread::current())
+                .is_none()
+        );
 
         VpRunner {
             partition: self.0,

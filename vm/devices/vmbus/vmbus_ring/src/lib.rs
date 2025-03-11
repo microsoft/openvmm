@@ -18,23 +18,23 @@
 pub mod gparange;
 
 pub use pipe_protocol::*;
-pub use protocol::TransferPageRange;
 pub use protocol::PAGE_SIZE;
+pub use protocol::TransferPageRange;
 
 use crate::gparange::GpaRange;
-use guestmem::ranges::PagedRange;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use protocol::*;
 use safeatomic::AtomicSliceOps;
 use std::fmt::Debug;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use thiserror::Error;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;

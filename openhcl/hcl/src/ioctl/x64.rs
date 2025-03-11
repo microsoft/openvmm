@@ -3,7 +3,6 @@
 
 //! Backing for non-hardware-isolated X64 partitions.
 
-use super::private::BackingPrivate;
 use super::BackingState;
 use super::Error;
 use super::GuestVtl;
@@ -13,14 +12,15 @@ use super::NoRunner;
 use super::ProcessorRunner;
 use super::TranslateGvaToGpaError;
 use super::TranslateResult;
+use super::private::BackingPrivate;
 use crate::protocol::hcl_cpu_context_x64;
+use hvdef::HV_PARTITION_ID_SELF;
+use hvdef::HV_VP_INDEX_SELF;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use hvdef::HvX64RegisterName;
 use hvdef::HvX64RegisterPage;
 use hvdef::HypercallCode;
-use hvdef::HV_PARTITION_ID_SELF;
-use hvdef::HV_VP_INDEX_SELF;
 use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use zerocopy::FromZeros;

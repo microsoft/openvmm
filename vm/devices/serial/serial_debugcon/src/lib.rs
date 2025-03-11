@@ -9,11 +9,11 @@
 
 pub mod resolver;
 
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use futures::AsyncWrite;
 use inspect::InspectMut;
 use serial_core::SerialIo;
@@ -21,10 +21,10 @@ use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
+use std::task::ready;
 use vmcore::device_state::ChangeDeviceState;
 
 // the bound here is entirely arbitrary. we pick a relatively large number, just

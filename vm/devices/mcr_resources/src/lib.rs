@@ -8,8 +8,8 @@
 // #![warn(missing_docs)] // TODO MCR
 
 use mesh::MeshPayload;
-use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::ResourceId;
+use vm_resource::kind::PciDeviceHandleKind;
 
 #[derive(MeshPayload)]
 pub struct McrControllerHandle {

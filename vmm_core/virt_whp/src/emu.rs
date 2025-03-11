@@ -3,18 +3,18 @@
 
 #![cfg(guest_arch = "x86_64")]
 
+use crate::WhpProcessor;
 use crate::memory::x86::GpaBackingType;
 use crate::vp::WhpRunVpError;
-use crate::WhpProcessor;
-use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
-use virt::io::CpuIo;
+use hvdef::Vtl;
 use virt::VpIndex;
-use virt_support_x86emu::emulate::emulate_translate_gva;
+use virt::io::CpuIo;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::emulate::TranslateMode;
+use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;

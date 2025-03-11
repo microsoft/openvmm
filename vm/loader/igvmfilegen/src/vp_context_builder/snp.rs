@@ -14,9 +14,9 @@ use loader::importer::TableRegister;
 use loader::importer::X86Register;
 use loader::paravisor::HCL_SECURE_VTL;
 use std::fmt::Debug;
+use x86defs::X64_EFER_SVME;
 use x86defs::snp::SevSelector;
 use x86defs::snp::SevVmsa;
-use x86defs::X64_EFER_SVME;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 

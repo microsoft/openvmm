@@ -13,12 +13,12 @@
 pub use self::maybe_floppy_disk_controller::MaybeStubFloppyDiskController;
 
 use self::super_io::SioController;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use floppy::DriveRibbon;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
@@ -193,10 +193,10 @@ impl<FDC: MaybeStubFloppyDiskController> PortIoIntercept for Winbond83977FloppyS
 }
 
 mod maybe_floppy_disk_controller {
+    use chipset_device::ChipsetDevice;
     use chipset_device::pio::PortIoIntercept;
     use chipset_device::pio::RegisterPortIoIntercept;
     use chipset_device::poll_device::PollDevice;
-    use chipset_device::ChipsetDevice;
     use floppy::DriveRibbon;
     use guestmem::GuestMemory;
     use inspect::InspectMut;

@@ -6,8 +6,8 @@ use hvdef::HvResult;
 use hvdef::Vtl;
 use inspect::Inspect;
 use parking_lot::Mutex;
-use std::collections::hash_map;
 use std::collections::HashMap;
+use std::collections::hash_map;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -99,7 +99,7 @@ impl SynicPortAccess for SynicPorts {
     ) -> Result<Box<dyn Sync + Send>, vmcore::synic::Error> {
         match self.ports.lock().entry(connection_id) {
             hash_map::Entry::Occupied(_) => {
-                return Err(vmcore::synic::Error::ConnectionIdInUse(connection_id))
+                return Err(vmcore::synic::Error::ConnectionIdInUse(connection_id));
             }
             hash_map::Entry::Vacant(e) => {
                 e.insert(Port {
@@ -131,7 +131,7 @@ impl SynicPortAccess for SynicPorts {
 
         match self.ports.lock().entry(connection_id) {
             hash_map::Entry::Occupied(_) => {
-                return Err(vmcore::synic::Error::ConnectionIdInUse(connection_id))
+                return Err(vmcore::synic::Error::ConnectionIdInUse(connection_id));
             }
             hash_map::Entry::Vacant(e) => {
                 e.insert(Port {

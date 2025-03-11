@@ -6,10 +6,10 @@
 #![forbid(unsafe_code)]
 
 use mesh::MeshPayload;
-use vm_resource::kind::SerialBackendHandle;
-use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::SerialBackendHandle;
+use vm_resource::kind::VmbusDeviceHandleKind;
 
 /// A handle to a vmbus serial device.
 #[derive(MeshPayload)]

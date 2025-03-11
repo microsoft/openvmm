@@ -14,12 +14,12 @@ use chipset_device::pci::PciConfigSpace;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pci_core::msi::MsiInterruptSet;
+use user_driver::DeviceBacking;
+use user_driver::DmaClient;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
-use user_driver::DeviceBacking;
-use user_driver::DmaClient;
 
 /// An EmulatedDevice fuzzer that requires a working EmulatedDevice backend.
 #[derive(Inspect)]

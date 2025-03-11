@@ -3,17 +3,17 @@
 
 //! Routines to prepare VTL2 memory for launching the kernel.
 
-use super::address_space::init_local_map;
 use super::address_space::LocalMap;
-use crate::host_params::shim_params::IsolationType;
-use crate::host_params::PartitionInfo;
-use crate::hypercall::hvcall;
+use super::address_space::init_local_map;
 use crate::ShimParams;
+use crate::host_params::PartitionInfo;
+use crate::host_params::shim_params::IsolationType;
+use crate::hypercall::hvcall;
 use memory_range::MemoryRange;
 use sha2::Digest;
 use sha2::Sha384;
-use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use x86defs::X64_LARGE_PAGE_SIZE;
+use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 
 /// On isolated systems, transitions all VTL2 RAM to be private and accepted, with the appropriate
 /// VTL permissions applied.

@@ -16,17 +16,17 @@ mod key_protector;
 mod secure_key_release;
 mod vmgs;
 
-pub use igvm_attest::ak_cert::parse_response as parse_ak_cert_response;
 pub use igvm_attest::Error as IgvmAttestError;
 pub use igvm_attest::IgvmAttestRequestHelper;
+pub use igvm_attest::ak_cert::parse_response as parse_ak_cert_response;
 
 use ::vmgs::EncryptionAlgorithm;
 use ::vmgs::Vmgs;
 use cvm_tracing::CVM_ALLOWED;
+use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::GspExtendedStatusFlags;
 use guest_emulation_transport::api::GuestStateProtection;
 use guest_emulation_transport::api::GuestStateProtectionById;
-use guest_emulation_transport::GuestEmulationTransportClient;
 use guid::Guid;
 use hardware_key_sealing::HardwareDerivedKeys;
 use hardware_key_sealing::HardwareKeyProtectorExt as _;
@@ -34,10 +34,10 @@ use key_protector::GetKeysFromKeyProtectorError;
 use key_protector::KeyProtectorExt as _;
 use mesh::MeshPayload;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
 use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::SecurityProfile;
-use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use pal_async::local::LocalDriver;
@@ -1064,13 +1064,13 @@ mod tests {
     use super::*;
     use disk_backend::Disk;
     use disklayer_ram::ram_disk;
-    use get_protocol::GspExtendedStatusFlags;
     use get_protocol::GSP_CLEARTEXT_MAX;
+    use get_protocol::GspExtendedStatusFlags;
     use key_protector::AES_WRAPPED_AES_KEY_LENGTH;
-    use openhcl_attestation_protocol::vmgs::DekKp;
-    use openhcl_attestation_protocol::vmgs::GspKp;
     use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
+    use openhcl_attestation_protocol::vmgs::DekKp;
     use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
+    use openhcl_attestation_protocol::vmgs::GspKp;
     use openhcl_attestation_protocol::vmgs::NUMBER_KP;
     use pal_async::async_test;
     use vmgs_format::EncryptionAlgorithm;
@@ -1719,10 +1719,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(found_key_protector.dek[active_kp_copy as usize]
-            .dek_buffer
-            .iter()
-            .all(|&b| b == 0),);
+        assert!(
+            found_key_protector.dek[active_kp_copy as usize]
+                .dek_buffer
+                .iter()
+                .all(|&b| b == 0),
+        );
         assert_eq!(
             found_key_protector.gsp[active_kp_copy as usize].gsp_length,
             0

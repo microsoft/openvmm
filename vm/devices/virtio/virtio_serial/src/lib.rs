@@ -346,30 +346,32 @@ impl VirtioSerialControlPort {
         let read_fn = port_read_fn(port, mem);
         std::thread::Builder::new()
             .name("virtio control".into())
-            .spawn(move || loop {
-                let data = (read_fn)();
-                if data.is_empty() {
-                    break;
-                }
-                let message = VirtioSerialControl::from_bytes(&data);
-                if message.is_err() {
-                    continue;
-                }
-
-                let message = message.unwrap();
-                match message.event {
-                    VIRTIO_CONSOLE_DEVICE_READY => {
-                        if message.value != 0 {
-                            (ready_callback)()
-                        }
+            .spawn(move || {
+                loop {
+                    let data = (read_fn)();
+                    if data.is_empty() {
+                        break;
                     }
-                    VIRTIO_CONSOLE_PORT_READY => (),
-                    _ => tracing::warn!(
-                        event = message.event,
-                        port_number = message.port_number,
-                        value = message.value,
-                        "[SERIAL] Unhandled control event",
-                    ),
+                    let message = VirtioSerialControl::from_bytes(&data);
+                    if message.is_err() {
+                        continue;
+                    }
+
+                    let message = message.unwrap();
+                    match message.event {
+                        VIRTIO_CONSOLE_DEVICE_READY => {
+                            if message.value != 0 {
+                                (ready_callback)()
+                            }
+                        }
+                        VIRTIO_CONSOLE_PORT_READY => (),
+                        _ => tracing::warn!(
+                            event = message.event,
+                            port_number = message.port_number,
+                            value = message.value,
+                            "[SERIAL] Unhandled control event",
+                        ),
+                    }
                 }
             })
             .unwrap()

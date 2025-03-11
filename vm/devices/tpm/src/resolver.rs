@@ -1,20 +1,20 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::ak_cert::TpmAkCertType;
 use crate::Tpm;
 use crate::TpmError;
+use crate::ak_cert::TpmAkCertType;
 use async_trait::async_trait;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::ResolvedChipsetDevice;
 use thiserror::Error;
 use tpm_resources::TpmAkCertTypeResource;
 use tpm_resources::TpmDeviceHandle;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::ChipsetDeviceHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::ChipsetDeviceHandleKind;
 
 pub struct TpmDeviceResolver;
 

@@ -11,10 +11,10 @@ use anyhow::Context;
 use futures::StreamExt;
 use guestmem::GuestMemory;
 use virt::VpIndex;
+use vmm_core_defs::HaltReason;
 use vmm_core_defs::debug_rpc::DebugRequest;
 use vmm_core_defs::debug_rpc::DebugStopReason;
 use vmm_core_defs::debug_rpc::GuestAddress;
-use vmm_core_defs::HaltReason;
 
 pub struct DebuggerState {
     guest_memory: GuestMemory,

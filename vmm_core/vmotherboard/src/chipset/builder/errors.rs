@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::chipset::io_ranges::IoRangeConflict;
 use crate::chipset::PciConflict;
+use crate::chipset::io_ranges::IoRangeConflict;
 use std::fmt::Debug;
 use thiserror::Error;
 

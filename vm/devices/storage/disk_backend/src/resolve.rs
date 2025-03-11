@@ -6,8 +6,8 @@
 use crate::Disk;
 use crate::DiskIo;
 use crate::InvalidDisk;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::CanResolveTo;
+use vm_resource::kind::DiskHandleKind;
 
 impl CanResolveTo<ResolvedDisk> for DiskHandleKind {
     type Input<'a> = ResolveDiskParameters<'a>;

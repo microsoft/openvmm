@@ -3,13 +3,13 @@
 
 //! Functions for interacting with the BIOS_NVRAM file in a VMGS file
 
-use crate::storage_backend::VmgsStorageBackend;
-use crate::vmgs_file_open;
-use crate::vmgs_json;
 use crate::Error;
 use crate::FilePathArg;
 use crate::KeyPathArg;
 use crate::OpenMode;
+use crate::storage_backend::VmgsStorageBackend;
+use crate::vmgs_file_open;
+use crate::vmgs_json;
 use anyhow::Result;
 use clap::Args;
 use clap::Subcommand;
@@ -22,10 +22,10 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use ucs2::Ucs2LeVec;
+use uefi_nvram_specvars::ParsedNvramEntry;
 use uefi_nvram_specvars::boot_order;
 use uefi_nvram_specvars::parse_nvram_entry;
 use uefi_nvram_specvars::signature_list::SignatureList;
-use uefi_nvram_specvars::ParsedNvramEntry;
 use uefi_nvram_storage::NvramStorage;
 use uefi_specs::uefi::nvram::vars::EFI_GLOBAL_VARIABLE;
 use uefi_specs::uefi::time::EFI_TIME;

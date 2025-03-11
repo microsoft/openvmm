@@ -12,11 +12,11 @@ mod spec;
 
 use self::ps2keyboard::Ps2Keyboard;
 use self::ps2mouse::Ps2Mouse;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use input_core::InputSource;
 use input_core::KeyboardData;
 use inspect::Inspect;

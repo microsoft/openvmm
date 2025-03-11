@@ -9,8 +9,8 @@
 #![forbid(unsafe_code)]
 
 use mesh::MeshPayload;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::Resource;
+use vm_resource::kind::DiskHandleKind;
 
 /// The configuration for a floppy disk.
 #[derive(Debug, MeshPayload)]

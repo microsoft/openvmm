@@ -6,8 +6,8 @@
 
 use virt::CpuidLeaf;
 use virt::IsolationType;
-use vm_topology::processor::x86::X86Topology;
 use vm_topology::processor::ProcessorTopology;
+use vm_topology::processor::x86::X86Topology;
 
 const MAX_CPUS: usize = 2048;
 

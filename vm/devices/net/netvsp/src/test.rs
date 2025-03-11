@@ -4,33 +4,33 @@
 #![cfg(test)]
 
 use super::*;
-use crate::protocol::Version;
-use crate::rndisprot;
 use crate::Arc;
 use crate::GuestMemory;
 use crate::Guid;
 use crate::InspectMut;
+use crate::protocol::Version;
+use crate::rndisprot;
 use async_trait::async_trait;
 use buffers::sub_allocation_size_for_mtu;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::TryFutureExt;
-use guestmem::ranges::PagedRanges;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::PagedRanges;
 use hvdef::hypercall::HvGuestOsId;
 use hvdef::hypercall::HvGuestOsMicrosoft;
 use hvdef::hypercall::HvGuestOsMicrosoftIds;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use net_backend::null::NullEndpoint;
 use net_backend::DisconnectableEndpoint;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
 use net_backend::QueueConfig;
-use pal_async::async_test;
+use net_backend::null::NullEndpoint;
 use pal_async::DefaultDriver;
+use pal_async::async_test;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::atomic::AtomicBool;
@@ -40,6 +40,9 @@ use test_with_tracing::test;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
 use vmbus_async::queue::Queue;
+use vmbus_channel::ChannelClosed;
+use vmbus_channel::RawAsyncChannel;
+use vmbus_channel::SignalVmbusChannel;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::ModifyRequest;
@@ -49,28 +52,25 @@ use vmbus_channel::bus::OpenData;
 use vmbus_channel::bus::OpenRequest;
 use vmbus_channel::bus::OpenResult;
 use vmbus_channel::bus::ParentBus;
-use vmbus_channel::channel::offer_channel;
 use vmbus_channel::channel::ChannelHandle;
 use vmbus_channel::channel::VmbusDevice;
+use vmbus_channel::channel::offer_channel;
 use vmbus_channel::gpadl::GpadlId;
 use vmbus_channel::gpadl::GpadlMap;
 use vmbus_channel::gpadl::GpadlMapView;
 use vmbus_channel::gpadl_ring::AlignedGpadlView;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
-use vmbus_channel::ChannelClosed;
-use vmbus_channel::RawAsyncChannel;
-use vmbus_channel::SignalVmbusChannel;
 use vmbus_core::protocol::UserDefinedData;
-use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmbus_ring::IncomingRing;
 use vmbus_ring::OutgoingRing;
 use vmbus_ring::PAGE_SIZE;
+use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::interrupt::Interrupt;
 use vmcore::save_restore::SavedStateBlob;
 use vmcore::slim_event::SlimEvent;
-use vmcore::vm_task::thread::ThreadDriverBackend;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
+use vmcore::vm_task::thread::ThreadDriverBackend;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -1475,10 +1475,12 @@ async fn initialize_rndis(driver: DefaultDriver) {
     assert_eq!(initialize_complete.minor_version, rndisprot::MINOR_VERSION);
 
     // Not expecting an association packet because virtual function is not present
-    assert!(channel
-        .read_with(|_| panic!("No packet expected"))
-        .await
-        .is_err());
+    assert!(
+        channel
+            .read_with(|_| panic!("No packet expected"))
+            .await
+            .is_err()
+    );
 
     assert_eq!(endpoint_state.lock().stop_endpoint_counter, 1);
 }
@@ -1535,10 +1537,12 @@ async fn initialize_rndis_no_sendbuffer(driver: DefaultDriver) {
     assert_eq!(initialize_complete.minor_version, rndisprot::MINOR_VERSION);
 
     // Not expecting an association packet because virtual function is not present
-    assert!(channel
-        .read_with(|_| panic!("No packet expected"))
-        .await
-        .is_err());
+    assert!(
+        channel
+            .read_with(|_| panic!("No packet expected"))
+            .await
+            .is_err()
+    );
 
     assert_eq!(endpoint_state.lock().stop_endpoint_counter, 1);
 }
@@ -1651,10 +1655,12 @@ async fn initialize_rndis_with_vf(driver: DefaultDriver) {
         .expect("association packet");
 
     // Device will be made ready after packet is sent because Linux netvsc does not send completion packet.
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     channel
         .write(OutgoingPacket {
@@ -1797,10 +1803,12 @@ async fn initialize_rndis_with_vf_alternate_id(driver: DefaultDriver) {
 
     // Device will be made ready after packet is sent because Linux netvsc does
     // not send completion packet.
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     channel
         .write(OutgoingPacket {
@@ -1891,10 +1899,12 @@ async fn initialize_rndis_with_vf_multi_open(driver: DefaultDriver) {
         .await
         .expect("association packet");
 
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     //
     // Revoke and open a new vmbus channel. This happens from a normal
@@ -2073,10 +2083,12 @@ async fn initialize_rndis_with_prev_vf_switch_data_path(driver: DefaultDriver) {
 
     // The data path was already switched before the device started, so not
     // expecting any VF state change.
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_err());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_err()
+    );
 
     // send switch data path message
     let message = NvspMessage {
@@ -2173,10 +2185,12 @@ async fn stop_start_with_vf(driver: DefaultDriver) {
         })
         .await;
 
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     // VF should remain visible through start/stop
     channel.stop().await;
@@ -2216,10 +2230,12 @@ async fn stop_start_with_vf(driver: DefaultDriver) {
 
     // The switch data path triggers a VF update as it uses the common restore
     // 'guest VF' state logic.
-    assert!(test_vf_state
-        .await_ready(true, Duration::ZERO)
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::ZERO)
+            .await
+            .is_ok()
+    );
 
     // VF should remain visible through start/stop
     channel.stop().await;
@@ -2287,10 +2303,12 @@ async fn save_restore_with_vf(driver: DefaultDriver) {
         .await
         .expect("association packet");
 
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     //
     // Save/restore.
@@ -2329,10 +2347,12 @@ async fn save_restore_with_vf(driver: DefaultDriver) {
         })
         .await;
 
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     channel.stop().await;
     let restore_state = channel.save().await.unwrap().unwrap();
@@ -2367,10 +2387,12 @@ async fn save_restore_with_vf(driver: DefaultDriver) {
             payload: &[],
         })
         .await;
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     endpoint_state.lock().poll_iterations_required = 5;
     let message = NvspMessage {
@@ -2484,10 +2506,12 @@ async fn save_restore_with_vf_multi_open(driver: DefaultDriver) {
         })
         .await;
 
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     //
     // Disconnect/reconnect vmbus a couple of times, re-establishing connection on the second.
@@ -2503,10 +2527,12 @@ async fn save_restore_with_vf_multi_open(driver: DefaultDriver) {
     let mut channel = nic.connect_vmbus_channel().await;
 
     // No network init has been done on newer channels, so VF should not be present.
-    assert!(test_vf_state
-        .await_ready(false, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(false, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     channel
         .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
@@ -2552,10 +2578,12 @@ async fn save_restore_with_vf_multi_open(driver: DefaultDriver) {
         })
         .await;
 
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     //
     // Invoke save/restore
@@ -2845,10 +2873,12 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
         })
         .await;
 
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     //
     // Remove VF ID.
@@ -2921,10 +2951,12 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
         })
         .await;
 
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     let message = NvspMessage {
         header: protocol::MessageHeader {
@@ -2951,10 +2983,12 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
         .expect("completion message");
 
     assert_eq!(endpoint_state.lock().use_vf.take().unwrap(), true);
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     //
     // Remove VF ID. The VF state that tracks whether the VF can be offered
@@ -3020,10 +3054,12 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
         })
         .await;
 
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     let message = NvspMessage {
         header: protocol::MessageHeader {
@@ -3063,14 +3099,18 @@ async fn dynamic_vf_support(driver: DefaultDriver) {
         endpoint_state.lock().stop_endpoint_counter,
         stop_endpoint_counter + 1
     );
-    assert!(channel
-        .read_with(|_| panic!("No packet expected"))
-        .await
-        .is_err());
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        channel
+            .read_with(|_| panic!("No packet expected"))
+            .await
+            .is_err()
+    );
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
     assert!(endpoint_state.lock().use_vf.is_none());
 }
 
@@ -3637,10 +3677,12 @@ async fn set_rss_parameter_unused_first_queue(driver: DefaultDriver) {
         .await
         .expect("association packet");
 
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     let message = NvspMessage {
         header: protocol::MessageHeader {
@@ -3852,10 +3894,12 @@ async fn race_coordinator_and_worker_stop_events(driver: DefaultDriver) {
         .await
         .expect("association packet");
 
-    assert!(test_vf_state
-        .await_ready(true, Duration::from_millis(333))
-        .await
-        .is_ok());
+    assert!(
+        test_vf_state
+            .await_ready(true, Duration::from_millis(333))
+            .await
+            .is_ok()
+    );
 
     let link_update_completion_message = NvspMessage {
         header: protocol::MessageHeader {

@@ -12,12 +12,12 @@
 use super::vmbusioctl::VMBUS_CHANNEL_OFFER;
 use super::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use bitfield_struct::bitfield;
-use windows::core::GUID;
 use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::System::Ioctl::FILE_DEVICE_UNKNOWN;
 use windows::Win32::System::Ioctl::FILE_READ_ACCESS;
 use windows::Win32::System::Ioctl::FILE_WRITE_ACCESS;
 use windows::Win32::System::Ioctl::METHOD_BUFFERED;
+use windows::core::GUID;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 

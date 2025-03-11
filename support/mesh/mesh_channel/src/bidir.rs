@@ -3,15 +3,15 @@
 
 //! A bidirectional channel implemented on top of [`Port`].
 
+use super::RecvError;
+use super::TryRecvError;
+use super::lazy::DeserializeFn;
+use super::lazy::LazyMessage;
+use super::lazy::SerializeFn;
 use super::lazy::deserializer;
 use super::lazy::ensure_serializable;
 use super::lazy::lazy_parse;
 use super::lazy::serializer;
-use super::lazy::DeserializeFn;
-use super::lazy::LazyMessage;
-use super::lazy::SerializeFn;
-use super::RecvError;
-use super::TryRecvError;
 use mesh_node::local_node::HandleMessageError;
 use mesh_node::local_node::HandlePortEvent;
 use mesh_node::local_node::NodeError;

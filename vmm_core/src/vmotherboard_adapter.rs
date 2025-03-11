@@ -8,8 +8,8 @@ use crate::partition_unit::Halt;
 use crate::synic::SynicPorts;
 use hvdef::Vtl;
 use std::sync::Arc;
-use virt::io::CpuIo;
 use virt::VpIndex;
+use virt::io::CpuIo;
 use vmm_core_defs::HaltReason;
 use vmotherboard::Chipset;
 
@@ -58,39 +58,19 @@ impl CpuIo for ChipsetPlusSynic {
             .on_post_message(vtl, connection_id, secure, message)
     }
 
-    fn read_mmio(
-        &self,
-        vp: VpIndex,
-        address: u64,
-        data: &mut [u8],
-    ) -> impl Future<Output = ()> {
+    fn read_mmio(&self, vp: VpIndex, address: u64, data: &mut [u8]) -> impl Future<Output = ()> {
         self.chipset.mmio_read(vp.index(), address, data)
     }
 
-    fn write_mmio(
-        &self,
-        vp: VpIndex,
-        address: u64,
-        data: &[u8],
-    ) -> impl Future<Output = ()> {
+    fn write_mmio(&self, vp: VpIndex, address: u64, data: &[u8]) -> impl Future<Output = ()> {
         self.chipset.mmio_write(vp.index(), address, data)
     }
 
-    fn read_io(
-        &self,
-        vp: VpIndex,
-        port: u16,
-        data: &mut [u8],
-    ) -> impl Future<Output = ()> {
+    fn read_io(&self, vp: VpIndex, port: u16, data: &mut [u8]) -> impl Future<Output = ()> {
         self.chipset.io_read(vp.index(), port, data)
     }
 
-    fn write_io(
-        &self,
-        vp: VpIndex,
-        port: u16,
-        data: &[u8],
-    ) -> impl Future<Output = ()> {
+    fn write_io(&self, vp: VpIndex, port: u16, data: &[u8]) -> impl Future<Output = ()> {
         self.chipset.io_write(vp.index(), port, data)
     }
 }

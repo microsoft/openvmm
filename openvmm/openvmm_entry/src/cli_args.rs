@@ -21,12 +21,12 @@
 use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
+use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::PcatBootDevice;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use hvlite_defs::config::X2ApicConfig;
-use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;

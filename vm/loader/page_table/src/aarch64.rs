@@ -693,7 +693,9 @@ pub fn build_identity_page_tables_aarch64(
         panic!("size not 2mb aligned");
     }
 
-    tracing::debug!("Creating Aarch64 page tables at {page_table_gpa:#x} mapping starting at {start_gpa:#x} of size {size} bytes");
+    tracing::debug!(
+        "Creating Aarch64 page tables at {page_table_gpa:#x} mapping starting at {start_gpa:#x} of size {size} bytes"
+    );
 
     let mut page_table_space = vec![0; page_table_region_size];
     let mut page_tables =

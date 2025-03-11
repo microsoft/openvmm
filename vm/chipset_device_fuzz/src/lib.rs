@@ -13,13 +13,13 @@ use chipset_arc_mutex_device::services::MmioInterceptServices;
 use chipset_arc_mutex_device::services::PciConfigSpaceServices;
 use chipset_arc_mutex_device::services::PollDeviceServices;
 use chipset_arc_mutex_device::services::PortIoInterceptServices;
-use chipset_device::io::deferred::DeferredToken;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
+use chipset_device::io::deferred::DeferredToken;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
-use chipset_device::ChipsetDevice;
 use closeable_mutex::CloseableMutex;
 use parking_lot::RwLock;
 use range_map_vec::RangeMap;
@@ -221,7 +221,9 @@ impl FuzzChipset {
             }
         }
         if self.max_defer_poll_count == 0 {
-            panic!("Device operation returned a deferred read. Call FuzzChipset::new and set a non-zero max_poll_count to poll async operations.");
+            panic!(
+                "Device operation returned a deferred read. Call FuzzChipset::new and set a non-zero max_poll_count to poll async operations."
+            );
         } else {
             panic!(
                 "Device operation returned a deferred read that didn't complete after {} polls",
@@ -249,7 +251,9 @@ impl FuzzChipset {
             }
         }
         if self.max_defer_poll_count == 0 {
-            panic!("Device operation returned a deferred write. Call FuzzChipset::new and set a non-zero max_poll_count to poll async operations.");
+            panic!(
+                "Device operation returned a deferred write. Call FuzzChipset::new and set a non-zero max_poll_count to poll async operations."
+            );
         } else {
             panic!(
                 "Device operation returned a deferred write that didn't complete after {} polls",

@@ -31,11 +31,11 @@
 
 pub mod resolver;
 
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use chipset_resources::battery::HostBatteryUpdate;
 use futures::StreamExt;
 use inspect::Inspect;
@@ -274,7 +274,9 @@ impl PollDevice for BatteryDevice {
             if self.state.battery_present && self.state.max_capacity == 0 {
                 // This configuration makes no sense. Just report no battery,
                 // and set AC power accordingly.
-                tracelimit::warn_ratelimited!("BATTERY: Invalid state: max_capacity is 0 but battery is present. Marking battery as not present.");
+                tracelimit::warn_ratelimited!(
+                    "BATTERY: Invalid state: max_capacity is 0 but battery is present. Marking battery as not present."
+                );
                 self.state.battery_present = false;
             }
             // Add the corresponding status bit to notification status

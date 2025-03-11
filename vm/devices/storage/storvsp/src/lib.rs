@@ -25,14 +25,14 @@ use crate::ring::gparange::MultiPagedRangeBuf;
 use anyhow::Context as _;
 use async_trait::async_trait;
 use fast_select::FastSelect;
-use futures::select_biased;
 use futures::FutureExt;
 use futures::StreamExt;
-use guestmem::ranges::PagedRange;
+use futures::select_biased;
 use guestmem::AccessError;
 use guestmem::GuestMemory;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::PagedRange;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -43,11 +43,11 @@ use parking_lot::Mutex;
 use parking_lot::RwLock;
 use protocol::NtStatus;
 use ring::OutgoingPacketType;
-use scsi::srb::SrbStatus;
-use scsi::srb::SrbStatusAndFlags;
 use scsi::AdditionalSenseCode;
 use scsi::ScsiOp;
 use scsi::ScsiStatus;
+use scsi::srb::SrbStatus;
+use scsi::srb::SrbStatusAndFlags;
 use scsi_buffers::RequestBuffers;
 use scsi_core::AsyncScsiDisk;
 use scsi_core::Request;
@@ -76,6 +76,7 @@ use vmbus_async::queue::ExternalDataError;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
 use vmbus_async::queue::Queue;
+use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::bus::OpenRequest;
@@ -85,9 +86,8 @@ use vmbus_channel::channel::DeviceResources;
 use vmbus_channel::channel::RestoreControl;
 use vmbus_channel::channel::SaveRestoreVmbusDevice;
 use vmbus_channel::channel::VmbusDevice;
-use vmbus_channel::gpadl_ring::gpadl_channel;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
-use vmbus_channel::RawAsyncChannel;
+use vmbus_channel::gpadl_ring::gpadl_channel;
 use vmbus_core::protocol::UserDefinedData;
 use vmbus_ring as ring;
 use vmbus_ring::RingMem;
@@ -882,7 +882,7 @@ impl<T: RingMem> Worker<T> {
                                 }
                             }
                         }
-                    }
+                    };
                 }
                 ProtocolState::Init(state) => {
                     let (mut reader, mut writer) = self.queue.split();
@@ -1737,11 +1737,11 @@ impl SaveRestoreVmbusDevice for StorageDevice {
 mod tests {
     use super::protocol;
     use super::*;
+    use crate::test_helpers::TestWorker;
     use crate::test_helpers::parse_guest_completion;
     use crate::test_helpers::parse_guest_completion_check_flags_status;
-    use crate::test_helpers::TestWorker;
-    use pal_async::async_test;
     use pal_async::DefaultDriver;
+    use pal_async::async_test;
     use scsi::srb::SrbStatus;
     use test_with_tracing::test;
     use vmbus_channel::connected_async_channels;

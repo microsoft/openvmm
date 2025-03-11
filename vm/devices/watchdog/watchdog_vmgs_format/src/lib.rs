@@ -46,11 +46,7 @@ impl WatchdogVmgsFormat {
 
     /// Return a slice to persist to VMGS.
     fn as_slice(&self) -> &[u8] {
-        if self.boot_failure {
-            &[1]
-        } else {
-            &[0]
-        }
+        if self.boot_failure { &[1] } else { &[0] }
     }
 }
 

@@ -4,8 +4,8 @@
 use super::RFLAGS_MOV_MASK;
 use crate::tests::common::run_test;
 use crate::tests::common::run_wide_test;
-use iced_x86::code_asm::*;
 use iced_x86::Register;
+use iced_x86::code_asm::*;
 use x86defs::RFlags;
 use x86emu::Cpu;
 use x86emu::Gp;

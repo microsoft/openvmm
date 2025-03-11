@@ -21,21 +21,21 @@ use core::mem::size_of;
 use disk_backend::Disk;
 use futures::FutureExt;
 use futures::StreamExt;
-use get_protocol::dps_json::HclSecureBootTemplateId;
-use get_protocol::dps_json::PcatBootDevice;
 use get_protocol::BatteryStatusFlags;
 use get_protocol::BatteryStatusNotification;
 use get_protocol::HeaderGeneric;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
 use get_protocol::IgvmAttestRequest;
+use get_protocol::MAX_PAYLOAD_SIZE;
 use get_protocol::RegisterState;
 use get_protocol::SaveGuestVtl2StateFlags;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::StartVtl0Status;
 use get_protocol::UefiConsoleMode;
 use get_protocol::VmgsIoStatus;
-use get_protocol::MAX_PAYLOAD_SIZE;
+use get_protocol::dps_json::HclSecureBootTemplateId;
+use get_protocol::dps_json::PcatBootDevice;
 use get_resources::ged::FirmwareEvent;
 use get_resources::ged::GuestEmulationRequest;
 use get_resources::ged::GuestServicingFlags;
@@ -48,10 +48,10 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
+use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
-use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
 use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
@@ -61,12 +61,12 @@ use thiserror::Error;
 use video_core::FramebufferControl;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::pipe::MessagePipe;
+use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SimpleVmbusDevice;
-use vmbus_channel::RawAsyncChannel;
 use vmbus_ring::RingMem;
 use vmcore::save_restore::SavedStateNotSupported;
 use zerocopy::FromBytes;
@@ -934,7 +934,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 framebuffer_control.map(gpa).await;
                 get_protocol::MapFramebufferStatus::SUCCESS
             } else {
-                tracing::warn!("Guest requested framebuffer mapping but no framebuffer control was provided to the GET");
+                tracing::warn!(
+                    "Guest requested framebuffer mapping but no framebuffer control was provided to the GET"
+                );
                 get_protocol::MapFramebufferStatus::FAILURE
             },
         );
@@ -954,7 +956,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 framebuffer_control.unmap().await;
                 get_protocol::UnmapFramebufferStatus::SUCCESS
             } else {
-                tracing::warn!("Guest requested framebuffer mapping but no framebuffer control was provided to the GET");
+                tracing::warn!(
+                    "Guest requested framebuffer mapping but no framebuffer control was provided to the GET"
+                );
                 get_protocol::UnmapFramebufferStatus::FAILURE
             },
         );

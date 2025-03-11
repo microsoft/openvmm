@@ -28,33 +28,33 @@
 //! This model allows for asynchronous, highly concurrent state changes, and it
 //! works across process boundaries thanks to `mesh`.
 
-use futures::future::join_all;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::future::join_all;
 use futures_concurrency::stream::Merge;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::MeshPayload;
+use mesh::Receiver;
+use mesh::Sender;
 use mesh::payload::Protobuf;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use mesh::MeshPayload;
-use mesh::Receiver;
-use mesh::Sender;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
-use std::collections::hash_map;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::hash_map;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::pin::pin;
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Weak;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 use thiserror::Error;
 use tracing::Instrument;
@@ -1097,11 +1097,11 @@ mod tests {
     use crate::run_unit;
     use inspect::InspectMut;
     use mesh::payload::Protobuf;
-    use pal_async::async_test;
     use pal_async::DefaultDriver;
+    use pal_async::async_test;
+    use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::Ordering;
-    use std::sync::Arc;
     use std::time::Duration;
     use test_with_tracing::test;
     use vmcore::save_restore::RestoreError;

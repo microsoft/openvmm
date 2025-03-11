@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-
 /// Trait for transitioning device state.
 pub trait ChangeDeviceState {
     /// Starts a device, allowing it to interact with the guest asynchronously.

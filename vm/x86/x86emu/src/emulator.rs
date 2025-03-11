@@ -3,13 +3,13 @@
 
 //! Implements an x86 instruction emulator.
 
-use crate::registers::bitness;
+use crate::Cpu;
 use crate::registers::Bitness;
 use crate::registers::Gp;
 use crate::registers::GpSize;
 use crate::registers::RegisterIndex;
 use crate::registers::Segment;
-use crate::Cpu;
+use crate::registers::bitness;
 use iced_x86::Code;
 use iced_x86::Decoder;
 use iced_x86::DecoderError;

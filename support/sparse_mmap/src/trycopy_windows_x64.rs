@@ -9,9 +9,9 @@
 // xtask-fmt allow-target-arch sys-crate
 #![cfg(all(windows, target_arch = "x86_64"))]
 
+use crate::AccessFailure;
 use crate::sys::EXCEPTION_CONTINUE_SEARCH;
 use crate::sys::EXCEPTION_EXECUTE_HANDLER;
-use crate::AccessFailure;
 use windows_sys::Win32::Foundation::EXCEPTION_ACCESS_VIOLATION;
 
 /// The exception filter that runs when there is an access violation in one of

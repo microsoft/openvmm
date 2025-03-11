@@ -117,8 +117,8 @@ pub mod private {
     #![allow(non_snake_case)]
 
     use std::ffi::c_void;
-    use widestring::u16cstr;
     use widestring::U16CStr;
+    use widestring::u16cstr;
 
     const BCRYPT_RNG_USE_ENTROPY_IN_BUFFER: u32 = 1; // ignored in Win8+
     const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 2;

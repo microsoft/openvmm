@@ -159,11 +159,7 @@ impl<T: 'static + Clone + MeshField + Sync + Send> CellUpdater<T> {
                     }
                 }
             }
-            if wait {
-                Poll::Pending
-            } else {
-                Poll::Ready(())
-            }
+            if wait { Poll::Pending } else { Poll::Ready(()) }
         })
     }
 }
@@ -328,9 +324,9 @@ impl<T: 'static + MeshField + Send + Sync + Clone> From<EncodedCell<T>> for Inne
 #[cfg(test)]
 mod tests {
     use super::CellUpdater;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
-    use pal_async::DefaultDriver;
     use std::future::poll_fn;
     use std::task::Poll;
 

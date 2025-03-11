@@ -3,10 +3,10 @@
 
 //! ScsiDisk test helpers.
 
+use crate::SimpleScsiDisk;
 use crate::atapi_scsi::AtapiScsiDisk;
 use crate::scsi;
 use crate::scsidvd::SimpleScsiDvd;
-use crate::SimpleScsiDisk;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;

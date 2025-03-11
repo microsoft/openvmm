@@ -7,12 +7,12 @@ mod unix;
 mod windows;
 
 use anyhow::Context as _;
-use futures::executor::block_on;
-use futures::io::AllowStdIo;
-use futures::io::AsyncReadExt;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use futures::AsyncWriteExt;
+use futures::executor::block_on;
+use futures::io::AllowStdIo;
+use futures::io::AsyncReadExt;
 use pal_async::driver::Driver;
 use pal_async::local::block_with_io;
 use std::borrow::Cow;

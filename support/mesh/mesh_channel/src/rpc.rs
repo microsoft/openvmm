@@ -4,18 +4,18 @@
 //! Remote Procedure Call functionality.
 
 use super::error::RemoteResult;
-use crate::error::RemoteError;
-use crate::oneshot;
 use crate::OneshotReceiver;
 use crate::OneshotSender;
 use crate::RecvError;
+use crate::error::RemoteError;
+use crate::oneshot;
 use mesh_node::message::MeshField;
 use mesh_protobuf::Protobuf;
 use std::convert::Infallible;
 use std::fmt::Debug;
 use std::pin::Pin;
-use std::task::ready;
 use std::task::Poll;
+use std::task::ready;
 use thiserror::Error;
 
 /// An RPC message for a request with input of type `I` and output of type `R`.

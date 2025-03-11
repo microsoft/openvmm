@@ -1,27 +1,24 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::UnicodeString;
 use super::chk_status;
 use super::dos_to_nt_path;
 use super::status_to_error;
-use super::UnicodeString;
 use namedpipeapi::GetNamedPipeHandleStateW;
 use namedpipeapi::SetNamedPipeHandleState;
 use ntapi::ntioapi;
-use ntapi::ntioapi::FilePipeLocalInformation;
-use ntapi::ntioapi::NtQueryInformationFile;
 use ntapi::ntioapi::FILE_OPEN;
 use ntapi::ntioapi::FILE_PIPE_CLOSING_STATE;
 use ntapi::ntioapi::FILE_PIPE_CONNECTED_STATE;
 use ntapi::ntioapi::FILE_PIPE_DISCONNECTED_STATE;
 use ntapi::ntioapi::FILE_PIPE_LISTENING_STATE;
 use ntapi::ntioapi::FILE_PIPE_LOCAL_INFORMATION;
+use ntapi::ntioapi::FilePipeLocalInformation;
+use ntapi::ntioapi::NtQueryInformationFile;
 use ntdef::LARGE_INTEGER;
-use ntdef::OBJECT_ATTRIBUTES;
 use ntdef::OBJ_CASE_INSENSITIVE;
-use ntioapi::NtCreateNamedPipeFile;
-use ntioapi::NtFsControlFile;
-use ntioapi::NtOpenFile;
+use ntdef::OBJECT_ATTRIBUTES;
 use ntioapi::FILE_CREATE;
 use ntioapi::FILE_NON_DIRECTORY_FILE;
 use ntioapi::FILE_PIPE_BYTE_STREAM_MODE;
@@ -30,6 +27,9 @@ use ntioapi::FILE_PIPE_MESSAGE_MODE;
 use ntioapi::FILE_PIPE_MESSAGE_TYPE;
 use ntioapi::FILE_PIPE_QUEUE_OPERATION;
 use ntioapi::FILE_SYNCHRONOUS_IO_NONALERT;
+use ntioapi::NtCreateNamedPipeFile;
+use ntioapi::NtFsControlFile;
+use ntioapi::NtOpenFile;
 use pal_event::Event;
 use std::fs::File;
 use std::io;

@@ -3,13 +3,13 @@
 
 //! Test instructure for criterion benchmarks.
 
+use crate::ScsiController;
+use crate::ScsiControllerDisk;
+use crate::ScsiPath;
 use crate::protocol;
 use crate::test_helpers;
 use crate::test_helpers::TestGuest;
 use crate::test_helpers::TestWorker;
-use crate::ScsiController;
-use crate::ScsiControllerDisk;
-use crate::ScsiPath;
 use disklayer_ram::ram_disk;
 use guestmem::GuestMemory;
 use pal_async::driver::SpawnDriver;

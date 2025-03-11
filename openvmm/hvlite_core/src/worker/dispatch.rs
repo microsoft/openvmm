@@ -11,19 +11,19 @@ use anyhow::Context;
 use cfg_if::cfg_if;
 use chipset_device_resources::IRQ_LINE_SET;
 use debug_ptr::DebugPtr;
-use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::Disk;
+use disk_backend::resolve::ResolveDiskParameters;
 use firmware_uefi::UefiCommandSet;
 use floppy_resources::FloppyDiskConfig;
-use futures::executor::block_on;
-use futures::future::try_join_all;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::executor::block_on;
+use futures::future::try_join_all;
 use futures_concurrency::prelude::*;
 use guestmem::GuestMemory;
 use guid::Guid;
-use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
+use hvdef::Vtl;
 use hvlite_defs::config::Aarch64TopologyConfig;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
@@ -43,8 +43,8 @@ use hvlite_defs::config::X2ApicConfig;
 use hvlite_defs::config::X86TopologyConfig;
 use hvlite_defs::rpc::PulseSaveRestoreError;
 use hvlite_defs::rpc::VmRpc;
-use hvlite_defs::worker::VmWorkerParameters;
 use hvlite_defs::worker::VM_WORKER;
+use hvlite_defs::worker::VmWorkerParameters;
 use hvlite_pcat_locator::RomFileLocation;
 use ide_resources::GuestMedia;
 use ide_resources::IdeDeviceConfig;
@@ -56,24 +56,24 @@ use membacking::GuestMemoryBuilder;
 use membacking::GuestMemoryManager;
 use membacking::SharedMemoryBacking;
 use memory_range::MemoryRange;
-use mesh::error::RemoteError;
-use mesh::payload::message::ProtobufMessage;
-use mesh::payload::Protobuf;
 use mesh::MeshPayload;
+use mesh::error::RemoteError;
+use mesh::payload::Protobuf;
+use mesh::payload::message::ProtobufMessage;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use missing_dev::MissingDevManifest;
+use pal_async::DefaultDriver;
+use pal_async::DefaultPool;
 use pal_async::local::block_with_io;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use pal_async::DefaultDriver;
-use pal_async::DefaultPool;
-use pci_core::msi::MsiInterruptSet;
 use pci_core::PciInterruptPin;
+use pci_core::msi::MsiInterruptSet;
 use scsi_core::ResolveScsiDeviceHandleParams;
-use scsidisk::atapi_scsi::AtapiScsiDisk;
 use scsidisk::SimpleScsiDisk;
+use scsidisk::atapi_scsi::AtapiScsiDisk;
 use serial_16550_resources::ComPort;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
@@ -88,58 +88,58 @@ use storvsp::ScsiControllerDisk;
 use tracing_helpers::ErrorValueExt;
 use virt::ProtoPartition;
 use virt::VpIndex;
-use virtio::resolve::VirtioResolveInput;
 use virtio::LegacyWrapper;
 use virtio::PciInterruptModel;
 use virtio::VirtioMmioDevice;
 use virtio::VirtioPciDevice;
+use virtio::resolve::VirtioResolveInput;
 use virtio_serial::VirtioSerialDevice;
 use vm_loader::initial_regs::initial_regs;
+use vm_resource::Resource;
+use vm_resource::ResourceResolver;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::KeyboardInputHandleKind;
 use vm_resource::kind::MouseInputHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
-use vm_resource::Resource;
-use vm_resource::ResourceResolver;
 use vm_topology::memory::MemoryLayout;
+use vm_topology::processor::ArchTopology;
+use vm_topology::processor::ProcessorTopology;
+use vm_topology::processor::TopologyBuilder;
 use vm_topology::processor::aarch64::Aarch64Topology;
 use vm_topology::processor::aarch64::GicInfo;
 use vm_topology::processor::x86::X2ApicState;
 use vm_topology::processor::x86::X86Topology;
-use vm_topology::processor::ArchTopology;
-use vm_topology::processor::ProcessorTopology;
-use vm_topology::processor::TopologyBuilder;
 use vmbus_channel::channel::VmbusDevice;
-use vmbus_server::hvsock::HvsockRelay;
 use vmbus_server::HvsockRelayChannel;
 use vmbus_server::VmbusServer;
+use vmbus_server::hvsock::HvsockRelay;
 use vmcore::save_restore::SavedStateRoot;
-use vmcore::vm_task::thread::ThreadDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
+use vmcore::vm_task::thread::ThreadDriverBackend;
 use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmcore::vmtime::VmTimeSource;
 use vmgs_broker::resolver::VmgsFileResolver;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
 use vmm_core::input_distributor::InputDistributor;
-use vmm_core::partition_unit::block_on_vp;
 use vmm_core::partition_unit::Halt;
 use vmm_core::partition_unit::PartitionUnit;
 use vmm_core::partition_unit::PartitionUnitParams;
+use vmm_core::partition_unit::block_on_vp;
 use vmm_core::synic::SynicPorts;
-use vmm_core::vmbus_unit::offer_channel_unit;
-use vmm_core::vmbus_unit::offer_vmbus_device_handle_unit;
 use vmm_core::vmbus_unit::ChannelUnit;
 use vmm_core::vmbus_unit::VmbusServerHandle;
+use vmm_core::vmbus_unit::offer_channel_unit;
+use vmm_core::vmbus_unit::offer_vmbus_device_handle_unit;
 use vmm_core_defs::HaltReason;
-use vmotherboard::options::BaseChipsetDevices;
-use vmotherboard::options::BaseChipsetFoundation;
-use vmotherboard::options::BaseChipsetManifest;
 use vmotherboard::BaseChipsetBuilder;
 use vmotherboard::BaseChipsetBuilderOutput;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::ChipsetDevices;
+use vmotherboard::options::BaseChipsetDevices;
+use vmotherboard::options::BaseChipsetFoundation;
+use vmotherboard::options::BaseChipsetManifest;
 use vpci::bus::VpciBus;
 
 const PM_BASE: u16 = 0x400;
@@ -588,7 +588,9 @@ fn convert_vtl2_config(
                     Vtl2BaseAddressType::Absolute(base) => {
                         // This file must support relocations.
                         if !crate::worker::vm_loaders::igvm::supports_relocations(igvm_file) {
-                            anyhow::bail!("vtl2 base address is absolute but igvm file does not support relocations");
+                            anyhow::bail!(
+                                "vtl2 base address is absolute but igvm file does not support relocations"
+                            );
                         }
 
                         // Use the size, but the base is the requested load
@@ -603,7 +605,9 @@ fn convert_vtl2_config(
                     Vtl2BaseAddressType::Vtl2Allocate { .. } => {
                         // When VTL2 is doing allocation, we do not know which
                         // ranges we should disallow late map access of.
-                        anyhow::bail!("late map vtl0 memory is not supported when VTL2 is doing self allocation of ram");
+                        anyhow::bail!(
+                            "late map vtl0 memory is not supported when VTL2 is doing self allocation of ram"
+                        );
                     }
                 }
             } else {
@@ -2095,26 +2099,28 @@ impl InitializedVm {
                 let virt_serial_read = virtio_serial.get_port_read_fn(0);
                 thread::Builder::new()
                     .name("virtio serial out".into())
-                    .spawn(move || loop {
-                        let data = (virt_serial_read)();
-                        if data.is_empty() {
-                            break;
-                        }
-                        if let Some(Some(stdout)) = &mut virtio_serial_output {
-                            let result = stdout.write_all(data.as_slice());
-                            if let Err(error) = result {
-                                tracing::error!(
-                                    error = error.as_error(),
-                                    "virtio console write failed"
-                                );
+                    .spawn(move || {
+                        loop {
+                            let data = (virt_serial_read)();
+                            if data.is_empty() {
                                 break;
                             }
-                            let result = stdout.flush();
-                            if let Err(error) = result {
-                                tracing::error!(
-                                    error = error.as_error(),
-                                    "virtio console flush failed"
-                                );
+                            if let Some(Some(stdout)) = &mut virtio_serial_output {
+                                let result = stdout.write_all(data.as_slice());
+                                if let Err(error) = result {
+                                    tracing::error!(
+                                        error = error.as_error(),
+                                        "virtio console write failed"
+                                    );
+                                    break;
+                                }
+                                let result = stdout.flush();
+                                if let Err(error) = result {
+                                    tracing::error!(
+                                        error = error.as_error(),
+                                        "virtio console flush failed"
+                                    );
+                                }
                             }
                         }
                     })

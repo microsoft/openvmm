@@ -14,8 +14,8 @@ use anyhow::Context;
 use anyhow::Result;
 use inspect::Inspect;
 use std::sync::Arc;
-use user_driver::memory::MemoryBlock;
 use user_driver::DmaClient;
+use user_driver::memory::MemoryBlock;
 use virt::VtlMemoryProtection;
 
 /// A guard that will restore [`hvdef::HV_MAP_GPA_PERMISSIONS_NONE`] permissions

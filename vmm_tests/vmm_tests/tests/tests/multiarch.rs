@@ -3,8 +3,8 @@
 
 //! Integration tests that run on more than one architecture.
 
-use petri::openvmm::PetriVmConfigOpenVmm;
 use petri::PetriVmConfig;
+use petri::openvmm::PetriVmConfigOpenVmm;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;

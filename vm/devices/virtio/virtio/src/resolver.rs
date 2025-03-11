@@ -3,19 +3,19 @@
 
 //! Resolver for virtio device infrastructure.
 
-use crate::resolve::VirtioResolveInput;
 use crate::PciInterruptModel;
 use crate::VirtioPciDevice;
+use crate::resolve::VirtioResolveInput;
 use async_trait::async_trait;
 use pci_resources::ResolvePciDeviceHandleParams;
 use pci_resources::ResolvedPciDevice;
 use thiserror::Error;
 use virtio_resources::VirtioPciDeviceHandle;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::PciDeviceHandleKind;
 
 declare_static_async_resolver! {
     VirtioPciResolver,

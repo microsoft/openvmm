@@ -3,18 +3,18 @@
 
 //! Hypercall exit handling.
 
-use crate::abi;
 use crate::HvfProcessor;
+use crate::abi;
 use hv1_hypercall::Arm64RegisterState;
 use hv1_hypercall::GetVpRegisters;
 use hv1_hypercall::HvRepResult;
 use hv1_hypercall::PostMessage;
 use hv1_hypercall::SetVpRegisters;
 use hv1_hypercall::SignalEvent;
-use hvdef::hypercall::HvRegisterAssoc;
 use hvdef::HvArm64RegisterName;
 use hvdef::HvError;
 use hvdef::Vtl;
+use hvdef::hypercall::HvRegisterAssoc;
 use std::sync::atomic::Ordering;
 use virt::io::CpuIo;
 

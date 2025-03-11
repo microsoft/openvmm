@@ -292,8 +292,15 @@ impl CpuidResults {
                         }
 
                         if skipped {
-                            tracing::warn!("cpuid result for leaf {} subleaf {} specified multiple times, ignoring duplicate with eax {}, ebx {}, ecx {}, edx {}",
-                                leaf.0, subleaf, result.eax, result.ebx, result.ecx, result.edx);
+                            tracing::warn!(
+                                "cpuid result for leaf {} subleaf {} specified multiple times, ignoring duplicate with eax {}, ebx {}, ecx {}, edx {}",
+                                leaf.0,
+                                subleaf,
+                                result.eax,
+                                result.ebx,
+                                result.ecx,
+                                result.edx
+                            );
                         }
                     }
                     std::collections::hash_map::Entry::Vacant(entry) => {
