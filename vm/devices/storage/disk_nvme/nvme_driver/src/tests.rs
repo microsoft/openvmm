@@ -8,9 +8,14 @@ use chipset_device::pci::PciConfigSpace;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use memory_range::MemoryRange;
 use nvme::NvmeControllerCaps;
 use nvme_spec::Cap;
 use nvme_spec::nvm::DsmRange;
+use page_pool_alloc::PagePool;
+use page_pool_alloc::PagePoolAllocator;
+use page_pool_alloc::TestMapper;
+use pal_async::async_test;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use parking_lot::Mutex;
@@ -309,7 +314,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 
 #[derive(Inspect)]
 pub struct NvmeTestEmulatedDevice<T: InspectMut> {
-    device: EmulatedDevice<T, EmulatedDmaAllocator>,
+    device: EmulatedDevice<T, PagePoolAllocator>,
     #[inspect(debug)]
     mocked_response_u32: Arc<Mutex<Option<(usize, u32)>>>,
     #[inspect(debug)]
@@ -328,12 +333,16 @@ pub struct NvmeTestMapping<T> {
 impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
     pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory) -> Self {
-        let dma_client = Arc::new(EmulatedDmaAllocator::new(
-            shared_mem.clone()
-        ));
+        let pool = PagePool::new(
+            &[MemoryRange::from_4k_gpn_range(0..3000)],
+            TestMapper::new(300).unwrap()
+        )
+        .unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+        let dma_client = Arc::new(alloc);
 
         Self {
-            device: EmulatedDevice::new(device, msi_set, dma_client),
+            device: EmulatedDevice::new(device, msi_set, dma_client.clone()),
             mocked_response_u32: Arc::new(Mutex::new(None)),
             mocked_response_u64: Arc::new(Mutex::new(None)),
         }
