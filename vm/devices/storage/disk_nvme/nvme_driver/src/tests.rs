@@ -1,10 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::NvmeDriver;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
+use crate::NvmeDriver;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
@@ -16,7 +16,6 @@ use nvme_spec::nvm::DsmRange;
 use page_pool_alloc::PagePool;
 use page_pool_alloc::PagePoolAllocator;
 use page_pool_alloc::TestMapper;
-use pal_async::async_test;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use parking_lot::Mutex;
@@ -27,7 +26,6 @@ use test_with_tracing::test;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
-use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
@@ -127,36 +125,28 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     const IO_QUEUE_COUNT: u16 = 64;
     const CPU_COUNT: u32 = 64;
 
-    let base_len = 64 << 20;
-    let payload_len = 4 << 20;
-    let mem = DeviceSharedMemory::new(base_len, payload_len);
-    let payload_mem = mem
-        .guest_memory()
-        .subrange(base_len as u64, payload_len as u64, false)
-        .unwrap();
+    // Memory setup
+    let pages = 100000;
+    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages);
+
     let driver_dma_mem = if allow_dma {
-        mem.guest_memory_for_driver_dma()
-            .subrange(base_len as u64, payload_len as u64, false)
-            .unwrap()
+        guest_mem.clone()
+        // TODO: This is most definitely wrong, what needs to happen here is that the underlying
+        // backing (SparseMapping) needs to support driver dma
+        // mem.guest_mem
+        //     .subrange(base_len as u64, payload_len as u64, false)
+        //     .unwrap()
     } else {
-        payload_mem.clone()
+        guest_mem.clone()
     };
 
     let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
-
-    let pool = PagePool::new(
-        &[MemoryRange::from_4k_gpn_range(0..3000)],
-        TestMapper::new(300).unwrap()
-    )
-    .unwrap();
-    let alloc = pool.allocator("test".into()).unwrap();
-    let dma_client = Arc::new(alloc);
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
     let nvme = nvme::NvmeController::new(
         &driver_source,
-        mem.guest_memory().clone(),
+        guest_mem.clone(),
         &mut msi_set,
         &mut ExternallyManagedMmioIntercepts,
         NvmeControllerCaps {
@@ -178,7 +168,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
 
     let namespace = driver.namespace(1).await.unwrap();
 
-    payload_mem.write_at(0, &[0xcc; 8192]).unwrap();
+    guest_mem.write_at(0, &[0xcc; 8192]).unwrap();
     namespace
         .write(
             0,
@@ -186,7 +176,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
             2,
             false,
             &driver_dma_mem,
-            buf_range.buffer(&payload_mem).range(),
+            buf_range.buffer(&guest_mem).range(),
         )
         .await
         .unwrap();
@@ -197,12 +187,12 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
             0,
             32,
             &driver_dma_mem,
-            buf_range.buffer(&payload_mem).range(),
+            buf_range.buffer(&guest_mem).range(),
         )
         .await
         .unwrap();
     let mut v = [0; 4096];
-    payload_mem.read_at(0, &mut v).unwrap();
+    guest_mem.read_at(0, &mut v).unwrap();
     assert_eq!(&v[..512], &[0; 512]);
     assert_eq!(&v[512..1536], &[0xcc; 1024]);
     assert!(v[1536..].iter().all(|&x| x == 0));
@@ -235,7 +225,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
             0,
             32,
             &driver_dma_mem,
-            buf_range.buffer(&payload_mem).range(),
+            buf_range.buffer(&guest_mem).range(),
         )
         .await
         .unwrap();
@@ -243,7 +233,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     assert_eq!(driver.fallback_cpu_count(), 1);
 
     let mut v = [0; 4096];
-    payload_mem.read_at(0, &mut v).unwrap();
+    guest_mem.read_at(0, &mut v).unwrap();
     assert_eq!(&v[..512], &[0; 512]);
     assert_eq!(&v[512..1024], &[0xcc; 512]);
     assert!(v[1024..].iter().all(|&x| x == 0));
