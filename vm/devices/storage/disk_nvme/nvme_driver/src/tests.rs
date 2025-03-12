@@ -1,10 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::NvmeDriver;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
-use crate::NvmeDriver;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
@@ -23,14 +23,14 @@ use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
 use test_with_tracing::test;
-use user_driver::emulated::create_guest_memory;
-use user_driver::emulated::EmulatedDevice;
-use user_driver::emulated::Mapping;
-use user_driver::interrupt::DeviceInterrupt;
-use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
+use user_driver::emulated::EmulatedDevice;
+use user_driver::emulated::Mapping;
+use user_driver::emulated::create_guest_memory;
+use user_driver::interrupt::DeviceInterrupt;
+use user_driver::memory::PAGE_SIZE64;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::IntoBytes;
@@ -131,9 +131,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
 
     let driver_dma_mem = if allow_dma {
         let range_half = (pages / 2) * PAGE_SIZE64;
-        guest_mem
-            .subrange(0_u64, range_half, false)
-            .unwrap()
+        guest_mem.subrange(0_u64, range_half, false).unwrap()
     } else {
         guest_mem.clone()
     };
