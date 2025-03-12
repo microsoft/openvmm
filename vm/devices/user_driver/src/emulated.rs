@@ -148,7 +148,7 @@ struct Backing<T> {
     allow_dma: bool,
 }
 
-/// SAFETY: passing through to GuestMemoryAccess implementation to T
+/// SAFETY: Defer to [GuestMemoryAccess] implementation of T
 /// Only intercept the base_iova fn with a naive response of 0 if allow_dma is enabled.
 unsafe impl<T: GuestMemoryAccess>  GuestMemoryAccess for Backing<T> {
     fn mapping(&self) -> Option<NonNull<u8>> {
