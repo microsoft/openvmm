@@ -142,7 +142,7 @@ pub struct DeviceSharedMemory {
 
 struct SparseMapBacking {
     sparse_mmap: SparseMapping,
-    allow_dma: bool
+    allow_dma: bool,
 }
 
 unsafe impl GuestMemoryAccess for SparseMapBacking {
@@ -303,9 +303,7 @@ pub struct EmulatedDmaAllocator {
 
 impl EmulatedDmaAllocator {
     pub fn new(shared_mem: DeviceSharedMemory) -> Self {
-        Self {
-            shared_mem
-        }
+        Self { shared_mem }
     }
 }
 
@@ -321,7 +319,9 @@ impl DmaClient for EmulatedDmaAllocator {
     }
 }
 
-impl<T: 'static + Send + InspectMut + MmioIntercept, U:'static + Send + DmaClient> DeviceBacking for EmulatedDevice<T, U> {
+impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + Send + DmaClient> DeviceBacking
+    for EmulatedDevice<T, U>
+{
     type Registers = Mapping<T>;
 
     fn id(&self) -> &str {

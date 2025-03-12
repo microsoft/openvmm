@@ -35,9 +35,7 @@ impl<T: PciConfigSpace + MmioIntercept + InspectMut> FuzzEmulatedDevice<T> {
         };
         let device = EmulatedDevice::new(device, msi_set, allocator);
 
-        Self {
-            device,
-        }
+        Self { device }
     }
 }
 
