@@ -293,20 +293,14 @@ impl BackingPrivate for SnpBacked {
     }
 
     fn init(this: &mut UhProcessor<'_, Self>) {
-        init_vmsa(
-            &mut this.runner.vmsa_mut(GuestVtl::Vtl0),
-            GuestVtl::Vtl0,
-            this.partition.caps.vtom,
-        );
+        for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
+            init_vmsa(
+                &mut this.runner.vmsa_mut(vtl),
+                vtl,
+                this.partition.caps.vtom,
+            );
 
-        init_vmsa(
-            &mut this.runner.vmsa_mut(GuestVtl::Vtl1),
-            GuestVtl::Vtl1,
-            this.partition.caps.vtom,
-        );
-
-        // Reset VMSA-backed state.
-        let mut reset_state = |vtl: GuestVtl| {
+            // Reset VMSA-backed state.
             let registers = vp::Registers::at_reset(&this.partition.caps, &this.inner.vp_info);
             this.access_state(vtl.into())
                 .set_registers(&registers)
@@ -328,13 +322,10 @@ impl BackingPrivate for SnpBacked {
             this.access_state(vtl.into())
                 .set_mtrrs(&cache_control)
                 .expect("Resetting to architectural state should succeed");
-        };
+        }
 
-        reset_state(GuestVtl::Vtl0);
-        reset_state(GuestVtl::Vtl1);
-
-        // So far, only VTL 0 is using these (for VMBus). Initialize the direct
-        // overlays for VTL 0.
+        // Configure the synic direct overlays.
+        // So far, only VTL 0 is using these (for VMBus).
         let pfns = &this.backing.cvm.direct_overlay_handle.pfns();
         let values: &[(HvX64RegisterName, u64); 3] = &[
             (

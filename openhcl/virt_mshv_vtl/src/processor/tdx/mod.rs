@@ -599,87 +599,99 @@ impl BackingPrivate for TdxBacked {
         ];
 
         // TODO TDX: ssp is for shadow stack
-
         // TODO TDX: direct overlay like snp?
         // TODO TDX: lapic / APIC setup?
-
         // TODO TDX: see ValInitializeVplc
         // TODO TDX: XCR_XFMEM setup?
-
-        // TODO TDX GUEST VSM: Presumably we need to duplicate much of this work
-        // when VTL 1 is enabled.
-
-        // Configure L2 controls to permit shared memory.
-
-        let mut controls =
-            TdxL2Ctls::new().with_enable_shared_ept(!params.partition.hide_isolation);
-
-        // If the synic is to be managed by the hypervisor, then enable TDVMCALLs.
-        controls.set_enable_tdvmcall(
-            params.partition.untrusted_synic.is_none() && !params.partition.hide_isolation,
-        );
-
-        let hcl = &params.partition.hcl;
-
-        params
-            .runner
-            .set_l2_ctls(GuestVtl::Vtl0, controls)
-            .map_err(crate::Error::FailedToSetL2Ctls)?;
-
-        // Set guest/host masks for CR0 and CR4. These enable shadowing these
-        // registers since TDX requires certain bits to be set at all times.
-        let initial_cr0 = params
-            .runner
-            .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_CR0);
-        assert_eq!(initial_cr0, X64_CR0_PE | X64_CR0_NE);
-
-        // N.B. CR0.PE and CR0.PG are guest owned but still intercept when they
-        // are changed for caching purposes and to ensure EFER is managed
-        // properly due to the need to change execution state.
-        params.runner.write_vmcs64(
-            GuestVtl::Vtl0,
-            VmcsField::VMX_VMCS_CR0_READ_SHADOW,
-            !0,
-            X64_CR0_PE | X64_CR0_NE,
-        );
-        params.runner.write_vmcs64(
-            GuestVtl::Vtl0,
-            VmcsField::VMX_VMCS_CR0_GUEST_HOST_MASK,
-            !0,
-            !ShadowedRegister::Cr0.guest_owned_mask() | X64_CR0_PE | X64_CR0_PG,
-        );
-
-        let initial_cr4 = params
-            .runner
-            .read_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_GUEST_CR4);
-        assert_eq!(initial_cr4, X64_CR4_MCE | X64_CR4_VMXE);
 
         // Allowed cr4 bits depend on the values allowed by the SEAM.
         //
         // TODO TDX: Consider just using MSR kernel module instead of explicit
         // ioctl.
-        let read_cr4 = hcl.read_vmx_cr4_fixed1();
+        let read_cr4 = params.partition.hcl.read_vmx_cr4_fixed1();
         let allowed_cr4_bits = (ShadowedRegister::Cr4.guest_owned_mask() | X64_CR4_MCE) & read_cr4;
 
-        params
-            .runner
-            .write_vmcs64(GuestVtl::Vtl0, VmcsField::VMX_VMCS_CR4_READ_SHADOW, !0, 0);
-        params.runner.write_vmcs64(
-            GuestVtl::Vtl0,
-            VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK,
-            !0,
-            !(ShadowedRegister::Cr4.guest_owned_mask() & allowed_cr4_bits),
-        );
+        for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
+            let controls = TdxL2Ctls::new()
+                // Configure L2 controls to permit shared memory.
+                .with_enable_shared_ept(!params.partition.hide_isolation)
+                // If the synic is to be managed by the hypervisor, then enable TDVMCALLs.
+                .with_enable_tdvmcall(
+                    params.partition.untrusted_synic.is_none() && !params.partition.hide_isolation,
+                );
 
-        // Configure the MSR bitmap for this VP.  Since the default MSR bitmap
-        // is all ones, only those values that are not all ones need to be set in
-        // the TDX module.
-        let bitmap = MsrBitmap::new();
-        for (i, &word) in bitmap.bitmap.iter().enumerate() {
-            if word != u64::MAX {
-                params
-                    .runner
-                    .write_msr_bitmap(GuestVtl::Vtl0, i as u32, !0, word);
+            params
+                .runner
+                .set_l2_ctls(vtl, controls)
+                .map_err(crate::Error::FailedToSetL2Ctls)?;
+
+            // Set guest/host masks for CR0 and CR4. These enable shadowing these
+            // registers since TDX requires certain bits to be set at all times.
+            let initial_cr0 = params
+                .runner
+                .read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR0);
+            assert_eq!(initial_cr0, X64_CR0_PE | X64_CR0_NE);
+
+            // N.B. CR0.PE and CR0.PG are guest owned but still intercept when they
+            // are changed for caching purposes and to ensure EFER is managed
+            // properly due to the need to change execution state.
+            params.runner.write_vmcs64(
+                vtl,
+                VmcsField::VMX_VMCS_CR0_READ_SHADOW,
+                !0,
+                X64_CR0_PE | X64_CR0_NE,
+            );
+            params.runner.write_vmcs64(
+                vtl,
+                VmcsField::VMX_VMCS_CR0_GUEST_HOST_MASK,
+                !0,
+                !ShadowedRegister::Cr0.guest_owned_mask() | X64_CR0_PE | X64_CR0_PG,
+            );
+
+            let initial_cr4 = params
+                .runner
+                .read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR4);
+            assert_eq!(initial_cr4, X64_CR4_MCE | X64_CR4_VMXE);
+
+            params
+                .runner
+                .write_vmcs64(vtl, VmcsField::VMX_VMCS_CR4_READ_SHADOW, !0, 0);
+            params.runner.write_vmcs64(
+                vtl,
+                VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK,
+                !0,
+                !(ShadowedRegister::Cr4.guest_owned_mask() & allowed_cr4_bits),
+            );
+
+            // Configure the MSR bitmap for this VP.  Since the default MSR bitmap
+            // is all ones, only those values that are not all ones need to be set in
+            // the TDX module.
+            let bitmap = MsrBitmap::new();
+            for (i, &word) in bitmap.bitmap.iter().enumerate() {
+                if word != u64::MAX {
+                    params.runner.write_msr_bitmap(vtl, i as u32, !0, word);
+                }
+            }
+
+            // Set the exception bitmap.
+            if params.partition.intercept_debug_exceptions {
+                if cfg!(feature = "gdb") {
+                    let initial_exception_bitmap = params
+                        .runner
+                        .read_vmcs32(vtl, VmcsField::VMX_VMCS_EXCEPTION_BITMAP);
+
+                    let exception_bitmap =
+                        initial_exception_bitmap | (1 << x86defs::Exception::DEBUG.0);
+
+                    params.runner.write_vmcs32(
+                        vtl,
+                        VmcsField::VMX_VMCS_EXCEPTION_BITMAP,
+                        !0,
+                        exception_bitmap,
+                    );
+                } else {
+                    return Err(super::Error::InvalidDebugConfiguration);
+                }
             }
         }
 
@@ -696,27 +708,6 @@ impl BackingPrivate for TdxBacked {
             .untrusted_synic
             .as_ref()
             .map(|synic| synic.add_vp(params.vp_info.base.vp_index));
-
-        // Set the exception bitmap for VTL0.
-        if params.partition.intercept_debug_exceptions {
-            if cfg!(feature = "gdb") {
-                let initial_exception_bitmap = params
-                    .runner
-                    .read_vmcs32(GuestVtl::Vtl0, VmcsField::VMX_VMCS_EXCEPTION_BITMAP);
-
-                let exception_bitmap =
-                    initial_exception_bitmap | (1 << x86defs::Exception::DEBUG.0);
-
-                params.runner.write_vmcs32(
-                    GuestVtl::Vtl0,
-                    VmcsField::VMX_VMCS_EXCEPTION_BITMAP,
-                    !0,
-                    exception_bitmap,
-                );
-            } else {
-                return Err(super::Error::InvalidDebugConfiguration);
-            }
-        }
 
         Ok(Self {
             vtls: VtlArray::from_fn(|vtl| {
@@ -774,10 +765,8 @@ impl BackingPrivate for TdxBacked {
     }
 
     fn init(this: &mut UhProcessor<'_, Self>) {
-        // TODO TDX GUEST VSM: Presumably we need to duplicate much of this work
-        // when VTL 1 is enabled.
-
-        // Configure the synic overlays.
+        // Configure the synic direct overlays.
+        // So far, only VTL 0 is using these (for VMBus).
         let pfns = &this.backing.cvm.direct_overlay_handle.pfns();
         let reg = |gpn| {
             u64::from(
@@ -819,7 +808,7 @@ impl BackingPrivate for TdxBacked {
             .set_vp_registers_hvcall(Vtl::Vtl0, &values[..reg_count])
             .expect("set_vp_registers hypercall for direct overlays should succeed");
 
-        // Enable APIC offload by default.
+        // Enable APIC offload by default for VTL 0.
         this.set_apic_offload(GuestVtl::Vtl0, true);
         this.backing.cvm.lapics[GuestVtl::Vtl0]
             .lapic
@@ -843,7 +832,7 @@ impl BackingPrivate for TdxBacked {
             // We only offload VTL 0 today.
             assert_eq!(vtl, GuestVtl::Vtl0);
             tracing::info!("disabling APIC offload due to auto EOI");
-            let page = this.runner.tdx_apic_page_mut(GuestVtl::Vtl0);
+            let page = this.runner.tdx_apic_page_mut(vtl);
             let (irr, isr) = pull_apic_offload(page);
 
             this.backing.cvm.lapics[vtl]
@@ -957,7 +946,7 @@ impl UhProcessor<'_, TdxBacked> {
             let r: Result<(), OffloadNotSupported> = self.backing.cvm.lapics[vtl]
                 .lapic
                 .push_to_offload(|irr, isr, tmr| {
-                    let apic_page = self.runner.tdx_apic_page_mut(GuestVtl::Vtl0);
+                    let apic_page = self.runner.tdx_apic_page_mut(vtl);
 
                     for (((irr, page_irr), isr), page_isr) in irr
                         .iter()
@@ -1008,7 +997,7 @@ impl UhProcessor<'_, TdxBacked> {
             }
 
             if update_rvi {
-                let page = self.runner.tdx_apic_page_mut(GuestVtl::Vtl0);
+                let page = self.runner.tdx_apic_page_mut(vtl);
                 let rvi = top_vector(&page.irr);
                 self.backing.vtls[vtl].private_regs.rvi = rvi;
             }
@@ -1045,7 +1034,7 @@ impl UhProcessor<'_, TdxBacked> {
         let offloaded = self.backing.cvm.lapics[vtl].lapic.is_offloaded();
         if offloaded {
             assert_eq!(vtl, GuestVtl::Vtl0);
-            let (irr, isr) = pull_apic_offload(self.runner.tdx_apic_page_mut(GuestVtl::Vtl0));
+            let (irr, isr) = pull_apic_offload(self.runner.tdx_apic_page_mut(vtl));
             self.backing.cvm.lapics[vtl]
                 .lapic
                 .disable_offload(&irr, &isr);
