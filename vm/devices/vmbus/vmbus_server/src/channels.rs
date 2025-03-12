@@ -45,6 +45,7 @@ use vmbus_core::protocol::OfferFlags;
 use vmbus_core::protocol::UserDefinedData;
 use vmbus_ring::gparange;
 use vmcore::monitor::MonitorId;
+use vmcore::synic::MonitorPageGpas;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
