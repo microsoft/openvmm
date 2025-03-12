@@ -138,6 +138,14 @@ impl IoQueue {
             cpu: *cpu,
         })
     }
+
+    #[cfg(test)]
+    pub(crate) async fn verify_restore(&self, saved_state: &IoQueueSavedState, mem: MemoryBlock) {
+        self.queue.verify_restore(&saved_state.queue_data, mem);
+
+        assert_eq!(saved_state.iv, self.iv as u32);
+        assert_eq!(saved_state.cpu, self.cpu);
+    }
 }
 
 #[derive(Debug, Inspect)]
@@ -682,6 +690,50 @@ impl<T: DeviceBacking> NvmeDriver<T> {
     /// Change device's behavior when servicing.
     pub fn update_servicing_flags(&mut self, nvme_keepalive: bool) {
         self.nvme_keepalive = nvme_keepalive;
+    }
+
+    /// Given an input of the saved state from which the driver was constructed and the underlying
+    /// memory, this validates the current driver.
+    #[cfg(test)]
+    pub(crate) async fn verify_restore(&mut self, saved_state: &NvmeDriverSavedState, mem: MemoryBlock) {
+        if let Some(task) = self.task.as_mut() {
+            task.stop().await;
+            let worker = task.task();
+            
+            // Verify Admin Queue
+            match (&saved_state.worker_data.admin, &worker.admin) {
+                (None, None) => (),
+                (Some(admin_saved_state), Some(admin)) => {
+                    // TODO: [expand-verify-restore-functionality] Currrently providing base_pfn value in u64, this might panic
+                    let admin_saved_mem = mem.subblock(admin_saved_state.base_pfn.try_into().unwrap(), admin_saved_state.mem_len);
+                    admin.verify_restore(&admin_saved_state, admin_saved_mem).await;
+                },
+                _ => panic!("admin queue states do not match"),
+            };
+
+            // Verify I/O queues in strict ordering
+            assert_eq!(saved_state.worker_data.io.len(), worker.io.len());
+            for index in 0..saved_state.worker_data.io.len() {
+                let io_saved_state = saved_state.worker_data.io[index].clone();
+                let io_saved_mem = mem.subblock(io_saved_state.queue_data.base_pfn.try_into().unwrap(), io_saved_state.queue_data.mem_len);
+                worker.io[index].verify_restore(&io_saved_state, io_saved_mem);
+            }
+            task.start();
+        } else {
+            // driver should be enabled during restore so task cannot be None.
+            panic!("task cannot be None after restore");
+        }
+
+        assert_eq!(saved_state.device_id, self.device_id);
+
+        if let Some(identify) = &self.identify {
+            assert_eq!(saved_state.identify_ctrl.as_bytes(), identify.as_bytes());
+        } else {
+            panic!("idenitfy value cannot be None after restore");
+        }
+
+        // TODO: [expand-verify-restore-functionality] Namespace save is currently not supported.
+        assert!(self.nvme_keepalive);
     }
 }
 
