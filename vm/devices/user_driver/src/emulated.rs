@@ -140,15 +140,6 @@ pub struct DeviceSharedMemory {
     state: Arc<Mutex<Vec<u64>>>,
 }
 
-/// Takes sparse mapping as input and converts it to GuestMemory with the allow_dma switch
-pub fn create_guest_memory(sparse_mmap: SparseMapping, allow_dma: bool) -> GuestMemory {
-   let test_backing = Backing {
-        mem: sparse_mmap,
-        allow_dma,
-    };
-    GuestMemory::new("test mapper guest memory", test_backing)
-}
-
 /// The Backing struct is meant for testing only. It is meant to encapsulate types that already
 /// implement [GuestMemoryAccess] but provides the allow_dma switch regardless of the underlying
 /// type T.
@@ -171,6 +162,15 @@ unsafe impl<T: GuestMemoryAccess>  GuestMemoryAccess for Backing<T> {
     fn max_address(&self) -> u64 {
         self.mem.max_address()
     }
+}
+
+/// Takes sparse mapping as input and converts it to GuestMemory with the allow_dma switch
+pub fn create_guest_memory(sparse_mmap: SparseMapping, allow_dma: bool) -> GuestMemory {
+   let test_backing = Backing {
+        mem: sparse_mmap,
+        allow_dma,
+    };
+    GuestMemory::new("test mapper guest memory", test_backing)
 }
 
 impl DeviceSharedMemory {
