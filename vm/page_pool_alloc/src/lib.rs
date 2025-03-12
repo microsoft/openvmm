@@ -463,7 +463,7 @@ impl TestMapper {
         let mappable = self.mappable();
         let mapping = SparseMapping::new(self.len).unwrap();
         mapping.map_file(0, self.len, mappable, 0, true).unwrap();
-        return mapping;
+        mapping
     }
 
     fn inspect_extra(&self, resp: &mut Response<'_>) {
