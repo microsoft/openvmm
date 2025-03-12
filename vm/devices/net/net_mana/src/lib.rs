@@ -1065,6 +1065,8 @@ impl<T: DeviceBacking> ManaQueue<T> {
             };
 
             // The header needs to be contiguous.
+            let mut bounce_buffer: Option<ContiguousBuffer<'_>> = None;
+            let mut bounce_buffer_next_gpa: Option<u64> = None;
             let (head_iova, bounced_len_with_padding) =
                 if header_len > head.len || self.force_tx_header_bounce {
                     let mut copy = match self.tx_bounce_buffer.allocate(header_len) {
@@ -1086,12 +1088,11 @@ impl<T: DeviceBacking> ManaQueue<T> {
                             .read_to_atomic(hdr_seg.gpa, &next[..len])?;
                         next = &next[len..];
                     }
-                    let ContiguousBufferInUse {
-                        gpa,
-                        offset: _,
-                        len_with_padding,
-                    } = copy.commit();
-                    (gpa, len_with_padding)
+                    let gpa = copy.get_gpa();
+                    let padding = copy.get_padding();
+                    bounce_buffer = Some(copy);
+                    bounce_buffer_next_gpa = Some(gpa + header_len as u64);
+                    (gpa, padding)
                 } else {
                     (self.guest_memory.iova(head.gpa).unwrap(), 0)
                 };
@@ -1138,23 +1139,37 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 sgl
             } else {
                 // Tx segment count exceeds the limit. Coalescing using a bounce buffer.
+                // Verbose logging for testing. TODO: Remove before checkin
+                tracing::error!(
+                    "ERIK segment_count {:?} >= hardware_segment_limit {:?}",
+                    segment_count,
+                    hardware_segment_limit
+                );
                 let mut segment_index = header_segment_count;
                 let mut segments_remaining = segment_count;
                 let mut segments_peekable = segments[header_segment_count..].iter().peekable();
                 let mut sgl_index = tail_sgl_offset;
-                while segments_remaining >= hardware_segment_limit
-                    && segments_peekable.peek().is_some()
-                {
-                    let seg = segments_peekable.next().unwrap();
-                    let next_segment_len = if let Some(&next) = segments_peekable.peek() {
-                        next.len
-                    } else {
-                        0
+                while segments_remaining >= hardware_segment_limit {
+                    let Some(seg) = segments_peekable.next() else {
+                        break;
                     };
+                    let mut segment_vector: Vec<&TxSegment> = Vec::new();
+                    segment_vector.push(seg);
+                    let mut data_len = seg.len;
                     // NOTE: allocate will panic if size is larger than PAGE_SIZE32 (4096)
-                    if segments_peekable.peek().is_none()
-                        || seg.len + next_segment_len >= PAGE_SIZE32
-                    {
+                    let available_memory = PAGE_SIZE32 - 1;
+                    while let Some(&seg) = segments_peekable.peek() {
+                        if data_len + seg.len >= available_memory {
+                            break;
+                        }
+
+                        segment_vector.push(segments_peekable.next().unwrap());
+                        data_len += seg.len;
+                    }
+
+                    if segment_vector.len() == 1 {
+                        tracing::error!("ERIK NO coalescing for 1 segments in vec");
+                        let seg = segment_vector[0];
                         sgl[sgl_index] = Sge {
                             address: self.guest_memory.iova(seg.gpa).unwrap(),
                             mem_key: self.mem_key,
@@ -1164,43 +1179,85 @@ impl<T: DeviceBacking> ManaQueue<T> {
                         segments_remaining -= 1;
                         segment_index += 1;
                     } else {
-                        // Combine segments and bounce buffer
-                        let buffer_len = seg.len + next_segment_len;
-                        let mut buf: ContiguousBuffer<'_> =
-                            match self.tx_bounce_buffer.allocate(buffer_len as u32) {
-                                Ok(buf) => buf,
-                                Err(err) => {
-                                    tracelimit::error_ratelimited!(
-                                        err = &err as &dyn std::error::Error,
-                                        meta.len,
-                                        "failed to bounce buffer"
-                                    );
-                                    // Drop the packet
-                                    return Ok(None);
-                                }
-                            };
-                        let mut next = buf.as_slice();
-                        let len = seg.len as usize;
-                        self.guest_memory
-                            .read_to_atomic(seg.gpa as u64, &next[..len])?;
-                        next = &next[len..];
-                        let seg = segments_peekable.next().unwrap();
-                        let len = seg.len as usize;
-                        self.guest_memory
-                            .read_to_atomic(seg.gpa as u64, &next[..len])?;
-
-                        let buf = buf.commit();
+                        tracing::error!(
+                            "ERIK allocating data_len {:?} for {:?} segments in vec",
+                            data_len,
+                            segment_vector.len()
+                        );
+                        let (mut buf, gpa) = if bounce_buffer.is_none() {
+                            let buf: ContiguousBuffer<'_> =
+                                match self.tx_bounce_buffer.allocate(data_len as u32) {
+                                    Ok(buf) => buf,
+                                    Err(err) => {
+                                        tracelimit::error_ratelimited!(
+                                            err = &err as &dyn std::error::Error,
+                                            data_len,
+                                            "failed to bounce buffer coalesce"
+                                        );
+                                        // Drop the packet
+                                        return Ok(None);
+                                    }
+                                };
+                            let gpa = buf.get_gpa();
+                            (buf, gpa)
+                        } else {
+                            let buf = bounce_buffer.unwrap();
+                            let gpa = bounce_buffer_next_gpa.unwrap();
+                            let buf: ContiguousBuffer<'_> =
+                                match buf.parent.extend(buf.len, data_len as u32) {
+                                    Ok(buf) => buf,
+                                    Err(err) => {
+                                        tracelimit::error_ratelimited!(
+                                            err = &err as &dyn std::error::Error,
+                                            data_len,
+                                            "failed to bounce buffer coalesce extend"
+                                        );
+                                        // Drop the packet
+                                        return Ok(None);
+                                    }
+                                };
+                            (buf, gpa)
+                        };
+                        let mut next = buf.as_slice_from(gpa as usize); // CRASH HERE as GPA was 8742924288 :(
+                        for seg in &segment_vector {
+                            let len = seg.len as usize;
+                            self.guest_memory
+                                .read_to_atomic(seg.gpa as u64, &next[..len])?;
+                            next = &next[len..];
+                        }
+                        tracing::error!(
+                            "ERIK writing buffer to sgl_index {:?} data_len {:?}",
+                            sgl_index,
+                            data_len
+                        );
                         sgl[sgl_index] = Sge {
-                            address: buf.gpa,
+                            address: gpa,
                             mem_key: self.mem_key,
-                            size: buffer_len as u32,
+                            size: data_len as u32,
                         };
                         sgl_index += 1;
-                        segments_remaining -= 2;
-                        segment_index += 2;
-                        bounced_len_with_padding_total += buffer_len;
+                        segments_remaining -= segment_vector.len();
+                        segment_index += segment_vector.len();
+                        bounced_len_with_padding_total += data_len;
+                        bounce_buffer = Some(buf);
+                        bounce_buffer_next_gpa = Some(gpa + data_len as u64);
                     }
                 }
+                if segments_remaining >= hardware_segment_limit {
+                    tracelimit::error_ratelimited!(
+                        segments_remaining,
+                        hardware_segment_limit,
+                        "Failed to bounce buffer the packet too many segments"
+                    );
+                    // Drop the packet, no need to free bounce buffer
+                    return Ok(None);
+                }
+                tracing::error!(
+                    "ERIK Finished Coalescing segment_index {:?} sgl_index {:?} segments_remaining {:?}",
+                    segment_index,
+                    sgl_index,
+                    segments_remaining
+                );
                 let sgl = &mut sgl[..segments_remaining];
                 for (tail, sge) in segments[segment_index..].iter().zip(&mut sgl[sgl_index..]) {
                     *sge = Sge {
@@ -1211,6 +1268,10 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 }
                 sgl
             };
+
+            if let Some(buf) = bounce_buffer {
+                buf.commit();
+            }
 
             let wqe_len = if short_format {
                 self.tx_wq
@@ -1231,6 +1292,12 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     )
                     .unwrap()
             };
+            if bounced_len_with_padding_total > 0 {
+                tracing::error!(
+                    "ERIK PostedTx bounced_len_with_padding_total {:?}",
+                    bounced_len_with_padding_total
+                );
+            }
             PostedTx {
                 id: meta.id,
                 wqe_len,
@@ -1274,6 +1341,10 @@ impl<'a> ContiguousBuffer<'a> {
         &self.parent.as_slice()[self.offset as usize..(self.offset + self.len) as usize]
     }
 
+    pub fn as_slice_from(&mut self, start: usize) -> &[AtomicU8] {
+        &self.parent.as_slice()[start..(self.offset + self.len) as usize]
+    }
+
     pub fn commit(self) -> ContiguousBufferInUse {
         let page = self.offset / PAGE_SIZE32;
         let offset_in_page = self.offset - page * PAGE_SIZE32;
@@ -1285,6 +1356,16 @@ impl<'a> ContiguousBuffer<'a> {
             offset: self.offset,
             len_with_padding,
         }
+    }
+
+    pub fn get_gpa(&self) -> u64 {
+        let page = self.offset / PAGE_SIZE32;
+        let offset_in_page = self.offset - page * PAGE_SIZE32;
+        self.parent.mem.pfns()[page as usize] * PAGE_SIZE64 + offset_in_page as u64
+    }
+
+    pub fn get_padding(&self) -> u32 {
+        self.padding_len
     }
 }
 
@@ -1336,6 +1417,35 @@ impl ContiguousBufferManager {
             allocated_offset % self.len,
             len,
             len_with_padding - len,
+        ))
+    }
+
+    /// Extend another allocation from next section of available ring buffer.
+    pub fn extend(
+        &mut self,
+        previous_len: u32,
+        len: u32,
+    ) -> Result<ContiguousBuffer<'_>, OutOfMemory> {
+        self.split_headers += 1;
+        assert!(len < PAGE_SIZE32);
+        let extended_length = len + previous_len;
+        let mut len_with_padding = extended_length;
+        let mut allocated_offset = self.head;
+        let bytes_remaining_on_page = PAGE_SIZE32 - (self.head & (PAGE_SIZE32 - 1));
+        if extended_length > bytes_remaining_on_page {
+            allocated_offset = allocated_offset.wrapping_add(bytes_remaining_on_page);
+            len_with_padding += bytes_remaining_on_page;
+        }
+        if len_with_padding > self.tail.wrapping_sub(self.head) {
+            self.failed_allocations += 1;
+            return Err(OutOfMemory);
+        }
+
+        Ok(ContiguousBuffer::new(
+            self,
+            allocated_offset % self.len,
+            extended_length,
+            len_with_padding - extended_length,
         ))
     }
 
