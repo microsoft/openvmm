@@ -62,6 +62,7 @@ use virt::x86::MsrError;
 use virt::x86::MsrErrorExt;
 use virt::x86::SegmentRegister;
 use virt::x86::TableRegister;
+use virt::Processor;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt_support_apic::ApicClient;
@@ -1474,7 +1475,6 @@ impl UhProcessor<'_, TdxBacked> {
             }
         }
 
-        #[cfg(feature = "gdb")]
         let mut breakpoint_debug_exception = false;
         let stat = match exit_info.code().vmx_exit() {
             VmxExit::IO_INSTRUCTION => {
@@ -1813,10 +1813,10 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.nmi_window
             }
             VmxExit::HW_INTERRUPT => {
-                #[cfg(feature = "gdb")]
-                {
+                if cfg!(feature = "gdb") {
                     // Check if the interrupt was triggered by a hardware breakpoint.
-                    let debug_regs = TdxBacked::access_vp_state(self, intercepted_vtl.into())
+                    let debug_regs = self
+                        .access_state(intercepted_vtl.into())
                         .debug_regs()
                         .expect("register query should not fail");
                     // The lowest four bits of DR6 indicate which of the
@@ -1848,8 +1848,7 @@ impl UhProcessor<'_, TdxBacked> {
                     "Caught Exception: {:?}",
                     exit_info._exit_interruption_info()
                 );
-                #[cfg(feature = "gdb")]
-                {
+                if cfg!(feature = "gdb") {
                     breakpoint_debug_exception = true;
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.exception
@@ -1869,8 +1868,7 @@ impl UhProcessor<'_, TdxBacked> {
 
         // Breakpoint exceptions may return a non-fatal error.
         // We dispatch here to correctly increment the counter.
-        #[cfg(feature = "gdb")]
-        if breakpoint_debug_exception {
+        if cfg!(feature = "gdb") && breakpoint_debug_exception {
             self.handle_debug_exception(intercepted_vtl)?;
         }
 
