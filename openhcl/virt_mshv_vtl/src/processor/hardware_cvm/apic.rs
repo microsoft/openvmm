@@ -74,7 +74,6 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
                 }
             }
         ) {
-            assert_eq!(vtl, GuestVtl::Vtl0);
             apic_backing.handle_init(vtl)?;
         }
     }
@@ -90,7 +89,6 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
                     }
                 }
             ) {
-                assert_eq!(vtl, GuestVtl::Vtl0);
                 let base = (vector as u64) << 12;
                 let selector = (vector as u16) << 8;
                 apic_backing.handle_sipi(
