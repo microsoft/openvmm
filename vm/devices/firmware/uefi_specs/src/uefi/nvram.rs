@@ -77,8 +77,8 @@ impl EFI_VARIABLE_AUTHENTICATION_2 {
     /// itself.
     pub const DUMMY: Self = {
         use crate::uefi::signing::EFI_CERT_TYPE_PKCS7_GUID;
-        use crate::uefi::signing::WIN_CERTIFICATE;
         use crate::uefi::signing::WIN_CERT_TYPE_EFI_GUID;
+        use crate::uefi::signing::WIN_CERTIFICATE;
 
         EFI_VARIABLE_AUTHENTICATION_2 {
             timestamp: EFI_TIME::ZEROED,

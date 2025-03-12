@@ -2,11 +2,11 @@
 // Licensed under the MIT License.
 
 use super::Error;
-use crate::regs::hv_register_to_whp;
-use crate::regs::ToWhpRegister;
 use crate::WhpProcessor;
 use crate::WhpResultExt;
 use crate::WhpVpRef;
+use crate::regs::ToWhpRegister;
+use crate::regs::hv_register_to_whp;
 use hvdef::HvRegisterValue;
 use hvdef::Vtl;
 use virt::state::HvRegisterState;

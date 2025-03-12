@@ -7,11 +7,11 @@
 #![expect(missing_docs)]
 
 use arbitrary::Arbitrary;
-use guestmem::ranges::PagedRange;
 use guestmem::BitmapInfo;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryAccess;
 use guestmem::LockedRange;
+use guestmem::ranges::PagedRange;
 use smallvec::SmallVec;
 use sparse_mmap::SparseMapping;
 use std::ptr::NonNull;

@@ -1,10 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::instruction;
 use super::AlignmentMode;
 use super::Emulator;
 use super::InternalError;
+use super::instruction;
 use crate::Cpu;
 use iced_x86::Instruction;
 

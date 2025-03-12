@@ -26,12 +26,12 @@ pub use petri_artifacts_core::ResolvedOptionalArtifact;
 pub use petri_artifacts_core::TestArtifactRequirements;
 pub use petri_artifacts_core::TestArtifacts;
 pub use pipette_client as pipette;
-pub use test::test_macro_support;
-pub use test::test_main;
 pub use test::PetriTestParams;
 pub use test::RunTest;
 pub use test::SimpleTest;
 pub use test::TestCase;
+pub use test::test_macro_support;
+pub use test::test_main;
 pub use tracing::*;
 pub use vm::*;
 

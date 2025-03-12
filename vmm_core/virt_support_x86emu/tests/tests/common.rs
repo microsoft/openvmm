@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use virt::io::CpuIo;
 use virt::VpIndex;
+use virt::io::CpuIo;
 use x86defs::RFlags;
 use x86defs::SegmentAttributes;
 use x86defs::SegmentRegister;

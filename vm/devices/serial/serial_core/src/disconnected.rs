@@ -65,11 +65,11 @@ pub mod resolver {
     use crate::resources::ResolveSerialBackendParams;
     use crate::resources::ResolvedSerialBackend;
     use std::convert::Infallible;
-    use vm_resource::declare_static_resolver;
-    use vm_resource::kind::SerialBackendHandle;
     use vm_resource::IntoResource;
     use vm_resource::ResolveResource;
     use vm_resource::Resource;
+    use vm_resource::declare_static_resolver;
+    use vm_resource::kind::SerialBackendHandle;
 
     /// A resolver for [`DisconnectedSerialBackendHandle`].
     pub struct DisconnectedSerialBackendResolver;

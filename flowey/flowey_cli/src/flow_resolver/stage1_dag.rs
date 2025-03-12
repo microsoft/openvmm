@@ -2,16 +2,16 @@
 // Licensed under the MIT License.
 
 use anyhow::Context;
-use flowey_core::node::read_var_internals;
-use flowey_core::node::steps::rust::RustRuntimeServices;
-use flowey_core::node::user_facing::ClaimedGhParam;
-use flowey_core::node::user_facing::GhPermission;
-use flowey_core::node::user_facing::GhPermissionValue;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
 use flowey_core::node::GhVarState;
 use flowey_core::node::NodeHandle;
+use flowey_core::node::read_var_internals;
+use flowey_core::node::steps::rust::RustRuntimeServices;
+use flowey_core::node::user_facing::ClaimedGhParam;
+use flowey_core::node::user_facing::GhPermission;
+use flowey_core::node::user_facing::GhPermissionValue;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -534,7 +534,9 @@ pub(crate) fn stage1_dag(
                     output_graph[idx].1.as_ref().unwrap().step.label()
                 );
             }
-            log::error!("found buggy node that emitted unreachable steps! use `--viz-mode flow-dot` to debug");
+            log::error!(
+                "found buggy node that emitted unreachable steps! use `--viz-mode flow-dot` to debug"
+            );
             Some(FoundUnreachableNodes)
         } else {
             None

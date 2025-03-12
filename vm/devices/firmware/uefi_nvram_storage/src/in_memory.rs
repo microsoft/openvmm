@@ -4,10 +4,10 @@
 //! Provides an in-memory implementation of [`NvramStorage`] that doesn't
 //! automatically persist to disk.
 
+use crate::EFI_TIME;
 use crate::NextVariable;
 use crate::NvramStorage;
 use crate::NvramStorageError;
-use crate::EFI_TIME;
 use guid::Guid;
 use std::collections::BTreeMap;
 use std::fmt::Display;
@@ -188,9 +188,9 @@ impl NvramStorage for InMemoryNvram {
 /// A collection of test-implementation helpers that operate on a generic
 /// implementation of [`NvramStorage`]
 pub mod impl_agnostic_tests {
+    use crate::EFI_TIME;
     use crate::NextVariable;
     use crate::NvramStorage;
-    use crate::EFI_TIME;
     use guid::Guid;
     use ucs2::Ucs2LeSlice;
     use wchar::wchz;

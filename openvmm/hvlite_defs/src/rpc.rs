@@ -5,16 +5,16 @@
 
 use crate::config::DeviceVtl;
 use guid::Guid;
+use mesh::CancelContext;
+use mesh::MeshPayload;
 use mesh::error::RemoteError;
 use mesh::payload::message::ProtobufMessage;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
-use mesh::CancelContext;
-use mesh::MeshPayload;
 use std::fmt;
 use std::fs::File;
-use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::Resource;
+use vm_resource::kind::VmbusDeviceHandleKind;
 
 #[derive(MeshPayload)]
 pub enum VmRpc {

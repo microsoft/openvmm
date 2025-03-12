@@ -12,18 +12,18 @@ use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
 use crate::cli::pipeline::CheckMode;
 use crate::flow_resolver::stage1_dag::OutputGraphEntry;
 use crate::flow_resolver::stage1_dag::Step;
-use crate::pipeline_resolver::common_yaml::job_flowey_bootstrap_source;
 use crate::pipeline_resolver::common_yaml::FloweySource;
+use crate::pipeline_resolver::common_yaml::job_flowey_bootstrap_source;
 use crate::pipeline_resolver::generic::ResolvedPipeline;
 use crate::pipeline_resolver::generic::ResolvedPipelineJob;
 use anyhow::Context;
-use flowey_core::node::user_facing::GhPermission;
-use flowey_core::node::user_facing::GhPermissionValue;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
 use flowey_core::node::FlowPlatformKind;
 use flowey_core::node::NodeHandle;
+use flowey_core::node::user_facing::GhPermission;
+use flowey_core::node::user_facing::GhPermissionValue;
 use flowey_core::pipeline::GhRunner;
 use flowey_core::pipeline::GhRunnerOsLabel;
 use std::collections::BTreeMap;
@@ -127,7 +127,9 @@ pub fn github_yaml(
         // actual artifact publish happens at the end of the job
         if let FloweySource::Bootstrap(_artifact, _publish) = &flowey_source {
             if gh_bootstrap_template.is_empty() {
-                anyhow::bail!("Did not specify flowey bootstrap template. Please provide one using `Pipeline::gh_set_flowey_bootstrap_template`")
+                anyhow::bail!(
+                    "Did not specify flowey bootstrap template. Please provide one using `Pipeline::gh_set_flowey_bootstrap_template`"
+                )
             }
 
             let gh_bootstrap_template = gh_bootstrap_template

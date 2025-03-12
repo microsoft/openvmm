@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::dhcp::DHCP_SERVER;
 use super::Access;
 use super::Client;
 use super::ConsommeState;
 use super::DropReason;
 use super::SocketAddress;
+use super::dhcp::DHCP_SERVER;
 use crate::ChecksumState;
 use crate::Ipv4Addresses;
 use inspect::Inspect;
@@ -16,20 +16,20 @@ use pal_async::interest::InterestSlot;
 use pal_async::interest::PollEvents;
 use pal_async::socket::PolledSocket;
 use smoltcp::phy::ChecksumCapabilities;
+use smoltcp::wire::ETHERNET_HEADER_LEN;
 use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
+use smoltcp::wire::IPV4_HEADER_LEN;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv4Repr;
+use smoltcp::wire::UDP_HEADER_LEN;
 use smoltcp::wire::UdpPacket;
 use smoltcp::wire::UdpRepr;
-use smoltcp::wire::ETHERNET_HEADER_LEN;
-use smoltcp::wire::IPV4_HEADER_LEN;
-use smoltcp::wire::UDP_HEADER_LEN;
-use std::collections::hash_map;
 use std::collections::HashMap;
+use std::collections::hash_map;
 use std::io::ErrorKind;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;

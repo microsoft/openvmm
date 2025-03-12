@@ -3,12 +3,12 @@
 
 //! Implementation of the key retrieval logic for the [`KeyProtector`].
 
-use crate::crypto;
 use crate::Keys;
+use crate::crypto;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
-use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
+use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use thiserror::Error;
@@ -24,7 +24,9 @@ pub(crate) enum GetKeysFromKeyProtectorError {
         key_size: usize,
         expected_size: usize,
     },
-    #[error("Wrapped DiskEncryptionSettings key size {key_size} was smaller than expected {expected_size}")]
+    #[error(
+        "Wrapped DiskEncryptionSettings key size {key_size} was smaller than expected {expected_size}"
+    )]
     InvalidWrappedDesKeySize {
         key_size: usize,
         expected_size: usize,

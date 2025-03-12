@@ -3,14 +3,14 @@
 
 //! Implements an arm64 instruction emulator.
 
-use crate::opcodes::decode_group;
+use crate::Cpu;
 use crate::opcodes::Aarch64DecodeGroup;
 use crate::opcodes::Aarch64DecodeLoadStoreGroup;
 use crate::opcodes::LoadRegisterLiteral;
 use crate::opcodes::LoadStoreAtomic;
 use crate::opcodes::LoadStoreRegister;
 use crate::opcodes::LoadStoreRegisterPair;
-use crate::Cpu;
+use crate::opcodes::decode_group;
 use aarch64defs::EsrEl2;
 use inspect::Inspect;
 use thiserror::Error;

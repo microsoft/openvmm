@@ -1,13 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use mesh::payload::Error;
+use mesh::payload::FieldDecode;
+use mesh::payload::FieldEncode;
 use mesh::payload::inplace::InplaceOption;
 use mesh::payload::protobuf::FieldReader;
 use mesh::payload::protobuf::FieldSizer;
 use mesh::payload::protobuf::FieldWriter;
-use mesh::payload::Error;
-use mesh::payload::FieldDecode;
-use mesh::payload::FieldEncode;
 use thiserror::Error;
 
 /// A wrapper type that skips serializing the type and fails deserialization.

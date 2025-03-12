@@ -115,14 +115,14 @@ mod tests {
     use super::test_utilities::*;
     use super::worker::GuestEmulationTransportWorker;
     use crate::process_loop::FatalError;
-    use get_protocol::test_utilities::TEST_VMGS_SECTOR_SIZE;
     use get_protocol::ProtocolVersion;
     use get_protocol::VmgsIoStatus;
+    use get_protocol::test_utilities::TEST_VMGS_SECTOR_SIZE;
     use guest_emulation_device::test_utilities::Event;
     use guest_emulation_device::test_utilities::TestGetResponses;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
-    use pal_async::DefaultDriver;
     use test_with_tracing::test;
     use vmbus_async::async_dgram::AsyncRecvExt;
     use vmbus_async::async_dgram::AsyncSendExt;

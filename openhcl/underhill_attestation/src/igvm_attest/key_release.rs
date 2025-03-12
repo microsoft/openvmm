@@ -11,8 +11,8 @@ use openssl::hash::MessageDigest;
 use openssl::pkey::PKey;
 use openssl::rsa::Padding;
 use openssl::sign::Verifier;
-use openssl::x509::X509VerifyResult;
 use openssl::x509::X509;
+use openssl::x509::X509VerifyResult;
 use std::fmt::Write;
 use thiserror::Error;
 

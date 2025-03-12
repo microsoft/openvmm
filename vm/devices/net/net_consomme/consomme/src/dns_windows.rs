@@ -8,17 +8,17 @@ use smoltcp::wire::Ipv4Address;
 use std::alloc::Layout;
 use std::io;
 use std::net::Ipv4Addr;
-use std::ptr::null_mut;
 use std::ptr::NonNull;
+use std::ptr::null_mut;
 use thiserror::Error;
 use windows_sys::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
 use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-use windows_sys::Win32::NetworkManagement::IpHelper::GetAdaptersAddresses;
 use windows_sys::Win32::NetworkManagement::IpHelper::GAA_FLAG_INCLUDE_ALL_INTERFACES;
 use windows_sys::Win32::NetworkManagement::IpHelper::GAA_FLAG_SKIP_ANYCAST;
 use windows_sys::Win32::NetworkManagement::IpHelper::GAA_FLAG_SKIP_FRIENDLY_NAME;
 use windows_sys::Win32::NetworkManagement::IpHelper::GAA_FLAG_SKIP_MULTICAST;
 use windows_sys::Win32::NetworkManagement::IpHelper::GAA_FLAG_SKIP_UNICAST;
+use windows_sys::Win32::NetworkManagement::IpHelper::GetAdaptersAddresses;
 use windows_sys::Win32::NetworkManagement::IpHelper::IP_ADAPTER_ADDRESSES_LH;
 use windows_sys::Win32::Networking::WinSock::AF_INET;
 use windows_sys::Win32::Networking::WinSock::SOCKADDR_IN;
@@ -53,7 +53,7 @@ pub fn nameservers() -> Result<Vec<Ipv4Address>, Error> {
                 err => {
                     return Err(Error::AdapterAddresses(io::Error::from_raw_os_error(
                         err as i32,
-                    )))
+                    )));
                 }
             }
 

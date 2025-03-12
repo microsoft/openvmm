@@ -4,8 +4,8 @@
 //! Implementation of [`RxBufferAccess`] and friends on top of the receive
 //! buffers.
 
-use crate::rndisprot;
 use crate::MAX_MTU;
+use crate::rndisprot;
 use arrayvec::ArrayVec;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;

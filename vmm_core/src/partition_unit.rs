@@ -6,12 +6,12 @@
 mod debug;
 mod vp_set;
 
-pub use vp_set::block_on_vp;
 pub use vp_set::Halt;
 pub use vp_set::RequestYield;
 pub use vp_set::RunCancelled;
 pub use vp_set::RunnerCanceller;
 pub use vp_set::VpRunner;
+pub use vp_set::block_on_vp;
 
 use self::vp_set::RegisterSetError;
 use async_trait::async_trait;
@@ -21,9 +21,9 @@ use guestmem::GuestMemory;
 use hvdef::Vtl;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
+use mesh::Receiver;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use mesh::Receiver;
 use pal_async::task::Spawn;
 use state_unit::NameInUse;
 use state_unit::SpawnedUnit;

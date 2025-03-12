@@ -12,26 +12,26 @@
 mod base_chipset;
 mod chipset;
 
-pub use self::base_chipset::options;
 pub use self::base_chipset::BaseChipsetBuilder;
 pub use self::base_chipset::BaseChipsetBuilderError;
 pub use self::base_chipset::BaseChipsetBuilderOutput;
 pub use self::base_chipset::BaseChipsetDeviceInterfaces;
+pub use self::base_chipset::options;
 pub use self::chipset::Chipset;
 pub use self::chipset::ChipsetDevices;
 
 // API wart: future changes should avoid exposing the `ChipsetBuilder`, and move
 // _all_ device instantiation into `vmotherboard` itself.
-pub use self::chipset::backing::arc_mutex::device::ArcMutexChipsetDeviceBuilder;
 pub use self::chipset::ChipsetBuilder;
+pub use self::chipset::backing::arc_mutex::device::ArcMutexChipsetDeviceBuilder;
 
 use chipset_device::ChipsetDevice;
 use inspect::InspectMut;
 use mesh::MeshPayload;
 use std::marker::PhantomData;
 use std::sync::Arc;
-use vm_resource::kind::ChipsetDeviceHandleKind;
 use vm_resource::Resource;
+use vm_resource::kind::ChipsetDeviceHandleKind;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::ProtobufSaveRestore;
 

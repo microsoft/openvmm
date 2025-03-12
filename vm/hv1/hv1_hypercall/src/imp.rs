@@ -12,12 +12,6 @@ use super::support::VtlHypercall;
 use crate::support::HvRepResult;
 use crate::support::VariableRepHypercall;
 use hv1_structs::ProcessorSet;
-use hvdef::hypercall as defs;
-use hvdef::hypercall::AcceptPagesAttributes;
-use hvdef::hypercall::HostVisibilityType;
-use hvdef::hypercall::HvRegisterAssoc;
-use hvdef::hypercall::HypercallOutput;
-use hvdef::hypercall::VtlPermissionSet;
 use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvRegisterName;
@@ -25,6 +19,12 @@ use hvdef::HvRegisterValue;
 use hvdef::HvResult;
 use hvdef::HypercallCode;
 use hvdef::Vtl;
+use hvdef::hypercall as defs;
+use hvdef::hypercall::AcceptPagesAttributes;
+use hvdef::hypercall::HostVisibilityType;
+use hvdef::hypercall::HvRegisterAssoc;
+use hvdef::hypercall::HypercallOutput;
+use hvdef::hypercall::VtlPermissionSet;
 use zerocopy::IntoBytes;
 
 /// Implements the `HvPostMessage` hypercall.

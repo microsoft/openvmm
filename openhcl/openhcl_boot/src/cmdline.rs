@@ -60,11 +60,7 @@ pub fn parse_boot_command_line(cmdline: &str) -> BootCommandLineOptions {
                 let num = arg.parse::<u64>().unwrap_or(0);
                 // A size of 0 or failure to parse is treated as disabling
                 // the pool.
-                if num == 0 {
-                    None
-                } else {
-                    Some(num)
-                }
+                if num == 0 { None } else { Some(num) }
             });
         }
     }

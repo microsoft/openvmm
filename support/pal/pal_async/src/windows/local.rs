@@ -3,9 +3,9 @@
 
 //! A thread-local executor backed by WaitForMultipleObjects.
 
-use super::overlapped::overlapped_io_done;
 use super::overlapped::IoOverlapped;
 use super::overlapped::OverlappedIoDriver;
+use super::overlapped::overlapped_io_done;
 use super::socket::make_poll_handle_info;
 use super::socket::parse_poll_handle_info;
 use crate::interest::InterestSlot;
@@ -21,10 +21,10 @@ use crate::wait::WaitDriver;
 use crate::waker::WakerList;
 use headervec::HeaderVec;
 use once_cell::sync::OnceCell;
-use pal::windows::afd;
-use pal::windows::set_file_completion_notification_modes;
 use pal::windows::Overlapped;
 use pal::windows::SendSyncRawHandle;
+use pal::windows::afd;
+use pal::windows::set_file_completion_notification_modes;
 use pal_event::Event;
 use std::fs::File;
 use std::io;

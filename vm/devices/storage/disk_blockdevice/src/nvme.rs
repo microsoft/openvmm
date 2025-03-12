@@ -308,7 +308,7 @@ pub fn check_nvme_status(status: i32) -> io::Result<()> {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
                     format!("nvme error {:#x?}", status),
-                ))
+                ));
             }
         };
         Err(io::Error::from_raw_os_error(errno))

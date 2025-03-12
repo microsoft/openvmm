@@ -3,25 +3,25 @@
 
 mod saved_state;
 
+use crate::Guid;
+use crate::SINT;
+use crate::SynicMessage;
 use crate::monitor::AssignedMonitors;
 use crate::protocol::Version;
-use crate::Guid;
-use crate::SynicMessage;
-use crate::SINT;
 use hvdef::Vtl;
 use inspect::Inspect;
 pub use saved_state::RestoreError;
 pub use saved_state::SavedState;
 use slab::Slab;
 use std::cmp::min;
+use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::collections::hash_map::HashMap;
-use std::collections::VecDeque;
 use std::fmt::Display;
 use std::ops::Index;
 use std::ops::IndexMut;
-use std::task::ready;
 use std::task::Poll;
+use std::task::ready;
 use thiserror::Error;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::GpadlRequest;
@@ -29,6 +29,12 @@ use vmbus_channel::bus::OfferKey;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::bus::OpenData;
 use vmbus_channel::bus::RestoredGpadl;
+use vmbus_core::HvsockConnectRequest;
+use vmbus_core::HvsockConnectResult;
+use vmbus_core::MaxVersionInfo;
+use vmbus_core::MonitorPageGpas;
+use vmbus_core::OutgoingMessage;
+use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::ConnectionId;
@@ -37,12 +43,6 @@ use vmbus_core::protocol::GpadlId;
 use vmbus_core::protocol::Message;
 use vmbus_core::protocol::OfferFlags;
 use vmbus_core::protocol::UserDefinedData;
-use vmbus_core::HvsockConnectRequest;
-use vmbus_core::HvsockConnectResult;
-use vmbus_core::MaxVersionInfo;
-use vmbus_core::MonitorPageGpas;
-use vmbus_core::OutgoingMessage;
-use vmbus_core::VersionInfo;
 use vmbus_ring::gparange;
 use vmcore::monitor::MonitorId;
 use zerocopy::FromZeros;
@@ -893,9 +893,11 @@ impl AssignmentEntry<'_> {
     }
 
     pub fn insert(self, offer_id: OfferId) {
-        assert!(self.list.assignments[self.index]
-            .replace(offer_id)
-            .is_none());
+        assert!(
+            self.list.assignments[self.index]
+                .replace(offer_id)
+                .is_none()
+        );
 
         if self.index < self.list.reserved_offset {
             self.list.count_in_reserved_range += 1;
@@ -1339,7 +1341,7 @@ impl Server {
             RestoreState::Restoring => {}
             RestoreState::Unmatched => unreachable!(),
             RestoreState::Restored => {
-                return Err(RestoreError::AlreadyRestored(channel.offer.key()))
+                return Err(RestoreError::AlreadyRestored(channel.offer.key()));
             }
         }
 
@@ -1425,7 +1427,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             RestoreState::Restoring => {}
             RestoreState::Unmatched => unreachable!(),
             RestoreState::Restored => {
-                return Err(RestoreError::AlreadyRestored(channel.offer.key()))
+                return Err(RestoreError::AlreadyRestored(channel.offer.key()));
             }
         }
 
@@ -2880,11 +2882,11 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             ChannelState::Revoked | ChannelState::Reoffered => {}
 
             ChannelState::Open { .. } | ChannelState::Opening { .. } => {
-                return Err(ChannelError::ChannelAlreadyOpen)
+                return Err(ChannelError::ChannelAlreadyOpen);
             }
 
             ChannelState::Closing { .. } | ChannelState::ClosingReopen { .. } => {
-                return Err(ChannelError::InvalidChannelState)
+                return Err(ChannelError::InvalidChannelState);
             }
 
             ChannelState::ClientReleased

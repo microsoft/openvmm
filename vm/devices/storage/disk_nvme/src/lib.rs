@@ -7,14 +7,14 @@
 #![expect(missing_docs)]
 
 use async_trait::async_trait;
-use disk_backend::pr;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
 use disk_backend::MediumErrorDetails;
+use disk_backend::pr;
 use inspect::Inspect;
 use nvme_common::from_nvme_reservation_report;
-use nvme_spec::nvm;
 use nvme_spec::Status;
+use nvme_spec::nvm;
 use pal::unix::affinity::get_cpu_number;
 use std::io;
 

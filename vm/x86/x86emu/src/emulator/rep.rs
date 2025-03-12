@@ -1,10 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::arith::ArithOp;
 use super::AlignmentMode;
 use super::Emulator;
 use super::InternalError;
+use super::arith::ArithOp;
 use crate::Cpu;
 use iced_x86::Instruction;
 use iced_x86::OpKind;

@@ -4,8 +4,8 @@
 //! Integration tests for x86_64 Linux direct boot with OpenHCL.
 
 use anyhow::Context;
-use disk_backend_resources::layer::RamDiskLayerHandle;
 use disk_backend_resources::LayeredDiskHandle;
+use disk_backend_resources::layer::RamDiskLayerHandle;
 use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::VpciDeviceConfig;
@@ -13,11 +13,11 @@ use hvlite_defs::config::Vtl2BaseAddressType;
 use mesh::rpc::RpcSend;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
-use petri::openvmm::PetriVmConfigOpenVmm;
-use petri::pipette::cmd;
-use petri::pipette::PipetteClient;
 use petri::OpenHclServicingFlags;
 use petri::ResolvedArtifact;
+use petri::openvmm::PetriVmConfigOpenVmm;
+use petri::pipette::PipetteClient;
+use petri::pipette::cmd;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;

@@ -4,12 +4,12 @@
 #![cfg(guest_arch = "x86_64")]
 
 use super::UhRunVpError;
-use crate::processor::HardwareIsolatedBacking;
 use crate::UhProcessor;
+use crate::processor::HardwareIsolatedBacking;
 use hcl::GuestVtl;
+use virt::Processor;
 use virt::vp::MpState;
 use virt::x86::SegmentRegister;
-use virt::Processor;
 use virt_support_apic::ApicWork;
 
 pub(crate) trait ApicBacking<'b, B: HardwareIsolatedBacking> {

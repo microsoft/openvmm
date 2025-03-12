@@ -37,11 +37,7 @@ impl Emulator {
     fn get_crt_port(&mut self) -> u16 {
         let data = self.emulate_in(0x3CC);
 
-        if data & 1 != 0 {
-            0x3D4
-        } else {
-            0x3B4
-        }
+        if data & 1 != 0 { 0x3D4 } else { 0x3B4 }
     }
 
     fn turn_screen_on_off(&mut self, on: bool) {
@@ -184,11 +180,7 @@ impl Emulator {
         let data = registers[0];
         *registers = &registers[1..];
         self.emulate_out(0x3C2, data);
-        if data & 1 != 0 {
-            0x3DA
-        } else {
-            0x3BA
-        }
+        if data & 1 != 0 { 0x3DA } else { 0x3BA }
     }
 
     fn program_attribute(&mut self, input_status1_port: u16, registers: &mut &[u8]) {

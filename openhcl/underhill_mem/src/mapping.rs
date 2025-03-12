@@ -4,9 +4,9 @@
 // UNSAFETY: Implementing GuestMemoryAccess.
 #![expect(unsafe_code)]
 
-use crate::registrar::MemoryRegistrar;
 use crate::MshvVtlWithPolicy;
 use crate::RegistrationError;
+use crate::registrar::MemoryRegistrar;
 use guestmem::GuestMemoryAccess;
 use guestmem::GuestMemoryBackingError;
 use guestmem::PAGE_SIZE;

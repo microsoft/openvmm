@@ -580,7 +580,7 @@ impl<'a> PropertyIter<'a> {
                     return Err(ErrorKind::PropertyToken {
                         node_name: self.node_name,
                         token: token.raw(),
-                    })
+                    });
                 }
             };
 

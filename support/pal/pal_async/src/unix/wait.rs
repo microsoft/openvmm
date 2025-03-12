@@ -6,8 +6,8 @@
 use crate::fd::PollFdReady;
 use crate::interest::InterestSlot;
 use crate::interest::PollEvents;
-use crate::wait::PollWait;
 use crate::wait::MAXIMUM_WAIT_READ_SIZE;
+use crate::wait::PollWait;
 use pal::unix::Errno;
 use pal::unix::SyscallResult;
 use std::os::unix::prelude::*;
@@ -41,9 +41,10 @@ impl<T: PollFdReady> FdWait<T> {
 impl<T: 'static + PollFdReady> PollWait for FdWait<T> {
     fn poll_wait(&mut self, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         loop {
-            std::task::ready!(self
-                .fd_ready
-                .poll_fd_ready(cx, InterestSlot::Read, PollEvents::IN));
+            std::task::ready!(
+                self.fd_ready
+                    .poll_fd_ready(cx, InterestSlot::Read, PollEvents::IN)
+            );
 
             self.fd_ready.clear_fd_ready(InterestSlot::Read);
 

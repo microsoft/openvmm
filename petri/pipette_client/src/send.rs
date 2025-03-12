@@ -4,10 +4,10 @@
 //! A thin wrapper around a `mesh::Sender<PipetteRequest>` that provides
 //! useful error handling semantics.
 
+use mesh::CancelContext;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use mesh::CancelContext;
 use pipette_protocol::PipetteRequest;
 use std::time::Duration;
 
@@ -28,7 +28,9 @@ impl PipetteSender {
     {
         let result = self.0.call(f, input).await;
         if result.is_err() {
-            tracing::warn!("Pipette request channel failed, sleeping for 5 seconds to let outstanding work finish");
+            tracing::warn!(
+                "Pipette request channel failed, sleeping for 5 seconds to let outstanding work finish"
+            );
             let mut c = CancelContext::new().with_timeout(Duration::from_secs(5));
             let _ = c.cancelled().await;
         }
@@ -46,7 +48,9 @@ impl PipetteSender {
     {
         let result = self.0.call_failable(f, input).await;
         if result.is_err() {
-            tracing::warn!("Pipette request channel failed, sleeping for 5 seconds to let outstanding work finish");
+            tracing::warn!(
+                "Pipette request channel failed, sleeping for 5 seconds to let outstanding work finish"
+            );
             let mut c = CancelContext::new().with_timeout(Duration::from_secs(5));
             let _ = c.cancelled().await;
         }

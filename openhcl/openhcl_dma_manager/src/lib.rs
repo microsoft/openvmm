@@ -17,8 +17,8 @@ use page_pool_alloc::PagePool;
 use page_pool_alloc::PagePoolAllocator;
 use page_pool_alloc::PagePoolAllocatorSpawner;
 use std::sync::Arc;
-use user_driver::lockmem::LockedMemorySpawner;
 use user_driver::DmaClient;
+use user_driver::lockmem::LockedMemorySpawner;
 
 /// Save restore support for [`OpenhclDmaManager`].
 pub mod save_restore {
@@ -73,7 +73,7 @@ pub mod save_restore {
                 (Some(_), None) => {
                     return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
                         "saved state for shared pool but no shared pool"
-                    )))
+                    )));
                 }
                 (None, Some(_)) => {
                     // It's possible that previously we did not have a shared
@@ -91,7 +91,7 @@ pub mod save_restore {
                 (Some(_), None) => {
                     return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
                         "saved state for private pool but no private pool"
-                    )))
+                    )));
                 }
                 (None, Some(_)) => {
                     // It's possible that previously we did not have a private

@@ -1,10 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::tests::common::run_wide_test;
 use crate::tests::common::MultipleCellCpu;
-use crate::tests::common::TestCpu;
 use crate::tests::common::RFLAGS_ARITH_MASK;
+use crate::tests::common::TestCpu;
+use crate::tests::common::run_wide_test;
 use futures::FutureExt;
 use iced_x86::code_asm::*;
 use x86defs::cpuid::Vendor;

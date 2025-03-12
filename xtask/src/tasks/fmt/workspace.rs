@@ -192,7 +192,11 @@ fn verify_dependencies(path: &PathBuf) -> Result<(), anyhow::Error> {
             );
         } else {
             found_bad_deps.set(true);
-            log::error!("{} contains non-workspaced dependency {}. Please move this dependency to the root Cargo.toml.", package_name, dep_name);
+            log::error!(
+                "{} contains non-workspaced dependency {}. Please move this dependency to the root Cargo.toml.",
+                package_name,
+                dep_name
+            );
         }
     };
     let check_table_like = |t: &dyn TableLike, dep_name| {
@@ -210,7 +214,11 @@ fn verify_dependencies(path: &PathBuf) -> Result<(), anyhow::Error> {
 
                     if t.len() == 1 {
                         found_bad_deps.set(true);
-                        log::error!("{} uses inline table syntax for its dependency on {}, but only contains one table entry. Please change to the dotted syntax.", package_name, dep_name);
+                        log::error!(
+                            "{} uses inline table syntax for its dependency on {}, but only contains one table entry. Please change to the dotted syntax.",
+                            package_name,
+                            dep_name
+                        );
                     }
                 }
                 Item::Table(t) => check_table_like(t, dep_name),

@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_code)]
 
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::MmioIntercept;
@@ -17,7 +18,6 @@ use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
-use chipset_device::ChipsetDevice;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pci_core::spec::hwid::ProgrammingInterface;
@@ -132,11 +132,7 @@ impl ChipsetDevice for MissingDev {
 
     fn supports_pci(&mut self) -> Option<&mut dyn PciConfigSpace> {
         // this is technically IDET abuse...
-        if self.pci.is_some() {
-            Some(self)
-        } else {
-            None
-        }
+        if self.pci.is_some() { Some(self) } else { None }
     }
 }
 
@@ -252,9 +248,9 @@ pub mod resolver {
     use chipset_device_resources::ResolvedChipsetDevice;
     use missing_dev_resources::MissingDevHandle;
     use std::convert::Infallible;
+    use vm_resource::ResolveResource;
     use vm_resource::declare_static_resolver;
     use vm_resource::kind::ChipsetDeviceHandleKind;
-    use vm_resource::ResolveResource;
 
     /// A resolver for [`MissingDevHandle`] resources.
     pub struct MissingDevResolver;

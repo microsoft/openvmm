@@ -6,10 +6,10 @@
 
 use super::ArchError;
 use super::TargetArch;
-use crate::gdb::arch::x86::reg::id::X86SegmentRegId;
-use crate::gdb::arch::x86::reg::id::X86_64CoreRegId;
-use crate::gdb::arch::x86::reg::X86SegmentRegs;
 use crate::gdb::arch::x86::reg::X86_64CoreRegs;
+use crate::gdb::arch::x86::reg::X86SegmentRegs;
+use crate::gdb::arch::x86::reg::id::X86_64CoreRegId;
+use crate::gdb::arch::x86::reg::id::X86SegmentRegId;
 use vmm_core_defs::debug_rpc::DebuggerVpState;
 
 mod target_xml;
@@ -43,8 +43,24 @@ impl TargetArch for crate::gdb::arch::x86::X86_64_QEMU {
             return Err(ArchError);
         };
         let gp_regs = {
-            let [rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15] =
-                state.gp;
+            let [
+                rax,
+                rcx,
+                rdx,
+                rbx,
+                rsp,
+                rbp,
+                rsi,
+                rdi,
+                r8,
+                r9,
+                r10,
+                r11,
+                r12,
+                r13,
+                r14,
+                r15,
+            ] = state.gp;
             [
                 rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8, r9, r10, r11, r12, r13, r14, r15,
             ]
@@ -94,8 +110,24 @@ impl TargetArch for crate::gdb::arch::x86::X86_64_QEMU {
             return Err(ArchError);
         };
         state.gp = {
-            let [rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8, r9, r10, r11, r12, r13, r14, r15] =
-                regs.regs;
+            let [
+                rax,
+                rbx,
+                rcx,
+                rdx,
+                rsi,
+                rdi,
+                rbp,
+                rsp,
+                r8,
+                r9,
+                r10,
+                r11,
+                r12,
+                r13,
+                r14,
+                r15,
+            ] = regs.regs;
             [
                 rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15,
             ]

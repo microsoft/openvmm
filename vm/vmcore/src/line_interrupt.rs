@@ -8,8 +8,8 @@
 use inspect::Inspect;
 use parking_lot::Mutex;
 use std::borrow::Cow;
-use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::ops::RangeInclusive;

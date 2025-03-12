@@ -12,8 +12,8 @@
 )]
 
 use bitfield_struct::bitfield;
-use hvdef::hypercall::HvInputVtl;
 use hvdef::HV_MESSAGE_SIZE;
+use hvdef::hypercall::HvInputVtl;
 use libc::c_void;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;

@@ -4,14 +4,14 @@
 //! Implementation of secure key release (SKR) scheme for stateful CVM to obtain VMGS
 //! encryption keys.
 
+use crate::IgvmAttestRequestHelper;
 use crate::crypto;
 use crate::igvm_attest;
-use crate::IgvmAttestRequestHelper;
 use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::GuestEmulationTransportClient;
-use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::igvm_attest::get::KEY_RELEASE_RESPONSE_BUFFER_SIZE;
 use openhcl_attestation_protocol::igvm_attest::get::WRAPPED_KEY_RESPONSE_BUFFER_SIZE;
+use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use openhcl_attestation_protocol::vmgs::AGENT_DATA_MAX_SIZE;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
@@ -35,7 +35,9 @@ pub(crate) enum RequestVmgsEncryptionKeysError {
     ParseIgvmAttestWrappedKeyResponse(#[source] igvm_attest::wrapped_key::WrappedKeyError),
     #[error("wrapped key from WRAPPED_KEY response is empty")]
     EmptyWrappedKey,
-    #[error("key reference size {key_reference_size} from WRAPPED_KEY response was larger than expected {expected_size}")]
+    #[error(
+        "key reference size {key_reference_size} from WRAPPED_KEY response was larger than expected {expected_size}"
+    )]
     InvalidKeyReferenceSize {
         key_reference_size: usize,
         expected_size: usize,

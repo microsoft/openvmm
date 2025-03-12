@@ -9,9 +9,9 @@ use pal_async::driver::Driver;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
 use tracing::instrument;
-use user_driver::backoff::Backoff;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
+use user_driver::backoff::Backoff;
 
 #[derive(Inspect)]
 #[inspect(extra = "Self::inspect_extra")]

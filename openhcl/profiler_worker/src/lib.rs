@@ -8,14 +8,14 @@
 
 use anyhow::Context;
 use futures::FutureExt;
-use mesh::error::RemoteError;
 use mesh::MeshPayload;
+use mesh::error::RemoteError;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
+use pal_async::DefaultPool;
 use pal_async::driver::Driver;
 use pal_async::timer::PolledTimer;
-use pal_async::DefaultPool;
 use socket2::Socket;
 use std::io::Read;
 use std::os::fd::AsRawFd;

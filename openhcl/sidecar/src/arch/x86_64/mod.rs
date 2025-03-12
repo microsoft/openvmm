@@ -16,8 +16,8 @@ use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering::Acquire;
 use hvdef::HvError;
 use hvdef::HypercallCode;
-use minimal_rt::arch::msr::write_msr;
 use minimal_rt::arch::Serial;
+use minimal_rt::arch::msr::write_msr;
 use x86defs::Exception;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
@@ -169,9 +169,9 @@ macro_rules! log {
     };
 }
 use core::mem::size_of;
-use hvdef::hypercall::HvInputVtl;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
+use hvdef::hypercall::HvInputVtl;
 pub(crate) use log;
 use minimal_rt::arch::InstrIoAccess;
 

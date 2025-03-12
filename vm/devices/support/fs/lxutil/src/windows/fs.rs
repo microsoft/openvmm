@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::VolumeState;
 use super::symlink;
 use super::util;
-use super::VolumeState;
 use ::windows::Wdk::Storage::FileSystem;
 use ::windows::Wdk::System::SystemServices;
 use ::windows::Win32::Foundation;

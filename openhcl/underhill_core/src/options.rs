@@ -5,8 +5,8 @@
 
 #![warn(missing_docs)]
 
-use anyhow::bail;
 use anyhow::Context;
+use anyhow::bail;
 use mesh::MeshPayload;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;

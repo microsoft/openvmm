@@ -12,15 +12,15 @@ use crate::wait::PollWait;
 use crate::wait::PolledWait;
 use futures::AsyncRead;
 use futures::AsyncWrite;
+use pal::windows::Overlapped;
 use pal::windows::chk_status;
-use pal::windows::pipe::new_named_pipe;
 use pal::windows::pipe::Disposition;
-use pal::windows::pipe::PipeExt;
-use pal::windows::pipe::PipeMode;
 use pal::windows::pipe::FILE_PIPE_DISCONNECTED;
 use pal::windows::pipe::FILE_PIPE_READ_READY;
 use pal::windows::pipe::FILE_PIPE_WRITE_READY;
-use pal::windows::Overlapped;
+use pal::windows::pipe::PipeExt;
+use pal::windows::pipe::PipeMode;
+use pal::windows::pipe::new_named_pipe;
 use pal_event::Event;
 use std::fs::File;
 use std::future::Future;
@@ -31,9 +31,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::ptr::null_mut;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 use winapi::shared::winerror::ERROR_BROKEN_PIPE;
 use winapi::shared::winerror::ERROR_IO_PENDING;
 use winapi::shared::winerror::ERROR_NO_DATA;
@@ -144,11 +144,12 @@ impl PolledPipe {
             self.refresh_events()?;
         }
         while self.events & FILE_PIPE_DISCONNECTED == 0 {
-            ready!(self
-                .wakers
-                .poll_wrapped(cx, InterestSlot::Read as usize, |cx| self
-                    .wait
-                    .poll_wait(cx)))?;
+            ready!(
+                self.wakers
+                    .poll_wrapped(cx, InterestSlot::Read as usize, |cx| self
+                        .wait
+                        .poll_wait(cx))
+            )?;
 
             self.refresh_events()?;
         }
@@ -201,11 +202,12 @@ impl AsyncRead for PolledPipe {
         let this = self.get_mut();
         let n = loop {
             while !this.is_read_ready() {
-                ready!(this
-                    .wakers
-                    .poll_wrapped(cx, InterestSlot::Read as usize, |cx| this
-                        .wait
-                        .poll_wait(cx)))?;
+                ready!(
+                    this.wakers
+                        .poll_wrapped(cx, InterestSlot::Read as usize, |cx| this
+                            .wait
+                            .poll_wait(cx))
+                )?;
 
                 this.refresh_events()?;
             }
@@ -262,11 +264,12 @@ impl AsyncWrite for PolledPipe {
 
         let n = loop {
             while !this.is_write_ready() {
-                ready!(this
-                    .wakers
-                    .poll_wrapped(cx, InterestSlot::Write as usize, |cx| this
-                        .wait
-                        .poll_wait(cx)))?;
+                ready!(
+                    this.wakers
+                        .poll_wrapped(cx, InterestSlot::Write as usize, |cx| this
+                            .wait
+                            .poll_wait(cx))
+                )?;
                 this.refresh_events()?;
             }
             let n = this.file.write(buf)?;
@@ -417,8 +420,8 @@ impl Future for ListeningPipe {
 #[cfg(test)]
 mod tests {
     use super::PolledPipe;
-    use crate::sys::pipe::NamedPipeServer;
     use crate::DefaultDriver;
+    use crate::sys::pipe::NamedPipeServer;
     use futures::AsyncReadExt;
     use futures::AsyncWriteExt;
     use pal_async_test::async_test;

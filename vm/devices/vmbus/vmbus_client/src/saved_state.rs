@@ -8,12 +8,12 @@ use crate::SUPPORTED_FEATURE_FLAGS;
 use guid::Guid;
 use mesh::payload::Protobuf;
 use vmbus_channel::bus::OfferKey;
+use vmbus_core::OutgoingMessage;
+use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::FeatureFlags;
 use vmbus_core::protocol::GpadlId;
-use vmbus_core::OutgoingMessage;
-use vmbus_core::VersionInfo;
 
 impl super::ClientTask {
     pub fn handle_save(&mut self) -> SavedState {

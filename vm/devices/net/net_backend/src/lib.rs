@@ -12,10 +12,10 @@ pub mod resolve;
 pub mod tests;
 
 use async_trait::async_trait;
-use futures::lock::Mutex;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::TryFutureExt;
+use futures::lock::Mutex;
 use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;

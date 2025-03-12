@@ -11,17 +11,17 @@ use parking_lot::Mutex;
 use pci_core::msi::MsiControl;
 use pci_core::msi::MsiInterruptTarget;
 use slab::Slab;
-use std::collections::hash_map;
 use std::collections::HashMap;
+use std::collections::hash_map;
 use std::sync::Arc;
 use thiserror::Error;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vmcore::vpci_msi::VpciInterruptParameters;
+use x86defs::msi::MSI_ADDRESS;
 use x86defs::msi::MsiAddress;
 use x86defs::msi::MsiData;
-use x86defs::msi::MSI_ADDRESS;
 
 /// A set of software devices that can be used to implement VPCI devices on an
 /// APIC (x86) platform.

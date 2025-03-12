@@ -32,20 +32,20 @@ use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use boot_logger::LoggerType;
 use core::fmt::Write;
-use dt::write_dt;
 use dt::BootTimes;
+use dt::write_dt;
+use host_params::COMMAND_LINE_SIZE;
+use host_params::PartitionInfo;
 use host_params::shim_params::IsolationType;
 use host_params::shim_params::ShimParams;
-use host_params::PartitionInfo;
-use host_params::COMMAND_LINE_SIZE;
 use hvdef::Vtl;
-use loader_defs::linux::setup_data;
 use loader_defs::linux::SETUP_DTB;
+use loader_defs::linux::setup_data;
 use loader_defs::shim::ShimParamsRaw;
-use memory_range::merge_adjacent_ranges;
-use memory_range::walk_ranges;
 use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
+use memory_range::merge_adjacent_ranges;
+use memory_range::walk_ranges;
 use minimal_rt::enlightened_panic::enable_enlightened_panic;
 use sidecar::SidecarConfig;
 use sidecar_defs::SidecarOutput;
@@ -374,24 +374,24 @@ fn reserved_memory_regions(
 
 #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 mod x86_boot {
-    use crate::host_params::PartitionInfo;
-    use crate::single_threaded::off_stack;
-    use crate::single_threaded::OffStackRef;
-    use crate::zeroed;
     use crate::PageAlign;
     use crate::ReservedMemoryType;
+    use crate::host_params::PartitionInfo;
+    use crate::single_threaded::OffStackRef;
+    use crate::single_threaded::off_stack;
+    use crate::zeroed;
     use core::mem::size_of;
     use core::ops::Range;
     use core::ptr;
-    use loader_defs::linux::boot_params;
-    use loader_defs::linux::e820entry;
-    use loader_defs::linux::setup_data;
     use loader_defs::linux::E820_RAM;
     use loader_defs::linux::E820_RESERVED;
     use loader_defs::linux::SETUP_E820_EXT;
-    use memory_range::walk_ranges;
+    use loader_defs::linux::boot_params;
+    use loader_defs::linux::e820entry;
+    use loader_defs::linux::setup_data;
     use memory_range::MemoryRange;
     use memory_range::RangeWalkResult;
+    use memory_range::walk_ranges;
     use zerocopy::FromZeros;
     use zerocopy::Immutable;
     use zerocopy::KnownLayout;
@@ -863,14 +863,14 @@ fn main() {
 
 #[cfg(test)]
 mod test {
-    use super::x86_boot::build_e820_map;
     use super::x86_boot::E820Ext;
-    use crate::dt::write_dt;
-    use crate::host_params::shim_params::IsolationType;
-    use crate::host_params::PartitionInfo;
-    use crate::host_params::MAX_CPU_COUNT;
-    use crate::reserved_memory_regions;
+    use super::x86_boot::build_e820_map;
     use crate::ReservedMemoryType;
+    use crate::dt::write_dt;
+    use crate::host_params::MAX_CPU_COUNT;
+    use crate::host_params::PartitionInfo;
+    use crate::host_params::shim_params::IsolationType;
+    use crate::reserved_memory_regions;
     use arrayvec::ArrayString;
     use arrayvec::ArrayVec;
     use core::ops::Range;
@@ -878,13 +878,13 @@ mod test {
     use host_fdt_parser::MemoryEntry;
     use host_fdt_parser::VmbusInfo;
     use igvm_defs::MemoryMapEntryType;
-    use loader_defs::linux::boot_params;
-    use loader_defs::linux::e820entry;
     use loader_defs::linux::E820_RAM;
     use loader_defs::linux::E820_RESERVED;
-    use memory_range::walk_ranges;
+    use loader_defs::linux::boot_params;
+    use loader_defs::linux::e820entry;
     use memory_range::MemoryRange;
     use memory_range::RangeWalkResult;
+    use memory_range::walk_ranges;
     use zerocopy::FromZeros;
 
     const HIGH_MMIO_GAP_END: u64 = 0x1000000000; //  64 GiB
@@ -1125,13 +1125,15 @@ mod test {
         let partition_info =
             partition_info_ram_ranges(&[ONE_MB..4 * ONE_MB], parameter_range, None);
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_ok());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+            )
+            .is_ok()
+        );
 
         check_e820(
             &boot_params,
@@ -1153,13 +1155,15 @@ mod test {
             Some(3 * ONE_MB..4 * ONE_MB),
         );
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_ok());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+            )
+            .is_ok()
+        );
 
         check_e820(
             &boot_params,
@@ -1183,13 +1187,15 @@ mod test {
             Some(3 * ONE_MB..4 * ONE_MB),
         );
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_ok());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+            )
+            .is_ok()
+        );
 
         check_e820(
             &boot_params,
@@ -1221,13 +1227,15 @@ mod test {
             Some(3 * ONE_MB..4 * ONE_MB),
         );
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_ok());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+            )
+            .is_ok()
+        );
 
         check_e820(
             &boot_params,
@@ -1253,13 +1261,15 @@ mod test {
         let partition_info =
             partition_info_ram_ranges(&[ONE_MB..4 * ONE_MB], parameter_range, None);
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_err());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+            )
+            .is_err()
+        );
 
         // parameter range start partial coverage
         let mut boot_params: boot_params = FromZeros::new_zeroed();
@@ -1268,13 +1278,15 @@ mod test {
         let partition_info =
             partition_info_ram_ranges(&[ONE_MB..4 * ONE_MB], parameter_range, None);
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_err());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+            )
+            .is_err()
+        );
 
         // parameter range end partial coverage
         let mut boot_params: boot_params = FromZeros::new_zeroed();
@@ -1283,13 +1295,15 @@ mod test {
         let partition_info =
             partition_info_ram_ranges(&[4 * ONE_MB..6 * ONE_MB], parameter_range, None);
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_err());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+            )
+            .is_err()
+        );
 
         // parameter range larger than ram
         let mut boot_params: boot_params = FromZeros::new_zeroed();
@@ -1298,13 +1312,15 @@ mod test {
         let partition_info =
             partition_info_ram_ranges(&[4 * ONE_MB..6 * ONE_MB], parameter_range, None);
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_err());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+            )
+            .is_err()
+        );
 
         // ram has gap inside param range
         let mut boot_params: boot_params = FromZeros::new_zeroed();
@@ -1316,13 +1332,15 @@ mod test {
             None,
         );
 
-        assert!(build_e820_map(
-            &mut boot_params,
-            &mut ext,
-            &partition_info,
-            reserved_memory_regions(&partition_info, None).as_ref(),
-        )
-        .is_err());
+        assert!(
+            build_e820_map(
+                &mut boot_params,
+                &mut ext,
+                &partition_info,
+                reserved_memory_regions(&partition_info, None).as_ref(),
+            )
+            .is_err()
+        );
     }
 
     #[test]

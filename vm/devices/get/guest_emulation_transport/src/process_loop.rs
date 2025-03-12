@@ -19,16 +19,16 @@ use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use mesh::RecvError;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::TryRpcSend;
-use mesh::RecvError;
 use parking_lot::Mutex;
 use std::cmp::min;
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::future::pending;
 use std::future::Future;
+use std::future::pending;
 use std::pin::Pin;
 use std::sync::Arc;
 use thiserror::Error;
@@ -93,7 +93,9 @@ pub(crate) enum FatalError {
     GpaMemoryAllocationError(#[source] anyhow::Error),
     #[error("failed to deserialize the asynchronous `IGVM_ATTEST` response")]
     DeserializeIgvmAttestResponse,
-    #[error("malformed `IGVM_ATTEST` response - reported size {response_size} was larger than maximum size {maximum_size}")]
+    #[error(
+        "malformed `IGVM_ATTEST` response - reported size {response_size} was larger than maximum size {maximum_size}"
+    )]
     InvalidIgvmAttestResponseSize {
         response_size: usize,
         maximum_size: usize,
@@ -1624,7 +1626,7 @@ async fn request_device_platform_settings_v2(
                 return Err(FatalError::ResponseHeaderMismatchId(
                     header.message_id,
                     HostRequests::DEVICE_PLATFORM_SETTINGS_V2,
-                ))
+                ));
             }
         }
     }

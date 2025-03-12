@@ -8,13 +8,13 @@
 //! definitions in MARS files.
 
 use super::ParseSchemaExt;
+use crate::Vtl2SettingsErrorCode;
+use crate::Vtl2SettingsErrorInfo;
 use crate::errors::ErrorContext;
 use crate::errors::ParseErrors;
 use crate::schema::ParseResultExt;
 use crate::schema::ParseSchema;
 use crate::schema::ParsingStopped;
-use crate::Vtl2SettingsErrorCode;
-use crate::Vtl2SettingsErrorInfo;
 use guid::Guid;
 use physical_device::DeviceType;
 use std::error::Error as _;

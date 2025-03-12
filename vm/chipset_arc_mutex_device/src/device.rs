@@ -7,9 +7,9 @@
 use crate::services::ChipsetServices;
 use arc_cyclic_builder::ArcCyclicBuilder;
 use arc_cyclic_builder::ArcCyclicBuilderExt;
+use chipset_device::ChipsetDevice;
 use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
-use chipset_device::ChipsetDevice;
 use closeable_mutex::CloseableMutex;
 use std::sync::Arc;
 use std::sync::Weak;
@@ -266,7 +266,7 @@ where
         let dev = match (f)(&mut self.services) {
             Ok(dev) => dev,
             Err(e) => {
-                return Err(AddDeviceErrorKind::DeviceError(e.into()).with_dev_name(self.dev_name))
+                return Err(AddDeviceErrorKind::DeviceError(e.into()).with_dev_name(self.dev_name));
             }
         };
         self.inner_add(Ok(dev))
@@ -285,7 +285,7 @@ where
         let dev = match (f)(&mut self.services).await {
             Ok(dev) => dev,
             Err(e) => {
-                return Err(AddDeviceErrorKind::DeviceError(e.into()).with_dev_name(self.dev_name))
+                return Err(AddDeviceErrorKind::DeviceError(e.into()).with_dev_name(self.dev_name));
             }
         };
         self.inner_add(Ok(dev))

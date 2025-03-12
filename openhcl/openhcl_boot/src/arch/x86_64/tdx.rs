@@ -7,12 +7,12 @@ use crate::single_threaded::SingleThreaded;
 use core::arch::asm;
 use core::cell::Cell;
 use memory_range::MemoryRange;
-use tdcall::tdcall_map_gpa;
-use tdcall::tdcall_rdmsr;
 use tdcall::AcceptPagesError;
 use tdcall::Tdcall;
 use tdcall::TdcallInput;
 use tdcall::TdcallOutput;
+use tdcall::tdcall_map_gpa;
+use tdcall::tdcall_rdmsr;
 
 /// Perform a tdcall instruction with the specified inputs.
 fn tdcall(input: TdcallInput) -> TdcallOutput {

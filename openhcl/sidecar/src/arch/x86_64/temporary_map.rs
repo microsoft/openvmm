@@ -7,8 +7,8 @@
 use super::addr_space;
 use core::ops::Deref;
 use core::ops::DerefMut;
-use core::sync::atomic::compiler_fence;
 use core::sync::atomic::Ordering::SeqCst;
+use core::sync::atomic::compiler_fence;
 use x86defs::Pte;
 
 const PAGE_SIZE: usize = 0x1000;

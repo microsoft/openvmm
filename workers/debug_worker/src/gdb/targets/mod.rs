@@ -2,9 +2,9 @@
 // Licensed under the MIT License.
 
 use super::VmProxy;
-use gdbstub::target::ext::target_description_xml_override::TargetDescriptionXmlOverrideOps;
 use gdbstub::target::Target;
 use gdbstub::target::TargetError;
+use gdbstub::target::ext::target_description_xml_override::TargetDescriptionXmlOverrideOps;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ops::DerefMut;

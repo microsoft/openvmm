@@ -14,15 +14,15 @@ use gdma::VportConfig;
 use gdma_defs::GdmaDevType;
 use gdma_defs::GdmaQueueType;
 use net_backend::null::NullEndpoint;
-use pal_async::async_test;
 use pal_async::DefaultDriver;
+use pal_async::async_test;
 use pci_core::msi::MsiInterruptSet;
 use std::sync::Arc;
 use test_with_tracing::test;
+use user_driver::DeviceBacking;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
 use user_driver::memory::PAGE_SIZE;
-use user_driver::DeviceBacking;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 

@@ -118,8 +118,8 @@ mod bcrypt {
 
     use std::sync::OnceLock;
     use thiserror::Error;
-    use windows::Win32::Foundation::RtlNtStatusToDosError;
     use windows::Win32::Foundation::NTSTATUS;
+    use windows::Win32::Foundation::RtlNtStatusToDosError;
     use windows::Win32::Security::Cryptography::BCRYPT_ALG_HANDLE;
     use windows::Win32::Security::Cryptography::BCRYPT_HANDLE;
     use windows::Win32::Security::Cryptography::BCRYPT_KEY_HANDLE;
@@ -302,7 +302,7 @@ mod bcrypt {
         // SAFETY: the key handle is valid.
         let status = unsafe {
             windows::Win32::Security::Cryptography::BCryptSetProperty(
-                BCRYPT_HANDLE(key.0 .0),
+                BCRYPT_HANDLE(key.0.0),
                 windows::Win32::Security::Cryptography::BCRYPT_MESSAGE_BLOCK_LENGTH,
                 &data_unit_size.to_ne_bytes(),
                 0,

@@ -17,9 +17,9 @@
 // UNSAFETY: needed to avoid monomorphization.
 #![expect(unsafe_code)]
 
-use crate::sync_unsafe_cell::SyncUnsafeCell;
 use crate::ChannelError;
 use crate::RecvError;
+use crate::sync_unsafe_cell::SyncUnsafeCell;
 use mesh_node::local_node::HandleMessageError;
 use mesh_node::local_node::HandlePortEvent;
 use mesh_node::local_node::Port;
@@ -36,10 +36,10 @@ use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
+use std::task::ready;
 use thiserror::Error;
 
 /// Creates a unidirection channel for sending a single value of type `T`.
@@ -624,9 +624,9 @@ mod tests {
     use crate::OneshotReceiver;
     use crate::OneshotSender;
     use crate::RecvError;
+    use futures::FutureExt;
     use futures::executor::block_on;
     use futures::task::SpawnExt;
-    use futures::FutureExt;
     use mesh_node::local_node::Port;
     use mesh_node::message::Message;
     use std::cell::Cell;
@@ -697,9 +697,11 @@ mod tests {
             let (sender, mut receiver) = oneshot::<String>();
             let sender = OneshotSender::<String>::from(Port::from(sender));
             // Ensure the receiver has seen the sender's port before converting.
-            assert!(poll_fn(|cx| receiver.poll_recv(cx))
-                .now_or_never()
-                .is_none());
+            assert!(
+                poll_fn(|cx| receiver.poll_recv(cx))
+                    .now_or_never()
+                    .is_none()
+            );
             let receiver = OneshotReceiver::<String>::from(Port::from(receiver));
             sender.send(String::from("foo"));
             assert_eq!(receiver.await.unwrap(), "foo");

@@ -6,11 +6,11 @@
 #![cfg(target_os = "linux")]
 #![cfg(feature = "vfio")]
 
-use crate::interrupt::DeviceInterrupt;
-use crate::interrupt::DeviceInterruptSource;
 use crate::DeviceBacking;
 use crate::DeviceRegisterIo;
 use crate::DmaClient;
+use crate::interrupt::DeviceInterrupt;
+use crate::interrupt::DeviceInterruptSource;
 use anyhow::Context;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -23,9 +23,9 @@ use pal_event::Event;
 use std::os::fd::AsFd;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::Arc;
 use std::time::Duration;
 use uevent::UeventListener;
 use vfio_bindings::bindings::vfio::VFIO_PCI_CONFIG_REGION_INDEX;

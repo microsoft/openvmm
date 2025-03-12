@@ -38,9 +38,15 @@ impl Display for HvfError {
             Self::SUCCESS => "The operation completed successfully.",
             Self::ERROR => "The operation was unsuccessful.",
             Self::BUSY => "The operation was unsuccessful because the owning resource was busy.",
-            Self::BAD_ARGUMENT => "The operation was unsuccessful because the function call had an invalid argument.",
-            Self::NO_RESOURCES => "The operation was unsuccessful because the host had no resources available to complete the request.",
-            Self::NO_DEVICE => "The operation was unsuccessful because no VM or vCPU was available.",
+            Self::BAD_ARGUMENT => {
+                "The operation was unsuccessful because the function call had an invalid argument."
+            }
+            Self::NO_RESOURCES => {
+                "The operation was unsuccessful because the host had no resources available to complete the request."
+            }
+            Self::NO_DEVICE => {
+                "The operation was unsuccessful because no VM or vCPU was available."
+            }
             Self::DENIED => "The system didn’t allow the requested operation.",
             // Self::FAULT => "",
             Self::UNSUPPORTED => "The operation requested isn’t supported by the hypervisor.",

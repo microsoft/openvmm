@@ -3,8 +3,8 @@
 
 //! Build `sidecar` binaries
 
-use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::BuildProfile;
+use crate::run_cargo_build::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 

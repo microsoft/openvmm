@@ -12,9 +12,9 @@
 
 extern crate alloc;
 
+use alloc::alloc::Layout;
 use alloc::alloc::alloc;
 use alloc::alloc::handle_alloc_error;
-use alloc::alloc::Layout;
 use alloc::boxed::Box;
 use core::cmp;
 use core::mem::MaybeUninit;

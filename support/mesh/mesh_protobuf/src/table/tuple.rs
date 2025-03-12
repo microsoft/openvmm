@@ -3,19 +3,19 @@
 
 //! Table definitions for tuples.
 
+use super::StructMetadata;
+use super::TableEncoder;
 use super::decode::ErasedDecoderEntry;
 use super::decode::StructDecodeMetadata;
 use super::encode::ErasedEncoderEntry;
 use super::encode::StructEncodeMetadata;
-use super::StructMetadata;
-use super::TableEncoder;
+use crate::DefaultEncoding;
+use crate::FieldDecode;
+use crate::FieldEncode;
 use crate::protofile::DescribeField;
 use crate::protofile::DescribeMessage;
 use crate::protofile::FieldType;
 use crate::protofile::MessageDescription;
-use crate::DefaultEncoding;
-use crate::FieldDecode;
-use crate::FieldEncode;
 
 impl DescribeMessage<()> for TableEncoder {
     const DESCRIPTION: MessageDescription<'static> = MessageDescription::External {

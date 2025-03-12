@@ -5,13 +5,13 @@
 
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
-use hvdef::hypercall::Control;
-use hvdef::hypercall::HypercallOutput;
+use hvdef::HV_PAGE_SIZE;
+use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HvError;
 use hvdef::HvResult;
 use hvdef::HypercallCode;
-use hvdef::HV_PAGE_SIZE;
-use hvdef::HV_PAGE_SIZE_USIZE;
+use hvdef::hypercall::Control;
+use hvdef::hypercall::HypercallOutput;
 use std::marker::PhantomData;
 use thiserror::Error;
 use zerocopy::FromBytes;

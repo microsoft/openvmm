@@ -57,10 +57,10 @@ mod debug {
     //! production use, but it simplifies mesh debugging.
 
     use super::Uuid;
+    use std::sync::Once;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::AtomicU64;
     use std::sync::atomic::Ordering;
-    use std::sync::Once;
 
     static CHECK_ONCE: Once = Once::new();
     static USE_LINEAR_IDS: AtomicBool = AtomicBool::new(false);

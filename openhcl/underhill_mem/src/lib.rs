@@ -9,29 +9,29 @@ mod init;
 mod mapping;
 mod registrar;
 
-pub use init::init;
 pub use init::Init;
 pub use init::MemoryMappings;
+pub use init::init;
 
-use guestmem::ranges::PagedRange;
 use guestmem::PAGE_SIZE;
-use hcl::ioctl::snp::SnpPageError;
+use guestmem::ranges::PagedRange;
+use hcl::GuestVtl;
 use hcl::ioctl::AcceptPagesError;
 use hcl::ioctl::ApplyVtlProtectionsError;
 use hcl::ioctl::Mshv;
 use hcl::ioctl::MshvHvcall;
 use hcl::ioctl::MshvVtl;
-use hcl::GuestVtl;
+use hcl::ioctl::snp::SnpPageError;
 use hv1_structs::VtlArray;
-use hvdef::hypercall::AcceptMemoryType;
-use hvdef::hypercall::HostVisibilityType;
-use hvdef::hypercall::HvInputVtl;
+use hvdef::HV_MAP_GPA_PERMISSIONS_ALL;
+use hvdef::HV_PAGE_SIZE;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
 use hvdef::HypercallCode;
 use hvdef::Vtl;
-use hvdef::HV_MAP_GPA_PERMISSIONS_ALL;
-use hvdef::HV_PAGE_SIZE;
+use hvdef::hypercall::AcceptMemoryType;
+use hvdef::hypercall::HostVisibilityType;
+use hvdef::hypercall::HvInputVtl;
 use mapping::GuestMemoryMapping;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
@@ -544,7 +544,10 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         };
         if let Err(err) = self.acceptor.modify_gpa_visibility(host_visibility, &gpns) {
             if shared {
-                panic!("the hypervisor refused to transition pages to shared, we cannot safely roll back: {:?}", err);
+                panic!(
+                    "the hypervisor refused to transition pages to shared, we cannot safely roll back: {:?}",
+                    err
+                );
             }
             todo!("roll back bitmap changes and report partial success");
         }
@@ -755,11 +758,12 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
     ) {
         // Should already have written contents to the page via the guest
         // memory object, confirming that this is a guest page
-        assert!(self
-            .layout
-            .ram()
-            .iter()
-            .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE)));
+        assert!(
+            self.layout
+                .ram()
+                .iter()
+                .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE))
+        );
 
         let inner = self.inner.lock();
 

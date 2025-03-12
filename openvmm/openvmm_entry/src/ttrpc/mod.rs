@@ -4,11 +4,11 @@
 //! Worker for the prototype gRPC/ttrpc management endpoint.
 
 use self::vmservice::nic_config::Backend;
-use crate::serial_io::bind_serial;
 use crate::DEFAULT_MMIO_GAPS;
+use crate::serial_io::bind_serial;
+use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
-use anyhow::Context;
 use awaitgroup::WaitGroup;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -23,8 +23,8 @@ use hvlite_defs::config::VirtioBus;
 use hvlite_defs::config::VmbusConfig;
 use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::rpc::VmRpc;
-use hvlite_defs::worker::VmWorkerParameters;
 use hvlite_defs::worker::VM_WORKER;
+use hvlite_defs::worker::VmWorkerParameters;
 use hvlite_helpers::disk::open_disk_type;
 use hvlite_ttrpc_vmservice as vmservice;
 use inspect::Inspect;
@@ -32,10 +32,10 @@ use inspect::InspectionBuilder;
 use inspect_proto::InspectResponse2;
 use inspect_proto::InspectService;
 use inspect_proto::UpdateResponse2;
-use mesh::error::RemoteError;
-use mesh::rpc::RpcSend;
 use mesh::CancelReason;
 use mesh::MeshPayload;
+use mesh::error::RemoteError;
+use mesh::rpc::RpcSend;
 use mesh_rpc::service::Code;
 use mesh_rpc::service::Status;
 use mesh_worker::RegisteredWorkers;
@@ -43,9 +43,9 @@ use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
 use netvsp_resources::NetvspHandle;
-use pal_async::task::Spawn;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
+use pal_async::task::Spawn;
 use parking_lot::Mutex;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use std::fs::File;
@@ -58,9 +58,9 @@ use storvsp_resources::ScsiDeviceAndPath;
 use unix_socket::UnixListener;
 use virtio_resources::VirtioPciDeviceHandle;
 use vm_manifest_builder::VmManifestBuilder;
-use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
+use vm_resource::kind::VmbusDeviceHandleKind;
 use vmm_core_defs::HaltReason;
 
 #[derive(mesh::MeshPayload)]

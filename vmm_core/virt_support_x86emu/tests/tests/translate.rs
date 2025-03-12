@@ -8,8 +8,8 @@ use iced_x86::code_asm::*;
 use pal_async::async_test;
 use virt_support_x86emu::emulate::*;
 use vm_topology::processor::VpIndex;
-use x86defs::cpuid::Vendor;
 use x86defs::RFlags;
+use x86defs::cpuid::Vendor;
 use x86emu::Gp;
 use x86emu::Segment;
 use zerocopy::IntoBytes;
@@ -253,7 +253,10 @@ impl EmulatorSupport for MockSupport {
                         // located at a previously translated gva. Just return the gva.
                         gva
                     } else {
-                        panic!("accessing {:x}, not the expected gva {:x}; was the instruction stream created incorrectly?", gva, test_gva)
+                        panic!(
+                            "accessing {:x}, not the expected gva {:x}; was the instruction stream created incorrectly?",
+                            gva, test_gva
+                        )
                     };
 
                     println!("translated gva {:x} to {:x}", gva, gpa);

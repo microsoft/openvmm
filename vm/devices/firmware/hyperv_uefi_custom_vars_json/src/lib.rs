@@ -41,13 +41,13 @@ pub enum JsonToTemplateError {
 pub fn load_template_from_json(
     data: &[u8],
 ) -> Result<firmware_uefi_custom_vars::CustomVars, ParseJsonError> {
+    use firmware_uefi_custom_vars::CustomVars;
+    use firmware_uefi_custom_vars::Signature;
+    use firmware_uefi_custom_vars::Signatures;
     use firmware_uefi_custom_vars::delta::CustomVarsDelta;
     use firmware_uefi_custom_vars::delta::SignatureDelta;
     use firmware_uefi_custom_vars::delta::SignatureDeltaVec;
     use firmware_uefi_custom_vars::delta::SignaturesDelta;
-    use firmware_uefi_custom_vars::CustomVars;
-    use firmware_uefi_custom_vars::Signature;
-    use firmware_uefi_custom_vars::Signatures;
 
     fn deny_default(sig: SignatureDelta) -> Result<Signature, JsonToTemplateError> {
         match sig {
@@ -257,7 +257,7 @@ mod json {
                     return Err(serde::de::Error::custom(format!(
                         "expected 4 bytes. found {} bytes",
                         other.len()
-                    )))
+                    )));
                 }
             };
             Ok(u32::from_le_bytes(v))

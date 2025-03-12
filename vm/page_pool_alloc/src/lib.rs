@@ -14,24 +14,24 @@ use inspect::Response;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use safeatomic::AtomicSliceOps;
-use sparse_mmap::alloc_shared_memory;
 use sparse_mmap::Mappable;
 use sparse_mmap::MappableRef;
 use sparse_mmap::SparseMapping;
+use sparse_mmap::alloc_shared_memory;
 use std::fmt::Debug;
 use std::num::NonZeroU64;
-use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 use thiserror::Error;
 
 const PAGE_SIZE: u64 = 4096;
 
 /// Save restore suport for [`PagePool`].
 pub mod save_restore {
+    use super::PAGE_SIZE;
     use super::PagePool;
     use super::Slot;
     use super::SlotState;
-    use super::PAGE_SIZE;
     use crate::ResolvedSlotState;
     use memory_range::MemoryRange;
     use mesh::payload::Protobuf;
@@ -859,10 +859,10 @@ impl user_driver::DmaClient for PagePoolAllocator {
 
 #[cfg(test)]
 mod test {
+    use crate::PAGE_SIZE;
     use crate::PagePool;
     use crate::PoolSource;
     use crate::TestMapper;
-    use crate::PAGE_SIZE;
     use inspect::Inspect;
     use memory_range::MemoryRange;
     use safeatomic::AtomicSliceOps;
@@ -1033,9 +1033,11 @@ mod test {
         pool.restore(state).unwrap();
 
         let alloc = pool.allocator("test2".into()).unwrap();
-        assert!(alloc
-            .restore_alloc(a1.base_pfn, a1.size_pages.try_into().unwrap())
-            .is_err());
+        assert!(
+            alloc
+                .restore_alloc(a1.base_pfn, a1.size_pages.try_into().unwrap())
+                .is_err()
+        );
     }
 
     #[test]

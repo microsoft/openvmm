@@ -19,9 +19,9 @@ use std::io::ErrorKind;
 use std::io::Write;
 use std::num::NonZeroU64;
 use std::pin::Pin;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 use tracing::Level;
 
 /// A stream of trace logging notifications from `/dev/kmsg`.

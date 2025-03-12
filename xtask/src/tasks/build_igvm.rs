@@ -2,8 +2,8 @@
 // Licensed under the MIT License.
 
 use crate::Xtask;
-use clap::builder::PossibleValue;
 use clap::Parser;
+use clap::builder::PossibleValue;
 use std::fmt;
 use std::path::PathBuf;
 

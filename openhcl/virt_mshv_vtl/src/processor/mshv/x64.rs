@@ -7,32 +7,32 @@
 
 type VpRegisterName = HvX64RegisterName;
 
+use super::super::BackingPrivate;
+use super::super::UhEmulationState;
+use super::super::UhRunVpError;
 use super::super::private::BackingParams;
 use super::super::signal_mnf;
 use super::super::vp_state;
 use super::super::vp_state::UhVpStateAccess;
-use super::super::BackingPrivate;
-use super::super::UhEmulationState;
-use super::super::UhRunVpError;
-use crate::processor::SidecarExitReason;
-use crate::processor::SidecarRemoveExit;
-use crate::processor::UhHypercallHandler;
-use crate::processor::UhProcessor;
-use crate::validate_vtl_gpa_flags;
 use crate::BackingShared;
 use crate::Error;
 use crate::GuestVsmState;
 use crate::GuestVsmVtl1State;
 use crate::GuestVtl;
+use crate::processor::SidecarExitReason;
+use crate::processor::SidecarRemoveExit;
+use crate::processor::UhHypercallHandler;
+use crate::processor::UhProcessor;
+use crate::validate_vtl_gpa_flags;
 use hcl::ioctl;
-use hcl::ioctl::x64::MshvX64;
 use hcl::ioctl::ApplyVtlProtectionsError;
+use hcl::ioctl::x64::MshvX64;
 use hcl::protocol;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::VtlSet;
-use hvdef::hypercall;
+use hvdef::HV_PAGE_SIZE;
 use hvdef::HvDeliverabilityNotificationsRegister;
 use hvdef::HvError;
 use hvdef::HvInterceptAccessType;
@@ -45,30 +45,30 @@ use hvdef::HvX64PendingEvent;
 use hvdef::HvX64PendingInterruptionType;
 use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
-use hvdef::HV_PAGE_SIZE;
+use hvdef::hypercall;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
 use std::sync::atomic::Ordering::Relaxed;
+use virt::StopVp;
+use virt::VpHaltReason;
+use virt::VpIndex;
 use virt::io::CpuIo;
 use virt::state::HvRegisterState;
 use virt::state::StateElement;
 use virt::vp;
 use virt::vp::AccessVpState;
 use virt::x86::MsrError;
-use virt::StopVp;
-use virt::VpHaltReason;
-use virt::VpIndex;
 use virt_support_x86emu::emulate::EmuCheckVtlAccessError;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::EmulatorSupport;
-use x86defs::xsave::Fxsave;
-use x86defs::xsave::XsaveHeader;
-use x86defs::xsave::XFEATURE_SSE;
-use x86defs::xsave::XFEATURE_X87;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
+use x86defs::xsave::Fxsave;
+use x86defs::xsave::XFEATURE_SSE;
+use x86defs::xsave::XFEATURE_X87;
+use x86defs::xsave::XsaveHeader;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -421,7 +421,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         let intercepted_vtl = match vp.runner.reg_page_vtl() {
             Ok(vtl) => vtl,
             Err(ioctl::x64::RegisterPageVtlError::InvalidVtl(vtl)) => {
-                return Err(UhRunVpError::InvalidInterceptedVtl(vtl))
+                return Err(UhRunVpError::InvalidInterceptedVtl(vtl));
             }
             Err(ioctl::x64::RegisterPageVtlError::NoRegisterPage) => {
                 if matches!(&message_type, &HvMessageType::HvMessageTypeX64ApicEoi) {
@@ -1833,10 +1833,10 @@ mod save_restore {
     use hvdef::HvInternalActivityRegister;
     use hvdef::HvX64RegisterName;
     use hvdef::Vtl;
+    use virt::Processor;
     use virt::irqcon::MsiRequest;
     use virt::vp::AccessVpState;
     use virt::vp::Mtrrs;
-    use virt::Processor;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
     use vmcore::save_restore::SaveRestore;
@@ -1970,8 +1970,24 @@ mod save_restore {
             let startup_suspend = internal_activity
                 .map(|a| HvInternalActivityRegister::from(a.as_u64()).startup_suspend());
 
-            let [rax, rcx, rdx, rbx, cr2, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15] =
-                self.runner.cpu_context().gps;
+            let [
+                rax,
+                rcx,
+                rdx,
+                rbx,
+                cr2,
+                rbp,
+                rsi,
+                rdi,
+                r8,
+                r9,
+                r10,
+                r11,
+                r12,
+                r13,
+                r14,
+                r15,
+            ] = self.runner.cpu_context().gps;
 
             // We are responsible for saving shared MSRs too, but other than
             // the MTRRs all shared MSRs are read-only. So this is all we need.

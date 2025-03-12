@@ -9,10 +9,10 @@ use aarch64emu::Emulator;
 use aarch64emu::InterceptState;
 use pal_async::async_test;
 use parking_lot::Mutex;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum TestCpuError {

@@ -56,12 +56,12 @@ pub mod service;
 #[cfg(not(feature = "fuzzing"))]
 mod service;
 
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use firmware_uefi_custom_vars::CustomVars;
 use guestmem::GuestMemory;
 use inspect::Inspect;

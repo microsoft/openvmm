@@ -320,10 +320,10 @@ pub mod thread {
     use super::BuildVmTaskDriver;
     use super::TargetedDriver;
     use inspect::Inspect;
-    use pal_async::driver::Driver;
-    use pal_async::task::Spawn;
     use pal_async::DefaultDriver;
     use pal_async::DefaultPool;
+    use pal_async::driver::Driver;
+    use pal_async::task::Spawn;
 
     /// A backend for [`VmTaskDriverSource`](super::VmTaskDriverSource) based on
     /// individual threads.

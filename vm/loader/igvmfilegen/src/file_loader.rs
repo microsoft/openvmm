@@ -10,32 +10,32 @@ use crate::identity_mapping::VbsMeasurement;
 use crate::signed_measurement::generate_snp_measurement;
 use crate::signed_measurement::generate_tdx_measurement;
 use crate::signed_measurement::generate_vbs_measurement;
+use crate::vp_context_builder::VpContextBuilder;
+use crate::vp_context_builder::VpContextPageState;
+use crate::vp_context_builder::VpContextState;
 use crate::vp_context_builder::snp::InjectionType;
 use crate::vp_context_builder::snp::SnpHardwareContext;
 use crate::vp_context_builder::tdx::TdxHardwareContext;
 use crate::vp_context_builder::vbs::VbsRegister;
 use crate::vp_context_builder::vbs::VbsVpContext;
-use crate::vp_context_builder::VpContextBuilder;
-use crate::vp_context_builder::VpContextPageState;
-use crate::vp_context_builder::VpContextState;
 use anyhow::Context;
 use hvdef::Vtl;
-use igvm::snp_defs::SevVmsa;
 use igvm::IgvmDirectiveHeader;
 use igvm::IgvmFile;
 use igvm::IgvmInitializationHeader;
 use igvm::IgvmPlatformHeader;
 use igvm::IgvmRelocatableRegion;
 use igvm::IgvmRevision;
-use igvm_defs::IgvmPageDataFlags;
-use igvm_defs::IgvmPageDataType;
-use igvm_defs::IgvmPlatformType;
-use igvm_defs::SnpPolicy;
-use igvm_defs::TdxPolicy;
+use igvm::snp_defs::SevVmsa;
 use igvm_defs::IGVM_VHS_PARAMETER;
 use igvm_defs::IGVM_VHS_PARAMETER_INSERT;
 use igvm_defs::IGVM_VHS_SUPPORTED_PLATFORM;
+use igvm_defs::IgvmPageDataFlags;
+use igvm_defs::IgvmPageDataType;
+use igvm_defs::IgvmPlatformType;
 use igvm_defs::PAGE_SIZE_4K;
+use igvm_defs::SnpPolicy;
+use igvm_defs::TdxPolicy;
 use loader::importer::Aarch64Register;
 use loader::importer::BootPageAcceptance;
 use loader::importer::GuestArch;
@@ -1120,7 +1120,9 @@ impl<R: IgvmLoaderRegister + GuestArch + 'static> ImageLoad<R> for IgvmVtlLoader
         }
 
         if gpa % relocation_alignment != 0 {
-            anyhow::bail!("relocation base {gpa:#x} must be aligned to relocation alignment {relocation_alignment:#x}");
+            anyhow::bail!(
+                "relocation base {gpa:#x} must be aligned to relocation alignment {relocation_alignment:#x}"
+            );
         }
 
         if minimum_relocation_gpa % relocation_alignment != 0 {

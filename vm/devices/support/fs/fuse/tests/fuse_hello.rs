@@ -4,8 +4,8 @@
 #![expect(missing_docs)]
 #![cfg(target_os = "linux")]
 
-use fuse::protocol::*;
 use fuse::Connection;
+use fuse::protocol::*;
 use fuse::*;
 use std::fs;
 use std::os::linux::fs::MetadataExt;

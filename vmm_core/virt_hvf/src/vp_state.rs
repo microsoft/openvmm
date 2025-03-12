@@ -3,12 +3,12 @@
 
 //! VP state handling.
 
-use crate::abi;
 use crate::Error;
 use crate::HvfProcessor;
+use crate::abi;
 use hvdef::HvArm64RegisterName;
-use virt::aarch64::vp::AccessVpState;
 use virt::aarch64::Aarch64PartitionCapabilities;
+use virt::aarch64::vp::AccessVpState;
 use virt::state::HvRegisterState;
 
 enum Reg {

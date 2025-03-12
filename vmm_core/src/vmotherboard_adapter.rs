@@ -8,8 +8,8 @@ use crate::partition_unit::Halt;
 use crate::synic::SynicPorts;
 use hvdef::Vtl;
 use std::sync::Arc;
-use virt::io::CpuIo;
 use virt::VpIndex;
+use virt::io::CpuIo;
 use vmm_core_defs::HaltReason;
 use vmotherboard::Chipset;
 

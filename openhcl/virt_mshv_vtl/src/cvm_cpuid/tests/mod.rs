@@ -457,12 +457,14 @@ fn hypervisor_present() {
     })
     .unwrap();
 
-    assert!(cpuid::VersionAndFeaturesEcx::from(
-        cpuid
-            .registered_result(CpuidFunction::VersionAndFeatures, 0)
-            .ecx,
-    )
-    .hypervisor_present());
+    assert!(
+        cpuid::VersionAndFeaturesEcx::from(
+            cpuid
+                .registered_result(CpuidFunction::VersionAndFeatures, 0)
+                .ecx,
+        )
+        .hypervisor_present()
+    );
 }
 
 #[test]
@@ -678,19 +680,23 @@ fn tsc_aux() {
     })
     .unwrap();
 
-    assert!(!cpuid::ExtendedVersionAndFeaturesEdx::from(
-        cpuid
-            .registered_result(CpuidFunction::ExtendedVersionAndFeatures, 0)
-            .edx
-    )
-    .rdtscp());
+    assert!(
+        !cpuid::ExtendedVersionAndFeaturesEdx::from(
+            cpuid
+                .registered_result(CpuidFunction::ExtendedVersionAndFeatures, 0)
+                .edx
+        )
+        .rdtscp()
+    );
 
-    assert!(!cpuid::ExtendedFeatureSubleaf0Ecx::from(
-        cpuid
-            .registered_result(CpuidFunction::ExtendedFeatures, 0)
-            .ecx
-    )
-    .rd_pid());
+    assert!(
+        !cpuid::ExtendedFeatureSubleaf0Ecx::from(
+            cpuid
+                .registered_result(CpuidFunction::ExtendedFeatures, 0)
+                .ecx
+        )
+        .rd_pid()
+    );
 }
 
 // values obtained by running cpuid.exe  -G 0 -P 0 (from bin\idw, copied into

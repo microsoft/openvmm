@@ -4,16 +4,16 @@
 //! Resource resolver for sqlite-backed disk layers.
 
 use super::SqliteDiskLayer;
-use crate::auto_cache::AutoCacheSqliteDiskLayer;
 use crate::FormatOnAttachSqliteDiskLayer;
+use crate::auto_cache::AutoCacheSqliteDiskLayer;
 use disk_backend_resources::layer::SqliteAutoCacheDiskLayerHandle;
 use disk_backend_resources::layer::SqliteDiskLayerFormatParams;
 use disk_backend_resources::layer::SqliteDiskLayerHandle;
 use disk_layered::resolve::ResolveDiskLayerParameters;
 use disk_layered::resolve::ResolvedDiskLayer;
+use vm_resource::ResolveResource;
 use vm_resource::declare_static_resolver;
 use vm_resource::kind::DiskLayerHandleKind;
-use vm_resource::ResolveResource;
 
 /// Resolver for a [`SqliteDiskLayerHandle`].
 pub struct SqliteDiskLayerResolver;

@@ -3,10 +3,10 @@
 
 #![expect(missing_docs)]
 
+use criterion::Criterion;
 use criterion::async_executor::FuturesExecutor;
 use criterion::criterion_group;
 use criterion::criterion_main;
-use criterion::Criterion;
 use mesh_channel::OneshotSender;
 use mesh_channel::Sender;
 use mesh_node::local_node::Port;

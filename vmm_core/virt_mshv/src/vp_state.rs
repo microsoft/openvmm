@@ -3,8 +3,8 @@
 
 use super::Error;
 use crate::MshvProcessor;
-use hvdef::hypercall::HvRegisterAssoc;
 use hvdef::HvX64RegisterName;
+use hvdef::hypercall::HvRegisterAssoc;
 use mshv_bindings::hv_register_assoc;
 use static_assertions::assert_eq_size;
 use std::mem::offset_of;

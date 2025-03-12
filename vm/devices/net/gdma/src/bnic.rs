@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use self::bnic_defs::CQE_TX_OKAY;
+use self::bnic_defs::MANA_CQE_COMPLETION;
 use self::bnic_defs::ManaCommandCode;
 use self::bnic_defs::ManaCqeHeader;
 use self::bnic_defs::ManaQueryVportCfgReq;
@@ -9,8 +11,8 @@ use self::bnic_defs::ManaRxcompOobFlags;
 use self::bnic_defs::ManaSetVportSerialNo;
 use self::bnic_defs::ManaTxCompOob;
 use self::bnic_defs::ManaTxCompOobOffsets;
-use self::bnic_defs::CQE_TX_OKAY;
-use self::bnic_defs::MANA_CQE_COMPLETION;
+use crate::VportConfig;
+use crate::bnic::bnic_defs::CQE_RX_OKAY;
 use crate::bnic::bnic_defs::ManaCfgRxSteerReq;
 use crate::bnic::bnic_defs::ManaConfigVportReq;
 use crate::bnic::bnic_defs::ManaConfigVportResp;
@@ -20,20 +22,18 @@ use crate::bnic::bnic_defs::ManaQueryDeviceCfgReq;
 use crate::bnic::bnic_defs::ManaQueryDeviceCfgResp;
 use crate::bnic::bnic_defs::ManaQueryVportCfgResp;
 use crate::bnic::bnic_defs::ManaTxOob;
-use crate::bnic::bnic_defs::CQE_RX_OKAY;
 use crate::hwc::HwState;
 use crate::queues::Queues;
-use crate::VportConfig;
-use anyhow::anyhow;
 use anyhow::Context;
+use anyhow::anyhow;
+use gdma_defs::GdmaQueueType;
+use gdma_defs::GdmaReqHdr;
+use gdma_defs::Wqe;
 use gdma_defs::access::WqeAccess;
 use gdma_defs::bnic as bnic_defs;
 use gdma_defs::bnic::ManaDestroyWqobjReq;
 use gdma_defs::bnic::ManaTxShortOob;
 use gdma_defs::bnic::Tristate;
-use gdma_defs::GdmaQueueType;
-use gdma_defs::GdmaReqHdr;
-use gdma_defs::Wqe;
 use guestmem::GuestMemory;
 use guestmem::Limit;
 use guestmem::MemoryRead;

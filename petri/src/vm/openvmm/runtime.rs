@@ -4,27 +4,27 @@
 //! Methods to interact with a running [`PetriVmOpenVmm`].
 
 use super::PetriVmResourcesOpenVmm;
-use crate::openhcl_diag::OpenHclDiagHandler;
-use crate::worker::Worker;
 use crate::OpenHclServicingFlags;
 use crate::PetriVm;
 use crate::ShutdownKind;
+use crate::openhcl_diag::OpenHclDiagHandler;
+use crate::worker::Worker;
 use anyhow::Context;
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use hvlite_defs::rpc::PulseSaveRestoreError;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
-use mesh::rpc::RpcError;
-use mesh::rpc::RpcSend;
 use mesh::CancelContext;
 use mesh::Receiver;
 use mesh::RecvError;
+use mesh::rpc::RpcError;
+use mesh::rpc::RpcSend;
 use mesh_process::Mesh;
+use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
-use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
@@ -251,13 +251,19 @@ impl PetriVmOpenVmm {
         match res {
             Either::Future(Ok(success)) => Ok(success),
             Either::Future(Err(e)) => {
-                tracing::warn!(?e, "Future returned with an error, sleeping for 5 seconds to let outstanding work finish");
+                tracing::warn!(
+                    ?e,
+                    "Future returned with an error, sleeping for 5 seconds to let outstanding work finish"
+                );
                 let mut c = CancelContext::new().with_timeout(Duration::from_secs(5));
                 c.cancelled().await;
                 Err(e)
             }
             Either::Halt(halt_result) => {
-                tracing::warn!(?halt_result, "Halt channel returned while waiting for other future, sleeping for 5 seconds to let outstanding work finish");
+                tracing::warn!(
+                    ?halt_result,
+                    "Halt channel returned while waiting for other future, sleeping for 5 seconds to let outstanding work finish"
+                );
                 let mut c = CancelContext::new().with_timeout(Duration::from_secs(5));
                 let try_again = c.until_cancelled(future).await;
 
@@ -265,7 +271,10 @@ impl PetriVmOpenVmm {
                     Ok(fut_result) => {
                         halt.already_received = Some(halt_result);
                         if let Err(e) = &fut_result {
-                            tracing::warn!(?e, "Future returned with an error, sleeping for 5 seconds to let outstanding work finish");
+                            tracing::warn!(
+                                ?e,
+                                "Future returned with an error, sleeping for 5 seconds to let outstanding work finish"
+                            );
                             let mut c = CancelContext::new().with_timeout(Duration::from_secs(5));
                             c.cancelled().await;
                         }

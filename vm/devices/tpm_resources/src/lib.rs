@@ -7,11 +7,11 @@
 
 use inspect::Inspect;
 use mesh::MeshPayload;
-use vm_resource::kind::ChipsetDeviceHandleKind;
-use vm_resource::kind::NonVolatileStoreKind;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::ResourceKind;
+use vm_resource::kind::ChipsetDeviceHandleKind;
+use vm_resource::kind::NonVolatileStoreKind;
 
 /// A handle to a TPM device.
 #[derive(MeshPayload)]

@@ -5,12 +5,12 @@
 
 use super::StructMetadata;
 use super::TableEncoder;
+use crate::FieldEncode;
+use crate::MessageEncode;
 use crate::protobuf::FieldSizer;
 use crate::protobuf::FieldWriter;
 use crate::protobuf::MessageSizer;
 use crate::protobuf::MessageWriter;
-use crate::FieldEncode;
-use crate::MessageEncode;
 use alloc::slice;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;

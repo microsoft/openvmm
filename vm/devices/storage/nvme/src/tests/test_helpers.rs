@@ -3,10 +3,10 @@
 
 //! Mock types for unit-testing various NVMe behaviors.
 
-use crate::prp::PrpRange;
-use crate::spec;
 use crate::PAGE_SIZE;
 use crate::PAGE_SIZE64;
+use crate::prp::PrpRange;
+use crate::spec;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use guestmem::GuestMemory;

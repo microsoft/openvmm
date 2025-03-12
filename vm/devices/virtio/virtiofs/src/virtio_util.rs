@@ -6,8 +6,8 @@ use std::cmp;
 use std::io;
 use std::io::Read;
 use std::io::Write;
-use virtio::queue::VirtioQueuePayload;
 use virtio::VirtioQueueCallbackWork;
+use virtio::queue::VirtioQueuePayload;
 
 /// An implementation of `Read` that allows reading data from a virtio payload that may use
 /// multiple buffers.

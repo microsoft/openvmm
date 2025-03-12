@@ -6,8 +6,8 @@
 use anyhow::Context;
 use anyhow::Ok;
 use guid::Guid;
-use pal_async::timer::PolledTimer;
 use pal_async::DefaultDriver;
+use pal_async::timer::PolledTimer;
 use std::ffi::OsStr;
 use std::process::Stdio;
 use std::time::Duration;

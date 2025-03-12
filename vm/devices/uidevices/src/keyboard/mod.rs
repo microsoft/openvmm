@@ -19,12 +19,12 @@ use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::async_dgram::AsyncSend;
 use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_async::pipe::MessagePipe;
+use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
-use vmbus_channel::RawAsyncChannel;
 use vmbus_ring::RingMem;
 use vmcore::save_restore::SavedStateRoot;
 use zerocopy::FromBytes;
@@ -309,10 +309,10 @@ impl<T: RingMem + Unpin> KeyboardChannel<T> {
 mod tests {
     use super::*;
     use input_core::mesh_input::input_pair;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
     use pal_async::task::Task;
-    use pal_async::DefaultDriver;
     use std::io::ErrorKind;
     use test_with_tracing::test;
     use tracing_helpers::ErrorValueExt;

@@ -15,14 +15,14 @@ mod start;
 
 pub use runtime::PetriVmOpenVmm;
 
-use crate::disk_image::AgentImage;
-use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
-use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::Firmware;
 use crate::PetriLogFile;
 use crate::PetriLogSource;
 use crate::PetriVm;
 use crate::PetriVmConfig;
+use crate::disk_image::AgentImage;
+use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
+use crate::openhcl_diag::OpenHclDiagHandler;
 use async_trait::async_trait;
 use framebuffer::FramebufferAccess;
 use get_resources::ged::FirmwareEvent;
@@ -31,9 +31,9 @@ use hvlite_defs::config::Config;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::Receiver;
 use mesh::Sender;
+use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
-use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;

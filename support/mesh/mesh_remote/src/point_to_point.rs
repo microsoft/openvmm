@@ -3,8 +3,6 @@
 
 //! Point-to-point mesh implementation.
 
-use futures::future::try_join;
-use futures::io::BufReader;
 use futures::AsyncBufReadExt;
 use futures::AsyncRead;
 use futures::AsyncReadExt;
@@ -12,6 +10,8 @@ use futures::AsyncWrite;
 use futures::AsyncWriteExt;
 use futures::StreamExt;
 use futures::TryFutureExt;
+use futures::future::try_join;
+use futures::io::BufReader;
 use futures_concurrency::future::Race;
 use mesh_channel::cancel::Cancel;
 use mesh_channel::cancel::CancelContext;
@@ -284,9 +284,9 @@ struct NoMesh;
 mod tests {
     use super::PointToPointMesh;
     use mesh_channel::channel;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::socket::PolledSocket;
-    use pal_async::DefaultDriver;
     use test_with_tracing::test;
     use unix_socket::UnixStream;
 

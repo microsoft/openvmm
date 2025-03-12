@@ -3,23 +3,23 @@
 
 //! Backing for SNP partitions.
 
+use super::Hcl;
+use super::HclVp;
+use super::MshvVtl;
+use super::NoRunner;
+use super::ProcessorRunner;
 use super::hcl_pvalidate_pages;
 use super::hcl_rmpadjust_pages;
 use super::hcl_rmpquery_pages;
 use super::mshv_pvalidate;
 use super::mshv_rmpadjust;
 use super::mshv_rmpquery;
-use super::Hcl;
-use super::HclVp;
-use super::MshvVtl;
-use super::NoRunner;
-use super::ProcessorRunner;
-use crate::vmsa::VmsaWrapper;
 use crate::GuestVtl;
+use crate::vmsa::VmsaWrapper;
 use hv1_structs::VtlArray;
+use hvdef::HV_PAGE_SIZE;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
-use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
 use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;

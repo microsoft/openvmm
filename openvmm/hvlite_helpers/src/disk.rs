@@ -4,8 +4,8 @@
 //! Guest disk helpers.
 
 use std::path::Path;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::Resource;
+use vm_resource::kind::DiskHandleKind;
 
 /// Opens the resources needed for using a disk from a file at `path`.
 ///

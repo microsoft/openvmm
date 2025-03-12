@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::vtl2::Vtl2InterceptState;
 use super::Vplc;
 use super::VtlPartition;
+use super::vtl2::Vtl2InterceptState;
 use crate::WhpProcessor;
 use guestmem::GuestMemoryError;
 use hvdef::HvDeliverabilityNotificationsRegister;
@@ -21,10 +21,10 @@ use std::sync::atomic::Ordering;
 use std::task::Poll;
 use thiserror::Error;
 use tracing_helpers::ErrorValueExt;
-use virt::io::CpuIo;
-use virt::vp::AccessVpState;
 use virt::StopVp;
 use virt::VpHaltReason;
+use virt::io::CpuIo;
+use virt::vp::AccessVpState;
 use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
@@ -570,31 +570,31 @@ impl<'a> WhpProcessor<'a> {
 #[cfg(guest_arch = "x86_64")]
 mod x86 {
     use super::WhpRunVpError;
+    use crate::Hv1State;
+    use crate::WhpProcessor;
     use crate::emu;
     use crate::emu::WhpVpRefEmulation;
     use crate::memory::x86::GpaBackingType;
     use crate::vtl2;
-    use crate::Hv1State;
-    use crate::WhpProcessor;
-    use hvdef::hypercall::InitialVpContextX64;
     use hvdef::HvCacheType;
     use hvdef::HvInterceptAccessType;
     use hvdef::HvMessageType;
     use hvdef::HvVtlEntryReason;
     use hvdef::HvX64VpExecutionState;
     use hvdef::Vtl;
+    use hvdef::hypercall::InitialVpContextX64;
+    use virt::LateMapVtl0MemoryPolicy;
+    use virt::VpHaltReason;
     use virt::io::CpuIo;
     use virt::state::StateElement;
     use virt::x86::MsrError;
     use virt::x86::MsrErrorExt;
-    use virt::LateMapVtl0MemoryPolicy;
-    use virt::VpHaltReason;
     use whp::get_registers;
     use whp::set_registers;
+    use x86defs::X86X_MSR_APIC_BASE;
     use x86defs::apic::X2APIC_MSR_BASE;
     use x86defs::apic::X2APIC_MSR_END;
     use x86defs::cpuid::CpuidFunction;
-    use x86defs::X86X_MSR_APIC_BASE;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
 
@@ -1732,8 +1732,8 @@ mod aarch64 {
     use aarch64defs::IssDataAbort;
     use hvdef::HvMessageType;
     use hvdef::Vtl;
-    use virt::io::CpuIo;
     use virt::VpHaltReason;
+    use virt::io::CpuIo;
 
     impl WhpProcessor<'_> {
         pub(super) fn process_apic(&mut self, _dev: &impl CpuIo) -> Result<bool, WhpRunVpError> {
@@ -1896,7 +1896,7 @@ mod aarch64 {
                 ec => {
                     return Err(VpHaltReason::EmulationFailure(
                         anyhow::anyhow!("unknown memory access exception: {ec:?}").into(),
-                    ))
+                    ));
                 }
             }
             Ok(())

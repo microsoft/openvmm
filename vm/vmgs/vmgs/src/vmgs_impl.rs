@@ -4,9 +4,9 @@
 use crate::error::Error;
 use crate::storage::VmgsStorage;
 #[cfg(with_encryption)]
-use anyhow::anyhow;
-#[cfg(with_encryption)]
 use anyhow::Context;
+#[cfg(with_encryption)]
+use anyhow::anyhow;
 use disk_backend::Disk;
 #[cfg(feature = "inspect")]
 use inspect::Inspect;
@@ -17,6 +17,12 @@ use std::num::NonZeroU32;
 use vmgs_format::EncryptionAlgorithm;
 use vmgs_format::FileAttribute;
 use vmgs_format::FileId;
+use vmgs_format::VMGS_BYTES_PER_BLOCK;
+use vmgs_format::VMGS_EXTENDED_FILE_TABLE_BLOCK_SIZE;
+use vmgs_format::VMGS_FILE_TABLE_BLOCK_SIZE;
+use vmgs_format::VMGS_MIN_FILE_BLOCK_OFFSET;
+use vmgs_format::VMGS_SIGNATURE;
+use vmgs_format::VMGS_VERSION_3_0;
 use vmgs_format::VmgsAuthTag;
 use vmgs_format::VmgsDatastoreKey;
 use vmgs_format::VmgsEncryptionKey;
@@ -24,12 +30,6 @@ use vmgs_format::VmgsExtendedFileTable;
 use vmgs_format::VmgsFileTable;
 use vmgs_format::VmgsHeader;
 use vmgs_format::VmgsNonce;
-use vmgs_format::VMGS_BYTES_PER_BLOCK;
-use vmgs_format::VMGS_EXTENDED_FILE_TABLE_BLOCK_SIZE;
-use vmgs_format::VMGS_FILE_TABLE_BLOCK_SIZE;
-use vmgs_format::VMGS_MIN_FILE_BLOCK_OFFSET;
-use vmgs_format::VMGS_SIGNATURE;
-use vmgs_format::VMGS_VERSION_3_0;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -1188,7 +1188,9 @@ impl Vmgs {
         if self.encryption_algorithm != EncryptionAlgorithm::NONE
             && encryption_algorithm != self.encryption_algorithm
         {
-            return Err(Error::Other(anyhow!("Encryption algorithm provided to add_new_encryption_key does not match VMGS's encryption algorithm.")));
+            return Err(Error::Other(anyhow!(
+                "Encryption algorithm provided to add_new_encryption_key does not match VMGS's encryption algorithm."
+            )));
         }
 
         let mut new_key_index = 0;

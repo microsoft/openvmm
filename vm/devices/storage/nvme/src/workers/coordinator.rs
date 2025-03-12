@@ -3,11 +3,11 @@
 
 //! Coordinator between queues and hot add/remove of namespaces.
 
+use super::IoQueueEntrySizes;
 use super::admin::AdminConfig;
 use super::admin::AdminHandler;
 use super::admin::AdminState;
 use super::admin::NsidConflict;
-use super::IoQueueEntrySizes;
 use crate::queue::DoorbellRegister;
 use disk_backend::Disk;
 use futures::FutureExt;

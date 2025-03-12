@@ -8,10 +8,10 @@ mod openhcl_servicing;
 mod openhcl_uefi;
 
 use anyhow::Context;
+use petri::SIZE_1_GB;
+use petri::ShutdownKind;
 use petri::openvmm::PetriVmConfigOpenVmm;
 use petri::pipette::cmd;
-use petri::ShutdownKind;
-use petri::SIZE_1_GB;
 use petri_artifacts_common::tags::OsFlavor;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
@@ -315,10 +315,14 @@ async fn mtrrs(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     // assert!(mtrr_output.contains("default type: uncachable"));
     // assert!(mtrr_output.contains("fixed ranges enabled"));
     // assert!(mtrr_output.contains("variable ranges enabled"));
-    assert!(mtrr_output
-        .contains("reg00: base=0x000000000 (    0MB), size=  128MB, count=1: write-back"));
-    assert!(mtrr_output
-        .contains("reg01: base=0x008000000 (  128MB), size= 4096MB, count=1: write-back"));
+    assert!(
+        mtrr_output
+            .contains("reg00: base=0x000000000 (    0MB), size=  128MB, count=1: write-back")
+    );
+    assert!(
+        mtrr_output
+            .contains("reg01: base=0x008000000 (  128MB), size= 4096MB, count=1: write-back")
+    );
 
     Ok(())
 }

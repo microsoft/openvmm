@@ -11,19 +11,19 @@
 //! * The VMBus device needs to spawn an asynchronous task to handle a channel
 //!   when the channel is opened.
 
+use crate::RawAsyncChannel;
 use crate::bus::OfferParams;
 use crate::bus::OpenRequest;
 use crate::bus::ParentBus;
-use crate::channel::offer_channel;
 use crate::channel::ChannelHandle;
 use crate::channel::ChannelOpenError;
 use crate::channel::DeviceResources;
 use crate::channel::RestoreControl;
 use crate::channel::SaveRestoreVmbusDevice;
 use crate::channel::VmbusDevice;
-use crate::gpadl_ring::gpadl_channel;
+use crate::channel::offer_channel;
 use crate::gpadl_ring::GpadlRingMem;
-use crate::RawAsyncChannel;
+use crate::gpadl_ring::gpadl_channel;
 use async_trait::async_trait;
 use guestmem::GuestMemory;
 use inspect::Inspect;

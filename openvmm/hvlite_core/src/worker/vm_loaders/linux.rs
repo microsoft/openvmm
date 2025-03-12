@@ -16,8 +16,8 @@ use std::io::Seek;
 use thiserror::Error;
 use vm_loader::Loader;
 use vm_topology::memory::MemoryLayout;
-use vm_topology::processor::aarch64::Aarch64Topology;
 use vm_topology::processor::ProcessorTopology;
+use vm_topology::processor::aarch64::Aarch64Topology;
 
 #[derive(Debug, Error)]
 #[error("device tree error: {0:?}")]

@@ -44,12 +44,12 @@ use hv1_emulator::message_queues::MessageQueues;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
-use hvdef::hypercall::HostVisibilityType;
 use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvSynicSint;
-use hvdef::Vtl;
 use hvdef::NUM_SINTS;
+use hvdef::Vtl;
+use hvdef::hypercall::HostVisibilityType;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal::unix::affinity;
@@ -63,15 +63,15 @@ use private::BackingPrivate;
 use std::convert::Infallible;
 use std::future::poll_fn;
 use std::marker::PhantomData;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::time::Duration;
-use virt::io::CpuIo;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use virt::io::CpuIo;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::vmtime::VmTimeAccess;
 
@@ -171,22 +171,22 @@ impl LapicState {
 }
 
 mod private {
-    use super::vp_state;
     use super::UhRunVpError;
-    use crate::processor::UhProcessor;
+    use super::vp_state;
     use crate::BackingShared;
     use crate::Error;
     use crate::GuestVtl;
     use crate::UhPartitionInner;
+    use crate::processor::UhProcessor;
     use hcl::ioctl::ProcessorRunner;
     use hv1_emulator::hv::ProcessorVtlHv;
     use hv1_emulator::synic::ProcessorSynic;
     use inspect::InspectMut;
     use std::future::Future;
-    use virt::io::CpuIo;
-    use virt::vp::AccessVpState;
     use virt::StopVp;
     use virt::VpHaltReason;
+    use virt::io::CpuIo;
+    use virt::vp::AccessVpState;
     use vm_topology::processor::TargetVpInfo;
 
     pub struct BackingParams<'a, 'b, T: BackingPrivate> {
@@ -674,61 +674,63 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
 
         loop {
             // Process VP activity and wait for the VP to be ready.
-            poll_fn(|cx| loop {
-                stop.check()?;
+            poll_fn(|cx| {
+                loop {
+                    stop.check()?;
 
-                // Clear the run VP cancel request.
-                self.runner.clear_cancel();
+                    // Clear the run VP cancel request.
+                    self.runner.clear_cancel();
 
-                // Cancel any pending timer.
-                self.vmtime.cancel_timeout();
+                    // Cancel any pending timer.
+                    self.vmtime.cancel_timeout();
 
-                // Ensure the waker is set.
-                if !last_waker
-                    .as_ref()
-                    .is_some_and(|waker| cx.waker().will_wake(waker))
-                {
-                    last_waker = Some(cx.waker().clone());
-                    self.inner.waker.write().clone_from(&last_waker);
-                }
-
-                // Process wakes.
-                let scan_irr = if self.inner.wake_reasons.load(Ordering::Relaxed) != 0 {
-                    self.handle_wake().map_err(VpHaltReason::Hypervisor)?
-                } else {
-                    [false, false].into()
-                };
-
-                if self.backing.untrusted_synic().is_some() {
-                    self.update_synic(GuestVtl::Vtl0, true);
-                }
-
-                for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
-                    // Process interrupts.
-                    if self.backing.hv(vtl).is_some() {
-                        self.update_synic(vtl, false);
+                    // Ensure the waker is set.
+                    if !last_waker
+                        .as_ref()
+                        .is_some_and(|waker| cx.waker().will_wake(waker))
+                    {
+                        last_waker = Some(cx.waker().clone());
+                        self.inner.waker.write().clone_from(&last_waker);
                     }
 
-                    T::poll_apic(self, vtl, scan_irr[vtl] || first_scan_irr)
-                        .map_err(VpHaltReason::Hypervisor)?;
-                }
-                first_scan_irr = false;
+                    // Process wakes.
+                    let scan_irr = if self.inner.wake_reasons.load(Ordering::Relaxed) != 0 {
+                        self.handle_wake().map_err(VpHaltReason::Hypervisor)?
+                    } else {
+                        [false, false].into()
+                    };
 
-                if T::handle_cross_vtl_interrupts(self, dev)
-                    .map_err(VpHaltReason::InvalidVmState)?
-                {
-                    continue;
-                }
+                    if self.backing.untrusted_synic().is_some() {
+                        self.update_synic(GuestVtl::Vtl0, true);
+                    }
 
-                // Arm the timer.
-                if let Some(timeout) = self.vmtime.get_timeout() {
-                    let deadline = self.vmtime.host_time(timeout);
-                    if self.timer.poll_timer(cx, deadline).is_ready() {
+                    for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
+                        // Process interrupts.
+                        if self.backing.hv(vtl).is_some() {
+                            self.update_synic(vtl, false);
+                        }
+
+                        T::poll_apic(self, vtl, scan_irr[vtl] || first_scan_irr)
+                            .map_err(VpHaltReason::Hypervisor)?;
+                    }
+                    first_scan_irr = false;
+
+                    if T::handle_cross_vtl_interrupts(self, dev)
+                        .map_err(VpHaltReason::InvalidVmState)?
+                    {
                         continue;
                     }
-                }
 
-                return <Result<_, VpHaltReason<_>>>::Ok(()).into();
+                    // Arm the timer.
+                    if let Some(timeout) = self.vmtime.get_timeout() {
+                        let deadline = self.vmtime.host_time(timeout);
+                        if self.timer.poll_timer(cx, deadline).is_ready() {
+                            continue;
+                        }
+                    }
+
+                    return <Result<_, VpHaltReason<_>>>::Ok(()).into();
+                }
             })
             .await?;
 

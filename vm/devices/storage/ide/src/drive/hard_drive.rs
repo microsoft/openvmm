@@ -5,19 +5,19 @@
 //! [`Disk`].
 
 use super::DriveRegister;
+use crate::DmaType;
+use crate::NewDeviceError;
 use crate::protocol;
 use crate::protocol::DeviceControlReg;
 use crate::protocol::DeviceHeadReg;
 use crate::protocol::ErrorReg;
 use crate::protocol::IdeCommand;
 use crate::protocol::Status;
-use crate::DmaType;
-use crate::NewDeviceError;
 use disk_backend::Disk;
 use disk_backend::DiskError;
-use guestmem::ranges::PagedRange;
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use ide_resources::IdePath;
 use inspect::Inspect;
 use safeatomic::AtomicSliceOps;
@@ -563,7 +563,9 @@ impl HardDrive {
                     && data != self.disk_path.drive
                     && self.state.command.is_some()
                 {
-                    tracing::warn!("Changing selected drive in the middle of operation. Resetting previously selected drive");
+                    tracing::warn!(
+                        "Changing selected drive in the middle of operation. Resetting previously selected drive"
+                    );
                     self.reset();
                 }
                 self.state.regs.device_head = data.into();

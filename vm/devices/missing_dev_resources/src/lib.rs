@@ -7,8 +7,8 @@
 
 use mesh::MeshPayload;
 use std::ops::RangeInclusive;
-use vm_resource::kind::ChipsetDeviceHandleKind;
 use vm_resource::ResourceId;
+use vm_resource::kind::ChipsetDeviceHandleKind;
 
 /// A handle to a device that ignores accesses to specified regions.
 #[derive(MeshPayload, Default)]

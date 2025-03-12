@@ -4,13 +4,13 @@
 // See also the LICENSE file in the root of the crate for additional copyright
 // information.
 
+use super::sys::EVP_KDF;
+use super::sys::EVP_KDF_CTX;
 use super::sys::EVP_KDF_CTX_free;
 use super::sys::EVP_KDF_CTX_new;
 use super::sys::EVP_KDF_derive;
 use super::sys::EVP_KDF_fetch;
 use super::sys::EVP_MD_get0_name;
-use super::sys::EVP_KDF;
-use super::sys::EVP_KDF_CTX;
 use super::sys::OSSL_KDF_PARAM_DIGEST;
 use super::sys::OSSL_KDF_PARAM_INFO;
 use super::sys::OSSL_KDF_PARAM_KBKDF_USE_L;

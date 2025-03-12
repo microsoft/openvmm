@@ -19,17 +19,17 @@ use std::path::Path;
 use std::path::PathBuf;
 use thiserror::Error;
 use uefi_nvram::UefiNvramOperation;
+use vmgs::Error as VmgsError;
+use vmgs::Vmgs;
 use vmgs::vmgs_helpers::get_active_header;
 use vmgs::vmgs_helpers::read_headers;
 use vmgs::vmgs_helpers::validate_header;
-use vmgs::Error as VmgsError;
-use vmgs::Vmgs;
 use vmgs_format::EncryptionAlgorithm;
 use vmgs_format::FileId;
-use vmgs_format::VmgsHeader;
 use vmgs_format::VMGS_BYTES_PER_BLOCK;
 use vmgs_format::VMGS_DEFAULT_CAPACITY;
 use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
+use vmgs_format::VmgsHeader;
 
 const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 const ONE_GIGA_BYTE: u64 = ONE_MEGA_BYTE * 1024;
@@ -537,7 +537,7 @@ fn vhdfiledisk_create(
     {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(Error::FileExists)
+            return Err(Error::FileExists);
         }
         Err(err) => return Err(Error::VmgsFile(err)),
     };

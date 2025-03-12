@@ -3,25 +3,25 @@
 
 //! Resolver for battery devices.
 
-use super::BatteryDevice;
-use super::BatteryRuntimeDeps;
 use super::BATTERY_MMIO_REGION_BASE_ADDRESS_ARM;
 use super::BATTERY_MMIO_REGION_BASE_ADDRESS_X64;
 use super::BATTERY_STATUS_GPE0_LINE;
 use super::BATTERY_STATUS_IRQ_NO;
+use super::BatteryDevice;
+use super::BatteryRuntimeDeps;
 use async_trait::async_trait;
-use chipset_device_resources::ResolveChipsetDeviceHandleParams;
-use chipset_device_resources::ResolvedChipsetDevice;
 use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
+use chipset_device_resources::ResolveChipsetDeviceHandleParams;
+use chipset_device_resources::ResolvedChipsetDevice;
 use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use thiserror::Error;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::ChipsetDeviceHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::ChipsetDeviceHandleKind;
 
 /// A resolver for battery devices.
 pub struct BatteryResolver;

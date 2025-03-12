@@ -4,15 +4,17 @@
 //! The module for `AK_CERT_REQUEST` request type that supports parsing the
 //! response.
 
-use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
+use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
 use thiserror::Error;
 use zerocopy::FromBytes;
 
 /// AkCertError is returned by parse_ak_cert_response() in emuplat/tpm.rs
 #[derive(Debug, Error)]
 pub enum AkCertError {
-    #[error("AK cert response is too small to parse. Found {size} bytes but expected at least {minimum_size}")]
+    #[error(
+        "AK cert response is too small to parse. Found {size} bytes but expected at least {minimum_size}"
+    )]
     SizeTooSmall { size: usize, minimum_size: usize },
     #[error(
         "AK cert response size {specified_size} specified in the header is larger then the actual size {size}"
@@ -88,10 +90,12 @@ mod tests {
         // When we finally have `HEADER_SIZE` bytes, we no longer see the failure as `AkCertError::SizeTooSmall`,
         // but we still see a different error since the response is not valid.
         let properly_sized_parse = parse_response(&properly_sized_response);
-        assert!(!properly_sized_parse
-            .unwrap_err()
-            .to_string()
-            .starts_with("AK cert response is too small to parse"),);
+        assert!(
+            !properly_sized_parse
+                .unwrap_err()
+                .to_string()
+                .starts_with("AK cert response is too small to parse"),
+        );
     }
 
     #[test]

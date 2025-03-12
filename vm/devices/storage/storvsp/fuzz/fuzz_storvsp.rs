@@ -6,20 +6,20 @@
 
 use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
-use futures::select;
 use futures::FutureExt;
-use guestmem::ranges::PagedRange;
+use futures::select;
 use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use pal_async::DefaultPool;
 use scsi_defs::Cdb10;
 use scsi_defs::ScsiOp;
 use std::pin::pin;
 use std::sync::Arc;
+use storvsp::ScsiController;
+use storvsp::ScsiControllerDisk;
 use storvsp::protocol;
 use storvsp::test_helpers::TestGuest;
 use storvsp::test_helpers::TestWorker;
-use storvsp::ScsiController;
-use storvsp::ScsiControllerDisk;
 use storvsp_resources::ScsiPath;
 use vmbus_async::queue::OutgoingPacket;
 use vmbus_async::queue::Queue;

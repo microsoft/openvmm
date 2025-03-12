@@ -7,9 +7,9 @@ use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoBuildProfile;
+use flowey_lib_common::run_cargo_nextest_run::TestResults;
 use flowey_lib_common::run_cargo_nextest_run::build_params::FeatureSet;
 use flowey_lib_common::run_cargo_nextest_run::build_params::TestPackages;
-use flowey_lib_common::run_cargo_nextest_run::TestResults;
 use std::collections::BTreeMap;
 
 /// Type-safe wrapper around a built nextest archive containing VMM tests

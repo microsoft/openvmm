@@ -28,13 +28,13 @@ pub use channels::OfferParamsInternal;
 use channels::OpenParams;
 use channels::RestoreError;
 pub use channels::Update;
-use futures::channel::mpsc;
-use futures::channel::mpsc::SendError;
-use futures::future::poll_fn;
-use futures::future::OptionFuture;
-use futures::stream::SelectAll;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::channel::mpsc;
+use futures::channel::mpsc::SendError;
+use futures::future::OptionFuture;
+use futures::future::poll_fn;
+use futures::stream::SelectAll;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
 use inspect::Inspect;
@@ -56,8 +56,8 @@ use std::future;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::ready;
 use std::task::Poll;
+use std::task::ready;
 use unicycle::FuturesUnordered;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
@@ -74,8 +74,6 @@ use vmbus_channel::bus::RestoreResult;
 use vmbus_channel::gpadl::GpadlMap;
 use vmbus_channel::gpadl_ring::AlignedGpadlView;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
-use vmbus_core::protocol;
-pub use vmbus_core::protocol::GpadlId;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
 use vmbus_core::MaxVersionInfo;
@@ -83,6 +81,8 @@ use vmbus_core::MonitorPageGpas;
 use vmbus_core::OutgoingMessage;
 use vmbus_core::TaggedStream;
 use vmbus_core::VersionInfo;
+use vmbus_core::protocol;
+pub use vmbus_core::protocol::GpadlId;
 #[cfg(windows)]
 use vmbus_proxy::ProxyHandle;
 use vmbus_ring as ring;
@@ -962,7 +962,9 @@ impl ServerTask {
                 if !self.inner.running {
                     self.inner.running = true;
                     if self.unstick_on_start {
-                        tracing::info!("lost synic bug fix is not in yet, call unstick_channels to mitigate the issue.");
+                        tracing::info!(
+                            "lost synic bug fix is not in yet, call unstick_channels to mitigate the issue."
+                        );
                         self.unstick_channels(false);
                         self.unstick_on_start = false;
                     }
@@ -1017,7 +1019,7 @@ impl ServerTask {
     async fn run(
         &mut self,
         mut relay_response_recv: impl futures::stream::FusedStream<Item = ModifyConnectionResponse>
-            + Unpin,
+        + Unpin,
         mut hvsock_recv: impl futures::stream::FusedStream<Item = HvsockConnectResult> + Unpin,
     ) {
         loop {
@@ -1936,11 +1938,11 @@ impl ParentBus for VmbusServerControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
     use pal_async::timer::Instant;
     use pal_async::timer::PolledTimer;
-    use pal_async::DefaultDriver;
     use parking_lot::Mutex;
     use protocol::UserDefinedData;
     use std::time::Duration;
