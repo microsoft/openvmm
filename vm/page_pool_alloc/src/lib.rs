@@ -20,8 +20,8 @@ use sparse_mmap::SparseMapping;
 use sparse_mmap::alloc_shared_memory;
 use std::fmt::Debug;
 use std::num::NonZeroU64;
-use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 use thiserror::Error;
 
 const PAGE_SIZE: u64 = 4096;
