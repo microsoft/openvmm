@@ -13,10 +13,10 @@ use super::super::private::BackingParams;
 use super::super::signal_mnf;
 use super::super::vp_state;
 use super::super::vp_state::UhVpStateAccess;
+use super::VbsIsolatedVtl1State;
 use crate::BackingShared;
 use crate::Error;
 use crate::GuestVsmState;
-use crate::VbsIsolatedVtl1State;
 use crate::processor::BackingSharedParams;
 use crate::processor::UhEmulationState;
 use crate::processor::UhHypercallHandler;
@@ -99,10 +99,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
     type Shared = HypervisorBackedArm64Shared;
 
     fn shared(shared: &BackingShared) -> &Self::Shared {
-        #[expect(irrefutable_let_patterns)]
-        let BackingShared::Hypervisor(shared) = shared else {
-            unreachable!()
-        };
+        let BackingShared::Hypervisor(shared) = shared;
         shared
     }
 

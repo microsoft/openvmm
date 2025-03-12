@@ -451,13 +451,6 @@ impl<T: Inspect> GuestVsmState<T> {
 }
 
 #[derive(Default, Inspect)]
-struct VbsIsolatedVtl1State {
-    #[inspect(with = "|flags| flags.map(|f| inspect::AsHex(u32::from(f)))")]
-    default_vtl_protections: Option<HvMapGpaFlags>,
-    enable_vtl_protection: bool,
-}
-
-#[derive(Default, Inspect)]
 struct CvmVtl1State {
     /// Whether VTL 1 has been enabled on any vp
     enabled_on_any_vp: bool,
