@@ -458,8 +458,9 @@ impl TestMapper {
         Ok(Self { mem: fd, len })
     }
 
-    /// Returns sparse memory that maps to the entire TestMapper
-    pub fn get_sparse_mapping(&self) -> SparseMapping {
+    /// Returns sparse memory that maps the entire range used by [TestMapper]. This assumes that
+    /// that pages start at 0.
+    pub fn sparse_mapping(&self) -> SparseMapping {
         let mappable = self.mappable();
         let mapping = SparseMapping::new(self.len).unwrap();
         mapping.map_file(0, self.len, mappable, 0, true).unwrap();
