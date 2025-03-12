@@ -132,7 +132,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     let driver_dma_mem = if allow_dma {
         let range_half = (pages / 2) * PAGE_SIZE64;
         guest_mem
-            .subrange(0 as u64, range_half as u64, false)
+            .subrange(0_u64, range_half, false)
             .unwrap()
     } else {
         guest_mem.clone()
