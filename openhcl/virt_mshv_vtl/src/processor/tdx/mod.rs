@@ -1816,7 +1816,7 @@ impl UhProcessor<'_, TdxBacked> {
                 #[cfg(feature = "gdb")]
                 {
                     // Check if the interrupt was triggered by a hardware breakpoint.
-                    let debug_regs = TdxBacked::access_vp_state(self, GuestVtl::Vtl0)
+                    let debug_regs = TdxBacked::access_vp_state(self, intercepted_vtl.into())
                         .debug_regs()
                         .expect("register query should not fail");
                     // The lowest four bits of DR6 indicate which of the
@@ -1844,12 +1844,12 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.tdcall
             }
             VmxExit::EXCEPTION => {
+                tracing::trace!(
+                    "Caught Exception: {:?}",
+                    exit_info._exit_interruption_info()
+                );
                 #[cfg(feature = "gdb")]
                 {
-                    tracing::trace!(
-                        "Caught Exception: {:?}",
-                        exit_info._exit_interruption_info()
-                    );
                     breakpoint_debug_exception = true;
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.exception
