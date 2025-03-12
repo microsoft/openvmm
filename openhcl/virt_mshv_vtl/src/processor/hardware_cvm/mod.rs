@@ -1137,10 +1137,7 @@ impl<T, B: HardwareIsolatedBacking>
 
                 hv_vp_context
             }
-            virt::IsolationType::Tdx => {
-                // TODO TDX GUEST VSM
-                hvdef::hypercall::InitialVpContextX64::new_zeroed()
-            }
+            virt::IsolationType::Tdx => hvdef::hypercall::InitialVpContextX64::new_zeroed(),
         };
 
         self.vp

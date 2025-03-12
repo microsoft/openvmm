@@ -1850,7 +1850,7 @@ impl UhProtoPartition<'_> {
         match params.isolation {
             IsolationType::None | IsolationType::Vbs => {}
             #[cfg(guest_arch = "x86_64")]
-            IsolationType::Tdx => return Ok(false), // TODO TDX GUEST_VSM
+            IsolationType::Tdx => return Ok(params.env_cvm_guest_vsm),
             #[cfg(guest_arch = "x86_64")]
             IsolationType::Snp => {
                 if !params.env_cvm_guest_vsm {
