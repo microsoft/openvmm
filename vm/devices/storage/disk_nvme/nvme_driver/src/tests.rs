@@ -50,8 +50,6 @@ async fn test_nvme_save_restore(driver: DefaultDriver) {
     test_nvme_save_restore_inner(driver).await;
 }
 
-
-
 #[async_test]
 async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
     const MSIX_COUNT: u16 = 2;
@@ -421,13 +419,16 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
 
 /// Creates test memory that leverages the TestMapper. Returned GuestMemory references the entire range
 /// and the page pool allocator references only the second half
-fn create_test_memory(num_pages: u64, allow_dma: bool) -> (GuestMemory, PagePool, Arc<PagePoolAllocator>){
+fn create_test_memory(
+    num_pages: u64,
+    allow_dma: bool,
+) -> (GuestMemory, PagePool, Arc<PagePoolAllocator>) {
     let test_mapper = TestMapper::new(num_pages).unwrap();
     let sparse_mmap = test_mapper.get_sparse_mapping();
     let guest_mem = create_guest_memory(sparse_mmap, allow_dma);
     let pool = PagePool::new(
-        &[MemoryRange::from_4k_gpn_range(num_pages/2..num_pages)],
-        test_mapper
+        &[MemoryRange::from_4k_gpn_range(num_pages / 2..num_pages)],
+        test_mapper,
     )
     .unwrap();
 

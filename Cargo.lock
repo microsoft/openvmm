@@ -5047,7 +5047,6 @@ name = "page_pool_alloc"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "guestmem",
  "inspect",
  "memory_range",
  "mesh",
