@@ -7,7 +7,9 @@ use std::fs::File;
 use std::io::Write;
 
 use anyhow::Context;
+use disk_backend_resources::FileDiskHandle;
 use disk_backend_resources::LayeredDiskHandle;
+use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use guid::Guid;
 use hvlite_defs::config::DeviceVtl;
