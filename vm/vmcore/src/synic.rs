@@ -96,7 +96,7 @@ pub trait SynicMonitorAccess: SynicPortAccess {
     fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send>;
 
     /// Sets the GPA of the monitor page currently in use.
-    fn set_monitor_page(&self, gpa: Option<u64>) -> anyhow::Result<()>;
+    fn set_monitor_page(&self, gpa: Option<MonitorPageGpas>) -> anyhow::Result<()>;
 }
 
 /// A guest event port, created by [`SynicPortAccess::new_guest_event_port`].
@@ -121,4 +121,12 @@ pub trait GuestMessagePort: Send + Sync + Inspect {
 
     /// Changes the virtual processor to which messages are sent.
     fn set_target_vp(&mut self, vp: u32) -> Result<(), HypervisorError>;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Inspect)]
+pub struct MonitorPageGpas {
+    #[inspect(hex)]
+    pub parent_to_child: u64,
+    #[inspect(hex)]
+    pub child_to_parent: u64,
 }

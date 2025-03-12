@@ -20,6 +20,7 @@ use vmcore::synic::EventPort;
 use vmcore::synic::GuestEventPort;
 use vmcore::synic::GuestMessagePort;
 use vmcore::synic::MessagePort;
+use vmcore::synic::MonitorPageGpas;
 use vmcore::synic::SynicMonitorAccess;
 use vmcore::synic::SynicPortAccess;
 
@@ -185,11 +186,11 @@ impl SynicMonitorAccess for SynicPorts {
             .register_monitor(monitor_id, connection_id)
     }
 
-    fn set_monitor_page(&self, gpa: Option<u64>) -> anyhow::Result<()> {
+    fn set_monitor_page(&self, gpa: Option<MonitorPageGpas>) -> anyhow::Result<()> {
         self.partition
             .monitor_support()
             .unwrap()
-            .set_monitor_page(gpa)
+            .set_monitor_page(gpa.map(|mp| mp.child_to_parent))
     }
 }
 

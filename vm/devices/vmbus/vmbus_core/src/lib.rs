@@ -188,14 +188,6 @@ impl PartialEq for OutgoingMessage {
 #[error("a synic message exceeds the maximum length")]
 pub struct MessageTooLarge;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Inspect)]
-pub struct MonitorPageGpas {
-    #[inspect(hex)]
-    pub parent_to_child: u64,
-    #[inspect(hex)]
-    pub child_to_parent: u64,
-}
-
 /// A request from the guest to connect to the specified hvsocket endpoint.
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Inspect)]
 pub struct HvsockConnectRequest {

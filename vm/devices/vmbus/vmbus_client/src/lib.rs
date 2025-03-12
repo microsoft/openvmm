@@ -53,6 +53,7 @@ use vmbus_core::protocol::Message;
 use vmbus_core::protocol::OpenChannelFlags;
 use vmbus_core::protocol::Version;
 use vmcore::interrupt::Interrupt;
+use vmcore::synic::MonitorPageGpas;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
