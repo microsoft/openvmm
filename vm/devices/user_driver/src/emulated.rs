@@ -145,6 +145,7 @@ struct SparseMapBacking {
     allow_dma: bool,
 }
 
+// SAFETY: the allocation will stay valid for the lifetime of the object.
 unsafe impl GuestMemoryAccess for SparseMapBacking {
     fn mapping(&self) -> Option<NonNull<u8>> {
         self.sparse_mmap.mapping()

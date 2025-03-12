@@ -1299,6 +1299,7 @@ mod tests {
     use test_with_tracing::test;
     use user_driver::emulated::DeviceSharedMemory;
     use user_driver::emulated::EmulatedDevice;
+    use user_driver::emulated::EmulatedDmaAllocator;
     use vmcore::vm_task::SingleDriverBackend;
     use vmcore::vm_task::VmTaskDriverSource;
 
