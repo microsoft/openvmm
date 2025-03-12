@@ -140,42 +140,26 @@ pub struct DeviceSharedMemory {
     state: Arc<Mutex<Vec<u64>>>,
 }
 
-struct SparseMapBacking {
-    sparse_mmap: SparseMapping,
-    allow_dma: bool,
-}
-
-// SAFETY: the allocation will stay valid for the lifetime of the object.
-unsafe impl GuestMemoryAccess for SparseMapBacking {
-    fn mapping(&self) -> Option<NonNull<u8>> {
-        self.sparse_mmap.mapping()
-    }
-
-    fn base_iova(&self) -> Option<u64> {
-        self.allow_dma.then_some(0)
-    }
-
-    fn max_address(&self) -> u64 {
-        self.sparse_mmap.max_address()
-    }
-}
-
 /// Takes sparse mapping as input and converts it to GuestMemory with the allow_dma switch
 pub fn create_guest_memory(sparse_mmap: SparseMapping, allow_dma: bool) -> GuestMemory {
-    let test_backing = SparseMapBacking {
-        sparse_mmap,
+   let test_backing = Backing {
+        mem: sparse_mmap,
         allow_dma,
     };
     GuestMemory::new("test mapper guest memory", test_backing)
 }
 
-struct Backing {
-    mem: Arc<AlignedHeapMemory>,
+/// The Backing struct is meant for testing only. It is meant to encapsulate types that already
+/// implement [GuestMemoryAccess] but provides the allow_dma switch regardless of the underlying
+/// type T.
+struct Backing<T> {
+    mem: T,
     allow_dma: bool,
 }
 
-/// SAFETY: passing through to [`AlignedHeapMemory`].
-unsafe impl GuestMemoryAccess for Backing {
+/// SAFETY: passing through to GuestMemoryAccess implementation to T
+/// Only intercept the base_iova fn with a naive response of 0 if allow_dma is enabled.
+unsafe impl<T: GuestMemoryAccess>  GuestMemoryAccess for Backing<T> {
     fn mapping(&self) -> Option<NonNull<u8>> {
         self.mem.mapping()
     }
