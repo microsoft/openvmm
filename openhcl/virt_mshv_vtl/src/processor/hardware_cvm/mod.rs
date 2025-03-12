@@ -622,7 +622,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         )
     }
 
-    pub fn hcvm_validate_flush_inputs(
+    pub(crate) fn hcvm_validate_flush_inputs(
         &mut self,
         processor_set: ProcessorSet<'_>,
         flags: HvFlushFlags,
@@ -1278,6 +1278,7 @@ impl hv1_emulator::hv::VtlProtectHypercallOverlay for HypercallOverlayAccess<'_>
     }
 }
 
+#[expect(private_bounds)]
 impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     pub(crate) fn write_msr_cvm(
         &mut self,
@@ -1408,21 +1409,19 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
         Ok(())
     }
-}
 
-impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     /// Returns the partition-wide CVM state.
-    pub fn cvm_partition(&self) -> &'_ crate::UhCvmPartitionState {
+    pub(crate) fn cvm_partition(&self) -> &'_ crate::UhCvmPartitionState {
         B::cvm_partition_state(self.shared)
     }
 
     /// Returns the per-vp cvm inner state for this vp
-    pub fn cvm_vp_inner(&self) -> &'_ crate::UhCvmVpInner {
+    pub(crate) fn cvm_vp_inner(&self) -> &'_ crate::UhCvmVpInner {
         self.cvm_partition().vp_inner(self.vp_index().index())
     }
 
     /// Returns the appropriately backed TLB flush and lock access
-    pub fn tlb_flush_lock_access(&self) -> impl TlbFlushLockAccess + use<'_, B> {
+    pub(crate) fn tlb_flush_lock_access(&self) -> impl TlbFlushLockAccess + use<'_, B> {
         B::tlb_flush_lock_access(self.vp_index(), self.partition, self.shared)
     }
 

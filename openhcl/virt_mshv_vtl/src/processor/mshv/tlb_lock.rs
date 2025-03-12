@@ -14,7 +14,8 @@ impl UhProcessor<'_, HypervisorBacked> {
     /// Causes the specified VTL on the current VP to wait on all TLB locks.
     /// This is typically used to synchronize VTL permission changes with
     /// concurrent instruction emulation.
-    pub fn set_wait_for_tlb_locks(&mut self, target_vtl: Vtl) {
+    #[expect(dead_code)]
+    pub(crate) fn set_wait_for_tlb_locks(&mut self, target_vtl: Vtl) {
         let reg = [(
             HvAllArchRegisterName::VsmVpWaitForTlbLock,
             u64::from(hvdef::HvRegisterVsmWpWaitForTlbLock::new().with_wait(true)),
@@ -25,7 +26,8 @@ impl UhProcessor<'_, HypervisorBacked> {
     }
 
     /// Lock the TLB of the target VTL on the current VP.
-    pub fn set_tlb_lock(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) {
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+    pub(crate) fn set_tlb_lock(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) {
         debug_assert_eq!(requesting_vtl, Vtl::Vtl2);
 
         if self.is_tlb_locked(requesting_vtl, target_vtl) {
@@ -46,7 +48,7 @@ impl UhProcessor<'_, HypervisorBacked> {
     }
 
     /// Check the status of the TLB lock of the target VTL on the current VP.
-    pub fn is_tlb_locked(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
+    pub(crate) fn is_tlb_locked(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
         debug_assert_eq!(requesting_vtl, Vtl::Vtl2);
         let local_status = self.vtls_tlb_locked.get(requesting_vtl, target_vtl);
         // The hypervisor may lock the TLB without us knowing, but the inverse should never happen.
@@ -71,7 +73,8 @@ impl UhProcessor<'_, HypervisorBacked> {
 
     /// Marks the TLBs of all lower VTLs as unlocked.
     /// The hypervisor does the actual unlocking required upon VTL exit.
-    pub fn unlock_tlb_lock(&mut self, unlocking_vtl: Vtl) {
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+    pub(crate) fn unlock_tlb_lock(&mut self, unlocking_vtl: Vtl) {
         debug_assert_eq!(unlocking_vtl, Vtl::Vtl2);
         self.vtls_tlb_locked.fill(unlocking_vtl, false);
     }

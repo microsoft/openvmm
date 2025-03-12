@@ -7,10 +7,10 @@
 
 type VpRegisterName = HvX64RegisterName;
 
-use super::super::BackingPrivate;
+use super::super::Backing;
+use super::super::BackingParams;
 use super::super::UhEmulationState;
 use super::super::UhRunVpError;
-use super::super::private::BackingParams;
 use super::super::signal_mnf;
 use super::super::vp_state;
 use super::super::vp_state::UhVpStateAccess;
@@ -99,7 +99,7 @@ pub struct HypervisorBackedX86Shared {
 
 impl HypervisorBackedX86Shared {
     /// Creates a new partition-shared data structure for hypervisor backed VMs.
-    pub fn new(params: BackingSharedParams) -> Result<Self, Error> {
+    pub(crate) fn new(params: BackingSharedParams) -> Result<Self, Error> {
         Ok(Self {
             guest_vsm: RwLock::new(GuestVsmState::from_availability(params.guest_vsm_available)),
         })
@@ -135,7 +135,8 @@ pub struct MshvEmulationCache {
     rflags: RFlags,
 }
 
-impl BackingPrivate for HypervisorBackedX86 {
+#[expect(private_interfaces)]
+impl Backing for HypervisorBackedX86 {
     type HclBacking<'mshv> = MshvX64<'mshv>;
     type Shared = HypervisorBackedX86Shared;
     type EmulationCache = MshvEmulationCache;

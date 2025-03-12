@@ -5,13 +5,13 @@
 
 mod tlb_flush;
 
+use super::Backing;
 use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
 use super::UhEmulationState;
 use super::UhHypercallHandler;
 use super::UhRunVpError;
 use super::hardware_cvm;
-use super::private::BackingPrivate;
 use super::vp_state;
 use super::vp_state::UhVpStateAccess;
 use crate::BackingShared;
@@ -439,40 +439,40 @@ struct TdxVtl {
 
 #[derive(Default)]
 pub struct TdxEmulationCache {
-    pub segs: [Option<SegmentRegister>; 6],
-    pub cr0: Option<u64>,
+    segs: [Option<SegmentRegister>; 6],
+    cr0: Option<u64>,
 }
 
 #[derive(Inspect, Default)]
-pub struct EnterStats {
-    pub success: Counter,
-    pub host_routed_async: Counter,
-    pub l2_exit_pending_intr: Counter,
-    pub pending_intr: Counter,
-    pub host_routed_td_vmcall: Counter,
+struct EnterStats {
+    success: Counter,
+    host_routed_async: Counter,
+    l2_exit_pending_intr: Counter,
+    pending_intr: Counter,
+    host_routed_td_vmcall: Counter,
 }
 
 #[derive(Inspect, Default)]
-pub struct ExitStats {
-    pub io: Counter,
-    pub msr_read: Counter,
-    pub msr_write: Counter,
-    pub ept_violation: Counter,
-    pub cpuid: Counter,
-    pub cr_access: Counter,
-    pub xsetbv: Counter,
-    pub tpr_below_threshold: Counter,
-    pub interrupt_window: Counter,
-    pub nmi_window: Counter,
-    pub vmcall: Counter,
-    pub smi_intr: Counter,
-    pub wbinvd: Counter,
-    pub hw_interrupt: Counter,
-    pub tdcall: Counter,
-    pub hlt: Counter,
-    pub pause: Counter,
-    pub needs_interrupt_reinject: Counter,
-    pub exception: Counter,
+struct ExitStats {
+    io: Counter,
+    msr_read: Counter,
+    msr_write: Counter,
+    ept_violation: Counter,
+    cpuid: Counter,
+    cr_access: Counter,
+    xsetbv: Counter,
+    tpr_below_threshold: Counter,
+    interrupt_window: Counter,
+    nmi_window: Counter,
+    vmcall: Counter,
+    smi_intr: Counter,
+    wbinvd: Counter,
+    hw_interrupt: Counter,
+    tdcall: Counter,
+    hlt: Counter,
+    pause: Counter,
+    needs_interrupt_reinject: Counter,
+    exception: Counter,
 }
 
 enum UhDirectOverlay {
@@ -482,10 +482,6 @@ enum UhDirectOverlay {
 }
 
 impl HardwareIsolatedBacking for TdxBacked {
-    fn shared_pages_required_per_cpu() -> u64 {
-        UhDirectOverlay::Count as u64
-    }
-
     fn cvm_state(&self) -> &UhCvmVpState {
         &self.cvm
     }
@@ -554,7 +550,7 @@ pub struct TdxBackedShared {
 }
 
 impl TdxBackedShared {
-    pub fn new(params: BackingSharedParams) -> Result<Self, crate::Error> {
+    pub(crate) fn new(params: BackingSharedParams) -> Result<Self, crate::Error> {
         Ok(Self {
             flush_state: VtlArray::from_fn(|_| RwLock::new(TdxPartitionFlushState::new())),
             cvm: params.cvm_state.unwrap(),
@@ -566,7 +562,16 @@ impl TdxBackedShared {
     }
 }
 
-impl BackingPrivate for TdxBacked {
+impl TdxBacked {
+    /// Gets the number of pages that will be allocated from the shared page pool
+    /// for each CPU.
+    pub fn shared_pages_required_per_cpu() -> u64 {
+        UhDirectOverlay::Count as u64
+    }
+}
+
+#[expect(private_interfaces)]
+impl Backing for TdxBacked {
     type HclBacking<'tdx> = Tdx<'tdx>;
     type Shared = TdxBackedShared;
     type EmulationCache = TdxEmulationCache;
@@ -579,7 +584,7 @@ impl BackingPrivate for TdxBacked {
     }
 
     fn new(
-        params: super::private::BackingParams<'_, '_, Self>,
+        params: super::BackingParams<'_, '_, Self>,
         shared: &TdxBackedShared,
     ) -> Result<Self, crate::Error> {
         // TODO TDX: TDX shares the vp context page for xmm registers only. It

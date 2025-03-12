@@ -12,11 +12,10 @@ mod devmsr;
 cfg_if::cfg_if!(
     if #[cfg(target_arch = "x86_64")] { // xtask-fmt allow-target-arch sys-crate
         mod cvm_cpuid;
-        pub use processor::HardwareIsolatedBacking;
         pub use processor::snp::SnpBacked;
         pub use processor::tdx::TdxBacked;
         pub use crate::processor::mshv::x64::HypervisorBackedX86 as HypervisorBacked;
-        pub use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
+        use crate::processor::mshv::x64::HypervisorBackedX86Shared as HypervisorBackedShared;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
         use devmsr::MsrDevice;
@@ -33,7 +32,7 @@ cfg_if::cfg_if!(
         type IrrBitmap = BitArray<[u32; 8], Lsb0>;
     } else if #[cfg(target_arch = "aarch64")] { // xtask-fmt allow-target-arch sys-crate
         pub use crate::processor::mshv::arm64::HypervisorBackedArm64 as HypervisorBacked;
-        pub use crate::processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
+        use crate::processor::mshv::arm64::HypervisorBackedArm64Shared as HypervisorBackedShared;
         use hvdef::HvArm64RegisterName;
     }
 );
@@ -197,7 +196,7 @@ pub struct UhPartition {
 /// Underhill partition.
 #[derive(Inspect)]
 #[inspect(extra = "UhPartitionInner::inspect_extra")]
-pub struct UhPartitionInner {
+struct UhPartitionInner {
     #[inspect(skip)]
     hcl: Hcl,
     #[inspect(skip)] // inspected separately
@@ -246,7 +245,7 @@ pub struct UhPartitionInner {
 #[derive(Inspect)]
 #[inspect(external_tag)]
 #[doc(hidden)]
-pub enum BackingShared {
+enum BackingShared {
     Hypervisor(#[inspect(flatten)] HypervisorBackedShared),
     #[cfg(guest_arch = "x86_64")]
     Snp(#[inspect(flatten)] SnpBackedShared),
@@ -329,7 +328,7 @@ impl From<EnterMode> for hcl::protocol::EnterMode {
 #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
 /// VP state for CVMs.
-pub struct UhCvmVpState {
+struct UhCvmVpState {
     // Allocation handle for direct overlays
     #[inspect(debug)]
     direct_overlay_handle: user_driver::memory::MemoryBlock,
@@ -392,7 +391,7 @@ impl UhCvmVpState {
 
 #[derive(Inspect)]
 /// Partition-wide state for CVMs.
-pub struct UhCvmPartitionState {
+struct UhCvmPartitionState {
     #[cfg(guest_arch = "x86_64")]
     #[inspect(skip)]
     cpuid: cvm_cpuid::CpuidResults,
@@ -421,7 +420,7 @@ impl UhCvmPartitionState {
 
 #[derive(Inspect)]
 /// Per-vp state for CVMs.
-pub struct UhCvmVpInner {
+struct UhCvmVpInner {
     /// The current status of TLB locks
     tlb_lock_info: VtlArray<TlbLockInfo, 2>,
     /// Whether EnableVpVtl for VTL 1 has been called on this VP.
@@ -619,7 +618,7 @@ impl UhVpInner {
 #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
 #[derive(Debug, Inspect)]
 /// Which operation is setting the initial vp context
-pub enum InitialVpContextOperation {
+enum InitialVpContextOperation {
     /// The VP is being started via the StartVp hypercall.
     StartVp,
     /// The VP is being started via the EnableVpVtl hypercall.
@@ -629,7 +628,7 @@ pub enum InitialVpContextOperation {
 #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
 #[derive(Debug, Inspect)]
 /// State for handling StartVp/EnableVpVtl hypercalls.
-pub struct VpStartEnableVtl {
+struct VpStartEnableVtl {
     /// Which operation, startvp or enablevpvtl, is setting the initial vp
     /// context
     operation: InitialVpContextOperation,
@@ -2205,7 +2204,8 @@ pub struct VtlCrash {
 
 /// Validate that flags is a valid setting for VTL memory protection when
 /// applied to VTL 1.
-pub fn validate_vtl_gpa_flags(
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+fn validate_vtl_gpa_flags(
     flags: HvMapGpaFlags,
     mbec_enabled: bool,
     shadow_supervisor_stack_enabled: bool,

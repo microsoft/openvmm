@@ -3,13 +3,13 @@
 
 //! Processor support for SNP partitions.
 
-use super::BackingPrivate;
+use super::Backing;
+use super::BackingParams;
 use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
 use super::UhEmulationState;
 use super::UhRunVpError;
 use super::hardware_cvm;
-use super::private::BackingParams;
 use super::vp_state;
 use super::vp_state::UhVpStateAccess;
 use crate::BackingShared;
@@ -88,32 +88,32 @@ pub struct SnpBacked {
 }
 
 #[derive(Inspect, Default)]
-pub struct GeneralStats {
-    pub guest_busy: Counter,
-    pub int_ack: Counter,
-    pub synth_int: Counter,
+struct GeneralStats {
+    guest_busy: Counter,
+    int_ack: Counter,
+    synth_int: Counter,
 }
 
 #[derive(Inspect, Default)]
-pub struct ExitStats {
-    pub automatic_exit: Counter,
-    pub cpuid: Counter,
-    pub hlt: Counter,
-    pub intr: Counter,
-    pub invd: Counter,
-    pub invlpgb: Counter,
-    pub ioio: Counter,
-    pub msr_read: Counter,
-    pub msr_write: Counter,
-    pub npf: Counter,
-    pub npf_no_intercept: Counter,
-    pub npf_spurious: Counter,
-    pub rdpmc: Counter,
-    pub unexpected: Counter,
-    pub vmgexit: Counter,
-    pub vmmcall: Counter,
-    pub xsetbv: Counter,
-    pub excp_db: Counter,
+struct ExitStats {
+    automatic_exit: Counter,
+    cpuid: Counter,
+    hlt: Counter,
+    intr: Counter,
+    invd: Counter,
+    invlpgb: Counter,
+    ioio: Counter,
+    msr_read: Counter,
+    msr_write: Counter,
+    npf: Counter,
+    npf_no_intercept: Counter,
+    npf_spurious: Counter,
+    rdpmc: Counter,
+    unexpected: Counter,
+    vmgexit: Counter,
+    vmmcall: Counter,
+    xsetbv: Counter,
+    excp_db: Counter,
 }
 
 enum UhDirectOverlay {
@@ -133,13 +133,15 @@ impl SnpBacked {
         };
         new_efer | x86defs::X64_EFER_SVME
     }
+
+    /// Gets the number of pages that will be allocated from the shared page pool
+    /// for each CPU.
+    pub fn shared_pages_required_per_cpu() -> u64 {
+        UhDirectOverlay::Count as u64
+    }
 }
 
 impl HardwareIsolatedBacking for SnpBacked {
-    fn shared_pages_required_per_cpu() -> u64 {
-        UhDirectOverlay::Count as u64
-    }
-
     fn cvm_state(&self) -> &UhCvmVpState {
         &self.cvm
     }
@@ -243,7 +245,7 @@ pub struct SnpBackedShared {
 }
 
 impl SnpBackedShared {
-    pub fn new(params: BackingSharedParams) -> Result<Self, Error> {
+    pub(crate) fn new(params: BackingSharedParams) -> Result<Self, Error> {
         let cvm = params.cvm_state.unwrap();
         let invlpgb_count_max = x86defs::cpuid::ExtendedAddressSpaceSizesEdx::from(
             cvm.cpuid
@@ -266,7 +268,8 @@ impl SnpBackedShared {
     }
 }
 
-impl BackingPrivate for SnpBacked {
+#[expect(private_interfaces)]
+impl Backing for SnpBacked {
     type HclBacking<'snp> = hcl::ioctl::snp::Snp<'snp>;
     type Shared = SnpBackedShared;
     type EmulationCache = ();

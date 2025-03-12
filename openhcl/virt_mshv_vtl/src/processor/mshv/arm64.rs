@@ -7,9 +7,9 @@
 
 type VpRegisterName = HvArm64RegisterName;
 
-use super::super::BackingPrivate;
+use super::super::Backing;
+use super::super::BackingParams;
 use super::super::UhRunVpError;
-use super::super::private::BackingParams;
 use super::super::signal_mnf;
 use super::super::vp_state;
 use super::super::vp_state::UhVpStateAccess;
@@ -78,7 +78,7 @@ pub struct HypervisorBackedArm64Shared {
 
 impl HypervisorBackedArm64Shared {
     /// Creates a new partition-shared data structure for hypervisor backed VMs.
-    pub fn new(params: BackingSharedParams) -> Result<Self, Error> {
+    pub(crate) fn new(params: BackingSharedParams) -> Result<Self, Error> {
         Ok(Self {
             guest_vsm: RwLock::new(GuestVsmState::from_availability(params.guest_vsm_available)),
         })
@@ -93,7 +93,8 @@ struct ProcessorStatsArm64 {
     synic_deliverable: Counter,
 }
 
-impl BackingPrivate for HypervisorBackedArm64 {
+#[expect(private_interfaces)]
+impl Backing for HypervisorBackedArm64 {
     type HclBacking<'mshv> = MshvArm64;
     type EmulationCache = UhCpuStateCache;
     type Shared = HypervisorBackedArm64Shared;
@@ -855,15 +856,12 @@ impl UhVpStateAccess<'_, '_, HypervisorBackedArm64> {
     }
 
     /// Get the system VP registers on the current VP.
-    pub fn get_system_registers(&mut self) -> Result<vp::SystemRegisters, vp_state::Error> {
+    fn get_system_registers(&mut self) -> Result<vp::SystemRegisters, vp_state::Error> {
         self.get_register_state()
     }
 
     /// Set the system VP registers on the current VP.
-    pub fn set_system_registers(
-        &mut self,
-        regs: &vp::SystemRegisters,
-    ) -> Result<(), vp_state::Error> {
+    fn set_system_registers(&mut self, regs: &vp::SystemRegisters) -> Result<(), vp_state::Error> {
         self.set_register_state(regs)
     }
 }

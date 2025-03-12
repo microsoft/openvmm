@@ -8,7 +8,6 @@ cfg_if::cfg_if! {
         pub use hvdef::HvX64RegisterName as HvArchRegisterName;
         use chipset_device_resources::BSP_LINT_LINE_SET;
         use virt::irqcon::MsiRequest;
-        use virt_mshv_vtl::HardwareIsolatedBacking;
         use vmm_core::acpi_builder::AcpiTablesBuilder;
     } else if #[cfg(guest_arch = "aarch64")] {
         pub use hvdef::HvArm64RegisterName as HvArchRegisterName;
