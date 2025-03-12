@@ -422,7 +422,7 @@ fn create_test_memory(
     allow_dma: bool,
 ) -> (GuestMemory, PagePool, Arc<PagePoolAllocator>) {
     let test_mapper = TestMapper::new(num_pages).unwrap();
-    let sparse_mmap = test_mapper.get_sparse_mapping();
+    let sparse_mmap = test_mapper.sparse_mapping();
     let guest_mem = create_guest_memory(sparse_mmap, allow_dma);
     let pool = PagePool::new(
         &[MemoryRange::from_4k_gpn_range(num_pages / 2..num_pages)],

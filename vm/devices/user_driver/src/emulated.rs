@@ -150,7 +150,7 @@ struct Backing<T> {
 
 /// SAFETY: Defer to [GuestMemoryAccess] implementation of T
 /// Only intercept the base_iova fn with a naive response of 0 if allow_dma is enabled.
-unsafe impl<T: GuestMemoryAccess>  GuestMemoryAccess for Backing<T> {
+unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for Backing<T> {
     fn mapping(&self) -> Option<NonNull<u8>> {
         self.mem.mapping()
     }
@@ -166,7 +166,7 @@ unsafe impl<T: GuestMemoryAccess>  GuestMemoryAccess for Backing<T> {
 
 /// Takes sparse mapping as input and converts it to GuestMemory with the allow_dma switch
 pub fn create_guest_memory(sparse_mmap: SparseMapping, allow_dma: bool) -> GuestMemory {
-   let test_backing = Backing {
+    let test_backing = Backing {
         mem: sparse_mmap,
         allow_dma,
     };
