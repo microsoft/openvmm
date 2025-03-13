@@ -22,6 +22,7 @@ use test_with_tracing::test;
 use user_driver::DeviceBacking;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
+use user_driver::emulated::EmulatedDmaAllocator;
 use user_driver::memory::PAGE_SIZE;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -40,7 +41,8 @@ async fn test_gdma(driver: DefaultDriver) {
         }],
         &mut ExternallyManagedMmioIntercepts,
     );
-    let device = EmulatedDevice::new(device, msi_set, mem);
+    let allocator = EmulatedDmaAllocator::new(mem.clone());
+    let device = EmulatedDevice::new(device, msi_set, allocator.into());
 
     let mut gdma = GdmaDriver::new(&driver, device, 1).await.unwrap();
     gdma.test_eq().await.unwrap();
