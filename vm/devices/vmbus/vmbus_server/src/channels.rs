@@ -22,6 +22,7 @@ use std::ops::Index;
 use std::ops::IndexMut;
 use std::task::Poll;
 use std::task::ready;
+use std::time::Duration;
 use thiserror::Error;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::GpadlRequest;
@@ -45,6 +46,7 @@ use vmbus_core::protocol::OfferFlags;
 use vmbus_core::protocol::UserDefinedData;
 use vmbus_ring::gparange;
 use vmcore::monitor::MonitorId;
+use vmcore::synic::MonitorInfo;
 use vmcore::synic::MonitorPageGpas;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -558,6 +560,7 @@ pub struct OfferParamsInternal {
     pub flags: OfferFlags,
     pub user_defined: UserDefinedData,
     pub monitor_id: Option<u8>,
+    pub interrupt_latency: Duration,
 }
 
 impl OfferParamsInternal {
@@ -631,6 +634,7 @@ impl From<OfferParams> for OfferParamsInternal {
             user_defined,
             flags,
             monitor_id: None,
+            interrupt_latency: value.interrupt_latency,
         }
     }
 }
@@ -749,9 +753,12 @@ impl Channel {
     /// are only usable for standard channels. Otherwise, we fail later when we
     /// try to change the MNF page as part of vmbus protocol renegotiation,
     /// since the page still appears to be in use by a device.
-    fn handled_monitor_id(&self) -> Option<MonitorId> {
+    fn handled_monitor_id(&self) -> Option<MonitorInfo> {
         if self.offer.use_mnf && !self.state.is_reserved() {
-            self.info.and_then(|info| info.monitor_id)
+            self.info.and_then(|info| {
+                info.monitor_id
+                    .map(|id| MonitorInfo::new(id, self.offer.interrupt_latency))
+            })
         } else {
             None
         }
@@ -1139,7 +1146,7 @@ pub struct OpenParams {
     pub open_data: OpenData,
     pub connection_id: u32,
     pub event_flag: u16,
-    pub monitor_id: Option<MonitorId>,
+    pub monitor_info: Option<MonitorInfo>,
     pub flags: protocol::OpenChannelFlags,
     pub reserved_target: Option<ConnectionTarget>,
 }
@@ -1148,7 +1155,7 @@ impl OpenParams {
     fn from_request(
         info: &OfferedInfo,
         request: &OpenRequest,
-        monitor_id: Option<MonitorId>,
+        monitor_info: Option<MonitorInfo>,
         reserved_target: Option<ConnectionTarget>,
     ) -> Self {
         // Determine whether to use the alternate IDs.
@@ -1170,7 +1177,7 @@ impl OpenParams {
             },
             connection_id,
             event_flag,
-            monitor_id,
+            monitor_info,
             flags: request.flags.with_unused(0),
             reserved_target,
         }
@@ -1436,9 +1443,15 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .info
             .ok_or_else(|| RestoreError::MissingChannel(channel.offer.key()))?;
 
-        if let Some(monitor_id) = channel.handled_monitor_id() {
-            if !self.inner.assigned_monitors.claim_monitor(monitor_id) {
-                return Err(RestoreError::DuplicateMonitorId(monitor_id.0));
+        if let Some(monitor_info) = channel.handled_monitor_id() {
+            if !self
+                .inner
+                .assigned_monitors
+                .claim_monitor(monitor_info.monitor_id())
+            {
+                return Err(RestoreError::DuplicateMonitorId(
+                    monitor_info.monitor_id().0,
+                ));
             }
         }
 
@@ -4391,7 +4404,7 @@ mod tests {
         assert_eq!(op.open_data.connection_id, connection_id);
         assert_eq!(op.connection_id, connection_id);
         assert_eq!(op.event_flag, event_flag);
-        assert_eq!(op.monitor_id, None);
+        assert_eq!(op.monitor_info, None);
         assert_eq!(op.flags, expected_flags);
 
         server

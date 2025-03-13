@@ -663,7 +663,7 @@ pub trait SynicMonitor: Synic {
     /// # Panics
     ///
     /// Panics if monitor_id is already in use.
-    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send>;
+    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Sync + Send>;
 
     /// Sets the GPA of the monitor page currently in use.
     fn set_monitor_page(&self, gpa: Option<u64>) -> anyhow::Result<()>;

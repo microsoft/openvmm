@@ -684,13 +684,11 @@ enum ChannelState {
     Closed,
     Opening {
         open_params: OpenParams,
-        monitor: Option<Box<dyn Send>>,
         host_to_guest_interrupt: Interrupt,
     },
     Open {
         open_params: OpenParams,
         _event_port: Box<dyn Send>,
-        monitor: Option<Box<dyn Send>>,
         host_to_guest_interrupt: Interrupt,
         guest_to_host_event: Arc<ChannelEvent>,
     },
@@ -1569,12 +1567,6 @@ impl ServerTaskInner {
             open_params.event_flag,
         );
 
-        let monitor = open_params.monitor_id.and_then(|monitor_id| {
-            self.synic
-                .monitor_support()
-                .map(|monitor| monitor.register_monitor(monitor_id, open_params.connection_id))
-        });
-
         // Delete any previously reserved state.
         channel.reserved_state.message_port = None;
 
@@ -1591,7 +1583,6 @@ impl ServerTaskInner {
 
         channel.state = ChannelState::Opening {
             open_params: *open_params,
-            monitor,
             host_to_guest_interrupt: interrupt.clone(),
         };
         Ok((channel, interrupt))
@@ -1613,7 +1604,6 @@ impl ServerTaskInner {
             match std::mem::replace(&mut channel.state, ChannelState::FailedOpen) {
                 ChannelState::Opening {
                     open_params,
-                    monitor,
                     host_to_guest_interrupt,
                 } => {
                     let guest_to_host_event =
@@ -1632,6 +1622,7 @@ impl ServerTaskInner {
                             open_params.connection_id,
                             self.vtl,
                             guest_to_host_event.clone(),
+                            open_params.monitor_info,
                         )
                         .with_context(|| {
                             format!(
@@ -1643,7 +1634,6 @@ impl ServerTaskInner {
                     ChannelState::Open {
                         open_params,
                         _event_port: event_port,
-                        monitor,
                         host_to_guest_interrupt,
                         guest_to_host_event,
                     }
@@ -1698,6 +1688,7 @@ impl ServerTaskInner {
             SHARED_EVENT_CONNECTION_ID,
             self.vtl,
             Arc::new(ChannelEvent(interrupt)),
+            None,
         )?);
 
         Ok(())
@@ -1721,12 +1712,12 @@ impl ServerTaskInner {
                 matches!(
                     &c.state,
                     ChannelState::Open {
-                        monitor: Some(_),
+                        open_params,
                         ..
                     } | ChannelState::Opening {
-                        monitor: Some(_),
+                        open_params,
                         ..
-                    }
+                    } if open_params.monitor_info.is_some()
                 )
             })
         {
@@ -1966,6 +1957,7 @@ mod tests {
     use vmbus_channel::bus::OfferParams;
     use vmbus_core::protocol::ChannelId;
     use vmbus_core::protocol::VmbusMessage;
+    use vmcore::synic::MonitorInfo;
     use vmcore::synic::SynicPortAccess;
     use zerocopy::FromBytes;
     use zerocopy::Immutable;
@@ -2102,6 +2094,7 @@ mod tests {
             connection_id: u32,
             _minimum_vtl: Vtl,
             _port: Arc<dyn EventPort>,
+            _monitor_info: Option<MonitorInfo>,
         ) -> Result<Box<dyn Sync + Send>, vmcore::synic::Error> {
             Ok(Box::new(connection_id))
         }
@@ -2230,6 +2223,7 @@ mod tests {
                     use_mnf: false,
                     offer_order: None,
                     allow_confidential_external_memory,
+                    interrupt_latency: Duration::from_millis(100),
                 },
             };
 
