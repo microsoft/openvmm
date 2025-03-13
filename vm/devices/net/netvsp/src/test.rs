@@ -317,7 +317,7 @@ struct TestNicQueue {
 
 impl TestNicQueue {
     pub fn new(config: QueueConfig<'_>, rx: mesh::Receiver<Vec<u8>>) -> Self {
-        let rx_ids = config.initial_rx.iter().map(|x| *x).collect();
+        let rx_ids = config.initial_rx.iter().copied().collect();
         Self {
             pool: config.pool,
             rx_ids,
@@ -344,7 +344,7 @@ impl NetQueue for TestNicQueue {
     }
 
     fn rx_poll(&mut self, packets: &mut [RxId]) -> anyhow::Result<usize> {
-        if packets.len() == 0 {
+        if packets.is_empty() {
             return Ok(0);
         }
 
