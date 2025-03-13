@@ -1136,6 +1136,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 &sgl[..segment_count]
             } else {
                 let sgl = &mut sgl[..segment_count.min(hardware_segment_limit)];
+                let mut last_segment_gpa = 0;
                 for tail in segments[header_segment_count..].iter() {
                     let cur_seg = &mut sgl[sgl_idx];
                     // Try to coalesce segments together if there are more than the hardware allows.
@@ -1143,8 +1144,12 @@ impl<T: DeviceBacking> ManaQueue<T> {
                     //       copying portions of segments to fill an entire
                     //       bounce page if the simple algorithm of coalescing
                     //       full segments together fails.
+                    // TODO: If the header was not bounced, we could search the segments for the
+                    //       longest sequence that can be coalesced, instead of the first sequence.
+                    let coalesce_possible = cur_seg.size + tail.len < PAGE_SIZE32;
                     if segment_count > hardware_segment_limit {
                         if !last_segment_bounced
+                            && coalesce_possible
                             && bounce_buffer.allocate(cur_seg.size + tail.len).is_ok()
                         {
                             // There is enough room to coalesce the current
@@ -1152,7 +1157,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                             // is not yet bounced, so bounce it now.
                             let mut copy = bounce_buffer.allocate(cur_seg.size).unwrap();
                             self.guest_memory
-                                .read_to_atomic(cur_seg.address, copy.as_slice())?;
+                                .read_to_atomic(last_segment_gpa, copy.as_slice())?;
                             let ContiguousBufferInUse { gpa, .. } = copy.reserve();
                             cur_seg.address = gpa;
                             last_segment_bounced = true;
@@ -1189,6 +1194,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                         mem_key: self.mem_key,
                         size: tail.len,
                     };
+                    last_segment_gpa = tail.gpa;
                 }
                 &sgl[..segment_count]
             };
