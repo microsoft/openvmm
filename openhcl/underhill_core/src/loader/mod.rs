@@ -76,6 +76,7 @@ pub enum Error {
     InvalidAcpiTableLength,
     #[error("invalid acpi table: unknown header signature {0:?}")]
     InvalidAcpiTableSignature([u8; 4]),
+    #[cfg(guest_arch = "x86_64")]
     #[error("acpi tables require at least two mmio ranges")]
     UnsupportedMmio,
 }
