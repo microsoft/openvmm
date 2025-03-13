@@ -3270,10 +3270,13 @@ async fn load_firmware(
     #[cfg(guest_arch = "x86_64")]
     let registers = {
         let crate::loader::VpContext::Vbs(mut registers) = vtl0_vp_context;
-        registers.extend(loader::common::compute_variable_mtrrs(
-            mem_layout,
-            partition.caps().physical_address_width,
-        ));
+        registers.extend(
+            loader::common::compute_variable_mtrrs(
+                mem_layout,
+                partition.caps().physical_address_width,
+            )
+            .context("Failed to compute variable mtrrs")?,
+        );
         registers
     };
     #[cfg(guest_arch = "aarch64")]

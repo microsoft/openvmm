@@ -76,6 +76,8 @@ pub enum Error {
     InvalidAcpiTableLength,
     #[error("invalid acpi table: unknown header signature {0:?}")]
     InvalidAcpiTableSignature([u8; 4]),
+    #[error("acpi tables require at least two mmio ranges")]
+    UnsupportedMmio,
 }
 
 pub const PV_CONFIG_BASE_PAGE: u64 = if cfg!(guest_arch = "x86_64") {
@@ -270,6 +272,10 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         pm_base: crate::worker::PM_BASE,
         acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
     };
+
+    if mem_layout.mmio().len() < 2 {
+        return Err(Error::UnsupportedMmio);
+    }
 
     let acpi_tables = acpi_builder.build_acpi_tables(ACPI_BASE, |mem_layout, dsdt| {
         dsdt.add_apic();

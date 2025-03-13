@@ -94,6 +94,8 @@ pub enum Error {
     LowerVtlContext,
     #[error("missing required memory range {0}")]
     MissingRequiredMemory(MemoryRange),
+    #[error("IGVM file requires at least two mmio ranges")]
+    UnsupportedMmio,
 }
 
 fn from_memory_range(range: &MemoryRange) -> IGVM_VHS_MEMORY_RANGE {
@@ -966,7 +968,9 @@ fn load_igvm_x86(
                 // Convert the hvlite format to the IGVM format
                 // Any gaps above 2 are ignored.
                 let mmio = mem_layout.mmio();
-                assert!(mmio.len() >= 2);
+                if mmio.len() < 2 {
+                    return Err(Error::UnsupportedMmio);
+                }
                 let mmio_ranges = IGVM_VHS_MMIO_RANGES {
                     mmio_ranges: [from_memory_range(&mmio[0]), from_memory_range(&mmio[1])],
                 };

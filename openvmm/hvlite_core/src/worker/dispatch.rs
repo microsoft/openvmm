@@ -1973,6 +1973,9 @@ impl InitializedVm {
         //
         // TODO: allocate PCI and MMIO space better.
         let mut pci_device_number = 10;
+        if mem_layout.mmio().len() < 2 {
+            anyhow::bail!("at least two mmio regions are required");
+        }
         let mut virtio_mmio_start = mem_layout.mmio()[1].end();
         let mut virtio_mmio_count = 0;
 
@@ -2292,6 +2295,9 @@ impl LoadedVmInner {
                     cmdline,
                     mem_layout: &self.mem_layout,
                 };
+                if custom_dsdt.is_none() && self.mem_layout.mmio().len() < 2 {
+                    anyhow::bail!("at least two mmio regions are required");
+                }
                 let regs =
                     super::vm_loaders::linux::load_linux_x86(&kernel_config, &self.gm, |gpa| {
                         let tables = if let Some(dsdt) = custom_dsdt {
@@ -2426,10 +2432,13 @@ impl LoadedVmInner {
         // VTL2 will setup MTRRs for VTL0 if needed.
         #[cfg(guest_arch = "x86_64")]
         if self.hypervisor_cfg.with_vtl2.is_none() {
-            regs.extend(loader::common::compute_variable_mtrrs(
-                &self.mem_layout,
-                self.partition.caps().physical_address_width,
-            ));
+            regs.extend(
+                loader::common::compute_variable_mtrrs(
+                    &self.mem_layout,
+                    self.partition.caps().physical_address_width,
+                )
+                .context("failed to compute variable mtrrs")?,
+            );
         }
 
         // Only set initial page visibility on isolated partitions.
