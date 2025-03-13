@@ -1679,15 +1679,17 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.exit_stats.nmi_window
             }
             VmxExit::HW_INTERRUPT => {
-                // Check if the interrupt was triggered by a hardware breakpoint.
-                let debug_regs = self
-                    .access_state(Vtl::Vtl0)
-                    .debug_regs()
-                    .expect("register query should not fail");
+                if cfg!(feature = "gdb") {
+                    //Check if the interrupt was triggered by a hardware breakpoint.
+                    let debug_regs = self
+                        .access_state(Vtl::Vtl0)
+                        .debug_regs()
+                        .expect("register query should not fail");
 
-                // The lowest four bits of DR6 indicate which of the
-                // four breakpoints triggered.
-                breakpoint_debug_exception = debug_regs.dr6.trailing_zeros() < 4;
+                    // The lowest four bits of DR6 indicate which of the
+                    // four breakpoints triggered.
+                    breakpoint_debug_exception = debug_regs.dr6.trailing_zeros() < 4;
+                }
                 &mut self.backing.exit_stats.hw_interrupt
             }
             VmxExit::SMI_INTR => &mut self.backing.exit_stats.smi_intr,
