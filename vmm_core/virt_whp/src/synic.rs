@@ -139,7 +139,7 @@ impl virt::Synic for WhpPartition {
 }
 
 impl SynicMonitor for WhpPartition {
-    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send> {
+    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Sync + Send> {
         self.inner
             .monitor_page
             .register_monitor(monitor_id, connection_id)

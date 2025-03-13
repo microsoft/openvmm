@@ -35,6 +35,7 @@ use std::collections::HashSet;
 use std::io;
 use std::os::windows::prelude::*;
 use std::sync::Arc;
+use std::time::Duration;
 use vmbus_channel::bus::ChannelServerRequest;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
@@ -309,6 +310,7 @@ impl ProxyTask {
             use_mnf: offer.ChannelFlags.request_monitored_notification(),
             offer_order: id.try_into().ok(),
             allow_confidential_external_memory: false,
+            interrupt_latency: Duration::from_nanos(offer.InterruptLatencyIn100nsUnits * 100),
         };
         let (request_send, request_recv) = mesh::channel();
         let (server_request_send, server_request_recv) = mesh::channel();

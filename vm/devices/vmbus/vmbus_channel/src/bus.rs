@@ -12,6 +12,7 @@ use mesh::payload::Protobuf;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use std::fmt::Display;
+use std::time::Duration;
 use vmbus_core::protocol;
 use vmbus_core::protocol::GpadlId;
 use vmbus_core::protocol::UserDefinedData;
@@ -287,6 +288,8 @@ pub struct OfferParams {
     /// external GPADLs and GPA direct ranges. This is only used when hardware
     /// isolation is in use.
     pub allow_confidential_external_memory: bool,
+    /// The interrupt latency to use for monitored interrupts.
+    pub interrupt_latency: Duration,
 }
 
 impl OfferParams {

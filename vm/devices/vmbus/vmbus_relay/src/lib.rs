@@ -42,6 +42,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use unicycle::FuturesUnordered;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
@@ -689,6 +690,8 @@ impl RelayTask {
                 .with_confidential_external_memory(false),
             user_defined: offer.offer.user_defined,
             monitor_id: use_mnf.then_some(offer.offer.monitor_id),
+            // Because MnF is emulated in OpenHCL, latency is not used.
+            interrupt_latency: Duration::ZERO,
         };
 
         let key = params.key();

@@ -15,11 +15,11 @@ use std::task::Context;
 use std::task::Poll;
 use virt::Synic;
 use virt::VpIndex;
-use vmcore::monitor::MonitorId;
 use vmcore::synic::EventPort;
 use vmcore::synic::GuestEventPort;
 use vmcore::synic::GuestMessagePort;
 use vmcore::synic::MessagePort;
+use vmcore::synic::MonitorInfo;
 use vmcore::synic::MonitorPageGpas;
 use vmcore::synic::SynicMonitorAccess;
 use vmcore::synic::SynicPortAccess;
@@ -113,6 +113,7 @@ impl SynicPortAccess for SynicPorts {
             ports: Arc::downgrade(&self.ports),
             connection_id,
             _inner_handle: None,
+            _monitor: None,
         }))
     }
 
@@ -121,6 +122,7 @@ impl SynicPortAccess for SynicPorts {
         connection_id: u32,
         minimum_vtl: Vtl,
         port: Arc<dyn EventPort>,
+        monitor_info: Option<MonitorInfo>,
     ) -> Result<Box<dyn Sync + Send>, vmcore::synic::Error> {
         // Create a direct port mapping in the hypervisor if an event was provided.
         let inner_handle = if let Some(event) = port.os_event() {
@@ -142,10 +144,17 @@ impl SynicPortAccess for SynicPorts {
             }
         }
 
+        let monitor = monitor_info.as_ref().and_then(|info| {
+            self.partition
+                .monitor_support()
+                .map(|monitor| monitor.register_monitor(info.monitor_id(), connection_id))
+        });
+
         Ok(Box::new(PortHandle {
             ports: Arc::downgrade(&self.ports),
             connection_id,
             _inner_handle: inner_handle,
+            _monitor: monitor,
         }))
     }
 
@@ -179,13 +188,6 @@ impl SynicPortAccess for SynicPorts {
 }
 
 impl SynicMonitorAccess for SynicPorts {
-    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send> {
-        self.partition
-            .monitor_support()
-            .unwrap()
-            .register_monitor(monitor_id, connection_id)
-    }
-
     fn set_monitor_page(&self, gpa: Option<MonitorPageGpas>) -> anyhow::Result<()> {
         self.partition
             .monitor_support()
@@ -198,6 +200,7 @@ struct PortHandle {
     ports: Weak<PortMap>,
     connection_id: u32,
     _inner_handle: Option<Box<dyn Sync + Send>>,
+    _monitor: Option<Box<dyn Sync + Send>>,
 }
 
 impl Drop for PortHandle {

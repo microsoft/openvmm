@@ -10,6 +10,7 @@ use inspect::Inspect;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use std::time::Duration;
 use thiserror::Error;
 
 pub trait MessagePort: Send + Sync {
@@ -53,11 +54,19 @@ pub trait SynicPortAccess: Send + Sync {
 
     /// Adds a host event port, which gets notified when the guest calls
     /// `HvSignalEvent`.
+    ///
+    /// The `monitor_info` parameter is ignored if the synic does not support MnF.
+    ///
+    /// # Panics
+    ///
+    /// Depending on the implementation, this may panic if the monitor ID indicated in
+    /// `monitor_info` is already in use.
     fn add_event_port(
         &self,
         connection_id: u32,
         minimum_vtl: Vtl,
         port: Arc<dyn EventPort>,
+        monitor_info: Option<MonitorInfo>,
     ) -> Result<Box<dyn Sync + Send>, Error>;
 
     /// Creates a [`GuestMessagePort`] for posting messages to the guest.
@@ -88,13 +97,6 @@ pub trait SynicPortAccess: Send + Sync {
 
 /// Provides monitor page functionality for a `SynicPortAccess` implementation.
 pub trait SynicMonitorAccess: SynicPortAccess {
-    /// Registers a monitored interrupt. The returned struct will unregister the ID when dropped.
-    ///
-    /// # Panics
-    ///
-    /// Panics if monitor_id is already in use.
-    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send>;
-
     /// Sets the GPA of the monitor page currently in use.
     fn set_monitor_page(&self, gpa: Option<MonitorPageGpas>) -> anyhow::Result<()>;
 }
@@ -129,4 +131,27 @@ pub struct MonitorPageGpas {
     pub parent_to_child: u64,
     #[inspect(hex)]
     pub child_to_parent: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MonitorInfo {
+    monitor_id: MonitorId,
+    latency: Duration,
+}
+
+impl MonitorInfo {
+    pub fn new(monitor_id: MonitorId, latency: Duration) -> Self {
+        Self {
+            monitor_id,
+            latency,
+        }
+    }
+
+    pub fn monitor_id(&self) -> MonitorId {
+        self.monitor_id
+    }
+
+    pub fn latency(&self) -> Duration {
+        self.latency
+    }
 }
