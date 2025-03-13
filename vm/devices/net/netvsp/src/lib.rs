@@ -4198,27 +4198,20 @@ impl Coordinator {
                     let queue_active = active_queues.is_empty()
                         || active_queues.binary_search(&queue_index).is_ok();
                     let (range_end, end, buffer_id_recv) = if queue_active {
-                        if rx_buffers.len() as u16 == active_queue_count - 1 {
+                        let range_end = if rx_buffers.len() as u16 == active_queue_count - 1 {
                             // The last queue gets all the remaining buffers.
-                            (
-                                state.buffers.recv_buffer.count,
-                                initial_rx.len(),
-                                Some(remote_buffer_id_recvs.remove(0)),
-                            )
+                            state.buffers.recv_buffer.count
+                        } else if queue_index == 0 {
+                            // Queue zero always includes the reserved buffers.
+                            RX_RESERVED_CONTROL_BUFFERS + ranges.buffers_per_queue
                         } else {
-                            let range_end = range_start
-                                + ranges.buffers_per_queue
-                                + if queue_index == 0 {
-                                    RX_RESERVED_CONTROL_BUFFERS
-                                } else {
-                                    0
-                                };
-                            (
-                                range_end,
-                                initial_rx.partition_point(|id| id.0 < range_end),
-                                Some(remote_buffer_id_recvs.remove(0)),
-                            )
-                        }
+                            range_start + ranges.buffers_per_queue
+                        };
+                        (
+                            range_end,
+                            initial_rx.partition_point(|id| id.0 < range_end),
+                            Some(remote_buffer_id_recvs.remove(0)),
+                        )
                     } else {
                         (range_start, 0, None)
                     };
