@@ -31,8 +31,8 @@ signal-hook.workspace = true
 static_assertions.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-vmm-sys-util.workspace = true
 zerocopy.workspace = true
+
 [build-dependencies]
 build_rs_guest_arch.workspace = true
 

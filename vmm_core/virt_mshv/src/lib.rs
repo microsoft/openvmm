@@ -41,6 +41,7 @@ use mshv_bindings::mshv_install_intercept;
 use mshv_bindings::mshv_user_mem_region;
 use mshv_ioctls::InterruptRequest;
 use mshv_ioctls::Mshv;
+use mshv_ioctls::MshvError;
 use mshv_ioctls::VcpuFd;
 use mshv_ioctls::VmFd;
 use mshv_ioctls::set_registers_64;
@@ -108,7 +109,7 @@ impl virt::Hypervisor for LinuxMshv {
         }
 
         // Open /dev/mshv.
-        let mshv = Mshv::new().map_err(|err| Error::OpenMshv(err.into()))?;
+        let mshv = Mshv::new().map_err(Error::OpenMshv)?;
 
         // Create VM.
         //
@@ -143,7 +144,7 @@ impl virt::Hypervisor for LinuxMshv {
 
             let vcpufd = vmfd
                 .create_vcpu(vp.base.vp_index.index() as u8)
-                .map_err(|err| Error::CreateVcpu(err.into()))?;
+                .map_err(Error::CreateVcpu)?;
 
             vps.push(MshvVpInner {
                 vcpufd,
@@ -163,7 +164,7 @@ impl virt::Hypervisor for LinuxMshv {
             intercept_parameter: Default::default(),
         };
         vmfd.install_intercept(intercept_args)
-            .map_err(|err| Error::InstallIntercept(err.into()))?;
+            .map_err(Error::InstallIntercept)?;
 
         // Set up a signal for forcing vcpufd.run() ioctl to exit.
         static SIGNAL_HANDLER_INIT: Once = Once::new();
@@ -428,7 +429,7 @@ impl MshvProcessor<'_> {
         message: &hv_message,
         devices: &impl CpuIo,
         interruption_pending: bool,
-    ) -> Result<(), VpHaltReason<MshvRunVpError>> {
+    ) -> Result<(), VpHaltReason<MshvError>> {
         let cache = self.emulation_cache().map_err(VpHaltReason::Hypervisor)?;
         let mut support = MshvEmulationState {
             partition: self.partition,
@@ -445,7 +446,7 @@ impl MshvProcessor<'_> {
         &self,
         message: &hv_message,
         devices: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<MshvRunVpError>> {
+    ) -> Result<(), VpHaltReason<MshvError>> {
         let info = message.to_ioport_info().unwrap();
         let access_info = info.access_info;
         // SAFETY: This union only contains one field.
@@ -482,7 +483,7 @@ impl MshvProcessor<'_> {
             ];
 
             set_registers_64!(self.inner.vcpufd, arr_reg_name_value)
-                .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
+                .map_err(VpHaltReason::Hypervisor)?;
         }
 
         Ok(())
@@ -492,7 +493,7 @@ impl MshvProcessor<'_> {
         &self,
         message: &hv_message,
         devices: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<MshvRunVpError>> {
+    ) -> Result<(), VpHaltReason<MshvError>> {
         let execution_state = message.to_memory_info().unwrap().header.execution_state;
         // SAFETY: This union only contains one field.
         let mmio_execution_state = unsafe { execution_state.__bindgen_anon_1 };
@@ -507,7 +508,7 @@ impl MshvProcessor<'_> {
         &self,
         message: &hv_message,
         _devices: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<MshvRunVpError>> {
+    ) -> Result<(), VpHaltReason<MshvError>> {
         let info = message.to_sint_deliverable_info().unwrap();
 
         self.flush_messages(info.deliverable_sints);
@@ -518,7 +519,7 @@ impl MshvProcessor<'_> {
         &self,
         message: &hv_message,
         devices: &impl CpuIo,
-    ) -> Result<(), VpHaltReason<MshvRunVpError>> {
+    ) -> Result<(), VpHaltReason<MshvError>> {
         let info = message.to_hypercall_intercept_info().unwrap();
         let execution_state = info.header.execution_state;
         // SAFETY: Accessing the raw field of this union is always safe.
@@ -667,7 +668,7 @@ impl MshvProcessor<'_> {
         }
     }
 
-    fn emulation_cache(&self) -> Result<MshvEmuCache, MshvRunVpError> {
+    fn emulation_cache(&self) -> Result<MshvEmuCache, MshvError> {
         let regs = self.inner.vcpufd.get_regs()?;
         let gps = [
             regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
@@ -709,7 +710,7 @@ struct MshvEmulationState<'a> {
 }
 
 impl EmulatorSupport for MshvEmulationState<'_> {
-    type Error = MshvRunVpError;
+    type Error = MshvError;
 
     fn vp_index(&self) -> VpIndex {
         self.vp_index
@@ -973,7 +974,8 @@ impl EmulatorSupport for MshvEmulationState<'_> {
             .flatten()
             .any(|range| {
                 (range.guest_pfn..range.guest_pfn + range.size).contains(&gpa)
-                    && (!write || range.flags & HV_MAP_GPA_WRITABLE == HV_MAP_GPA_WRITABLE)
+                    && (!write
+                        || range.flags & (HV_MAP_GPA_WRITABLE as u8) == (HV_MAP_GPA_WRITABLE as u8))
             })
     }
 
@@ -991,7 +993,7 @@ impl EmulatorSupport for MshvEmulationState<'_> {
 }
 
 impl TranslateGvaSupport for MshvEmulationState<'_> {
-    type Error = MshvRunVpError;
+    type Error = MshvError;
 
     fn guest_memory(&self) -> &GuestMemory {
         &self.partition.gm
@@ -1033,9 +1035,6 @@ impl TranslateGvaSupport for MshvEmulationState<'_> {
         })
     }
 }
-
-// TODO: get the real type exported.
-type MshvError = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -1141,12 +1140,12 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
         }
         let slot_to_use = slot_to_use.unwrap();
 
-        let mut flags = HV_MAP_GPA_READABLE;
+        let mut flags = HV_MAP_GPA_READABLE as u8;
         if writable {
-            flags |= HV_MAP_GPA_WRITABLE;
+            flags |= HV_MAP_GPA_WRITABLE as u8;
         }
         if exec {
-            flags |= HV_MAP_GPA_EXECUTABLE;
+            flags |= HV_MAP_GPA_EXECUTABLE as u8;
         }
 
         let mem_region = mshv_user_mem_region {
@@ -1154,6 +1153,7 @@ impl virt::PartitionMemoryMap for MshvPartitionInner {
             guest_pfn: addr,
             userspace_addr: data as u64,
             flags,
+            rsvd: [0; 7],
         };
 
         self.vmfd.map_user_memory(mem_region)?;
@@ -1321,7 +1321,7 @@ impl InspectMut for MshvProcessor<'_> {
 
 impl virt::Processor for MshvProcessor<'_> {
     type Error = Error;
-    type RunVpError = MshvRunVpError;
+    type RunVpError = MshvError;
     type StateAccess<'a>
         = &'a mut Self
     where
@@ -1339,7 +1339,7 @@ impl virt::Processor for MshvProcessor<'_> {
         &mut self,
         stop: StopVp<'_>,
         dev: &impl CpuIo,
-    ) -> Result<Infallible, VpHaltReason<MshvRunVpError>> {
+    ) -> Result<Infallible, VpHaltReason<MshvError>> {
         #![allow(non_upper_case_globals)]
 
         let vpinner = self.inner;
@@ -1354,8 +1354,7 @@ impl virt::Processor for MshvProcessor<'_> {
             vpinner.needs_yield.maybe_yield().await;
             stop.check()?;
 
-            let hv_message: hv_message = Default::default();
-            match vcpufd.run(hv_message) {
+            match vcpufd.run() {
                 Ok(exit) => match HvMessageType(exit.header.message_type) {
                     HvMessageType::HvMessageTypeUnrecoverableException => {
                         return Err(VpHaltReason::TripleFault { vtl: Vtl::Vtl0 });
@@ -1399,13 +1398,6 @@ impl virt::Processor for MshvProcessor<'_> {
         assert_eq!(vtl, Vtl::Vtl0);
         self
     }
-}
-
-#[derive(Debug, Error)]
-
-pub enum MshvRunVpError {
-    #[error("/dev/mshv error")]
-    MsHv(#[from] vmm_sys_util::errno::Error),
 }
 
 fn x86emu_sreg_from_mshv_sreg(reg: mshv_bindings::SegmentRegister) -> SegmentRegister {
