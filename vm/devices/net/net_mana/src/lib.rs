@@ -1136,8 +1136,8 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 &sgl[..segment_count]
             } else {
                 let sgl = &mut sgl[..segment_count.min(hardware_segment_limit)];
-                let mut last_segment_gpa = 0;
-                for tail in segments[header_segment_count..].iter() {
+                for tail_idx in header_segment_count..segments.len() {
+                    let tail = &segments[tail_idx];
                     let cur_seg = &mut sgl[sgl_idx];
                     // Try to coalesce segments together if there are more than the hardware allows.
                     // TODO: Could use more expensive techniques such as
@@ -1155,6 +1155,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                             // There is enough room to coalesce the current
                             // segment with the previous. The previous segment
                             // is not yet bounced, so bounce it now.
+                            let last_segment_gpa = segments[tail_idx - 1].gpa;
                             let mut copy = bounce_buffer.allocate(cur_seg.size).unwrap();
                             self.guest_memory
                                 .read_to_atomic(last_segment_gpa, copy.as_slice())?;
@@ -1194,7 +1195,6 @@ impl<T: DeviceBacking> ManaQueue<T> {
                         mem_key: self.mem_key,
                         size: tail.len,
                     };
-                    last_segment_gpa = tail.gpa;
                 }
                 &sgl[..segment_count]
             };
