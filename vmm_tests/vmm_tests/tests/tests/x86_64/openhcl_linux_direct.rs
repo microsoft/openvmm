@@ -367,10 +367,8 @@ async fn openhcl_linux_storvsp_dvd(config: PetriVmConfigOpenVmm) -> Result<(), a
         .call_failable(
             SimpleScsiDvdRequest::ChangeMedia,
             Some(
-                LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                    len: Some(len as u64),
-                })
-                .into_resource(),
+                LayeredDiskHandle::single_layer(RamDiskLayerHandle { len: Some(len) })
+                    .into_resource(),
             ),
         )
         .await
@@ -393,9 +391,13 @@ async fn openhcl_linux_storvsp_dvd(config: PetriVmConfigOpenVmm) -> Result<(), a
         .context("failed to modify vtl2 settings")?;
 
     let b = read_drive().await.context("failed to read dvd drive")?;
-    if b.len() != len {
-        anyhow::bail!("expected {} bytes, got {}", len, b.len());
-    }
+    assert_eq!(
+        b.len() as u64,
+        len,
+        "expected {} bytes, got {}",
+        len,
+        b.len()
+    );
 
     // Remove media.
     vtl2_settings.dynamic.as_mut().unwrap().storage_controllers[0].luns[0].physical_devices = None;
@@ -486,14 +488,18 @@ async fn openhcl_linux_storvsp_dvd_nvme(config: PetriVmConfigOpenVmm) -> Result<
         .run()
         .await?;
 
-    let read_drive = || agent.read_file("/dev/sr0");
-    let b = read_drive().await.context("failed to read dvd drive")?;
-    if b.len() as u64 != disk_len {
-        anyhow::bail!("expected {} bytes, got {}", disk_len, b.len());
-    }
-    if !b[..].eq(&bytes[..]) {
-        anyhow::bail!("content mismatch");
-    }
+    let b = agent
+        .read_file("dev/sr0")
+        .await
+        .context("failed to read dvd drive")?;
+    assert_eq!(
+        b.len() as u64,
+        disk_len,
+        "expected {} bytes, got {}",
+        disk_len,
+        b.len()
+    );
+    assert_eq!(b[..], bytes[..], "content mismatch");
 
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
