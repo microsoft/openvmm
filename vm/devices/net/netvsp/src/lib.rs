@@ -336,7 +336,11 @@ impl RxBufferRange {
             false
         } else {
             let i = (id - RX_RESERVED_CONTROL_BUFFERS) / self.remote_ranges.buffers_per_queue;
-            let _ = self.remote_ranges.buffer_id_send[i as usize].unbounded_send(id);
+            // The total number of receive buffers may not evenly divide among
+            // the active queues. Any extra buffers are given to the last
+            // queue, so redirect any larger values there.
+            let i = (i as usize).min(self.remote_ranges.buffer_id_send.len() - 1);
+            let _ = self.remote_ranges.buffer_id_send[i].unbounded_send(id);
             true
         }
     }
@@ -4194,18 +4198,27 @@ impl Coordinator {
                     let queue_active = active_queues.is_empty()
                         || active_queues.binary_search(&queue_index).is_ok();
                     let (range_end, end, buffer_id_recv) = if queue_active {
-                        let range_end = range_start
-                            + ranges.buffers_per_queue
-                            + if queue_index == 0 {
-                                RX_RESERVED_CONTROL_BUFFERS
-                            } else {
-                                0
-                            };
-                        (
-                            range_end,
-                            initial_rx.partition_point(|id| id.0 < range_end),
-                            Some(remote_buffer_id_recvs.remove(0)),
-                        )
+                        if rx_buffers.len() as u16 == active_queue_count - 1 {
+                            // The last queue gets all the remaining buffers.
+                            (
+                                state.buffers.recv_buffer.count,
+                                initial_rx.len(),
+                                Some(remote_buffer_id_recvs.remove(0)),
+                            )
+                        } else {
+                            let range_end = range_start
+                                + ranges.buffers_per_queue
+                                + if queue_index == 0 {
+                                    RX_RESERVED_CONTROL_BUFFERS
+                                } else {
+                                    0
+                                };
+                            (
+                                range_end,
+                                initial_rx.partition_point(|id| id.0 < range_end),
+                                Some(remote_buffer_id_recvs.remove(0)),
+                            )
+                        }
                     } else {
                         (range_start, 0, None)
                     };
