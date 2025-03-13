@@ -13,7 +13,11 @@ use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use gdma::VportConfig;
 use gdma_defs::GdmaDevType;
 use gdma_defs::GdmaQueueType;
+use guestmem::GuestMemory;
+use memory_range::MemoryRange;
 use net_backend::null::NullEndpoint;
+use page_pool_alloc::PagePool;
+use page_pool_alloc::TestMapper;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::msi::MsiInterruptSet;
@@ -23,7 +27,9 @@ use user_driver::DeviceBacking;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
 use user_driver::emulated::EmulatedDmaAllocator;
+use user_driver::emulated::create_guest_memory;
 use user_driver::memory::PAGE_SIZE;
+use vmcore::save_restore::SaveRestore;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 
@@ -159,4 +165,55 @@ async fn test_gdma(driver: DefaultDriver) {
     .await
     .unwrap();
     arena.destroy(&mut gdma).await;
+}
+
+#[async_test]
+async fn test_gdma_restore(driver: DefaultDriver) {
+    // Memory setup
+    let pages = 1000;
+    let (guest_mem, mut page_pool) = create_test_memory(pages, false);
+    let dma_client = Arc::new(page_pool.allocator("test_gdma_device".into()).unwrap());
+
+    let mut msi_set = MsiInterruptSet::new();
+    let device = gdma::GdmaDevice::new(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        guest_mem.clone(),
+        &mut msi_set,
+        vec![VportConfig {
+            mac_address: [1, 2, 3, 4, 5, 6].into(),
+            endpoint: Box::new(NullEndpoint::new()),
+        }],
+        &mut ExternallyManagedMmioIntercepts,
+    );
+    let device = EmulatedDevice::new(device, msi_set, dma_client.clone());
+    let mut gdma = GdmaDriver::new(&driver, device, 1).await.unwrap();
+    gdma.test_eq().await.unwrap();
+
+    let saved_gdma = gdma.save().await.unwrap();
+    let saved_pool = page_pool.save().unwrap();
+    let device = gdma.into_device();
+
+    let (_guest_mem, mut page_pool) = create_test_memory(pages, false);
+    page_pool.restore(saved_pool).unwrap();
+    let dma_client = Arc::new(page_pool.allocator("test_gdma_device".into()).unwrap());
+
+    let mut restored_gdma = GdmaDriver::restore(saved_gdma, device, dma_client)
+        .await
+        .unwrap();
+    restored_gdma.test_eq().await.unwrap();
+}
+
+/// Creates test memory that leverages the TestMapper. Returned GuestMemory references the entire range
+/// and the page pool allocator references only the second half
+fn create_test_memory(num_pages: u64, allow_dma: bool) -> (GuestMemory, PagePool) {
+    let test_mapper = TestMapper::new(num_pages).unwrap();
+    let sparse_mmap = test_mapper.sparse_mapping();
+    let guest_mem = create_guest_memory(sparse_mmap, allow_dma);
+    let pool = PagePool::new(
+        &[MemoryRange::from_4k_gpn_range(num_pages / 2..num_pages)],
+        test_mapper,
+    )
+    .unwrap();
+
+    (guest_mem, pool)
 }

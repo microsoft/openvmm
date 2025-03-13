@@ -9,6 +9,10 @@ use crate::queues::Eq;
 use crate::queues::Wq;
 use crate::resources::Resource;
 use crate::resources::ResourceArena;
+use crate::save_restore::DoorbellSavedState;
+use crate::save_restore::GdmaDriverSavedState;
+use crate::save_restore::InterruptSavedState;
+use crate::save_restore::SavedMemoryState;
 use anyhow::Context;
 use futures::FutureExt;
 use gdma_defs::Cqe;
@@ -74,6 +78,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
+use user_driver::DmaClient;
 use user_driver::backoff::Backoff;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
@@ -118,6 +123,13 @@ impl<T: DeviceRegisterIo + Inspect> Doorbell for Bar0<T> {
         safe_intrinsics::store_fence();
         self.mem.write_u64(offset as usize, value);
     }
+
+    fn save(&self, doorbell_id: Option<u64>) -> DoorbellSavedState {
+        DoorbellSavedState {
+            doorbell_id: doorbell_id.unwrap(),
+            page_count: self.page_count(),
+        }
+    }
 }
 
 #[derive(Inspect)]
@@ -125,7 +137,7 @@ pub struct GdmaDriver<T: DeviceBacking> {
     device: Option<T>,
     bar0: Arc<Bar0<T::Registers>>,
     #[inspect(skip)]
-    dma_buffer: MemoryBlock,
+    pub dma_buffer: MemoryBlock,
     #[inspect(skip)]
     interrupts: Vec<Option<DeviceInterrupt>>,
     eq: Eq,
@@ -148,6 +160,7 @@ pub struct GdmaDriver<T: DeviceBacking> {
     hwc_warning_time_in_ms: u32,
     hwc_timeout_in_ms: u32,
     hwc_failure: bool,
+    db_id: u32,
 }
 
 const EQ_PAGE: usize = 0;
@@ -475,6 +488,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_warning_time_in_ms: HWC_WARNING_TIME_IN_MS,
             hwc_timeout_in_ms: HWC_TIMEOUT_DEFAULT_IN_MS,
             hwc_failure: false,
+            db_id,
         };
 
         this.push_rqe();
@@ -495,6 +509,217 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             .max_eq
             .min(max_vf_resources.max_sq)
             .min(max_vf_resources.max_rq);
+
+        Ok(this)
+    }
+
+    pub async fn save(&mut self) -> anyhow::Result<GdmaDriverSavedState> {
+        tracing::info!(
+            "saving GDMA driver state. base_pfn: {}, len: {}",
+            self.dma_buffer.pfns()[0],
+            self.dma_buffer.len()
+        );
+
+        tracing::info!(
+            "saving gdma interrupts state. count: {}, active: {}",
+            self.interrupts.len(),
+            self.interrupts.iter().filter(|i| i.is_some()).count()
+        );
+
+        let doorbell = self.bar0.save(Some(self.db_id as u64));
+
+        let mut interrupt_config = Vec::new();
+        for (index, interrupt) in self.interrupts.iter().enumerate() {
+            if interrupt.is_some() {
+                interrupt_config.push(InterruptSavedState {
+                    msix_index: index as u32,
+                    cpu: index as u32,
+                });
+            }
+        }
+
+        Ok(GdmaDriverSavedState {
+            mem: SavedMemoryState {
+                base_pfn: self.dma_buffer.pfns()[0],
+                len: self.dma_buffer.len(),
+            },
+            eq: self.eq.save(),
+            cq: self.cq.save(),
+            rq: self.rq.save(),
+            sq: self.sq.save(),
+            db_id: doorbell.doorbell_id,
+            gpa_mkey: self.gpa_mkey,
+            pdid: self._pdid,
+            cq_armed: self.cq_armed,
+            eq_armed: self.eq_armed,
+            hwc_subscribed: self.hwc_subscribed,
+            eq_id_msix: self.eq_id_msix.clone(),
+            hwc_activity_id: self.hwc_activity_id,
+            num_msix: self.num_msix,
+            min_queue_avail: self.min_queue_avail,
+            interrupt_config,
+        })
+    }
+
+    pub async fn restore(
+        saved_state: GdmaDriverSavedState,
+        mut device: T,
+        dma_client: Arc<dyn DmaClient>,
+    ) -> anyhow::Result<Self> {
+        tracing::info!("restoring gdma driver from saved state");
+
+        let bar0_mapping = device.map_bar(0)?;
+        let bar0_len = bar0_mapping.len();
+        if bar0_len < size_of::<RegMap>() {
+            anyhow::bail!("bar0 ({} bytes) too small for reg map", bar0_mapping.len());
+        }
+
+        let mut map = RegMap::new_zeroed();
+        for i in 0..size_of_val(&map) / 4 {
+            let v = bar0_mapping.read_u32(i * 4);
+            // Unmapped device memory will return -1 on reads, so check the first 32
+            // bits for this condition to get a clear error message early.
+            if i == 0 && v == !0 {
+                anyhow::bail!("bar0 read returned -1, device is not present");
+            }
+            map.as_mut_bytes()[i * 4..(i + 1) * 4].copy_from_slice(&v.to_ne_bytes());
+        }
+
+        tracing::debug!(?map, "register map on restore");
+
+        // Verify HWC channel is still active by reading shared memory region
+        let shmem_data = bar0_mapping.read_u32(map.vf_gdma_sriov_shared_reg_start as usize + 28);
+        if shmem_data == u32::MAX {
+            anyhow::bail!("Device no longer present");
+        }
+
+        let header = SmcProtoHdr::from(shmem_data);
+        if header.owner_is_pf() {
+            tracing::warn!("HWC channel appears inactive, device owns shared memory");
+            // Consider re-establishing HWC here if needed
+            anyhow::bail!("HWC channel not active");
+        } else {
+            tracing::info!("HWC channel appears active");
+        }
+
+        // Log on unknown major version numbers. This is not necessarily an
+        // error, so continue.
+        if map.major_version_number != 0 && map.major_version_number != 1 {
+            tracing::warn!(
+                major = map.major_version_number,
+                minor = map.minor_version_number,
+                micro = map.micro_version_number,
+                "unrecognized major version"
+            );
+        }
+
+        if map.vf_gdma_sriov_shared_sz != 32 {
+            anyhow::bail!(
+                "unexpected shared memory size: {}",
+                map.vf_gdma_sriov_shared_sz
+            );
+        }
+
+        if (bar0_len as u64).saturating_sub(map.vf_gdma_sriov_shared_reg_start)
+            < map.vf_gdma_sriov_shared_sz as u64
+        {
+            anyhow::bail!(
+                "bar0 ({} bytes) too small for shared memory at {}",
+                bar0_mapping.len(),
+                map.vf_gdma_sriov_shared_reg_start
+            );
+        }
+
+        tracing::info!("restoring gdma DMA buffer: {:?}", saved_state.mem);
+        let dma_buffer =
+            dma_client.attach_dma_buffer(saved_state.mem.len, saved_state.mem.base_pfn)?;
+
+        let pages = dma_buffer.pfns();
+        tracing::info!("restored pages: {:?}", pages);
+
+        let doorbell_shift = map.vf_db_page_sz.trailing_zeros();
+        let bar0 = Arc::new(Bar0 {
+            mem: bar0_mapping,
+            map,
+            doorbell_shift,
+        });
+
+        tracing::info!("Restoring doorbell state with db_id: {}", saved_state.db_id);
+
+        let eq = Eq::restore(
+            dma_buffer.subblock(0, PAGE_SIZE),
+            saved_state.eq,
+            DoorbellPage::new(bar0.clone(), saved_state.db_id as u32)?,
+        )?;
+
+        let db_id = saved_state.db_id;
+        let cq = Cq::restore(
+            dma_buffer.subblock(CQ_PAGE * PAGE_SIZE, PAGE_SIZE),
+            saved_state.cq,
+            DoorbellPage::new(bar0.clone(), saved_state.db_id as u32)?,
+        )?;
+
+        let rq = Wq::restore_rq(
+            dma_buffer.subblock(RQ_PAGE * PAGE_SIZE, PAGE_SIZE),
+            saved_state.rq,
+            DoorbellPage::new(bar0.clone(), saved_state.db_id as u32)?,
+        )?;
+
+        let sq = Wq::restore_sq(
+            dma_buffer.subblock(SQ_PAGE * PAGE_SIZE, PAGE_SIZE),
+            saved_state.sq,
+            DoorbellPage::new(bar0.clone(), saved_state.db_id as u32)?,
+        )?;
+
+        let mut interrupts = vec![None; saved_state.num_msix as usize];
+        for int_state in &saved_state.interrupt_config {
+            tracing::info!(
+                "Restoring interrupt at index {:?} and on cpu {:?}",
+                int_state.msix_index,
+                int_state.cpu
+            );
+            let interrupt = device.map_interrupt(int_state.msix_index, int_state.cpu)?;
+
+            interrupts[int_state.msix_index as usize] = Some(interrupt);
+        }
+
+        let mut this = Self {
+            device: Some(device),
+            bar0,
+            dma_buffer,
+            interrupts, // Revisit: is this right?
+            eq,
+            cq,
+            rq,
+            sq,
+            test_events: 0,
+            eq_armed: saved_state.eq_armed,
+            cq_armed: saved_state.cq_armed,
+            gpa_mkey: saved_state.gpa_mkey,
+            _pdid: saved_state.pdid,
+            eq_id_msix: saved_state.eq_id_msix,
+            num_msix: saved_state.num_msix,
+            min_queue_avail: saved_state.min_queue_avail,
+            hwc_activity_id: saved_state.hwc_activity_id,
+            link_toggle: Vec::new(), // Revisit: is this right?
+            hwc_subscribed: saved_state.hwc_subscribed,
+            hwc_warning_time_in_ms: HWC_WARNING_TIME_IN_MS,
+            hwc_timeout_in_ms: HWC_TIMEOUT_DEFAULT_IN_MS,
+            hwc_failure: false,
+            db_id: db_id as u32,
+        };
+
+        if saved_state.hwc_subscribed {
+            this.hwc_subscribe();
+        }
+
+        if saved_state.eq_armed {
+            this.eq.arm();
+        }
+
+        if saved_state.cq_armed {
+            this.cq.arm();
+        }
 
         Ok(this)
     }
