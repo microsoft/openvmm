@@ -584,8 +584,8 @@ pbjson-build = { git = "https://github.com/jstarks/pbjson", branch = "aliases" }
 
 [workspace.lints.rust]
 # Lint groups need a priority lower than individual lints so they get applied first.
-future_incompatible = { level = "deny", priority = -1 }
-rust_2018_idioms = { level = "warn", priority = -1 }
+future_incompatible = { level = "deny", priority = -2 }
+rust_2018_idioms = { level = "warn", priority = -2 }
 
 rust-2024-compatibility = { level = "warn", priority = -1 }
 edition_2024_expr_fragment_specifier = "allow"
