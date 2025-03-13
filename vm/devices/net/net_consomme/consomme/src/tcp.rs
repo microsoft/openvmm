@@ -453,7 +453,7 @@ impl<T: Client> Sender<'_, T> {
 impl Default for TcpConnection {
     fn default() -> Self {
         let mut rx_tx_seq = [0; 8];
-        getrandom::getrandom(&mut rx_tx_seq[..]).expect("prng failure");
+        getrandom::fill(&mut rx_tx_seq[..]).expect("prng failure");
         let rx_seq = TcpSeqNumber(i32::from_ne_bytes(
             rx_tx_seq[0..4].try_into().expect("invalid length"),
         ));

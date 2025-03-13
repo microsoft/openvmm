@@ -1037,7 +1037,7 @@ mod tests {
 
     fn new_server(config: PortConfig) -> (Port, UnicodeString) {
         let mut id = [0; 16];
-        getrandom::getrandom(&mut id).unwrap();
+        getrandom::fill(&mut id).unwrap();
         let path: UnicodeString = format!("\\BaseNamedObjects\\{:x}", u128::from_ne_bytes(id))
             .try_into()
             .unwrap();

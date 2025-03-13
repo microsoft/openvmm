@@ -17,7 +17,7 @@ version = "0.0.0"
 dependencies = [
  "aarch64defs",
  "futures",
- "getrandom",
+ "getrandom 0.3.1",
  "inspect",
  "pal_async",
  "parking_lot",
@@ -709,7 +709,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "futures",
- "getrandom",
+ "getrandom 0.3.1",
  "pal_async",
  "term",
  "unix_socket",
@@ -720,7 +720,7 @@ name = "consomme"
 version = "0.0.0"
 dependencies = [
  "futures",
- "getrandom",
+ "getrandom 0.3.1",
  "inspect",
  "inspect_counters",
  "libc",
@@ -1636,7 +1636,7 @@ version = "0.0.0"
 dependencies = [
  "chipset_device",
  "generation_id",
- "getrandom",
+ "getrandom 0.3.1",
  "guestmem",
  "guid",
  "inspect",
@@ -1662,7 +1662,7 @@ dependencies = [
  "der",
  "firmware_uefi_custom_vars",
  "generation_id",
- "getrandom",
+ "getrandom 0.3.1",
  "guestmem",
  "guid",
  "inspect",
@@ -2319,7 +2319,7 @@ dependencies = [
 name = "generation_id"
 version = "0.0.0"
 dependencies = [
- "getrandom",
+ "getrandom 0.3.1",
  "guestmem",
  "inspect",
  "mesh",
@@ -2391,7 +2391,19 @@ checksum = "190092ea657667030ac6a35e305e62fc4dd69fd98ac98631e5d3a2b1575a12b5"
 dependencies = [
  "cfg-if",
  "libc",
- "wasi",
+ "wasi 0.11.0+wasi-snapshot-preview1",
+]
+
+[[package]]
+name = "getrandom"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43a49c392881ce6d5c3b8cb70f98717b7c07aabbdff06687b9030dbfbe2725f8"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "wasi 0.13.3+wasi-0.2.2",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -2555,7 +2567,7 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "get_protocol",
- "getrandom",
+ "getrandom 0.3.1",
  "guest_emulation_device",
  "guid",
  "hvdef",
@@ -2616,7 +2628,7 @@ dependencies = [
 name = "guid"
 version = "0.0.0"
 dependencies = [
- "getrandom",
+ "getrandom 0.3.1",
  "inspect",
  "mesh_protobuf",
  "thiserror 2.0.0",
@@ -2683,7 +2695,7 @@ dependencies = [
  "bitfield-struct",
  "build_rs_guest_arch",
  "fs-err",
- "getrandom",
+ "getrandom 0.3.1",
  "hv1_structs",
  "hvdef",
  "inspect",
@@ -2907,7 +2919,7 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "get_resources",
- "getrandom",
+ "getrandom 0.3.1",
  "guestmem",
  "guid",
  "hcl_compat_uefi_nvram_storage",
@@ -3550,9 +3562,9 @@ checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 
 [[package]]
 name = "libc"
-version = "0.2.152"
+version = "0.2.171"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13e3bf6590cbc649f4d1a3eefc9d5d6eb746f5200ffb04e5e142700b8faa56e7"
+checksum = "c19937216e9d3aa9956d9bb8dfc0b0c8beb6058fc4f7a4dc4d850edf86a237d6"
 
 [[package]]
 name = "libfuzzer-sys"
@@ -3784,7 +3796,7 @@ dependencies = [
  "futures",
  "gdma",
  "gdma_defs",
- "getrandom",
+ "getrandom 0.3.1",
  "inspect",
  "mesh",
  "net_backend",
@@ -3842,7 +3854,7 @@ name = "membacking"
 version = "0.0.0"
 dependencies = [
  "futures",
- "getrandom",
+ "getrandom 0.3.1",
  "guestmem",
  "hvdef",
  "inspect",
@@ -3956,7 +3968,7 @@ dependencies = [
  "bitfield-struct",
  "futures",
  "futures-channel",
- "getrandom",
+ "getrandom 0.3.1",
  "mesh_derive",
  "mesh_protobuf",
  "open_enum",
@@ -4132,7 +4144,7 @@ checksum = "a4a650543ca06a924e8b371db273b2756685faae30f8487da1b56505a8f78b0c"
 dependencies = [
  "libc",
  "log",
- "wasi",
+ "wasi 0.11.0+wasi-snapshot-preview1",
  "windows-sys 0.48.0",
 ]
 
@@ -4804,7 +4816,7 @@ dependencies = [
  "futures-concurrency",
  "gdma_resources",
  "get_resources",
- "getrandom",
+ "getrandom 0.3.1",
  "guid",
  "hvlite_defs",
  "hvlite_helpers",
@@ -5006,7 +5018,7 @@ version = "0.0.0"
 dependencies = [
  "caps",
  "fs-err",
- "getrandom",
+ "getrandom 0.3.1",
  "headervec",
  "landlock",
  "libc",
@@ -5030,7 +5042,7 @@ dependencies = [
  "async-task",
  "cfg-if",
  "futures",
- "getrandom",
+ "getrandom 0.3.1",
  "headervec",
  "libc",
  "loan_cell",
@@ -5063,7 +5075,7 @@ dependencies = [
 name = "pal_event"
 version = "0.0.0"
 dependencies = [
- "getrandom",
+ "getrandom 0.3.1",
  "libc",
  "mesh_protobuf",
  "windows-sys 0.52.0",
@@ -5667,7 +5679,7 @@ version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a18479200779601e498ada4e8c1e1f50e3ee19deb0259c25825a98b5603b2cb4"
 dependencies = [
- "getrandom",
+ "getrandom 0.2.12",
  "libredox",
  "thiserror 1.0.68",
 ]
@@ -5928,7 +5940,7 @@ dependencies = [
  "disk_backend",
  "disk_prwrap",
  "futures",
- "getrandom",
+ "getrandom 0.3.1",
  "guestmem",
  "guid",
  "hvdef",
@@ -6352,7 +6364,7 @@ version = "0.0.0"
 dependencies = [
  "cc",
  "criterion",
- "getrandom",
+ "getrandom 0.3.1",
  "libc",
  "pal",
  "parking_lot",
@@ -6801,7 +6813,7 @@ dependencies = [
  "bitfield-struct",
  "chipset_device",
  "chipset_device_resources",
- "getrandom",
+ "getrandom 0.3.1",
  "guestmem",
  "inspect",
  "mesh",
@@ -7112,7 +7124,7 @@ dependencies = [
  "disk_backend",
  "disklayer_ram",
  "get_protocol",
- "getrandom",
+ "getrandom 0.3.1",
  "guest_emulation_transport",
  "guid",
  "mesh",
@@ -7186,7 +7198,7 @@ dependencies = [
  "futures-concurrency",
  "get_helpers",
  "get_protocol",
- "getrandom",
+ "getrandom 0.3.1",
  "guest_emulation_transport",
  "guestmem",
  "guid",
@@ -7435,7 +7447,7 @@ checksum = "6c9f21fe154ca4d5d06fc2ebb8c58cc80e338eacc372ec794943f69e535c131c"
 name = "unix_socket"
 version = "0.0.0"
 dependencies = [
- "getrandom",
+ "getrandom 0.3.1",
  "mesh_protobuf",
  "socket2",
  "windows-sys 0.52.0",
@@ -8131,7 +8143,7 @@ dependencies = [
  "anyhow",
  "futures",
  "futures-concurrency",
- "getrandom",
+ "getrandom 0.3.1",
  "guid",
  "inspect",
  "mesh",
@@ -8332,7 +8344,7 @@ dependencies = [
  "async-trait",
  "futures",
  "futures-concurrency",
- "getrandom",
+ "getrandom 0.3.1",
  "guestmem",
  "guid",
  "hvdef",
@@ -8420,7 +8432,7 @@ dependencies = [
  "crc32fast",
  "disk_backend",
  "disklayer_ram",
- "getrandom",
+ "getrandom 0.3.1",
  "guestmem",
  "inspect",
  "inspect_counters",
@@ -8686,7 +8698,7 @@ name = "vmswitch"
 version = "0.0.0"
 dependencies = [
  "futures",
- "getrandom",
+ "getrandom 0.3.1",
  "guid",
  "pal",
  "pal_async",
@@ -8836,6 +8848,15 @@ name = "wasi"
 version = "0.11.0+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c8d87e72b64a3b4db28d11ce29237c246188f4f51057d65a7eab63b7987e423"
+
+[[package]]
+name = "wasi"
+version = "0.13.3+wasi-0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26816d2e1a4a36a2940b96c5296ce403917633dff8f3440e9b236ed6f6bacad2"
+dependencies = [
+ "wit-bindgen-rt",
+]
 
 [[package]]
 name = "watchdog_core"
@@ -9297,6 +9318,15 @@ checksum = "a277a57398d4bfa075df44f501a17cfdf8542d224f0d36095a2adc7aee4ef0a5"
 dependencies = [
  "cfg-if",
  "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "wit-bindgen-rt"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3268f3d866458b787f390cf61f4bbb563b922d091359f9608842999eaee3943c"
+dependencies = [
+ "bitflags 2.6.0",
 ]
 
 [[package]]

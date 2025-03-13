@@ -36,7 +36,7 @@ impl KernelVmNic {
         // BUGBUG: Generate a random partition ID since the switch relies on
         // this being unique or the machine will bugcheck. Fix the switch.
         let mut partition_id = [0; 8];
-        getrandom::getrandom(&mut partition_id).expect("rng failure");
+        getrandom::fill(&mut partition_id).expect("rng failure");
 
         let handle = unsafe {
             let mut raw_handle = null_mut();

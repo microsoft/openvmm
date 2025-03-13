@@ -265,8 +265,7 @@ impl BlockDevice {
 
         let devmeta = if metadata.file_type().is_block_device() {
             let rdev = metadata.rdev();
-            // SAFETY: just parsing bits out of a u64.
-            let (major, minor) = unsafe { (libc::major(rdev), libc::minor(rdev)) };
+            let (major, minor) = (libc::major(rdev), libc::minor(rdev));
 
             // Register for resize events.
             if let Some(uevent_listener) = uevent_listener {

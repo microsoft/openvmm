@@ -62,7 +62,7 @@ pub fn load_uefi(
     };
 
     let mut entropy = [0; 64];
-    getrandom::getrandom(&mut entropy).expect("rng failure");
+    getrandom::fill(&mut entropy).expect("rng failure");
 
     let memory_map: Vec<_> = mem_layout
         .ram()

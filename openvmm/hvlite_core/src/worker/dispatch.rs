@@ -1014,7 +1014,7 @@ impl InitializedVm {
                         secure_boot: cfg.secure_boot_enabled,
                         initial_generation_id: {
                             let mut generation_id = [0; 16];
-                            getrandom::getrandom(&mut generation_id).expect("rng failure");
+                            getrandom::fill(&mut generation_id).expect("rng failure");
                             generation_id
                         },
                         use_mmio: cfg!(not(guest_arch = "x86_64")),
@@ -1116,7 +1116,7 @@ impl InitializedVm {
                             hibernation_enabled: false,
                             initial_generation_id: {
                                 let mut generation_id = [0; 16];
-                                getrandom::getrandom(&mut generation_id).expect("rng failure");
+                                getrandom::fill(&mut generation_id).expect("rng failure");
                                 generation_id
                             },
                             boot_order: {
@@ -2395,7 +2395,7 @@ impl LoadedVmInner {
                 let srat = acpi_builder.build_srat();
                 const ENTROPY_SIZE: usize = 64;
                 let mut entropy = [0u8; ENTROPY_SIZE];
-                getrandom::getrandom(&mut entropy).unwrap();
+                getrandom::fill(&mut entropy).unwrap();
 
                 let params = crate::worker::vm_loaders::igvm::LoadIgvmParams {
                     igvm_file: self.igvm_file.as_ref().expect("should be already read"),

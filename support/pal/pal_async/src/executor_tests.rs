@@ -238,7 +238,7 @@ pub mod windows {
         // named pipe
         {
             let mut path = [0; 16];
-            getrandom::getrandom(&mut path).unwrap();
+            getrandom::fill(&mut path).unwrap();
             let path = format!(r#"\\.\pipe\{:0x}"#, u128::from_ne_bytes(path));
             let server = NamedPipeServer::create(&path).unwrap();
             let accept = server.accept(&driver).unwrap();

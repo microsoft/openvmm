@@ -229,7 +229,7 @@ pub fn make_guest_memory(data: &[u8]) -> GuestMemory {
 pub fn make_repeat_data_buffer(len: usize, sector_size: usize) -> Vec<u8> {
     let mut buf = vec![0u8; len * HV_PAGE_SIZE as usize];
     let mut temp = vec![0u8; sector_size];
-    getrandom::getrandom(&mut temp).unwrap();
+    getrandom::fill(&mut temp).unwrap();
 
     for i in (0..buf.len()).step_by(temp.len()) {
         let end_point = std::cmp::min(i + temp.len(), buf.len());

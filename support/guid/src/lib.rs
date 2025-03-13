@@ -76,7 +76,7 @@ impl Guid {
     /// Return a new randomly-generated Version 4 UUID
     pub fn new_random() -> Self {
         let mut guid = Guid::default();
-        getrandom::getrandom(guid.as_mut_bytes()).expect("rng failure");
+        getrandom::fill(guid.as_mut_bytes()).expect("rng failure");
 
         guid.data3 = guid.data3 & 0xfff | 0x4000;
         // Variant 1

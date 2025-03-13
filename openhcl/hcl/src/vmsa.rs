@@ -101,7 +101,7 @@ impl<T: DerefMut<Target = SevVmsa>> VmsaWrapper<'_, T> {
         *self.vmsa = FromZeros::new_zeroed();
         if vmsa_reg_prot {
             // Initialize nonce and all protected fields.
-            getrandom::getrandom(self.vmsa.register_protection_nonce.as_mut_bytes())
+            getrandom::fill(self.vmsa.register_protection_nonce.as_mut_bytes())
                 .expect("rng failure");
             let nonce = self.vmsa.register_protection_nonce;
             let chunk_size = 8;

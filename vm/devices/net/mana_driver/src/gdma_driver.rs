@@ -450,7 +450,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         // To make debugging from the device side easier, randomize the upper
         // 16 bits of the ActivityId, so that requests can be distinguished.
         let mut rand_activity_id = [0_u8; 2];
-        getrandom::getrandom(&mut rand_activity_id).unwrap();
+        getrandom::fill(&mut rand_activity_id).unwrap();
         let hwc_activity_id = (u16::from_ne_bytes(rand_activity_id) as u32) << 16;
         let mut this = Self {
             device: Some(device),

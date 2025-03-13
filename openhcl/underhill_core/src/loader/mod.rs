@@ -412,7 +412,7 @@ pub fn write_uefi_config(
     // - Data that we generate ourselves
     cfg.add(&config::Entropy({
         let mut entropy = [0; 64];
-        getrandom::getrandom(&mut entropy).expect("rng failure");
+        getrandom::fill(&mut entropy).expect("rng failure");
         entropy
     }));
 

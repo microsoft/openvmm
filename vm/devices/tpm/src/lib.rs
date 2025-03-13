@@ -307,7 +307,7 @@ impl ms_tpm_20_ref::PlatformCallbacks for TpmPlatformCallbacks {
     }
 
     fn get_crypt_random(&mut self, buf: &mut [u8]) -> ms_tpm_20_ref::DynResult<usize> {
-        getrandom::getrandom(buf).expect("rng failure");
+        getrandom::fill(buf).expect("rng failure");
         Ok(buf.len())
     }
 
@@ -488,7 +488,7 @@ impl Tpm {
             // Create auth value for NV index password authorization.
             // The value needs to be preserved across live servicing.
             let mut auth_value = 0;
-            getrandom::getrandom(auth_value.as_mut_bytes()).expect("rng failure");
+            getrandom::fill(auth_value.as_mut_bytes()).expect("rng failure");
             self.auth_value = Some(auth_value);
 
             // Initialize `TpmKeys`.

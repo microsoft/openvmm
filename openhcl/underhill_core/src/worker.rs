@@ -1851,7 +1851,7 @@ async fn new_underhill_vm(
         Some(0) | None => {
             let mut gen_id = [0; 16];
             tracing::trace!("Generation ID uninitialized by host.");
-            getrandom::getrandom(&mut gen_id).expect("rng failure");
+            getrandom::fill(&mut gen_id).expect("rng failure");
             gen_id
         }
         Some(n) => n.to_ne_bytes(),

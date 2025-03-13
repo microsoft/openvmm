@@ -462,7 +462,7 @@ impl Vmgs {
         let data_nonce_auth_tag = if should_encrypt {
             let data_encryption_key = {
                 let mut encryption_key = VmgsDatastoreKey::new_zeroed();
-                getrandom::getrandom(&mut encryption_key).expect("rng failure");
+                getrandom::fill(&mut encryption_key).expect("rng failure");
                 encryption_key
             };
             let data_nonce = generate_nonce();
@@ -1545,15 +1545,14 @@ fn round_up_count(count: usize, pow2: u32) -> u64 {
 fn generate_nonce() -> VmgsNonce {
     let mut nonce = VmgsNonce::new_zeroed();
     // Generate a 4-byte random seed for nonce
-    getrandom::getrandom(&mut nonce[..4]).expect("rng failure");
+    getrandom::fill(&mut nonce[..4]).expect("rng failure");
     nonce
 }
 
 /// Increment Nonce by one.
 fn increment_nonce(nonce: &mut VmgsNonce) -> Result<(), Error> {
     // Update the random seed of nonce
-    getrandom::getrandom(&mut nonce[..vmgs_format::VMGS_NONCE_RANDOM_SEED_SIZE])
-        .expect("rng failure");
+    getrandom::fill(&mut nonce[..vmgs_format::VMGS_NONCE_RANDOM_SEED_SIZE]).expect("rng failure");
 
     // Increment the counter of nonce by 1.
     for i in &mut nonce[vmgs_format::VMGS_NONCE_RANDOM_SEED_SIZE..] {

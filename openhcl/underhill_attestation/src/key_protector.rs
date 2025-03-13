@@ -227,7 +227,7 @@ impl KeyProtectorExt for KeyProtector {
             tracing::info!(CVM_ALLOWED, "there is no egress dek");
 
             // There is no egress DEK, so create a new key value and encrypt it.
-            getrandom::getrandom(&mut egress_key).expect("rng failure");
+            getrandom::fill(&mut egress_key).expect("rng failure");
 
             let new_egress_key = if let Some(wrapping_key) = des_key {
                 // Create an AES wrapped key

@@ -281,7 +281,7 @@ pub fn vtl2_memory_range(
     // Select a random base within the alignment
     let possible_bases = (aligned_max_addr - aligned_min_addr) / alignment;
     let mut num: u64 = 0;
-    getrandom::getrandom(num.as_mut_bytes()).expect("crng failure");
+    getrandom::fill(num.as_mut_bytes()).expect("crng failure");
     let selected_base = num % (possible_bases - 1);
     let selected_addr = aligned_min_addr + (selected_base * alignment);
     tracing::trace!(possible_bases, selected_base, selected_addr);

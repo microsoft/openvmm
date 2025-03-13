@@ -2043,7 +2043,7 @@ mod tests {
 
             // Return pending 25% of the time.
             let mut pending_chance = [0; 1];
-            getrandom::getrandom(&mut pending_chance).unwrap();
+            getrandom::fill(&mut pending_chance).unwrap();
             if pending_chance[0] % 4 == 0 {
                 let mut timer = PolledTimer::new(self.spawner.as_ref());
                 let deadline = Instant::now() + Duration::from_millis(10);
