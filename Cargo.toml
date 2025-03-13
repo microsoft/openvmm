@@ -440,7 +440,7 @@ igvm = {git = "https://github.com/microsoft/igvm", rev = "365065d7e31da0a0116e79
 igvm_defs = {git = "https://github.com/microsoft/igvm", rev = "365065d7e31da0a0116e7934de3ecd85f00bab70", default-features = false, features = [ "unstable" ]}
 image = { version = "0.24", default-features = false }
 io-uring = "0.6"
-jiff = "0.1"
+jiff = "0.2"
 kvm-bindings = "0.7"
 # Use of these specific REPO will go away when changes are taken upstream.
 landlock = "0.3.1"

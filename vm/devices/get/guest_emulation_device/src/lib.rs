@@ -618,20 +618,29 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     }
 
     fn handle_time(&mut self) -> Result<(), Error> {
-        const WINDOWS_EPOCH: time::OffsetDateTime = time::macros::datetime!(1601-01-01 0:00 UTC);
+        use jiff::Unit;
+        use jiff::civil::{DateTime, date};
+        use jiff::tz::TimeZone;
+
+        const WINDOWS_EPOCH: DateTime = date(1601, 1, 1).at(0, 0, 0, 0);
 
         // utc in TimeResponse is in units of 100ns since the windows epoch
-        let now_utc = time::OffsetDateTime::now_utc();
-        let since_win_epoch = now_utc - WINDOWS_EPOCH;
-        let since_win_epoch: i64 = (since_win_epoch.whole_nanoseconds() / 100)
-            .try_into()
-            .unwrap();
+        let now_utc = jiff::Timestamp::now().to_zoned(TimeZone::UTC);
+        let since_win_epoch = &now_utc
+            - &WINDOWS_EPOCH
+                .to_zoned(TimeZone::UTC)
+                .expect("windows epoch is valid");
+        let since_win_epoch = since_win_epoch.total(Unit::Nanosecond).unwrap() as i64 / 100;
 
-        // time_zone is in minutes between UTC and local time (as stored
+        // tz_offset is in minutes between UTC and local time (as stored
         // in a windows TIME_ZONE_INFORMATION struct)
-        let local_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
-        let time_zone = local_offset.whole_minutes();
-        let response = get_protocol::TimeResponse::new(0, since_win_epoch, time_zone, false);
+        let local_offset = TimeZone::try_system().unwrap_or(TimeZone::UTC);
+        let tz_offset = (local_offset
+            .to_fixed_offset()
+            .expect("the system timezone is fixed")
+            .seconds()
+            / 60) as i16;
+        let response = get_protocol::TimeResponse::new(0, since_win_epoch, tz_offset, false);
 
         self.channel
             .try_send(response.as_bytes())
