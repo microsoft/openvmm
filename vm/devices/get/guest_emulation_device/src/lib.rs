@@ -46,6 +46,9 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use jiff::Timestamp;
+use jiff::civil::{DateTime, date};
+use jiff::tz::TimeZone;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
 use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
@@ -618,26 +621,23 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     }
 
     fn handle_time(&mut self) -> Result<(), Error> {
-        use jiff::Unit;
-        use jiff::civil::{DateTime, date};
-        use jiff::tz::TimeZone;
-
         const WINDOWS_EPOCH: DateTime = date(1601, 1, 1).at(0, 0, 0, 0);
 
         // utc in TimeResponse is in units of 100ns since the windows epoch
-        let now_utc = jiff::Timestamp::now().to_zoned(TimeZone::UTC);
-        let since_win_epoch = &now_utc
-            - &WINDOWS_EPOCH
-                .to_zoned(TimeZone::UTC)
-                .expect("windows epoch is valid");
-        let since_win_epoch = since_win_epoch.total(Unit::Nanosecond).unwrap() as i64 / 100;
+        let since_win_epoch = (WINDOWS_EPOCH
+            .to_zoned(TimeZone::UTC)
+            .expect("windows epoch value to be valid")
+            .timestamp()
+            .duration_until(Timestamp::now())
+            .as_nanos()
+            / 100) as i64;
 
         // tz_offset is in minutes between UTC and local time (as stored
         // in a windows TIME_ZONE_INFORMATION struct)
         let local_offset = TimeZone::try_system().unwrap_or(TimeZone::UTC);
         let tz_offset = (local_offset
             .to_fixed_offset()
-            .expect("the system timezone is fixed")
+            .expect("the system timezone to be fixed")
             .seconds()
             / 60) as i16;
         let response = get_protocol::TimeResponse::new(0, since_win_epoch, tz_offset, false);
