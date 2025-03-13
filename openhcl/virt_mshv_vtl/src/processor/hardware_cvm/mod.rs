@@ -865,15 +865,7 @@ impl<T, B: HardwareIsolatedBacking>
         // coming from a secure VTL. We know guest VSM has been enabled from the
         // previous check.
         if self.intercepted_vtl == GuestVtl::Vtl0
-            && matches!(
-                *self.vp.cvm_partition().guest_vsm.read(),
-                GuestVsmState::Enabled {
-                    vtl1: CvmVtl1State {
-                        deny_lower_vtl_startup: true,
-                        ..
-                    }
-                }
-            )
+            && self.vp.cvm_partition().is_lower_vtl_startup_denied()
         {
             return Err(HvError::AccessDenied);
         }

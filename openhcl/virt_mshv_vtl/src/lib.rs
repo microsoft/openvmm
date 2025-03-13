@@ -417,6 +417,18 @@ impl UhCvmPartitionState {
     fn vp_inner(&self, vp_index: u32) -> &UhCvmVpInner {
         &self.vps[vp_index as usize]
     }
+
+    fn is_lower_vtl_startup_denied(&self) -> bool {
+        matches!(
+            *self.guest_vsm.read(),
+            GuestVsmState::Enabled {
+                vtl1: CvmVtl1State {
+                    deny_lower_vtl_startup: true,
+                    ..
+                }
+            }
+        )
+    }
 }
 
 #[derive(Inspect)]
