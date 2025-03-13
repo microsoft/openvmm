@@ -24,7 +24,8 @@ pub use workers::NvmeControllerClient;
 use guestmem::ranges::PagedRange;
 use nvme_spec as spec;
 
-// Device configuration shared by PCI and NVMe.
+// Device configuration constants, shared by the PCI implementation and the
+// NVMe protocol implementation.
 const DOORBELL_STRIDE_BITS: u8 = 2;
 const VENDOR_ID: u16 = 0x1414;
 const NVME_VERSION: u32 = 0x00020000;

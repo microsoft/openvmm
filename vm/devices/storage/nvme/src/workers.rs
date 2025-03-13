@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! NVMe admin and IO queue workers.
+//! Supporting definitions for the NVMe admin and IO queue workers.
 
 mod admin;
 mod coordinator;
