@@ -1122,7 +1122,19 @@ impl<T: DeviceBacking> ManaQueue<T> {
 
             let mut segment_count = tail_sgl_offset + meta.segment_count - header_segment_count;
             let mut sgl_idx = tail_sgl_offset - 1;
-            let sgl = {
+            let sgl = if segment_count <= hardware_segment_limit {
+                for (tail, sge) in segments[header_segment_count..]
+                    .iter()
+                    .zip(&mut sgl[tail_sgl_offset..])
+                {
+                    *sge = Sge {
+                        address: self.guest_memory.iova(tail.gpa).unwrap(),
+                        mem_key: self.mem_key,
+                        size: tail.len,
+                    };
+                }
+                &sgl[..segment_count]
+            } else {
                 let sgl = &mut sgl[..segment_count.min(hardware_segment_limit)];
                 for tail in segments[header_segment_count..].iter() {
                     let cur_seg = &mut sgl[sgl_idx];
