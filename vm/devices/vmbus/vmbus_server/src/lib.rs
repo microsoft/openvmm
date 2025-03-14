@@ -1572,6 +1572,7 @@ impl ServerTaskInner {
             target_vp,
             target_sint,
             event_flag,
+            open_params.monitor_info,
         )?;
 
         let interrupt = ChannelBitmap::create_interrupt(
@@ -2135,6 +2136,7 @@ mod tests {
             _vp: u32,
             _sint: u8,
             _flag: u16,
+            _monitor_info: Option<MonitorInfo>,
         ) -> Result<Box<(dyn GuestEventPort)>, vmcore::synic::HypervisorError> {
             Ok(Box::new(MockGuestPort {}))
         }
