@@ -133,6 +133,8 @@ pub struct Emulator<'a, T> {
 
 #[derive(Debug, Error)]
 pub enum Error<E> {
+    #[error("non-emulateable instruction - this is typically a sign of a bug in the caller")]
+    UnsupportedInstructionFailFast(Vec<u8>),
     #[error("unsupported instruction")]
     UnsupportedInstruction(Vec<u8>),
     #[error("memory access error - {1:?} @ {0:#x}")]
@@ -768,7 +770,9 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         // We should not be emulating instructions that don't touch MMIO or PIO, even though we are capable of doing so.
         // If we are asked to do so it is usually indicative of some other problem, so abort so we can track that down.
         if !instr.op_kinds().any(|x| x == OpKind::Memory) && !instr.is_string_instruction() {
-            Err(self.unsupported_instruction(instr))?;
+            Err(Error::UnsupportedInstructionFailFast(
+                self.bytes[..instr.len()].into(),
+            ))?;
         }
 
         match instr.code() {
