@@ -77,7 +77,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
-use user_driver::DmaClient;
 use user_driver::backoff::Backoff;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
