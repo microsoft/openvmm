@@ -666,7 +666,6 @@ struct Channel {
     seq: u64,
     state: ChannelState,
     gpadls: Arc<GpadlMap>,
-    guest_event_port: Box<dyn GuestEventPort>,
     flags: protocol::OfferFlags,
     // A channel can be reserved no matter what state it is in. This allows the message port for a
     // reserved channel to remain available even if the channel is closed, so the guest can read the
@@ -684,14 +683,17 @@ enum ChannelState {
     Closed,
     Opening {
         open_params: OpenParams,
+        guest_event_port: Box<dyn GuestEventPort>,
         host_to_guest_interrupt: Interrupt,
     },
     Open {
         open_params: OpenParams,
         _event_port: Box<dyn Send>,
+        guest_event_port: Box<dyn GuestEventPort>,
         host_to_guest_interrupt: Interrupt,
         guest_to_host_event: Arc<ChannelEvent>,
     },
+    Closing,
     FailedOpen,
 }
 
@@ -713,8 +715,6 @@ impl ServerTask {
             .offer_channel(info.params)
             .context("channel offer failed")?;
 
-        let guest_event_port = self.inner.synic.new_guest_event_port()?;
-
         tracing::debug!(?offer_id, %key, "offered channel");
 
         let id = self.next_seq;
@@ -726,7 +726,6 @@ impl ServerTask {
                 send: info.request_send,
                 state: ChannelState::Closed,
                 gpadls: GpadlMap::new(),
-                guest_event_port,
                 seq: id,
                 flags,
                 reserved_state: ReservedState {
@@ -822,7 +821,7 @@ impl ServerTask {
             .expect("channel still exists");
 
         match &mut channel.state {
-            ChannelState::Open { .. } => {
+            ChannelState::Closing => {
                 channel.state = ChannelState::Closed;
                 self.server
                     .with_notifier(&mut self.inner)
@@ -1304,7 +1303,7 @@ impl Notifier for ServerTaskInner {
                     }
                 }
 
-                channel.guest_event_port.clear();
+                channel.state = ChannelState::Closing;
                 handle(offer_id, channel, ChannelRequest::Close, (), |()| {
                     ChannelResponse::Close
                 })
@@ -1343,14 +1342,19 @@ impl Notifier for ServerTaskInner {
                 )
             }
             channels::Action::Modify { target_vp } => {
-                if let ChannelState::Open { open_params, .. } = channel.state {
+                if let ChannelState::Open {
+                    open_params,
+                    guest_event_port,
+                    ..
+                } = &mut channel.state
+                {
                     let (target_vtl, target_sint) = if open_params.flags.redirect_interrupt() {
                         (self.redirect_vtl, self.redirect_sint)
                     } else {
                         (self.vtl, SINT)
                     };
 
-                    if let Err(err) = channel.guest_event_port.set(
+                    if let Err(err) = guest_event_port.set(
                         target_vtl,
                         target_vp,
                         target_sint,
@@ -1557,13 +1561,22 @@ impl ServerTaskInner {
         } else {
             (self.vtl, SINT)
         };
-        channel
-            .guest_event_port
-            .set(target_vtl, target_vp, target_sint, event_flag)?;
+
+        let port_id = ((self.vtl as u32) << 22)
+            | ((open_params.channel_id.0) << 8)
+            | ((SINT as u32) << 4)
+            | 2;
+        let guest_event_port = self.synic.new_guest_event_port(
+            port_id,
+            target_vtl,
+            target_vp,
+            target_sint,
+            event_flag,
+        )?;
 
         let interrupt = ChannelBitmap::create_interrupt(
             &self.channel_bitmap,
-            channel.guest_event_port.interrupt(),
+            guest_event_port.interrupt(),
             open_params.event_flag,
         );
 
@@ -1583,6 +1596,7 @@ impl ServerTaskInner {
 
         channel.state = ChannelState::Opening {
             open_params: *open_params,
+            guest_event_port,
             host_to_guest_interrupt: interrupt.clone(),
         };
         Ok((channel, interrupt))
@@ -1604,6 +1618,7 @@ impl ServerTaskInner {
             match std::mem::replace(&mut channel.state, ChannelState::FailedOpen) {
                 ChannelState::Opening {
                     open_params,
+                    guest_event_port,
                     host_to_guest_interrupt,
                 } => {
                     let guest_to_host_event =
@@ -1634,6 +1649,7 @@ impl ServerTaskInner {
                     ChannelState::Open {
                         open_params,
                         _event_port: event_port,
+                        guest_event_port,
                         host_to_guest_interrupt,
                         guest_to_host_event,
                     }
@@ -2114,6 +2130,11 @@ mod tests {
 
         fn new_guest_event_port(
             &self,
+            _port_id: u32,
+            _vtl: Vtl,
+            _vp: u32,
+            _sint: u8,
+            _flag: u16,
         ) -> Result<Box<(dyn GuestEventPort)>, vmcore::synic::HypervisorError> {
             Ok(Box::new(MockGuestPort {}))
         }
