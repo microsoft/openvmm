@@ -419,7 +419,7 @@ pub async fn emulate<T: EmulatorSupport>(
                     None,
                 ));
             }
-            err @ x86emu::Error::UnsupportedInstructionFailFast { .. } => {
+            err @ x86emu::Error::NonMemoryOrPortInstruction { .. } => {
                 tracelimit::error_ratelimited!(
                     error = &err as &dyn std::error::Error,
                     ?instruction_bytes,
@@ -427,11 +427,9 @@ pub async fn emulate<T: EmulatorSupport>(
                     "given an instruction that we shouldn't have been asked to emulate - likely a bug in the caller"
                 );
 
-                cpu.support.inject_pending_event(make_exception_event(
-                    Exception::INVALID_OPCODE,
-                    None,
-                    None,
-                ));
+                panic!(
+                    "given an instruction that we shouldn't have been asked to emulate - likely a bug in the caller"
+                )
             }
             x86emu::Error::InstructionException(exception, error_code, cause) => {
                 tracing::trace!(
