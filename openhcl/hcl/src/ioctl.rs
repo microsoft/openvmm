@@ -2448,7 +2448,8 @@ impl Hcl {
             padding0: [0; 3],
             sint,
             padding1: [0; 3],
-            message: *message,
+            message: zerocopy::Unalign::new(*message),
+            padding2: 0,
         };
 
         // SAFETY: calling the hypercall with correct input buffer.
