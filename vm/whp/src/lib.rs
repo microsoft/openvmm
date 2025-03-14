@@ -1738,7 +1738,7 @@ impl<'a> ExitReason<'a> {
         match ctx.ExitReason {
             abi::WHvRunVpExitReasonNone => Self::None,
             abi::WHvRunVpExitReasonCanceled => Self::Canceled,
-            reason => Self::Hypervisor(reason.0, &ctx.u.message),
+            reason => Self::Hypervisor(reason.0, &ctx.u),
         }
     }
 }
@@ -1785,7 +1785,7 @@ pub enum ExitReason<'a> {
 #[derive(Copy, Clone, Debug)]
 pub enum ExitReason<'a> {
     None,
-    Hypervisor(u32, &'a [u8; 256]),
+    Hypervisor(u32, &'a abi::WHV_RUN_VP_EXIT_CONTEXT_u),
     Canceled,
 }
 
