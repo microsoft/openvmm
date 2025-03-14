@@ -46,7 +46,7 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
-use jiff::Timestamp;
+use jiff::Zoned;
 use jiff::civil::{DateTime, date};
 use jiff::tz::TimeZone;
 use mesh::error::RemoteError;
@@ -623,23 +623,20 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     fn handle_time(&mut self) -> Result<(), Error> {
         const WINDOWS_EPOCH: DateTime = date(1601, 1, 1).at(0, 0, 0, 0);
 
+        let now = Zoned::now();
+
         // utc in TimeResponse is in units of 100ns since the windows epoch
         let since_win_epoch = (WINDOWS_EPOCH
             .to_zoned(TimeZone::UTC)
             .expect("windows epoch value to be valid")
             .timestamp()
-            .duration_until(Timestamp::now())
+            .duration_until(now.timestamp())
             .as_nanos()
             / 100) as i64;
 
         // tz_offset is in minutes between UTC and local time (as stored
         // in a windows TIME_ZONE_INFORMATION struct)
-        let local_offset = TimeZone::try_system().unwrap_or(TimeZone::UTC);
-        let tz_offset = (local_offset
-            .to_fixed_offset()
-            .expect("the system timezone to be fixed")
-            .seconds()
-            / 60) as i16;
+        let tz_offset = (now.offset().seconds() / 60) as i16;
         let response = get_protocol::TimeResponse::new(0, since_win_epoch, tz_offset, false);
 
         self.channel
