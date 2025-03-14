@@ -49,7 +49,6 @@ use hvdef::HvMessage;
 use hvdef::HvSynicSint;
 use hvdef::NUM_SINTS;
 use hvdef::Vtl;
-use hvdef::hypercall::HostVisibilityType;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal::unix::affinity;
@@ -1253,32 +1252,6 @@ impl<T: CpuIo, B: Backing> UhHypercallHandler<'_, '_, T, B> {
             .as_ref()
             .expect("should exist if this intercept is registered or this is a CVM")
             .retarget_interrupt(device_id, address, data, &vpci_params)
-    }
-}
-
-impl<T: CpuIo, B: Backing> hv1_hypercall::QuerySparseGpaPageHostVisibility
-    for UhHypercallHandler<'_, '_, T, B>
-{
-    fn query_gpa_visibility(
-        &mut self,
-        partition_id: u64,
-        gpa_pages: &[u64],
-        host_visibility: &mut [HostVisibilityType],
-    ) -> HvRepResult {
-        if partition_id != hvdef::HV_PARTITION_ID_SELF {
-            return Err((HvError::AccessDenied, 0));
-        }
-
-        if self.vp.partition.hide_isolation {
-            return Err((HvError::AccessDenied, 0));
-        }
-
-        self.vp
-            .partition
-            .isolated_memory_protector
-            .as_ref()
-            .ok_or((HvError::AccessDenied, 0))?
-            .query_host_visibility(gpa_pages, host_visibility)
     }
 }
 

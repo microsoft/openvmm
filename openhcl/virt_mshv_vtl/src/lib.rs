@@ -210,7 +210,6 @@ struct UhPartitionInner {
     cpuid: Mutex<CpuidLeafSet>,
     lower_vtl_memory_layout: MemoryLayout,
     gm: VtlArray<GuestMemory, 2>,
-    shared_memory: Option<GuestMemory>,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     #[inspect(skip)]
     crash_notification_send: mesh::Sender<VtlCrash>,
@@ -227,8 +226,6 @@ struct UhPartitionInner {
     /// This is only set for TDX VMs. For SNP VMs, this is implemented by the
     /// hypervisor. For non-isolated VMs, this isn't a concept.
     untrusted_synic: Option<GlobalSynic>,
-    #[inspect(skip)]
-    isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     shared_dma_client: Option<Arc<dyn DmaClient>>,
     private_dma_client: Option<Arc<dyn DmaClient>>,
     #[inspect(with = "inspect::AtomicMut")]
@@ -403,6 +400,8 @@ struct UhCvmPartitionState {
     #[inspect(with = "inspect::iter_by_index")]
     vps: Vec<UhCvmVpInner>,
     shared_memory: GuestMemory,
+    #[inspect(skip)]
+    isolated_memory_protector: Arc<dyn ProtectIsolatedMemory>,
     /// The emulated local APIC set.
     lapic: VtlArray<LocalApicSet, 2>,
     /// The emulated hypervisor state.
@@ -1276,8 +1275,6 @@ pub struct UhPartitionNewParams<'a> {
 
 /// Parameters to [`UhProtoPartition::build`].
 pub struct UhLateParams<'a> {
-    /// Guest memory for untrusted devices, like overlay pages.
-    pub shared_memory: Option<GuestMemory>,
     /// Guest memory for lower VTLs.
     pub gm: VtlArray<GuestMemory, 2>,
     /// The CPUID leaves to expose to the guest.
@@ -1288,12 +1285,20 @@ pub struct UhLateParams<'a> {
     pub crash_notification_send: mesh::Sender<VtlCrash>,
     /// The VM time source.
     pub vmtime: &'a VmTimeSource,
-    /// An object to call to change host visibility on guest memory.
-    pub isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     /// Dma client for shared visibility pages.
     pub shared_dma_client: Option<Arc<dyn DmaClient>>,
     /// Allocator for private visibility pages.
     pub private_dma_client: Option<Arc<dyn DmaClient>>,
+    /// Parameters for CVMs only.
+    pub cvm_params: Option<CvmLateParams>,
+}
+
+/// CVM-only parameters to [`UhProtoPartition::build`].
+pub struct CvmLateParams {
+    /// Guest memory for untrusted devices, like overlay pages.
+    pub shared_gm: GuestMemory,
+    /// An object to call to change host visibility on guest memory.
+    pub isolated_memory_protector: Arc<dyn ProtectIsolatedMemory>,
 }
 
 /// Trait for CVM-related protections on guest memory.
@@ -1670,11 +1675,18 @@ impl<'a> UhProtoPartition<'a> {
         };
 
         #[cfg(guest_arch = "x86_64")]
-        let cvm_state = cvm_cpuid
-            .map(|cpuid| {
-                Self::construct_cvm_state(&params, &late_params, &caps, cpuid, guest_vsm_available)
-            })
-            .transpose()?;
+        let cvm_state = if is_hardware_isolated {
+            Some(Self::construct_cvm_state(
+                &params,
+                late_params.cvm_params.unwrap(),
+                &caps,
+                cvm_cpuid.unwrap(),
+                guest_vsm_available,
+            )?)
+        } else {
+            None
+        };
+
         #[cfg(guest_arch = "aarch64")]
         let cvm_state = None;
 
@@ -1688,7 +1700,6 @@ impl<'a> UhProtoPartition<'a> {
             enter_modes: Mutex::new(enter_modes),
             enter_modes_atomic: u8::from(hcl::protocol::EnterModes::from(enter_modes)).into(),
             gm: late_params.gm,
-            shared_memory: late_params.shared_memory,
             cpuid,
             crash_notification_send: late_params.crash_notification_send,
             monitor_page: MonitorPage::new(),
@@ -1698,7 +1709,6 @@ impl<'a> UhProtoPartition<'a> {
             isolation,
             hide_isolation: params.hide_isolation,
             untrusted_synic,
-            isolated_memory_protector: late_params.isolated_memory_protector.clone(),
             shared_dma_client: late_params.shared_dma_client,
             private_dma_client: late_params.private_dma_client,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
@@ -1859,7 +1869,7 @@ impl UhProtoPartition<'_> {
     /// Constructs partition-wide CVM state.
     fn construct_cvm_state(
         params: &UhPartitionNewParams<'_>,
-        late_params: &UhLateParams<'_>,
+        late_params: CvmLateParams,
         caps: &PartitionCapabilities,
         cpuid: cvm_cpuid::CpuidResults,
         guest_vsm_available: bool,
@@ -1908,10 +1918,8 @@ impl UhProtoPartition<'_> {
             cpuid,
             tlb_locked_vps,
             vps,
-            shared_memory: late_params
-                .shared_memory
-                .clone()
-                .ok_or(Error::MissingSharedMemory)?,
+            shared_memory: late_params.shared_gm,
+            isolated_memory_protector: late_params.isolated_memory_protector,
             lapic,
             hv,
             guest_vsm: RwLock::new(GuestVsmState::from_availability(guest_vsm_available)),
