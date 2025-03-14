@@ -32,7 +32,7 @@ impl FlowNode for Node {
                 target_lexicon::OperatingSystem::Linux => {
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu)
                 }
-                target_lexicon::OperatingSystem::Darwin => FlowPlatform::MacOs,
+                target_lexicon::OperatingSystem::Darwin(_) => FlowPlatform::MacOs,
                 _ => return false,
             };
             let arch = match target.architecture {

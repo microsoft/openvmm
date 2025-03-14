@@ -78,7 +78,7 @@ unsafe fn virtual_alloc(
 ) -> Result<*mut c_void, Error> {
     let address = unsafe {
         VirtualAlloc2(
-            process.handle() as isize,
+            process.handle(),
             base_address,
             size,
             allocation_type,
@@ -99,7 +99,7 @@ unsafe fn virtual_free(
     size: usize,
     flags: u32,
 ) -> Result<(), Error> {
-    if unsafe { VirtualFreeEx(process.handle() as isize, address, size, flags) } == 0 {
+    if unsafe { VirtualFreeEx(process.handle(), address, size, flags) } == 0 {
         return Err(Error::last_os_error());
     }
     Ok(())
@@ -116,8 +116,8 @@ unsafe fn map_view_of_file(
 ) -> Result<*mut c_void, Error> {
     let address = unsafe {
         MapViewOfFile3(
-            file_mapping as isize,
-            process.handle() as isize,
+            file_mapping,
+            process.handle(),
             base_address,
             offset,
             view_size,
@@ -141,7 +141,7 @@ unsafe fn unmap_view_of_file(
 ) -> Result<(), Error> {
     if unsafe {
         UnmapViewOfFile2(
-            process.handle() as isize,
+            process.handle(),
             MEMORY_MAPPED_VIEW_ADDRESS { Value: address },
             flags,
         )
@@ -262,14 +262,8 @@ pub fn new_mappable_from_file(
     };
 
     unsafe {
-        let section = CreateFileMappingW(
-            file.as_raw_handle() as isize,
-            null_mut(),
-            protection,
-            0,
-            0,
-            null(),
-        ) as RawHandle;
+        let section = CreateFileMappingW(file.as_raw_handle(), null_mut(), protection, 0, 0, null())
+            as RawHandle;
         if section.is_null() {
             return Err(Error::last_os_error());
         }

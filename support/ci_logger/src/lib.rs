@@ -3,21 +3,21 @@
 
 //! A [`log::Log`] implementation translates log-levels to ADO logging commands.
 
-use env_logger::filter::Filter;
+use env_logger::Logger;
 use log::Level;
 use log::Metadata;
 use log::Record;
 
 struct AdoLogger {
-    filter: Filter,
+    filter: Logger,
     in_ci: bool,
 }
 
 impl AdoLogger {
     fn new(log_level: Option<&str>) -> AdoLogger {
-        let mut builder = env_logger::filter::Builder::new();
+        let mut builder = env_logger::Builder::new();
         if let Some(log_level) = log_level {
-            builder.parse(log_level);
+            builder.parse_filters(log_level);
         } else {
             builder.filter_level(log::LevelFilter::Info);
         }

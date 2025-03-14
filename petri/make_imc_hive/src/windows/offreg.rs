@@ -15,6 +15,7 @@ use windows_sys::Wdk::System::OfflineRegistry::ORCloseHive;
 use windows_sys::Wdk::System::OfflineRegistry::ORCloseKey;
 use windows_sys::Wdk::System::OfflineRegistry::ORCreateHive;
 use windows_sys::Wdk::System::OfflineRegistry::ORCreateKey;
+use windows_sys::Wdk::System::OfflineRegistry::ORHKEY;
 use windows_sys::Wdk::System::OfflineRegistry::ORSaveHive;
 use windows_sys::Wdk::System::OfflineRegistry::ORSetValue;
 use windows_sys::Win32::System::Registry::REG_DWORD;
@@ -25,7 +26,7 @@ pub struct Hive(Key);
 
 impl Hive {
     pub fn create() -> std::io::Result<Self> {
-        let mut key = 0;
+        let mut key = null_mut();
         // SAFETY: calling as documented
         unsafe {
             chk(ORCreateHive(&mut key))?;
@@ -97,11 +98,11 @@ impl Drop for OwnedKey {
     }
 }
 
-pub struct Key(isize);
+pub struct Key(ORHKEY);
 
 impl Key {
     pub fn create_key(&self, name: &str) -> anyhow::Result<OwnedKey> {
-        let mut new_key = 0;
+        let mut new_key = null_mut();
         let name16 = name.encode_utf16().chain([0]).collect::<Vec<_>>();
         // SAFETY: calling as documented with owned key and null-terminated
         // path.
