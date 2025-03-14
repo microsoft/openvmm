@@ -126,7 +126,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     const CPU_COUNT: u32 = 64;
 
     // Memory setup
-    let pages = 100000;
+    let pages = 1000;
     let (guest_mem, _page_pool, dma_client) = create_test_memory(pages, allow_dma);
 
     let driver_dma_mem = if allow_dma {
