@@ -90,6 +90,10 @@ impl Endpoint for TapEndpoint {
     fn is_ordered(&self) -> bool {
         true
     }
+
+    fn restore(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 struct TapQueue {

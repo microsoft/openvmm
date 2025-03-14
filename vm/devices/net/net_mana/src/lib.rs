@@ -47,6 +47,7 @@ use net_backend::TxId;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
 use net_backend::TxSegmentType;
+use net_backend::save_restore::EndpointSavedState;
 use pal_async::task::Spawn;
 use safeatomic::AtomicSliceOps;
 use std::collections::VecDeque;
@@ -539,6 +540,14 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
     fn link_speed(&self) -> u64 {
         // Hard code to 200Gbps until MANA supports querying this.
         200 * 1000 * 1000 * 1000
+    }
+
+    fn save(&self) -> anyhow::Result<Option<EndpointSavedState>> {
+        Ok(None)
+    }
+
+    fn restore(&mut self) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 

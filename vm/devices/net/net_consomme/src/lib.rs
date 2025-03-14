@@ -115,6 +115,10 @@ impl net_backend::Endpoint for ConsommeEndpoint {
             tso: true,
         }
     }
+
+    fn restore(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 pub struct ConsommeQueue {

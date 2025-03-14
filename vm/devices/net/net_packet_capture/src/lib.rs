@@ -27,6 +27,7 @@ use net_backend::TxId;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
 use net_backend::next_packet;
+use net_backend::save_restore::EndpointSavedState;
 use pcap_file::DataLink;
 use pcap_file::PcapError;
 use pcap_file::PcapResult;
@@ -354,6 +355,15 @@ impl Endpoint for PacketCaptureEndpoint {
 
     fn link_speed(&self) -> u64 {
         self.current().link_speed()
+    }
+
+    fn save(&self) -> anyhow::Result<Option<EndpointSavedState>> {
+        self.current().save()
+    }
+
+    fn restore(&mut self) -> anyhow::Result<()> {
+        self.current_mut().restore()?;
+        Ok(())
     }
 }
 

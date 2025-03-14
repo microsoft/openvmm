@@ -13,6 +13,7 @@ use crate::queues;
 use crate::queues::Doorbell;
 use crate::queues::DoorbellPage;
 use crate::save_restore::ManaDeviceSavedState;
+use crate::save_restore::ManaSavedState;
 use anyhow::Context;
 use futures::StreamExt;
 use futures::lock::Mutex;
@@ -77,11 +78,11 @@ impl<T: DeviceBacking> ManaDevice<T> {
         device: T,
         num_vps: u32,
         max_queues_per_vport: u16,
-        mana_state: Option<ManaDeviceSavedState>,
+        mana_state: Option<ManaSavedState>,
     ) -> anyhow::Result<Self> {
         let mut gdma = if let Some(ref mana_state) = mana_state {
             tracing::info!("Restoring gdma driver from saved state");
-            GdmaDriver::restore(mana_state.gdma.clone(), device).await?
+            GdmaDriver::restore(mana_state.mana_device.gdma.clone(), device).await?
         } else {
             tracing::info!("Creating a new gdma driver");
             GdmaDriver::new(driver, device, num_vps).await?
@@ -102,9 +103,9 @@ impl<T: DeviceBacking> ManaDevice<T> {
         let dev_data = if let Some(mana_state) = mana_state {
             tracing::info!("restoring device data from saved state");
             GdmaRegisterDeviceResp {
-                pdid: mana_state.gdma.pdid,
-                gpa_mkey: mana_state.gdma.gpa_mkey,
-                db_id: mana_state.gdma.db_id as u32,
+                pdid: mana_state.mana_device.gdma.pdid,
+                gpa_mkey: mana_state.mana_device.gdma.gpa_mkey,
+                db_id: mana_state.mana_device.gdma.db_id as u32,
             }
         } else {
             gdma.register_device(dev_id).await?

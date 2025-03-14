@@ -4,9 +4,23 @@
 //! Types to save and restore the state of a MANA device.
 
 use mesh::payload::Protobuf;
+use net_backend::save_restore::EndpointSavedState;
 use std::collections::HashMap;
 
-/// Top level mana device driver saved state
+/// Mana saved state
+#[derive(Debug, Protobuf, Clone)]
+#[mesh(package = "mana_driver")]
+pub struct ManaSavedState {
+    /// The saved state of the MANA device driver
+    #[mesh(1)]
+    pub mana_device: ManaDeviceSavedState,
+
+    /// The saved state of the MANA endpoints
+    #[mesh(2)]
+    pub endpoints: Vec<EndpointSavedState>,
+}
+
+/// Mana device saved state
 #[derive(Debug, Protobuf, Clone)]
 #[mesh(package = "mana_driver")]
 pub struct ManaDeviceSavedState {

@@ -280,6 +280,10 @@ impl net_backend::Endpoint for TestNicEndpoint {
         }
         EndpointAction::LinkStatusNotify(self.pending_link_status_updates.pop_front().unwrap())
     }
+
+    fn restore(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 struct TestNicDevice {

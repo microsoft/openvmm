@@ -82,7 +82,7 @@ use input_core::InputData;
 use input_core::MultiplexedInputHandle;
 use inspect::Inspect;
 use loader_defs::shim::MemoryVtlType;
-use mana_driver::save_restore::ManaDeviceSavedState;
+use mana_driver::save_restore::ManaSavedState;
 use memory_range::MemoryRange;
 use mesh::CancelContext;
 use mesh::MeshPayload;
@@ -729,7 +729,7 @@ impl UhVmNetworkSettings {
         driver_source: &VmTaskDriverSource,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        servicing_mana_state: &Option<Vec<ManaDeviceSavedState>>,
+        servicing_mana_state: &Option<Vec<ManaSavedState>>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         tp: &AffinitizedThreadpool,
@@ -877,7 +877,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         threadpool: &AffinitizedThreadpool,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        servicing_mana_state: &Option<Vec<ManaDeviceSavedState>>,
+        servicing_mana_state: &Option<Vec<ManaSavedState>>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
@@ -973,7 +973,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
     async fn save(
         &mut self,
         mana_keepalive_flag: bool,
-    ) -> Option<Vec<Result<ManaDeviceSavedState, anyhow::Error>>> {
+    ) -> Option<Vec<Result<ManaSavedState, anyhow::Error>>> {
         if mana_keepalive_flag {
             Some(
                 join_all(

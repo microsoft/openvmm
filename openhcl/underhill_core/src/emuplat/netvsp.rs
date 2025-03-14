@@ -14,7 +14,7 @@ use guid::Guid;
 use inspect::Inspect;
 use mana_driver::mana::ManaDevice;
 use mana_driver::mana::VportState;
-use mana_driver::save_restore::ManaDeviceSavedState;
+use mana_driver::save_restore::ManaSavedState;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
@@ -59,7 +59,7 @@ enum HclNetworkVfManagerMessage {
     HideVtl0VF(Rpc<bool, ()>),
     Inspect(inspect::Deferred),
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
-    SaveState(Rpc<(), ManaDeviceSavedState>),
+    SaveState(Rpc<(), ManaSavedState>),
 }
 
 async fn create_mana_device(
@@ -68,7 +68,7 @@ async fn create_mana_device(
     vp_count: u32,
     max_sub_channels: u16,
     dma_client: Arc<dyn DmaClient>,
-    mana_state: Option<ManaDeviceSavedState>,
+    mana_state: Option<ManaSavedState>,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
     // Don't do anything to the device in servicing mode
     if let Some(mana_state) = mana_state {
@@ -141,7 +141,7 @@ async fn try_create_mana_device(
     vp_count: u32,
     max_sub_channels: u16,
     dma_client: Arc<dyn DmaClient>,
-    mana_state: Option<ManaDeviceSavedState>,
+    mana_state: Option<ManaSavedState>,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
     let device = if mana_state.is_some() {
         tracing::info!("restoring mana vfio device with pci_id {:?}", pci_id);
@@ -697,7 +697,10 @@ impl HclNetworkVFManagerWorker {
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::SaveState(rpc)) => {
                     rpc.handle(|_| async {
-                        self.mana_device.as_ref().unwrap().save().await.unwrap()
+                        ManaSavedState {
+                            mana_device: self.mana_device.as_ref().unwrap().save().await.unwrap(),
+                            endpoints: Vec::new(),
+                        }
                     })
                     .await;
                     return;
@@ -899,7 +902,7 @@ impl HclNetworkVFManager {
         vp_count: u32,
         max_sub_channels: u16,
         netvsp_state: &Option<Vec<SavedState>>,
-        mana_state: &Option<Vec<ManaDeviceSavedState>>,
+        mana_state: &Option<Vec<ManaSavedState>>,
         dma_mode: GuestDmaMode,
         dma_client: Arc<dyn DmaClient>,
     ) -> anyhow::Result<(
@@ -1017,7 +1020,7 @@ impl HclNetworkVFManager {
         ))
     }
 
-    pub async fn save(&self) -> anyhow::Result<ManaDeviceSavedState> {
+    pub async fn save(&self) -> anyhow::Result<ManaSavedState> {
         let save_state = self
             .shared_state
             .worker_channel

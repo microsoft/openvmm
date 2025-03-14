@@ -24,6 +24,7 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use null::NullEndpoint;
 use pal_async::driver::Driver;
+use save_restore::EndpointSavedState;
 use std::future::pending;
 use std::sync::Arc;
 use std::task::Context;
@@ -104,6 +105,13 @@ pub trait Endpoint: Send + Sync + InspectMut {
         // can overwrite.
         10 * 1000 * 1000 * 1000
     }
+
+    fn save(&self) -> anyhow::Result<Option<EndpointSavedState>> {
+        Ok(None)
+    }
+
+    /// Restore the endpoint state from saved state.
+    fn restore(&mut self) -> anyhow::Result<()>;
 }
 
 /// Multi-queue related support.
@@ -589,4 +597,31 @@ impl Endpoint for DisconnectableEndpoint {
             .expect("Endpoint needs connected at least once before use")
             .link_speed
     }
+
+    fn save(&self) -> anyhow::Result<Option<EndpointSavedState>> {
+        self.current().save()
+    }
+
+    fn restore(&mut self) -> anyhow::Result<()> {
+        self.current_mut().restore()?;
+        Ok(())
+    }
+}
+
+pub mod save_restore {
+    use mesh::payload::Protobuf;
+
+    /// The saved state of the endpoint.
+    #[derive(Debug, Protobuf, Clone)]
+    #[mesh(package = "net_backend")]
+    pub enum EndpointSavedState {
+        /// The saved state of a MANA endpoint.
+        #[mesh(1)]
+        ManaEndpoint(ManaEndpointSavedState),
+    }
+
+    /// Saved state of a MANA endpoint for restoration during servicing
+    #[derive(Protobuf, Clone, Debug)]
+    #[mesh(package = "net_backend")]
+    pub struct ManaEndpointSavedState {}
 }

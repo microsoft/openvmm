@@ -71,6 +71,10 @@ impl Endpoint for LoopbackEndpoint {
             indirection_table_size: 64,
         }
     }
+
+    fn restore(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(InspectMut)]

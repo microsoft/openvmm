@@ -33,7 +33,7 @@ use hyperv_ic_resources::shutdown::ShutdownRpc;
 use hyperv_ic_resources::shutdown::ShutdownType;
 use igvm_defs::MemoryMapEntryType;
 use inspect::Inspect;
-use mana_driver::save_restore::ManaDeviceSavedState;
+use mana_driver::save_restore::ManaSavedState;
 use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
@@ -107,7 +107,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
         threadpool: &AffinitizedThreadpool,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        servicing_mana_state: &Option<Vec<ManaDeviceSavedState>>,
+        servicing_mana_state: &Option<Vec<ManaSavedState>>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
@@ -124,7 +124,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
     async fn save(
         &mut self,
         mana_keepalive_flag: bool,
-    ) -> Option<Vec<Result<ManaDeviceSavedState, anyhow::Error>>>;
+    ) -> Option<Vec<Result<ManaSavedState, anyhow::Error>>>;
 
     /// Handles packet capture related operations.
     async fn packet_capture(
