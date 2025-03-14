@@ -317,6 +317,7 @@ async fn launch_workers(
         gdbstub: opt.gdbstub,
         hide_isolation: opt.hide_isolation,
         nvme_keep_alive: opt.nvme_keep_alive,
+        mana_keep_alive: opt.mana_keep_alive,
         test_configuration: opt.test_configuration,
     };
 

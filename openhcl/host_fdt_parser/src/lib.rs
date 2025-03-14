@@ -237,6 +237,8 @@ pub struct ParsedDeviceTree<
     pub nvme_keepalive: bool,
     /// The physical address of the VTL0 alias mapping, if one is configured.
     pub vtl0_alias_map: Option<u64>,
+    /// Indicates that Host supports MANA keep-alive.
+    pub mana_keepalive: bool,
 }
 
 /// The memory allocation mode provided by the host. This determines how OpenHCL
@@ -316,6 +318,7 @@ impl<
             entropy: None,
             device_dma_page_count: None,
             nvme_keepalive: false,
+            mana_keepalive: false,
             vtl0_alias_map: None,
         }
     }
@@ -735,6 +738,7 @@ impl<
             device_dma_page_count: _,
             nvme_keepalive: _,
             vtl0_alias_map: _,
+            mana_keepalive: _,
         } = storage;
 
         *device_tree_size = parser.total_size;

@@ -101,6 +101,7 @@ async fn nvme_keepalive(
         igvm_file,
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,
+            enable_mana_keepalive: false,
         },
     )
     .await

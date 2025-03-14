@@ -136,6 +136,9 @@ pub struct Options {
     /// (OPENHCL_NVME_KEEP_ALIVE=1) Enable nvme keep alive when servicing.
     pub nvme_keep_alive: bool,
 
+    /// (OPENHCL_MANA_KEEP_ALIVE=1) Enable mana keep alive when servicing.
+    pub mana_keep_alive: bool,
+
     /// (OPENHCL_TEST_CONFIG=\<TestScenarioConfig\>)
     /// Test configurations are designed to replicate specific behaviors and
     /// conditions in order to simulate various test scenarios.
@@ -227,6 +230,7 @@ impl Options {
         let gdbstub = parse_legacy_env_bool("OPENHCL_GDBSTUB");
         let gdbstub_port = parse_legacy_env_number("OPENHCL_GDBSTUB_PORT")?.map(|x| x as u32);
         let nvme_keep_alive = parse_env_bool("OPENHCL_NVME_KEEP_ALIVE");
+        let mana_keep_alive = parse_env_bool("OPENHCL_MANA_KEEP_ALIVE");
         let test_configuration = parse_env_string("OPENHCL_TEST_CONFIG").and_then(|x| {
             x.to_string_lossy()
                 .parse::<TestScenarioConfig>()
@@ -291,6 +295,7 @@ impl Options {
             halt_on_guest_halt,
             no_sidecar_hotplug,
             nvme_keep_alive,
+            mana_keep_alive,
             test_configuration,
         })
     }

@@ -10,6 +10,6 @@ mod gdma_driver;
 pub mod mana;
 pub mod queues;
 mod resources;
-mod save_restore;
+pub mod save_restore;
 #[cfg(test)]
 mod tests;

@@ -31,9 +31,6 @@ safe_intrinsics.workspace = true
 gdma.workspace = true
 pci_core.workspace = true
 test_with_tracing.workspace = true
-page_pool_alloc.workspace=true
-memory_range.workspace=true
-guestmem.workspace=true
 
 [lints]
 workspace = true

@@ -1354,7 +1354,7 @@ mod tests {
             reserved: 0,
             max_num_eqs: 64,
         };
-        let thing = ManaDevice::new(&driver, device, 1, 1).await.unwrap();
+        let thing = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
         let vport = thing.new_vport(0, None, &dev_config).await.unwrap();
         let mut endpoint = ManaEndpoint::new(driver.clone(), vport, dma_mode).await;
         let mut queues = Vec::new();
@@ -1443,7 +1443,7 @@ mod tests {
             reserved: 0,
             max_num_eqs: 64,
         };
-        let thing = ManaDevice::new(&driver, device, 1, 1).await.unwrap();
+        let thing = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
         let _ = thing.new_vport(0, None, &dev_config).await.unwrap();
     }
 }

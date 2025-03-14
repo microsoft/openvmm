@@ -64,7 +64,6 @@ use gdma_defs::HwcTxOob;
 use gdma_defs::HwcTxOobFlags3;
 use gdma_defs::HwcTxOobFlags4;
 use gdma_defs::RegMap;
-use gdma_defs::SMC_MSG_TYPE_DESTROY_HWC_VERSION;
 use gdma_defs::SMC_MSG_TYPE_ESTABLISH_HWC_VERSION;
 use gdma_defs::SMC_MSG_TYPE_REPORT_HWC_TIMEOUT_VERSION;
 use gdma_defs::Sge;
@@ -173,61 +172,6 @@ const NUM_PAGES: usize = 6;
 
 // RWQEs have no OOB and one SGL entry so they are always exactly 32 bytes.
 const RWQE_SIZE: u32 = 32;
-
-impl<T: DeviceBacking> Drop for GdmaDriver<T> {
-    fn drop(&mut self) {
-        if self.hwc_failure {
-            return;
-        }
-        let data = self
-            .bar0
-            .mem
-            .read_u32(self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28);
-        if data == u32::MAX {
-            tracing::error!("Device no longer present");
-            return;
-        }
-
-        let hdr = SmcProtoHdr::new()
-            .with_msg_type(SmcMessageType::SMC_MSG_TYPE_DESTROY_HWC.0)
-            .with_msg_version(SMC_MSG_TYPE_DESTROY_HWC_VERSION);
-
-        let hdr = u32::from_le_bytes(hdr.as_bytes().try_into().expect("known size"));
-        self.bar0.mem.write_u32(
-            self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28,
-            hdr,
-        );
-        // Wait for the device to respond.
-        let max_wait_time =
-            std::time::Instant::now() + Duration::from_millis(HWC_POLL_TIMEOUT_IN_MS);
-        let header = loop {
-            let data = self
-                .bar0
-                .mem
-                .read_u32(self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28);
-            if data == u32::MAX {
-                tracing::error!("Device no longer present");
-                return;
-            }
-            let header = SmcProtoHdr::from(data);
-            if !header.owner_is_pf() {
-                break header;
-            }
-            if std::time::Instant::now() > max_wait_time {
-                tracing::error!("MANA request timed out. SMC_MSG_TYPE_DESTROY_HWC");
-                return;
-            }
-            std::hint::spin_loop();
-        };
-
-        if !header.is_response() {
-            tracing::error!("expected response");
-        }
-        if header.status() != 0 {
-            tracing::error!("DESTROY_HWC failed: {}", header.status());
-        }
-    }
-}
 
 struct EqeWaitResult {
     eqe_found: bool,
@@ -561,11 +505,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         })
     }
 
-    pub async fn restore(
-        saved_state: GdmaDriverSavedState,
-        mut device: T,
-        dma_client: Arc<dyn DmaClient>,
-    ) -> anyhow::Result<Self> {
+    pub async fn restore(saved_state: GdmaDriverSavedState, mut device: T) -> anyhow::Result<Self> {
         tracing::info!("restoring gdma driver from saved state");
 
         let bar0_mapping = device.map_bar(0)?;
@@ -630,6 +570,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             );
         }
 
+        let dma_client = device.dma_client();
         tracing::info!("restoring gdma DMA buffer: {:?}", saved_state.mem);
         let dma_buffer =
             dma_client.attach_dma_buffer(saved_state.mem.len, saved_state.mem.base_pfn)?;

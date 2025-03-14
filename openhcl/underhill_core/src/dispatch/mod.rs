@@ -33,6 +33,7 @@ use hyperv_ic_resources::shutdown::ShutdownRpc;
 use hyperv_ic_resources::shutdown::ShutdownType;
 use igvm_defs::MemoryMapEntryType;
 use inspect::Inspect;
+use mana_driver::save_restore::ManaDeviceSavedState;
 use mesh::CancelContext;
 use mesh::MeshPayload;
 use mesh::error::RemoteError;
@@ -106,6 +107,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
         threadpool: &AffinitizedThreadpool,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
+        servicing_mana_state: &Option<Vec<ManaDeviceSavedState>>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
@@ -118,6 +120,11 @@ pub trait LoadedVmNetworkSettings: Inspect {
 
     /// Callback after stopping the VM and all workers, in preparation for a VTL2 reboot.
     async fn unload_for_servicing(&mut self);
+
+    async fn save(
+        &mut self,
+        mana_keepalive_flag: bool,
+    ) -> Option<Vec<Result<ManaDeviceSavedState, anyhow::Error>>>;
 
     /// Handles packet capture related operations.
     async fn packet_capture(
@@ -181,6 +188,7 @@ pub(crate) struct LoadedVm {
     pub _periodic_telemetry_task: Task<()>,
 
     pub nvme_keep_alive: bool,
+    pub mana_keep_alive: bool,
     pub test_configuration: Option<TestScenarioConfig>,
     pub dma_manager: OpenhclDmaManager,
 }
@@ -268,7 +276,7 @@ impl LoadedVm {
                     WorkerRpc::Restart(rpc) => {
                         let state = async {
                             let running = self.stop().await;
-                            match self.save(None, false).await {
+                            match self.save(None, false, false).await {
                                 Ok(servicing_state) => Some((rpc, servicing_state)),
                                 Err(err) => {
                                     if running {
@@ -330,7 +338,7 @@ impl LoadedVm {
                     UhVmRpc::Save(rpc) => {
                         rpc.handle_failable(async |()| {
                             let running = self.stop().await;
-                            let r = self.save(None, false).await;
+                            let r = self.save(None, false, false).await;
                             if running {
                                 self.start(None).await;
                             }
@@ -442,6 +450,11 @@ impl LoadedVm {
             std::future::pending::<()>().await;
         }
 
+        tracing::info!(
+            "handle_servicing_request mana: {:?}",
+            capabilities_flags.enable_mana_keepalive()
+        );
+
         let running = self.state_units.is_running();
         let success = match self
             .handle_servicing_inner(correlation_id, deadline, capabilities_flags)
@@ -492,9 +505,22 @@ impl LoadedVm {
             anyhow::bail!("Servicing is not yet supported for isolated VMs");
         }
 
+        tracing::info!("self.nvme_keepalive: {:?}", self.nvme_keep_alive);
+        tracing::info!("self.mana_keepalive: {:?}", self.mana_keep_alive);
+
         // NOTE: This is set via the corresponding env arg, as this feature is
         // experimental.
         let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
+        let mana_keepalive = self.mana_keep_alive && capabilities_flags.enable_mana_keepalive();
+
+        tracing::info!(
+            "handle_servicing_inner nvme_keepalive: {:?}",
+            nvme_keepalive
+        );
+        tracing::info!(
+            "handle_servicing_inner mana_keepalive: {:?}",
+            mana_keepalive
+        );
 
         // Do everything before the log flush under a span.
         let r = async {
@@ -509,7 +535,7 @@ impl LoadedVm {
                 anyhow::bail!("cannot service underhill while paused");
             }
 
-            let mut state = self.save(Some(deadline), nvme_keepalive).await?;
+            let mut state = self.save(Some(deadline), nvme_keepalive, mana_keepalive).await?;
             state.init_state.correlation_id = Some(correlation_id);
 
             // Unload any network devices.
@@ -662,22 +688,49 @@ impl LoadedVm {
     async fn save(
         &mut self,
         _deadline: Option<std::time::Instant>,
-        vf_keepalive_flag: bool,
+        nvme_keepalive_flag: bool,
+        mana_keepalive_flag: bool,
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
+
+        tracing::info!(
+            "keepalive flags - nvme: {:?}, mana: {:?}",
+            nvme_keepalive_flag,
+            mana_keepalive_flag
+        );
 
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
 
         // Only save NVMe state when there are NVMe controllers and keep alive
         // was enabled.
         let nvme_state = if let Some(n) = &self.nvme_manager {
-            n.save(vf_keepalive_flag)
+            n.save(nvme_keepalive_flag)
                 .instrument(tracing::info_span!("nvme_manager_save"))
                 .await
                 .map(|s| NvmeSavedState { nvme_state: s })
         } else {
             None
         };
+
+        let mana_state = if let Some(network_settings) = &mut self.network_settings {
+            let results = network_settings.save(mana_keepalive_flag).await;
+            let mut saved_states = Vec::new();
+
+            if let Some(results) = results {
+                for result in results {
+                    match result {
+                        Ok(state) => saved_states.push(state),
+                        Err(e) => tracing::warn!("Error saving MANA device state: {:#}", e),
+                    }
+                }
+            }
+
+            Some(saved_states)
+        } else {
+            None
+        };
+
+        tracing::info!("saved mana_state: {:?}", mana_state);
 
         let units = self.save_units().await.context("state unit save failed")?;
         let vmgs = self
@@ -689,7 +742,7 @@ impl LoadedVm {
         // Only save dma manager state if we are expected to keep VF devices
         // alive across save. Otherwise, don't persist the state at all, as
         // there should be no live DMA across save.
-        let dma_manager_state = if vf_keepalive_flag {
+        let dma_manager_state = if nvme_keepalive_flag {
             use vmcore::save_restore::SaveRestore;
             Some(self.dma_manager.save().context("dma_manager save failed")?)
         } else {
@@ -713,6 +766,7 @@ impl LoadedVm {
                 vmgs: (vmgs, self.vmgs_disk_metadata.clone()),
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
                 nvme_state,
+                mana_state,
                 dma_manager_state,
                 vmbus_client,
             },
@@ -775,6 +829,7 @@ impl LoadedVm {
                 max_sub_channels,
                 threadpool,
                 &self.uevent_listener,
+                &None, // VF getting added; no existing state
                 &None, // VF getting added; no existing state
                 self.partition.clone(),
                 &self.state_units,

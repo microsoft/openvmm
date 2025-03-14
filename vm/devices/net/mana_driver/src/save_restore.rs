@@ -1,5 +1,17 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Types to save and restore the state of a MANA device.
+
 use mesh::payload::Protobuf;
 use std::collections::HashMap;
+
+#[derive(Debug, Protobuf, Clone)]
+#[mesh(package = "mana_driver")]
+pub struct ManaDeviceSavedState {
+    #[mesh(1)]
+    pub gdma: GdmaDriverSavedState,
+}
 
 #[derive(Protobuf, Clone, Debug)]
 #[mesh(package = "mana_driver")]

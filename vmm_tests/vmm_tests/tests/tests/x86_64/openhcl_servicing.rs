@@ -28,6 +28,8 @@ async fn openhcl_servicing_core(
 ) -> anyhow::Result<()> {
     let (mut vm, agent) = config
         .with_openhcl_command_line(openhcl_cmdline)
+        .with_vmbus_redirect()
+        .with_nic()
         .run()
         .await?;
 
@@ -59,9 +61,9 @@ async fn openhcl_servicing(
 }
 
 /// Test servicing an OpenHCL VM from the current version to itself
-/// with VF keepalive support.
+/// with nvme keepalive support.
 #[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
-async fn openhcl_servicing_keepalive(
+async fn openhcl_servicing_nvme_keepalive(
     config: PetriVmConfigOpenVmm,
     (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
 ) -> Result<(), anyhow::Error> {
@@ -71,6 +73,26 @@ async fn openhcl_servicing_keepalive(
         igvm_file,
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,
+            enable_mana_keepalive: false,
+        },
+    )
+    .await
+}
+
+/// Test servicing an OpenHCL VM from the current version to itself
+/// with mana keepalive support.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn openhcl_servicing_mana_keepalive(
+    config: PetriVmConfigOpenVmm,
+    (igvm_file,): (ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,),
+) -> Result<(), anyhow::Error> {
+    openhcl_servicing_core(
+        config,
+        "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
+        igvm_file,
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: false,
+            enable_mana_keepalive: true,
         },
     )
     .await

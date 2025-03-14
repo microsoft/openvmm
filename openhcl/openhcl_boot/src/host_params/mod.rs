@@ -94,6 +94,8 @@ pub struct PartitionInfo {
     pub vtl0_alias_map: Option<u64>,
     /// Host is compatible with DMA preservation / NVMe keep-alive.
     pub nvme_keepalive: bool,
+    /// Host is compatible with MANA keep-alive.
+    pub mana_keepalive: bool,
 }
 
 impl PartitionInfo {
@@ -125,6 +127,7 @@ impl PartitionInfo {
             entropy: None,
             vtl0_alias_map: None,
             nvme_keepalive: false,
+            mana_keepalive: false,
         }
     }
 

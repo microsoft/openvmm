@@ -234,6 +234,10 @@ fn build_kernel_command_line(
         write!(cmdline, "OPENHCL_NVME_KEEP_ALIVE=1 ")?;
     }
 
+    if partition_info.mana_keepalive && !partition_info.vtl2_pool_memory.is_empty() {
+        write!(cmdline, "OPENHCL_MANA_KEEP_ALIVE=1 ")?;
+    }
+
     if let Some(sidecar) = sidecar {
         write!(cmdline, "{} ", sidecar.kernel_command_line())?;
     }
@@ -931,6 +935,7 @@ mod test {
             entropy: None,
             vtl0_alias_map: None,
             nvme_keepalive: false,
+            mana_keepalive: false,
         }
     }
 
