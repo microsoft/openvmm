@@ -526,7 +526,12 @@ mod tests {
     fn test_landlock_sandbox() {
         use crate::sys::SyscallResult;
         use crate::sys::while_eintr;
-        use landlock::{AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr};
+        use landlock::AccessFs;
+        use landlock::PathBeneath;
+        use landlock::PathFd;
+        use landlock::Ruleset;
+        use landlock::RulesetAttr;
+        use landlock::RulesetCreatedAttr;
         use std::os::unix::prelude::*;
 
         let landlock_rules = Ruleset::default()
@@ -563,7 +568,9 @@ mod tests {
     fn test_seccomp_sandbox() {
         use crate::sys::SyscallResult;
         use crate::sys::while_eintr;
-        use seccompiler::{SeccompAction, SeccompFilter, TargetArch};
+        use seccompiler::SeccompAction;
+        use seccompiler::SeccompFilter;
+        use seccompiler::TargetArch;
         use std::os::unix::prelude::*;
 
         // This isn't defined in libc MUSL yet.
