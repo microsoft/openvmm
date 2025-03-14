@@ -185,7 +185,7 @@ fn export_vtpm_srk_pub(mut tpm_engine_helper: TpmEngineHelper, srk_out_path: &st
             // Write the SRK pub to a file.
             //let srk_pub_file = Use the input.
             let mut srk_pub_file = File::create(srk_out_path).expect("failed to create file");
-            let srk_pub = response.out_public.public_area.serialize();
+            let srk_pub = response.out_public.serialize();
             let srk_pub = srk_pub.as_slice();
             srk_pub_file
                 .write_all(&srk_pub)
