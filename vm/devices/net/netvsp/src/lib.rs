@@ -4183,7 +4183,7 @@ impl Coordinator {
                     // buffers.
                     queue_config.push(QueueConfig {
                         pool: Box::new(BufferPool::new(guest_buffers.clone())),
-                        initial_rx: &[RxId(0)],
+                        initial_rx: &[],
                         driver: Box::new(drivers[0].clone()),
                     });
                     rx_buffers.push(RxBufferRange::new(
