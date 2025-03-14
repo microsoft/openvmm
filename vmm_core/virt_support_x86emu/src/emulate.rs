@@ -427,9 +427,13 @@ pub async fn emulate<T: EmulatorSupport>(
                     "given an instruction that we shouldn't have been asked to emulate - likely a bug in the caller"
                 );
 
-                panic!(
-                    "given an instruction that we shouldn't have been asked to emulate - likely a bug in the caller"
-                )
+                return Err(VpHaltReason::EmulationFailure(
+                    EmulationError::Emulator {
+                        bytes: instruction_bytes.to_vec(),
+                        error: err,
+                    }
+                    .into(),
+                ));
             }
             x86emu::Error::InstructionException(exception, error_code, cause) => {
                 tracing::trace!(
