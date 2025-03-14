@@ -174,8 +174,15 @@ impl SynicPortAccess for SynicPorts {
 
     fn new_guest_event_port(
         &self,
+        _port_id: u32,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
     ) -> Result<Box<(dyn GuestEventPort)>, vmcore::synic::HypervisorError> {
-        Ok(self.partition.new_guest_event_port())
+        let mut port = self.partition.new_guest_event_port();
+        port.set(vtl, vp, sint, flag)?;
+        Ok(port)
     }
 
     fn prefer_os_events(&self) -> bool {
