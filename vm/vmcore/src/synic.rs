@@ -78,6 +78,9 @@ pub trait SynicPortAccess: Send + Sync {
     ) -> Result<Box<dyn GuestMessagePort>, HypervisorError>;
 
     /// Creates a [`GuestEventPort`] for signaling VMBus channels in the guest.
+    ///
+    /// The `monitor_info` parameter is ignored if the synic does not support outgoing monitored
+    /// interrupts.
     fn new_guest_event_port(
         &self,
         port_id: u32,
@@ -85,6 +88,7 @@ pub trait SynicPortAccess: Send + Sync {
         vp: u32,
         sint: u8,
         flag: u16,
+        monitor_info: Option<MonitorInfo>,
     ) -> Result<Box<dyn GuestEventPort>, HypervisorError>;
 
     /// Returns whether callers should pass an OS event when creating event

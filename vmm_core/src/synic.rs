@@ -179,6 +179,7 @@ impl SynicPortAccess for SynicPorts {
         vp: u32,
         sint: u8,
         flag: u16,
+        _monitor_info: Option<MonitorInfo>,
     ) -> Result<Box<(dyn GuestEventPort)>, vmcore::synic::HypervisorError> {
         let mut port = self.partition.new_guest_event_port();
         port.set(vtl, vp, sint, flag)?;
