@@ -18,21 +18,23 @@ use user_driver::DeviceBacking;
 use user_driver::DmaClient;
 use user_driver::emulated::DeviceSharedMemory;
 use user_driver::emulated::EmulatedDevice;
+use user_driver::emulated::EmulatedDmaAllocator;
 use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
 
 /// An EmulatedDevice fuzzer that requires a working EmulatedDevice backend.
 #[derive(Inspect)]
 pub struct FuzzEmulatedDevice<T: InspectMut> {
-    device: EmulatedDevice<T>,
+    device: EmulatedDevice<T, EmulatedDmaAllocator>,
 }
 
 impl<T: PciConfigSpace + MmioIntercept + InspectMut> FuzzEmulatedDevice<T> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
     pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory) -> Self {
-        Self {
-            device: EmulatedDevice::new(device, msi_set, shared_mem),
-        }
+        let allocator = EmulatedDmaAllocator::new(shared_mem.clone());
+        let device = EmulatedDevice::new(device, msi_set, allocator.into());
+
+        Self { device }
     }
 }
 
