@@ -400,6 +400,7 @@ struct UhCvmPartitionState {
     #[inspect(with = "inspect::iter_by_index")]
     vps: Vec<UhCvmVpInner>,
     shared_memory: GuestMemory,
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     #[inspect(skip)]
     isolated_memory_protector: Arc<dyn ProtectIsolatedMemory>,
     /// The emulated local APIC set.
