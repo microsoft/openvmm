@@ -66,7 +66,7 @@ pub fn report(
         let _ = write!(panic_buffer, "{}", panic);
     }
     report_raw(
-        panic_buffer.as_ref().as_bytes(),
+        panic_buffer.as_bytes(),
         stack_va_to_pa(panic_buffer.as_bytes().as_ptr().cast()),
     );
 }

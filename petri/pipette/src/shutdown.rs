@@ -65,13 +65,13 @@ pub fn handle_shutdown(request: pipette_protocol::ShutdownRequest) -> anyhow::Re
 
     // SAFETY: calling as documented
     let token = unsafe {
-        let mut token = 0;
+        let mut token = null_mut();
         OpenProcessToken(
             GetCurrentProcess(),
             TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
             &mut token,
         );
-        OwnedHandle::from_raw_handle(token as _)
+        OwnedHandle::from_raw_handle(token)
     };
 
     let tkp = TOKEN_PRIVILEGES {
@@ -86,16 +86,8 @@ pub fn handle_shutdown(request: pipette_protocol::ShutdownRequest) -> anyhow::Re
     };
 
     // SAFETY: calling as documented with an appropriate initialized struct.
-    let r = unsafe {
-        AdjustTokenPrivileges(
-            token.as_raw_handle() as isize,
-            0,
-            &tkp,
-            0,
-            null_mut(),
-            null_mut(),
-        )
-    };
+    let r =
+        unsafe { AdjustTokenPrivileges(token.as_raw_handle(), 0, &tkp, 0, null_mut(), null_mut()) };
     if r == 0 {
         return Err(std::io::Error::last_os_error()).context("failed to adjust token privileges");
     }
