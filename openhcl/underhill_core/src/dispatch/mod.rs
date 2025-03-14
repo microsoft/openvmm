@@ -713,6 +713,7 @@ impl LoadedVm {
         };
 
         let mana_state = if let Some(network_settings) = &mut self.network_settings {
+            tracing::info!("saving mana state: {:?}", mana_keepalive_flag);
             let results = network_settings.save(mana_keepalive_flag).await;
             let mut saved_states = Vec::new();
 
@@ -742,7 +743,7 @@ impl LoadedVm {
         // Only save dma manager state if we are expected to keep VF devices
         // alive across save. Otherwise, don't persist the state at all, as
         // there should be no live DMA across save.
-        let dma_manager_state = if nvme_keepalive_flag {
+        let dma_manager_state = if nvme_keepalive_flag || mana_keepalive_flag {
             use vmcore::save_restore::SaveRestore;
             Some(self.dma_manager.save().context("dma_manager save failed")?)
         } else {
