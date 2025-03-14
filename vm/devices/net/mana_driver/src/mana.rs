@@ -12,6 +12,7 @@ use crate::gdma_driver::GdmaDriver;
 use crate::queues;
 use crate::queues::Doorbell;
 use crate::queues::DoorbellPage;
+use crate::save_restore::ManaDeviceSavedState;
 use anyhow::Context;
 use futures::StreamExt;
 use futures::lock::Mutex;
@@ -76,8 +77,16 @@ impl<T: DeviceBacking> ManaDevice<T> {
         device: T,
         num_vps: u32,
         max_queues_per_vport: u16,
+        mana_state: Option<ManaDeviceSavedState>,
     ) -> anyhow::Result<Self> {
-        let mut gdma = GdmaDriver::new(driver, device, num_vps).await?;
+        let mut gdma = if let Some(ref mana_state) = mana_state {
+            tracing::info!("Restoring gdma driver from saved state");
+            GdmaDriver::restore(mana_state.gdma.clone(), device).await?
+        } else {
+            tracing::info!("Creating a new gdma driver");
+            GdmaDriver::new(driver, device, num_vps).await?
+        };
+
         gdma.test_eq().await?;
 
         gdma.verify_vf_driver_version().await?;
@@ -90,7 +99,16 @@ impl<T: DeviceBacking> ManaDevice<T> {
             .find(|dev_id| dev_id.ty == GdmaDevType::GDMA_DEVICE_MANA)
             .context("no mana device found")?;
 
-        let dev_data = gdma.register_device(dev_id).await?;
+        let dev_data = if let Some(mana_state) = mana_state {
+            tracing::info!("restoring device data from saved state");
+            GdmaRegisterDeviceResp {
+                pdid: mana_state.gdma.pdid,
+                gpa_mkey: mana_state.gdma.gpa_mkey,
+                db_id: mana_state.gdma.db_id as u32,
+            }
+        } else {
+            gdma.register_device(dev_id).await?
+        };
 
         let mut bnic = BnicDriver::new(&mut gdma, dev_id);
         let dev_config = bnic.query_dev_config().await?;
@@ -139,6 +157,18 @@ impl<T: DeviceBacking> ManaDevice<T> {
             hwc_task: None,
         };
         Ok(device)
+    }
+
+    /// Saves the device's state for servicing
+    pub async fn save(&self) -> anyhow::Result<ManaDeviceSavedState> {
+        let mut gdma = self.inner.gdma.lock().await;
+        let saved_state = ManaDeviceSavedState {
+            gdma: gdma.save().await?,
+        };
+
+        tracing::info!("Saved gdma driver state: {:?}", saved_state);
+
+        Ok(saved_state)
     }
 
     /// Returns the number of vports the device supports.

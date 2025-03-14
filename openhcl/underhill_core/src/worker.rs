@@ -82,6 +82,7 @@ use input_core::InputData;
 use input_core::MultiplexedInputHandle;
 use inspect::Inspect;
 use loader_defs::shim::MemoryVtlType;
+use mana_driver::save_restore::ManaDeviceSavedState;
 use memory_range::MemoryRange;
 use mesh::CancelContext;
 use mesh::MeshPayload;
@@ -279,6 +280,8 @@ pub struct UnderhillEnvCfg {
     pub hide_isolation: bool,
     /// Enable nvme keep alive.
     pub nvme_keep_alive: bool,
+    /// Enable mana keep alive.
+    pub mana_keep_alive: bool,
 
     /// test configuration
     pub test_configuration: Option<TestScenarioConfig>,
@@ -726,6 +729,7 @@ impl UhVmNetworkSettings {
         driver_source: &VmTaskDriverSource,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
+        servicing_mana_state: &Option<Vec<ManaDeviceSavedState>>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         tp: &AffinitizedThreadpool,
@@ -747,7 +751,7 @@ impl UhVmNetworkSettings {
             } else {
                 AllocationVisibility::Private
             },
-            persistent_allocations: false,
+            persistent_allocations: true,
         })?;
 
         let (vf_manager, endpoints, save_state) = HclNetworkVFManager::new(
@@ -760,6 +764,7 @@ impl UhVmNetworkSettings {
             vps_count as u32,
             nic_max_sub_channels,
             servicing_netvsp_state,
+            servicing_mana_state,
             self.dma_mode,
             dma_client,
         )
@@ -872,6 +877,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         threadpool: &AffinitizedThreadpool,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
+        servicing_mana_state: &Option<Vec<ManaDeviceSavedState>>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
@@ -904,6 +910,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
                 &driver_source,
                 uevent_listener,
                 servicing_netvsp_state,
+                servicing_mana_state,
                 partition,
                 state_units,
                 threadpool,
@@ -961,6 +968,24 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
             params = manager.packet_capture(params).await?;
         }
         Ok(params)
+    }
+
+    async fn save(
+        &mut self,
+        mana_keepalive_flag: bool,
+    ) -> Option<Vec<Result<ManaDeviceSavedState, anyhow::Error>>> {
+        if mana_keepalive_flag {
+            Some(
+                join_all(
+                    self.vf_managers
+                        .values()
+                        .map(|vf_manager| vf_manager.save()),
+                )
+                .await,
+            )
+        } else {
+            None
+        }
     }
 }
 
@@ -2790,6 +2815,12 @@ async fn new_underhill_vm(
             net_mana::GuestDmaMode::DirectDma
         },
     };
+
+    tracing::info!(
+        "mana servicing state on create: {:?}",
+        servicing_state.mana_state
+    );
+
     let mut netvsp_state = Vec::with_capacity(controllers.mana.len());
     if !controllers.mana.is_empty() {
         let _span = tracing::info_span!("network_settings").entered();
@@ -2802,6 +2833,7 @@ async fn new_underhill_vm(
                     tp,
                     &uevent_listener,
                     &servicing_state.emuplat.netvsp_state,
+                    &servicing_state.mana_state,
                     partition.clone(),
                     &state_units,
                     &vmbus_server,
@@ -3007,6 +3039,7 @@ async fn new_underhill_vm(
 
         _periodic_telemetry_task: periodic_telemetry_task,
         nvme_keep_alive: env_cfg.nvme_keep_alive,
+        mana_keep_alive: env_cfg.mana_keep_alive,
         test_configuration: env_cfg.test_configuration,
         dma_manager,
     };

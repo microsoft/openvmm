@@ -153,8 +153,10 @@ pub mod ged {
     /// Define servicing behavior.
     #[derive(MeshPayload, Default)]
     pub struct GuestServicingFlags {
-        /// Retain memory for DMA-attached devices.
+        /// Retain memory for DMA-attached NVMe devices.
         pub nvme_keepalive: bool,
+        /// Retain memory for DMA-attached MANA devices.
+        pub mana_keepalive: bool,
     }
 
     /// Actions a client can request that the Guest Emulation
