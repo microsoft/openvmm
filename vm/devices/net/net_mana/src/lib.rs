@@ -1412,16 +1412,26 @@ mod tests {
     /// ensures that packets can be sent and received.
     #[async_test]
     async fn test_endpoint_direct_dma(driver: DefaultDriver) {
-        test_endpoint(driver, GuestDmaMode::DirectDma).await;
+        test_endpoint(driver, GuestDmaMode::DirectDma, 1138, 1).await;
     }
 
     #[async_test]
     async fn test_endpoint_bounce_buffer(driver: DefaultDriver) {
-        test_endpoint(driver, GuestDmaMode::BounceBuffer).await;
+        test_endpoint(driver, GuestDmaMode::BounceBuffer, 1138, 1).await;
     }
 
-    async fn test_endpoint(driver: DefaultDriver, dma_mode: GuestDmaMode) {
-        const PACKET_LEN: usize = 1138;
+    #[async_test]
+    async fn test_segment_coalescing(driver: DefaultDriver) {
+        // 34 segments of 60 bytes each == 2040
+        test_endpoint(driver, GuestDmaMode::DirectDma, 2040, 34).await;
+    }
+
+    async fn test_endpoint(
+        driver: DefaultDriver,
+        dma_mode: GuestDmaMode,
+        packet_len: usize,
+        num_segments: usize,
+    ) {
         let base_len = 1 << 20;
         let payload_len = 1 << 20;
         let mem: DeviceSharedMemory = DeviceSharedMemory::new(base_len, payload_len);
@@ -1476,21 +1486,34 @@ mod tests {
             .unwrap();
 
         for i in 0..1000 {
-            let sent_data = (0..PACKET_LEN).map(|v| (i + v) as u8).collect::<Vec<u8>>();
+            let sent_data = (0..packet_len).map(|v| (i + v) as u8).collect::<Vec<u8>>();
             payload_mem.write_at(0, &sent_data).unwrap();
 
-            queues[0]
-                .tx_avail(&[TxSegment {
-                    ty: net_backend::TxSegmentType::Head(net_backend::TxMetadata {
-                        id: TxId(1),
-                        segment_count: 1,
-                        len: sent_data.len(),
-                        ..Default::default()
-                    }),
-                    gpa: 0,
-                    len: sent_data.len() as u32,
-                }])
-                .unwrap();
+            let mut segments = Vec::new();
+            let segment_len = packet_len / num_segments;
+            assert!(packet_len % num_segments == 0);
+            segments.push(TxSegment {
+                ty: net_backend::TxSegmentType::Head(net_backend::TxMetadata {
+                    id: TxId(1),
+                    segment_count: num_segments,
+                    len: sent_data.len(),
+                    ..Default::default()
+                }),
+                gpa: 0,
+                len: segment_len as u32,
+            });
+
+            for j in 0..(num_segments - 1) {
+                let gpa = (j + 1) * segment_len;
+                segments.push(TxSegment {
+                    ty: net_backend::TxSegmentType::Tail,
+                    gpa: gpa as u64,
+                    len: segment_len as u32,
+                });
+            }
+            assert!(segments.len() == num_segments);
+
+            queues[0].tx_avail(segments.as_slice()).unwrap();
 
             let mut packets = [RxId(0); 2];
             let mut done = [TxId(0); 2];
@@ -1504,7 +1527,7 @@ mod tests {
             assert_eq!(packets_n, 1);
             let rx_id = packets[0];
 
-            let mut received_data = vec![0; PACKET_LEN];
+            let mut received_data = vec![0; packet_len];
             payload_mem
                 .read_at(2048 * rx_id.0 as u64, &mut received_data)
                 .unwrap();
