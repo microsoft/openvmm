@@ -31,21 +31,26 @@ use vm_topology::processor::ProcessorTopology;
 pub struct MemoryMappings {
     vtl0: Arc<GuestMemoryMapping>,
     vtl1: Option<Arc<GuestMemoryMapping>>,
-    shared: Option<Arc<GuestMemoryMapping>>,
     #[inspect(skip)]
     vtl0_gm: GuestMemory,
     #[inspect(skip)]
     vtl1_gm: Option<GuestMemory>,
+    #[inspect(flatten)]
+    cvm_memory: Option<CvmMemory>,
+}
+
+#[derive(Inspect)]
+/// Mappings, pools, and useful types for memory management that are only
+/// available in confidential VMs.
+pub struct CvmMemory {
+    shared_mapping: Arc<GuestMemoryMapping>,
     #[inspect(skip)]
-    shared_memory: Option<GuestMemory>,
+    pub shared_gm: GuestMemory,
     #[inspect(skip)]
-    private_vtl0_memory: Option<GuestMemory>,
+    /// Includes only private VTL0 memory, not pages that have been made shared.
+    pub private_vtl0_memory: GuestMemory,
     #[inspect(skip)]
-    layout: MemoryLayout,
-    #[inspect(skip)]
-    acceptor: Option<Arc<MemoryAcceptor>>,
-    #[inspect(skip)]
-    isolation: IsolationType,
+    pub protector: Arc<dyn ProtectIsolatedMemory>,
 }
 
 impl MemoryMappings {
@@ -53,30 +58,13 @@ impl MemoryMappings {
     pub fn vtl0(&self) -> &GuestMemory {
         &self.vtl0_gm
     }
+
     pub fn vtl1(&self) -> Option<&GuestMemory> {
         self.vtl1_gm.as_ref()
     }
-    pub fn shared_memory(&self) -> Option<&GuestMemory> {
-        self.shared_memory.as_ref()
-    }
-    /// Includes only private VTL0 memory, not pages that have been made shared.
-    pub fn private_vtl0_memory(&self) -> Option<&GuestMemory> {
-        self.private_vtl0_memory.as_ref()
-    }
-    pub fn isolated_memory_protector(
-        &self,
-    ) -> anyhow::Result<Option<Arc<dyn ProtectIsolatedMemory>>> {
-        match self.isolation {
-            IsolationType::Snp | IsolationType::Tdx => Ok(self.shared.as_ref().map(|shared| {
-                Arc::new(HardwareIsolatedMemoryProtector::new(
-                    shared.clone(),
-                    self.vtl0.clone(),
-                    self.layout.clone(),
-                    self.acceptor.as_ref().unwrap().clone(),
-                )) as Arc<dyn ProtectIsolatedMemory>
-            })),
-            _ => Ok(None),
-        }
+
+    pub fn cvm_memory(&self) -> Option<&CvmMemory> {
+        self.cvm_memory.as_ref()
     }
 }
 
@@ -99,7 +87,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
     let mut validated_ranges = Vec::new();
 
     let acceptor = if params.isolation.is_isolated() {
-        Some(MemoryAcceptor::new(params.isolation)?)
+        Some(Arc::new(MemoryAcceptor::new(params.isolation)?))
     } else {
         None
     };
@@ -352,17 +340,24 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
         let private_vtl0_memory = GuestMemory::new("trusted", vtl0_mapping.clone());
 
+        let protector = Arc::new(HardwareIsolatedMemoryProtector::new(
+            shared_mapping.clone(),
+            vtl0_mapping.clone(),
+            params.mem_layout.clone(),
+            acceptor.as_ref().unwrap().clone(),
+        )) as Arc<dyn ProtectIsolatedMemory>;
+
         MemoryMappings {
             vtl0: vtl0_mapping,
             vtl1: None,
-            shared_memory: Some(shared_gm),
-            private_vtl0_memory: Some(private_vtl0_memory),
-            shared: Some(shared_mapping),
             vtl0_gm,
             vtl1_gm,
-            layout: params.mem_layout.clone(),
-            acceptor: acceptor.map(Arc::new),
-            isolation: params.isolation,
+            cvm_memory: Some(CvmMemory {
+                shared_gm,
+                private_vtl0_memory,
+                shared_mapping,
+                protector,
+            }),
         }
     } else {
         tracing::debug!("Creating VTL0 guest memory");
@@ -427,14 +422,9 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         MemoryMappings {
             vtl0: vtl0_mapping,
             vtl1: vtl1_mapping,
-            shared: None,
-            vtl0_gm: vtl0_gm.clone(),
+            vtl0_gm,
             vtl1_gm,
-            shared_memory: None,
-            private_vtl0_memory: None,
-            acceptor: acceptor.map(Arc::new),
-            layout: params.mem_layout.clone(),
-            isolation: params.isolation,
+            cvm_memory: None,
         }
     };
     Ok(gm)

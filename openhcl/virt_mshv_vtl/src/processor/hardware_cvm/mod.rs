@@ -579,10 +579,8 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::ModifySparseGpaPageHos
         };
 
         self.vp
-            .partition
+            .cvm_partition()
             .isolated_memory_protector
-            .as_ref()
-            .ok_or((HvError::AccessDenied, 0))?
             .change_host_visibility(shared, gpa_pages, &mut self.vp.tlb_flush_lock_access())
     }
 }
@@ -928,12 +926,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
             return Err((HvError::InvalidParameter, 0));
         }
 
-        let protector = self
-            .vp
-            .partition
-            .isolated_memory_protector
-            .as_ref()
-            .expect("has a memory protector");
+        let protector = &self.vp.cvm_partition().isolated_memory_protector;
 
         // A VTL cannot change its own VTL permissions until it has enabled VTL protection and
         // configured default permissions. Higher VTLs are not under this restriction (as they may
@@ -967,6 +960,30 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
             map_flags,
             &mut self.vp.tlb_flush_lock_access(),
         )
+    }
+}
+
+impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::QuerySparseGpaPageHostVisibility
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn query_gpa_visibility(
+        &mut self,
+        partition_id: u64,
+        gpa_pages: &[u64],
+        host_visibility: &mut [HostVisibilityType],
+    ) -> HvRepResult {
+        if partition_id != hvdef::HV_PARTITION_ID_SELF {
+            return Err((HvError::AccessDenied, 0));
+        }
+
+        if self.vp.partition.hide_isolation {
+            return Err((HvError::AccessDenied, 0));
+        }
+
+        self.vp
+            .cvm_partition()
+            .isolated_memory_protector
+            .query_host_visibility(gpa_pages, host_visibility)
     }
 }
 
@@ -1017,12 +1034,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
             },
         };
 
-        let protector = self
-            .vp
-            .partition
-            .isolated_memory_protector
-            .as_ref()
-            .expect("exists for a cvm");
+        let protector = &self.vp.cvm_partition().isolated_memory_protector;
 
         // Grant VTL 1 access to lower VTL memory
         tracing::debug!("Granting VTL 1 access to lower VTL memory");
@@ -1296,11 +1308,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         // is inside the UhProcessor.
         let mut access = HypercallOverlayAccess {
             vtl,
-            protector: self
-                .partition
+            protector: B::cvm_partition_state(self.shared)
                 .isolated_memory_protector
-                .as_ref()
-                .unwrap()
                 .as_ref(),
             // Don't call the helper method, break out into partial borrows so we
             // can interact with the hv at the same time.
@@ -1347,11 +1356,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
         let protections = HvMapGpaFlags::from(value.default_vtl_protection_mask() as u32);
 
-        let protector = self
-            .partition
-            .isolated_memory_protector
-            .as_ref()
-            .expect("isolated memory protector must exist for a CVM");
+        let protector = &self.cvm_partition().isolated_memory_protector;
         // VTL protection cannot be disabled once enabled.
         if !value.enable_vtl_protection() && protector.vtl1_protections_enabled() {
             return Err(HvError::InvalidRegisterValue);

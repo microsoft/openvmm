@@ -123,7 +123,6 @@ use uevent::UeventListener;
 use underhill_attestation::AttestationType;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
-use user_driver::DmaClient;
 use virt::Partition;
 use virt::VpIndex;
 use virt::X86Partition;
@@ -1475,8 +1474,7 @@ async fn new_underhill_vm(
     let device_memory = if hide_isolation || !isolation.is_hardware_isolated() {
         gm.vtl0()
     } else {
-        gm.shared_memory()
-            .expect("isolated VMs should have shared memory")
+        &gm.cvm_memory().unwrap().shared_gm
     };
 
     let mut dma_manager = OpenhclDmaManager::new(
@@ -1706,12 +1704,14 @@ async fn new_underhill_vm(
             gm.vtl1().cloned().unwrap_or(GuestMemory::empty()),
         ]
         .into(),
-        shared_memory: gm.shared_memory().cloned(),
         #[cfg(guest_arch = "x86_64")]
         cpuid,
         crash_notification_send,
         vmtime: &vmtime_source,
-        isolated_memory_protector: gm.isolated_memory_protector()?,
+        cvm_params: gm.cvm_memory().map(|cvm_mem| virt_mshv_vtl::CvmLateParams {
+            shared_gm: cvm_mem.shared_gm.clone(),
+            isolated_memory_protector: cvm_mem.protector.clone(),
+        }),
         shared_dma_client: dma_manager
             .new_client(DmaClientParameters {
                 device_name: "partition-shared".into(),
@@ -1720,10 +1720,7 @@ async fn new_underhill_vm(
                 persistent_allocations: false,
             })
             .ok()
-            .map(|client| {
-                let client: Arc<dyn DmaClient> = client;
-                client
-            }),
+            .map(|client| client as _),
         private_dma_client: dma_manager
             .new_client(DmaClientParameters {
                 device_name: "partition-private".into(),
@@ -1732,10 +1729,7 @@ async fn new_underhill_vm(
                 persistent_allocations: false,
             })
             .ok()
-            .map(|client| {
-                let client: Arc<dyn DmaClient> = client;
-                client
-            }),
+            .map(|client| client as _),
     };
 
     let (partition, vps) = proto_partition
@@ -2635,7 +2629,7 @@ async fn new_underhill_vm(
         // N.B. VmBus uses untrusted memory by default for relay channels, and uses additional
         //      trusted memory only for confidential channels offered by Underhill itself.
         let vmbus = VmbusServer::builder(&tp, synic.clone(), device_memory.clone())
-            .private_gm(gm.private_vtl0_memory().cloned())
+            .private_gm(gm.cvm_memory().map(|x| &x.private_vtl0_memory).cloned())
             .hvsock_notify(hvsock_notify)
             .server_relay(server_relay)
             .max_version(max_version)
