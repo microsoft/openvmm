@@ -25,6 +25,8 @@ mod vp;
 mod vpci;
 mod worker;
 mod wrapped_partition;
+mod dma_manager;
+mod dma_client;
 
 // `pub` so that the missing_docs warning fires for options without
 // documentation.
