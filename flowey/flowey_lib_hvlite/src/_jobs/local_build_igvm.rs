@@ -45,6 +45,7 @@ pub struct Customizations {
 flowey_request! {
     pub struct Params {
         pub artifact_dir: ReadVar<PathBuf>,
+        pub bin_path: Option<WriteVar<PathBuf>>,
         pub done: WriteVar<SideEffect>,
 
         pub base_recipe: OpenhclIgvmRecipe,
@@ -66,6 +67,7 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params {
             artifact_dir,
+            bin_path,
             done,
 
             base_recipe,
@@ -233,6 +235,7 @@ impl SimpleFlowNode for Node {
             let built_openhcl_boot = built_openhcl_boot.claim(ctx);
             let built_openhcl_igvm = built_openhcl_igvm.claim(ctx);
             let built_sidecar = built_sidecar.claim(ctx);
+            let bin_path = bin_path.claim(ctx);
             move |rt| {
                 let output_dir = rt
                     .read(artifact_dir)
@@ -271,6 +274,14 @@ impl SimpleFlowNode for Node {
                     igvm_bin,
                     output_dir.join(format!("openhcl-{build_label}.bin")),
                 )?;
+
+                if let Some(bin_path) = bin_path {
+                    rt.write(
+                        bin_path,
+                        &output_dir.join(format!("openhcl-{build_label}.bin")),
+                    );
+                }
+
                 if let Some(igvm_map) = igvm_map {
                     fs_err::copy(
                         igvm_map,
