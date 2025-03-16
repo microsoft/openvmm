@@ -19,6 +19,7 @@ pub mod lockmem;
 pub mod memory;
 pub mod page_allocator;
 pub mod vfio;
+pub mod dma;
 
 /// An interface to access device hardware.
 pub trait DeviceBacking: 'static + Send + Inspect {
