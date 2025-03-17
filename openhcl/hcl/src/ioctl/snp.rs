@@ -230,7 +230,7 @@ impl ProcessorRunner<'_, Snp<'_>> {
     pub fn vmsas_mut(&mut self) -> [VmsaWrapper<'_, &mut SevVmsa>; 2] {
         self.state
             .vmsa
-            .each_ref()
+            .each_mut()
             .map(|vmsa| {
                 // SAFETY: the VMSA will not be concurrently accessed by the processor
                 // while this VP is in VTL2.
