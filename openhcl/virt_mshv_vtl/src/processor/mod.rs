@@ -16,13 +16,14 @@ cfg_if::cfg_if! {
 
         use crate::TlbFlushLockAccess;
         use crate::VtlCrash;
+        use bitvec::prelude::BitArray;
+        use bitvec::prelude::Lsb0;
         use hvdef::HvX64RegisterName;
         use virt::vp::MpState;
         use virt::x86::MsrError;
         use virt_support_apic::LocalApic;
         use virt_support_x86emu::translate::TranslationRegisters;
-        use bitvec::prelude::BitArray;
-        use bitvec::prelude::Lsb0;
+        use virt::vp::AccessVpState;
     } else if #[cfg(guest_arch = "aarch64")] {
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
@@ -69,7 +70,6 @@ use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt::io::CpuIo;
-use virt::vp::AccessVpState;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::vmtime::VmTimeAccess;
 
