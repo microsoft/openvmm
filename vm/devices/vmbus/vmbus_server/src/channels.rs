@@ -33,7 +33,6 @@ use vmbus_channel::bus::RestoredGpadl;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
 use vmbus_core::MaxVersionInfo;
-use vmbus_core::MonitorPageGpas;
 use vmbus_core::OutgoingMessage;
 use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
