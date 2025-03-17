@@ -4,7 +4,6 @@
 //! Interface to `mshv_vtl` driver.
 
 // Used to implement the [`private::BackingPrivate`] trait.
-#![expect(private_interfaces)]
 
 mod deferred;
 
@@ -60,7 +59,6 @@ use hvdef::hypercall::ModifyHostVisibility;
 use memory_range::MemoryRange;
 use pal::unix::pthread::*;
 use parking_lot::Mutex;
-use private::BackingPrivate;
 use sidecar_client::NewSidecarClientError;
 use sidecar_client::SidecarClient;
 use sidecar_client::SidecarRun;
@@ -1643,40 +1641,24 @@ pub enum NoRunner {
 }
 
 /// An isolation-type-specific backing for a processor runner.
-pub trait Backing<'a>: BackingPrivate<'a> {}
+#[expect(private_interfaces, missing_docs)]
+pub trait Backing<'a>: Sized {
+    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>, hcl: &Hcl) -> Result<Self, NoRunner>;
 
-impl<'a, T: BackingPrivate<'a>> Backing<'a> for T {}
+    fn try_set_reg(
+        runner: &mut ProcessorRunner<'_, Self>,
+        vtl: GuestVtl,
+        name: HvRegisterName,
+        value: HvRegisterValue,
+    ) -> Result<bool, Error>;
 
-mod private {
-    use super::Error;
-    use super::Hcl;
-    use super::HclVp;
-    use super::NoRunner;
-    use super::ProcessorRunner;
-    use crate::GuestVtl;
-    use hvdef::HvRegisterName;
-    use hvdef::HvRegisterValue;
-    use sidecar_client::SidecarVp;
+    fn must_flush_regs_on(runner: &ProcessorRunner<'_, Self>, name: HvRegisterName) -> bool;
 
-    pub trait BackingPrivate<'a>: Sized {
-        fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>, hcl: &Hcl)
-        -> Result<Self, NoRunner>;
-
-        fn try_set_reg(
-            runner: &mut ProcessorRunner<'_, Self>,
-            vtl: GuestVtl,
-            name: HvRegisterName,
-            value: HvRegisterValue,
-        ) -> Result<bool, Error>;
-
-        fn must_flush_regs_on(runner: &ProcessorRunner<'_, Self>, name: HvRegisterName) -> bool;
-
-        fn try_get_reg(
-            runner: &ProcessorRunner<'_, Self>,
-            vtl: GuestVtl,
-            name: HvRegisterName,
-        ) -> Result<Option<HvRegisterValue>, Error>;
-    }
+    fn try_get_reg(
+        runner: &ProcessorRunner<'_, Self>,
+        vtl: GuestVtl,
+        name: HvRegisterName,
+    ) -> Result<Option<HvRegisterValue>, Error>;
 }
 
 impl<T> Drop for ProcessorRunner<'_, T> {

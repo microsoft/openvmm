@@ -412,7 +412,8 @@ fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {
         .with_field_size(field_size)
 }
 
-impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
+#[expect(private_interfaces)]
+impl<'a> super::Backing<'a> for Tdx<'a> {
     fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>, hcl: &Hcl) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
         let super::BackingState::Tdx {

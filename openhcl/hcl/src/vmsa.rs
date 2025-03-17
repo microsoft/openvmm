@@ -24,7 +24,7 @@ pub struct VmsaWrapper<'a, T> {
 
 impl<'a, T> VmsaWrapper<'a, T> {
     /// Create a VmsaWrapper
-    pub fn new(vmsa: T, bitmap: &'a [u8; 64]) -> Self {
+    pub(crate) fn new(vmsa: T, bitmap: &'a [u8; 64]) -> Self {
         VmsaWrapper { vmsa, bitmap }
     }
 }

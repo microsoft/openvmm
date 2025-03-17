@@ -12,7 +12,6 @@ use super::NoRunner;
 use super::ProcessorRunner;
 use super::TranslateGvaToGpaError;
 use super::TranslateResult;
-use super::private::BackingPrivate;
 use crate::protocol::hcl_cpu_context_x64;
 use hvdef::HV_PARTITION_ID_SELF;
 use hvdef::HV_VP_INDEX_SELF;
@@ -169,7 +168,8 @@ impl ProcessorRunner<'_, MshvX64<'_>> {
     }
 }
 
-impl<'a> BackingPrivate<'a> for MshvX64<'a> {
+#[expect(private_interfaces)]
+impl<'a> super::Backing<'a> for MshvX64<'a> {
     fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
         let BackingState::Mshv { reg_page } = &vp.backing else {
             return Err(NoRunner::MismatchedIsolation);
