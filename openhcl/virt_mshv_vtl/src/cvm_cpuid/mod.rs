@@ -181,7 +181,7 @@ pub struct ParsedCpuidEntry {
 /// Prepares and caches the results that should be returned for hardware CVMs.
 #[derive(Inspect)]
 pub struct CpuidResults {
-    #[inspect(iter_by_key)]
+    #[inspect(with = "inspect_helpers::cpuid_table")]
     results: HashMap<CpuidFunction, CpuidEntry>,
     #[inspect(hex)]
     max_extended_state: u64,
@@ -195,8 +195,42 @@ type CpuidSubtable = HashMap<u32, CpuidResult>;
 #[derive(Inspect)]
 #[inspect(tag = "type")]
 enum CpuidEntry {
-    Leaf(#[inspect(debug)] CpuidResult),
-    Subtable(#[inspect(iter_by_key)] CpuidSubtable),
+    #[inspect(transparent)]
+    Leaf(#[inspect(with = "inspect_helpers::cpuid_result")] CpuidResult),
+    #[inspect(transparent)]
+    Subtable(#[inspect(with = "inspect_helpers::cpuid_subtable")] CpuidSubtable),
+}
+
+mod inspect_helpers {
+    use super::*;
+    use inspect::AsHex;
+    use inspect::Inspect;
+
+    pub(super) fn cpuid_result(result: &CpuidResult) -> impl Inspect + '_ {
+        inspect::adhoc(|req| {
+            req.respond()
+                .field("eax", AsHex(result.eax))
+                .field("ebx", AsHex(result.ebx))
+                .field("ecx", AsHex(result.ecx))
+                .field("edx", AsHex(result.edx));
+        })
+    }
+
+    pub(super) fn cpuid_table(table: &HashMap<CpuidFunction, CpuidEntry>) -> impl Inspect + '_ {
+        inspect::iter_by_key(
+            table
+                .iter()
+                .map(|(key, value)| (format!("{:?}", key), value)),
+        )
+    }
+
+    pub(super) fn cpuid_subtable(table: &CpuidSubtable) -> impl Inspect + '_ {
+        inspect::iter_by_key(
+            table
+                .iter()
+                .map(|(key, value)| (format!("{:x?}", key), cpuid_result(value))),
+        )
+    }
 }
 
 /// Guest state needed to compute the cpuid result for a specific execution
