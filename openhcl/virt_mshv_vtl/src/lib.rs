@@ -393,7 +393,6 @@ impl UhCvmVpState {
 /// Partition-wide state for CVMs.
 struct UhCvmPartitionState {
     #[cfg(guest_arch = "x86_64")]
-    #[inspect(skip)]
     cpuid: cvm_cpuid::CpuidResults,
     /// VPs that have locked their TLB.
     #[inspect(

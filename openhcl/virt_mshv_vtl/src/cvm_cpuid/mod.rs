@@ -9,6 +9,7 @@ use self::snp::SnpCpuidSupport;
 use self::tdx::TdxCpuidInitializer;
 use self::tdx::TdxCpuidSupport;
 use core::arch::x86_64::CpuidResult;
+use inspect::Inspect;
 use masking::CpuidResultMask;
 use snp::SnpCpuidInitializer;
 use std::boxed::Box;
@@ -88,7 +89,7 @@ trait CpuidArchInitializer {
 }
 
 /// Architecture-specific behaviors for cpuid results during runtime
-trait CpuidArchSupport: Sync + Send {
+trait CpuidArchSupport: Sync + Send + Inspect {
     /// Get the cpuid result of the leaf/subleaf but modified based on guest
     /// context
     fn process_guest_result(
@@ -178,8 +179,11 @@ pub struct ParsedCpuidEntry {
 }
 
 /// Prepares and caches the results that should be returned for hardware CVMs.
+#[derive(Inspect)]
 pub struct CpuidResults {
+    #[inspect(iter_by_key)]
     results: HashMap<CpuidFunction, CpuidEntry>,
+    #[inspect(hex)]
     max_extended_state: u64,
     arch_support: Box<dyn CpuidArchSupport>,
     vps_per_socket: u32,
@@ -188,9 +192,11 @@ pub struct CpuidResults {
 type CpuidSubtable = HashMap<u32, CpuidResult>;
 
 /// Entry in [`CpuidResults`] for caching leaf value or its subleaves.
+#[derive(Inspect)]
+#[inspect(tag = "type")]
 enum CpuidEntry {
-    Leaf(CpuidResult),
-    Subtable(CpuidSubtable),
+    Leaf(#[inspect(debug)] CpuidResult),
+    Subtable(#[inspect(iter_by_key)] CpuidSubtable),
 }
 
 /// Guest state needed to compute the cpuid result for a specific execution
