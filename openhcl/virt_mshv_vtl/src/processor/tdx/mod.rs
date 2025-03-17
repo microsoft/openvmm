@@ -5,7 +5,7 @@
 
 mod tlb_flush;
 
-use super::Backing;
+use super::BackingPrivate;
 use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
 use super::UhEmulationState;
@@ -571,7 +571,7 @@ impl TdxBacked {
 }
 
 #[expect(private_interfaces)]
-impl Backing for TdxBacked {
+impl BackingPrivate for TdxBacked {
     type HclBacking<'tdx> = Tdx<'tdx>;
     type Shared = TdxBackedShared;
     type EmulationCache = TdxEmulationCache;

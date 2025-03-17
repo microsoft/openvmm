@@ -34,13 +34,10 @@ cfg_if::cfg_if! {
 use super::Error;
 use super::UhPartitionInner;
 use super::UhVpInner;
-use crate::BackingShared;
 use crate::GuestVtl;
 use crate::WakeReason;
 use hcl::ioctl::ProcessorRunner;
-use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::message_queues::MessageQueues;
-use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
@@ -59,8 +56,8 @@ use pal_async::driver::PollImpl;
 use pal_async::timer::PollTimer;
 use pal_uring::IdleControl;
 use parking_lot::Mutex;
+use private::BackingPrivate;
 use std::convert::Infallible;
-use std::future::Future;
 use std::future::poll_fn;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -171,81 +168,104 @@ impl LapicState {
     }
 }
 
-pub(crate) struct BackingParams<'a, 'b, T: Backing> {
+struct BackingParams<'a, 'b, T: Backing> {
     partition: &'a UhPartitionInner,
     vp_info: &'a TargetVpInfo,
     runner: &'a mut ProcessorRunner<'b, T::HclBacking<'b>>,
 }
 
-#[expect(private_interfaces, missing_docs)]
-pub trait Backing: 'static + Sized + InspectMut + Sized {
-    type HclBacking<'b>: hcl::ioctl::Backing<'b>;
-    type EmulationCache;
-    type Shared;
+mod private {
+    use super::BackingParams;
+    use super::UhRunVpError;
+    use super::vp_state;
+    use crate::BackingShared;
+    use crate::Error;
+    use crate::GuestVtl;
+    use crate::processor::UhProcessor;
+    use hv1_emulator::hv::ProcessorVtlHv;
+    use hv1_emulator::synic::ProcessorSynic;
+    use inspect::InspectMut;
+    use std::future::Future;
+    use virt::StopVp;
+    use virt::VpHaltReason;
+    use virt::io::CpuIo;
+    use virt::vp::AccessVpState;
 
-    fn shared(shared: &BackingShared) -> &Self::Shared;
+    #[expect(private_interfaces)]
+    pub trait BackingPrivate: 'static + Sized + InspectMut + Sized {
+        type HclBacking<'b>: hcl::ioctl::Backing<'b>;
+        type EmulationCache;
+        type Shared;
 
-    fn new(params: BackingParams<'_, '_, Self>, shared: &Self::Shared) -> Result<Self, Error>;
+        fn shared(shared: &BackingShared) -> &Self::Shared;
 
-    type StateAccess<'p, 'a>: AccessVpState<Error = vp_state::Error>
-    where
-        Self: 'a + 'p,
-        'p: 'a;
+        fn new(params: BackingParams<'_, '_, Self>, shared: &Self::Shared) -> Result<Self, Error>;
 
-    fn init(this: &mut UhProcessor<'_, Self>);
+        type StateAccess<'p, 'a>: AccessVpState<Error = vp_state::Error>
+        where
+            Self: 'a + 'p,
+            'p: 'a;
 
-    fn access_vp_state<'a, 'p>(
-        this: &'a mut UhProcessor<'p, Self>,
-        vtl: GuestVtl,
-    ) -> Self::StateAccess<'p, 'a>;
+        fn init(this: &mut UhProcessor<'_, Self>);
 
-    fn run_vp(
-        this: &mut UhProcessor<'_, Self>,
-        dev: &impl CpuIo,
-        stop: &mut StopVp<'_>,
-    ) -> impl Future<Output = Result<(), VpHaltReason<UhRunVpError>>>;
+        fn access_vp_state<'a, 'p>(
+            this: &'a mut UhProcessor<'p, Self>,
+            vtl: GuestVtl,
+        ) -> Self::StateAccess<'p, 'a>;
 
-    /// Process any pending APIC work.
-    fn poll_apic(
-        this: &mut UhProcessor<'_, Self>,
-        vtl: GuestVtl,
-        scan_irr: bool,
-    ) -> Result<(), UhRunVpError>;
+        fn run_vp(
+            this: &mut UhProcessor<'_, Self>,
+            dev: &impl CpuIo,
+            stop: &mut StopVp<'_>,
+        ) -> impl Future<Output = Result<(), VpHaltReason<UhRunVpError>>>;
 
-    /// Requests the VP to exit when an external interrupt is ready to be
-    /// delivered.
-    ///
-    /// Only used when the hypervisor implements the APIC.
-    fn request_extint_readiness(this: &mut UhProcessor<'_, Self>);
+        /// Process any pending APIC work.
+        fn poll_apic(
+            this: &mut UhProcessor<'_, Self>,
+            vtl: GuestVtl,
+            scan_irr: bool,
+        ) -> Result<(), UhRunVpError>;
 
-    /// Requests the VP to exit when any of the specified SINTs have a free
-    /// message slot.
-    ///
-    /// This is used for hypervisor-managed and untrusted SINTs.
-    fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
+        /// Requests the VP to exit when an external interrupt is ready to be
+        /// delivered.
+        ///
+        /// Only used when the hypervisor implements the APIC.
+        fn request_extint_readiness(this: &mut UhProcessor<'_, Self>);
 
-    /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
-    /// Returns whether interrupt reprocessing is required.
-    fn handle_cross_vtl_interrupts(
-        this: &mut UhProcessor<'_, Self>,
-        dev: &impl CpuIo,
-    ) -> Result<bool, UhRunVpError>;
+        /// Requests the VP to exit when any of the specified SINTs have a free
+        /// message slot.
+        ///
+        /// This is used for hypervisor-managed and untrusted SINTs.
+        fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
 
-    fn handle_vp_start_enable_vtl_wake(
-        _this: &mut UhProcessor<'_, Self>,
-        _vtl: GuestVtl,
-    ) -> Result<(), UhRunVpError>;
+        /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
+        /// Returns whether interrupt reprocessing is required.
+        fn handle_cross_vtl_interrupts(
+            this: &mut UhProcessor<'_, Self>,
+            dev: &impl CpuIo,
+        ) -> Result<bool, UhRunVpError>;
 
-    fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
+        fn handle_vp_start_enable_vtl_wake(
+            _this: &mut UhProcessor<'_, Self>,
+            _vtl: GuestVtl,
+        ) -> Result<(), UhRunVpError>;
 
-    fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv>;
-    fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv>;
+        fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
 
-    fn untrusted_synic(&self) -> Option<&ProcessorSynic>;
-    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
+        fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv>;
+        fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv>;
 
-    fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool;
+        fn untrusted_synic(&self) -> Option<&ProcessorSynic>;
+        fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
+
+        fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool;
+    }
 }
+
+/// Processor backing.
+pub trait Backing: BackingPrivate {}
+
+impl<T: BackingPrivate> Backing for T {}
 
 pub(crate) struct BackingSharedParams {
     pub cvm_state: Option<crate::UhCvmPartitionState>,

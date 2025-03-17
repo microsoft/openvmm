@@ -7,8 +7,8 @@
 
 type VpRegisterName = HvX64RegisterName;
 
-use super::super::Backing;
 use super::super::BackingParams;
+use super::super::BackingPrivate;
 use super::super::UhEmulationState;
 use super::super::UhRunVpError;
 use super::super::signal_mnf;
@@ -135,7 +135,7 @@ pub struct MshvEmulationCache {
 }
 
 #[expect(private_interfaces)]
-impl Backing for HypervisorBackedX86 {
+impl BackingPrivate for HypervisorBackedX86 {
     type HclBacking<'mshv> = MshvX64<'mshv>;
     type Shared = HypervisorBackedX86Shared;
     type EmulationCache = MshvEmulationCache;

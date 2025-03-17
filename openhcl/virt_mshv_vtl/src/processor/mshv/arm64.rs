@@ -7,8 +7,8 @@
 
 type VpRegisterName = HvArm64RegisterName;
 
-use super::super::Backing;
 use super::super::BackingParams;
+use super::super::BackingPrivate;
 use super::super::UhRunVpError;
 use super::super::signal_mnf;
 use super::super::vp_state;
@@ -93,7 +93,7 @@ struct ProcessorStatsArm64 {
 }
 
 #[expect(private_interfaces)]
-impl Backing for HypervisorBackedArm64 {
+impl BackingPrivate for HypervisorBackedArm64 {
     type HclBacking<'mshv> = MshvArm64;
     type EmulationCache = UhCpuStateCache;
     type Shared = HypervisorBackedArm64Shared;
