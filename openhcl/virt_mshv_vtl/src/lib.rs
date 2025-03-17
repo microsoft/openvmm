@@ -245,7 +245,7 @@ struct UhPartitionInner {
 #[derive(Inspect)]
 #[inspect(external_tag)]
 #[doc(hidden)]
-enum BackingShared {
+pub enum BackingShared {
     Hypervisor(#[inspect(flatten)] HypervisorBackedShared),
     #[cfg(guest_arch = "x86_64")]
     Snp(#[inspect(flatten)] SnpBackedShared),

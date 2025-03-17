@@ -267,7 +267,6 @@ impl SnpBackedShared {
     }
 }
 
-#[expect(private_interfaces)]
 impl Backing for SnpBacked {
     type HclBacking<'snp> = hcl::ioctl::snp::Snp<'snp>;
     type Shared = SnpBackedShared;

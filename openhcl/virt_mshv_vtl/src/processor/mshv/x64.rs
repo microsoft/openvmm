@@ -134,7 +134,6 @@ pub struct MshvEmulationCache {
     rflags: RFlags,
 }
 
-#[expect(private_interfaces)]
 impl Backing for HypervisorBackedX86 {
     type HclBacking<'mshv> = MshvX64<'mshv>;
     type Shared = HypervisorBackedX86Shared;

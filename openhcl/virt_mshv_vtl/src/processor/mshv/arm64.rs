@@ -92,7 +92,6 @@ struct ProcessorStatsArm64 {
     synic_deliverable: Counter,
 }
 
-#[expect(private_interfaces)]
 impl Backing for HypervisorBackedArm64 {
     type HclBacking<'mshv> = MshvArm64;
     type EmulationCache = UhCpuStateCache;

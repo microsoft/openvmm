@@ -171,13 +171,14 @@ impl LapicState {
     }
 }
 
-pub(crate) struct BackingParams<'a, 'b, T: Backing> {
+#[doc(hidden)]
+pub struct BackingParams<'a, 'b, T: Backing> {
     partition: &'a UhPartitionInner,
     vp_info: &'a TargetVpInfo,
     runner: &'a mut ProcessorRunner<'b, T::HclBacking<'b>>,
 }
 
-#[expect(private_interfaces, missing_docs)]
+#[expect(missing_docs)]
 pub trait Backing: 'static + Sized + InspectMut + Sized {
     type HclBacking<'b>: hcl::ioctl::Backing<'b>;
     type EmulationCache;

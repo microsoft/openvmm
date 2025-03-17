@@ -570,7 +570,6 @@ impl TdxBacked {
     }
 }
 
-#[expect(private_interfaces)]
 impl Backing for TdxBacked {
     type HclBacking<'tdx> = Tdx<'tdx>;
     type Shared = TdxBackedShared;
