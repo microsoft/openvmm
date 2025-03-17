@@ -1395,6 +1395,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8975ffdaa0ef3661bfe02dbdcc06c9f829dfafe6a3c474de366a8d5e44276921"
 
 [[package]]
+name = "dma_guest_memory_wrapper"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chipset_device",
+ "guestmem",
+ "inspect",
+ "parking_lot",
+ "pci_core",
+ "sparse_mmap",
+ "user_driver",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
