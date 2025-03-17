@@ -220,7 +220,7 @@ mod inspect_helpers {
         inspect::iter_by_key(
             table
                 .iter()
-                .map(|(key, value)| (format!("{:?}", key), value)),
+                .map(|(key, value)| (format!("{:?} ({:x})", key, key.0), value)),
         )
     }
 
