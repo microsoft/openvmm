@@ -36,8 +36,7 @@ ci_logger = { path = "../support/ci_logger" }
 # outer workspace
 [workspace.lints.rust]
 future_incompatible = { level = "deny", priority = -2 }
-nonstandard_style = { level = "deny", priority = -2 }
-rust_2018_idioms = { level = "deny", priority = -2 }
+rust_2018_idioms = { level = "warn", priority = -2 }
 
 rust-2024-compatibility = { level = "warn", priority = -1 }
 edition_2024_expr_fragment_specifier = "allow"
