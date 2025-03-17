@@ -2712,58 +2712,52 @@ impl LoadedVm {
             return Ok(());
         }
 
-        let r = async {
-            // Grab the staged IGVM file.
-            let next_igvm_file = self
-                .inner
-                .next_igvm_file
-                .take()
-                .context("no staged igvm file")?;
+        // Grab the staged IGVM file.
+        let next_igvm_file = self
+            .inner
+            .next_igvm_file
+            .take()
+            .context("no staged igvm file")?;
 
-            // Stop the partition and VTL2 vmbus so that we can reset vmbus and
-            // reset the VTL2 register state.
-            //
-            // When these units will be resumed when `stopped_units` is dropped.
-            let vtl2_vmbus = self
-                .inner
-                .vtl2_vmbus_server
-                .as_ref()
-                .context("missing vtl2 vmbus")?
-                .unit_handle();
+        // Stop the partition and VTL2 vmbus so that we can reset vmbus and
+        // reset the VTL2 register state.
+        //
+        // When these units will be resumed when `stopped_units` is dropped.
+        let vtl2_vmbus = self
+            .inner
+            .vtl2_vmbus_server
+            .as_ref()
+            .context("missing vtl2 vmbus")?;
 
-            // FUTURE: instead of stopping the partition as a state unit, just stop
-            // the VPs via a side call to the partition unit. This distinction will
-            // become important when stopping a VM stops the VM's perception of
-            // time--we don't want to stop VM time during VTL2 servicing.
-            self.state_units
-                .stop_subset([vtl2_vmbus, self.inner.partition_unit.unit_handle()])
-                .await;
+        // Stop the VPs so that VTL2 state can be replaced.
+        let stop_vps = self.inner.partition_unit.temporarily_stop_vps().await;
 
-            // Reset vmbus VTL2 state so that all DMA transactions to VTL2 memory
-            // stop. We don't need to reset the individual devices, since resetting
-            // vmbus will close all the channels.
-            self.state_units
-                .force_reset([vtl2_vmbus])
-                .await
-                .context("failed to reset vtl2 vmbus")?;
+        // Reset vmbus VTL2 state so that all DMA transactions to VTL2
+        // memory stop. We don't need to reset the individual devices, since
+        // resetting vmbus will close all the channels.
+        //
+        // This must be done after the VPs have been stopped to avoid
+        // confusing VTL2 and to ensure that VTL2 does not send any
+        // additional vmbus messages.
+        vtl2_vmbus
+            .control()
+            .force_reset()
+            .await
+            .context("failed to reset vtl2 vmbus")?;
 
-            // Reload the VTL2 firmware.
-            //
-            // When the initial registers are set, this will implicitly reset VTL2
-            // state as well.
-            let _old_igvm_file = self.inner.igvm_file.replace(next_igvm_file);
-            self.inner
-                .load_firmware(true)
-                .await
-                .context("failed to reload VTL2 firmware")?;
+        // Reload the VTL2 firmware.
+        //
+        // When the initial registers are set, this will implicitly reset VTL2
+        // state as well.
+        let _old_igvm_file = self.inner.igvm_file.replace(next_igvm_file);
+        self.inner
+            .load_firmware(true)
+            .await
+            .context("failed to reload VTL2 firmware")?;
 
-            Ok(())
-        }
-        .await;
-
-        // Resume the stopped units.
-        self.state_units.start_stopped_units().await;
-        r
+        // OK to resume the VPs now.
+        drop(stop_vps);
+        Ok(())
     }
 
     /// Get the associated hvsock relay for a given vtl, if any.

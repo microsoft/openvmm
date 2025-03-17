@@ -469,9 +469,8 @@ impl StateUnits {
         self.running
     }
 
-    /// Starts any units that are individually stopped (either because of a call
-    /// to [`StateUnits::stop_subset`] or because they were added via
-    /// [`StateUnits::add`] while the VM was running.
+    /// Starts any units that are individually stopped, because they were added
+    /// via [`StateUnits::add`] while the VM was running.
     ///
     /// Does nothing if all units are stopped, via [`StateUnits::stop`].
     pub async fn start_stopped_units(&mut self) {
@@ -513,62 +512,6 @@ impl StateUnits {
         )
         .await;
         self.running = false;
-    }
-
-    /// Stops just the units in `units`.
-    ///
-    /// This can be useful, for example, if you need to temporarily stop the
-    /// virtual processors for a short time without stopping the VM devices
-    /// (which might itself take too long).
-    ///
-    /// Units within this set will be stopped in reverse dependency order, but
-    /// other units that have dependencies on the units being stopped will
-    /// continue running.
-    pub async fn stop_subset(&mut self, units: impl IntoIterator<Item = &'_ UnitHandle>) {
-        if self.running {
-            self.run_op(
-                "stop",
-                Some(&units.into_iter().map(|h| h.id.id).collect::<Vec<_>>()),
-                State::Running,
-                State::Stopping,
-                State::Stopped,
-                StateRequest::Stop,
-                |_, _| Some(()),
-                |unit| &unit.dependents,
-            )
-            .await;
-        }
-    }
-
-    /// Resets just the units in `units`. The units must be stopped, either via
-    /// a call to [`StateUnits::stop`] or [`StateUnits::stop_subset`].
-    ///
-    /// Units within this set will be reset in dependency order, but other units
-    /// that have dependencies on the units being reset will not be reset. This
-    /// may cause inconsistencies in VM state depending on the details of the
-    /// state units being reset, so this must be used with knowledge of the
-    /// state units.
-    ///
-    /// Panics if the specified units are not stopped.
-    pub async fn force_reset(
-        &mut self,
-        units: impl IntoIterator<Item = &'_ UnitHandle>,
-    ) -> Result<(), StateTransitionError> {
-        let r = self
-            .run_op(
-                "reset",
-                Some(&units.into_iter().map(|h| h.id.id).collect::<Vec<_>>()),
-                State::Stopped,
-                State::Resetting,
-                State::Stopped,
-                StateRequest::Reset,
-                |_, _| Some(()),
-                |unit| &unit.dependencies,
-            )
-            .await;
-
-        check("force_reset", r)?;
-        Ok(())
     }
 
     /// Resets all the state units.
@@ -866,8 +809,6 @@ struct ReadyState {
 impl ReadySet {
     async fn wait(&self, op: &str, id: u64, deps: &[u64]) -> bool {
         for dep in deps {
-            // Note that the dependency might not be found if this is part of
-            // `stop_subset` or `TemporaryStop::reset`.
             if let Some(dep) = self.0.get(dep) {
                 if !dep.ready.is_ready() {
                     tracing::debug!(
@@ -1183,7 +1124,7 @@ mod tests {
 
         async fn restore(&mut self, _state: SavedStateBlob) -> Result<(), RestoreError> {
             pal_async::timer::PolledTimer::new(&self.driver)
-                .sleep(Duration::from_secs(1))
+                .sleep(Duration::from_millis(100))
                 .await;
 
             self.dep.store(true, Ordering::Relaxed);
@@ -1208,7 +1149,7 @@ mod tests {
 
         let a_val = Arc::new(AtomicBool::new(true));
 
-        let a = units
+        let _a = units
             .add("a")
             .spawn(&driver, |recv| {
                 run_unit(
@@ -1233,13 +1174,7 @@ mod tests {
         units.stop().await;
         units.start().await;
 
-        units.stop_subset([a.handle()]).await;
-        units.start_stopped_units().await;
-
         units.stop().await;
-
-        units.stop_subset([a.handle()]).await;
-        units.start_stopped_units().await;
 
         let state = units.save().await.unwrap();
 
