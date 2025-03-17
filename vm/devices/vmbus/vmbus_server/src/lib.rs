@@ -971,10 +971,11 @@ impl ServerTask {
     }
 
     fn handle_reset(&mut self, rpc: Rpc<(), ()>) {
-        if self.inner.reset_done.is_empty() {
+        let needs_reset = self.inner.reset_done.is_empty();
+        self.inner.reset_done.push(rpc);
+        if needs_reset {
             self.server.with_notifier(&mut self.inner).reset();
         }
-        self.inner.reset_done.push(rpc);
     }
 
     fn handle_relay_response(&mut self, response: ModifyConnectionResponse) {
@@ -1963,6 +1964,7 @@ mod tests {
     use parking_lot::Mutex;
     use protocol::UserDefinedData;
     use std::time::Duration;
+    use test_with_tracing::test;
     use vmbus_channel::bus::OfferParams;
     use vmbus_core::protocol::ChannelId;
     use vmbus_core::protocol::VmbusMessage;
