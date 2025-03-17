@@ -12,6 +12,7 @@ use core::arch::x86_64::CpuidResult;
 use masking::CpuidResultMask;
 use snp::SnpCpuidInitializer;
 use std::boxed::Box;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use thiserror::Error;
 use x86defs::cpuid;
@@ -185,7 +186,9 @@ pub struct CpuidResults {
     vps_per_socket: u32,
 }
 
-type CpuidSubtable = HashMap<u32, CpuidResult>;
+// NOTE: Because subtables are used to calculate certain values _in order_ such
+// as xsave, the data structure used must provide inorder traversal.
+type CpuidSubtable = BTreeMap<u32, CpuidResult>;
 
 /// Entry in [`CpuidResults`] for caching leaf value or its subleaves.
 enum CpuidEntry {
@@ -305,7 +308,7 @@ impl CpuidResults {
                     }
                     std::collections::hash_map::Entry::Vacant(entry) => {
                         if mask.is_subleaf() {
-                            let subtable = HashMap::from([(subleaf, masked_result)]);
+                            let subtable = BTreeMap::from([(subleaf, masked_result)]);
                             entry.insert(CpuidEntry::Subtable(subtable));
                         } else {
                             entry.insert(CpuidEntry::Leaf(masked_result));
