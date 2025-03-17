@@ -1535,7 +1535,8 @@ impl Hcl {
 }
 
 #[derive(Debug)]
-struct HclVp {
+#[doc(hidden)]
+pub struct HclVp {
     state: Mutex<VpState>,
     run: MappedPage<hcl_run>,
     backing: BackingState,
@@ -1643,7 +1644,6 @@ pub enum NoRunner {
 /// An isolation-type-specific backing for a processor runner.
 #[expect(missing_docs)]
 pub trait Backing<'a>: Sized {
-    #[expect(private_interfaces)]
     fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>, hcl: &Hcl) -> Result<Self, NoRunner>;
 
     fn try_set_reg(
