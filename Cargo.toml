@@ -453,8 +453,8 @@ macaddr = "1.0"
 mbrman = "0.5"
 mimalloc = { version = "0.1.39", default-features = false }
 ms-tpm-20-ref = { version = "0.1", git = "https://github.com/microsoft/ms-tpm-20-ref-rs.git", branch = "main" }
-mshv-bindings = { git = "https://github.com/rust-vmm/mshv", branch = "main" }
-mshv-ioctls = { git = "https://github.com/rust-vmm/mshv", branch = "main" }
+mshv-bindings = "0.3.4"
+mshv-ioctls = "0.3.4"
 nix = { version = "0.27", default-features = false }
 ntapi = "0.4"
 object = { version = "0.36.7", default-features = false }
