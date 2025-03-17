@@ -41,7 +41,6 @@ use vmbus_channel::bus::ModifyRequest;
 use vmbus_channel::bus::OpenData;
 use vmbus_channel::gpadl::GpadlId;
 use vmbus_core::HvsockConnectRequest;
-use vmbus_core::MonitorPageGpas;
 use vmbus_core::OutgoingMessage;
 use vmbus_core::TaggedStream;
 use vmbus_core::VersionInfo;
