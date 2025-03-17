@@ -761,11 +761,10 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "cpuid");
 
-        let [eax, ebx, ecx, edx] = self.vp.partition.cpuid.lock().result(
-            message.rax as u32,
-            message.rcx as u32,
-            &default_result,
-        );
+        let [eax, ebx, ecx, edx] =
+            self.vp
+                .partition
+                .cpuid_result(message.rax as u32, message.rcx as u32, &default_result);
 
         let next_rip = next_rip(&message.header);
         self.vp.runner.cpu_context_mut().gps[protocol::RAX] = eax.into();

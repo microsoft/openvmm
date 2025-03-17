@@ -1680,7 +1680,7 @@ impl UhProcessor<'_, TdxBacked> {
                         .cpuid
                         .guest_result(CpuidFunction(leaf), subleaf, &guest_state);
 
-                let [eax, ebx, ecx, edx] = self.partition.cpuid.lock().result(
+                let [eax, ebx, ecx, edx] = self.partition.cpuid_result(
                     leaf,
                     subleaf,
                     &[result.eax, result.ebx, result.ecx, result.edx],

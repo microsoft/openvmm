@@ -207,7 +207,9 @@ struct UhPartitionInner {
     enter_modes: Mutex<EnterModes>,
     #[inspect(skip)]
     enter_modes_atomic: AtomicU8,
-    cpuid: Mutex<CpuidLeafSet>,
+    cpuid: CpuidLeafSet,
+    // Only transitions from `false` to `true`.
+    guest_vsm_revoked: AtomicBool,
     lower_vtl_memory_layout: MemoryLayout,
     gm: VtlArray<GuestMemory, 2>,
     shared_memory: Option<GuestMemory>,
@@ -724,40 +726,10 @@ impl UhPartition {
             BackingShared::Snp(SnpBackedShared { cvm, .. })
             | BackingShared::Tdx(TdxBackedShared { cvm, .. }) => {
                 revoke(&mut *cvm.guest_vsm.write())?;
-                let mut cpuid_lock = self.inner.cpuid.lock();
-                let current_result =
-                    cpuid_lock.result(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0, &[0; 4]);
-
-                let mut features = hvdef::HvFeatures::from(u128::from_le_bytes(
-                    current_result
-                        .iter()
-                        .flat_map(|i| i.to_le_bytes())
-                        .collect::<Vec<u8>>()
-                        .try_into()
-                        .unwrap(),
-                ));
-
-                let privileges = hvdef::HvPartitionPrivilege::from(features.privileges());
-                features.set_privileges(privileges.with_access_vsm(false).into());
-
-                let split_u128 = |x: u128| -> [u32; 4] {
-                    let bytes = x.to_le_bytes();
-                    [
-                        u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-                        u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-                        u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
-                        u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
-                    ]
-                };
-
-                cpuid_lock.update_result(
-                    hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES,
-                    0,
-                    &split_u128(features.into()),
-                );
             }
         };
 
+        self.inner.guest_vsm_revoked.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -1610,7 +1582,7 @@ impl<'a> UhProtoPartition<'a> {
         #[cfg(guest_arch = "aarch64")]
         let (caps, cpuid) = (
             virt::aarch64::Aarch64PartitionCapabilities {},
-            Mutex::new(CpuidLeafSet::new(Vec::new())),
+            CpuidLeafSet::new(Vec::new()),
         );
 
         #[cfg(guest_arch = "x86_64")]
@@ -1635,9 +1607,6 @@ impl<'a> UhProtoPartition<'a> {
             isolation,
             params.hide_isolation,
         );
-
-        #[cfg(guest_arch = "x86_64")]
-        let cpuid = Mutex::new(cpuid);
 
         let untrusted_synic = if params.handle_synic {
             if matches!(isolation, IsolationType::Tdx) {
@@ -1690,6 +1659,7 @@ impl<'a> UhProtoPartition<'a> {
             gm: late_params.gm,
             shared_memory: late_params.shared_memory,
             cpuid,
+            guest_vsm_revoked: false.into(),
             crash_notification_send: late_params.crash_notification_send,
             monitor_page: MonitorPage::new(),
             software_devices,
@@ -2175,6 +2145,28 @@ impl UhPartitionInner {
             !write || self.monitor_page.gpa() != Some(gpa & !(HV_PAGE_SIZE - 1))
         } else {
             false
+        }
+    }
+
+    /// Gets the CPUID result, applying any necessary runtime modifications.
+    #[cfg(guest_arch = "x86_64")]
+    fn cpuid_result(&self, eax: u32, ecx: u32, default: &[u32; 4]) -> [u32; 4] {
+        let r = self.cpuid.result(eax, ecx, default);
+        if eax == hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES {
+            // Update the VSM access privilege.
+            //
+            // FUTURE: Investigate if this is really necessary for non-CVM--the
+            // hypervisor should already update this correctly.
+            //
+            // If it is only for CVM, then it should be moved to the
+            // CVM-specific cpuid fixups.
+            let mut features = hvdef::HvFeatures::from_cpuid(r);
+            if self.guest_vsm_revoked.load(Ordering::Acquire) {
+                features.set_privileges(features.privileges().with_access_vsm(false));
+            }
+            features.into_cpuid()
+        } else {
+            r
         }
     }
 }

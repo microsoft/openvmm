@@ -998,7 +998,7 @@ impl UhProcessor<'_, SnpBacked> {
                     &guest_state,
                 );
 
-                let [eax, ebx, ecx, edx] = self.partition.cpuid.lock().result(
+                let [eax, ebx, ecx, edx] = self.partition.cpuid_result(
                     vmsa.rax() as u32,
                     vmsa.rcx() as u32,
                     &[result.eax, result.ebx, result.ecx, result.edx],

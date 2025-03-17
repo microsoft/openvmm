@@ -188,17 +188,15 @@ impl virt::Hypervisor for Kvm {
             };
 
             use hvdef::*;
-            let privileges = u64::from(
-                HvPartitionPrivilege::new()
-                    .with_access_partition_reference_counter(true)
-                    .with_access_hypercall_msrs(true)
-                    .with_access_vp_index(true)
-                    .with_access_frequency_msrs(true)
-                    .with_access_synic_msrs(true)
-                    .with_access_synthetic_timer_msrs(true)
-                    .with_access_vp_runtime_msr(true)
-                    .with_access_apic_msrs(true),
-            );
+            let privileges = HvPartitionPrivilege::new()
+                .with_access_partition_reference_counter(true)
+                .with_access_hypercall_msrs(true)
+                .with_access_vp_index(true)
+                .with_access_frequency_msrs(true)
+                .with_access_synic_msrs(true)
+                .with_access_synthetic_timer_msrs(true)
+                .with_access_vp_runtime_msr(true)
+                .with_access_apic_msrs(true);
 
             let hv_cpuid = &[
                 CpuidLeaf::new(

@@ -47,7 +47,7 @@ pub fn hv_cpuid_leaves(
             //     .with_fast_hypercall_output(true);
         }
 
-        u64::from(privileges)
+        privileges
     };
 
     let mut hv_cpuid = vec![

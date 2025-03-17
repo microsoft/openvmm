@@ -108,8 +108,10 @@ open_enum! {
 }
 
 #[bitfield(u128)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvFeatures {
-    pub privileges: u64, // HvPartitionPrivilege
+    #[bits(64)]
+    pub privileges: HvPartitionPrivilege,
 
     #[bits(4)]
     pub max_supported_cstate: u32,
@@ -153,6 +155,16 @@ pub struct HvFeatures {
     pub idle_spec_ctrl_available: bool,
     pub translate_gva_flags_available: bool,
     pub apic_eoi_intercept_available: bool,
+}
+
+impl HvFeatures {
+    pub fn from_cpuid(cpuid: [u32; 4]) -> Self {
+        zerocopy::transmute!(cpuid)
+    }
+
+    pub fn into_cpuid(self) -> [u32; 4] {
+        zerocopy::transmute!(self)
+    }
 }
 
 #[bitfield(u128)]
