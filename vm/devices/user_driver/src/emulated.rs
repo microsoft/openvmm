@@ -10,7 +10,6 @@ use crate::DmaClient;
 use crate::interrupt::DeviceInterrupt;
 use crate::interrupt::DeviceInterruptSource;
 use crate::memory::MappedDmaTarget;
-use crate::memory::MemoryBlock;
 use crate::memory::PAGE_SIZE;
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
@@ -25,7 +24,6 @@ use pci_core::chipset_device_ext::PciChipsetDeviceExt;
 use pci_core::msi::MsiControl;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
-use safeatomic::AtomicSliceOps;
 use sparse_mmap::SparseMapping;
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -140,17 +138,17 @@ pub struct DeviceSharedMemory {
     state: Arc<Mutex<Vec<u64>>>,
 }
 
-/// The Backing struct is meant for testing only. It is meant to encapsulate types that already
-/// implement [GuestMemoryAccess] but provides the allow_dma switch regardless of the underlying
+/// The [`TestGuestMemoryAccessWrapper`] struct is meant for testing only. It is meant to encapsulate types that already
+/// implement [`GuestMemoryAccess`] but provides the allow_dma switch regardless of the underlying
 /// type T.
-struct Backing<T> {
+struct TestGuestMemoryAccessWrapper<T> {
     mem: T,
     allow_dma: bool,
 }
 
-/// SAFETY: Defer to [GuestMemoryAccess] implementation of T
+/// SAFETY: Defer to [`GuestMemoryAccess`] implementation of T
 /// Only intercept the base_iova fn with a naive response of 0 if allow_dma is enabled.
-unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for Backing<T> {
+unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for TestGuestMemoryAccessWrapper<T> {
     fn mapping(&self) -> Option<NonNull<u8>> {
         self.mem.mapping()
     }
@@ -164,9 +162,9 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for Backing<T> {
     }
 }
 
-/// Takes sparse mapping as input and converts it to GuestMemory with the allow_dma switch
-pub fn create_guest_memory(sparse_mmap: SparseMapping, allow_dma: bool) -> GuestMemory {
-    let test_backing = Backing {
+/// Takes sparse mapping as input and converts it to [`GuestMemory`] with the allow_dma switch
+pub fn create_test_guest_memory(sparse_mmap: SparseMapping, allow_dma: bool) -> GuestMemory {
+    let test_backing = TestGuestMemoryAccessWrapper {
         mem: sparse_mmap,
         allow_dma,
     };
@@ -177,11 +175,11 @@ impl DeviceSharedMemory {
     pub fn new(size: usize, extra: usize) -> Self {
         assert_eq!(size % PAGE_SIZE, 0);
         assert_eq!(extra % PAGE_SIZE, 0);
-        let mem_backing = Backing {
+        let mem_backing = TestGuestMemoryAccessWrapper {
             mem: Arc::new(AlignedHeapMemory::new(size + extra)),
             allow_dma: false,
         };
-        let dma_backing = Backing {
+        let dma_backing = TestGuestMemoryAccessWrapper {
             mem: mem_backing.mem.clone(),
             allow_dma: true,
         };
@@ -281,17 +279,20 @@ unsafe impl MappedDmaTarget for DmaBuffer {
 }
 
 #[derive(Inspect)]
+#[cfg(test)]
 pub struct EmulatedDmaAllocator {
     #[inspect(skip)]
     shared_mem: DeviceSharedMemory,
 }
 
+#[cfg(test)]
 impl EmulatedDmaAllocator {
     pub fn new(shared_mem: DeviceSharedMemory) -> Self {
         Self { shared_mem }
     }
 }
 
+#[cfg(test)]
 impl DmaClient for EmulatedDmaAllocator {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
         let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);
