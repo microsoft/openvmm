@@ -3,9 +3,6 @@
 
 //! Interface to `mshv_vtl` driver.
 
-// Used to implement the [`private::BackingPrivate`] trait.
-#![expect(private_interfaces)]
-
 mod deferred;
 
 pub mod aarch64;
@@ -1643,6 +1640,7 @@ pub enum NoRunner {
 }
 
 /// An isolation-type-specific backing for a processor runner.
+#[expect(private_bounds)]
 pub trait Backing<'a>: BackingPrivate<'a> {}
 
 impl<'a, T: BackingPrivate<'a>> Backing<'a> for T {}
@@ -1658,7 +1656,7 @@ mod private {
     use hvdef::HvRegisterValue;
     use sidecar_client::SidecarVp;
 
-    pub trait BackingPrivate<'a>: Sized {
+    pub(super) trait BackingPrivate<'a>: Sized {
         fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>, hcl: &Hcl)
         -> Result<Self, NoRunner>;
 

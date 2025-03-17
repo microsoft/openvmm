@@ -10,7 +10,7 @@ use std::cell::UnsafeCell;
 use zerocopy::IntoBytes;
 
 #[derive(Debug, Default)]
-pub struct DeferredActions {
+pub(crate) struct DeferredActions {
     actions: Vec<DeferredAction>,
 }
 
@@ -51,7 +51,7 @@ impl DeferredActions {
 /// A deferred action that can be handled by the hypervisor as part of switching
 /// VTLs.
 #[derive(Debug, Copy, Clone)]
-pub enum DeferredAction {
+pub(crate) enum DeferredAction {
     SignalEvent { vp: u32, sint: u8, flag: u16 },
 }
 
@@ -83,7 +83,7 @@ impl DeferredAction {
 }
 
 /// A reference to the HCL run data structure's deferred action slots.
-pub struct DeferredActionSlots<'a>(&'a UnsafeCell<hcl_run>);
+pub(crate) struct DeferredActionSlots<'a>(&'a UnsafeCell<hcl_run>);
 
 impl<'a> DeferredActionSlots<'a> {
     /// # Safety
