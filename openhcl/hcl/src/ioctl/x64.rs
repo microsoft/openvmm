@@ -168,8 +168,8 @@ impl ProcessorRunner<'_, MshvX64<'_>> {
     }
 }
 
-#[expect(private_interfaces)]
 impl<'a> super::Backing<'a> for MshvX64<'a> {
+    #[expect(private_interfaces)]
     fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
         let BackingState::Mshv { reg_page } = &vp.backing else {
             return Err(NoRunner::MismatchedIsolation);

@@ -173,8 +173,8 @@ impl MshvVtl {
     }
 }
 
-#[expect(private_interfaces)]
 impl<'a> super::Backing<'a> for Snp<'a> {
+    #[expect(private_interfaces)]
     fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
         let super::BackingState::Snp { vmsa } = &vp.backing else {

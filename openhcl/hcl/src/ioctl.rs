@@ -1641,8 +1641,9 @@ pub enum NoRunner {
 }
 
 /// An isolation-type-specific backing for a processor runner.
-#[expect(private_interfaces, missing_docs)]
+#[expect(missing_docs)]
 pub trait Backing<'a>: Sized {
+    #[expect(private_interfaces)]
     fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>, hcl: &Hcl) -> Result<Self, NoRunner>;
 
     fn try_set_reg(
