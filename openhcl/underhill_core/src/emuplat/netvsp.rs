@@ -696,7 +696,18 @@ impl HclNetworkVFManagerWorker {
                     return;
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::SaveState(rpc)) => {
-                    rpc.handle(|_| async {
+                    drop(self.messages.take().unwrap());
+
+                    rpc.handle(|_| async move {
+                        let saved_endpoints = futures::future::join_all(
+                            self.endpoint_controls
+                                .iter_mut()
+                                .map(|control| control.save()),
+                        )
+                        .await;
+
+                        tracing::info!("saved endpoints: {:?}", saved_endpoints);
+
                         ManaSavedState {
                             mana_device: self.mana_device.as_ref().unwrap().save().await.unwrap(),
                             endpoints: Vec::new(),

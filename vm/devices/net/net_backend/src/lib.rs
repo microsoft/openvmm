@@ -432,6 +432,10 @@ impl DisconnectableEndpointControl {
             .map_err(anyhow::Error::from)
             .await
     }
+
+    pub async fn save(&mut self) -> anyhow::Result<Option<EndpointSavedState>> {
+        Ok(None)
+    }
 }
 
 pub struct DisconnectableEndpointCachedState {
