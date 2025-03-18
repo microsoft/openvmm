@@ -3359,10 +3359,12 @@ impl ChipsetDevice for FallbackMmioDevice {
     }
 }
 
+#[cfg(guest_arch = "x86_64")]
 struct WatchdogTimeoutNmi {
     partition: Arc<UhPartition>,
 }
 
+#[cfg(guest_arch = "x86_64")]
 #[async_trait::async_trait]
 impl WatchdogTimeout for WatchdogTimeoutNmi {
     async fn on_timeout(&self) {
