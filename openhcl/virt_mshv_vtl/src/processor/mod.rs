@@ -270,6 +270,7 @@ pub(crate) struct BackingSharedParams<'a> {
     pub cvm_state: Option<crate::UhCvmPartitionState>,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     pub vp_count: u32,
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     pub cpuid: &'a CpuidLeafSet,
     pub guest_vsm_available: bool,
 }

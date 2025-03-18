@@ -1432,6 +1432,8 @@ impl<'a> UhProtoPartition<'a> {
                 .map_err(Error::CvmCpuid)?,
             IsolationType::Vbs | IsolationType::None => CpuidLeafSet::default(),
         };
+        #[cfg(guest_arch = "aarch64")]
+        let cvm_cpuid = CpuidLeafSet::default();
 
         let guest_vsm_available = Self::check_guest_vsm_support(
             &hcl,
@@ -1443,7 +1445,6 @@ impl<'a> UhProtoPartition<'a> {
         Ok(UhProtoPartition {
             hcl,
             params,
-            #[cfg(guest_arch = "x86_64")]
             cpuid: cvm_cpuid,
             guest_vsm_available,
         })
@@ -1462,7 +1463,7 @@ impl<'a> UhProtoPartition<'a> {
         let Self {
             mut hcl,
             params,
-            mut cpuid,
+            cpuid,
             guest_vsm_available,
         } = self;
         let isolation = params.isolation;
@@ -1593,6 +1594,8 @@ impl<'a> UhProtoPartition<'a> {
         #[cfg(guest_arch = "aarch64")]
         let caps = virt::aarch64::Aarch64PartitionCapabilities {};
 
+        #[cfg(guest_arch = "x86_64")]
+        let mut cpuid = cpuid;
         #[cfg(guest_arch = "x86_64")]
         UhPartition::construct_cpuid_results(
             &mut cpuid,
