@@ -45,7 +45,7 @@ impl<T: InspectMut, U> Inspect for EmulatedDevice<T, U> {
     }
 }
 
-/// Controller to be used only for testing purposes
+/// MSI Controller to be used only for testing purposes
 struct MsiController {
     events: Arc<[DeviceInterruptSource]>,
 }
@@ -133,7 +133,7 @@ impl Default for Page {
     }
 }
 
-/// Struct to house some [`GuestMemory`] for memory and dma. ONLY to be used for testing.
+/// Struct to house some [`GuestMemory`] for device memory and device dma. ONLY to be used for testing.
 #[derive(Clone)]
 pub struct DeviceSharedMemory {
     mem: GuestMemory,
@@ -145,7 +145,7 @@ pub struct DeviceSharedMemory {
 /// The [`TestGuestMemoryAccessWrapper`] struct is meant for testing only. It is meant to encapsulate types that already
 /// implement [`GuestMemoryAccess`] but provides the allow_dma switch regardless of the underlying
 /// type T.
-struct TestGuestMemoryAccessWrapper<T> {
+pub struct TestGuestMemoryAccessWrapper<T> {
     mem: T,
     allow_dma: bool,
 }
@@ -166,13 +166,15 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for TestGuestMemoryAccessWra
     }
 }
 
-/// Takes sparse mapping as input and converts it to [`GuestMemory`] with the allow_dma switch
-pub fn create_test_guest_memory(sparse_mmap: SparseMapping, allow_dma: bool) -> GuestMemory {
-    let test_backing = TestGuestMemoryAccessWrapper {
-        mem: sparse_mmap,
-        allow_dma,
-    };
-    GuestMemory::new("test mapper guest memory", test_backing)
+impl<T: GuestMemoryAccess> TestGuestMemoryAccessWrapper<T> {
+    /// Takes sparse mapping as input and converts it to [`GuestMemory`] with the allow_dma switch
+    pub fn create_test_guest_memory(mem: T, allow_dma: bool) -> GuestMemory {
+        let test_backing = TestGuestMemoryAccessWrapper {
+            mem,
+            allow_dma,
+        };
+        GuestMemory::new("test mapper guest memory", test_backing)
+    }
 }
 
 impl DeviceSharedMemory {
