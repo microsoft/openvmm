@@ -355,6 +355,10 @@ struct UhCvmVpState {
     lapics: VtlArray<LapicState, 2>,
     /// Whether VTL 1 has been enabled on this VP.
     vtl1_enabled: bool,
+    /// The pending event that VTL 1 wants to inject into VTL 0. Injected on
+    /// next exit to VTL 0.
+    #[inspect(with = "|x| x.map(|e| e.event_type())")]
+    vtl0_exit_pending_exception: Option<hvdef::HvX64PendingExceptionEvent>,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -398,6 +402,7 @@ impl UhCvmVpState {
             hv,
             lapics,
             vtl1_enabled: false,
+            vtl0_exit_pending_exception: None,
         })
     }
 }

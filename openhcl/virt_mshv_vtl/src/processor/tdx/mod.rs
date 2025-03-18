@@ -977,6 +977,11 @@ impl BackingPrivate for TdxBacked {
     fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool {
         this.hcvm_vtl1_inspectable()
     }
+
+    fn deliver_exit_pending_event(_this: &mut UhProcessor<'_, Self>) {
+        // TODO TDX GUEST VSM: uncomment when fully implemented
+        // this.hcvm_deliver_exit_pending_event();
+    }
 }
 
 impl UhProcessor<'_, TdxBacked> {
@@ -1355,6 +1360,10 @@ impl UhProcessor<'_, TdxBacked> {
         let kernel_known_state =
             matches!(activity, MpState::Running | MpState::Halted | MpState::Idle);
         let halted_other = tlb_halt || !kernel_known_state;
+
+        // TODO TDX GUEST VSM: if there's an event pending, clear any
+        // halts or idles, etc and exit to the guest (should still
+        // halt for TLB lock)
 
         self.runner
             .set_halted(activity != MpState::Running || tlb_halt);

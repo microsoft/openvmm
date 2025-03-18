@@ -456,6 +456,10 @@ impl BackingPrivate for SnpBacked {
         })
     }
 
+    fn deliver_exit_pending_event(this: &mut UhProcessor<'_, Self>) {
+        this.hcvm_deliver_exit_pending_event();
+    }
+
     fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>) {
         let vtl0_vmsa = this.runner.vmsa(GuestVtl::Vtl0);
         let vtl1_vmsa = if this.backing.cvm_state().vtl1_enabled {
@@ -764,6 +768,10 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpB
         // For now, just inject an NMI and hope for the best.
         // Don't forget to update handle_cross_vtl_interrupts if this code changes.
         let mut vmsa = self.runner.vmsa_mut(vtl);
+
+        // TODO GUEST VSM: Don't inject the NMI if there's already an event
+        // pending.
+
         vmsa.set_event_inject(
             SevEventInjectInfo::new()
                 .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_NMI)
@@ -912,6 +920,10 @@ impl UhProcessor<'_, SnpBacked> {
 
         self.unlock_tlb_lock(Vtl::Vtl2);
         let tlb_halt = self.should_halt_for_tlb_unlock(next_vtl);
+
+        // TODO GUEST VSM: if there's an event pending, clear any
+        // halts or idles, etc and exit to the guest (should still
+        // halt for TLB lock)
 
         let halt = self.backing.cvm.lapics[next_vtl].activity != MpState::Running || tlb_halt;
 
@@ -1545,14 +1557,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
 
         let exception = HvX64PendingExceptionEvent::from(u128::from(event_info.reg_0));
 
-        self.vp.runner.vmsa_mut(self.vtl).set_event_inject(
-            SevEventInjectInfo::new()
-                .with_valid(true)
-                .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT)
-                .with_vector(exception.vector() as u8)
-                .with_deliver_error_code(exception.deliver_error_code())
-                .with_error_code(exception.error_code()),
-        );
+        self.vp.hcvm_inject_pending_exception(self.vtl, exception);
     }
 
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {
@@ -1773,12 +1778,38 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
 
     fn activity(&mut self) -> Result<vp::Activity, Self::Error> {
         let lapic = &self.vp.backing.cvm.lapics[self.vtl];
+
+        let event_inject = self.vp.runner.vmsa(self.vtl).event_inject();
+        let pending_event = if event_inject.valid() {
+            match event_inject.interruption_type() {
+                x86defs::snp::SEV_INTR_TYPE_EXCEPT => Some(vp::PendingEvent::Exception {
+                    vector: event_inject.vector(),
+                    error_code: if event_inject.deliver_error_code() {
+                        Some(event_inject.error_code())
+                    } else {
+                        None
+                    },
+                    parameter: 0, // TODO SNP
+                }),
+                x86defs::snp::SEV_INTR_TYPE_EXT => Some(vp::PendingEvent::ExtInt {
+                    vector: event_inject.vector(),
+                }),
+                _ => {
+                    // TODO SNP. As of yet, consuming code doesn't need to know
+                    // about other types, but they may exist (e.g. NMIs).
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(vp::Activity {
             mp_state: lapic.activity,
             nmi_pending: lapic.nmi_pending,
-            nmi_masked: false,          // TODO SNP
-            interrupt_shadow: false,    // TODO SNP
-            pending_event: None,        // TODO SNP
+            nmi_masked: false,       // TODO SNP
+            interrupt_shadow: false, // TODO SNP
+            pending_event,
             pending_interruption: None, // TODO SNP
         })
     }
@@ -1787,14 +1818,42 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         let &vp::Activity {
             mp_state,
             nmi_pending,
-            nmi_masked: _,           // TODO SNP
-            interrupt_shadow: _,     // TODO SNP
-            pending_event: _,        // TODO SNP
+            nmi_masked: _,       // TODO SNP
+            interrupt_shadow: _, // TODO SNP
+            pending_event,
             pending_interruption: _, // TODO SNP
         } = value;
         let lapic = &mut self.vp.backing.cvm.lapics[self.vtl];
         lapic.activity = mp_state;
         lapic.nmi_pending = nmi_pending;
+
+        if let Some(pending_event) = pending_event {
+            let mut event_inject = SevEventInjectInfo::new().with_valid(true);
+            match pending_event {
+                vp::PendingEvent::Exception {
+                    vector,
+                    error_code,
+                    parameter: _, // TODO SNP
+                } => {
+                    event_inject = event_inject
+                        .with_vector(vector)
+                        .with_error_code(error_code.unwrap_or_default())
+                        .with_deliver_error_code(error_code.is_some())
+                        .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT);
+                }
+                vp::PendingEvent::ExtInt { vector } => {
+                    event_inject = event_inject
+                        .with_vector(vector)
+                        .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXT);
+                }
+            }
+
+            self.vp
+                .runner
+                .vmsa_mut(self.vtl)
+                .set_event_inject(event_inject);
+        }
+
         Ok(())
     }
 
