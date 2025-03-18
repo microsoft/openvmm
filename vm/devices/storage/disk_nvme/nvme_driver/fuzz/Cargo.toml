@@ -12,7 +12,7 @@ anyhow.workspace = true
 arbitrary = { workspace = true, features = ["derive"] }
 chipset_device.workspace = true
 disklayer_ram.workspace = true
-dma_guest_memory_access_wrapper.workspace = true
+devices_test_helpers.workspace = true
 guestmem.workspace = true
 guid.workspace = true
 inspect.workspace = true

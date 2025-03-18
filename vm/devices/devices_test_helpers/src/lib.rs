@@ -4,4 +4,4 @@
 //! Provides wrapper functionality over guest memory for testing purposes only
 
 #![allow(unsafe_code)]
-pub mod emulated;
+pub mod emulated_test_infra;

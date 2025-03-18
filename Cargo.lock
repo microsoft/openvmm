@@ -1002,6 +1002,21 @@ name = "device_emulators"
 version = "0.0.0"
 
 [[package]]
+name = "devices_test_helpers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chipset_device",
+ "guestmem",
+ "inspect",
+ "parking_lot",
+ "pci_core",
+ "safeatomic",
+ "tracing",
+ "user_driver",
+]
+
+[[package]]
 name = "diag_client"
 version = "0.0.0"
 dependencies = [
@@ -1393,21 +1408,6 @@ name = "dissimilar"
 version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8975ffdaa0ef3661bfe02dbdcc06c9f829dfafe6a3c474de366a8d5e44276921"
-
-[[package]]
-name = "dma_guest_memory_access_wrapper"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chipset_device",
- "guestmem",
- "inspect",
- "parking_lot",
- "pci_core",
- "safeatomic",
- "tracing",
- "user_driver",
-]
 
 [[package]]
 name = "either"
@@ -2202,8 +2202,8 @@ dependencies = [
  "anyhow",
  "arbitrary",
  "chipset_device",
+ "devices_test_helpers",
  "disklayer_ram",
- "dma_guest_memory_access_wrapper",
  "guestmem",
  "guid",
  "inspect",
@@ -3850,7 +3850,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
- "dma_guest_memory_wrapper",
+ "devices_test_helpers",
  "futures",
  "gdma",
  "gdma_defs",
@@ -4363,7 +4363,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chipset_device",
- "dma_guest_memory_wrapper",
+ "devices_test_helpers",
  "futures",
  "gdma",
  "gdma_defs",
@@ -4612,8 +4612,8 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "devices_test_helpers",
  "disklayer_ram",
- "dma_guest_memory_wrapper",
  "event-listener",
  "futures",
  "guestmem",

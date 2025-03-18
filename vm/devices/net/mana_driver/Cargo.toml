@@ -28,7 +28,7 @@ zerocopy.workspace = true
 safe_intrinsics.workspace = true
 
 [dev-dependencies]
-dma_guest_memory_access_wrapper.workspace = true
+devices_test_helpers.workspace = true
 gdma.workspace = true
 pci_core.workspace = true
 test_with_tracing.workspace = true

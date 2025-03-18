@@ -41,7 +41,7 @@ members = [
   "petri/make_imc_hive",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
-  "vm/vmgs/vmgstool", "vm/devices/dma_guest_memory_access_wrapper",
+  "vm/vmgs/vmgstool", "vm/devices/devices_test_helpers",
 ]
 exclude = [
   "xsync",
@@ -92,7 +92,7 @@ clap_dyn_complete = { path = "support/clap_dyn_complete" }
 console_relay = { path = "support/console_relay" }
 safe_intrinsics = { path = "support/safe_intrinsics" }
 debug_ptr = { path = "support/debug_ptr" }
-dma_guest_memory_access_wrapper = { path = "vm/devices/dma_guest_memory_access_wrapper" }
+devices_test_helpers = { path = "vm/devices/devices_test_helpers" }
 fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }
