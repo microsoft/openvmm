@@ -6,12 +6,12 @@
 //! Everything in this crate is meant for TESTING PURPOSES ONLY and it should only ever be added as a dev-dependency.
 #![deny(missing_docs)]
 
-// UNSAFETY: underlying structs need to implement the unsafe [`GuestMemoryAccess`] and [`MappedDmaTarget`] traits.
-#![expect(unsafe_code)]
-pub mod unsafe_mock;
 
-use crate::unsafe_mock::DmaBuffer;
-use crate::unsafe_mock::GuestMemoryAccessWrapper;
+mod dma_buffer;
+pub mod guest_memory_access_wrapper;
+
+use crate::dma_buffer::DmaBuffer;
+use crate::guest_memory_access_wrapper::GuestMemoryAccessWrapper;
 
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;

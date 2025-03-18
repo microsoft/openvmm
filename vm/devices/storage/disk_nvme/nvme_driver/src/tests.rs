@@ -7,7 +7,7 @@ use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use user_driver_emulated_mock::EmulatedDevice;
 use user_driver_emulated_mock::Mapping;
-use user_driver_emulated_mock::unsafe_mock::GuestMemoryAccessWrapper;
+use user_driver_emulated_mock::guest_memory_access_wrapper::GuestMemoryAccessWrapper;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
