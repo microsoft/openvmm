@@ -3964,7 +3964,6 @@ dependencies = [
  "criterion",
  "futures",
  "futures-concurrency",
- "futures-core",
  "futures-io",
  "mesh_channel_core",
  "mesh_node",
