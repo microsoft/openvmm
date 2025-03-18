@@ -243,6 +243,8 @@ mod private {
             dev: &impl CpuIo,
         ) -> Result<bool, UhRunVpError>;
 
+        fn deliver_exit_pending_event(this: &mut UhProcessor<'_, Self>);
+
         fn handle_vp_start_enable_vtl_wake(
             _this: &mut UhProcessor<'_, Self>,
             _vtl: GuestVtl,
@@ -686,6 +688,8 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     } else {
                         [false, false].into()
                     };
+
+                    T::deliver_exit_pending_event(self);
 
                     if self.backing.untrusted_synic().is_some() {
                         self.update_synic(GuestVtl::Vtl0, true);
