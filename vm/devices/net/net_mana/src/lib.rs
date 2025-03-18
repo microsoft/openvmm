@@ -1177,6 +1177,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                                 continue;
                             }
                         }
+                        last_segment_bounced = false;
                     }
 
                     sgl_idx += 1;
@@ -1309,6 +1310,10 @@ impl<'a> ContiguousBufferManagerTransaction<'a> {
 
     pub fn try_extend<'b>(&'b mut self, len: u32) -> Option<ContiguousBuffer<'b, 'a>> {
         let bytes_remaining_on_page = PAGE_SIZE32 - (self.head & (PAGE_SIZE32 - 1));
+        if bytes_remaining_on_page == PAGE_SIZE32 {
+            // Used the entire previous page. Cannot extend onto a new page.
+            return None;
+        }
         if len <= bytes_remaining_on_page {
             self.allocate(len).ok()
         } else {
@@ -1426,6 +1431,12 @@ mod tests {
         test_endpoint(driver, GuestDmaMode::DirectDma, 2040, 34).await;
     }
 
+    #[async_test]
+    async fn test_segment_coalescing_many(driver: DefaultDriver) {
+        // 128 segments of 16 bytes each == 2048
+        test_endpoint(driver, GuestDmaMode::DirectDma, 2048, 128).await;
+    }
+
     async fn test_endpoint(
         driver: DefaultDriver,
         dma_mode: GuestDmaMode,
@@ -1492,6 +1503,7 @@ mod tests {
             let mut segments = Vec::new();
             let segment_len = packet_len / num_segments;
             assert!(packet_len % num_segments == 0);
+            assert!(sent_data.len() == packet_len);
             segments.push(TxSegment {
                 ty: net_backend::TxSegmentType::Head(net_backend::TxMetadata {
                     id: TxId(1),
@@ -1531,6 +1543,7 @@ mod tests {
             payload_mem
                 .read_at(2048 * rx_id.0 as u64, &mut received_data)
                 .unwrap();
+            assert!(received_data.len() == packet_len);
             assert_eq!(&received_data[..], sent_data, "{i} {:?}", rx_id);
             assert_eq!(done_n, 1);
             assert_eq!(done[0].0, 1);
