@@ -1135,7 +1135,7 @@ impl<T: DeviceBacking> ManaQueue<T> {
                 }
                 &sgl[..segment_count]
             } else {
-                let sgl = &mut sgl[..segment_count.min(hardware_segment_limit)];
+                let sgl = &mut sgl[..hardware_segment_limit];
                 for tail_idx in header_segment_count..segments.len() {
                     let tail = &segments[tail_idx];
                     let cur_seg = &mut sgl[sgl_idx];
