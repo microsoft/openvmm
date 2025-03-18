@@ -15,12 +15,12 @@ use devices_test_helpers::emulated_test_infra::DeviceSharedMemory;
 use devices_test_helpers::emulated_test_infra::EmulatedDevice;
 use devices_test_helpers::emulated_test_infra::EmulatedDmaAllocator;
 use devices_test_helpers::emulated_test_infra::Mapping;
-use devices_test_helpers::interrupt::DeviceInterrupt;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pci_core::msi::MsiInterruptSet;
 use user_driver::DeviceBacking;
 use user_driver::DmaClient;
+use user_driver::interrupt::DeviceInterrupt;
 
 /// An EmulatedDevice fuzzer that requires a working EmulatedDevice backend.
 #[derive(Inspect)]

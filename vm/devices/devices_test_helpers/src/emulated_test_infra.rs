@@ -141,7 +141,7 @@ pub struct DeviceSharedMemory {
     state: Arc<Mutex<Vec<u64>>>,
 }
 
-/// The [`TestGuestMemoryAccessWrapper`] struct is meant for testing only. It is meant to encapsulate types that already
+/// The [`GuestMemoryAccessWrapper`] struct is meant for testing only. It is meant to encapsulate types that already
 /// implement [`GuestMemoryAccess`] but provides the allow_dma switch regardless of the underlying
 /// type T.
 pub struct GuestMemoryAccessWrapper<T> {
@@ -168,10 +168,7 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for GuestMemoryAccessWrapper
 impl<T: GuestMemoryAccess> GuestMemoryAccessWrapper<T> {
     /// Takes sparse mapping as input and converts it to [`GuestMemory`] with the allow_dma switch
     pub fn create_test_guest_memory(mem: T, allow_dma: bool) -> GuestMemory {
-        let test_backing = GuestMemoryAccessWrapper {
-            mem,
-            allow_dma,
-        };
+        let test_backing = GuestMemoryAccessWrapper { mem, allow_dma };
         GuestMemory::new("test mapper guest memory", test_backing)
     }
 }
