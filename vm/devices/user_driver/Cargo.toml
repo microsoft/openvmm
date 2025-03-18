@@ -13,7 +13,6 @@ mmio_simulate_fallback = []
 
 [dependencies]
 anyhow.workspace = true
-chipset_device.workspace = true
 event-listener.workspace = true
 guestmem.workspace = true
 inspect.workspace = true
