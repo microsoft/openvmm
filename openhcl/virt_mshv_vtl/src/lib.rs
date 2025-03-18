@@ -282,6 +282,7 @@ impl BackingShared {
             BackingShared::Hypervisor(h) => {
                 matches!(*h.guest_vsm.read(), GuestVsmState::NotPlatformSupported)
             }
+            #[cfg(guest_arch = "x86_64")]
             BackingShared::Snp(SnpBackedShared { cvm, .. })
             | BackingShared::Tdx(TdxBackedShared { cvm, .. }) => {
                 matches!(*cvm.guest_vsm.read(), GuestVsmState::NotPlatformSupported)
