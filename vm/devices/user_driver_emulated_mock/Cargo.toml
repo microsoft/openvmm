@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-name = "devices_test_helpers"
+name = "user_driver_emulated_mock"
 edition.workspace = true
 rust-version.workspace = true
 

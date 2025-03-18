@@ -1002,21 +1002,6 @@ name = "device_emulators"
 version = "0.0.0"
 
 [[package]]
-name = "devices_test_helpers"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "chipset_device",
- "guestmem",
- "inspect",
- "parking_lot",
- "pci_core",
- "safeatomic",
- "tracing",
- "user_driver",
-]
-
-[[package]]
 name = "diag_client"
 version = "0.0.0"
 dependencies = [
@@ -2202,7 +2187,6 @@ dependencies = [
  "anyhow",
  "arbitrary",
  "chipset_device",
- "devices_test_helpers",
  "disklayer_ram",
  "guestmem",
  "guid",
@@ -2216,6 +2200,7 @@ dependencies = [
  "pci_core",
  "scsi_buffers",
  "user_driver",
+ "user_driver_emulated_mock",
  "vmcore",
  "xtask_fuzz",
 ]
@@ -3850,7 +3835,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
- "devices_test_helpers",
  "futures",
  "gdma",
  "gdma_defs",
@@ -3866,6 +3850,7 @@ dependencies = [
  "test_with_tracing",
  "tracing",
  "user_driver",
+ "user_driver_emulated_mock",
  "vmcore",
  "zerocopy 0.8.23",
 ]
@@ -4363,7 +4348,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chipset_device",
- "devices_test_helpers",
  "futures",
  "gdma",
  "gdma_defs",
@@ -4380,6 +4364,7 @@ dependencies = [
  "tracelimit",
  "tracing",
  "user_driver",
+ "user_driver_emulated_mock",
  "vmcore",
  "zerocopy 0.8.23",
 ]
@@ -4612,7 +4597,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
- "devices_test_helpers",
  "disklayer_ram",
  "event-listener",
  "futures",
@@ -4637,6 +4621,7 @@ dependencies = [
  "thiserror 2.0.12",
  "tracing",
  "user_driver",
+ "user_driver_emulated_mock",
  "vmcore",
  "zerocopy 0.8.23",
 ]
@@ -7548,6 +7533,21 @@ dependencies = [
  "vfio_sys",
  "vmcore",
  "zerocopy 0.8.23",
+]
+
+[[package]]
+name = "user_driver_emulated_mock"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chipset_device",
+ "guestmem",
+ "inspect",
+ "parking_lot",
+ "pci_core",
+ "safeatomic",
+ "tracing",
+ "user_driver",
 ]
 
 [[package]]

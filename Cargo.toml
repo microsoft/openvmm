@@ -41,7 +41,7 @@ members = [
   "petri/make_imc_hive",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
-  "vm/vmgs/vmgstool", "vm/devices/devices_test_helpers",
+  "vm/vmgs/vmgstool", "vm/devices/user_driver_emulated_mock",
 ]
 exclude = [
   "xsync",
@@ -92,7 +92,7 @@ clap_dyn_complete = { path = "support/clap_dyn_complete" }
 console_relay = { path = "support/console_relay" }
 safe_intrinsics = { path = "support/safe_intrinsics" }
 debug_ptr = { path = "support/debug_ptr" }
-devices_test_helpers = { path = "vm/devices/devices_test_helpers" }
+user_driver_emulated_mock = { path = "vm/devices/user_driver_emulated_mock" }
 fast_select = { path = "support/fast_select" }
 fdt = { path = "support/fdt" }
 guid = { path = "support/guid" }

@@ -1,11 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! This implements the user-mode driver device traits using an emulated PCI
-//! device.
+//! This crate provides a collection of wrapper structs around things like devices and memory.
 #![deny(missing_docs)]
 
-// UNSAFETY: underlying structs implement the unsafe [`GuestMemoryAccess`] and [`MappedDmaTarget`] traits.
+// UNSAFETY: underlying structs need to implement the unsafe [`GuestMemoryAccess`] and [`MappedDmaTarget`] traits.
 #![expect(unsafe_code)]
 pub mod emulated_test_infra;
 
