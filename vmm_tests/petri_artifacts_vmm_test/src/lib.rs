@@ -15,7 +15,7 @@ pub mod artifacts {
             /// [`OPENVMM_WIN_X64`](const@OPENVMM_WIN_X64) when compiled on windows x86_64,
             /// [`OPENVMM_LINUX_AARCH64`](const@OPENVMM_LINUX_AARCH64) when compiled on linux aarch64,
             /// etc...)
-            // xtask-fmt allow-target-arch oneoff-petri-native-openvmm
+            // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
             #[cfg(all(target_os = $os, target_arch = $arch))]
             pub const OPENVMM_NATIVE: petri_artifacts_core::ArtifactHandle<$id_ty> =
                 petri_artifacts_core::ArtifactHandle::new();
@@ -46,6 +46,34 @@ pub mod artifacts {
         use petri_artifacts_common::tags::IsLoadable;
         use petri_artifacts_common::tags::MachineArch;
         use petri_artifacts_core::declare_artifacts;
+
+        macro_rules! linux_direct_native {
+            ($id_kernel_ty:ty, $id_initrd_ty:ty, $arch:literal) => {
+                /// Test linux direct kernel (from OpenVMM deps) for the target architecture
+                // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
+                #[cfg(target_arch = $arch)]
+                pub const LINUX_DIRECT_TEST_KERNEL_NATIVE: petri_artifacts_core::ArtifactHandle<
+                    $id_kernel_ty,
+                > = petri_artifacts_core::ArtifactHandle::new();
+                /// Test linux direct initrd (from OpenVMM deps) for the target architecture
+                // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
+                #[cfg(target_arch = $arch)]
+                pub const LINUX_DIRECT_TEST_INITRD_NATIVE: petri_artifacts_core::ArtifactHandle<
+                    $id_initrd_ty,
+                > = petri_artifacts_core::ArtifactHandle::new();
+            };
+        }
+
+        linux_direct_native!(
+            LINUX_DIRECT_TEST_KERNEL_X64,
+            LINUX_DIRECT_TEST_INITRD_X64,
+            "x86_64"
+        );
+        linux_direct_native!(
+            LINUX_DIRECT_TEST_KERNEL_AARCH64,
+            LINUX_DIRECT_TEST_INITRD_AARCH64,
+            "aarch64"
+        );
 
         declare_artifacts! {
             /// Test linux direct kernel (from OpenVMM deps)

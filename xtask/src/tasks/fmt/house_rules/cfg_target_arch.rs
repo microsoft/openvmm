@@ -22,8 +22,8 @@ const SUPPRESS_REASON_ONEOFF_GUEST_ARCH_IMPL: &str = "oneoff-guest-arch-impl";
 const SUPPRESS_REASON_ONEOFF_VIRT_HVF: &str = "oneoff-virt-hvf";
 /// One off - used as part of flowey CI infra
 const SUPPRESS_REASON_ONEOFF_FLOWEY: &str = "oneoff-flowey";
-/// One off - used by petri to select a native openvmm executable
-const SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_OPENVMM: &str = "oneoff-petri-native-openvmm";
+/// One off - used by petri to select native test dependencies
+const SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_TEST_DEPS: &str = "oneoff-petri-native-test-deps";
 
 fn has_suppress(s: &str) -> bool {
     let Some((_, after)) = s.split_once(SUPPRESS) else {
@@ -40,7 +40,7 @@ fn has_suppress(s: &str) -> bool {
             | SUPPRESS_REASON_ONEOFF_GUEST_ARCH_IMPL
             | SUPPRESS_REASON_ONEOFF_VIRT_HVF
             | SUPPRESS_REASON_ONEOFF_FLOWEY
-            | SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_OPENVMM
+            | SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_TEST_DEPS
     );
 
     if !ok {
