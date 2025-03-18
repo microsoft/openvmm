@@ -427,9 +427,9 @@ struct UhCvmPartitionState {
     /// Guest VSM state.
     guest_vsm: RwLock<GuestVsmState<CvmVtl1State>>,
     /// Dma client for shared visibility pages.
-    pub shared_dma_client: Arc<dyn DmaClient>,
+    shared_dma_client: Arc<dyn DmaClient>,
     /// Dma client for private visibility pages.
-    pub private_dma_client: Arc<dyn DmaClient>,
+    private_dma_client: Arc<dyn DmaClient>,
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
