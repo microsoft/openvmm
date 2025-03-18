@@ -44,7 +44,7 @@ members = [
   "petri/make_imc_hive",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
-  "vm/vmgs/vmgstool", "tmk/tmk_protocol",
+  "vm/vmgs/vmgstool",
 ]
 exclude = [
   "xsync",
