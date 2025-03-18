@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! This does something
+//! This module is an extension of the lib.rs file from the crate and houses any structs that require impelemnting unsafe traits.
 
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryAccess;
@@ -11,9 +11,8 @@ use std::sync::Arc;
 use user_driver::memory::MappedDmaTarget;
 use user_driver::memory::PAGE_SIZE;
 
-/// The [`GuestMemoryAccessWrapper`] struct is meant for testing only. It is meant to encapsulate types that already
-/// implement [`GuestMemoryAccess`] but provides the allow_dma switch regardless of the underlying
-/// type T.
+/// The [`GuestMemoryAccessWrapper`] encapsulates types T that already implement [`GuestMemoryAccess`].
+/// It provides the allow_dma switch regardless of the underlying type T.
 pub struct GuestMemoryAccessWrapper<T> {
     mem: T,
     allow_dma: bool,
@@ -56,7 +55,7 @@ impl<T: GuestMemoryAccess> GuestMemoryAccessWrapper<T> {
     }
 }
 
-/// DmaBuffer struct
+/// A representation of a contiguous slice of memory in a larger [`GuestMemory`]
 pub struct DmaBuffer {
     mem: GuestMemory,
     pfns: Vec<u64>,

@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! This crate provides a collection of wrapper structs around things like devices and memory.
+//! This crate provides a collection of wrapper structs around things like devices and memory. Through the wrappers, it provides functionality to emulate devices such
+//! as Nvme and Mana and gives some additional control over things like [`GuestMemory`] to make testing devices easier.
+//! Everything in this crate is meant for TESTING PURPOSES ONLY and it should only ever be added as a dev-dependency.
 #![deny(missing_docs)]
 
 // UNSAFETY: underlying structs need to implement the unsafe [`GuestMemoryAccess`] and [`MappedDmaTarget`] traits.
@@ -48,7 +50,6 @@ impl<T: InspectMut, U> Inspect for EmulatedDevice<T, U> {
     }
 }
 
-/// MSI Controller to be used only for testing purposes
 struct MsiController {
     events: Arc<[DeviceInterruptSource]>,
 }
@@ -77,7 +78,8 @@ impl MsiInterruptTarget for MsiController {
 }
 
 impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
-    /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
+    /// Creates a new emulated device, wrapping `device` of type T, using the provided MSI Interrupt Set. Dma_client should point to memory
+    /// shared with the device.
     pub fn new(mut device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
         // Connect an interrupt controller.
         let controller = MsiController::new(msi_set.len());
@@ -136,7 +138,8 @@ impl Default for Page {
     }
 }
 
-/// Struct to house some [`GuestMemory`] for device memory and device dma. ONLY to be used for testing.
+/// Some synthetic (test) memory that can be shared with an [`EmulatedDevice`]. It provides both shared and dma-able memory to the device
+/// and uses [`GuestMemory`] backed by [`AlignedHeapMemory`].
 #[derive(Clone)]
 pub struct DeviceSharedMemory {
     mem: GuestMemory,
@@ -218,7 +221,7 @@ impl DeviceSharedMemory {
     }
 }
 
-/// Allocator to be only used for [`DeviceSharedMemory`].
+/// Implements a [`DmaClient`] backed by [`DeviceSharedMemory`] 
 #[derive(Inspect)]
 pub struct EmulatedDmaAllocator {
     #[inspect(skip)]
@@ -226,7 +229,7 @@ pub struct EmulatedDmaAllocator {
 }
 
 impl EmulatedDmaAllocator {
-    /// Returns a new EmulatedDmaAllocator struct
+    /// Returns a new EmulatedDmaAllocator struct wrapping the provided [`DeviceSharedMemory`]
     pub fn new(shared_mem: DeviceSharedMemory) -> Self {
         Self { shared_mem }
     }
