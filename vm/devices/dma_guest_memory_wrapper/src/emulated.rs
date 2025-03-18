@@ -31,7 +31,7 @@ use user_driver::memory::MappedDmaTarget;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 
-/// An emulated device.
+/// An emulated device to be used only for testing purposes
 pub struct EmulatedDevice<T, U> {
     device: Arc<Mutex<T>>,
     controller: MsiController,
@@ -45,6 +45,7 @@ impl<T: InspectMut, U> Inspect for EmulatedDevice<T, U> {
     }
 }
 
+/// Controller to be used only for testing purposes
 struct MsiController {
     events: Arc<[DeviceInterruptSource]>,
 }
@@ -132,6 +133,7 @@ impl Default for Page {
     }
 }
 
+/// Struct to house some [`GuestMemory`] for memory and dma. ONLY to be used for testing.
 #[derive(Clone)]
 pub struct DeviceSharedMemory {
     mem: GuestMemory,
@@ -174,6 +176,9 @@ pub fn create_test_guest_memory(sparse_mmap: SparseMapping, allow_dma: bool) -> 
 }
 
 impl DeviceSharedMemory {
+    /// Creates a new [`DeviceSharedMemory`] object. First "size" pages are alloacted as regular
+    /// memory and the "extra" is strictly for dma testing. Both inputs are in bytes and required
+    /// to be page aligned.
     pub fn new(size: usize, extra: usize) -> Self {
         assert_eq!(size % PAGE_SIZE, 0);
         assert_eq!(extra % PAGE_SIZE, 0);
@@ -196,14 +201,17 @@ impl DeviceSharedMemory {
         }
     }
 
+    /// Gets regular [`GuestMemory`]
     pub fn guest_memory(&self) -> &GuestMemory {
         &self.mem
     }
 
+    /// Gets dma-able [`GuestMemory`]
     pub fn guest_memory_for_driver_dma(&self) -> &GuestMemory {
         &self.dma
     }
 
+    /// Allocates `len` number of contiguous bytes in `mem`. Input must be page aligned
     pub fn alloc(&self, len: usize) -> Option<DmaBuffer> {
         assert!(len % PAGE_SIZE == 0);
         let count = len / PAGE_SIZE;
@@ -240,6 +248,7 @@ impl DeviceSharedMemory {
     }
 }
 
+/// DmaBuffer struct
 pub struct DmaBuffer {
     mem: GuestMemory,
     pfns: Vec<u64>,
@@ -280,21 +289,20 @@ unsafe impl MappedDmaTarget for DmaBuffer {
     }
 }
 
+/// Allocator to be only used for [`DeviceSharedMemory`].
 #[derive(Inspect)]
-#[cfg(test)]
 pub struct EmulatedDmaAllocator {
     #[inspect(skip)]
     shared_mem: DeviceSharedMemory,
 }
 
-#[cfg(test)]
 impl EmulatedDmaAllocator {
+    /// Returns a new EmulatedDmaAllocator struct
     pub fn new(shared_mem: DeviceSharedMemory) -> Self {
         Self { shared_mem }
     }
 }
 
-#[cfg(test)]
 impl DmaClient for EmulatedDmaAllocator {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
         let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);

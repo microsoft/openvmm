@@ -2204,6 +2204,7 @@ dependencies = [
  "arbitrary",
  "chipset_device",
  "disklayer_ram",
+ "dma_guest_memory_wrapper",
  "guestmem",
  "guid",
  "inspect",
@@ -3850,6 +3851,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "dma_guest_memory_wrapper",
  "futures",
  "gdma",
  "gdma_defs",
