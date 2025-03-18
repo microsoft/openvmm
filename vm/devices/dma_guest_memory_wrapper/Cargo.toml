@@ -15,7 +15,6 @@ inspect.workspace = true
 parking_lot.workspace = true
 pci_core.workspace = true
 safeatomic.workspace = true
-sparse_mmap.workspace = true
 tracing.workspace = true
 user_driver.workspace = true
 
