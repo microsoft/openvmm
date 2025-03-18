@@ -37,7 +37,7 @@ use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
 
 /// A wrapper around any user_driver device T. It provides device emulation by providing access to the memory shared with the device and thus
-/// allowing the user to control device behaviour to a certain extent. Can be used with devices such as the [`NvmeController`]
+/// allowing the user to control device behaviour to a certain extent. Can be used with devices such as the `NvmeController`
 pub struct EmulatedDevice<T, U> {
     device: Arc<Mutex<T>>,
     controller: MsiController,
