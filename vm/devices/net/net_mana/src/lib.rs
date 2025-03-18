@@ -1264,7 +1264,7 @@ impl<'a, 'b> ContiguousBuffer<'a, 'b> {
     pub fn reserve(self) -> ContiguousBufferInUse {
         let page = self.offset / PAGE_SIZE32;
         let offset_in_page = self.offset - page * PAGE_SIZE32;
-        let gpa = self.parent.get_page_gpa(page as usize) + offset_in_page as u64;
+        let gpa = self.parent.page_gpa(page as usize) + offset_in_page as u64;
         let len_with_padding = self.len + self.padding_len;
         self.parent.head = self.parent.head.wrapping_add(len_with_padding);
         ContiguousBufferInUse {
@@ -1332,7 +1332,7 @@ impl<'a> ContiguousBufferManagerTransaction<'a> {
         self.parent.as_slice()
     }
 
-    pub fn get_page_gpa(&self, page_idx: usize) -> u64 {
+    pub fn page_gpa(&self, page_idx: usize) -> u64 {
         self.parent.mem.pfns()[page_idx] * PAGE_SIZE64
     }
 }
