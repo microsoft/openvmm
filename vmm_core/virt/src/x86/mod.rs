@@ -294,10 +294,10 @@ impl XsaveCapabilities {
         for i in 2..63 {
             if xfem & (1 << i) != 0 {
                 let feature = &self.feature_info[i as usize];
-                len += feature.len;
                 if feature.align {
                     len = (len + 63) & !63;
                 }
+                len += feature.len;
             }
         }
         len
