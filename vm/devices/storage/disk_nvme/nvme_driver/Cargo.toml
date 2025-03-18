@@ -7,14 +7,16 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+guestmem.workspace = true
 inspect = { workspace = true, features = ["defer"] }
 inspect_counters.workspace = true
+memory_range.workspace = true
 mesh.workspace = true
-pal_async.workspace = true
 nvme_spec.workspace = true
+page_pool_alloc.workspace = true
+pal_async.workspace = true
 task_control.workspace = true
 user_driver.workspace = true
-guestmem.workspace = true
 vmcore.workspace = true
 
 anyhow.workspace = true

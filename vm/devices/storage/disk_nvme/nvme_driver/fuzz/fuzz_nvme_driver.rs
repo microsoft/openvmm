@@ -7,7 +7,7 @@ use crate::fuzz_emulated_device::FuzzEmulatedDevice;
 
 use arbitrary::Arbitrary;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
-use devices_test_helpers::DeviceSharedMemory;
+use user_driver_emulated_mock::DeviceSharedMemory;
 use guestmem::GuestMemory;
 use guid::Guid;
 use nvme::NvmeController;
