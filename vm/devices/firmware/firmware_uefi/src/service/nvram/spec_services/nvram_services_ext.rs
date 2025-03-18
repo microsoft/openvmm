@@ -19,7 +19,7 @@ use uefi_specs::uefi::common::EfiStatus;
 pub trait NvramServicesExt {
     /// Get a variable identified by `name` (as a Rust string) + `vendor`,
     /// returning the variable's attributes and data.
-    #[cfg_attr(windows, expect(dead_code))]
+    #[allow(dead_code)]
     async fn get_variable(
         &mut self,
         vendor: Guid,
