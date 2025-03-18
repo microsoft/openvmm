@@ -302,11 +302,9 @@ trait HardwareIsolatedBacking: Backing {
         vtl: GuestVtl,
     ) -> TranslationRegisters;
 
-    // Individual registers for CPUID.
-
-    fn cr4(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
-    fn xfem(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
-    fn xss(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
+    /// Individual register for CPUID, since AccessVpState::registers is
+    /// relatively slow on TDX.
+    fn cr4_for_cpuid(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]

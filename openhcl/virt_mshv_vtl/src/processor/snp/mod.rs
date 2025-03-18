@@ -234,16 +234,8 @@ impl HardwareIsolatedBacking for SnpBacked {
         }
     }
 
-    fn cr4(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
+    fn cr4_for_cpuid(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
         this.runner.vmsa(vtl).cr4()
-    }
-
-    fn xfem(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
-        this.runner.vmsa(vtl).xcr0()
-    }
-
-    fn xss(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
-        this.runner.vmsa(vtl).xss()
     }
 }
 

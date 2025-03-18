@@ -538,19 +538,8 @@ impl HardwareIsolatedBacking for TdxBacked {
         }
     }
 
-    fn cr4(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
+    fn cr4_for_cpuid(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
         this.backing.vtls[vtl].cr4.read(&this.runner)
-    }
-
-    fn xfem(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
-        this.runner
-            .get_vp_register(vtl, HvX64RegisterName::Xfem)
-            .expect("cannot fail to get xfem")
-            .as_u64()
-    }
-
-    fn xss(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
-        this.backing.vtls[vtl].private_regs.msr_xss
     }
 }
 

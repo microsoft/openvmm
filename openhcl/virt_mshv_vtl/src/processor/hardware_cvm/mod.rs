@@ -1336,7 +1336,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         // Apply fixups.
         match CpuidFunction(leaf) {
             CpuidFunction::VersionAndFeatures => {
-                let cr4 = B::cr4(self, vtl);
+                let cr4 = B::cr4_for_cpuid(self, vtl);
                 ecx = cpuid::VersionAndFeaturesEcx::from(ecx)
                     .with_os_xsave(cr4 & x86defs::X64_CR4_OSXSAVE != 0)
                     .with_x2_apic(true)
@@ -1352,13 +1352,17 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             }
             CpuidFunction::ExtendedStateEnumeration => match subleaf {
                 0 => {
-                    let xfem = B::xfem(self, vtl);
+                    let mut state = self.access_state(vtl.into());
+                    let xfem = state.xcr().expect("can't fail to get xfem").value;
+                    drop(state);
                     ebx = self.partition.caps.xsave.standard_len_for(xfem);
                 }
                 1 => {
                     if cpuid::ExtendedStateEnumerationSubleaf1Eax::from(eax).xsave_s() {
-                        let xfem = B::xfem(self, vtl);
-                        let xss = B::xss(self, vtl);
+                        let mut state = self.access_state(vtl.into());
+                        let xfem = state.xcr().expect("can't fail to get xfem").value;
+                        let xss = state.xss().expect("can't fail to get xss").value;
+                        drop(state);
                         ebx = self.partition.caps.xsave.compact_len_for(xfem | xss);
                     }
                 }
