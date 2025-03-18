@@ -155,7 +155,7 @@ impl DeviceSharedMemory {
     pub fn new(size: usize, extra: usize) -> Self {
         assert_eq!(size % PAGE_SIZE, 0);
         assert_eq!(extra % PAGE_SIZE, 0);
-        let mem_backing = 
+        let mem_backing =
             GuestMemoryAccessWrapper::new(Arc::new(AlignedHeapMemory::new(size + extra)), false);
         let dma_backing = GuestMemoryAccessWrapper::new(mem_backing.mem().clone(), true);
         let mem = GuestMemory::new("emulated_shared_mem", mem_backing);
