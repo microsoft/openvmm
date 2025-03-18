@@ -28,10 +28,10 @@ zerocopy.workspace = true
 safe_intrinsics.workspace = true
 
 [dev-dependencies]
-user_driver_emulated_mock.workspace = true
 gdma.workspace = true
 pci_core.workspace = true
 test_with_tracing.workspace = true
+user_driver_emulated_mock.workspace = true
 
 [lints]
 workspace = true

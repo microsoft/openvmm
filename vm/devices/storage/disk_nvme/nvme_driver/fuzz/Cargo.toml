@@ -12,7 +12,6 @@ anyhow.workspace = true
 arbitrary = { workspace = true, features = ["derive"] }
 chipset_device.workspace = true
 disklayer_ram.workspace = true
-user_driver_emulated_mock.workspace = true
 guestmem.workspace = true
 guid.workspace = true
 inspect.workspace = true
@@ -26,6 +25,9 @@ scsi_buffers.workspace = true
 user_driver.workspace = true
 vmcore.workspace = true
 xtask_fuzz.workspace = true
+
+[dev-dependencies]
+user_driver_emulated_mock.worspace = true
 
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 libfuzzer-sys.workspace = true

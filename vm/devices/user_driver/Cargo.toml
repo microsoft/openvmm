@@ -12,26 +12,27 @@ vfio = ["vfio_sys", "sparse_mmap"]
 mmio_simulate_fallback = []
 
 [dependencies]
-anyhow.workspace = true
-event-listener.workspace = true
-guestmem.workspace = true
+chipset_device.workspace = true
 inspect.workspace = true
 inspect_counters.workspace = true
 mesh.workspace = true
 pal_async.workspace = true
-parking_lot.workspace = true
 pci_core.workspace = true
 safeatomic.workspace = true
-tracing.workspace = true
 uevent.workspace = true
-vfio-bindings.workspace = true
+event-listener.workspace = true
+guestmem.workspace = true
 vmcore.workspace = true
-zerocopy.workspace = true
 
+anyhow.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+vfio-bindings.workspace = true
+zerocopy.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 fs-err.workspace = true
-futures-concurrency.workspace = true
 futures.workspace = true
+futures-concurrency.workspace = true
 libc.workspace = true
 pal_event.workspace = true
 sparse_mmap = { workspace = true, optional = true }
