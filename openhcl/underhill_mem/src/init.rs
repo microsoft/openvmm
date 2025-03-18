@@ -69,16 +69,19 @@ impl MemoryMappings {
 }
 
 pub struct Init<'a> {
-    pub tp: &'a AffinitizedThreadpool,
     pub processor_topology: &'a ProcessorTopology,
     pub isolation: IsolationType,
     pub vtl0_alias_map_bit: Option<u64>,
     pub vtom: Option<u64>,
     pub mem_layout: &'a MemoryLayout,
     pub complete_memory_layout: &'a MemoryLayout,
-    pub boot_init: bool,
+    pub boot_init: Option<BootInit<'a>>,
     pub shared_pool: &'a [MemoryRangeWithNode],
     pub maximum_vtl: Vtl,
+}
+
+pub struct BootInit<'a> {
+    pub tp: &'a AffinitizedThreadpool,
     pub vtl2_memory: &'a [MemoryRangeWithNode],
     pub accepted_regions: &'a [MemoryRange],
 }
@@ -94,85 +97,86 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
     let hardware_isolated = params.isolation.is_hardware_isolated();
 
-    if params.boot_init && !params.isolation.is_isolated() {
-        // TODO: VTL 2 protections are applied in the boot shim for isolated
-        // VMs. Since non-isolated VMs can undergo servicing and this is an
-        // expensive operation, continue to apply protections here for now. In
-        // the future, the boot shim should be made aware of when it's booting
-        // during a servicing operation and unify the application of vtl2
-        // protections.
+    if let Some(boot_init) = &params.boot_init {
+        if !params.isolation.is_isolated() {
+            // TODO: VTL 2 protections are applied in the boot shim for isolated
+            // VMs. Since non-isolated VMs can undergo servicing and this is an
+            // expensive operation, continue to apply protections here for now. In
+            // the future, the boot shim should be made aware of when it's booting
+            // during a servicing operation and unify the application of vtl2
+            // protections.
 
-        // Temporarily move HCL into an Arc so that it can be used across
-        // multiple processors.
+            // Temporarily move HCL into an Arc so that it can be used across
+            // multiple processors.
 
-        tracing::debug!("Applying VTL2 protections");
-        apply_vtl2_protections(params.tp, params.vtl2_memory)
-            .instrument(tracing::info_span!("apply_vtl2_protections"))
-            .await?;
-    }
-
-    // Prepare VTL0 memory for mapping.
-    if params.boot_init && params.isolation.is_isolated() {
-        let acceptor = acceptor.as_ref().unwrap();
-        let ram = params.mem_layout.ram().iter().map(|r| r.range);
-        let accepted_ranges = params.accepted_regions.iter().copied();
-        // On hardware isolated platforms, accepted memory was accepted with
-        // VTL2 only permissions. Provide VTL0 access here.
-        tracing::debug!("Applying VTL0 protections");
-        if hardware_isolated {
-            for range in memory_range::overlapping_ranges(ram.clone(), accepted_ranges.clone()) {
-                acceptor.apply_initial_lower_vtl_protections(range)?;
-            }
-        }
-
-        // Accept the memory that was not accepted by the boot loader.
-        // FUTURE: do this lazily.
-        let vp_count = std::cmp::max(1, params.processor_topology.vp_count() - 1);
-        let accept_subrange = move |subrange| {
-            acceptor.accept_vtl0_pages(subrange).unwrap();
+            tracing::debug!("Applying VTL2 protections");
+            apply_vtl2_protections(boot_init.tp, boot_init.vtl2_memory)
+                .instrument(tracing::info_span!("apply_vtl2_protections"))
+                .await?;
+        } else {
+            // Prepare VTL0 memory for mapping.
+            let acceptor = acceptor.as_ref().unwrap();
+            let ram = params.mem_layout.ram().iter().map(|r| r.range);
+            let accepted_ranges = boot_init.accepted_regions.iter().copied();
+            // On hardware isolated platforms, accepted memory was accepted with
+            // VTL2 only permissions. Provide VTL0 access here.
+            tracing::debug!("Applying VTL0 protections");
             if hardware_isolated {
-                // For VBS-isolated VMs, the VTL protections are set as
-                // part of the accept call.
-                acceptor
-                    .apply_initial_lower_vtl_protections(subrange)
-                    .unwrap();
-            }
-        };
-        tracing::debug!("Accepting VTL0 memory");
-        std::thread::scope(|scope| {
-            for source_range in memory_range::subtract_ranges(ram, accepted_ranges) {
-                validated_ranges.push(source_range);
-
-                // Chunks must be 2mb aligned
-                let two_mb = 2 * 1024 * 1024;
-                let mut range = source_range.aligned_subrange(two_mb);
-                if !range.is_empty() {
-                    let chunk_size = (range.page_count_2m().div_ceil(vp_count as u64)) * two_mb;
-                    let chunk_count = range.len().div_ceil(chunk_size);
-
-                    for _ in 0..chunk_count {
-                        let subrange;
-                        (subrange, range) = if range.len() >= chunk_size {
-                            range.split_at_offset(chunk_size)
-                        } else {
-                            (range, MemoryRange::EMPTY)
-                        };
-                        scope.spawn(move || accept_subrange(subrange));
-                    }
-                    assert!(range.is_empty());
+                for range in memory_range::overlapping_ranges(ram.clone(), accepted_ranges.clone())
+                {
+                    acceptor.apply_initial_lower_vtl_protections(range)?;
                 }
-
-                // Now accept whatever wasn't aligned on the edges
-                scope.spawn(move || {
-                    for unaligned_subrange in memory_range::subtract_ranges(
-                        [source_range],
-                        [source_range.aligned_subrange(two_mb)],
-                    ) {
-                        accept_subrange(unaligned_subrange);
-                    }
-                });
             }
-        });
+
+            // Accept the memory that was not accepted by the boot loader.
+            // FUTURE: do this lazily.
+            let vp_count = std::cmp::max(1, params.processor_topology.vp_count() - 1);
+            let accept_subrange = move |subrange| {
+                acceptor.accept_vtl0_pages(subrange).unwrap();
+                if hardware_isolated {
+                    // For VBS-isolated VMs, the VTL protections are set as
+                    // part of the accept call.
+                    acceptor
+                        .apply_initial_lower_vtl_protections(subrange)
+                        .unwrap();
+                }
+            };
+            tracing::debug!("Accepting VTL0 memory");
+            std::thread::scope(|scope| {
+                for source_range in memory_range::subtract_ranges(ram, accepted_ranges) {
+                    validated_ranges.push(source_range);
+
+                    // Chunks must be 2mb aligned
+                    let two_mb = 2 * 1024 * 1024;
+                    let mut range = source_range.aligned_subrange(two_mb);
+                    if !range.is_empty() {
+                        let chunk_size = (range.page_count_2m().div_ceil(vp_count as u64)) * two_mb;
+                        let chunk_count = range.len().div_ceil(chunk_size);
+
+                        for _ in 0..chunk_count {
+                            let subrange;
+                            (subrange, range) = if range.len() >= chunk_size {
+                                range.split_at_offset(chunk_size)
+                            } else {
+                                (range, MemoryRange::EMPTY)
+                            };
+                            scope.spawn(move || accept_subrange(subrange));
+                        }
+                        assert!(range.is_empty());
+                    }
+
+                    // Now accept whatever wasn't aligned on the edges
+                    scope.spawn(move || {
+                        for unaligned_subrange in memory_range::subtract_ranges(
+                            [source_range],
+                            [source_range.aligned_subrange(two_mb)],
+                        ) {
+                            accept_subrange(unaligned_subrange);
+                        }
+                    });
+                }
+            });
+        }
     }
 
     // Tell the hypervisor we want to use the shared pool for shared memory.
@@ -278,7 +282,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 .for_kernel_access(true)
                 .shared(true)
                 .use_bitmap(Some(false))
-                .ignore_registration_failure(!params.boot_init)
+                .ignore_registration_failure(params.boot_init.is_none())
                 .dma_base_address(Some(dma_base_address))
                 .build(&gpa_fd, params.complete_memory_layout)
                 .context("failed to map shared memory")?
@@ -368,7 +372,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 GuestMemoryMapping::builder(base_address)
                     .for_kernel_access(true)
                     .dma_base_address(Some(base_address))
-                    .ignore_registration_failure(!params.boot_init)
+                    .ignore_registration_failure(params.boot_init.is_none())
                     .build(&gpa_fd, params.mem_layout)
                     .context("failed to map vtl0 memory")?,
             )
@@ -402,7 +406,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                 let vtl1_mapping = GuestMemoryMapping::builder(0)
                     .for_kernel_access(true)
                     .dma_base_address(Some(0))
-                    .ignore_registration_failure(!params.boot_init)
+                    .ignore_registration_failure(params.boot_init.is_none())
                     .build(&gpa_fd, params.mem_layout)
                     .context("failed to map vtl1 memory")?;
                 Some(Arc::new(vtl1_mapping))

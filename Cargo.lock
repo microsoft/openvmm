@@ -6392,6 +6392,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d66dc143e6b11c1eddc06d5c423cfc97062865baf299914ab64caa38182078fe"
 
 [[package]]
+name = "simple_tmk"
+version = "0.0.0"
+dependencies = [
+ "minimal_rt",
+ "minimal_rt_build",
+ "tmk_protocol",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6774,6 +6783,43 @@ checksum = "be4d6b5f19ff7664e8c98d03e2139cb510db9b0a60b55f8e8709b689d939b6bc"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "tmk_protocol"
+version = "0.0.0"
+
+[[package]]
+name = "tmk_vmm"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "build_rs_guest_arch",
+ "clap",
+ "fs-err",
+ "futures",
+ "guestmem",
+ "hvdef",
+ "loader",
+ "mesh",
+ "page_table",
+ "pal_async",
+ "pal_uring",
+ "tmk_protocol",
+ "tracing",
+ "tracing-subscriber",
+ "tracing_helpers",
+ "underhill_mem",
+ "virt",
+ "virt_hvf",
+ "virt_kvm",
+ "virt_mshv",
+ "virt_mshv_vtl",
+ "virt_whp",
+ "vm_loader",
+ "vm_topology",
+ "vmcore",
+ "x86defs",
 ]
 
 [[package]]

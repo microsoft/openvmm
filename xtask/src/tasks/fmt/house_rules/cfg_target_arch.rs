@@ -74,7 +74,7 @@ pub fn check_cfg_target_arch(path: &Path, _fix: bool) -> anyhow::Result<()> {
     //
     // openhcl_boot uses target_arch liberally, since it runs in VTL2 entirely
     // in-service to the VTL2 linux kernel, which will always be native-arch.
-    // Similar for the sidecar kernel. And minimal_rt provides the
+    // Similar for the sidecar kernel and TMKs. And minimal_rt provides the
     // (arch-specific) runtime for both of them.
     //
     // safe_intrinsics performs architecture-specific operations that require
@@ -87,6 +87,7 @@ pub fn check_cfg_target_arch(path: &Path, _fix: bool) -> anyhow::Result<()> {
         || path.starts_with("openhcl/minimal_rt")
         || path.starts_with("openhcl/sidecar")
         || path.starts_with("support/safe_intrinsics")
+        || path.starts_with("tmk/simple_tmk")
         || path.starts_with("vm/whp")
         || path.starts_with("vm/kvm")
     {

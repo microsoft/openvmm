@@ -9,6 +9,7 @@ mod init;
 mod mapping;
 mod registrar;
 
+pub use init::BootInit;
 pub use init::Init;
 pub use init::MemoryMappings;
 pub use init::init;

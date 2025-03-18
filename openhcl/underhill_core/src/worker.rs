@@ -1439,22 +1439,23 @@ async fn new_underhill_vm(
         .context("failed to create prototype partition")?;
 
     let gm = underhill_mem::init(&underhill_mem::Init {
-        tp,
         processor_topology: &processor_topology,
         isolation,
         vtl0_alias_map_bit,
         vtom,
         mem_layout: &mem_layout,
         complete_memory_layout: &complete_memory_layout,
-        boot_init,
+        boot_init: boot_init.then_some(underhill_mem::BootInit {
+            tp,
+            vtl2_memory: runtime_params.vtl2_memory_map(),
+            accepted_regions: measured_vtl2_info.accepted_regions(),
+        }),
         shared_pool: &shared_pool,
         maximum_vtl: if proto_partition.guest_vsm_available() {
             Vtl::Vtl1
         } else {
             Vtl::Vtl0
         },
-        vtl2_memory: runtime_params.vtl2_memory_map(),
-        accepted_regions: measured_vtl2_info.accepted_regions(),
     })
     .await
     .context("failed to initialize memory")?;

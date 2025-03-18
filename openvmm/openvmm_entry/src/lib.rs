@@ -441,7 +441,7 @@ fn vm_config_from_command_line(
         );
     }
 
-    let with_get = opt.get || opt.vtl2;
+    let with_get = opt.get || (opt.vtl2 && !opt.no_get);
 
     let mut storage = storage_builder::StorageBuilder::new(with_get.then_some(openhcl_vtl));
     for &cli_args::DiskCli {

@@ -17,6 +17,9 @@ members = [
   "openhcl/openvmm_hcl",
   "openhcl/sidecar",
   "openhcl/vmfirmwareigvm_dll",
+  # tmk
+  "tmk/tmk_vmm",
+  "tmk/simple_tmk",
   # VMM tests
   "vmm_tests/vmm_tests",
   # hyper-v tooling
@@ -41,7 +44,7 @@ members = [
   "petri/make_imc_hive",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
-  "vm/vmgs/vmgstool",
+  "vm/vmgs/vmgstool", "tmk/tmk_protocol",
 ]
 exclude = [
   "xsync",
@@ -172,6 +175,8 @@ openhcl_attestation_protocol = { path = "openhcl/openhcl_attestation_protocol" }
 openvmm_hcl_resources = { path = "openhcl/openvmm_hcl_resources" }
 underhill_threadpool = { path = "openhcl/underhill_threadpool" }
 virt_mshv_vtl = { path = "openhcl/virt_mshv_vtl" }
+
+tmk_protocol = { path = "tmk/tmk_protocol" }
 
 aarch64defs = { path = "vm/aarch64/aarch64defs" }
 aarch64emu = { path = "vm/aarch64/aarch64emu" }
@@ -574,6 +579,13 @@ panic = 'abort'
 codegen-units = 1
 opt-level = 'z'
 lto = 'fat'
+
+# Optimize minimal_rt even in the dev profile to ensure no relocations creep
+# into the relocate function.
+#
+# FUTURE: rewrite relocator in asm to avoid depending on this.
+[profile.dev.package.minimal_rt]
+opt-level = 1
 
 [patch.crates-io]
 # Pending <https://github.com/ferrilab/bitvec/pull/273>

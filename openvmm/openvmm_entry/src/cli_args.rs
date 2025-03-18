@@ -92,6 +92,11 @@ pub struct Options {
     #[clap(long, requires("hv"))]
     pub get: bool,
 
+    /// Disable GET and related devices for using the OpenHCL paravisor, even
+    /// when --vtl2 is passed.
+    #[clap(long, conflicts_with("get"))]
+    pub no_get: bool,
+
     /// The disk to use for the GET VMGS.
     ///
     /// If this is not provided, then a 4MB RAM disk will be used.
