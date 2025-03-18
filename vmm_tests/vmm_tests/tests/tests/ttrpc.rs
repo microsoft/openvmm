@@ -3,6 +3,8 @@
 
 //! Integration tests for hvlite's TTRPC interface.
 
+#![cfg(guest_arch = "x86_64")]
+
 use anyhow::Context;
 use guid::Guid;
 use hvlite_ttrpc_vmservice as vmservice;
