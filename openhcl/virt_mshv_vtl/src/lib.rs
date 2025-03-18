@@ -85,6 +85,7 @@ use parking_lot::RwLock;
 use processor::BackingSharedParams;
 use processor::SidecarExitReason;
 use sidecar_client::NewSidecarClientError;
+use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
@@ -97,7 +98,6 @@ use std::sync::atomic::Ordering;
 use std::task::Waker;
 use thiserror::Error;
 use user_driver::DmaClient;
-use virt::CpuidLeafSet;
 use virt::IsolationType;
 use virt::PartitionCapabilities;
 use virt::VpIndex;
@@ -207,7 +207,8 @@ struct UhPartitionInner {
     enter_modes: Mutex<EnterModes>,
     #[inspect(skip)]
     enter_modes_atomic: AtomicU8,
-    cpuid: CpuidLeafSet,
+    #[cfg(guest_arch = "x86_64")]
+    cpuid: virt::CpuidLeafSet,
     lower_vtl_memory_layout: MemoryLayout,
     gm: VtlArray<GuestMemory, 2>,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -1358,8 +1359,9 @@ pub trait TlbFlushLockAccess {
 pub struct UhProtoPartition<'a> {
     params: UhPartitionNewParams<'a>,
     hcl: Hcl,
-    cpuid: CpuidLeafSet,
     guest_vsm_available: bool,
+    #[cfg(guest_arch = "x86_64")]
+    cpuid: virt::CpuidLeafSet,
 }
 
 impl<'a> UhProtoPartition<'a> {
@@ -1420,7 +1422,7 @@ impl<'a> UhProtoPartition<'a> {
         set_vtl2_vsm_partition_config(&hcl)?;
 
         #[cfg(guest_arch = "x86_64")]
-        let cvm_cpuid = match params.isolation {
+        let cpuid = match params.isolation {
             IsolationType::Snp => cvm_cpuid::CpuidResultsIsolationType::Snp {
                 cpuid_pages: params.cvm_cpuid_info.unwrap(),
             }
@@ -1430,23 +1432,22 @@ impl<'a> UhProtoPartition<'a> {
             IsolationType::Tdx => cvm_cpuid::CpuidResultsIsolationType::Tdx
                 .build()
                 .map_err(Error::CvmCpuid)?,
-            IsolationType::Vbs | IsolationType::None => CpuidLeafSet::default(),
+            IsolationType::Vbs | IsolationType::None => Default::default(),
         };
-        #[cfg(guest_arch = "aarch64")]
-        let cvm_cpuid = CpuidLeafSet::default();
 
         let guest_vsm_available = Self::check_guest_vsm_support(
             &hcl,
             &params,
             #[cfg(guest_arch = "x86_64")]
-            &cvm_cpuid,
+            &cpuid,
         )?;
 
         Ok(UhProtoPartition {
             hcl,
             params,
-            cpuid: cvm_cpuid,
             guest_vsm_available,
+            #[cfg(guest_arch = "x86_64")]
+            cpuid,
         })
     }
 
@@ -1463,8 +1464,9 @@ impl<'a> UhProtoPartition<'a> {
         let Self {
             mut hcl,
             params,
-            cpuid,
             guest_vsm_available,
+            #[cfg(guest_arch = "x86_64")]
+            cpuid,
         } = self;
         let isolation = params.isolation;
         let is_hardware_isolated = isolation.is_hardware_isolated();
@@ -1667,9 +1669,11 @@ impl<'a> UhProtoPartition<'a> {
             isolation,
             BackingSharedParams {
                 cvm_state,
+                #[cfg(guest_arch = "x86_64")]
                 cpuid: &cpuid,
                 vp_count: params.topology.vp_count(),
                 guest_vsm_available,
+                _phantom: PhantomData,
             },
         )?;
 
@@ -1683,6 +1687,7 @@ impl<'a> UhProtoPartition<'a> {
             enter_modes: Mutex::new(enter_modes),
             enter_modes_atomic: u8::from(hcl::protocol::EnterModes::from(enter_modes)).into(),
             gm: late_params.gm,
+            #[cfg(guest_arch = "x86_64")]
             cpuid,
             crash_notification_send: late_params.crash_notification_send,
             monitor_page: MonitorPage::new(),
@@ -1786,7 +1791,7 @@ impl UhProtoPartition<'_> {
     fn check_guest_vsm_support(
         hcl: &Hcl,
         params: &UhPartitionNewParams<'_>,
-        #[cfg(guest_arch = "x86_64")] cvm_cpuid: &CpuidLeafSet,
+        #[cfg(guest_arch = "x86_64")] cvm_cpuid: &virt::CpuidLeafSet,
     ) -> Result<bool, Error> {
         match params.isolation {
             IsolationType::None | IsolationType::Vbs => {}
@@ -1907,7 +1912,7 @@ impl UhPartition {
     #[cfg(guest_arch = "x86_64")]
     /// Constructs the set of cpuid results to show to the guest
     fn construct_cpuid_results(
-        cpuid: &mut CpuidLeafSet,
+        cpuid: &mut virt::CpuidLeafSet,
         initial_cpuid: &[CpuidLeaf],
         topology: &ProcessorTopology<vm_topology::processor::x86::X86Topology>,
         access_vsm: bool,
@@ -1944,7 +1949,7 @@ impl UhPartition {
     /// Computes the partition capabilities
     fn construct_capabilities(
         topology: &ProcessorTopology,
-        cpuid: &CpuidLeafSet,
+        cpuid: &virt::CpuidLeafSet,
         isolation: IsolationType,
         hide_isolation: bool,
     ) -> virt::x86::X86PartitionCapabilities {

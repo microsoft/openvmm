@@ -64,7 +64,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::time::Duration;
-use virt::CpuidLeafSet;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
@@ -270,9 +269,11 @@ pub(crate) struct BackingSharedParams<'a> {
     pub cvm_state: Option<crate::UhCvmPartitionState>,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     pub vp_count: u32,
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    pub cpuid: &'a CpuidLeafSet,
+    #[cfg(guest_arch = "x86_64")]
+    pub cpuid: &'a virt::CpuidLeafSet,
     pub guest_vsm_available: bool,
+    /// Not all arches reference 'a.
+    pub _phantom: PhantomData<&'a ()>,
 }
 
 /// Trait for processor backings that have hardware isolation support.
