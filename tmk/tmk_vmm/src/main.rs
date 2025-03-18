@@ -31,9 +31,15 @@ fn main() -> anyhow::Result<()> {
     DefaultPool::run_with(do_main)
 }
 
+/// A simple VMM for loading and running test microkernels (TMKs).
+///
+/// This is used to test the underlying VMM infrastructure without the complexity
+/// of the full OpenVMM stack.
+///
+/// This can run either on a host or inside a paravisor environment.
 #[derive(Parser)]
 struct Options {
-    /// The hypervisor to use.
+    /// The hypervisor interface to use to run the TMK.
     #[clap(long)]
     hv: HypervisorOpt,
     /// The path to the TMK binary.
@@ -43,14 +49,20 @@ struct Options {
 
 #[derive(clap::ValueEnum, Clone)]
 enum HypervisorOpt {
+    /// Use KVM to run the TMK.
     #[cfg(target_os = "linux")]
     Kvm,
+    /// Use mshv to run the TMK.
     #[cfg(all(target_os = "linux", guest_arch = "x86_64"))]
     Mshv,
+    /// Use mshv-vtl to run the TMK; only supported inside a paravisor
+    /// environment.
     #[cfg(target_os = "linux")]
     MshvVtl,
+    /// Use WHP to run the TMK.
     #[cfg(target_os = "windows")]
     Whp,
+    /// Use Hypervisor.Framework to run the TMK.
     #[cfg(target_os = "macos")]
     Hvf,
 }
