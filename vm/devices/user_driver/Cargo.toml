@@ -12,7 +12,6 @@ vfio = ["vfio_sys", "sparse_mmap"]
 mmio_simulate_fallback = []
 
 [dependencies]
-chipset_device.workspace = true
 inspect.workspace = true
 inspect_counters.workspace = true
 mesh.workspace = true
