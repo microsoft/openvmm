@@ -147,15 +147,4 @@ impl CpuidLeafSet {
         }
         result
     }
-
-    /// Updates an existing result to have the new value
-    /// Returns false if the leaf was not found
-    pub fn update_result(&mut self, eax: u32, ecx: u32, new_values: &[u32; 4]) -> bool {
-        if let Some(x) = self.leaves.iter_mut().find(|x| x.matches(eax, ecx)) {
-            x.result = *new_values;
-            return true;
-        }
-
-        false
-    }
 }
