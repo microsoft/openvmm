@@ -18,7 +18,6 @@ use pci_core::msi::MsiControl;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
 use safeatomic::AtomicSliceOps;
-use sparse_mmap::SparseMapping;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
@@ -145,14 +144,14 @@ pub struct DeviceSharedMemory {
 /// The [`TestGuestMemoryAccessWrapper`] struct is meant for testing only. It is meant to encapsulate types that already
 /// implement [`GuestMemoryAccess`] but provides the allow_dma switch regardless of the underlying
 /// type T.
-pub struct TestGuestMemoryAccessWrapper<T> {
+pub struct GuestMemoryAccessWrapper<T> {
     mem: T,
     allow_dma: bool,
 }
 
 /// SAFETY: Defer to [`GuestMemoryAccess`] implementation of T
 /// Only intercept the base_iova fn with a naive response of 0 if allow_dma is enabled.
-unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for TestGuestMemoryAccessWrapper<T> {
+unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for GuestMemoryAccessWrapper<T> {
     fn mapping(&self) -> Option<NonNull<u8>> {
         self.mem.mapping()
     }
@@ -166,10 +165,10 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for TestGuestMemoryAccessWra
     }
 }
 
-impl<T: GuestMemoryAccess> TestGuestMemoryAccessWrapper<T> {
+impl<T: GuestMemoryAccess> GuestMemoryAccessWrapper<T> {
     /// Takes sparse mapping as input and converts it to [`GuestMemory`] with the allow_dma switch
     pub fn create_test_guest_memory(mem: T, allow_dma: bool) -> GuestMemory {
-        let test_backing = TestGuestMemoryAccessWrapper {
+        let test_backing = GuestMemoryAccessWrapper {
             mem,
             allow_dma,
         };
@@ -184,11 +183,11 @@ impl DeviceSharedMemory {
     pub fn new(size: usize, extra: usize) -> Self {
         assert_eq!(size % PAGE_SIZE, 0);
         assert_eq!(extra % PAGE_SIZE, 0);
-        let mem_backing = TestGuestMemoryAccessWrapper {
+        let mem_backing = GuestMemoryAccessWrapper {
             mem: Arc::new(AlignedHeapMemory::new(size + extra)),
             allow_dma: false,
         };
-        let dma_backing = TestGuestMemoryAccessWrapper {
+        let dma_backing = GuestMemoryAccessWrapper {
             mem: mem_backing.mem.clone(),
             allow_dma: true,
         };
