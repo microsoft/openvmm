@@ -7,14 +7,16 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 
-[dev-dependencies]
+[dependencies]
 anyhow.workspace = true
 chipset_device.workspace = true
 guestmem.workspace = true
 inspect.workspace = true
 parking_lot.workspace = true
 pci_core.workspace = true
+safeatomic.workspace = true
 sparse_mmap.workspace = true
+tracing.workspace = true
 user_driver.workspace = true
 
 [lints]

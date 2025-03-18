@@ -28,7 +28,7 @@ use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
 use user_driver::emulated::EmulatedDevice;
 use user_driver::emulated::Mapping;
-use user_driver::emulated::create_test_guest_memory;
+use dma_guest_memory_wrapper::emulated::create_test_guest_memory;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::PAGE_SIZE64;
 use vmcore::vm_task::SingleDriverBackend;

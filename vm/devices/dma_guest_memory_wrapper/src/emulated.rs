@@ -4,13 +4,6 @@
 //! This implements the user-mode driver device traits using an emulated PCI
 //! device.
 
-use user_driver::DeviceBacking;
-use user_driver::DeviceRegisterIo;
-use user_driver::DmaClient;
-use user_driver::interrupt::DeviceInterrupt;
-use user_driver::interrupt::DeviceInterruptSource;
-use user_driver::memory::MappedDmaTarget;
-use user_driver::memory::PAGE_SIZE;
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
@@ -24,10 +17,19 @@ use pci_core::chipset_device_ext::PciChipsetDeviceExt;
 use pci_core::msi::MsiControl;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
+use safeatomic::AtomicSliceOps;
 use sparse_mmap::SparseMapping;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
+use user_driver::DeviceBacking;
+use user_driver::DeviceRegisterIo;
+use user_driver::DmaClient;
+use user_driver::interrupt::DeviceInterrupt;
+use user_driver::interrupt::DeviceInterruptSource;
+use user_driver::memory::MappedDmaTarget;
+use user_driver::memory::MemoryBlock;
+use user_driver::memory::PAGE_SIZE;
 
 /// An emulated device.
 pub struct EmulatedDevice<T, U> {
