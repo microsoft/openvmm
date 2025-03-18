@@ -11,19 +11,24 @@ use watchdog_vmgs_format::WatchdogVmgsFormatStoreError;
 pub struct UnderhillWatchdog {
     store: WatchdogVmgsFormatStore,
     get: guest_emulation_transport::GuestEmulationTransportClient,
-    on_timeout: Box<dyn Fn() + Send + Sync>,
+    hook: Box<dyn WatchdogTimeout>,
+}
+
+#[async_trait::async_trait]
+pub trait WatchdogTimeout: Send + Sync {
+    async fn on_timeout(&self);
 }
 
 impl UnderhillWatchdog {
     pub async fn new(
         store: Box<dyn NonVolatileStore>,
         get: guest_emulation_transport::GuestEmulationTransportClient,
-        on_timeout: Box<dyn Fn() + Send + Sync>,
+        hook: Box<dyn WatchdogTimeout>,
     ) -> Result<Self, WatchdogVmgsFormatStoreError> {
         Ok(UnderhillWatchdog {
             store: WatchdogVmgsFormatStore::new(store).await?,
             get,
-            on_timeout,
+            hook,
         })
     }
 }
@@ -45,7 +50,7 @@ impl WatchdogPlatform for UnderhillWatchdog {
             .event_log_fatal(get_protocol::EventLogId::WATCHDOG_TIMEOUT_RESET)
             .await;
 
-        (self.on_timeout)()
+        self.hook.on_timeout().await
     }
 
     async fn read_and_clear_boot_status(&mut self) -> bool {
