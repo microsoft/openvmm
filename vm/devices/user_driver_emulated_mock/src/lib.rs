@@ -8,10 +8,10 @@
 
 // UNSAFETY: underlying structs need to implement the unsafe [`GuestMemoryAccess`] and [`MappedDmaTarget`] traits.
 #![expect(unsafe_code)]
-pub mod emulated_test_infra;
+pub mod unsafe_mock;
 
-use crate::emulated_test_infra::DmaBuffer;
-use crate::emulated_test_infra::GuestMemoryAccessWrapper;
+use crate::unsafe_mock::DmaBuffer;
+use crate::unsafe_mock::GuestMemoryAccessWrapper;
 
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;

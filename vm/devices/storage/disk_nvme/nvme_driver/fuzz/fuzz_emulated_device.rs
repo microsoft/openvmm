@@ -11,10 +11,10 @@ use crate::arbitrary_data;
 
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
-use devices_test_helpers::emulated_test_infra::DeviceSharedMemory;
-use devices_test_helpers::emulated_test_infra::EmulatedDevice;
-use devices_test_helpers::emulated_test_infra::EmulatedDmaAllocator;
-use devices_test_helpers::emulated_test_infra::Mapping;
+use devices_test_helpers::DeviceSharedMemory;
+use devices_test_helpers::EmulatedDevice;
+use devices_test_helpers::EmulatedDmaAllocator;
+use devices_test_helpers::Mapping;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pci_core::msi::MsiInterruptSet;
