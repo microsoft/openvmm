@@ -20,8 +20,14 @@ use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use run::CommonState;
 use std::path::PathBuf;
+use tracing_subscriber::fmt::format::FmtSpan;
 
 fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .fmt_fields(tracing_helpers::formatter::FieldFormatter)
+        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+        .init();
+
     DefaultPool::run_with(do_main)
 }
 
@@ -51,10 +57,6 @@ enum HypervisorOpt {
 
 async fn do_main(driver: DefaultDriver) -> anyhow::Result<()> {
     let opts = Options::parse();
-
-    tracing_subscriber::fmt()
-        .fmt_fields(tracing_helpers::formatter::FieldFormatter)
-        .init();
 
     let mut state = CommonState::new(driver, opts).await?;
 
