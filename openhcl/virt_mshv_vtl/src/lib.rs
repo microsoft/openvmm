@@ -208,8 +208,6 @@ struct UhPartitionInner {
     #[inspect(skip)]
     enter_modes_atomic: AtomicU8,
     cpuid: CpuidLeafSet,
-    // Only transitions from `false` to `true`.
-    guest_vsm_revoked: AtomicBool,
     lower_vtl_memory_layout: MemoryLayout,
     gm: VtlArray<GuestMemory, 2>,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -274,9 +272,20 @@ impl BackingShared {
         match self {
             BackingShared::Hypervisor(_) => None,
             #[cfg(guest_arch = "x86_64")]
-            BackingShared::Snp(s) => Some(&s.cvm),
-            #[cfg(guest_arch = "x86_64")]
-            BackingShared::Tdx(s) => Some(&s.cvm),
+            BackingShared::Snp(SnpBackedShared { cvm, .. })
+            | BackingShared::Tdx(TdxBackedShared { cvm, .. }) => Some(cvm),
+        }
+    }
+
+    fn guest_vsm_disabled(&self) -> bool {
+        match self {
+            BackingShared::Hypervisor(h) => {
+                matches!(*h.guest_vsm.read(), GuestVsmState::NotPlatformSupported)
+            }
+            BackingShared::Snp(SnpBackedShared { cvm, .. })
+            | BackingShared::Tdx(TdxBackedShared { cvm, .. }) => {
+                matches!(*cvm.guest_vsm.read(), GuestVsmState::NotPlatformSupported)
+            }
         }
     }
 }
@@ -728,7 +737,6 @@ impl UhPartition {
             }
         };
 
-        self.inner.guest_vsm_revoked.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -1670,7 +1678,6 @@ impl<'a> UhProtoPartition<'a> {
             enter_modes_atomic: u8::from(hcl::protocol::EnterModes::from(enter_modes)).into(),
             gm: late_params.gm,
             cpuid,
-            guest_vsm_revoked: false.into(),
             crash_notification_send: late_params.crash_notification_send,
             monitor_page: MonitorPage::new(),
             software_devices,
@@ -2171,7 +2178,7 @@ impl UhPartitionInner {
             //
             // TODO TDX GUEST VSM: Consider changing TLB hypercall flag too
             let mut features = hvdef::HvFeatures::from_cpuid(r);
-            if self.guest_vsm_revoked.load(Ordering::Acquire) {
+            if self.backing_shared.guest_vsm_disabled() {
                 features.set_privileges(features.privileges().with_access_vsm(false));
             }
             features.into_cpuid()
