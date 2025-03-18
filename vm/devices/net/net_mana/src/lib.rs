@@ -1283,9 +1283,6 @@ mod tests {
     use crate::GuestDmaMode;
     use crate::ManaEndpoint;
     use chipset_device::mmio::ExternallyManagedMmioIntercepts;
-    use user_driver_emulated_mock::DeviceSharedMemory;
-    use user_driver_emulated_mock::EmulatedDevice;
-    use user_driver_emulated_mock::EmulatedDmaAllocator;
     use gdma::VportConfig;
     use gdma_defs::bnic::ManaQueryDeviceCfgResp;
     use mana_driver::mana::ManaDevice;
@@ -1300,6 +1297,9 @@ mod tests {
     use pci_core::msi::MsiInterruptSet;
     use std::future::poll_fn;
     use test_with_tracing::test;
+    use user_driver_emulated_mock::DeviceSharedMemory;
+    use user_driver_emulated_mock::EmulatedDevice;
+    use user_driver_emulated_mock::EmulatedDmaAllocator;
     use vmcore::vm_task::SingleDriverBackend;
     use vmcore::vm_task::VmTaskDriverSource;
 

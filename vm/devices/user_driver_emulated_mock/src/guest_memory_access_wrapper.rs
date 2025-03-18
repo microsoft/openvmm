@@ -22,7 +22,7 @@ impl<T> GuestMemoryAccessWrapper<T> {
     /// Creates and returns a new [`GuestMemoryAccessWrapper`] with given memory and the allow_dma switch.
     /// `mem` must implement the [`GuestMemoryAccess`] trait.
     pub fn new(mem: T, allow_dma: bool) -> Self {
-        Self { mem, allow_dma}
+        Self { mem, allow_dma }
     }
 
     /// Returns a ref to underlying `mem`

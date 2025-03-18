@@ -22,11 +22,7 @@ pub struct DmaBuffer {
 impl DmaBuffer {
     /// Creates and returns new [`DmaBuffer`] with the given input parameters
     pub fn new(mem: GuestMemory, pfns: Vec<u64>, state: Arc<Mutex<Vec<u64>>>) -> Self {
-        Self {
-            mem,
-            pfns,
-            state,
-        }
+        Self { mem, pfns, state }
     }
 }
 

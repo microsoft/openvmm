@@ -3,9 +3,8 @@
 
 //! This crate provides a collection of wrapper structs around things like devices and memory. Through the wrappers, it provides functionality to emulate devices such
 //! as Nvme and Mana and gives some additional control over things like [`GuestMemory`] to make testing devices easier.
-//! Everything in this crate is meant for TESTING PURPOSES ONLY and it should only ever be added as a dev-dependency.
+//! Everything in this crate is meant for TESTING PURPOSES ONLY and it should only ever be added as a dev-dependency (Few expceptions like using this for fuzzing)
 #![deny(missing_docs)]
-
 
 mod dma_buffer;
 pub mod guest_memory_access_wrapper;
@@ -26,15 +25,15 @@ use pci_core::msi::MsiControl;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
 use safeatomic::AtomicSliceOps;
-use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
+use user_driver::DeviceBacking;
+use user_driver::DeviceRegisterIo;
+use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::interrupt::DeviceInterruptSource;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
-use user_driver::DeviceBacking;
-use user_driver::DeviceRegisterIo;
-use user_driver::DmaClient;
 
 /// A wrapper around any user_driver device T. It provides device emulation by providing access to the memory shared with the device and thus
 /// allowing the user to control device behaviour to a certain extent. Can be used with devices such as the `NvmeController`
@@ -156,14 +155,9 @@ impl DeviceSharedMemory {
     pub fn new(size: usize, extra: usize) -> Self {
         assert_eq!(size % PAGE_SIZE, 0);
         assert_eq!(extra % PAGE_SIZE, 0);
-        let mem_backing = GuestMemoryAccessWrapper::new(
-            Arc::new(AlignedHeapMemory::new(size + extra)),
-            false,
-        );
-        let dma_backing = GuestMemoryAccessWrapper::new(
-            mem_backing.mem().clone(),
-            true,
-        );
+        let mem_backing = 
+            GuestMemoryAccessWrapper::new(Arc::new(AlignedHeapMemory::new(size + extra)), false);
+        let dma_backing = GuestMemoryAccessWrapper::new(mem_backing.mem().clone(), true);
         let mem = GuestMemory::new("emulated_shared_mem", mem_backing);
         let dma = GuestMemory::new("emulated_shared_dma", dma_backing);
         let len = size / PAGE_SIZE;
@@ -214,15 +208,11 @@ impl DeviceSharedMemory {
         };
 
         let pages = (start_page..start_page + count).map(|p| p as u64).collect();
-        Some(DmaBuffer::new(
-            self.mem.clone(),
-            pages,
-            self.state.clone(),
-        ))
+        Some(DmaBuffer::new(self.mem.clone(), pages, self.state.clone()))
     }
 }
 
-/// Implements a [`DmaClient`] backed by [`DeviceSharedMemory`] 
+/// Implements a [`DmaClient`] backed by [`DeviceSharedMemory`]
 #[derive(Inspect)]
 pub struct EmulatedDmaAllocator {
     #[inspect(skip)]

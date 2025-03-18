@@ -11,16 +11,16 @@ use crate::arbitrary_data;
 
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
-use user_driver_emulated_mock::DeviceSharedMemory;
-use user_driver_emulated_mock::EmulatedDevice;
-use user_driver_emulated_mock::EmulatedDmaAllocator;
-use user_driver_emulated_mock::Mapping;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pci_core::msi::MsiInterruptSet;
 use user_driver::DeviceBacking;
 use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
+use user_driver_emulated_mock::DeviceSharedMemory;
+use user_driver_emulated_mock::EmulatedDevice;
+use user_driver_emulated_mock::EmulatedDmaAllocator;
+use user_driver_emulated_mock::Mapping;
 
 /// An EmulatedDevice fuzzer that requires a working EmulatedDevice backend.
 #[derive(Inspect)]

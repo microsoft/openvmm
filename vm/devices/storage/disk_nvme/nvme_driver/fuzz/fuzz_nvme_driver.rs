@@ -7,7 +7,6 @@ use crate::fuzz_emulated_device::FuzzEmulatedDevice;
 
 use arbitrary::Arbitrary;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
-use user_driver_emulated_mock::DeviceSharedMemory;
 use guestmem::GuestMemory;
 use guid::Guid;
 use nvme::NvmeController;
@@ -19,6 +18,7 @@ use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::convert::TryFrom;
+use user_driver_emulated_mock::DeviceSharedMemory;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 
