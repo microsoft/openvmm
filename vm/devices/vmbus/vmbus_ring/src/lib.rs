@@ -70,8 +70,6 @@ mod pipe_protocol {
 }
 
 mod protocol {
-    #![allow(dead_code)]
-
     use crate::CONTROL_WORD_COUNT;
     use inspect::Inspect;
     use std::fmt::Debug;

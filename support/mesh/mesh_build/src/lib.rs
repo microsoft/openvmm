@@ -83,7 +83,7 @@ impl prost_build::ServiceGenerator for MeshServiceGenerator {
             }
 
             impl #ident {
-                #[allow(dead_code)]
+                #[expect(dead_code)]
                 pub fn fail(self, status: ::mesh_rpc::service::Status) {
                     match self {
                         #(

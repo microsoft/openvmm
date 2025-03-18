@@ -194,7 +194,6 @@ impl<T: 'static + MeshField + Send> BoundedSender<T> {
         })
     }
 
-    #[allow(dead_code)]
     pub async fn send(&mut self, message: T) {
         let mut message = Some(message);
         poll_fn(|cx| self.poll_send(cx, &mut message)).await

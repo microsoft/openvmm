@@ -71,7 +71,7 @@ fn to_igvm_vtl(vtl: Vtl) -> igvm::hv_defs::Vtl {
 
 /// Page table relocation information kept for debugging purposes.
 // Allow dead code because clippy doesn't count #[derive(Debug)] as non-dead code usage.
-#[allow(dead_code)]
+#[expect(dead_code)]
 #[derive(Debug, Clone)]
 struct PageTableRegion {
     gpa: u64,

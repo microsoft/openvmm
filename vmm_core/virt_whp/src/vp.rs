@@ -203,7 +203,7 @@ impl<'a> WhpProcessor<'a> {
         Ok(())
     }
 
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     pub(crate) fn vtl2_intercept(&mut self, typ: HvMessageType, payload: &[u8]) {
         match self.vtl2_intercept_inner(typ, payload) {
             Ok(()) => {}

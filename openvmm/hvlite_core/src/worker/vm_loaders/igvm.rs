@@ -571,7 +571,7 @@ pub fn load_igvm(
 ///
 /// TODO: only supports underhill for now, with assumptions that the file always
 /// has VTL2 enabled.
-#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn load_igvm_x86(
     params: LoadIgvmParams<'_, X86Topology>,
 ) -> Result<(Vec<X86Register>, Vec<(MemoryRange, PageVisibility)>), Error> {
@@ -1274,7 +1274,7 @@ fn build_memory_map(
     (memory_map, vnodes)
 }
 
-#[cfg_attr(not(guest_arch = "aarch64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
 fn load_igvm_aarch64(
     _params: LoadIgvmParams<'_, Aarch64Topology>,
 ) -> Result<(Vec<Aarch64Register>, Vec<(MemoryRange, PageVisibility)>), Error> {

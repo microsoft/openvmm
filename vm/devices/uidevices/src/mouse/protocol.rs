@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(dead_code)]
+#![expect(dead_code)]
 #![allow(unused_macros)]
 
 use guid::Guid;

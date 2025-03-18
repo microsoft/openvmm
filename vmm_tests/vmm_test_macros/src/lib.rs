@@ -686,7 +686,7 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
     Ok(quote! {
         ::petri::multitest!(vec![#tests]);
         // Allow dead code for tests that are not run on the current architecture.
-        #[cfg_attr(not(any(#(guest_arch = #guest_archs,)*)), allow(dead_code))]
+        #[cfg_attr(not(any(#(guest_arch = #guest_archs,)*)), expect(dead_code))]
         #item
     })
 }

@@ -122,7 +122,6 @@ struct VtlsTlbLocked {
     vtl2: VtlArray<bool, 2>,
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 impl VtlsTlbLocked {
     fn get(&self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
         match requesting_vtl {
@@ -301,7 +300,7 @@ trait HardwareIsolatedBacking: Backing {
     ) -> TranslationRegisters;
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 #[derive(Inspect, Debug)]
 #[inspect(tag = "reason")]
 pub(crate) enum SidecarExitReason {
@@ -312,7 +311,7 @@ pub(crate) enum SidecarExitReason {
     ManualRequest,
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 #[derive(Inspect, Debug)]
 #[inspect(tag = "exit")]
 pub(crate) enum SidecarRemoveExit {
@@ -383,7 +382,6 @@ impl UhVpInner {
         }
     }
 
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     pub fn set_sidecar_exit_reason(&self, reason: SidecarExitReason) {
         self.sidecar_exit_reason.lock().get_or_insert_with(|| {
             tracing::info!(?reason, "sidecar exit");

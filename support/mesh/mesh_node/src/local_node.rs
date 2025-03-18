@@ -1062,7 +1062,7 @@ enum EventError {
     UnknownPort,
     Truncated,
     // Field is stored solely for logging via debug, not actually dead.
-    UnknownEventType(#[allow(dead_code)] protocol::EventType),
+    UnknownEventType(#[expect(dead_code)] protocol::EventType),
     MissingOsResource,
 }
 

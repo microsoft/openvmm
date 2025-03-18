@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
-#![allow(dead_code)]
 
 pub mod srb;
 

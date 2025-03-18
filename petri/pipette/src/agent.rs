@@ -30,7 +30,6 @@ pub struct Agent {
     watch_send: mesh::OneshotSender<()>,
 }
 
-#[allow(dead_code)] // Not used on all platforms yet
 #[derive(Clone)]
 pub struct DiagnosticSender(mesh::Sender<DiagnosticFile>);
 
@@ -129,7 +128,7 @@ async fn connect_client(driver: &DefaultDriver) -> anyhow::Result<PolledSocket<S
 async fn handle_request(
     driver: &DefaultDriver,
     req: PipetteRequest,
-    _diag_file_send: DiagnosticSender, // Not used on all platforms yet
+    _diag_file_send: DiagnosticSender,
 ) {
     match req {
         PipetteRequest::Ping(rpc) => rpc.handle_sync(|()| {
@@ -197,7 +196,7 @@ async fn write_file(mut request: pipette_protocol::WriteFileRequest) -> anyhow::
 }
 
 impl DiagnosticSender {
-    #[allow(dead_code)] // Not used on all platforms yet
+    #[cfg_attr(not(windows), expect(dead_code))]
     pub async fn send(&self, filename: &str) -> anyhow::Result<()> {
         tracing::debug!(filename, "Beginning diagnostic file request");
         let file = fs_err::File::open(filename)?;

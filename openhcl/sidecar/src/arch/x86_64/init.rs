@@ -148,7 +148,7 @@ impl Display for InitVpError {
 
 /// BSP entry point from entry.S. Called with BSS, stack, and page tables
 /// initialized, and relocations applied.
-#[cfg_attr(not(minimal_rt), allow(dead_code))]
+#[cfg_attr(not(minimal_rt), expect(dead_code))]
 pub extern "C" fn start(params: u64, output: u64) -> bool {
     enlightened_panic::enable_enlightened_panic();
 

@@ -48,7 +48,7 @@ pub struct AcpiTables {
     pub tables: Vec<u8>,
 }
 
-#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 pub fn load_linux_x86(
     cfg: &KernelConfig<'_>,
     gm: &GuestMemory,
@@ -363,7 +363,7 @@ fn build_dt(
     Ok(buffer)
 }
 
-#[cfg_attr(not(guest_arch = "aarch64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
 pub fn load_linux_arm64(
     cfg: &KernelConfig<'_>,
     gm: &GuestMemory,

@@ -18,7 +18,7 @@ impl WakerList {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(not(windows), expect(dead_code))]
     pub fn push(&mut self, waker: Waker) {
         self.0.push(waker);
     }

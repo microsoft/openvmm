@@ -1081,7 +1081,7 @@ fn round_up_to_2mb(bytes: u64) -> u64 {
     (bytes + (2 * 1024 * 1024) - 1) & !((2 * 1024 * 1024) - 1)
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 fn new_x86_topology(
     cpus: &[bootloader_fdt_parser::Cpu],
     x2apic: vm_topology::processor::x86::X2ApicState,
@@ -1111,7 +1111,7 @@ fn new_x86_topology(
         .context("failed to construct the processor topology")
 }
 
-#[cfg_attr(guest_arch = "x86_64", allow(dead_code))]
+#[cfg_attr(guest_arch = "x86_64", expect(dead_code))]
 fn new_aarch64_topology(
     gic: GicInfo,
     cpus: &[bootloader_fdt_parser::Cpu],

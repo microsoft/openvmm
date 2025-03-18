@@ -115,7 +115,7 @@ pub fn handle_shutdown(request: pipette_protocol::ShutdownRequest) -> anyhow::Re
 }
 
 #[cfg(windows)]
-#[allow(dead_code)] // Currently unused, but left as an example
+#[expect(dead_code)] // Currently unused, but left as an example
 pub fn start_shutdown_trace() -> anyhow::Result<()> {
     use anyhow::Context;
 
@@ -142,7 +142,7 @@ pub fn start_shutdown_trace() -> anyhow::Result<()> {
 }
 
 #[cfg(windows)]
-#[allow(dead_code)] // Currently unused, but left as an example
+#[expect(dead_code)] // Currently unused, but left as an example
 pub async fn send_shutdown_trace(
     diag_file_send: crate::agent::DiagnosticSender,
 ) -> anyhow::Result<()> {

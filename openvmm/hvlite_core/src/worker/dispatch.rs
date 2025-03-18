@@ -517,12 +517,12 @@ struct LoadedVmInner {
     virtio_serial: Option<SerialPipes>,
 
     chipset_cfg: BaseChipsetManifest,
-    #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_count: usize,
-    #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_irq: u32,
     /// ((device, function), interrupt)
-    #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     pci_legacy_interrupts: Vec<((u8, Option<u8>), u32)>,
     firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
 
@@ -699,7 +699,6 @@ impl InitializedVm {
         }
     }
 
-    #[allow(dead_code)]
     async fn new_with_hypervisor<P, H>(
         driver_source: VmTaskDriverSource,
         hypervisor: &mut H,
@@ -2874,7 +2873,7 @@ impl LoadedVm {
     }
 }
 
-#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn add_devices_to_dsdt(
     mem_layout: &MemoryLayout,
     dsdt: &mut dsdt::Dsdt,

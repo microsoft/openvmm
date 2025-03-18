@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 #![cfg(windows)]
-#![allow(dead_code)]
 
 //! Code to interact with the Windows AFD (socket) driver.
 

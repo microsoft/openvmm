@@ -529,7 +529,6 @@ impl Namespace {
     /// during servicing.
     /// TODO: Re-enable namespace save/restore once we confirm
     /// that we can process namespace change AEN.
-    #[allow(dead_code)]
     pub fn save(&self) -> anyhow::Result<SavedNamespaceData> {
         Ok(SavedNamespaceData {
             nsid: self.nsid,

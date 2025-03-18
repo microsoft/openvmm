@@ -316,7 +316,6 @@ pub struct GedChannel<T: RingMem = GpadlRingMem> {
     // TODO: allow unused temporarily as a follow up change will use it to
     // implement AK cert renewal.
     #[inspect(skip)]
-    #[allow(dead_code)]
     gm: GuestMemory,
 }
 

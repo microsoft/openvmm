@@ -7,7 +7,7 @@
 //! is a start providing assurance that HvLite virtualization model is appropriate for
 //! KVM/aarch64.
 
-#![allow(dead_code)]
+#![expect(dead_code)]
 #![cfg(all(target_os = "linux", guest_is_native, guest_arch = "aarch64"))]
 
 use crate::KvmError;

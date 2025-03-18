@@ -1138,7 +1138,7 @@ impl FromStr for SmtConfigCli {
     }
 }
 
-#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn parse_x2apic(s: &str) -> Result<X2ApicConfig, &'static str> {
     let r = match s {
         "auto" => X2ApicConfig::Auto,

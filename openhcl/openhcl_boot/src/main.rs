@@ -372,7 +372,7 @@ fn reserved_memory_regions(
     flattened
 }
 
-#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(target_arch = "x86_64"), expect(dead_code))]
 mod x86_boot {
     use crate::PageAlign;
     use crate::ReservedMemoryType;

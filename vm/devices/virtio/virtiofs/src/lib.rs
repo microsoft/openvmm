@@ -452,7 +452,7 @@ impl<T> HandleMap<T> {
     }
 
     /// Retrieves a value from the map.
-    #[allow(dead_code)]
+    #[cfg_attr(not(windows), expect(dead_code))]
     pub fn get_mut(&mut self, handle: u64) -> Option<&mut T> {
         self.values.get_mut(&handle)
     }

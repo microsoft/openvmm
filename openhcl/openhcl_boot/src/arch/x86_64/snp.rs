@@ -19,7 +19,7 @@ pub enum AcceptGpaStatus {
     Retry,
 }
 
-#[allow(dead_code)] // Printed via Debug in the error case.
+#[expect(dead_code)] // Printed via Debug in the error case.
 #[derive(Debug)]
 pub enum AcceptGpaError {
     MemorySecurityViolation {

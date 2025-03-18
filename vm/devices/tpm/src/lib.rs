@@ -143,7 +143,7 @@ struct ControlArea {
 }
 
 // TODO: switch this over to open_enum!
-#[allow(dead_code)]
+#[expect(dead_code)]
 impl ControlArea {
     const OFFSET_OF_LOC_STATE: usize = 0x00;
     const OFFSET_OF_LOC_CTRL: usize = 0x08;
@@ -1271,7 +1271,7 @@ mod io_port_interface {
         }
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     #[repr(u32)]
     #[derive(Debug, Copy, Clone)]
     pub enum TcgProtocol {

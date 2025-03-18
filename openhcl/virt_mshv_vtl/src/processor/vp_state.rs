@@ -8,7 +8,6 @@ use thiserror::Error;
 
 pub struct UhVpStateAccess<'a, 'b, T: Backing> {
     pub(crate) vp: &'a mut UhProcessor<'b, T>,
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     pub(crate) vtl: GuestVtl,
 }
 

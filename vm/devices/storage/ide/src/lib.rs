@@ -1815,7 +1815,7 @@ mod tests {
         device_head: u8,
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     enum Addressing {
         Chs,
         Lba28Bit,

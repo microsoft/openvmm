@@ -28,7 +28,7 @@ struct DeviceBlockIndexInfo {
     /// The number of blocks.
     block_count: u32,
     /// The size of the last partial block.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     last_partial_block_size: u32,
     /// The number of LBAs per block.
     lba_per_block: u64,
@@ -40,10 +40,10 @@ enum LbaStatus {
     /// The block is mapped.
     Mapped,
     /// The block is deallocated.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     Deallocated,
     /// The block is anchored.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     Anchored,
 }
 
