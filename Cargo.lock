@@ -1003,7 +1003,7 @@ version = "0.0.0"
 
 [[package]]
 name = "devices_test_helpers"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
