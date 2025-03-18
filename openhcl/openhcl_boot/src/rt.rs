@@ -33,7 +33,7 @@ pub fn verify_stack_cookie() {
 ///
 /// ARM64: The relative offset for shim parameters are passed in the x1 register.
 /// x2 contains the base address of where the shim was loaded at.
-#[expect(dead_code)]
+#[cfg_attr(not(minimal_rt), expect(dead_code))]
 pub unsafe extern "C" fn start(_: usize, shim_params_offset: isize) -> ! {
     crate::shim_main(shim_params_offset)
 }
