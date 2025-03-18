@@ -686,7 +686,6 @@ impl Drop for Halted<'_> {
 struct Inner {
     #[inspect(flatten)]
     halt: Arc<Halt>,
-    #[cfg_attr(not(feature = "gdb"), expect(dead_code))]
     #[inspect(skip)]
     vtl_guest_memory: [Option<GuestMemory>; NUM_VTLS],
 }
