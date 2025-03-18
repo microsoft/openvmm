@@ -233,6 +233,18 @@ impl HardwareIsolatedBacking for SnpBacked {
             shared,
         }
     }
+
+    fn cr4(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
+        this.runner.vmsa(vtl).cr4()
+    }
+
+    fn xfem(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
+        this.runner.vmsa(vtl).xcr0()
+    }
+
+    fn xss(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
+        this.runner.vmsa(vtl).xss()
+    }
 }
 
 /// Partition-wide shared data for SNP VPs.
@@ -244,18 +256,18 @@ pub struct SnpBackedShared {
 }
 
 impl SnpBackedShared {
-    pub(crate) fn new(params: BackingSharedParams) -> Result<Self, Error> {
+    pub(crate) fn new(params: BackingSharedParams<'_>) -> Result<Self, Error> {
         let cvm = params.cvm_state.unwrap();
         let invlpgb_count_max = x86defs::cpuid::ExtendedAddressSpaceSizesEdx::from(
-            cvm.cpuid
-                .registered_result(CpuidFunction::ExtendedAddressSpaceSizes, 0)
-                .edx,
+            params
+                .cpuid
+                .result(CpuidFunction::ExtendedAddressSpaceSizes.0, 0, &[0; 4])[3],
         )
         .invlpgb_count_max();
         let tsc_aux_virtualized = x86defs::cpuid::ExtendedSevFeaturesEax::from(
-            cvm.cpuid
-                .registered_result(CpuidFunction::ExtendedSevFeatures, 0)
-                .eax,
+            params
+                .cpuid
+                .result(CpuidFunction::ExtendedSevFeatures.0, 0, &[0; 4])[0],
         )
         .tsc_aux_virtualization();
 
@@ -985,25 +997,10 @@ impl UhProcessor<'_, SnpBacked> {
 
         let stat = match sev_error_code {
             SevExitCode::CPUID => {
-                let guest_state = crate::cvm_cpuid::CpuidGuestState {
-                    xfem: vmsa.xcr0(),
-                    xss: vmsa.xss(),
-                    cr4: vmsa.cr4(),
-                    apic_id: self.inner.vp_info.apic_id,
-                };
-
-                let result = self.shared.cvm.cpuid.guest_result(
-                    CpuidFunction(vmsa.rax() as u32),
-                    vmsa.rcx() as u32,
-                    &guest_state,
-                );
-
-                let [eax, ebx, ecx, edx] = self.partition.cpuid_result(
-                    vmsa.rax() as u32,
-                    vmsa.rcx() as u32,
-                    &[result.eax, result.ebx, result.ecx, result.edx],
-                );
-
+                let leaf = vmsa.rax() as u32;
+                let subleaf = vmsa.rcx() as u32;
+                let [eax, ebx, ecx, edx] = self.cvm_cpuid_result(entered_from_vtl, leaf, subleaf);
+                let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
                 vmsa.set_rax(eax.into());
                 vmsa.set_rbx(ebx.into());
                 vmsa.set_rcx(ecx.into());

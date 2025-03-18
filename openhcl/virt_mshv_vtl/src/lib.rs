@@ -252,7 +252,7 @@ enum BackingShared {
 impl BackingShared {
     fn new(
         isolation: IsolationType,
-        backing_shared_params: BackingSharedParams,
+        backing_shared_params: BackingSharedParams<'_>,
     ) -> Result<BackingShared, Error> {
         Ok(match isolation {
             IsolationType::None | IsolationType::Vbs => {
@@ -402,8 +402,7 @@ impl UhCvmVpState {
 /// Partition-wide state for CVMs.
 struct UhCvmPartitionState {
     #[cfg(guest_arch = "x86_64")]
-    #[inspect(skip)]
-    cpuid: cvm_cpuid::CpuidResults,
+    vps_per_socket: u32,
     /// VPs that have locked their TLB.
     #[inspect(
         with = "|arr| inspect::iter_by_index(arr.iter()).map_value(|bb| inspect::iter_by_index(bb.iter().map(|v| *v)))"
@@ -1359,8 +1358,7 @@ pub trait TlbFlushLockAccess {
 pub struct UhProtoPartition<'a> {
     params: UhPartitionNewParams<'a>,
     hcl: Hcl,
-    #[cfg(guest_arch = "x86_64")]
-    cvm_cpuid: Option<cvm_cpuid::CpuidResults>,
+    cpuid: CpuidLeafSet,
     guest_vsm_available: bool,
 }
 
@@ -1423,31 +1421,30 @@ impl<'a> UhProtoPartition<'a> {
 
         #[cfg(guest_arch = "x86_64")]
         let cvm_cpuid = match params.isolation {
-            IsolationType::Snp => Some(
-                cvm_cpuid::CpuidResults::new(cvm_cpuid::CpuidResultsIsolationType::Snp {
-                    cpuid_pages: params.cvm_cpuid_info.unwrap(),
-                })
+            IsolationType::Snp => cvm_cpuid::CpuidResultsIsolationType::Snp {
+                cpuid_pages: params.cvm_cpuid_info.unwrap(),
+            }
+            .build()
+            .map_err(Error::CvmCpuid)?,
+
+            IsolationType::Tdx => cvm_cpuid::CpuidResultsIsolationType::Tdx
+                .build()
                 .map_err(Error::CvmCpuid)?,
-            ),
-            IsolationType::Tdx => Some(
-                cvm_cpuid::CpuidResults::new(cvm_cpuid::CpuidResultsIsolationType::Tdx)
-                    .map_err(Error::CvmCpuid)?,
-            ),
-            IsolationType::Vbs | IsolationType::None => None,
+            IsolationType::Vbs | IsolationType::None => CpuidLeafSet::default(),
         };
 
         let guest_vsm_available = Self::check_guest_vsm_support(
             &hcl,
             &params,
             #[cfg(guest_arch = "x86_64")]
-            cvm_cpuid.as_ref(),
+            &cvm_cpuid,
         )?;
 
         Ok(UhProtoPartition {
             hcl,
             params,
             #[cfg(guest_arch = "x86_64")]
-            cvm_cpuid,
+            cpuid: cvm_cpuid,
             guest_vsm_available,
         })
     }
@@ -1465,8 +1462,7 @@ impl<'a> UhProtoPartition<'a> {
         let Self {
             mut hcl,
             params,
-            #[cfg(guest_arch = "x86_64")]
-            cvm_cpuid,
+            mut cpuid,
             guest_vsm_available,
         } = self;
         let isolation = params.isolation;
@@ -1595,13 +1591,11 @@ impl<'a> UhProtoPartition<'a> {
         let software_devices = None;
 
         #[cfg(guest_arch = "aarch64")]
-        let (caps, cpuid) = (
-            virt::aarch64::Aarch64PartitionCapabilities {},
-            CpuidLeafSet::new(Vec::new()),
-        );
+        let caps = virt::aarch64::Aarch64PartitionCapabilities {};
 
         #[cfg(guest_arch = "x86_64")]
-        let cpuid = UhPartition::construct_cpuid_results(
+        UhPartition::construct_cpuid_results(
+            &mut cpuid,
             &late_params.cpuid,
             params.topology,
             // Note: currently, guest_vsm_available can only set to true for
@@ -1618,7 +1612,6 @@ impl<'a> UhProtoPartition<'a> {
         let caps = UhPartition::construct_capabilities(
             params.topology,
             &cpuid,
-            cvm_cpuid.as_ref(),
             isolation,
             params.hide_isolation,
         );
@@ -1659,15 +1652,23 @@ impl<'a> UhProtoPartition<'a> {
                 &params,
                 late_params.cvm_params.unwrap(),
                 &caps,
-                cvm_cpuid.unwrap(),
                 guest_vsm_available,
             )?)
         } else {
             None
         };
-
         #[cfg(guest_arch = "aarch64")]
         let cvm_state = None;
+
+        let backing_shared = BackingShared::new(
+            isolation,
+            BackingSharedParams {
+                cvm_state,
+                cpuid: &cpuid,
+                vp_count: params.topology.vp_count(),
+                guest_vsm_available,
+            },
+        )?;
 
         let enter_modes = EnterModes::default();
 
@@ -1692,14 +1693,7 @@ impl<'a> UhProtoPartition<'a> {
             private_dma_client: late_params.private_dma_client,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
-            backing_shared: BackingShared::new(
-                isolation,
-                BackingSharedParams {
-                    cvm_state,
-                    vp_count: params.topology.vp_count(),
-                    guest_vsm_available,
-                },
-            )?,
+            backing_shared,
             #[cfg(guest_arch = "x86_64")]
             device_vector_table: RwLock::new(IrrBitmap::new(Default::default())),
             intercept_debug_exceptions: params.intercept_debug_exceptions,
@@ -1789,7 +1783,7 @@ impl UhProtoPartition<'_> {
     fn check_guest_vsm_support(
         hcl: &Hcl,
         params: &UhPartitionNewParams<'_>,
-        #[cfg(guest_arch = "x86_64")] cvm_cpuid: Option<&cvm_cpuid::CpuidResults>,
+        #[cfg(guest_arch = "x86_64")] cvm_cpuid: &CpuidLeafSet,
     ) -> Result<bool, Error> {
         match params.isolation {
             IsolationType::None | IsolationType::Vbs => {}
@@ -1806,10 +1800,11 @@ impl UhProtoPartition<'_> {
                 }
                 // Require RMP Query
                 let rmp_query = x86defs::cpuid::ExtendedSevFeaturesEax::from(
-                    cvm_cpuid
-                        .unwrap()
-                        .registered_result(x86defs::cpuid::CpuidFunction::ExtendedSevFeatures, 0)
-                        .eax,
+                    cvm_cpuid.result(
+                        x86defs::cpuid::CpuidFunction::ExtendedSevFeatures.0,
+                        0,
+                        &[0; 4],
+                    )[0],
                 )
                 .rmp_query();
 
@@ -1850,7 +1845,6 @@ impl UhProtoPartition<'_> {
         params: &UhPartitionNewParams<'_>,
         late_params: CvmLateParams,
         caps: &PartitionCapabilities,
-        cpuid: cvm_cpuid::CpuidResults,
         guest_vsm_available: bool,
     ) -> Result<UhCvmPartitionState, Error> {
         let vp_count = params.topology.vp_count() as usize;
@@ -1894,7 +1888,7 @@ impl UhProtoPartition<'_> {
         }
 
         Ok(UhCvmPartitionState {
-            cpuid,
+            vps_per_socket: params.topology.reserved_vps_per_socket(),
             tlb_locked_vps,
             vps,
             shared_memory: late_params.shared_gm,
@@ -1910,15 +1904,14 @@ impl UhPartition {
     #[cfg(guest_arch = "x86_64")]
     /// Constructs the set of cpuid results to show to the guest
     fn construct_cpuid_results(
+        cpuid: &mut CpuidLeafSet,
         initial_cpuid: &[CpuidLeaf],
         topology: &ProcessorTopology<vm_topology::processor::x86::X86Topology>,
         access_vsm: bool,
         vtom: Option<u64>,
         isolation: IsolationType,
         hide_isolation: bool,
-    ) -> CpuidLeafSet {
-        let mut cpuid = CpuidLeafSet::new(Vec::new());
-
+    ) {
         if isolation.is_hardware_isolated() {
             // Get the hypervisor version from the host. This is just for
             // reporting purposes, so it is safe even if the hypervisor is not
@@ -1942,8 +1935,6 @@ impl UhPartition {
             ));
         }
         cpuid.extend(initial_cpuid);
-
-        cpuid
     }
 
     #[cfg(guest_arch = "x86_64")]
@@ -1951,7 +1942,6 @@ impl UhPartition {
     fn construct_capabilities(
         topology: &ProcessorTopology,
         cpuid: &CpuidLeafSet,
-        cvm_cpuid: Option<&cvm_cpuid::CpuidResults>,
         isolation: IsolationType,
         hide_isolation: bool,
     ) -> virt::x86::X86PartitionCapabilities {
@@ -1960,22 +1950,9 @@ impl UhPartition {
 
         // Determine the method to get cpuid results for the guest when
         // computing partition capabilities.
-        let cpuid_fn: &mut dyn FnMut(u32, u32) -> [u32; 4] = if let Some(cvm_cpuid) = cvm_cpuid {
+        let cpuid_fn: &mut dyn FnMut(u32, u32) -> [u32; 4] = if isolation.is_hardware_isolated() {
             // Use the filtered CPUID to determine capabilities.
-            let bsp = topology.vp_arch(VpIndex::BSP).apic_id;
-            cvm_cpuid_fn = move |leaf, sub_leaf| {
-                let CpuidResult { eax, ebx, ecx, edx } = cvm_cpuid.guest_result(
-                    x86defs::cpuid::CpuidFunction(leaf),
-                    sub_leaf,
-                    &cvm_cpuid::CpuidGuestState {
-                        xfem: 1,
-                        xss: 0,
-                        cr4: 0,
-                        apic_id: bsp,
-                    },
-                );
-                cpuid.result(leaf, sub_leaf, &[eax, ebx, ecx, edx])
-            };
+            cvm_cpuid_fn = move |leaf, sub_leaf| cpuid.result(leaf, sub_leaf, &[0, 0, 0, 0]);
             &mut cvm_cpuid_fn
         } else {
             // Just use the native cpuid.

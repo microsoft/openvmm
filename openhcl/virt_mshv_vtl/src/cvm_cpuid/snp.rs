@@ -4,7 +4,6 @@
 //! CPUID definitions and implementation specific to Underhill in SNP CVMs.
 
 use super::CpuidArchInitializer;
-use super::CpuidArchSupport;
 use super::CpuidResultMask;
 use super::CpuidResults;
 use super::CpuidResultsError;
@@ -12,7 +11,6 @@ use super::CpuidSubtable;
 use super::ExtendedTopologyResult;
 use super::ParsedCpuidEntry;
 use super::TopologyError;
-use super::ZERO_CPUID_RESULT;
 use core::arch::x86_64::CpuidResult;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
@@ -374,7 +372,6 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
         Ok(ExtendedTopologyResult {
             subleaf0: Some(topology_subleaf0),
             subleaf1: Some(topology_subleaf1),
-            vps_per_socket,
         })
     }
 
@@ -441,56 +438,6 @@ impl Iterator for SnpCpuidIterator<'_> {
                 edx: leaf.edx_out,
             },
         })
-    }
-}
-
-pub struct SnpCpuidSupport;
-
-impl CpuidArchSupport for SnpCpuidSupport {
-    fn process_guest_result(
-        &self,
-        leaf: CpuidFunction,
-        _subleaf: u32,
-        result: &mut CpuidResult,
-        guest_state: &super::CpuidGuestState,
-        vps_per_socket: u32,
-    ) {
-        match leaf {
-            CpuidFunction::ProcessorTopologyDefinition => {
-                result.eax = cpuid::ProcessorTopologyDefinitionEax::from(result.eax)
-                    .with_extended_apic_id(guest_state.apic_id)
-                    .into();
-
-                let topology_ebx = cpuid::ProcessorTopologyDefinitionEbx::from(result.ebx);
-                let mut new_unit_id = (guest_state.apic_id) & (vps_per_socket - 1);
-
-                if topology_ebx.threads_per_compute_unit() > 0 {
-                    new_unit_id /= 2;
-                }
-
-                result.ebx = topology_ebx.with_compute_unit_id(new_unit_id as u8).into();
-
-                // TODO SNP: Ideally we would use the actual value of this property from the host, but
-                // we currently have no way of obtaining it. 1 is the default value for all current VMs.
-                let amd_nodes_per_socket = 1u32;
-
-                let node_id = guest_state.apic_id
-                    >> (vps_per_socket
-                        .trailing_zeros()
-                        .saturating_sub(amd_nodes_per_socket.trailing_zeros()));
-                let nodes_per_processor = amd_nodes_per_socket - 1;
-
-                result.ecx = cpuid::ProcessorTopologyDefinitionEcx::from(result.ecx)
-                    .with_node_id(node_id as u8)
-                    .with_nodes_per_processor(nodes_per_processor as u8)
-                    .into();
-            }
-            CpuidFunction::ExtendedSevFeatures => {
-                // SEV features are not exposed to lower VTLs at this time.
-                *result = ZERO_CPUID_RESULT
-            }
-            _ => (),
-        }
     }
 }
 

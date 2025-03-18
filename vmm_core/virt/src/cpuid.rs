@@ -92,7 +92,7 @@ impl CpuidLeaf {
 }
 
 /// A collection of CPUID results.
-#[derive(Debug, Inspect)]
+#[derive(Debug, Inspect, Default)]
 pub struct CpuidLeafSet {
     #[inspect(
         flatten,

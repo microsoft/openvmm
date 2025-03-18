@@ -98,7 +98,7 @@ pub struct HypervisorBackedX86Shared {
 
 impl HypervisorBackedX86Shared {
     /// Creates a new partition-shared data structure for hypervisor backed VMs.
-    pub(crate) fn new(params: BackingSharedParams) -> Result<Self, Error> {
+    pub(crate) fn new(params: BackingSharedParams<'_>) -> Result<Self, Error> {
         Ok(Self {
             guest_vsm: RwLock::new(GuestVsmState::from_availability(params.guest_vsm_available)),
         })

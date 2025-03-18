@@ -64,6 +64,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::time::Duration;
+use virt::CpuidLeafSet;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
@@ -265,10 +266,11 @@ pub trait Backing: BackingPrivate {}
 
 impl<T: BackingPrivate> Backing for T {}
 
-pub(crate) struct BackingSharedParams {
+pub(crate) struct BackingSharedParams<'a> {
     pub cvm_state: Option<crate::UhCvmPartitionState>,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     pub vp_count: u32,
+    pub cpuid: &'a CpuidLeafSet,
     pub guest_vsm_available: bool,
 }
 
@@ -297,6 +299,12 @@ trait HardwareIsolatedBacking: Backing {
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
     ) -> TranslationRegisters;
+
+    // Individual registers for CPUID.
+
+    fn cr4(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
+    fn xfem(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
+    fn xss(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]

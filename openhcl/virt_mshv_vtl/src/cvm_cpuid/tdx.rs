@@ -5,7 +5,6 @@
 
 use super::COMMON_REQUIRED_LEAVES;
 use super::CpuidArchInitializer;
-use super::CpuidArchSupport;
 use super::CpuidResultMask;
 use super::CpuidResults;
 use super::CpuidResultsError;
@@ -207,17 +206,12 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
     ) -> Result<super::ExtendedTopologyResult, CpuidResultsError> {
         // TODO TDX: see HvlpInitializeCpuidTopologyIntel
         // TODO TDX: fix returned errors
-        let vps_per_socket;
         if !version_and_features_edx.mt_per_socket() {
             if version_and_features_ebx.lps_per_package() > 1 {
                 return Err(CpuidResultsError::TopologyInconsistent(
                     TopologyError::ThreadsPerUnit,
                 ));
-            } else {
-                vps_per_socket = 1;
             }
-        } else {
-            vps_per_socket = version_and_features_ebx.lps_per_package();
         }
 
         // TODO TDX: validation of leaf 0xB
@@ -225,7 +219,6 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
         Ok(super::ExtendedTopologyResult {
             subleaf0: None,
             subleaf1: None,
-            vps_per_socket: vps_per_socket.into(),
         })
     }
 
@@ -235,20 +228,5 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
 
     fn supports_tsc_aux_virtualization(&self, _results: &CpuidResults) -> bool {
         true
-    }
-}
-
-pub struct TdxCpuidSupport;
-
-impl CpuidArchSupport for TdxCpuidSupport {
-    fn process_guest_result(
-        &self,
-        _leaf: CpuidFunction,
-        _subleaf: u32,
-        _result: &mut CpuidResult,
-        _guest_state: &super::CpuidGuestState,
-        _vps_per_socket: u32,
-    ) {
-        // Nothing extra to do for TDX
     }
 }
