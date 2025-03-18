@@ -165,10 +165,6 @@ pub enum Error {
     FailedToSetL2Ctls(TdCallResult),
     #[error("debugging is configured but the binary does not have the gdb feature")]
     InvalidDebugConfiguration,
-    #[error("missing shared memory for an isolated partition")]
-    MissingSharedMemory,
-    #[error("missing private memory for an isolated partition")]
-    MissingPrivateMemory,
     #[error("failed to allocate TLB flush page")]
     AllocateTlbFlushPage(#[source] anyhow::Error),
 }
@@ -219,8 +215,6 @@ struct UhPartitionInner {
     vmtime: VmTimeSource,
     isolation: IsolationType,
     hide_isolation: bool,
-    shared_dma_client: Option<Arc<dyn DmaClient>>,
-    private_dma_client: Option<Arc<dyn DmaClient>>,
     #[inspect(with = "inspect::AtomicMut")]
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
@@ -373,10 +367,8 @@ impl UhCvmVpState {
         vp_info: &TargetVpInfo,
         overlay_pages_required: usize,
     ) -> Result<Self, Error> {
-        let direct_overlay_handle = inner
+        let direct_overlay_handle = cvm_partition
             .shared_dma_client
-            .as_ref()
-            .ok_or(Error::MissingSharedMemory)?
             .allocate_dma_buffer(overlay_pages_required * HV_PAGE_SIZE as usize)
             .map_err(Error::AllocateSharedVisOverlay)?;
 
@@ -434,6 +426,10 @@ struct UhCvmPartitionState {
     hv: GlobalHv,
     /// Guest VSM state.
     guest_vsm: RwLock<GuestVsmState<CvmVtl1State>>,
+    /// Dma client for shared visibility pages.
+    pub shared_dma_client: Arc<dyn DmaClient>,
+    /// Dma client for private visibility pages.
+    pub private_dma_client: Arc<dyn DmaClient>,
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -1281,10 +1277,6 @@ pub struct UhLateParams<'a> {
     pub crash_notification_send: mesh::Sender<VtlCrash>,
     /// The VM time source.
     pub vmtime: &'a VmTimeSource,
-    /// Dma client for shared visibility pages.
-    pub shared_dma_client: Option<Arc<dyn DmaClient>>,
-    /// Allocator for private visibility pages.
-    pub private_dma_client: Option<Arc<dyn DmaClient>>,
     /// Parameters for CVMs only.
     pub cvm_params: Option<CvmLateParams>,
 }
@@ -1295,6 +1287,10 @@ pub struct CvmLateParams {
     pub shared_gm: GuestMemory,
     /// An object to call to change host visibility on guest memory.
     pub isolated_memory_protector: Arc<dyn ProtectIsolatedMemory>,
+    /// Dma client for shared visibility pages.
+    pub shared_dma_client: Arc<dyn DmaClient>,
+    /// Allocator for private visibility pages.
+    pub private_dma_client: Arc<dyn DmaClient>,
 }
 
 /// Trait for CVM-related protections on guest memory.
@@ -1564,7 +1560,10 @@ impl<'a> UhProtoPartition<'a> {
         // Do per-VP HCL initialization.
         hcl.add_vps(
             params.topology.vp_count(),
-            late_params.private_dma_client.as_ref(),
+            late_params
+                .cvm_params
+                .as_ref()
+                .map(|x| &x.private_dma_client),
         )
         .map_err(Error::Hcl)?;
 
@@ -1687,8 +1686,6 @@ impl<'a> UhProtoPartition<'a> {
             vmtime: late_params.vmtime.clone(),
             isolation,
             hide_isolation: params.hide_isolation,
-            shared_dma_client: late_params.shared_dma_client,
-            private_dma_client: late_params.private_dma_client,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
             backing_shared: BackingShared::new(
@@ -1902,6 +1899,8 @@ impl UhProtoPartition<'_> {
             lapic,
             hv,
             guest_vsm: RwLock::new(GuestVsmState::from_availability(guest_vsm_available)),
+            shared_dma_client: late_params.shared_dma_client,
+            private_dma_client: late_params.private_dma_client,
         })
     }
 }

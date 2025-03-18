@@ -717,11 +717,9 @@ impl BackingPrivate for TdxBacked {
             }
         }
 
-        let flush_page = params
-            .partition
+        let flush_page = shared
+            .cvm
             .private_dma_client
-            .as_ref()
-            .ok_or(crate::Error::MissingPrivateMemory)?
             .allocate_dma_buffer(HV_PAGE_SIZE as usize)
             .map_err(crate::Error::AllocateTlbFlushPage)?;
 

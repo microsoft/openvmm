@@ -1699,6 +1699,28 @@ async fn new_underhill_vm(
         })
         .unwrap();
 
+    let cvm_params = if isolation.is_hardware_isolated() {
+        let cvm_mem = gm.cvm_memory().unwrap();
+        Some(virt_mshv_vtl::CvmLateParams {
+            shared_gm: cvm_mem.shared_gm.clone(),
+            isolated_memory_protector: cvm_mem.protector.clone(),
+            shared_dma_client: dma_manager.new_client(DmaClientParameters {
+                device_name: "partition-shared".into(),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                allocation_visibility: AllocationVisibility::Shared,
+                persistent_allocations: false,
+            })?,
+            private_dma_client: dma_manager.new_client(DmaClientParameters {
+                device_name: "partition-private".into(),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                allocation_visibility: AllocationVisibility::Private,
+                persistent_allocations: false,
+            })?,
+        })
+    } else {
+        None
+    };
+
     let late_params = virt_mshv_vtl::UhLateParams {
         gm: [
             gm.vtl0().clone(),
@@ -1709,28 +1731,7 @@ async fn new_underhill_vm(
         cpuid,
         crash_notification_send,
         vmtime: &vmtime_source,
-        cvm_params: gm.cvm_memory().map(|cvm_mem| virt_mshv_vtl::CvmLateParams {
-            shared_gm: cvm_mem.shared_gm.clone(),
-            isolated_memory_protector: cvm_mem.protector.clone(),
-        }),
-        shared_dma_client: dma_manager
-            .new_client(DmaClientParameters {
-                device_name: "partition-shared".into(),
-                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
-                allocation_visibility: AllocationVisibility::Shared,
-                persistent_allocations: false,
-            })
-            .ok()
-            .map(|client| client as _),
-        private_dma_client: dma_manager
-            .new_client(DmaClientParameters {
-                device_name: "partition-private".into(),
-                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
-                allocation_visibility: AllocationVisibility::Private,
-                persistent_allocations: false,
-            })
-            .ok()
-            .map(|client| client as _),
+        cvm_params,
     };
 
     let (partition, vps) = proto_partition
