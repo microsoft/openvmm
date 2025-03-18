@@ -7,7 +7,7 @@ use crate::fuzz_emulated_device::FuzzEmulatedDevice;
 
 use arbitrary::Arbitrary;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
-use dma_guest_memory_wrapper::emulated::DeviceSharedMemory;
+use dma_guest_memory_access_wrapper::emulated::DeviceSharedMemory;
 use guestmem::GuestMemory;
 use guid::Guid;
 use nvme::NvmeController;

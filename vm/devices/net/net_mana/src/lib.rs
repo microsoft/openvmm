@@ -1283,9 +1283,9 @@ mod tests {
     use crate::GuestDmaMode;
     use crate::ManaEndpoint;
     use chipset_device::mmio::ExternallyManagedMmioIntercepts;
-    use dma_guest_memory_wrapper::emulated::DeviceSharedMemory;
-    use dma_guest_memory_wrapper::emulated::EmulatedDevice;
-    use dma_guest_memory_wrapper::emulated::EmulatedDmaAllocator;
+    use dma_guest_memory_access_wrapper::emulated::DeviceSharedMemory;
+    use dma_guest_memory_access_wrapper::emulated::EmulatedDevice;
+    use dma_guest_memory_access_wrapper::emulated::EmulatedDmaAllocator;
     use gdma::VportConfig;
     use gdma_defs::bnic::ManaQueryDeviceCfgResp;
     use mana_driver::mana::ManaDevice;

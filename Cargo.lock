@@ -1395,7 +1395,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8975ffdaa0ef3661bfe02dbdcc06c9f829dfafe6a3c474de366a8d5e44276921"
 
 [[package]]
-name = "dma_guest_memory_wrapper"
+name = "dma_guest_memory_access_wrapper"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2203,7 +2203,7 @@ dependencies = [
  "arbitrary",
  "chipset_device",
  "disklayer_ram",
- "dma_guest_memory_wrapper",
+ "dma_guest_memory_access_wrapper",
  "guestmem",
  "guid",
  "inspect",

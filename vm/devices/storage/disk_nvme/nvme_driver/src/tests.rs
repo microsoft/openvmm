@@ -5,9 +5,9 @@ use crate::NvmeDriver;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
-use dma_guest_memory_wrapper::emulated::EmulatedDevice;
-use dma_guest_memory_wrapper::emulated::Mapping;
-use dma_guest_memory_wrapper::emulated::GuestMemoryAccessWrapper;
+use dma_guest_memory_access_wrapper::emulated::EmulatedDevice;
+use dma_guest_memory_access_wrapper::emulated::Mapping;
+use dma_guest_memory_access_wrapper::emulated::GuestMemoryAccessWrapper;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
@@ -416,7 +416,7 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
 }
 
 /// Creates test memory that leverages the [`TestMapper`]. Returned [`GuestMemory`] references the entire range
-/// and the page pool allocator references only the second half
+/// and the returned [`PagePoolAllocator`] references only the second half of the range.
 fn create_test_memory(
     num_pages: u64,
     allow_dma: bool,
