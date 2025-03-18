@@ -568,7 +568,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::ModifySparseGpaPageHos
             "modify_gpa_visibility"
         );
 
-        if self.vp.partition.hide_isolation {
+        if self.vp.cvm_partition().hide_isolation {
             return Err((HvError::AccessDenied, 0));
         }
 
@@ -981,7 +981,7 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::QuerySparseGpaPageHost
             return Err((HvError::AccessDenied, 0));
         }
 
-        if self.vp.partition.hide_isolation {
+        if self.vp.cvm_partition().hide_isolation {
             return Err((HvError::AccessDenied, 0));
         }
 

@@ -1143,7 +1143,7 @@ impl UhProcessor<'_, SnpBacked> {
                 let is_64bit = self.long_mode(entered_from_vtl);
                 let guest_memory = &self.partition.gm[entered_from_vtl];
                 let handler = UhHypercallHandler {
-                    trusted: !self.partition.hide_isolation,
+                    trusted: !self.cvm_partition().hide_isolation,
                     vp: &mut *self,
                     bus: dev,
                     intercepted_vtl: entered_from_vtl,

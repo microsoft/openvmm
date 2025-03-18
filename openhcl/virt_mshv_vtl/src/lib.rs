@@ -214,7 +214,6 @@ struct UhPartitionInner {
     #[inspect(skip)]
     vmtime: VmTimeSource,
     isolation: IsolationType,
-    hide_isolation: bool,
     #[inspect(with = "inspect::AtomicMut")]
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
@@ -430,6 +429,7 @@ struct UhCvmPartitionState {
     shared_dma_client: Arc<dyn DmaClient>,
     /// Dma client for private visibility pages.
     private_dma_client: Arc<dyn DmaClient>,
+    hide_isolation: bool,
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -1685,7 +1685,6 @@ impl<'a> UhProtoPartition<'a> {
             lower_vtl_memory_layout: params.lower_vtl_memory_layout.clone(),
             vmtime: late_params.vmtime.clone(),
             isolation,
-            hide_isolation: params.hide_isolation,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
             backing_shared: BackingShared::new(
@@ -1901,6 +1900,7 @@ impl UhProtoPartition<'_> {
             guest_vsm: RwLock::new(GuestVsmState::from_availability(guest_vsm_available)),
             shared_dma_client: late_params.shared_dma_client,
             private_dma_client: late_params.private_dma_client,
+            hide_isolation: params.hide_isolation,
         })
     }
 }

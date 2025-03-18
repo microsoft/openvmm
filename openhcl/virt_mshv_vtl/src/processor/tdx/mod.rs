@@ -636,10 +636,10 @@ impl BackingPrivate for TdxBacked {
         for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
             let controls = TdxL2Ctls::new()
                 // Configure L2 controls to permit shared memory.
-                .with_enable_shared_ept(!params.partition.hide_isolation)
+                .with_enable_shared_ept(!shared.cvm.hide_isolation)
                 // If the synic is to be managed by the hypervisor, then enable TDVMCALLs.
                 .with_enable_tdvmcall(
-                    shared.untrusted_synic.is_none() && !params.partition.hide_isolation,
+                    shared.untrusted_synic.is_none() && !shared.cvm.hide_isolation,
                 );
 
             params
@@ -1716,7 +1716,7 @@ impl UhProcessor<'_, TdxBacked> {
                     let is_64bit = self.long_mode(intercepted_vtl);
                     let guest_memory = &self.partition.gm[intercepted_vtl];
                     let handler = UhHypercallHandler {
-                        trusted: !self.partition.hide_isolation,
+                        trusted: !self.cvm_partition().hide_isolation,
                         vp: &mut *self,
                         bus: dev,
                         intercepted_vtl,
@@ -1898,7 +1898,7 @@ impl UhProcessor<'_, TdxBacked> {
                 if self.backing.untrusted_synic.is_some() {
                     assert_eq!(intercepted_vtl, GuestVtl::Vtl0);
                     self.handle_tdvmcall(dev, intercepted_vtl);
-                } else if self.partition.hide_isolation {
+                } else if self.cvm_partition().hide_isolation {
                     // TDCALL is not valid when hiding isolation. Inject a #UD.
                     self.backing.vtls[intercepted_vtl].interruption_information =
                         InterruptionInformation::new()
