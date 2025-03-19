@@ -1,0 +1,10 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# Config file to use to build minimal_rt binaries for x86_64.
+
+[build]
+target = "x86_64-unknown-none"
+
+[env]
+MINIMAL_RT_BUILD = "1"

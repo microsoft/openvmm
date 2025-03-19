@@ -1,0 +1,19 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+# Config file to use to build minimal_rt binaries for aarch64.
+#
+# This requires setting RUSTC_BOOTSTRAP=1, or an unstable toolchain.
+# Consider using the aarch64-unknown-linux-musl target if you want to
+# avoid this.
+
+[build]
+# Custom target needed to enable static PIE support, which is not
+# supported by aarch64-minimal.
+target = "minimal_rt/aarch64-minimal_rt-none.json"
+
+[unstable]
+build-std = ["core"]
+
+[env]
+MINIMAL_RT_BUILD = "1"
