@@ -19,6 +19,7 @@ use crate::TlbFlushLockAccess;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
 use crate::UhPartitionInner;
+use crate::UhPartitionNewParams;
 use crate::WakeReason;
 use crate::devmsr;
 use crate::processor::UhHypercallHandler;
@@ -244,7 +245,10 @@ pub struct SnpBackedShared {
 }
 
 impl SnpBackedShared {
-    pub(crate) fn new(params: BackingSharedParams) -> Result<Self, Error> {
+    pub(crate) fn new(
+        _partition_params: &UhPartitionNewParams<'_>,
+        params: BackingSharedParams,
+    ) -> Result<Self, Error> {
         let cvm = params.cvm_state.unwrap();
         let invlpgb_count_max = x86defs::cpuid::ExtendedAddressSpaceSizesEdx::from(
             cvm.cpuid

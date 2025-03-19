@@ -221,13 +221,6 @@ struct UhPartitionInner {
     vmtime: VmTimeSource,
     isolation: IsolationType,
     hide_isolation: bool,
-    /// The synic state used for untrusted SINTs, that is, the SINTs for which
-    /// the guest thinks it is interacting directly with the untrusted
-    /// hypervisor via an architecture-specific interface.
-    ///
-    /// This is only set for TDX VMs. For SNP VMs, this is implemented by the
-    /// hypervisor. For non-isolated VMs, this isn't a concept.
-    untrusted_synic: Option<GlobalSynic>,
     shared_dma_client: Option<Arc<dyn DmaClient>>,
     private_dma_client: Option<Arc<dyn DmaClient>>,
     #[inspect(with = "inspect::AtomicMut")]
@@ -254,17 +247,27 @@ enum BackingShared {
 impl BackingShared {
     fn new(
         isolation: IsolationType,
+        partition_params: &UhPartitionNewParams<'_>,
         backing_shared_params: BackingSharedParams,
     ) -> Result<BackingShared, Error> {
         Ok(match isolation {
             IsolationType::None | IsolationType::Vbs => {
                 assert!(backing_shared_params.cvm_state.is_none());
-                BackingShared::Hypervisor(HypervisorBackedShared::new(backing_shared_params)?)
+                BackingShared::Hypervisor(HypervisorBackedShared::new(
+                    partition_params,
+                    backing_shared_params,
+                )?)
             }
             #[cfg(guest_arch = "x86_64")]
-            IsolationType::Snp => BackingShared::Snp(SnpBackedShared::new(backing_shared_params)?),
+            IsolationType::Snp => BackingShared::Snp(SnpBackedShared::new(
+                partition_params,
+                backing_shared_params,
+            )?),
             #[cfg(guest_arch = "x86_64")]
-            IsolationType::Tdx => BackingShared::Tdx(TdxBackedShared::new(backing_shared_params)?),
+            IsolationType::Tdx => BackingShared::Tdx(TdxBackedShared::new(
+                partition_params,
+                backing_shared_params,
+            )?),
             #[cfg(not(guest_arch = "x86_64"))]
             _ => unreachable!(),
         })
@@ -277,6 +280,16 @@ impl BackingShared {
             BackingShared::Snp(s) => Some(&s.cvm),
             #[cfg(guest_arch = "x86_64")]
             BackingShared::Tdx(s) => Some(&s.cvm),
+        }
+    }
+
+    fn untrusted_synic(&self) -> Option<&GlobalSynic> {
+        match self {
+            BackingShared::Hypervisor(_) => None,
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Snp(_) => None,
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Tdx(s) => s.untrusted_synic.as_ref(),
         }
     }
 }
@@ -1044,7 +1057,7 @@ impl vmcore::synic::GuestEventPort for UhEventPort {
                             flag,
                             "forwarding event to untrusted synic"
                         );
-                        if let Some(synic) = &partition.untrusted_synic {
+                        if let Some(synic) = partition.backing_shared.untrusted_synic() {
                             synic
                                 .signal_event(
                                     &partition.gm[vtl],
@@ -1613,35 +1626,21 @@ impl<'a> UhProtoPartition<'a> {
             params.hide_isolation,
         );
 
-        let untrusted_synic = if params.handle_synic {
-            if matches!(isolation, IsolationType::Tdx) {
-                // Create a second synic to fully manage the untrusted SINTs
-                // here. At time of writing, the hypervisor does not support
-                // sharing the untrusted SINTs with the TDX L1. Even if it did,
-                // performance would be poor for cases where the L1 implements
-                // high-performance devices.
-                if !params.hide_isolation {
-                    Some(GlobalSynic::new(params.topology.vp_count()))
-                } else {
-                    None
-                }
-            } else {
-                // The hypervisor will manage the untrusted SINTs (or the whole
-                // synic for non-hardware-isolated VMs), but some event ports
-                // and message ports are implemented here. Register an intercept
-                // to handle HvSignalEvent and HvPostMessage hypercalls when the
-                // hypervisor doesn't recognize the connection ID.
-                hcl.register_intercept(
-                    HvInterceptType::HvInterceptTypeUnknownSynicConnection,
-                    HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-                    HvInterceptParameters::new_zeroed(),
-                )
-                .expect("registering synic intercept cannot fail");
-                None
-            }
-        } else {
-            None
-        };
+        if params.handle_synic && !matches!(isolation, IsolationType::Tdx) {
+            // The hypervisor will manage the untrusted SINTs (or the whole
+            // synic for non-hardware-isolated VMs), but some event ports
+            // and message ports are implemented here. Register an intercept
+            // to handle HvSignalEvent and HvPostMessage hypercalls when the
+            // hypervisor doesn't recognize the connection ID.
+            //
+            // TDX manages this locally instead of through the hypervisor.
+            hcl.register_intercept(
+                HvInterceptType::HvInterceptTypeUnknownSynicConnection,
+                HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                HvInterceptParameters::new_zeroed(),
+            )
+            .expect("registering synic intercept cannot fail");
+        }
 
         #[cfg(guest_arch = "x86_64")]
         let cvm_state = if is_hardware_isolated {
@@ -1678,16 +1677,15 @@ impl<'a> UhProtoPartition<'a> {
             vmtime: late_params.vmtime.clone(),
             isolation,
             hide_isolation: params.hide_isolation,
-            untrusted_synic,
             shared_dma_client: late_params.shared_dma_client,
             private_dma_client: late_params.private_dma_client,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
             backing_shared: BackingShared::new(
                 isolation,
+                &params,
                 BackingSharedParams {
                     cvm_state,
-                    vp_count: params.topology.vp_count(),
                     guest_vsm_available,
                 },
             )?,

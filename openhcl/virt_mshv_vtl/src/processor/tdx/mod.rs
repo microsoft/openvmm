@@ -20,6 +20,7 @@ use crate::TlbFlushLockAccess;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
 use crate::UhPartitionInner;
+use crate::UhPartitionNewParams;
 use crate::UhProcessor;
 use crate::WakeReason;
 use hcl::ioctl::ProcessorRunner;
@@ -28,6 +29,7 @@ use hcl::ioctl::tdx::TdxPrivateRegs;
 use hcl::protocol::hcl_intr_offload_flags;
 use hcl::protocol::tdx_tdg_vp_enter_exit_info;
 use hv1_emulator::hv::ProcessorVtlHv;
+use hv1_emulator::synic::GlobalSynic;
 use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::AsHandler;
 use hv1_hypercall::HvRepResult;
@@ -544,18 +546,33 @@ impl HardwareIsolatedBacking for TdxBacked {
 #[derive(Inspect)]
 pub struct TdxBackedShared {
     pub(crate) cvm: UhCvmPartitionState,
+    /// The synic state used for untrusted SINTs, that is, the SINTs for which
+    /// the guest thinks it is interacting directly with the untrusted
+    /// hypervisor via an architecture-specific interface.
+    pub(crate) untrusted_synic: Option<GlobalSynic>,
     flush_state: VtlArray<RwLock<TdxPartitionFlushState>, 2>,
     #[inspect(iter_by_index)]
     active_vtl: Vec<AtomicU8>,
 }
 
 impl TdxBackedShared {
-    pub(crate) fn new(params: BackingSharedParams) -> Result<Self, crate::Error> {
+    pub(crate) fn new(
+        partition_params: &UhPartitionNewParams<'_>,
+        params: BackingSharedParams,
+    ) -> Result<Self, crate::Error> {
+        // Create a second synic to fully manage the untrusted SINTs
+        // here. At time of writing, the hypervisor does not support
+        // sharing the untrusted SINTs with the TDX L1. Even if it did,
+        // performance would be poor for cases where the L1 implements
+        // high-performance devices.
+        let untrusted_synic = (partition_params.handle_synic && !partition_params.hide_isolation)
+            .then(|| GlobalSynic::new(partition_params.topology.vp_count()));
         Ok(Self {
+            untrusted_synic,
             flush_state: VtlArray::from_fn(|_| RwLock::new(TdxPartitionFlushState::new())),
             cvm: params.cvm_state.unwrap(),
             // VPs start in VTL 2.
-            active_vtl: std::iter::repeat_n(2, params.vp_count as usize)
+            active_vtl: std::iter::repeat_n(2, partition_params.topology.vp_count() as usize)
                 .map(AtomicU8::new)
                 .collect(),
         })
@@ -622,7 +639,7 @@ impl BackingPrivate for TdxBacked {
                 .with_enable_shared_ept(!params.partition.hide_isolation)
                 // If the synic is to be managed by the hypervisor, then enable TDVMCALLs.
                 .with_enable_tdvmcall(
-                    params.partition.untrusted_synic.is_none() && !params.partition.hide_isolation,
+                    shared.untrusted_synic.is_none() && !params.partition.hide_isolation,
                 );
 
             params
@@ -708,8 +725,7 @@ impl BackingPrivate for TdxBacked {
             .allocate_dma_buffer(HV_PAGE_SIZE as usize)
             .map_err(crate::Error::AllocateTlbFlushPage)?;
 
-        let untrusted_synic = params
-            .partition
+        let untrusted_synic = shared
             .untrusted_synic
             .as_ref()
             .map(|synic| synic.add_vp(params.vp_info.base.vp_index));
