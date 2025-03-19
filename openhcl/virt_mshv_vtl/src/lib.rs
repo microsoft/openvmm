@@ -951,7 +951,7 @@ impl virt::Synic for UhPartition {
 }
 
 impl virt::SynicMonitor for UhPartition {
-    fn set_monitor_page(&self, gpa: Option<u64>) -> anyhow::Result<()> {
+    fn set_monitor_page(&self, _vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
         let old_gpa = self.inner.monitor_page.set_gpa(gpa);
         if let Some(old_gpa) = old_gpa {
             self.inner

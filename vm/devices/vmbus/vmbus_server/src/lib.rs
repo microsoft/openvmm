@@ -1522,7 +1522,7 @@ impl Notifier for ServerTaskInner {
 
     fn reset_complete(&mut self) {
         if let Some(monitor) = self.synic.monitor_support() {
-            if let Err(err) = monitor.set_monitor_page(None) {
+            if let Err(err) = monitor.set_monitor_page(self.vtl, None) {
                 tracing::warn!(?err, "resetting monitor page failed")
             }
         }
@@ -1743,7 +1743,7 @@ impl ServerTaskInner {
 
         if self.enable_mnf {
             if let Some(monitor) = self.synic.monitor_support() {
-                if let Err(err) = monitor.set_monitor_page(monitor_page) {
+                if let Err(err) = monitor.set_monitor_page(self.vtl, monitor_page) {
                     anyhow::bail!(
                         "setting monitor page failed, err = {err:?}, monitor_page = {monitor_page:?}"
                     );

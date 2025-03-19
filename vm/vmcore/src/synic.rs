@@ -109,7 +109,7 @@ pub trait SynicPortAccess: Send + Sync {
 /// Provides monitor page functionality for a `SynicPortAccess` implementation.
 pub trait SynicMonitorAccess: SynicPortAccess {
     /// Sets the GPA of the monitor page currently in use.
-    fn set_monitor_page(&self, gpa: Option<MonitorPageGpas>) -> anyhow::Result<()>;
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<MonitorPageGpas>) -> anyhow::Result<()>;
 }
 
 /// A guest event port, created by [`SynicPortAccess::new_guest_event_port`].
