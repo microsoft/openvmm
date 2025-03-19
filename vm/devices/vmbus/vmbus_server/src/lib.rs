@@ -20,6 +20,7 @@ use channel_bitmap::ChannelBitmap;
 use channels::ConnectionTarget;
 pub use channels::InitiateContactRequest;
 use channels::MessageTarget;
+pub use channels::MnfUsage;
 use channels::ModifyConnectionRequest;
 pub use channels::ModifyConnectionResponse;
 use channels::Notifier;
@@ -58,6 +59,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
 use std::task::ready;
+use std::time::Duration;
 use unicycle::FuturesUnordered;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
@@ -702,11 +704,20 @@ impl ServerTask {
         let key = info.params.key();
         let flags = info.params.flags;
 
-        // Disable mnf if the synic doesn't support it or it's not enabled in this server.
-        if info.params.use_mnf
-            && (!self.inner.enable_mnf || self.inner.synic.monitor_support().is_none())
-        {
-            info.params.use_mnf = false;
+        if self.inner.enable_mnf && self.inner.synic.monitor_support().is_some() {
+            // If this server is handling MnF, ignore any relayed monitor IDs but still enable MnF
+            // for those channels.
+            // N.B. Since this can only happen in OpenHCL, which emulates MnF, the latency is
+            //      ignored.
+            if info.params.use_mnf.is_relayed() {
+                info.params.use_mnf = MnfUsage::Enabled {
+                    latency: Duration::ZERO,
+                }
+            }
+        } else if info.params.use_mnf.is_enabled() {
+            // If the server is not handling MnF, disable it for the channel. This does not affect
+            // channels with a relayed monitor ID.
+            info.params.use_mnf = MnfUsage::Disabled;
         }
 
         let offer_id = self
@@ -2243,10 +2254,9 @@ mod tests {
                         pipe_packets: false,
                     },
                     subchannel_index: 0,
-                    use_mnf: false,
+                    mnf_interrupt_latency: None,
                     offer_order: None,
                     allow_confidential_external_memory,
-                    interrupt_latency: Duration::from_millis(100),
                 },
             };
 
@@ -2447,7 +2457,7 @@ mod tests {
                     mmio_megabytes: 0,
                     mmio_megabytes_optional: 0,
                     subchannel_index: 0,
-                    use_mnf: false,
+                    use_mnf: MnfUsage::Disabled,
                     offer_order: None,
                     flags: protocol::OfferFlags::new().with_enumerate_device_interface(true),
                     ..Default::default()
