@@ -56,7 +56,7 @@ impl FlowNode for Node {
             move |rt| {
                 let path = rt.read(openvmm_repo_path).join(".cargo/config.toml");
                 let data = fs_err::read_to_string(&path)?;
-                let data = data.replace("### ENABLE_IN_CI", "");
+                // let data = data.replace("### ENABLE_IN_CI", "");
                 fs_err::write(path, data)?;
                 Ok(())
             }
