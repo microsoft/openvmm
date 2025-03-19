@@ -7,9 +7,6 @@
 //! This is used to test the underlying VMM infrastructure without the complexity
 //! of the full OpenVMM stack.
 
-// UNSAFETY: needed to map guest memory.
-#![expect(unsafe_code)]
-
 mod host_vmm;
 mod load;
 mod paravisor_vmm;

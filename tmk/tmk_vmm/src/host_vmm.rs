@@ -3,6 +3,9 @@
 
 //! Support for running as a host VMM.
 
+// UNSAFETY: needed to map guest memory.
+#![expect(unsafe_code)]
+
 use crate::run::CommonState;
 use crate::run::RunnerBuilder;
 use anyhow::Context as _;

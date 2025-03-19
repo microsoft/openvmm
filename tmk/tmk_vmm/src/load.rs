@@ -71,7 +71,6 @@ pub fn load_x86(
             | x86defs::X64_EFER_LMA
             | x86defs::X64_EFER_NXE,
     ))?;
-    import_reg(X86Register::Pat(x86defs::X86X_MSR_DEFAULT_PAT))?;
     import_reg(X86Register::Rip(load_info.entrypoint))?;
 
     let regs = vm_loader::initial_regs::x86_initial_regs(
