@@ -23,6 +23,7 @@ uevent.workspace = true
 event-listener.workspace = true
 guestmem.workspace = true
 vmcore.workspace = true
+sparse_mmap = { workspace = true, optional = true }
 
 anyhow.workspace = true
 parking_lot.workspace = true
@@ -35,7 +36,6 @@ futures.workspace = true
 futures-concurrency.workspace = true
 libc.workspace = true
 pal_event.workspace = true
-sparse_mmap = { workspace = true, optional = true }
 vfio_sys = { workspace = true, optional = true }
 
 [lints]
