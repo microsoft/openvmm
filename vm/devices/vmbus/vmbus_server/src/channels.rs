@@ -780,7 +780,7 @@ impl Channel {
 
     /// Returns the monitor ID and latency only if it's being handled by this server.
     ///
-    /// The monitor ID can be set while use_mnf is false, which is the case if
+    /// The monitor ID can be set while use_mnf is Relayed, which is the case if
     /// the relay host is handling MNF.
     ///
     /// Also returns `None` for reserved channels, since monitored notifications
