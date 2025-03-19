@@ -279,8 +279,9 @@ pub struct OfferParams {
     pub channel_type: ChannelType,
     /// The subchannel index. Index 0 indicates a primary (normal channel).
     pub subchannel_index: u16,
-    /// Indicates whether the channel's interrupts should use monitor pages.
-    pub use_mnf: bool,
+    /// Indicates whether the channel's interrupts should use monitor pages,
+    /// and the interrupt latency to use.
+    pub mnf_interrupt_latency: Option<Duration>,
     /// The order in which channels with the same interface will be offered to
     /// the guest (optional).
     pub offer_order: Option<u32>,
@@ -288,8 +289,6 @@ pub struct OfferParams {
     /// external GPADLs and GPA direct ranges. This is only used when hardware
     /// isolation is in use.
     pub allow_confidential_external_memory: bool,
-    /// The interrupt latency to use for monitored interrupts.
-    pub interrupt_latency: Duration,
 }
 
 impl OfferParams {

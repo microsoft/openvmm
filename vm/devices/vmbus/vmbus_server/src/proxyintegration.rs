@@ -307,10 +307,12 @@ impl ProxyTask {
             mmio_megabytes_optional: offer.MmioMegabytesOptional,
             subchannel_index: offer.SubChannelIndex,
             channel_type,
-            use_mnf: offer.ChannelFlags.request_monitored_notification(),
+            mnf_interrupt_latency: offer
+                .ChannelFlags
+                .request_monitored_notification()
+                .then(|| Duration::from_nanos(offer.InterruptLatencyIn100nsUnits * 100)),
             offer_order: id.try_into().ok(),
             allow_confidential_external_memory: false,
-            interrupt_latency: Duration::from_nanos(offer.InterruptLatencyIn100nsUnits * 100),
         };
         let (request_send, request_recv) = mesh::channel();
         let (server_request_send, server_request_recv) = mesh::channel();
