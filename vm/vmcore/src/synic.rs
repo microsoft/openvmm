@@ -136,14 +136,18 @@ pub trait GuestMessagePort: Send + Sync + Inspect {
     fn set_target_vp(&mut self, vp: u32) -> Result<(), HypervisorError>;
 }
 
+/// Represents the GPA of the outgoing and incoming monitor pages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Inspect)]
 pub struct MonitorPageGpas {
+    /// The GPA of the incoming monitor page.
     #[inspect(hex)]
     pub parent_to_child: u64,
+    /// The GPA of the outgoing monitor page.
     #[inspect(hex)]
     pub child_to_parent: u64,
 }
 
+/// Provides information about monitor usage for a synic event port.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MonitorInfo {
     monitor_id: MonitorId,
@@ -151,6 +155,7 @@ pub struct MonitorInfo {
 }
 
 impl MonitorInfo {
+    /// Creates a new `MonitorInfo` instance.
     pub fn new(monitor_id: MonitorId, latency: Duration) -> Self {
         Self {
             monitor_id,
@@ -158,10 +163,12 @@ impl MonitorInfo {
         }
     }
 
+    /// Returns the monitor ID associated with the event port.
     pub fn monitor_id(&self) -> MonitorId {
         self.monitor_id
     }
 
+    /// Returns the interrupt latency for monitored interrupts to this port.
     pub fn latency(&self) -> Duration {
         self.latency
     }

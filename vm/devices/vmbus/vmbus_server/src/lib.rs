@@ -101,6 +101,7 @@ const SINT: u8 = 2;
 pub const REDIRECT_SINT: u8 = 7;
 pub const REDIRECT_VTL: Vtl = Vtl::Vtl2;
 const SHARED_EVENT_CONNECTION_ID: u32 = 2;
+const EVENT_PORT_ID: u32 = 2;
 const VMBUS_MESSAGE_TYPE: u32 = 1;
 
 const MAX_CONCURRENT_HVSOCK_REQUESTS: usize = 16;
@@ -599,6 +600,10 @@ impl VmbusServer {
             | (vtl as u32) << 22
             | vp_index << 8
             | (sint_index as u32) << 4
+    }
+
+    fn get_child_event_port_id(channel_id: protocol::ChannelId, sint_index: u8, vtl: Vtl) -> u32 {
+        EVENT_PORT_ID | (vtl as u32) << 22 | channel_id.0 << 8 | (sint_index as u32) << 4
     }
 }
 
@@ -1573,12 +1578,8 @@ impl ServerTaskInner {
             (self.vtl, SINT)
         };
 
-        let port_id = ((self.vtl as u32) << 22)
-            | ((open_params.channel_id.0) << 8)
-            | ((SINT as u32) << 4)
-            | 2;
         let guest_event_port = self.synic.new_guest_event_port(
-            port_id,
+            VmbusServer::get_child_event_port_id(open_params.channel_id, SINT, self.vtl),
             target_vtl,
             target_vp,
             target_sint,
