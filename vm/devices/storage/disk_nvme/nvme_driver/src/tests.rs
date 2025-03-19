@@ -126,11 +126,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     const CPU_COUNT: u32 = 64;
 
     // Memory setup
-<<<<<<< HEAD
-    let pages = 100000;
-=======
     let pages = 1000;
->>>>>>> main
     let (guest_mem, _page_pool, dma_client) = create_test_memory(pages, allow_dma);
 
     let driver_dma_mem = if allow_dma {
@@ -419,24 +415,15 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
     }
 }
 
-<<<<<<< HEAD
-/// Creates test memory that leverages the TestMapper. Returned GuestMemory references the entire range
-/// and the page pool allocator references only the second half
-=======
 /// Creates test memory that leverages the [`TestMapper`]. Returned [`GuestMemory`] references the entire range
 /// and the returned [`PagePoolAllocator`] references only the second half of the range.
->>>>>>> main
 fn create_test_memory(
     num_pages: u64,
     allow_dma: bool,
 ) -> (GuestMemory, PagePool, Arc<PagePoolAllocator>) {
     let test_mapper = TestMapper::new(num_pages).unwrap();
     let sparse_mmap = test_mapper.sparse_mapping();
-<<<<<<< HEAD
-    let guest_mem = create_guest_memory(sparse_mmap, allow_dma);
-=======
     let guest_mem = GuestMemoryAccessWrapper::create_test_guest_memory(sparse_mmap, allow_dma);
->>>>>>> main
     let pool = PagePool::new(
         &[MemoryRange::from_4k_gpn_range(num_pages / 2..num_pages)],
         test_mapper,

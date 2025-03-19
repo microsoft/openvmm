@@ -78,12 +78,8 @@ impl MsiInterruptTarget for MsiController {
 }
 
 impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
-<<<<<<< HEAD:vm/devices/user_driver/src/emulated.rs
-    /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-=======
     /// Creates a new emulated device, wrapping `device` of type T, using the provided MSI Interrupt Set. Dma_client should point to memory
     /// shared with the device.
->>>>>>> main:vm/devices/user_driver_emulated_mock/src/lib.rs
     pub fn new(mut device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
         // Connect an interrupt controller.
         let controller = MsiController::new(msi_set.len());
@@ -152,42 +148,6 @@ pub struct DeviceSharedMemory {
     state: Arc<Mutex<Vec<u64>>>,
 }
 
-<<<<<<< HEAD:vm/devices/user_driver/src/emulated.rs
-/// The Backing struct is meant for testing only. It is meant to encapsulate types that already
-/// implement [GuestMemoryAccess] but provides the allow_dma switch regardless of the underlying
-/// type T.
-struct Backing<T> {
-    mem: T,
-    allow_dma: bool,
-}
-
-/// SAFETY: Defer to [GuestMemoryAccess] implementation of T
-/// Only intercept the base_iova fn with a naive response of 0 if allow_dma is enabled.
-unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for Backing<T> {
-    fn mapping(&self) -> Option<NonNull<u8>> {
-        self.mem.mapping()
-    }
-
-    fn base_iova(&self) -> Option<u64> {
-        self.allow_dma.then_some(0)
-    }
-
-    fn max_address(&self) -> u64 {
-        self.mem.max_address()
-    }
-}
-
-/// Takes sparse mapping as input and converts it to GuestMemory with the allow_dma switch
-pub fn create_guest_memory(sparse_mmap: SparseMapping, allow_dma: bool) -> GuestMemory {
-    let test_backing = Backing {
-        mem: sparse_mmap,
-        allow_dma,
-    };
-    GuestMemory::new("test mapper guest memory", test_backing)
-}
-
-=======
->>>>>>> main:vm/devices/user_driver_emulated_mock/src/lib.rs
 impl DeviceSharedMemory {
     /// Creates a new [`DeviceSharedMemory`] object. First "size" pages are alloacted as regular
     /// memory and the "extra" is strictly for dma testing. Both inputs are in bytes and required
@@ -260,10 +220,7 @@ pub struct EmulatedDmaAllocator {
 }
 
 impl EmulatedDmaAllocator {
-<<<<<<< HEAD:vm/devices/user_driver/src/emulated.rs
-=======
     /// Returns a new EmulatedDmaAllocator struct wrapping the provided [`DeviceSharedMemory`]
->>>>>>> main:vm/devices/user_driver_emulated_mock/src/lib.rs
     pub fn new(shared_mem: DeviceSharedMemory) -> Self {
         Self { shared_mem }
     }
