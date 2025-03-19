@@ -3,15 +3,6 @@
 
 //! Support for running a VM's VPs.
 
-#![cfg_attr(
-    guest_arch = "aarch64",
-    expect(unreachable_code),
-    expect(dead_code),
-    expect(unused_imports),
-    expect(unused_variables),
-    expect(unused_mut)
-)]
-
 use crate::Options;
 use crate::load;
 use anyhow::Context as _;
@@ -54,9 +45,11 @@ impl CommonState {
             .context("failed to build processor topology")?;
 
         #[cfg(guest_arch = "aarch64")]
-        anyhow::bail!("aarch64 not supported yet");
-        #[cfg(guest_arch = "aarch64")]
-        let processor_topology = TopologyBuilder::new_aarch64(todo!())
+        let processor_topology =
+            TopologyBuilder::new_aarch64(vm_topology::processor::arch::GicInfo {
+                gic_distributor_base: 0xff000000,
+                gic_redistributors_base: 0xff020000,
+            })
             .build(1)
             .context("failed to build processor topology")?;
 
@@ -82,8 +75,8 @@ impl CommonState {
         let (event_send, mut event_recv) = mesh::channel();
 
         // Load the TMK.
+        let tmk = fs_err::File::open(&self.opts.tmk).context("failed to open tmk")?;
         let regs = {
-            let tmk = fs_err::File::open(&self.opts.tmk).context("failed to open tmk")?;
             #[cfg(guest_arch = "x86_64")]
             {
                 load::load_x86(
@@ -96,7 +89,13 @@ impl CommonState {
             }
             #[cfg(guest_arch = "aarch64")]
             {
-                anyhow::bail!("aarch64 not supported yet");
+                load::load_aarch64(
+                    &self.memory_layout,
+                    guest_memory,
+                    &self.processor_topology,
+                    caps,
+                    &tmk,
+                )?
             }
         };
 
@@ -272,7 +271,12 @@ impl RunnerBuilder {
             }
             #[cfg(guest_arch = "aarch64")]
             {
-                todo!()
+                let virt::InitialRegs {
+                    registers,
+                    system_registers,
+                } = self.regs.as_ref();
+                state.set_registers(registers)?;
+                state.set_system_registers(system_registers)?;
             }
             state.commit()?;
         }

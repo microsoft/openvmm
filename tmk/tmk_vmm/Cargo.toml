@@ -28,7 +28,7 @@ clap = { workspace = true, features = ["derive"] }
 fs-err.workspace = true
 futures.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [target.'cfg(windows)'.dependencies]
 virt_whp.workspace = true

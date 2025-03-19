@@ -5,7 +5,7 @@
 
 #![cfg_attr(minimal_rt, no_std, no_main)]
 
-#[cfg(all(minimal_rt, target_arch = "x86_64"))]
+#[cfg(minimal_rt)]
 mod tmk;
 
 #[cfg(not(minimal_rt))]
