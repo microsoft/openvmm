@@ -277,6 +277,7 @@ impl BackingShared {
         }
     }
 
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn guest_vsm_disabled(&self) -> bool {
         match self {
             BackingShared::Hypervisor(h) => {
