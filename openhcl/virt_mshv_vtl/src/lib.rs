@@ -995,7 +995,7 @@ impl virt::SynicMonitor for UhPartition {
         &self,
         monitor_id: vmcore::monitor::MonitorId,
         connection_id: u32,
-    ) -> Box<dyn Send> {
+    ) -> Box<dyn Sync + Send> {
         self.inner
             .monitor_page
             .register_monitor(monitor_id, connection_id)
