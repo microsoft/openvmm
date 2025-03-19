@@ -383,8 +383,9 @@ impl OneshotReceiverCore {
         }
     }
 
-    // # Safety
-    // The caller must ensure that `T` is slot's type.
+    /// # Safety
+    ///
+    /// The caller must ensure that `T` is slot's type.
     unsafe fn poll_recv<T>(&mut self, cx: &mut Context<'_>) -> Poll<Result<Box<T>, RecvError>> {
         fn poll_recv(
             this: &mut OneshotReceiverCore,

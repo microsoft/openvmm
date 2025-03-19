@@ -78,16 +78,18 @@ enum Data<T, U, const N: usize> {
 }
 
 impl<T, U, const N: usize> Data<T, U, N> {
-    /// SAFETY: the caller must ensure that the first `len` elements have been
-    /// initialized.
+    /// # Safety
+    ///
+    /// The caller must ensure that the first `len` elements have been initialized.
     unsafe fn valid(&self, len: usize) -> &HeaderSlice<T, [U]> {
         // SAFETY: the caller has ensured that the first `len` elements have been
         // initialized.
         unsafe { HeaderSlice::from_raw_parts(core::ptr::from_ref(self.storage()).cast(), len) }
     }
 
-    /// SAFETY: the caller must ensure that the first `len` elements have been
-    /// initialized.
+    /// # Safety
+    ///
+    /// The caller must ensure that the first `len` elements have been initialized.
     unsafe fn valid_mut(&mut self, len: usize) -> &mut HeaderSlice<T, [U]> {
         // SAFETY: the caller has ensured that the first `len` elements have been
         // initialized.
