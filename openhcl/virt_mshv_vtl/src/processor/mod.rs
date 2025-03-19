@@ -55,7 +55,6 @@ use pal_async::driver::Driver;
 use pal_async::driver::PollImpl;
 use pal_async::timer::PollTimer;
 use pal_uring::IdleControl;
-use parking_lot::Mutex;
 use private::BackingPrivate;
 use std::convert::Infallible;
 use std::future::poll_fn;
@@ -354,7 +353,6 @@ impl UhVpInner {
             waker: Default::default(),
             cpu_index,
             vp_info,
-            hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
             sidecar_exit_reason: Default::default(),
         }
     }

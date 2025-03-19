@@ -451,6 +451,9 @@ struct UhCvmVpInner {
     vtl1_enable_called: Mutex<bool>,
     /// Whether the VP has been started via the StartVp hypercall.
     started: AtomicBool,
+    /// Start context for StartVp and EnableVpVtl calls.
+    #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
+    hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<VpStartEnableVtl>>>, 2>,
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -628,8 +631,6 @@ struct UhVpInner {
     /// The Linux kernel's CPU index for this VP. This should be used instead of VpIndex
     /// when interacting with non-MSHV kernel interfaces.
     cpu_index: u32,
-    #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
-    hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<VpStartEnableVtl>>>, 2>,
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
 }
 
@@ -1859,6 +1860,7 @@ impl UhProtoPartition<'_> {
                 tlb_lock_info: VtlArray::from_fn(|_| TlbLockInfo::new(vp_count)),
                 vtl1_enable_called: Mutex::new(false),
                 started: AtomicBool::new(vp_index == 0),
+                hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
             })
             .collect();
         let tlb_locked_vps =

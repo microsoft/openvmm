@@ -2004,7 +2004,6 @@ mod save_restore {
                         // Topology information
                         vp_info: _,
                         cpu_index: _,
-                        hv_start_enable_vtl_vp: _,
                     },
                 // Saved
                 crash_reg,

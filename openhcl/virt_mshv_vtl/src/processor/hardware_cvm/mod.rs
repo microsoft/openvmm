@@ -897,9 +897,14 @@ impl<T, B: HardwareIsolatedBacking>
             context: *vp_context,
         };
 
-        let target_vp = &self.vp.partition.vps[target_vp as usize];
-        *target_vp.hv_start_enable_vtl_vp[target_vtl].lock() = Some(Box::new(start_state));
-        target_vp.wake(target_vtl, WakeReason::HV_START_ENABLE_VP_VTL);
+        *self
+            .vp
+            .cvm_partition()
+            .vp_inner(target_vp)
+            .hv_start_enable_vtl_vp[target_vtl]
+            .lock() = Some(Box::new(start_state));
+        self.vp.partition.vps[target_vp as usize]
+            .wake(target_vtl, WakeReason::HV_START_ENABLE_VP_VTL);
 
         Ok(())
     }
@@ -1170,9 +1175,13 @@ impl<T, B: HardwareIsolatedBacking>
             context: *vp_context,
         };
 
-        let target_vp = &self.vp.partition.vps[vp_index as usize];
-        *target_vp.hv_start_enable_vtl_vp[vtl].lock() = Some(Box::new(enable_vp_vtl_state));
-        target_vp.wake(vtl, WakeReason::HV_START_ENABLE_VP_VTL);
+        *self
+            .vp
+            .cvm_partition()
+            .vp_inner(vp_index)
+            .hv_start_enable_vtl_vp[vtl]
+            .lock() = Some(Box::new(enable_vp_vtl_state));
+        self.vp.partition.vps[vp_index as usize].wake(vtl, WakeReason::HV_START_ENABLE_VP_VTL);
 
         tracing::debug!(vp_index, "enabled vtl 1 on vp");
 
@@ -1471,7 +1480,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         &mut self,
         vtl: GuestVtl,
     ) -> Result<(), UhRunVpError> {
-        if let Some(start_enable_vtl_state) = self.inner.hv_start_enable_vtl_vp[vtl].lock().take() {
+        let context = {
+            self.cvm_vp_inner().hv_start_enable_vtl_vp[vtl]
+                .lock()
+                .take()
+        };
+        if let Some(start_enable_vtl_state) = context {
             if vtl == GuestVtl::Vtl1 {
                 assert!(*self.cvm_vp_inner().vtl1_enable_called.lock());
                 if let InitialVpContextOperation::EnableVpVtl = start_enable_vtl_state.operation {
