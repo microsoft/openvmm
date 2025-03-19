@@ -347,7 +347,7 @@ impl GuestEmulationTransportClient {
         gsp_extended_status: crate::api::GspExtendedStatusFlags,
     ) -> crate::api::GuestStateProtection {
         let mut buffer = [0; get_protocol::GSP_CLEARTEXT_MAX as usize * 2];
-        getrandom::getrandom(&mut buffer).expect("rng failure");
+        getrandom::fill(&mut buffer).expect("rng failure");
 
         let gsp_request = get_protocol::GuestStateProtectionRequest::new(
             buffer,

@@ -517,12 +517,12 @@ struct LoadedVmInner {
     virtio_serial: Option<SerialPipes>,
 
     chipset_cfg: BaseChipsetManifest,
-    #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_count: usize,
-    #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     virtio_mmio_irq: u32,
     /// ((device, function), interrupt)
-    #[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     pci_legacy_interrupts: Vec<((u8, Option<u8>), u32)>,
     firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
 
@@ -1014,7 +1014,7 @@ impl InitializedVm {
                         secure_boot: cfg.secure_boot_enabled,
                         initial_generation_id: {
                             let mut generation_id = [0; 16];
-                            getrandom::getrandom(&mut generation_id).expect("rng failure");
+                            getrandom::fill(&mut generation_id).expect("rng failure");
                             generation_id
                         },
                         use_mmio: cfg!(not(guest_arch = "x86_64")),
@@ -1116,7 +1116,7 @@ impl InitializedVm {
                             hibernation_enabled: false,
                             initial_generation_id: {
                                 let mut generation_id = [0; 16];
-                                getrandom::getrandom(&mut generation_id).expect("rng failure");
+                                getrandom::fill(&mut generation_id).expect("rng failure");
                                 generation_id
                             },
                             boot_order: {
@@ -1973,6 +1973,9 @@ impl InitializedVm {
         //
         // TODO: allocate PCI and MMIO space better.
         let mut pci_device_number = 10;
+        if mem_layout.mmio().len() < 2 {
+            anyhow::bail!("at least two mmio regions are required");
+        }
         let mut virtio_mmio_start = mem_layout.mmio()[1].end();
         let mut virtio_mmio_count = 0;
 
@@ -2292,6 +2295,9 @@ impl LoadedVmInner {
                     cmdline,
                     mem_layout: &self.mem_layout,
                 };
+                if custom_dsdt.is_none() && self.mem_layout.mmio().len() < 2 {
+                    anyhow::bail!("at least two mmio regions are required");
+                }
                 let regs =
                     super::vm_loaders::linux::load_linux_x86(&kernel_config, &self.gm, |gpa| {
                         let tables = if let Some(dsdt) = custom_dsdt {
@@ -2395,7 +2401,7 @@ impl LoadedVmInner {
                 let srat = acpi_builder.build_srat();
                 const ENTROPY_SIZE: usize = 64;
                 let mut entropy = [0u8; ENTROPY_SIZE];
-                getrandom::getrandom(&mut entropy).unwrap();
+                getrandom::fill(&mut entropy).unwrap();
 
                 let params = crate::worker::vm_loaders::igvm::LoadIgvmParams {
                     igvm_file: self.igvm_file.as_ref().expect("should be already read"),
@@ -2426,10 +2432,13 @@ impl LoadedVmInner {
         // VTL2 will setup MTRRs for VTL0 if needed.
         #[cfg(guest_arch = "x86_64")]
         if self.hypervisor_cfg.with_vtl2.is_none() {
-            regs.extend(loader::common::compute_variable_mtrrs(
-                &self.mem_layout,
-                self.partition.caps().physical_address_width,
-            ));
+            regs.extend(
+                loader::common::compute_variable_mtrrs(
+                    &self.mem_layout,
+                    self.partition.caps().physical_address_width,
+                )
+                .context("failed to compute variable mtrrs")?,
+            );
         }
 
         // Only set initial page visibility on isolated partitions.
@@ -2703,58 +2712,52 @@ impl LoadedVm {
             return Ok(());
         }
 
-        let r = async {
-            // Grab the staged IGVM file.
-            let next_igvm_file = self
-                .inner
-                .next_igvm_file
-                .take()
-                .context("no staged igvm file")?;
+        // Grab the staged IGVM file.
+        let next_igvm_file = self
+            .inner
+            .next_igvm_file
+            .take()
+            .context("no staged igvm file")?;
 
-            // Stop the partition and VTL2 vmbus so that we can reset vmbus and
-            // reset the VTL2 register state.
-            //
-            // When these units will be resumed when `stopped_units` is dropped.
-            let vtl2_vmbus = self
-                .inner
-                .vtl2_vmbus_server
-                .as_ref()
-                .context("missing vtl2 vmbus")?
-                .unit_handle();
+        // Stop the partition and VTL2 vmbus so that we can reset vmbus and
+        // reset the VTL2 register state.
+        //
+        // When these units will be resumed when `stopped_units` is dropped.
+        let vtl2_vmbus = self
+            .inner
+            .vtl2_vmbus_server
+            .as_ref()
+            .context("missing vtl2 vmbus")?;
 
-            // FUTURE: instead of stopping the partition as a state unit, just stop
-            // the VPs via a side call to the partition unit. This distinction will
-            // become important when stopping a VM stops the VM's perception of
-            // time--we don't want to stop VM time during VTL2 servicing.
-            self.state_units
-                .stop_subset([vtl2_vmbus, self.inner.partition_unit.unit_handle()])
-                .await;
+        // Stop the VPs so that VTL2 state can be replaced.
+        let stop_vps = self.inner.partition_unit.temporarily_stop_vps().await;
 
-            // Reset vmbus VTL2 state so that all DMA transactions to VTL2 memory
-            // stop. We don't need to reset the individual devices, since resetting
-            // vmbus will close all the channels.
-            self.state_units
-                .force_reset([vtl2_vmbus])
-                .await
-                .context("failed to reset vtl2 vmbus")?;
+        // Reset vmbus VTL2 state so that all DMA transactions to VTL2
+        // memory stop. We don't need to reset the individual devices, since
+        // resetting vmbus will close all the channels.
+        //
+        // This must be done after the VPs have been stopped to avoid
+        // confusing VTL2 and to ensure that VTL2 does not send any
+        // additional vmbus messages.
+        vtl2_vmbus
+            .control()
+            .force_reset()
+            .await
+            .context("failed to reset vtl2 vmbus")?;
 
-            // Reload the VTL2 firmware.
-            //
-            // When the initial registers are set, this will implicitly reset VTL2
-            // state as well.
-            let _old_igvm_file = self.inner.igvm_file.replace(next_igvm_file);
-            self.inner
-                .load_firmware(true)
-                .await
-                .context("failed to reload VTL2 firmware")?;
+        // Reload the VTL2 firmware.
+        //
+        // When the initial registers are set, this will implicitly reset VTL2
+        // state as well.
+        let _old_igvm_file = self.inner.igvm_file.replace(next_igvm_file);
+        self.inner
+            .load_firmware(true)
+            .await
+            .context("failed to reload VTL2 firmware")?;
 
-            Ok(())
-        }
-        .await;
-
-        // Resume the stopped units.
-        self.state_units.start_stopped_units().await;
-        r
+        // OK to resume the VPs now.
+        drop(stop_vps);
+        Ok(())
     }
 
     /// Get the associated hvsock relay for a given vtl, if any.
@@ -2865,7 +2868,7 @@ impl LoadedVm {
     }
 }
 
-#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn add_devices_to_dsdt(
     mem_layout: &MemoryLayout,
     dsdt: &mut dsdt::Dsdt,

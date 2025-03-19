@@ -3,8 +3,6 @@
 
 //! GDMA Basic NIC (BNIC/MANA) definitions
 
-#![allow(dead_code)]
-
 use super::GdmaQueueType;
 use bitfield_struct::bitfield;
 use open_enum::open_enum;

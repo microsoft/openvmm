@@ -4,7 +4,7 @@
 // See also the LICENSE file in the root of the crate for additional copyright
 // information.
 
-#![allow(dead_code)]
+#![expect(dead_code)]
 #![allow(non_camel_case_types)]
 
 pub mod evp;

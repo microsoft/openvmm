@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(dead_code)]
-
 use guid::Guid;
 use open_enum::open_enum;
 use scsi_defs::ScsiStatus;

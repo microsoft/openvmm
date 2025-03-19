@@ -7,8 +7,8 @@
 
 type VpRegisterName = HvArm64RegisterName;
 
-use super::super::Backing;
 use super::super::BackingParams;
+use super::super::BackingPrivate;
 use super::super::UhRunVpError;
 use super::super::signal_mnf;
 use super::super::vp_state;
@@ -55,7 +55,6 @@ use virt_support_aarch64emu::emulate::EmuCheckVtlAccessError;
 use virt_support_aarch64emu::emulate::EmuTranslateError;
 use virt_support_aarch64emu::emulate::EmuTranslateResult;
 use virt_support_aarch64emu::emulate::EmulatorSupport;
-use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
@@ -94,7 +93,7 @@ struct ProcessorStatsArm64 {
 }
 
 #[expect(private_interfaces)]
-impl Backing for HypervisorBackedArm64 {
+impl BackingPrivate for HypervisorBackedArm64 {
     type HclBacking<'mshv> = MshvArm64;
     type EmulationCache = UhCpuStateCache;
     type Shared = HypervisorBackedArm64Shared;
@@ -180,11 +179,10 @@ impl Backing for HypervisorBackedArm64 {
                     &mut this.backing.stats.synic_deliverable
                 }
                 HvMessageType::HvMessageTypeArm64ResetIntercept => {
-                    let message = hvdef::HvArm64ResetInterceptMessage::ref_from_prefix(
-                        this.runner.exit_message().payload(),
-                    )
-                    .unwrap()
-                    .0; // TODO: zerocopy: err, use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                    let message = this
+                        .runner
+                        .exit_message()
+                        .as_message::<hvdef::HvArm64ResetInterceptMessage>();
                     match message.reset_type {
                         HvArm64ResetType::POWER_OFF => return Err(VpHaltReason::PowerOff),
                         HvArm64ResetType::REBOOT => return Err(VpHaltReason::Reset),
@@ -266,11 +264,10 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
     }
 
     fn handle_synic_deliverable_exit(&mut self) {
-        let message = hvdef::HvArm64SynicSintDeliverableMessage::ref_from_prefix(
-            self.runner.exit_message().payload(),
-        )
-        .unwrap()
-        .0; // TODO: zerocopy: err, use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+        let message = self
+            .runner
+            .exit_message()
+            .as_message::<hvdef::HvArm64SynicSintDeliverableMessage>();
 
         tracing::trace!(
             deliverable_sints = message.deliverable_sints,
@@ -292,11 +289,10 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
         &mut self,
         bus: &impl CpuIo,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let message = hvdef::HvArm64HypercallInterceptMessage::ref_from_prefix(
-            self.runner.exit_message().payload(),
-        )
-        .unwrap()
-        .0; // TODO: zerocopy: err, use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+        let message = self
+            .runner
+            .exit_message()
+            .as_message::<hvdef::HvArm64HypercallInterceptMessage>();
 
         tracing::trace!(msg = %format_args!("{:x?}", message), "hypercall");
 
@@ -325,11 +321,10 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
         &mut self,
         dev: &impl CpuIo,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let message = hvdef::HvArm64MemoryInterceptMessage::ref_from_prefix(
-            self.runner.exit_message().payload(),
-        )
-        .unwrap()
-        .0; // TODO: zerocopy: err, use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+        let message = self
+            .runner
+            .exit_message()
+            .as_message::<hvdef::HvArm64MemoryInterceptMessage>();
         // tracing::trace!(msg = %format_args!("{:x?}", message), "mmio");
 
         let intercept_state = InterceptState {
@@ -389,12 +384,11 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
         &mut self,
         dev: &impl CpuIo,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let gpa = hvdef::HvArm64MemoryInterceptMessage::ref_from_prefix(
-            self.runner.exit_message().payload(),
-        )
-        .unwrap()
-        .0 // TODO: zerocopy: err, use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-        .guest_physical_address;
+        let gpa = self
+            .runner
+            .exit_message()
+            .as_message::<hvdef::HvArm64MemoryInterceptMessage>()
+            .guest_physical_address;
 
         if self.partition.is_gpa_lower_vtl_ram(gpa) {
             // The host may have moved the page to an unaccepted state, so fail
@@ -594,11 +588,11 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
         match message.header.typ {
             HvMessageType::HvMessageTypeGpaIntercept
             | HvMessageType::HvMessageTypeUnmappedGpa
-            | HvMessageType::HvMessageTypeUnacceptedGpa => {
-                hvdef::HvArm64MemoryInterceptMessage::ref_from_prefix(message.payload())
-                    .ok()
-                    .map(|v| v.0.guest_physical_address) // TODO: zerocopy: err, use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-            }
+            | HvMessageType::HvMessageTypeUnacceptedGpa => Some(
+                message
+                    .as_message::<hvdef::HvArm64MemoryInterceptMessage>()
+                    .guest_physical_address,
+            ),
             _ => None,
         }
     }
@@ -612,11 +606,11 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
             return None;
         }
 
-        let message = hvdef::HvArm64MemoryInterceptMessage::ref_from_prefix(
-            self.vp.runner.exit_message().payload(),
-        )
-        .ok()?
-        .0; // TODO: zerocopy: err, use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+        let message = self
+            .vp
+            .runner
+            .exit_message()
+            .as_message::<hvdef::HvArm64MemoryInterceptMessage>();
 
         if !message.memory_access_info.gva_gpa_valid() {
             tracing::trace!(?message.guest_virtual_address, ?message.guest_physical_address, "gva gpa not valid {:?}", self.vp.runner.exit_message().payload());

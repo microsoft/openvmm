@@ -90,7 +90,7 @@ pub type HvPostMessageDirect =
 impl<T: PostMessageDirect> HypercallDispatch<HvPostMessageDirect> for T {
     fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         HvPostMessageDirect::run(params, |input| {
-            let message = input.message;
+            let message = input.message.get();
             self.post_message_direct(
                 input.partition_id,
                 Vtl::try_from(input.vtl)?,

@@ -134,7 +134,7 @@ impl SupportedAttrs {
 }
 
 /// Helper struct to collect various properties of a parsed authenticated var
-#[cfg_attr(not(feature = "auth-var-verify-crypto"), allow(dead_code))]
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ParsedAuthVar<'a> {
     pub name: &'a Ucs2LeSlice,

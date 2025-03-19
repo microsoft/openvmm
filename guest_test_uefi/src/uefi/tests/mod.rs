@@ -8,7 +8,7 @@ use uefi::boot;
 use uefi::cstr16;
 use uefi::println;
 use uefi::runtime;
-use uefi::table::runtime::VariableVendor;
+use uefi::runtime::VariableVendor;
 
 // TODO: add runtime config for which tests to run (e.g: skipping watchdog)
 pub fn run_tests() {

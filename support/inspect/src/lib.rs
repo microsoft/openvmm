@@ -1850,7 +1850,7 @@ where
     any(feature = "defer", feature = "initiate"),
     derive(mesh::MeshPayload)
 )]
-#[cfg_attr(not(feature = "initiate"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "defer", feature = "initiate")), expect(dead_code))]
 enum InternalNode {
     Unevaluated,
     Failed(InternalError),
@@ -1871,7 +1871,7 @@ enum InternalNode {
 )]
 // Without the initiate feature we never read fields of the InternalEntry
 // to produce a user-visible Entry, but we still need those fields.
-#[cfg_attr(not(feature = "initiate"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "defer", feature = "initiate")), expect(dead_code))]
 struct InternalEntry {
     name: String,
     node: InternalNode,
@@ -2688,7 +2688,7 @@ mod tests {
         struct Tr2(#[inspect(debug)] ());
 
         #[derive(Inspect)]
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         enum Enum {
             Foo,
             BarBaz,
@@ -2737,16 +2737,16 @@ mod tests {
 
     #[test]
     fn test_derive_enum() {
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         enum EmptyUnitEmum {}
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(untagged)]
         enum EmptyUntaggedEmum {}
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         enum UnitEnum {
             A,
@@ -2756,7 +2756,7 @@ mod tests {
 
         inspect_sync_expect("", None, &UnitEnum::B, expect!([r#""b""#]));
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(tag = "tag")]
         enum TaggedEnum {
@@ -2771,7 +2771,7 @@ mod tests {
             expect!([r#"{tag: "b", y: true}"#]),
         );
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(external_tag)]
         enum ExternallyTaggedEnum {
@@ -2792,7 +2792,7 @@ mod tests {
 
         inspect_sync_expect("", None, &ExternallyTaggedEnum::C(5), expect!("{c: 5}"));
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(untagged)]
         enum UntaggedEnum {

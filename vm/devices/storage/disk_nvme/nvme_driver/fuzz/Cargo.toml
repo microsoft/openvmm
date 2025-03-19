@@ -25,6 +25,7 @@ scsi_buffers.workspace = true
 user_driver.workspace = true
 vmcore.workspace = true
 xtask_fuzz.workspace = true
+user_driver_emulated_mock.workspace = true
 
 [target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
 libfuzzer-sys.workspace = true

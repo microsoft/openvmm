@@ -342,6 +342,7 @@ impl Partition {
     }
 
     /// Enable X2APIC IDs in interrupt and LAPIC APIs.
+    #[cfg(target_arch = "x86_64")]
     pub fn enable_x2apic_api(&self) -> Result<()> {
         let flags = KVM_X2APIC_API_USE_32BIT_IDS;
         // SAFETY: Calling IOCTL as documented, with no special requirements.

@@ -1635,7 +1635,7 @@ mod tests {
         }
 
         fn get_crypt_random(&mut self, buf: &mut [u8]) -> DynResult<usize> {
-            getrandom::getrandom(buf).expect("rng failure");
+            getrandom::fill(buf).expect("rng failure");
 
             Ok(buf.len())
         }

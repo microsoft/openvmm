@@ -293,24 +293,7 @@ impl<T: 'static + Send> RpcSend for OneshotSender<T> {
     }
 }
 
-#[cfg(feature = "newchan")]
 impl<T: 'static + Send> RpcSend for &mesh_channel_core::Sender<T> {
-    type Message = T;
-    fn send_rpc(self, message: T) {
-        self.send(message);
-    }
-}
-
-#[cfg(not(feature = "newchan_spsc"))]
-impl<T: 'static + Send> RpcSend for &crate::Sender<T> {
-    type Message = T;
-    fn send_rpc(&self, message: T) {
-        self.send(message);
-    }
-}
-
-#[cfg(not(feature = "newchan_mpsc"))]
-impl<T: 'static + Send> RpcSend for &crate::MpscSender<T> {
     type Message = T;
     fn send_rpc(self, message: T) {
         self.send(message);

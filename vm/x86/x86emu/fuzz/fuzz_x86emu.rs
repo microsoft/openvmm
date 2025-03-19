@@ -30,10 +30,10 @@ fn do_fuzz(static_params: StaticParams) -> arbitrary::Result<()> {
             // Acceptable results
             Error::InstructionException(_, _, _) => Ok(()),
 
-            // Not useful results - didn't make it past iced into our code
-            Error::DecodeFailure | Error::UnsupportedInstruction(_) => {
-                Err(arbitrary::Error::IncorrectFormat)
-            }
+            // Not useful results - didn't make it into meaningful code
+            Error::DecodeFailure
+            | Error::UnsupportedInstruction(_)
+            | Error::NonMemoryOrPortInstruction(_) => Err(arbitrary::Error::IncorrectFormat),
 
             // Should be impossible as we provide the maximum length up front
             Error::NotEnoughBytes => unreachable!(),

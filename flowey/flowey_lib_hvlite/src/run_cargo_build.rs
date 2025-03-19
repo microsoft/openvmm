@@ -245,7 +245,7 @@ pub mod common {
                     CommonPlatform::MacOs => target_lexicon::Triple {
                         architecture: arch.as_arch(),
                         vendor: target_lexicon::Vendor::Apple,
-                        operating_system: target_lexicon::OperatingSystem::Darwin,
+                        operating_system: target_lexicon::OperatingSystem::Darwin(None),
                         environment: target_lexicon::Environment::Unknown,
                         binary_format: target_lexicon::BinaryFormat::Macho,
                     },

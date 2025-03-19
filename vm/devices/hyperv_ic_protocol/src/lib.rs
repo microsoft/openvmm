@@ -3,8 +3,6 @@
 
 //! IC protocol definitions.
 
-#![allow(dead_code)]
-
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
 use std::fmt::Display;

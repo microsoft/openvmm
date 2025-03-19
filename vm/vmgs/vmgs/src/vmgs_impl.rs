@@ -66,7 +66,6 @@ struct ResolvedFileControlBlock {
 
 /// Implementation of the VMGS file format, backed by a generic [`Disk`]
 /// device.
-#[cfg_attr(not(with_encryption), allow(dead_code))]
 #[cfg_attr(feature = "inspect", derive(Inspect))]
 pub struct Vmgs {
     storage: VmgsStorage,
@@ -80,6 +79,7 @@ pub struct Vmgs {
     #[cfg_attr(feature = "inspect", inspect(with = "vmgs_inspect::fcbs"))]
     fcbs: HashMap<FileId, ResolvedFileControlBlock>,
     encryption_algorithm: EncryptionAlgorithm,
+    #[allow(dead_code)]
     datastore_key_count: u8,
     active_datastore_key_index: Option<usize>,
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
@@ -462,7 +462,7 @@ impl Vmgs {
         let data_nonce_auth_tag = if should_encrypt {
             let data_encryption_key = {
                 let mut encryption_key = VmgsDatastoreKey::new_zeroed();
-                getrandom::getrandom(&mut encryption_key).expect("rng failure");
+                getrandom::fill(&mut encryption_key).expect("rng failure");
                 encryption_key
             };
             let data_nonce = generate_nonce();
@@ -1545,15 +1545,14 @@ fn round_up_count(count: usize, pow2: u32) -> u64 {
 fn generate_nonce() -> VmgsNonce {
     let mut nonce = VmgsNonce::new_zeroed();
     // Generate a 4-byte random seed for nonce
-    getrandom::getrandom(&mut nonce[..4]).expect("rng failure");
+    getrandom::fill(&mut nonce[..4]).expect("rng failure");
     nonce
 }
 
 /// Increment Nonce by one.
 fn increment_nonce(nonce: &mut VmgsNonce) -> Result<(), Error> {
     // Update the random seed of nonce
-    getrandom::getrandom(&mut nonce[..vmgs_format::VMGS_NONCE_RANDOM_SEED_SIZE])
-        .expect("rng failure");
+    getrandom::fill(&mut nonce[..vmgs_format::VMGS_NONCE_RANDOM_SEED_SIZE]).expect("rng failure");
 
     // Increment the counter of nonce by 1.
     for i in &mut nonce[vmgs_format::VMGS_NONCE_RANDOM_SEED_SIZE..] {
@@ -1598,7 +1597,7 @@ fn encrypt_metadata_key(
 }
 
 /// Decrypts metadata_key. Returns decrypted_metadata_key.
-#[cfg_attr(not(with_encryption), allow(unused_variables), allow(dead_code))]
+#[cfg_attr(not(with_encryption), allow(unused_variables), expect(dead_code))]
 fn decrypt_metadata_key(
     datastore_key: &[u8],
     nonce: &[u8],

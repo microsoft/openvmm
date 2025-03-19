@@ -180,7 +180,7 @@ pub fn random_console_path() -> PathBuf {
     let mut path = std::env::temp_dir();
 
     let mut random = [0; 16];
-    getrandom::getrandom(&mut random).expect("rng failure");
+    getrandom::fill(&mut random).expect("rng failure");
     path.push(u128::from_ne_bytes(random).to_string());
 
     path

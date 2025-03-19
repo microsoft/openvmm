@@ -13,7 +13,6 @@ use memory::MemoryBlock;
 use std::sync::Arc;
 
 pub mod backoff;
-pub mod emulated;
 pub mod interrupt;
 pub mod lockmem;
 pub mod memory;

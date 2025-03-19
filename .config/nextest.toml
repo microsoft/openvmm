@@ -38,13 +38,6 @@ filter = 'package(~vmm_tests)'
 # If you change it here then change it there!
 slow-timeout = { period = "3m", terminate-after = 2 }
 
-# Add retries for known flaky tests.
-# TODO: Fix these tests and remove the retries.
-# openhcl_linux_x64_openhcl_servicing is tracked by #1092
-[[profile.ci.overrides]]
-filter = 'package(~vmm_tests) and test(~x86_64::openhcl_linux_x64_openhcl_servicing)'
-retries = 1
-
 # TEMP (hopefully): For reasons that continue to befuddle, running Windows
 # release-mode unit tests in flowey CI is resulting in seemingly-random
 # tests occationally stalling by up to ~10 seconds.

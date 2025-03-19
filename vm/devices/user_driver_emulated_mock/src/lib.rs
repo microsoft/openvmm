@@ -1,23 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! This implements the user-mode driver device traits using an emulated PCI
-//! device.
+//! This crate provides a collection of wrapper structs around things like devices and memory. Through the wrappers, it provides functionality to emulate devices such
+//! as Nvme and Mana and gives some additional control over things like [`GuestMemory`] to make testing devices easier.
+//! Everything in this crate is meant for TESTING PURPOSES ONLY and it should only ever be added as a dev-dependency (Few expceptions like using this for fuzzing)
+#![deny(missing_docs)]
 
-use crate::DeviceBacking;
-use crate::DeviceRegisterIo;
-use crate::DmaClient;
-use crate::interrupt::DeviceInterrupt;
-use crate::interrupt::DeviceInterruptSource;
-use crate::memory::MappedDmaTarget;
-use crate::memory::MemoryBlock;
-use crate::memory::PAGE_SIZE;
+mod dma_buffer;
+pub mod guest_memory_access_wrapper;
+
+use crate::dma_buffer::DmaBuffer;
+use crate::guest_memory_access_wrapper::GuestMemoryAccessWrapper;
+
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
-use guestmem::GuestMemoryAccess;
 use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::Mutex;
@@ -26,12 +25,18 @@ use pci_core::msi::MsiControl;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
 use safeatomic::AtomicSliceOps;
-use sparse_mmap::SparseMapping;
-use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
+use user_driver::DeviceBacking;
+use user_driver::DeviceRegisterIo;
+use user_driver::DmaClient;
+use user_driver::interrupt::DeviceInterrupt;
+use user_driver::interrupt::DeviceInterruptSource;
+use user_driver::memory::MemoryBlock;
+use user_driver::memory::PAGE_SIZE;
 
-/// An emulated device.
+/// A wrapper around any user_driver device T. It provides device emulation by providing access to the memory shared with the device and thus
+/// allowing the user to control device behaviour to a certain extent. Can be used with devices such as the `NvmeController`
 pub struct EmulatedDevice<T, U> {
     device: Arc<Mutex<T>>,
     controller: MsiController,
@@ -73,7 +78,12 @@ impl MsiInterruptTarget for MsiController {
 }
 
 impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
+<<<<<<< HEAD:vm/devices/user_driver/src/emulated.rs
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
+=======
+    /// Creates a new emulated device, wrapping `device` of type T, using the provided MSI Interrupt Set. Dma_client should point to memory
+    /// shared with the device.
+>>>>>>> main:vm/devices/user_driver_emulated_mock/src/lib.rs
     pub fn new(mut device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
         // Connect an interrupt controller.
         let controller = MsiController::new(msi_set.len());
@@ -132,6 +142,8 @@ impl Default for Page {
     }
 }
 
+/// Some synthetic (test) memory that can be shared with an [`EmulatedDevice`]. It provides both shared and dma-able memory to the device
+/// and uses [`GuestMemory`] backed by [`AlignedHeapMemory`].
 #[derive(Clone)]
 pub struct DeviceSharedMemory {
     mem: GuestMemory,
@@ -140,6 +152,7 @@ pub struct DeviceSharedMemory {
     state: Arc<Mutex<Vec<u64>>>,
 }
 
+<<<<<<< HEAD:vm/devices/user_driver/src/emulated.rs
 /// The Backing struct is meant for testing only. It is meant to encapsulate types that already
 /// implement [GuestMemoryAccess] but provides the allow_dma switch regardless of the underlying
 /// type T.
@@ -173,18 +186,18 @@ pub fn create_guest_memory(sparse_mmap: SparseMapping, allow_dma: bool) -> Guest
     GuestMemory::new("test mapper guest memory", test_backing)
 }
 
+=======
+>>>>>>> main:vm/devices/user_driver_emulated_mock/src/lib.rs
 impl DeviceSharedMemory {
+    /// Creates a new [`DeviceSharedMemory`] object. First "size" pages are alloacted as regular
+    /// memory and the "extra" is strictly for dma testing. Both inputs are in bytes and required
+    /// to be page aligned.
     pub fn new(size: usize, extra: usize) -> Self {
         assert_eq!(size % PAGE_SIZE, 0);
         assert_eq!(extra % PAGE_SIZE, 0);
-        let mem_backing = Backing {
-            mem: Arc::new(AlignedHeapMemory::new(size + extra)),
-            allow_dma: false,
-        };
-        let dma_backing = Backing {
-            mem: mem_backing.mem.clone(),
-            allow_dma: true,
-        };
+        let mem_backing =
+            GuestMemoryAccessWrapper::new(Arc::new(AlignedHeapMemory::new(size + extra)), false);
+        let dma_backing = GuestMemoryAccessWrapper::new(mem_backing.mem().clone(), true);
         let mem = GuestMemory::new("emulated_shared_mem", mem_backing);
         let dma = GuestMemory::new("emulated_shared_dma", dma_backing);
         let len = size / PAGE_SIZE;
@@ -196,14 +209,17 @@ impl DeviceSharedMemory {
         }
     }
 
+    /// Gets regular [`GuestMemory`]
     pub fn guest_memory(&self) -> &GuestMemory {
         &self.mem
     }
 
+    /// Gets dma-able [`GuestMemory`]
     pub fn guest_memory_for_driver_dma(&self) -> &GuestMemory {
         &self.dma
     }
 
+    /// Allocates `len` number of contiguous bytes in `mem`. Input must be page aligned
     pub fn alloc(&self, len: usize) -> Option<DmaBuffer> {
         assert!(len % PAGE_SIZE == 0);
         let count = len / PAGE_SIZE;
@@ -232,54 +248,11 @@ impl DeviceSharedMemory {
         };
 
         let pages = (start_page..start_page + count).map(|p| p as u64).collect();
-        Some(DmaBuffer {
-            mem: self.mem.clone(),
-            pfns: pages,
-            state: self.state.clone(),
-        })
+        Some(DmaBuffer::new(self.mem.clone(), pages, self.state.clone()))
     }
 }
 
-pub struct DmaBuffer {
-    mem: GuestMemory,
-    pfns: Vec<u64>,
-    state: Arc<Mutex<Vec<u64>>>,
-}
-
-impl Drop for DmaBuffer {
-    fn drop(&mut self) {
-        let mut state = self.state.lock();
-        for &pfn in &self.pfns {
-            state[pfn as usize / 64] &= !(1 << (pfn % 64));
-        }
-    }
-}
-
-/// SAFETY: we are handing out a VA and length for valid data, propagating the
-/// guarantee from [`GuestMemory`] (which is known to be in a fully allocated
-/// state because we used `GuestMemory::allocate` to create it).
-unsafe impl MappedDmaTarget for DmaBuffer {
-    fn base(&self) -> *const u8 {
-        self.mem
-            .full_mapping()
-            .unwrap()
-            .0
-            .wrapping_add(self.pfns[0] as usize * PAGE_SIZE)
-    }
-
-    fn len(&self) -> usize {
-        self.pfns.len() * PAGE_SIZE
-    }
-
-    fn pfns(&self) -> &[u64] {
-        &self.pfns
-    }
-
-    fn pfn_bias(&self) -> u64 {
-        0
-    }
-}
-
+/// Implements a [`DmaClient`] backed by [`DeviceSharedMemory`]
 #[derive(Inspect)]
 pub struct EmulatedDmaAllocator {
     #[inspect(skip)]
@@ -287,6 +260,10 @@ pub struct EmulatedDmaAllocator {
 }
 
 impl EmulatedDmaAllocator {
+<<<<<<< HEAD:vm/devices/user_driver/src/emulated.rs
+=======
+    /// Returns a new EmulatedDmaAllocator struct wrapping the provided [`DeviceSharedMemory`]
+>>>>>>> main:vm/devices/user_driver_emulated_mock/src/lib.rs
     pub fn new(shared_mem: DeviceSharedMemory) -> Self {
         Self { shared_mem }
     }

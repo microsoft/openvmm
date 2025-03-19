@@ -29,7 +29,7 @@ impl MshvProcessor<'_> {
         self.inner
             .vcpufd
             .set_reg(hvdef_to_mshv(&assoc[..]))
-            .map_err(|err| Error::Register(Box::new(err)))?;
+            .map_err(Error::Register)?;
 
         Ok(())
     }
@@ -48,7 +48,7 @@ impl MshvProcessor<'_> {
         self.inner
             .vcpufd
             .get_reg(hvdef_to_mshv_mut(&mut assoc[..]))
-            .map_err(|err| Error::Register(Box::new(err)))?;
+            .map_err(Error::Register)?;
 
         regs.set_values(assoc.iter().map(|assoc| assoc.value));
         Ok(regs)

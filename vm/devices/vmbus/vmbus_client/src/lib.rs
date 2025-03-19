@@ -2017,7 +2017,7 @@ mod tests {
                 // FUTURE: use some kind of deterministic test framework for this to
                 // allow for reproducible tests.
                 let mut b = [0];
-                getrandom::getrandom(&mut b).unwrap();
+                getrandom::fill(&mut b).unwrap();
                 if b[0] % 4 == 0 {
                     self.deadline =
                         Some(pal_async::timer::Instant::now() + Duration::from_millis(10));

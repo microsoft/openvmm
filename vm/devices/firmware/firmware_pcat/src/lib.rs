@@ -171,7 +171,7 @@ struct PcatBiosState {
 impl PcatBiosState {
     fn new() -> Self {
         let mut entropy = [0; 64];
-        getrandom::getrandom(&mut entropy).expect("rng failure");
+        getrandom::fill(&mut entropy).expect("rng failure");
         Self {
             address: 0,
             read_count: 0,

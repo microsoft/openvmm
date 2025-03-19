@@ -6,7 +6,7 @@
 //! These are used both by unit tests and by benchmarks.
 
 // Benchmarks do not use all the code here, but unit tests should.
-#![cfg_attr(not(test), allow(dead_code))]
+#![cfg_attr(not(test), expect(dead_code))]
 
 use super::protocol;
 use crate::InitState;

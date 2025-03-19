@@ -882,7 +882,7 @@ pub struct UhScsiControllerConfig {
     )>,
 }
 
-#[cfg_attr(not(feature = "vpci"), allow(dead_code))]
+#[cfg_attr(not(feature = "vpci"), expect(dead_code))]
 pub struct UhVpciDeviceConfig {
     pub instance_id: Guid,
     pub resource: Resource<PciDeviceHandleKind>,

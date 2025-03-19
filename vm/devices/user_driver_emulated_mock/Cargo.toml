@@ -1,0 +1,21 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "user_driver_emulated_mock"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chipset_device.workspace = true
+guestmem.workspace = true
+inspect.workspace = true
+parking_lot.workspace = true
+pci_core.workspace = true
+safeatomic.workspace = true
+tracing.workspace = true
+user_driver.workspace = true
+
+[lints]
+workspace = true

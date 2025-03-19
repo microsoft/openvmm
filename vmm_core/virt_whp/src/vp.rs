@@ -203,7 +203,7 @@ impl<'a> WhpProcessor<'a> {
         Ok(())
     }
 
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     pub(crate) fn vtl2_intercept(&mut self, typ: HvMessageType, payload: &[u8]) {
         match self.vtl2_intercept_inner(typ, payload) {
             Ok(()) => {}
@@ -1735,6 +1735,10 @@ mod aarch64 {
     use virt::VpHaltReason;
     use virt::io::CpuIo;
 
+    fn message_ref<T: hvdef::MessagePayload>(v: &whp::abi::WHV_RUN_VP_EXIT_CONTEXT_u) -> &T {
+        T::ref_from_prefix(&v.message).unwrap().0
+    }
+
     impl WhpProcessor<'_> {
         pub(super) fn process_apic(&mut self, _dev: &impl CpuIo) -> Result<bool, WhpRunVpError> {
             Ok(true)
@@ -1784,7 +1788,6 @@ mod aarch64 {
             exit: whp::Exit<'_>,
         ) -> Result<(), VpHaltReason<WhpRunVpError>> {
             use whp::ExitReason;
-            use zerocopy::FromBytes;
 
             let stat = match exit.reason {
                 ExitReason::Canceled => &mut self.state.exits.cancel,
@@ -1792,32 +1795,24 @@ mod aarch64 {
                 ExitReason::Hypervisor(reason, message) => match HvMessageType(reason) {
                     HvMessageType::HvMessageTypeUnmappedGpa
                     | HvMessageType::HvMessageTypeGpaIntercept => {
-                        self.handle_memory_access(
-                            dev,
-                            FromBytes::ref_from_prefix(message).unwrap().0, // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-                            exit,
-                        )
-                        .await?;
+                        self.handle_memory_access(dev, message_ref(message), exit)
+                            .await?;
                         &mut self.state.exits.memory
                     }
                     HvMessageType::HvMessageTypeSynicSintDeliverable => {
-                        self.handle_sint_deliverable(
-                            FromBytes::ref_from_prefix(message).unwrap().0,
-                        ); // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                        self.handle_sint_deliverable(message_ref(message));
                         &mut self.state.exits.sint_deliverable
                     }
                     HvMessageType::HvMessageTypeHypercallIntercept => {
                         crate::hypercalls::WhpHypercallExit::handle(
                             self,
                             dev,
-                            FromBytes::ref_from_prefix(message).unwrap().0, // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                            message_ref(message),
                         );
                         &mut self.state.exits.hypercall
                     }
                     HvMessageType::HvMessageTypeArm64ResetIntercept => {
-                        return Err(
-                            self.handle_reset(FromBytes::ref_from_prefix(message).unwrap().0)
-                        ); // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                        return Err(self.handle_reset(message_ref(message)));
                     }
                     reason => {
                         return Err(VpHaltReason::Hypervisor(WhpRunVpError::UnknownExit(reason)));

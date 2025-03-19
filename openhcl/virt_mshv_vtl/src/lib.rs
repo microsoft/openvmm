@@ -207,10 +207,9 @@ struct UhPartitionInner {
     enter_modes: Mutex<EnterModes>,
     #[inspect(skip)]
     enter_modes_atomic: AtomicU8,
-    cpuid: Mutex<CpuidLeafSet>,
+    cpuid: CpuidLeafSet,
     lower_vtl_memory_layout: MemoryLayout,
     gm: VtlArray<GuestMemory, 2>,
-    shared_memory: Option<GuestMemory>,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     #[inspect(skip)]
     crash_notification_send: mesh::Sender<VtlCrash>,
@@ -227,8 +226,6 @@ struct UhPartitionInner {
     /// This is only set for TDX VMs. For SNP VMs, this is implemented by the
     /// hypervisor. For non-isolated VMs, this isn't a concept.
     untrusted_synic: Option<GlobalSynic>,
-    #[inspect(skip)]
-    isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     shared_dma_client: Option<Arc<dyn DmaClient>>,
     private_dma_client: Option<Arc<dyn DmaClient>>,
     #[inspect(with = "inspect::AtomicMut")]
@@ -244,7 +241,6 @@ struct UhPartitionInner {
 
 #[derive(Inspect)]
 #[inspect(external_tag)]
-#[doc(hidden)]
 enum BackingShared {
     Hypervisor(#[inspect(flatten)] HypervisorBackedShared),
     #[cfg(guest_arch = "x86_64")]
@@ -276,9 +272,22 @@ impl BackingShared {
         match self {
             BackingShared::Hypervisor(_) => None,
             #[cfg(guest_arch = "x86_64")]
-            BackingShared::Snp(s) => Some(&s.cvm),
+            BackingShared::Snp(SnpBackedShared { cvm, .. })
+            | BackingShared::Tdx(TdxBackedShared { cvm, .. }) => Some(cvm),
+        }
+    }
+
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+    fn guest_vsm_disabled(&self) -> bool {
+        match self {
+            BackingShared::Hypervisor(h) => {
+                matches!(*h.guest_vsm.read(), GuestVsmState::NotPlatformSupported)
+            }
             #[cfg(guest_arch = "x86_64")]
-            BackingShared::Tdx(s) => Some(&s.cvm),
+            BackingShared::Snp(SnpBackedShared { cvm, .. })
+            | BackingShared::Tdx(TdxBackedShared { cvm, .. }) => {
+                matches!(*cvm.guest_vsm.read(), GuestVsmState::NotPlatformSupported)
+            }
         }
     }
 }
@@ -403,6 +412,9 @@ struct UhCvmPartitionState {
     #[inspect(with = "inspect::iter_by_index")]
     vps: Vec<UhCvmVpInner>,
     shared_memory: GuestMemory,
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+    #[inspect(skip)]
+    isolated_memory_protector: Arc<dyn ProtectIsolatedMemory>,
     /// The emulated local APIC set.
     lapic: VtlArray<LocalApicSet, 2>,
     /// The emulated hypervisor state.
@@ -627,7 +639,7 @@ impl UhVpInner {
     }
 }
 
-#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 #[derive(Debug, Inspect)]
 /// Which operation is setting the initial vp context
 enum InitialVpContextOperation {
@@ -637,7 +649,7 @@ enum InitialVpContextOperation {
     EnableVpVtl,
 }
 
-#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 #[derive(Debug, Inspect)]
 /// State for handling StartVp/EnableVpVtl hypercalls.
 struct VpStartEnableVtl {
@@ -665,7 +677,7 @@ struct TlbLockInfo {
     sleeping: AtomicBool,
 }
 
-#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 impl TlbLockInfo {
     fn new(vp_count: usize) -> Self {
         Self {
@@ -724,37 +736,6 @@ impl UhPartition {
             BackingShared::Snp(SnpBackedShared { cvm, .. })
             | BackingShared::Tdx(TdxBackedShared { cvm, .. }) => {
                 revoke(&mut *cvm.guest_vsm.write())?;
-                let mut cpuid_lock = self.inner.cpuid.lock();
-                let current_result =
-                    cpuid_lock.result(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0, &[0; 4]);
-
-                let mut features = hvdef::HvFeatures::from(u128::from_le_bytes(
-                    current_result
-                        .iter()
-                        .flat_map(|i| i.to_le_bytes())
-                        .collect::<Vec<u8>>()
-                        .try_into()
-                        .unwrap(),
-                ));
-
-                let privileges = hvdef::HvPartitionPrivilege::from(features.privileges());
-                features.set_privileges(privileges.with_access_vsm(false).into());
-
-                let split_u128 = |x: u128| -> [u32; 4] {
-                    let bytes = x.to_le_bytes();
-                    [
-                        u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-                        u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
-                        u32::from_le_bytes(bytes[8..12].try_into().unwrap()),
-                        u32::from_le_bytes(bytes[12..16].try_into().unwrap()),
-                    ]
-                };
-
-                cpuid_lock.update_result(
-                    hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES,
-                    0,
-                    &split_u128(features.into()),
-                );
             }
         };
 
@@ -1276,8 +1257,6 @@ pub struct UhPartitionNewParams<'a> {
 
 /// Parameters to [`UhProtoPartition::build`].
 pub struct UhLateParams<'a> {
-    /// Guest memory for untrusted devices, like overlay pages.
-    pub shared_memory: Option<GuestMemory>,
     /// Guest memory for lower VTLs.
     pub gm: VtlArray<GuestMemory, 2>,
     /// The CPUID leaves to expose to the guest.
@@ -1288,12 +1267,20 @@ pub struct UhLateParams<'a> {
     pub crash_notification_send: mesh::Sender<VtlCrash>,
     /// The VM time source.
     pub vmtime: &'a VmTimeSource,
-    /// An object to call to change host visibility on guest memory.
-    pub isolated_memory_protector: Option<Arc<dyn ProtectIsolatedMemory>>,
     /// Dma client for shared visibility pages.
     pub shared_dma_client: Option<Arc<dyn DmaClient>>,
     /// Allocator for private visibility pages.
     pub private_dma_client: Option<Arc<dyn DmaClient>>,
+    /// Parameters for CVMs only.
+    pub cvm_params: Option<CvmLateParams>,
+}
+
+/// CVM-only parameters to [`UhProtoPartition::build`].
+pub struct CvmLateParams {
+    /// Guest memory for untrusted devices, like overlay pages.
+    pub shared_gm: GuestMemory,
+    /// An object to call to change host visibility on guest memory.
+    pub isolated_memory_protector: Arc<dyn ProtectIsolatedMemory>,
 }
 
 /// Trait for CVM-related protections on guest memory.
@@ -1610,7 +1597,7 @@ impl<'a> UhProtoPartition<'a> {
         #[cfg(guest_arch = "aarch64")]
         let (caps, cpuid) = (
             virt::aarch64::Aarch64PartitionCapabilities {},
-            Mutex::new(CpuidLeafSet::new(Vec::new())),
+            CpuidLeafSet::new(Vec::new()),
         );
 
         #[cfg(guest_arch = "x86_64")]
@@ -1635,9 +1622,6 @@ impl<'a> UhProtoPartition<'a> {
             isolation,
             params.hide_isolation,
         );
-
-        #[cfg(guest_arch = "x86_64")]
-        let cpuid = Mutex::new(cpuid);
 
         let untrusted_synic = if params.handle_synic {
             if matches!(isolation, IsolationType::Tdx) {
@@ -1670,11 +1654,18 @@ impl<'a> UhProtoPartition<'a> {
         };
 
         #[cfg(guest_arch = "x86_64")]
-        let cvm_state = cvm_cpuid
-            .map(|cpuid| {
-                Self::construct_cvm_state(&params, &late_params, &caps, cpuid, guest_vsm_available)
-            })
-            .transpose()?;
+        let cvm_state = if is_hardware_isolated {
+            Some(Self::construct_cvm_state(
+                &params,
+                late_params.cvm_params.unwrap(),
+                &caps,
+                cvm_cpuid.unwrap(),
+                guest_vsm_available,
+            )?)
+        } else {
+            None
+        };
+
         #[cfg(guest_arch = "aarch64")]
         let cvm_state = None;
 
@@ -1688,7 +1679,6 @@ impl<'a> UhProtoPartition<'a> {
             enter_modes: Mutex::new(enter_modes),
             enter_modes_atomic: u8::from(hcl::protocol::EnterModes::from(enter_modes)).into(),
             gm: late_params.gm,
-            shared_memory: late_params.shared_memory,
             cpuid,
             crash_notification_send: late_params.crash_notification_send,
             monitor_page: MonitorPage::new(),
@@ -1698,7 +1688,6 @@ impl<'a> UhProtoPartition<'a> {
             isolation,
             hide_isolation: params.hide_isolation,
             untrusted_synic,
-            isolated_memory_protector: late_params.isolated_memory_protector.clone(),
             shared_dma_client: late_params.shared_dma_client,
             private_dma_client: late_params.private_dma_client,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
@@ -1859,7 +1848,7 @@ impl UhProtoPartition<'_> {
     /// Constructs partition-wide CVM state.
     fn construct_cvm_state(
         params: &UhPartitionNewParams<'_>,
-        late_params: &UhLateParams<'_>,
+        late_params: CvmLateParams,
         caps: &PartitionCapabilities,
         cpuid: cvm_cpuid::CpuidResults,
         guest_vsm_available: bool,
@@ -1908,10 +1897,8 @@ impl UhProtoPartition<'_> {
             cpuid,
             tlb_locked_vps,
             vps,
-            shared_memory: late_params
-                .shared_memory
-                .clone()
-                .ok_or(Error::MissingSharedMemory)?,
+            shared_memory: late_params.shared_gm,
+            isolated_memory_protector: late_params.isolated_memory_protector,
             lapic,
             hv,
             guest_vsm: RwLock::new(GuestVsmState::from_availability(guest_vsm_available)),
@@ -2175,6 +2162,30 @@ impl UhPartitionInner {
             !write || self.monitor_page.gpa() != Some(gpa & !(HV_PAGE_SIZE - 1))
         } else {
             false
+        }
+    }
+
+    /// Gets the CPUID result, applying any necessary runtime modifications.
+    #[cfg(guest_arch = "x86_64")]
+    fn cpuid_result(&self, eax: u32, ecx: u32, default: &[u32; 4]) -> [u32; 4] {
+        let r = self.cpuid.result(eax, ecx, default);
+        if eax == hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES {
+            // Update the VSM access privilege.
+            //
+            // FUTURE: Investigate if this is really necessary for non-CVM--the
+            // hypervisor should already update this correctly.
+            //
+            // If it is only for CVM, then it should be moved to the
+            // CVM-specific cpuid fixups.
+            //
+            // TODO TDX GUEST VSM: Consider changing TLB hypercall flag too
+            let mut features = hvdef::HvFeatures::from_cpuid(r);
+            if self.backing_shared.guest_vsm_disabled() {
+                features.set_privileges(features.privileges().with_access_vsm(false));
+            }
+            features.into_cpuid()
+        } else {
+            r
         }
     }
 }

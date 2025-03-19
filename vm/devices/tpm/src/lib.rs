@@ -143,7 +143,7 @@ struct ControlArea {
 }
 
 // TODO: switch this over to open_enum!
-#[allow(dead_code)]
+#[expect(dead_code)]
 impl ControlArea {
     const OFFSET_OF_LOC_STATE: usize = 0x00;
     const OFFSET_OF_LOC_CTRL: usize = 0x08;
@@ -307,7 +307,7 @@ impl ms_tpm_20_ref::PlatformCallbacks for TpmPlatformCallbacks {
     }
 
     fn get_crypt_random(&mut self, buf: &mut [u8]) -> ms_tpm_20_ref::DynResult<usize> {
-        getrandom::getrandom(buf).expect("rng failure");
+        getrandom::fill(buf).expect("rng failure");
         Ok(buf.len())
     }
 
@@ -488,7 +488,7 @@ impl Tpm {
             // Create auth value for NV index password authorization.
             // The value needs to be preserved across live servicing.
             let mut auth_value = 0;
-            getrandom::getrandom(auth_value.as_mut_bytes()).expect("rng failure");
+            getrandom::fill(auth_value.as_mut_bytes()).expect("rng failure");
             self.auth_value = Some(auth_value);
 
             // Initialize `TpmKeys`.
@@ -1271,7 +1271,7 @@ mod io_port_interface {
         }
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     #[repr(u32)]
     #[derive(Debug, Copy, Clone)]
     pub enum TcgProtocol {

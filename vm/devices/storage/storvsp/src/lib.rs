@@ -13,6 +13,7 @@ pub mod protocol;
 pub mod test_helpers;
 
 #[cfg(not(feature = "fuzz_helpers"))]
+#[expect(dead_code)]
 mod protocol;
 #[cfg(not(feature = "fuzz_helpers"))]
 mod test_helpers;

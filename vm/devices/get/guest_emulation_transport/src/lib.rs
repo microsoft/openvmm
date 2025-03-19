@@ -64,7 +64,7 @@ pub mod test_utilities {
 
     pub const DEFAULT_SIZE: usize = 4194816; // 4 MB
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(test), expect(dead_code))]
     pub struct TestGet {
         pub client: GuestEmulationTransportClient,
         pub(crate) gen_id: Receiver<[u8; 16]>,

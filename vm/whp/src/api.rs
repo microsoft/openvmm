@@ -43,7 +43,7 @@ macro_rules! delayload {
             )*
         }
         pub mod is_supported {
-            #![allow(dead_code, non_snake_case)]
+            #![expect(dead_code, non_snake_case)]
             $(
                 $(#[$a])*
                 pub fn $name() -> bool {

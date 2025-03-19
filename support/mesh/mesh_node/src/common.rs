@@ -16,7 +16,7 @@ impl Uuid {
         // Generate a cryptographically random ID so that a malicious peer
         // cannot guess a port ID.
         let mut id = Self([0; 16]);
-        getrandom::getrandom(&mut id.0[..]).expect("rng failure");
+        getrandom::fill(&mut id.0[..]).expect("rng failure");
         id
     }
 }

@@ -124,7 +124,6 @@ use uevent::UeventListener;
 use underhill_attestation::AttestationType;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
-use user_driver::DmaClient;
 use virt::Partition;
 use virt::VpIndex;
 use virt::X86Partition;
@@ -1106,7 +1105,7 @@ fn round_up_to_2mb(bytes: u64) -> u64 {
     (bytes + (2 * 1024 * 1024) - 1) & !((2 * 1024 * 1024) - 1)
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 fn new_x86_topology(
     cpus: &[bootloader_fdt_parser::Cpu],
     x2apic: vm_topology::processor::x86::X2ApicState,
@@ -1136,7 +1135,7 @@ fn new_x86_topology(
         .context("failed to construct the processor topology")
 }
 
-#[cfg_attr(guest_arch = "x86_64", allow(dead_code))]
+#[cfg_attr(guest_arch = "x86_64", expect(dead_code))]
 fn new_aarch64_topology(
     gic: GicInfo,
     cpus: &[bootloader_fdt_parser::Cpu],
@@ -1465,22 +1464,23 @@ async fn new_underhill_vm(
         .context("failed to create prototype partition")?;
 
     let gm = underhill_mem::init(&underhill_mem::Init {
-        tp,
         processor_topology: &processor_topology,
         isolation,
         vtl0_alias_map_bit,
         vtom,
         mem_layout: &mem_layout,
         complete_memory_layout: &complete_memory_layout,
-        boot_init,
+        boot_init: boot_init.then_some(underhill_mem::BootInit {
+            tp,
+            vtl2_memory: runtime_params.vtl2_memory_map(),
+            accepted_regions: measured_vtl2_info.accepted_regions(),
+        }),
         shared_pool: &shared_pool,
         maximum_vtl: if proto_partition.guest_vsm_available() {
             Vtl::Vtl1
         } else {
             Vtl::Vtl0
         },
-        vtl2_memory: runtime_params.vtl2_memory_map(),
-        accepted_regions: measured_vtl2_info.accepted_regions(),
     })
     .await
     .context("failed to initialize memory")?;
@@ -1500,8 +1500,7 @@ async fn new_underhill_vm(
     let device_memory = if hide_isolation || !isolation.is_hardware_isolated() {
         gm.vtl0()
     } else {
-        gm.shared_memory()
-            .expect("isolated VMs should have shared memory")
+        &gm.cvm_memory().unwrap().shared_gm
     };
 
     let mut dma_manager = OpenhclDmaManager::new(
@@ -1731,12 +1730,14 @@ async fn new_underhill_vm(
             gm.vtl1().cloned().unwrap_or(GuestMemory::empty()),
         ]
         .into(),
-        shared_memory: gm.shared_memory().cloned(),
         #[cfg(guest_arch = "x86_64")]
         cpuid,
         crash_notification_send,
         vmtime: &vmtime_source,
-        isolated_memory_protector: gm.isolated_memory_protector()?,
+        cvm_params: gm.cvm_memory().map(|cvm_mem| virt_mshv_vtl::CvmLateParams {
+            shared_gm: cvm_mem.shared_gm.clone(),
+            isolated_memory_protector: cvm_mem.protector.clone(),
+        }),
         shared_dma_client: dma_manager
             .new_client(DmaClientParameters {
                 device_name: "partition-shared".into(),
@@ -1745,10 +1746,7 @@ async fn new_underhill_vm(
                 persistent_allocations: false,
             })
             .ok()
-            .map(|client| {
-                let client: Arc<dyn DmaClient> = client;
-                client
-            }),
+            .map(|client| client as _),
         private_dma_client: dma_manager
             .new_client(DmaClientParameters {
                 device_name: "partition-private".into(),
@@ -1757,10 +1755,7 @@ async fn new_underhill_vm(
                 persistent_allocations: false,
             })
             .ok()
-            .map(|client| {
-                let client: Arc<dyn DmaClient> = client;
-                client
-            }),
+            .map(|client| client as _),
     };
 
     let (partition, vps) = proto_partition
@@ -1876,7 +1871,7 @@ async fn new_underhill_vm(
         Some(0) | None => {
             let mut gen_id = [0; 16];
             tracing::trace!("Generation ID uninitialized by host.");
-            getrandom::getrandom(&mut gen_id).expect("rng failure");
+            getrandom::fill(&mut gen_id).expect("rng failure");
             gen_id
         }
         Some(n) => n.to_ne_bytes(),
@@ -2660,7 +2655,7 @@ async fn new_underhill_vm(
         // N.B. VmBus uses untrusted memory by default for relay channels, and uses additional
         //      trusted memory only for confidential channels offered by Underhill itself.
         let vmbus = VmbusServer::builder(&tp, synic.clone(), device_memory.clone())
-            .private_gm(gm.private_vtl0_memory().cloned())
+            .private_gm(gm.cvm_memory().map(|x| &x.private_vtl0_memory).cloned())
             .hvsock_notify(hvsock_notify)
             .server_relay(server_relay)
             .max_version(max_version)
@@ -3303,10 +3298,13 @@ async fn load_firmware(
     #[cfg(guest_arch = "x86_64")]
     let registers = {
         let crate::loader::VpContext::Vbs(mut registers) = vtl0_vp_context;
-        registers.extend(loader::common::compute_variable_mtrrs(
-            mem_layout,
-            partition.caps().physical_address_width,
-        ));
+        registers.extend(
+            loader::common::compute_variable_mtrrs(
+                mem_layout,
+                partition.caps().physical_address_width,
+            )
+            .context("Failed to compute variable mtrrs")?,
+        );
         registers
     };
     #[cfg(guest_arch = "aarch64")]

@@ -159,7 +159,7 @@ struct WhpVp {
     scrub_next: AtomicBool,
     vp_info: TargetVpInfo,
     waker: RwLock<Option<Waker>>,
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     scan_irr: AtomicBool,
 }
 

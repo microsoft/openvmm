@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::{F80, X86SegmentRegs, X87FpuInternalRegs};
+use super::F80;
+use super::X86SegmentRegs;
+use super::X87FpuInternalRegs;
 use core::convert::TryInto;
 use gdbstub::arch::Registers;
 

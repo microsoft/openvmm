@@ -92,6 +92,11 @@ pub struct Options {
     #[clap(long, requires("hv"))]
     pub get: bool,
 
+    /// Disable GET and related devices for using the OpenHCL paravisor, even
+    /// when --vtl2 is passed.
+    #[clap(long, conflicts_with("get"))]
+    pub no_get: bool,
+
     /// The disk to use for the GET VMGS.
     ///
     /// If this is not provided, then a 4MB RAM disk will be used.
@@ -1138,7 +1143,7 @@ impl FromStr for SmtConfigCli {
     }
 }
 
-#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn parse_x2apic(s: &str) -> Result<X2ApicConfig, &'static str> {
     let r = match s {
         "auto" => X2ApicConfig::Auto,

@@ -69,7 +69,8 @@ pub trait VmPartition: 'static + Send + Sync + InspectMut + ProtobufSaveRestore 
 struct PartitionUnitRunner {
     partition: Box<dyn VmPartition>,
     vp_set: VpSet,
-    started: bool,
+    unit_started: bool,
+    vp_stop_count: usize,
     needs_reset: bool,
     halt_reason: Option<HaltReason>,
     halt_request_recv: Receiver<InternalHaltReason>,
@@ -118,6 +119,8 @@ enum PartitionRequest {
     SetInitialPageVisibility(
         Rpc<Vec<(MemoryRange, PageVisibility)>, Result<(), InitialVisibilityError>>,
     ),
+    StopVps(Rpc<(), ()>),
+    StartVps,
 }
 
 pub struct PartitionUnitParams<'a> {
@@ -196,7 +199,8 @@ impl PartitionUnit {
         let mut runner = PartitionUnitRunner {
             partition: Box::new(partition),
             vp_set,
-            started: false,
+            unit_started: false,
+            vp_stop_count: 0,
             needs_reset: false,
             halt_reason: None,
             halt_request_recv: params.halt_request_recv.0,
@@ -243,6 +247,17 @@ impl PartitionUnit {
             .call(PartitionRequest::ClearHalt, ())
             .await
             .unwrap()
+    }
+
+    /// Temporarily stops the VPs, returning a guard that will resume them when
+    /// dropped.
+    pub async fn temporarily_stop_vps(&mut self) -> StopGuard {
+        self.req_send
+            .call(PartitionRequest::StopVps, ())
+            .await
+            .unwrap();
+
+        StopGuard(self.req_send.clone())
     }
 
     /// Sets the register state for the VPs for initial boot.
@@ -333,6 +348,17 @@ impl PartitionUnitRunner {
                         rpc.handle(async |vis| self.set_initial_page_visibility(vis).await)
                             .await
                     }
+                    PartitionRequest::StopVps(rpc) => {
+                        rpc.handle(async |()| {
+                            self.vp_set.stop().await;
+                            self.vp_stop_count += 1;
+                        })
+                        .await
+                    }
+                    PartitionRequest::StartVps => {
+                        self.vp_stop_count -= 1;
+                        self.try_start();
+                    }
                 },
                 #[cfg(feature = "gdb")]
                 Event::Debug(request) => {
@@ -341,7 +367,7 @@ impl PartitionUnitRunner {
             }
         }
 
-        if self.started {
+        if self.unit_started {
             self.vp_set.stop().await;
         }
     }
@@ -414,7 +440,7 @@ impl PartitionUnitRunner {
         vtl: Vtl,
         state: Arc<InitialRegs>,
     ) -> Result<(), InitialRegError> {
-        assert!(!self.started);
+        assert!(!self.unit_started || self.vp_stop_count > 0);
 
         // If this VM has been run before, then automatically scrub the target
         // VTL state.
@@ -438,7 +464,7 @@ impl PartitionUnitRunner {
         &mut self,
         visibility: Vec<(MemoryRange, PageVisibility)>,
     ) -> Result<(), InitialVisibilityError> {
-        assert!(!self.started);
+        assert!(!self.unit_started);
 
         self.partition
             .accept_initial_pages(visibility)
@@ -446,22 +472,31 @@ impl PartitionUnitRunner {
     }
 
     fn try_start(&mut self) {
-        if self.started && self.halt_reason.is_none() {
+        if self.unit_started && self.halt_reason.is_none() && self.vp_stop_count == 0 {
             self.vp_set.start();
         }
     }
 }
 
+#[must_use = "when dropped, the VPs will be resumed"]
+pub struct StopGuard(mesh::Sender<PartitionRequest>);
+
+impl Drop for StopGuard {
+    fn drop(&mut self) {
+        self.0.send(PartitionRequest::StartVps);
+    }
+}
+
 impl StateUnit for PartitionUnitRunner {
     async fn start(&mut self) {
-        self.started = true;
+        self.unit_started = true;
         self.needs_reset = true;
         self.try_start();
     }
 
     async fn stop(&mut self) {
         self.vp_set.stop().await;
-        self.started = false;
+        self.unit_started = false;
 
         // Now that the VM is stopped, flush any guest-initiated
         // power state change that may have raced with this request.

@@ -16,11 +16,11 @@ use inspect::InspectMut;
 use pci_core::msi::MsiInterruptSet;
 use user_driver::DeviceBacking;
 use user_driver::DmaClient;
-use user_driver::emulated::DeviceSharedMemory;
-use user_driver::emulated::EmulatedDevice;
-use user_driver::emulated::EmulatedDmaAllocator;
-use user_driver::emulated::Mapping;
 use user_driver::interrupt::DeviceInterrupt;
+use user_driver_emulated_mock::DeviceSharedMemory;
+use user_driver_emulated_mock::EmulatedDevice;
+use user_driver_emulated_mock::EmulatedDmaAllocator;
+use user_driver_emulated_mock::Mapping;
 
 /// An EmulatedDevice fuzzer that requires a working EmulatedDevice backend.
 #[derive(Inspect)]

@@ -27,11 +27,13 @@ base64.workspace = true
 base64-serde.workspace = true
 getrandom.workspace = true
 openssl.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 static_assertions.workspace = true
 thiserror.workspace = true
 time = { workspace = true, features = ["macros"] }
 zerocopy.workspace = true
+
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 disklayer_ram.workspace = true
 disk_backend.workspace = true
@@ -40,3 +42,7 @@ vmgs_format.workspace = true
 
 [lints]
 workspace = true
+
+[package.metadata.xtask.unused-deps]
+# Needed for the base64-serde macros.
+ignored = ["serde"]

@@ -1701,7 +1701,7 @@ impl<T: DefaultEncoding + Clone> DefaultEncoding for Arc<T> {
 // Derive an encoding for `Result`.
 #[derive(mesh_derive::Protobuf)]
 #[mesh(impl_for = "::core::result::Result")]
-#[allow(dead_code)]
+#[expect(dead_code)]
 enum ResultAsPayload<T, U> {
     #[mesh(transparent)]
     Ok(T),
@@ -1712,7 +1712,7 @@ enum ResultAsPayload<T, U> {
 // Derive an encoding for `Range`.
 #[derive(mesh_derive::Protobuf)]
 #[mesh(impl_for = "::core::ops::Range")]
-#[allow(dead_code)]
+#[expect(dead_code)]
 struct RangeAsPayload<T> {
     start: T,
     end: T,

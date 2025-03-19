@@ -29,7 +29,7 @@ pub struct CmdCtx {
 }
 
 /// Common trait implemented by all Cmd subcommands.
-trait Cmd: clap::Parser {
+trait Cmd: Parser {
     /// Run the Cmd.
     fn run(self, ctx: CmdCtx) -> anyhow::Result<()>;
 }

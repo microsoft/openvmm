@@ -115,7 +115,7 @@ impl SimpleFlowNode for Node {
         // with no additional dependencies
         if !matches!(
             target.operating_system,
-            target_lexicon::OperatingSystem::Darwin
+            target_lexicon::OperatingSystem::Darwin(_)
         ) {
             pre_build_deps.push(
                 ctx.reqv(|v| crate::init_cross_build::Request {
@@ -185,7 +185,7 @@ impl SimpleFlowNode for Node {
                 // packages requiring openssl-sys won't cross compile for macos
                 if matches!(
                     target.operating_system,
-                    target_lexicon::OperatingSystem::Darwin
+                    target_lexicon::OperatingSystem::Darwin(_)
                 ) {
                     exclude.extend(
                         ["openssl_kdf", "vmgs_lib", "block_crypto", "disk_crypt"].map(|x| x.into()),
@@ -198,7 +198,7 @@ impl SimpleFlowNode for Node {
 
         let extra_env = if matches!(
             target.operating_system,
-            target_lexicon::OperatingSystem::Darwin
+            target_lexicon::OperatingSystem::Darwin(_)
         ) {
             Some(vec![("SPARSE_MMAP_NO_BUILD".into(), "1".into())])
         } else {

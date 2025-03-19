@@ -430,7 +430,7 @@ mod tests {
     #[async_test]
     async fn named_pipe_server(driver: DefaultDriver) {
         let mut path = [0; 16];
-        getrandom::getrandom(&mut path).unwrap();
+        getrandom::fill(&mut path).unwrap();
         let path = format!(r#"\\.\pipe\{:0x}"#, u128::from_ne_bytes(path));
         let server = NamedPipeServer::create(&path).unwrap();
         let mut c;

@@ -3,7 +3,7 @@
 
 //! Integration tests for hvlite's TTRPC interface.
 
-#![cfg_attr(guest_arch = "aarch64", allow(unused_imports))]
+#![cfg(guest_arch = "x86_64")]
 
 use anyhow::Context;
 use guid::Guid;
@@ -18,15 +18,13 @@ use std::io::Read;
 use std::process::Stdio;
 use unix_socket::UnixStream;
 
-#[cfg(guest_arch = "x86_64")]
 petri::test!(test_ttrpc_interface, |resolver| {
     let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
-    let kernel = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64);
-    let initrd = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64);
+    let kernel = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_NATIVE);
+    let initrd = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_NATIVE);
     [openvmm.erase(), kernel.erase(), initrd.erase()]
 });
 
-#[cfg(guest_arch = "x86_64")]
 fn test_ttrpc_interface(
     params: petri::PetriTestParams<'_>,
     [openvmm, kernel_path, initrd_path]: [ResolvedArtifact; 3],

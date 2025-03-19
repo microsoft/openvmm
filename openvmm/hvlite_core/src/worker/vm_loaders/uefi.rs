@@ -22,6 +22,8 @@ pub enum Error {
     Firmware(#[source] std::io::Error),
     #[error("uefi loader error")]
     Loader(#[source] loader::uefi::Error),
+    #[error("UEFI requires at least two MMIO ranges")]
+    UnsupportedMmio,
 }
 
 pub struct UefiLoadSettings {
@@ -49,7 +51,9 @@ pub fn load_uefi(
     srat: &[u8],
     pptt: Option<&[u8]>,
 ) -> Result<Vec<Register>, Error> {
-    assert!(mem_layout.mmio().len() >= 2, "UEFI expects 2 MMIO gaps");
+    if mem_layout.mmio().len() < 2 {
+        return Err(Error::UnsupportedMmio);
+    }
 
     let mut loaded_image;
     let image = {
@@ -62,7 +66,7 @@ pub fn load_uefi(
     };
 
     let mut entropy = [0; 64];
-    getrandom::getrandom(&mut entropy).expect("rng failure");
+    getrandom::fill(&mut entropy).expect("rng failure");
 
     let memory_map: Vec<_> = mem_layout
         .ram()

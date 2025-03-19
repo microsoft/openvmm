@@ -101,7 +101,7 @@ def find_llvm_tool(name):
 
 
 def find_midlrt(sdk):
-    midlrt = f'{sdk['bin']}/midlrt.exe'
+    midlrt = f"{sdk['bin']}/midlrt.exe"
     return os.path.normpath(midlrt)
 
 

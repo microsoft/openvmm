@@ -22,8 +22,8 @@ const SUPPRESS_REASON_ONEOFF_GUEST_ARCH_IMPL: &str = "oneoff-guest-arch-impl";
 const SUPPRESS_REASON_ONEOFF_VIRT_HVF: &str = "oneoff-virt-hvf";
 /// One off - used as part of flowey CI infra
 const SUPPRESS_REASON_ONEOFF_FLOWEY: &str = "oneoff-flowey";
-/// One off - used by petri to select a native openvmm executable
-const SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_OPENVMM: &str = "oneoff-petri-native-openvmm";
+/// One off - used by petri to select native test dependencies
+const SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_TEST_DEPS: &str = "oneoff-petri-native-test-deps";
 
 fn has_suppress(s: &str) -> bool {
     let Some((_, after)) = s.split_once(SUPPRESS) else {
@@ -40,7 +40,7 @@ fn has_suppress(s: &str) -> bool {
             | SUPPRESS_REASON_ONEOFF_GUEST_ARCH_IMPL
             | SUPPRESS_REASON_ONEOFF_VIRT_HVF
             | SUPPRESS_REASON_ONEOFF_FLOWEY
-            | SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_OPENVMM
+            | SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_TEST_DEPS
     );
 
     if !ok {
@@ -74,7 +74,7 @@ pub fn check_cfg_target_arch(path: &Path, _fix: bool) -> anyhow::Result<()> {
     //
     // openhcl_boot uses target_arch liberally, since it runs in VTL2 entirely
     // in-service to the VTL2 linux kernel, which will always be native-arch.
-    // Similar for the sidecar kernel. And minimal_rt provides the
+    // Similar for the sidecar kernel and TMKs. And minimal_rt provides the
     // (arch-specific) runtime for both of them.
     //
     // safe_intrinsics performs architecture-specific operations that require
@@ -87,6 +87,7 @@ pub fn check_cfg_target_arch(path: &Path, _fix: bool) -> anyhow::Result<()> {
         || path.starts_with("openhcl/minimal_rt")
         || path.starts_with("openhcl/sidecar")
         || path.starts_with("support/safe_intrinsics")
+        || path.starts_with("tmk/simple_tmk")
         || path.starts_with("vm/whp")
         || path.starts_with("vm/kvm")
     {

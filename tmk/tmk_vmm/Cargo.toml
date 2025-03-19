@@ -1,0 +1,50 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "tmk_vmm"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tmk_protocol.workspace = true
+
+hvdef.workspace = true
+loader.workspace = true
+guestmem.workspace = true
+page_table.workspace = true
+virt.workspace = true
+vm_topology.workspace = true
+vmcore.workspace = true
+vm_loader.workspace = true
+x86defs.workspace = true
+
+pal_async.workspace = true
+mesh.workspace = true
+tracing_helpers.workspace = true
+
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+fs-err.workspace = true
+futures.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+virt_whp.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pal_uring.workspace = true
+underhill_mem.workspace = true
+virt_kvm.workspace = true
+virt_mshv.workspace = true
+virt_mshv_vtl.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+virt_hvf.workspace = true
+
+[build-dependencies]
+build_rs_guest_arch.workspace = true
+
+[lints]
+workspace = true

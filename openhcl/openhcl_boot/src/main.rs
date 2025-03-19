@@ -244,7 +244,7 @@ fn build_kernel_command_line(
 
     // If we're isolated we can't trust the host-provided cmdline
     if can_trust_host {
-        let old_cmdline = partition_info.cmdline.as_ref();
+        let old_cmdline = &partition_info.cmdline;
 
         // HACK: See if we should set the vmbus connection id via kernel
         // commandline. It may already be set, and we don't want to set it again.
@@ -376,7 +376,7 @@ fn reserved_memory_regions(
     flattened
 }
 
-#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(target_arch = "x86_64"), expect(dead_code))]
 mod x86_boot {
     use crate::PageAlign;
     use crate::ReservedMemoryType;

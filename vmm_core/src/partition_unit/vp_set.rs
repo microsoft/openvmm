@@ -686,7 +686,6 @@ impl Drop for Halted<'_> {
 struct Inner {
     #[inspect(flatten)]
     halt: Arc<Halt>,
-    #[cfg_attr(not(feature = "gdb"), allow(dead_code))]
     #[inspect(skip)]
     vtl_guest_memory: [Option<GuestMemory>; NUM_VTLS],
 }
@@ -764,7 +763,7 @@ impl VpSet {
     }
 
     /// Initiates a halt to the VPs.
-    #[cfg_attr(not(feature = "gdb"), allow(dead_code))]
+    #[cfg_attr(not(feature = "gdb"), expect(dead_code))]
     pub fn halt(&mut self, reason: HaltReason) {
         self.inner.halt.halt(reason);
     }

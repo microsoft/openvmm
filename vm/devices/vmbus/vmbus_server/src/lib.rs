@@ -217,8 +217,9 @@ pub struct OfferInfo {
 }
 
 #[derive(mesh::MeshPayload)]
-pub enum OfferRequest {
+pub(crate) enum OfferRequest {
     Offer(FailableRpc<OfferInfo, ()>),
+    ForceReset(Rpc<(), ()>),
 }
 
 impl Inspect for VmbusServer {
@@ -502,7 +503,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
             external_server_send: self.external_server,
             channel_bitmap: None,
             shared_event_port: None,
-            reset_done: None,
+            reset_done: Vec::new(),
             enable_mnf: self.enable_mnf,
         };
 
@@ -646,7 +647,7 @@ struct ServerTaskInner {
     relay_send: mesh::Sender<ModifyRelayRequest>,
     channel_bitmap: Option<Arc<ChannelBitmap>>,
     shared_event_port: Option<Box<dyn Send>>,
-    reset_done: Option<Rpc<(), ()>>,
+    reset_done: Vec<Rpc<(), ()>>,
     enable_mnf: bool,
 }
 
@@ -911,11 +912,7 @@ impl ServerTask {
     fn handle_request(&mut self, request: VmbusRequest) {
         tracing::debug!(?request, "handle_request");
         match request {
-            VmbusRequest::Reset(rpc) => {
-                assert!(self.inner.reset_done.is_none());
-                self.inner.reset_done = Some(rpc);
-                self.server.with_notifier(&mut self.inner).reset();
-            }
+            VmbusRequest::Reset(rpc) => self.handle_reset(rpc),
             VmbusRequest::Inspect(deferred) => {
                 deferred.respond(|resp| {
                     resp.field("message_port", &self.inner.message_port)
@@ -973,6 +970,14 @@ impl ServerTask {
         }
     }
 
+    fn handle_reset(&mut self, rpc: Rpc<(), ()>) {
+        let needs_reset = self.inner.reset_done.is_empty();
+        self.inner.reset_done.push(rpc);
+        if needs_reset {
+            self.server.with_notifier(&mut self.inner).reset();
+        }
+    }
+
     fn handle_relay_response(&mut self, response: ModifyConnectionResponse) {
         self.server
             .with_notifier(&mut self.inner)
@@ -1027,9 +1032,9 @@ impl ServerTask {
             // while the VM is running. In other cases, leave the events in
             // their respective queues.
 
+            let running_not_resetting = self.inner.running && self.inner.reset_done.is_empty();
             let mut external_requests = OptionFuture::from(
-                self.inner
-                    .running
+                running_not_resetting
                     .then(|| {
                         self.external_requests
                             .as_mut()
@@ -1042,7 +1047,7 @@ impl ServerTask {
             let has_pending_messages = self.server.has_pending_messages();
             let message_port = self.inner.message_port.as_mut();
             let mut flush_pending_messages =
-                OptionFuture::from((self.inner.running && has_pending_messages).then(|| {
+                OptionFuture::from((running_not_resetting && has_pending_messages).then(|| {
                     poll_fn(|cx| {
                         self.server.poll_flush_pending_messages(|msg| {
                             message_port.poll_post_message(cx, VMBUS_MESSAGE_TYPE, msg.data())
@@ -1055,7 +1060,7 @@ impl ServerTask {
             // too many hvsock requests outstanding. This puts a bound on the resources used by the
             // guest.
             let mut message_recv = OptionFuture::from(
-                (self.inner.running
+                (running_not_resetting
                     && !has_pending_messages
                     && self.inner.hvsock_requests < MAX_CONCURRENT_HVSOCK_REQUESTS)
                     .then(|| self.message_recv.select_next_some()),
@@ -1063,13 +1068,13 @@ impl ServerTask {
 
             // Accept channel responses until stopped or when resetting.
             let mut channel_response = OptionFuture::from(
-                (self.inner.running || self.inner.reset_done.is_some())
+                (self.inner.running || !self.inner.reset_done.is_empty())
                     .then(|| self.inner.channel_responses.select_next_some()),
             );
 
             // Accept hvsock connect responses while the VM is running.
             let mut hvsock_response =
-                OptionFuture::from(self.inner.running.then(|| hvsock_recv.select_next_some()));
+                OptionFuture::from(running_not_resetting.then(|| hvsock_recv.select_next_some()));
 
             futures::select! { // merge semantics
                 r = self.task_recv.recv().fuse() => {
@@ -1084,6 +1089,9 @@ impl ServerTask {
                         OfferRequest::Offer(rpc) => {
                             rpc.handle_failable_sync(|request| { self.handle_offer(request) })
                         },
+                        OfferRequest::ForceReset(rpc) => {
+                            self.handle_reset(rpc);
+                        }
                     }
                 }
                 r = self.server_request_recv.select_next_some() => {
@@ -1518,8 +1526,9 @@ impl Notifier for ServerTaskInner {
         }
 
         self.unreserve_channels();
-        let done = self.reset_done.take().expect("must have requested reset");
-        done.complete(());
+        for done in self.reset_done.drain(..) {
+            done.complete(());
+        }
     }
 
     fn unload_complete(&mut self) {
@@ -1833,6 +1842,15 @@ impl VmbusServerControl {
         ))
     }
 
+    /// Force reset all channels and protocol state, without requiring the
+    /// server to be paused.
+    pub async fn force_reset(&self) -> anyhow::Result<()> {
+        self.send
+            .call(OfferRequest::ForceReset, ())
+            .await
+            .context("vmbus server is gone")
+    }
+
     async fn offer(&self, request: OfferInput) -> anyhow::Result<OfferResources> {
         let mut offer_info = OfferInfo {
             params: request.params.into(),
@@ -1946,6 +1964,7 @@ mod tests {
     use parking_lot::Mutex;
     use protocol::UserDefinedData;
     use std::time::Duration;
+    use test_with_tracing::test;
     use vmbus_channel::bus::OfferParams;
     use vmbus_core::protocol::ChannelId;
     use vmbus_core::protocol::VmbusMessage;
@@ -2043,7 +2062,7 @@ mod tests {
 
             // Return pending 25% of the time.
             let mut pending_chance = [0; 1];
-            getrandom::getrandom(&mut pending_chance).unwrap();
+            getrandom::fill(&mut pending_chance).unwrap();
             if pending_chance[0] % 4 == 0 {
                 let mut timer = PolledTimer::new(self.spawner.as_ref());
                 let deadline = Instant::now() + Duration::from_millis(10);

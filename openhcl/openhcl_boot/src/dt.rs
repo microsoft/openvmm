@@ -53,7 +53,7 @@ mod aarch64 {
 #[derive(Debug)]
 pub enum DtError {
     // Field is stored solely for logging via debug, not actually dead.
-    Fdt(#[allow(dead_code)] fdt::builder::Error),
+    Fdt(#[expect(dead_code)] fdt::builder::Error),
 }
 
 impl From<fdt::builder::Error> for DtError {

@@ -245,7 +245,9 @@ pub mod private {
                 fn do_not_impl_this_manually(&self) {}
             }
             const _: () = {
-                use $crate::save_restore::private::{SAVED_STATE_ROOTS, linkme, protofile};
+                use $crate::save_restore::private::SAVED_STATE_ROOTS;
+                use $crate::save_restore::private::linkme;
+                use $crate::save_restore::private::protofile;
 
                 #[linkme::distributed_slice(SAVED_STATE_ROOTS)]
                 #[linkme(crate = linkme)]
