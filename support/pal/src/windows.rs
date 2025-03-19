@@ -5,7 +5,7 @@
 // UNSAFETY: Calls to Win32 functions to handle delay loading, interacting
 // with low level primitives, and memory management.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 pub mod afd;
 pub mod alpc;

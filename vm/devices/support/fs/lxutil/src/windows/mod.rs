@@ -3,7 +3,7 @@
 
 // UNSAFETY: Calling into lxutil external dll.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 mod macros;
 

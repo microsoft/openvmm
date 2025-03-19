@@ -7,7 +7,7 @@
 #![expect(missing_docs)]
 // UNSAFETY: Calling WHP APIs and manually managing memory.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 mod apic;
 pub mod device;

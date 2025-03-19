@@ -5,7 +5,7 @@
 #![cfg(windows)]
 // UNSAFETY: Calling WHP APIs.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 pub mod abi;
 mod api;
