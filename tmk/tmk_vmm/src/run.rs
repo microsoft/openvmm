@@ -194,11 +194,25 @@ impl CpuIo for IoHandler<'_> {
         match address {
             tmk_protocol::TMK_ADDRESS_LOG => {
                 let p = widen(data);
-                let [gpa, len]: [u64; 2] = self.guest_memory.read_plain(p).expect("BUGBUG");
-                let mut s = vec![0; len as usize];
-                self.guest_memory.read_at(gpa, &mut s).expect("BUGBUG");
-                let s = String::from_utf8(s).expect("BUGBUG");
-                tracing::info!(target: "tmk", message = s);
+                let r = (|| {
+                    let [gpa, len]: [u64; 2] = self.guest_memory.read_plain(p)?;
+                    let mut s = vec![0; len as usize];
+                    self.guest_memory.read_at(gpa, &mut s)?;
+                    let s = String::from_utf8(s)?;
+                    anyhow::Ok(s)
+                })();
+                match r {
+                    Ok(s) => {
+                        tracing::info!(target: "tmk", message = s);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = e.as_ref() as &dyn std::error::Error,
+                            p,
+                            "failed to read log"
+                        );
+                    }
+                }
             }
             tmk_protocol::TMK_ADDRESS_COMPLETE => {
                 self.event_send.send(VpEvent::TestComplete);
