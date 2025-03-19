@@ -666,5 +666,5 @@ pub trait SynicMonitor: Synic {
     fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Sync + Send>;
 
     /// Sets the GPA of the monitor page currently in use.
-    fn set_monitor_page(&self, gpa: Option<u64>) -> anyhow::Result<()>;
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()>;
 }

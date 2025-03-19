@@ -196,11 +196,11 @@ impl SynicPortAccess for SynicPorts {
 }
 
 impl SynicMonitorAccess for SynicPorts {
-    fn set_monitor_page(&self, gpa: Option<MonitorPageGpas>) -> anyhow::Result<()> {
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<MonitorPageGpas>) -> anyhow::Result<()> {
         self.partition
             .monitor_support()
             .unwrap()
-            .set_monitor_page(gpa.map(|mp| mp.child_to_parent))
+            .set_monitor_page(vtl, gpa.map(|mp| mp.child_to_parent))
     }
 }
 
