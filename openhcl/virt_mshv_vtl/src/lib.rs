@@ -342,6 +342,15 @@ impl From<EnterMode> for hcl::protocol::EnterMode {
 
 #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
+struct GuestVsmVpState {
+    /// The pending event that VTL 1 wants to inject into VTL 0. Injected on
+    /// next exit to VTL 0.
+    #[inspect(debug)]
+    vtl0_exit_pending_event: Option<hvdef::HvX64PendingExceptionEvent>,
+}
+
+#[cfg(guest_arch = "x86_64")]
+#[derive(Inspect)]
 /// VP state for CVMs.
 struct UhCvmVpState {
     // Allocation handle for direct overlays
@@ -353,12 +362,8 @@ struct UhCvmVpState {
     hv: VtlArray<ProcessorVtlHv, 2>,
     /// LAPIC state.
     lapics: VtlArray<LapicState, 2>,
-    /// Whether VTL 1 has been enabled on this VP.
-    vtl1_enabled: bool,
-    /// The pending event that VTL 1 wants to inject into VTL 0. Injected on
-    /// next exit to VTL 0.
-    #[inspect(with = "|x| x.map(|e| e.event_type())")]
-    vtl0_exit_pending_exception: Option<hvdef::HvX64PendingExceptionEvent>,
+    /// Guest VSM state for this vp. Some when VTL 1 is enabled.
+    vtl1: Option<GuestVsmVpState>,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -401,8 +406,7 @@ impl UhCvmVpState {
             exit_vtl: GuestVtl::Vtl0,
             hv,
             lapics,
-            vtl1_enabled: false,
-            vtl0_exit_pending_exception: None,
+            vtl1: None,
         })
     }
 }

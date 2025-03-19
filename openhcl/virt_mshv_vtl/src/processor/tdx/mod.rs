@@ -541,6 +541,18 @@ impl HardwareIsolatedBacking for TdxBacked {
             shared,
         }
     }
+
+    fn pending_event_vector(_this: &UhProcessor<'_, Self>, _vtl: GuestVtl) -> Option<u8> {
+        todo!()
+    }
+
+    fn set_pending_exception(
+        _this: &mut UhProcessor<'_, Self>,
+        _vtl: GuestVtl,
+        _event: HvX64PendingExceptionEvent,
+    ) {
+        todo!()
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.
@@ -1360,10 +1372,6 @@ impl UhProcessor<'_, TdxBacked> {
         let kernel_known_state =
             matches!(activity, MpState::Running | MpState::Halted | MpState::Idle);
         let halted_other = tlb_halt || !kernel_known_state;
-
-        // TODO TDX GUEST VSM: if there's an event pending, clear any
-        // halts or idles, etc and exit to the guest (should still
-        // halt for TLB lock)
 
         self.runner
             .set_halted(activity != MpState::Running || tlb_halt);

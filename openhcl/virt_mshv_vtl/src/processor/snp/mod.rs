@@ -234,6 +234,32 @@ impl HardwareIsolatedBacking for SnpBacked {
             shared,
         }
     }
+
+    fn pending_event_vector(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> Option<u8> {
+        let event_inject = this.runner.vmsa(vtl).event_inject();
+        if event_inject.valid() {
+            Some(event_inject.vector())
+        } else {
+            None
+        }
+    }
+
+    fn set_pending_exception(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        event: HvX64PendingExceptionEvent,
+    ) {
+        assert!(event.vector() < (u8::MAX as u16));
+
+        let inject_info = SevEventInjectInfo::new()
+            .with_valid(true)
+            .with_deliver_error_code(event.deliver_error_code())
+            .with_error_code(event.error_code())
+            .with_vector(event.vector() as u8)
+            .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT);
+
+        this.runner.vmsa_mut(vtl).set_event_inject(inject_info);
+    }
 }
 
 /// Partition-wide shared data for SNP VPs.
@@ -457,12 +483,12 @@ impl BackingPrivate for SnpBacked {
     }
 
     fn deliver_exit_pending_event(this: &mut UhProcessor<'_, Self>) {
-        this.hcvm_deliver_exit_pending_event();
+        this.cvm_deliver_exit_pending_event();
     }
 
     fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>) {
         let vtl0_vmsa = this.runner.vmsa(GuestVtl::Vtl0);
-        let vtl1_vmsa = if this.backing.cvm_state().vtl1_enabled {
+        let vtl1_vmsa = if this.backing.cvm_state().vtl1.is_some() {
             Some(this.runner.vmsa(GuestVtl::Vtl1))
         } else {
             None
@@ -920,10 +946,6 @@ impl UhProcessor<'_, SnpBacked> {
 
         self.unlock_tlb_lock(Vtl::Vtl2);
         let tlb_halt = self.should_halt_for_tlb_unlock(next_vtl);
-
-        // TODO GUEST VSM: if there's an event pending, clear any
-        // halts or idles, etc and exit to the guest (should still
-        // halt for TLB lock)
 
         let halt = self.backing.cvm.lapics[next_vtl].activity != MpState::Running || tlb_halt;
 
@@ -1557,7 +1579,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
 
         let exception = HvX64PendingExceptionEvent::from(u128::from(event_info.reg_0));
 
-        self.vp.hcvm_inject_pending_exception(self.vtl, exception);
+        self.vp.cvm_inject_pending_exception(self.vtl, exception);
     }
 
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {
@@ -1779,37 +1801,12 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
     fn activity(&mut self) -> Result<vp::Activity, Self::Error> {
         let lapic = &self.vp.backing.cvm.lapics[self.vtl];
 
-        let event_inject = self.vp.runner.vmsa(self.vtl).event_inject();
-        let pending_event = if event_inject.valid() {
-            match event_inject.interruption_type() {
-                x86defs::snp::SEV_INTR_TYPE_EXCEPT => Some(vp::PendingEvent::Exception {
-                    vector: event_inject.vector(),
-                    error_code: if event_inject.deliver_error_code() {
-                        Some(event_inject.error_code())
-                    } else {
-                        None
-                    },
-                    parameter: 0, // TODO SNP
-                }),
-                x86defs::snp::SEV_INTR_TYPE_EXT => Some(vp::PendingEvent::ExtInt {
-                    vector: event_inject.vector(),
-                }),
-                _ => {
-                    // TODO SNP. As of yet, consuming code doesn't need to know
-                    // about other types, but they may exist (e.g. NMIs).
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
         Ok(vp::Activity {
             mp_state: lapic.activity,
             nmi_pending: lapic.nmi_pending,
-            nmi_masked: false,       // TODO SNP
-            interrupt_shadow: false, // TODO SNP
-            pending_event,
+            nmi_masked: false,          // TODO SNP
+            interrupt_shadow: false,    // TODO SNP
+            pending_event: None,        // TODO SNP
             pending_interruption: None, // TODO SNP
         })
     }
@@ -1818,41 +1815,14 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         let &vp::Activity {
             mp_state,
             nmi_pending,
-            nmi_masked: _,       // TODO SNP
-            interrupt_shadow: _, // TODO SNP
-            pending_event,
+            nmi_masked: _,           // TODO SNP
+            interrupt_shadow: _,     // TODO SNP
+            pending_event: _,        // TODO SNP
             pending_interruption: _, // TODO SNP
         } = value;
         let lapic = &mut self.vp.backing.cvm.lapics[self.vtl];
         lapic.activity = mp_state;
         lapic.nmi_pending = nmi_pending;
-
-        if let Some(pending_event) = pending_event {
-            let mut event_inject = SevEventInjectInfo::new().with_valid(true);
-            match pending_event {
-                vp::PendingEvent::Exception {
-                    vector,
-                    error_code,
-                    parameter: _, // TODO SNP
-                } => {
-                    event_inject = event_inject
-                        .with_vector(vector)
-                        .with_error_code(error_code.unwrap_or_default())
-                        .with_deliver_error_code(error_code.is_some())
-                        .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT);
-                }
-                vp::PendingEvent::ExtInt { vector } => {
-                    event_inject = event_inject
-                        .with_vector(vector)
-                        .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXT);
-                }
-            }
-
-            self.vp
-                .runner
-                .vmsa_mut(self.vtl)
-                .set_event_inject(event_inject);
-        }
 
         Ok(())
     }

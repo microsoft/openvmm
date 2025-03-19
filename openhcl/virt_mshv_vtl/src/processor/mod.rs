@@ -296,6 +296,15 @@ trait HardwareIsolatedBacking: Backing {
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
     ) -> TranslationRegisters;
+    /// Vector of the event that is pending injection into the guest state, if
+    /// valid.
+    fn pending_event_vector(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> Option<u8>;
+    /// Sets the pending exception for the guest state.
+    fn set_pending_exception(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        event: hvdef::HvX64PendingExceptionEvent,
+    );
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]

@@ -565,7 +565,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     }
 
     fn set_vtl0_pending_event(&mut self, event: HvX64PendingExceptionEvent) -> HvResult<()> {
-        if event.event_pending() {
+        let set_event = if event.event_pending() {
             // Only exception events are supported.
             if event.event_type() != hvdef::HV_X64_PENDING_EVENT_EXCEPTION {
                 return Err(HvError::InvalidRegisterValue);
@@ -575,29 +575,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             // excludes exceptions not common to Intel/AMD platforms
             // (#VE, #VC, #SX, #HV are excluded).
 
-            if (event.vector() > (x86defs::Exception::CONTROL_PROTECTION_EXCEPTION.0 as u16))
-                || !matches!(
-                    x86defs::Exception(event.vector() as u8),
-                    x86defs::Exception::DIVIDE_ERROR
-                        | x86defs::Exception::DEBUG
-                        | x86defs::Exception::BREAKPOINT
-                        | x86defs::Exception::OVERFLOW
-                        | x86defs::Exception::BOUND_RANGE_EXCEEDED
-                        | x86defs::Exception::INVALID_OPCODE
-                        | x86defs::Exception::DEVICE_NOT_AVAILABLE
-                        | x86defs::Exception::DOUBLE_FAULT
-                        | x86defs::Exception::INVALID_TSS
-                        | x86defs::Exception::SEGMENT_NOT_PRESENT
-                        | x86defs::Exception::STACK_SEGMENT_FAULT
-                        | x86defs::Exception::GENERAL_PROTECTION_FAULT
-                        | x86defs::Exception::PAGE_FAULT
-                        | x86defs::Exception::FLOATING_POINT_EXCEPTION
-                        | x86defs::Exception::ALIGNMENT_CHECK
-                        | x86defs::Exception::MACHINE_CHECK
-                        | x86defs::Exception::SIMD_FLOATING_POINT_EXCEPTION
-                        | x86defs::Exception::CONTROL_PROTECTION_EXCEPTION
-                )
-            {
+            if !x86defs::Exception::architectural(event.vector()) {
                 return Err(HvError::InvalidRegisterValue);
             }
 
@@ -605,25 +583,23 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             // exceptions.
 
             if event.deliver_error_code()
-                && !matches!(
-                    x86defs::Exception(event.vector() as u8),
-                    x86defs::Exception::DOUBLE_FAULT
-                        | x86defs::Exception::INVALID_TSS
-                        | x86defs::Exception::SEGMENT_NOT_PRESENT
-                        | x86defs::Exception::STACK_SEGMENT_FAULT
-                        | x86defs::Exception::GENERAL_PROTECTION_FAULT
-                        | x86defs::Exception::PAGE_FAULT
-                        | x86defs::Exception::ALIGNMENT_CHECK
-                        | x86defs::Exception::CONTROL_PROTECTION_EXCEPTION
-                )
+                && !x86defs::Exception::architecturally_has_error_code(event.vector() as u8)
             {
                 return Err(HvError::InvalidRegisterValue);
             }
 
-            self.vp.backing.cvm_state_mut().vtl0_exit_pending_exception = Some(event);
+            Some(event)
         } else {
-            self.vp.backing.cvm_state_mut().vtl0_exit_pending_exception = None;
-        }
+            None
+        };
+
+        self.vp
+            .backing
+            .cvm_state_mut()
+            .vtl1
+            .as_mut()
+            .unwrap()
+            .vtl0_exit_pending_event = set_event;
 
         Ok(())
     }
@@ -835,7 +811,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
                 self.intercepted_vtl
             );
             false
-        } else if !self.vp.backing.cvm_state().vtl1_enabled {
+        } else if self.vp.backing.cvm_state().vtl1.is_none() {
             // VTL 1 must be active on the vp
             tracelimit::warn_ratelimited!("vtl call not allowed because vtl 1 is not enabled");
             false
@@ -1569,7 +1545,9 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             if vtl == GuestVtl::Vtl1 {
                 assert!(*self.cvm_vp_inner().vtl1_enable_called.lock());
                 if let InitialVpContextOperation::EnableVpVtl = start_enable_vtl_state.operation {
-                    self.backing.cvm_state_mut().vtl1_enabled = true;
+                    self.backing.cvm_state_mut().vtl1 = Some(crate::GuestVsmVpState {
+                        vtl0_exit_pending_event: None,
+                    });
                 }
             }
 
@@ -1589,7 +1567,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             if let InitialVpContextOperation::StartVp = start_enable_vtl_state.operation {
                 match vtl {
                     GuestVtl::Vtl0 => {
-                        if self.backing.cvm_state().vtl1_enabled {
+                        if self.backing.cvm_state().vtl1.is_some() {
                             // When starting a VP targeting VTL on a
                             // hardware confidential VM, if VTL 1 has been
                             // enabled, switch to it (the highest enabled
@@ -1619,7 +1597,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         Ok(())
     }
 
-    pub(crate) fn hcvm_deliver_exit_pending_event(&mut self) {
+    pub(crate) fn cvm_deliver_exit_pending_event(&mut self) {
         let next_vtl = self.backing.cvm_state().exit_vtl;
 
         // Currently, the only pending event that needs to be delivered on exit
@@ -1633,86 +1611,73 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             // be rewound.
             //
             // TODO GUEST VSM: Memory intercept handling.
-            if let Some(exception) = self.backing.cvm_state().vtl0_exit_pending_exception {
-                self.hcvm_inject_pending_exception(next_vtl, exception);
-            }
 
-            self.backing.cvm_state_mut().vtl0_exit_pending_exception = None;
+            let pending_event = self
+                .backing
+                .cvm_state()
+                .vtl1
+                .as_ref()
+                .and_then(|vtl1| vtl1.vtl0_exit_pending_event);
+
+            if let Some(pending_event) = pending_event {
+                self.cvm_inject_pending_exception(next_vtl, pending_event);
+
+                // The pending event takes precedence over any halts or idles
+                // (but not halts for the TLB lock).
+                self.backing.cvm_state_mut().lapics[next_vtl].activity = virt::vp::MpState::Running;
+
+                self.backing
+                    .cvm_state_mut()
+                    .vtl1
+                    .as_mut()
+                    .unwrap()
+                    .vtl0_exit_pending_event = None;
+            }
         }
     }
 
     /// Injects the exception into the VP state, combining it as necessary with
     /// any event that's already there.
-    pub(crate) fn hcvm_inject_pending_exception(
+    pub(crate) fn cvm_inject_pending_exception(
         &mut self,
         vtl: GuestVtl,
         event: HvX64PendingExceptionEvent,
     ) {
-        let current_activity = self.access_state(vtl.into()).activity().unwrap();
-
         let double_fault = {
-            if let Some(pending_event) = current_activity.pending_event {
-                let is_contributory_exception = |exception: x86defs::Exception| -> bool {
-                    matches!(
-                        exception,
-                        x86defs::Exception::DIVIDE_ERROR
-                            | x86defs::Exception::INVALID_TSS
-                            | x86defs::Exception::SEGMENT_NOT_PRESENT
-                            | x86defs::Exception::STACK_SEGMENT_FAULT
-                            | x86defs::Exception::GENERAL_PROTECTION_FAULT
-                            | x86defs::Exception::CONTROL_PROTECTION_EXCEPTION
-                    )
-                };
-
-                let incoming_exception = x86defs::Exception(event.vector() as u8);
-
-                let current_exception = x86defs::Exception(match pending_event {
-                    virt::vp::PendingEvent::Exception {
-                        vector,
-                        error_code: _,
-                        parameter: _,
-                    } => vector,
-                    virt::vp::PendingEvent::ExtInt { vector } => vector,
-                });
-
-                if current_exception == x86defs::Exception::PAGE_FAULT
-                    && (incoming_exception == x86defs::Exception::PAGE_FAULT
-                        || is_contributory_exception(incoming_exception))
-                {
-                    true
+            if let Some(pending_event_vector) = B::pending_event_vector(self, vtl) {
+                if event.vector() > x86defs::Exception::CONTROL_PROTECTION_EXCEPTION.0 as u16 {
+                    false
                 } else {
-                    is_contributory_exception(current_exception)
-                        && is_contributory_exception(incoming_exception)
+                    let incoming_exception = x86defs::Exception(event.vector() as u8);
+                    let current_exception = x86defs::Exception(pending_event_vector);
+
+                    if current_exception == x86defs::Exception::PAGE_FAULT
+                        && (incoming_exception == x86defs::Exception::PAGE_FAULT
+                            || incoming_exception.contributory())
+                    {
+                        true
+                    } else {
+                        current_exception.contributory() && incoming_exception.contributory()
+                    }
                 }
             } else {
                 false
             }
         };
 
-        let mut new_activity = current_activity;
-        new_activity.pending_event = Some(if double_fault {
-            virt::vp::PendingEvent::Exception {
-                vector: x86defs::Exception::DOUBLE_FAULT.0,
-                error_code: Some(0),
-                parameter: 0,
-            }
+        if double_fault {
+            let double_fault_event = HvX64PendingExceptionEvent::new()
+                .with_vector(x86defs::Exception::DOUBLE_FAULT.0 as u16)
+                .with_deliver_error_code(true)
+                .with_error_code(0);
+            B::set_pending_exception(self, vtl, double_fault_event);
         } else {
-            virt::vp::PendingEvent::Exception {
-                vector: event.vector() as u8,
-                error_code: if event.deliver_error_code() {
-                    Some(event.error_code())
-                } else {
-                    None
-                },
-                parameter: event.exception_parameter(),
-            }
-        });
-
-        let _ = self.access_state(vtl.into()).set_activity(&new_activity);
+            B::set_pending_exception(self, vtl, event);
+        }
     }
 
     pub(crate) fn hcvm_vtl1_inspectable(&self) -> bool {
-        self.backing.cvm_state().vtl1_enabled
+        self.backing.cvm_state().vtl1.is_some()
     }
 
     fn get_vsm_vp_secure_config_vtl(
