@@ -5,7 +5,7 @@
 // information.
 
 #![expect(dead_code)]
-#![allow(non_camel_case_types)]
+#![expect(non_camel_case_types)]
 
 pub mod evp;
 pub mod kdf;

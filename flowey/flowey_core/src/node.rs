@@ -322,7 +322,7 @@ macro_rules! impl_tuple_claim {
         {
             type Claimed = ($($T::Claimed,)*);
 
-            #[allow(non_snake_case)]
+            #[expect(non_snake_case)]
             fn claim(self, ctx: &mut StepCtx<'_>) -> Self::Claimed {
                 let ($($T,)*) = self;
                 ($($T.claim(ctx),)*)
@@ -2374,7 +2374,7 @@ pub trait IntoRequest {
     /// By implementing this method manually, you're indicating that you know what you're
     /// doing,
     #[doc(hidden)]
-    #[allow(nonstandard_style)]
+    #[expect(nonstandard_style)]
     fn do_not_manually_impl_this_trait__use_the_flowey_request_macro_instead(&mut self);
 }
 

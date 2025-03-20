@@ -3,14 +3,10 @@
 
 //! Serde defs for GitHub YAML
 
-#![allow(unused)]
-
-use flowey_core::pipeline::GhRunner;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::Serializer;
 use serde::ser::SerializeMap;
-use serde::ser::SerializeSeq;
 use std::collections::BTreeMap;
 
 /// Valid names may only contain alphanumeric characters and '_' and may not

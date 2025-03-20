@@ -33,10 +33,7 @@ declare_static_async_resolver! {
 }
 
 /// Errors that can occur when resolving a battery device.
-/// Currently marked unused to dodge compiler warning despite needing
-/// this for the type Error below.
 #[derive(Debug, Error)]
-#[allow(unused)]
 pub enum ResolveBatteryError {
     #[error("failed to resolve battery")]
     ResolveBattery(#[source] ResolveError),

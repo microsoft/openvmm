@@ -606,10 +606,6 @@ impl virt::BindProcessor for WhpProcessorBinder {
     type Processor<'a> = WhpProcessor<'a>;
     type Error = Error;
 
-    #[cfg_attr(
-        not(all(guest_arch = "aarch64", feature = "unstable_whp")),
-        allow(unused_variables)
-    )]
     fn bind(&mut self) -> Result<Self::Processor<'_>, Self::Error> {
         let vp = WhpProcessor {
             vp: WhpVpRef {

@@ -1026,14 +1026,14 @@ macro_rules! delayload {
     };
 
     (@func pub fn $name:ident($($params:ident : $types:ty),* $(,)?) -> $result:ty) => {
-        #[allow(non_snake_case, clippy::too_many_arguments, clippy::diverging_sub_expression)]
+        #[expect(non_snake_case, clippy::too_many_arguments, clippy::diverging_sub_expression)]
         pub unsafe fn $name($($params: $types,)*) -> $result {
             $crate::delayload!(@body $name($($params : $types),*) -> $result)
         }
     };
 
     (@func fn $name:ident($($params:ident : $types:ty),* $(,)?) -> $result:ty) => {
-        #[allow(non_snake_case, clippy::diverging_sub_expression)]
+        #[expect(non_snake_case, clippy::diverging_sub_expression)]
         unsafe fn $name($($params: $types,)*) -> $result {
             $crate::delayload!(@body $name($($params : $types),*) -> $result)
         }

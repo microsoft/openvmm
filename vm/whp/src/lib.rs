@@ -1885,7 +1885,7 @@ macro_rules! get_registers {
             let mut values = [$($crate::get_registers!(@def $name)),+];
             ($vp).get_registers(&names, &mut values).map(|_| {
                 let mut vs = &values[..];
-                #[allow(unused_assignments, clippy::mixed_read_write_in_expression)]
+                #[allow(unused_assignments)]
                 ($({
                     let n = $name;
                     let v = &vs[0];

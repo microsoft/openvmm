@@ -459,7 +459,7 @@ async fn vmgs_file_update_key(
     vmgs_update_key(&mut vmgs, encryption_alg, new_encryption_key.as_ref()).await
 }
 
-#[cfg_attr(not(with_encryption), allow(unused_variables))]
+#[cfg_attr(not(with_encryption), expect(unused_variables))]
 async fn vmgs_update_key(
     vmgs: &mut Vmgs,
     encryption_alg: EncryptionAlgorithm,
@@ -560,7 +560,7 @@ fn vhdfiledisk_create(
     Disk::new(disk).map_err(Error::InvalidDisk)
 }
 
-#[cfg_attr(not(with_encryption), allow(unused_mut), allow(unused_variables))]
+#[cfg_attr(not(with_encryption), expect(unused_mut), expect(unused_variables))]
 async fn vmgs_create(
     disk: Disk,
     encryption_alg_key: Option<(EncryptionAlgorithm, &[u8])>,
@@ -924,7 +924,7 @@ async fn vmgs_file_open(
     res
 }
 
-#[cfg_attr(not(with_encryption), allow(unused_mut), allow(unused_variables))]
+#[cfg_attr(not(with_encryption), expect(unused_mut), expect(unused_variables))]
 async fn vmgs_open(
     disk: Disk,
     encryption_key: Option<&[u8]>,

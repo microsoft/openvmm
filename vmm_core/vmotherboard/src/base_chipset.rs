@@ -1078,8 +1078,6 @@ pub mod options {
         use crate::BusIdPci;
         use chipset_resources::battery::HostBatteryUpdate;
         use local_clock::InspectableLocalClock;
-        #[allow(unused)]
-        use vmcore::non_volatile_store::NonVolatileStore;
 
         macro_rules! feature_gated {
             (

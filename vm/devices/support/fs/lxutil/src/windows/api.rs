@@ -37,7 +37,7 @@ pub const LX_UTIL_XATTR_LIST_CASE_SENSITIVE_DIR: ntdef::ULONG = 0x1;
 // Size of PE header signature.
 pub const LX_UTIL_PE_HEADER_SIZE: ntdef::ULONG = 2;
 
-#[allow(non_camel_case_types, non_snake_case, unused)]
+#[allow(non_camel_case_types, non_snake_case)]
 #[repr(C)]
 pub struct FILE_ID_64_EXTD_DIR_INFORMATION {
     pub NextEntryOffset: u32,
@@ -56,7 +56,7 @@ pub struct FILE_ID_64_EXTD_DIR_INFORMATION {
     pub FileName: [u16; 1],
 }
 
-#[allow(non_camel_case_types, non_snake_case, unused)]
+#[allow(non_camel_case_types, non_snake_case)]
 #[repr(C)]
 pub struct FILE_ID_ALL_EXTD_DIR_INFORMATION {
     pub NextEntryOffset: u32,

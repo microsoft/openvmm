@@ -9,7 +9,7 @@
 //! For more details, see fuse.h.
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
-#![allow(unused_parens)]
+#![expect(unused_parens)]
 
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
