@@ -563,19 +563,33 @@ impl HardwareIsolatedBacking for TdxBacked {
         this.backing.vtls[vtl].cr4.read(&this.runner)
     }
 
-    fn set_intercept_control_register(
-        _this: &mut UhProcessor<'_, Self>,
-        _intercept_control: hvdef::HvRegisterCrInterceptControl,
-    ) -> Result<(), HvError> {
-        // TODO TDX GUEST VSM
+    fn cr0(_this: &UhProcessor<'_, Self>, _vtl: GuestVtl) -> u64 {
         todo!()
     }
 
-    fn set_control_register_mask_register(
+    fn cr4(_this: &UhProcessor<'_, Self>, _vtl: GuestVtl) -> u64 {
+        todo!()
+    }
+
+    fn set_cr0(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl, _cr0: u64) {
+        todo!()
+    }
+
+    fn set_cr4(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl, _cr4: u64) {
+        todo!()
+    }
+
+    fn advance_to_next_instruction(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
+        this.advance_to_next_instruction(vtl);
+    }
+
+    fn generate_register_intercept_message(
         _this: &mut UhProcessor<'_, Self>,
-        _mask: super::ControlRegisterMask,
-    ) {
-        // TODO TDX GUEST VSM
+        _vtl: GuestVtl,
+        _vp_index: VpIndex,
+        _reg: HvX64RegisterName,
+        _value: u64,
+    ) -> hvdef::HvX64RegisterInterceptMessage {
         todo!()
     }
 }
