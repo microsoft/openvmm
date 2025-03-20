@@ -13,6 +13,7 @@ use super::CpuidSubtable;
 use super::ParsedCpuidEntry;
 use super::TopologyError;
 use core::arch::x86_64::CpuidResult;
+use inspect::Inspect;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::xsave;
@@ -250,5 +251,11 @@ impl CpuidArchSupport for TdxCpuidSupport {
         _vps_per_socket: u32,
     ) {
         // Nothing extra to do for TDX
+    }
+}
+
+impl Inspect for TdxCpuidSupport {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        req.respond().field("type", "tdx-cpuid");
     }
 }

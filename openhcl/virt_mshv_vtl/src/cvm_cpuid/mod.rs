@@ -9,6 +9,7 @@ use self::snp::SnpCpuidSupport;
 use self::tdx::TdxCpuidInitializer;
 use self::tdx::TdxCpuidSupport;
 use core::arch::x86_64::CpuidResult;
+use inspect::Inspect;
 use masking::CpuidResultMask;
 use snp::SnpCpuidInitializer;
 use std::boxed::Box;
@@ -89,7 +90,7 @@ trait CpuidArchInitializer {
 }
 
 /// Architecture-specific behaviors for cpuid results during runtime
-trait CpuidArchSupport: Sync + Send {
+trait CpuidArchSupport: Sync + Send + Inspect {
     /// Get the cpuid result of the leaf/subleaf but modified based on guest
     /// context
     fn process_guest_result(
@@ -179,8 +180,11 @@ pub struct ParsedCpuidEntry {
 }
 
 /// Prepares and caches the results that should be returned for hardware CVMs.
+#[derive(Inspect)]
 pub struct CpuidResults {
+    #[inspect(with = "inspect_helpers::cpuid_table")]
     results: HashMap<CpuidFunction, CpuidEntry>,
+    #[inspect(hex)]
     max_extended_state: u64,
     arch_support: Box<dyn CpuidArchSupport>,
     vps_per_socket: u32,
@@ -191,9 +195,45 @@ pub struct CpuidResults {
 type CpuidSubtable = BTreeMap<u32, CpuidResult>;
 
 /// Entry in [`CpuidResults`] for caching leaf value or its subleaves.
+#[derive(Inspect)]
+#[inspect(tag = "type")]
 enum CpuidEntry {
-    Leaf(CpuidResult),
-    Subtable(CpuidSubtable),
+    #[inspect(transparent)]
+    Leaf(#[inspect(with = "inspect_helpers::cpuid_result")] CpuidResult),
+    #[inspect(transparent)]
+    Subtable(#[inspect(with = "inspect_helpers::cpuid_subtable")] CpuidSubtable),
+}
+
+mod inspect_helpers {
+    use super::*;
+    use inspect::AsHex;
+    use inspect::Inspect;
+
+    pub(super) fn cpuid_result(result: &CpuidResult) -> impl Inspect + '_ {
+        inspect::adhoc(|req| {
+            req.respond()
+                .field("eax", AsHex(result.eax))
+                .field("ebx", AsHex(result.ebx))
+                .field("ecx", AsHex(result.ecx))
+                .field("edx", AsHex(result.edx));
+        })
+    }
+
+    pub(super) fn cpuid_table(table: &HashMap<CpuidFunction, CpuidEntry>) -> impl Inspect + '_ {
+        inspect::iter_by_key(
+            table
+                .iter()
+                .map(|(key, value)| (format!("{:?} ({:x})", key, key.0), value)),
+        )
+    }
+
+    pub(super) fn cpuid_subtable(table: &CpuidSubtable) -> impl Inspect + '_ {
+        inspect::iter_by_key(
+            table
+                .iter()
+                .map(|(key, value)| (format!("{:x?}", key), cpuid_result(value))),
+        )
+    }
 }
 
 /// Guest state needed to compute the cpuid result for a specific execution
