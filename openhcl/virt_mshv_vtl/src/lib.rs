@@ -1597,10 +1597,8 @@ impl<'a> UhProtoPartition<'a> {
         let caps = virt::aarch64::Aarch64PartitionCapabilities {};
 
         #[cfg(guest_arch = "x86_64")]
-        let mut cpuid = cpuid;
-        #[cfg(guest_arch = "x86_64")]
-        UhPartition::construct_cpuid_results(
-            &mut cpuid,
+        let cpuid = UhPartition::construct_cpuid_results(
+            cpuid,
             &late_params.cpuid,
             params.topology,
             // Note: currently, guest_vsm_available can only set to true for
@@ -1912,20 +1910,39 @@ impl UhPartition {
     #[cfg(guest_arch = "x86_64")]
     /// Constructs the set of cpuid results to show to the guest
     fn construct_cpuid_results(
-        cpuid: &mut virt::CpuidLeafSet,
+        cpuid: virt::CpuidLeafSet,
         initial_cpuid: &[CpuidLeaf],
         topology: &ProcessorTopology<vm_topology::processor::x86::X86Topology>,
         access_vsm: bool,
         vtom: Option<u64>,
         isolation: IsolationType,
         hide_isolation: bool,
-    ) {
+    ) -> virt::CpuidLeafSet {
+        let mut cpuid = cpuid.into_leaves();
         if isolation.is_hardware_isolated() {
+            // Update the x2apic leaf based on the topology.
+            {
+                let x2apic = match topology.apic_mode() {
+                    vm_topology::processor::x86::ApicMode::XApic => false,
+                    vm_topology::processor::x86::ApicMode::X2ApicSupported => true,
+                    vm_topology::processor::x86::ApicMode::X2ApicEnabled => true,
+                };
+                let ecx = x86defs::cpuid::VersionAndFeaturesEcx::new().with_x2_apic(x2apic);
+                let ecx_mask = x86defs::cpuid::VersionAndFeaturesEcx::new().with_x2_apic(true);
+                cpuid.push(
+                    CpuidLeaf::new(
+                        x86defs::cpuid::CpuidFunction::VersionAndFeatures.0,
+                        [0, 0, ecx.into(), 0],
+                    )
+                    .masked([0, 0, ecx_mask.into(), 0]),
+                );
+            }
+
             // Get the hypervisor version from the host. This is just for
             // reporting purposes, so it is safe even if the hypervisor is not
             // trusted.
             let hv_version = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_VERSION, 0);
-            cpuid.extend(&hv1_emulator::cpuid::hv_cpuid_leaves(
+            cpuid.extend(hv1_emulator::cpuid::hv_cpuid_leaves(
                 topology,
                 if hide_isolation {
                     IsolationType::None
@@ -1943,6 +1960,7 @@ impl UhPartition {
             ));
         }
         cpuid.extend(initial_cpuid);
+        virt::CpuidLeafSet::new(cpuid)
     }
 
     #[cfg(guest_arch = "x86_64")]

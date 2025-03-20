@@ -282,7 +282,9 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         mut self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
-        self.cpuid.extend(config.cpuid);
+        let mut cpuid = self.cpuid.into_leaves();
+        cpuid.extend(config.cpuid);
+        let cpuid = CpuidLeafSet::new(cpuid);
 
         let bsp_apic_id = self.config.processor_topology.vp_arch(VpIndex::BSP).apic_id;
         if bsp_apic_id != 0 {
@@ -291,7 +293,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
         let mut caps = virt::PartitionCapabilities::from_cpuid(
             self.config.processor_topology,
-            &mut |function, index| self.cpuid.result(function, index, &[0; 4]),
+            &mut |function, index| cpuid.result(function, index, &[0; 4]),
         );
 
         caps.can_freeze_time = false;
@@ -323,8 +325,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
             // Convert the CPUID entries and update the APIC ID in CPUID for
             // this VCPU.
-            let cpuid_entries = self
-                .cpuid
+            let cpuid_entries = cpuid
                 .leaves()
                 .iter()
                 .map(|leaf| {
@@ -404,7 +405,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                 .collect(),
             gsi_routing: Mutex::new(gsi_routing),
             caps,
-            cpuid: self.cpuid,
+            cpuid,
         };
 
         let partition = KvmPartition {

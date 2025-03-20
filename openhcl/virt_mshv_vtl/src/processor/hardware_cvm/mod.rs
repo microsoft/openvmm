@@ -1333,13 +1333,18 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         let [mut eax, mut ebx, mut ecx, mut edx] =
             self.partition.cpuid_result(leaf, subleaf, &[0, 0, 0, 0]);
 
-        // Apply fixups.
+        // Apply fixups. These must be runtime changes only, for parts of cpuid
+        // that are dynamic (either beccause it's a function of the current VP's
+        // identity or the current VP or partition state).
+        //
+        // We rely on the cpuid set being accurate during partition startup,
+        // without running through this code, so violations of this principle
+        // may cause the partition to be constructed improperly.
         match CpuidFunction(leaf) {
             CpuidFunction::VersionAndFeatures => {
                 let cr4 = B::cr4_for_cpuid(self, vtl);
                 ecx = cpuid::VersionAndFeaturesEcx::from(ecx)
                     .with_os_xsave(cr4 & x86defs::X64_CR4_OSXSAVE != 0)
-                    .with_x2_apic(true)
                     .into();
                 ebx = cpuid::VersionAndFeaturesEbx::from(ebx)
                     .with_initial_apic_id(self.inner.vp_info.apic_id as u8)
@@ -1394,6 +1399,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     >> (vps_per_socket
                         .trailing_zeros()
                         .saturating_sub(amd_nodes_per_socket.trailing_zeros()));
+                // TODO: just set this part statically.
                 let nodes_per_processor = amd_nodes_per_socket - 1;
 
                 ecx = cpuid::ProcessorTopologyDefinitionEcx::from(ecx)
@@ -1405,6 +1411,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 if self.partition.caps.vendor.is_amd_compatible() =>
             {
                 // SEV features are not exposed to lower VTLs at this time.
+                //
+                // TODO: set this in cvm_cpuid.
                 eax = 0;
                 ebx = 0;
                 ecx = 0;

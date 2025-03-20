@@ -124,11 +124,9 @@ impl CpuidLeafSet {
         Self { leaves }
     }
 
-    /// Extends this result collection with additional `leaves`, which are
-    /// merged as in [`new`](Self::new).
-    pub fn extend(&mut self, leaves: &[CpuidLeaf]) {
-        self.leaves.extend(leaves);
-        *self = Self::new(std::mem::take(&mut self.leaves));
+    /// Returns the merged leaves.
+    pub fn into_leaves(self) -> Vec<CpuidLeaf> {
+        self.leaves
     }
 
     /// Returns the merged leaves.
