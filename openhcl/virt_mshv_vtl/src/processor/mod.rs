@@ -309,21 +309,25 @@ trait HardwareIsolatedBacking: Backing {
         event: hvdef::HvX64PendingExceptionEvent,
     );
 
-    fn set_intercept_control_register(
+    fn generate_register_intercept_message(
         this: &mut UhProcessor<'_, Self>,
-        intercept_control: hvdef::HvRegisterCrInterceptControl,
-    ) -> Result<(), HvError>;
+        vtl: GuestVtl,
+        vp_index: VpIndex,
+        reg: HvX64RegisterName,
+        value: u64,
+    ) -> hvdef::HvX64RegisterInterceptMessage;
 
-    fn set_control_register_mask_register(
-        this: &mut UhProcessor<'_, Self>,
-        mask: ControlRegisterMask,
-    );
-}
+    // fn generate_msr_intercept(
+    //     this: &mut UhProcessor<'_, Self>,
+    //     vtl: GuestVtl,
+    // ) -> hvdef::HvX64MsrInterceptMessage;
 
-pub enum ControlRegisterMask {
-    Cr0(u64),
-    Cr4(u64),
-    Ia32MiscEnable(u64),
+    fn cr0(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
+    fn cr4(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
+
+    fn set_cr0(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, cr0: u64);
+    fn set_cr4(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, cr4: u64);
+    fn advance_to_next_instruction(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl);
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
