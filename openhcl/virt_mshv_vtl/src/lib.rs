@@ -350,6 +350,7 @@ struct GuestVsmVpState {
     /// next exit to VTL 0.
     #[inspect(with = "|x| x.as_ref().map(inspect::AsDebug)")]
     vtl0_exit_pending_event: Option<hvdef::HvX64PendingExceptionEvent>,
+    reg_intercept: SecureRegisterInterceptState,
 }
 
 #[cfg(guest_arch = "x86_64")]
