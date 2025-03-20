@@ -19,21 +19,25 @@ use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
+use memory_range::MemoryRange;
+use page_pool_alloc::PagePool;
+use page_pool_alloc::PagePoolAllocator;
+use page_pool_alloc::TestMapper;
 use parking_lot::Mutex;
 use pci_core::chipset_device_ext::PciChipsetDeviceExt;
 use pci_core::msi::MsiControl;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
 use safeatomic::AtomicSliceOps;
-use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
-use user_driver::DeviceBacking;
-use user_driver::DeviceRegisterIo;
-use user_driver::DmaClient;
+use std::sync::Arc;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::interrupt::DeviceInterruptSource;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
+use user_driver::DeviceBacking;
+use user_driver::DeviceRegisterIo;
+use user_driver::DmaClient;
 
 /// A wrapper around any user_driver device T. It provides device emulation by providing access to the memory shared with the device and thus
 /// allowing the user to control device behaviour to a certain extent. Can be used with devices such as the `NvmeController`
@@ -312,4 +316,25 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for Mapping<T> {
             .mmio_write(self.addr + offset as u64, &data.to_ne_bytes())
             .unwrap();
     }
+}
+
+/// Creates test memory that leverages the [`TestMapper`]. Returned [`GuestMemory`] references the entire range
+/// and the returned [`PagePoolAllocator`] references only the second half of the range.
+pub fn create_test_memory(
+    num_pages: u64,
+    allow_dma: bool,
+    pool_name: &str,
+) -> (GuestMemory, PagePool, Arc<PagePoolAllocator>) {
+    let test_mapper = TestMapper::new(num_pages).unwrap();
+    let sparse_mmap = test_mapper.sparse_mapping();
+    let guest_mem = GuestMemoryAccessWrapper::create_test_guest_memory(sparse_mmap, allow_dma);
+    let pool = PagePool::new(
+        &[MemoryRange::from_4k_gpn_range(num_pages / 2..num_pages)],
+        test_mapper,
+    )
+    .unwrap();
+
+    // Return page pool so that it is not dropped.
+    let allocator = pool.allocator(pool_name.into()).unwrap();
+    (guest_mem, pool, Arc::new(allocator))
 }
