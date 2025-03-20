@@ -59,8 +59,6 @@ impl CommonState {
                 cpuid: Vec::new(),
                 crash_notification_send: mesh::channel().0,
                 vmtime: &self.vmtime_source,
-                shared_dma_client: None,
-                private_dma_client: None,
                 cvm_params: None,
             })
             .await?;
