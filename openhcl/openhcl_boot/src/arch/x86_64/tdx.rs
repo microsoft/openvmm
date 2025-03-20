@@ -13,7 +13,6 @@ use tdcall::Tdcall;
 use tdcall::TdcallInput;
 use tdcall::TdcallOutput;
 use tdcall::tdcall_map_gpa;
-use tdcall::tdcall_rdmsr;
 
 /// Perform a tdcall instruction with the specified inputs.
 fn tdcall(input: TdcallInput) -> TdcallOutput {
@@ -99,13 +98,6 @@ impl minimal_rt::arch::IoAccess for TdxIoAccess {
     }
 }
 
-/// Reads MSR using TDCALL
-fn read_msr_tdcall(msr_index: u32) -> u64 {
-    let mut msr_value: u64 = 0;
-    tdcall_rdmsr(&mut TdcallInstruction, msr_index, &mut msr_value).unwrap();
-    msr_value
-}
-
 /// Global variable to store tsc frequency.
 static TSC_FREQUENCY: SingleThreaded<Cell<u64>> = SingleThreaded(Cell::new(0));
 
@@ -115,9 +107,9 @@ pub fn get_tdx_tsc_reftime() -> Option<u64> {
     // is saved in this gloabal variable. Subsequent calls use the global variable.
     if TSC_FREQUENCY.get() == 0 {
         // The TDX module interprets frequencies as multiples of 25 MHz
-        const TDX_FREQ_MULTIPLIER: u32 = 25 * 1000 * 1000;
+        const TDX_FREQ_MULTIPLIER: u64 = 25 * 1000 * 1000;
         const CPUID_LEAF_TDX_TSC_FREQ: u32 = 0x15;
-        TSC_FREQUENCY.set((cpuid(CPUID_LEAF_TDX_TSC_FREQ, 0x0).ebx * TDX_FREQ_MULTIPLIER).into());
+        TSC_FREQUENCY.set(cpuid(CPUID_LEAF_TDX_TSC_FREQ, 0x0).ebx as u64 * TDX_FREQ_MULTIPLIER);
     }
 
     if TSC_FREQUENCY.get() != 0 {
