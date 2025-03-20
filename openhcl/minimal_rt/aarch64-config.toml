@@ -3,9 +3,9 @@
 
 # Config file to use to build minimal_rt binaries for aarch64.
 #
-# This requires setting RUSTC_BOOTSTRAP=1, or an unstable toolchain.
-# Consider using the aarch64-unknown-linux-musl target if you want to
-# avoid this.
+# The dependency on build-std requires setting RUSTC_BOOTSTRAP=1, or an
+# unstable toolchain. Consider using the aarch64-unknown-linux-musl
+# target if you want to avoid this.
 
 [build]
 # Custom target needed to enable static PIE support, which is not

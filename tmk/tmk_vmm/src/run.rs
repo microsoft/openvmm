@@ -26,7 +26,7 @@ use vmcore::vmtime::VmTimeKeeper;
 use vmcore::vmtime::VmTimeSource;
 
 pub struct CommonState {
-    #[allow(dead_code)] // Only used in some configurations.
+    #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
     pub driver: DefaultDriver,
     pub vmtime_keeper: VmTimeKeeper,
     pub vmtime_source: VmTimeSource,
@@ -271,7 +271,7 @@ impl RunnerBuilder {
             }
             #[cfg(guest_arch = "aarch64")]
             {
-                let virt::InitialRegs {
+                let virt::aarch64::Aarch64InitialRegs {
                     registers,
                     system_registers,
                 } = self.regs.as_ref();
