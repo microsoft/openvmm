@@ -5,7 +5,6 @@
 
 #![cfg_attr(minimal_rt, no_std, no_main)]
 
-#[cfg(minimal_rt)]
 mod tmk;
 
 #[cfg(not(minimal_rt))]

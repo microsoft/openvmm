@@ -5,8 +5,40 @@
 
 #![no_std]
 
-/// Address for logging. Write `&[gpa, len]: &[u64; 2]` of a UTF-8 string to
-/// log.
-pub const TMK_ADDRESS_LOG: u64 = 0xffff0000;
-/// Address for reporting test completion. Write 0 to signal completion.
-pub const TMK_ADDRESS_COMPLETE: u64 = 0xffff0008;
+use zerocopy::FromBytes;
+use zerocopy::TryFromBytes;
+
+/// Address for issuing a command. Write a `&Command` to log.
+pub const COMMAND_ADDRESS: u64 = 0xffff0000;
+
+/// TMK command.
+#[repr(u32)]
+#[derive(TryFromBytes)]
+pub enum Command {
+    /// Log a UTF-8 message string.
+    Log(Str),
+    /// The test panicked.
+    Panic {
+        /// The panic message.
+        message: Str,
+        /// The file and line where the panic occurred.
+        filename: Str,
+        /// The line where the panic occurred.
+        line: u32,
+    },
+    /// Complete the test.
+    Complete {
+        /// Success status of the test.
+        success: bool,
+    },
+}
+
+/// A UTF-8 string in guest memory.
+#[repr(C)]
+#[derive(FromBytes)]
+pub struct Str {
+    /// Pointer to the string.
+    pub gpa: u64,
+    /// Length of the string.
+    pub len: u64,
+}

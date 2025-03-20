@@ -26,6 +26,8 @@ fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::fmt::layer()
+                .pretty()
+                .map_event_format(|e| e.with_source_location(false))
                 .fmt_fields(tracing_helpers::formatter::FieldFormatter)
                 .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE),
         )

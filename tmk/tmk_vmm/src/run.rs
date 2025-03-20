@@ -24,6 +24,7 @@ use vm_topology::processor::TopologyBuilder;
 use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmcore::vmtime::VmTimeSource;
+use zerocopy::TryFromBytes as _;
 
 pub struct CommonState {
     #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
@@ -114,7 +115,10 @@ impl CommonState {
 
         let event = event_recv.next().await.unwrap();
         match event {
-            VpEvent::TestComplete => {
+            VpEvent::TestComplete { success } => {
+                if !success {
+                    anyhow::bail!("test failed");
+                }
                 tracing::info!("test complete");
                 Ok(())
             }
@@ -135,7 +139,9 @@ impl CommonState {
 }
 
 enum VpEvent {
-    TestComplete,
+    TestComplete {
+        success: bool,
+    },
     Halt {
         vp_index: VpIndex,
         reason: String,
@@ -190,36 +196,18 @@ impl CpuIo for IoHandler<'_> {
     }
 
     async fn write_mmio(&self, vp: VpIndex, address: u64, data: &[u8]) {
-        match address {
-            tmk_protocol::TMK_ADDRESS_LOG => {
-                let p = widen(data);
-                let r = (|| {
-                    let [gpa, len]: [u64; 2] = self.guest_memory.read_plain(p)?;
-                    let mut s = vec![0; len as usize];
-                    self.guest_memory.read_at(gpa, &mut s)?;
-                    let s = String::from_utf8(s)?;
-                    anyhow::Ok(s)
-                })();
-                match r {
-                    Ok(s) => {
-                        tracing::info!(target: "tmk", message = s);
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            error = e.as_ref() as &dyn std::error::Error,
-                            p,
-                            "failed to read log"
-                        );
-                    }
-                }
+        if address == tmk_protocol::COMMAND_ADDRESS {
+            let p = widen(data);
+            let r = self.handle_command(p);
+            if let Err(e) = r {
+                tracing::error!(
+                    error = e.as_ref() as &dyn std::error::Error,
+                    p,
+                    "failed to handle command"
+                );
             }
-            tmk_protocol::TMK_ADDRESS_COMPLETE => {
-                self.event_send.send(VpEvent::TestComplete);
-                self.stop.stop();
-            }
-            _ => {
-                tracing::info!(vp = vp.index(), address, data = widen(data), "write mmio");
-            }
+        } else {
+            tracing::info!(vp = vp.index(), address, data = widen(data), "write mmio");
         }
     }
 
@@ -230,6 +218,53 @@ impl CpuIo for IoHandler<'_> {
 
     async fn write_io(&self, vp: VpIndex, port: u16, data: &[u8]) {
         tracing::info!(vp = vp.index(), port, data = widen(data), "write io");
+    }
+}
+
+impl IoHandler<'_> {
+    fn read_str(&self, s: tmk_protocol::Str) -> anyhow::Result<String> {
+        let mut buf = vec![0; s.len as usize];
+        self.guest_memory
+            .read_at(s.gpa, &mut buf)
+            .context("failed to read string")?;
+        String::from_utf8(buf).context("string not utf-8")
+    }
+
+    fn handle_command(&self, gpa: u64) -> anyhow::Result<()> {
+        let buf = self
+            .guest_memory
+            .read_plain::<[u8; size_of::<tmk_protocol::Command>()]>(gpa)
+            .context("failed to read command")?;
+        let cmd = tmk_protocol::Command::try_read_from_bytes(&buf)
+            .ok()
+            .context("bad command")?;
+        match cmd {
+            tmk_protocol::Command::Log(s) => {
+                let message = self.read_str(s)?;
+                tracing::info!(target: "tmk", message);
+            }
+            tmk_protocol::Command::Panic {
+                message,
+                filename,
+                line,
+            } => {
+                let message = self.read_str(message)?;
+                let location = if filename.len > 0 {
+                    Some(format!("{}:{}", self.read_str(filename)?, line))
+                } else {
+                    None
+                };
+                tracing::error!(target: "tmk", location, panic = message);
+                self.event_send
+                    .send(VpEvent::TestComplete { success: false });
+                self.stop.stop();
+            }
+            tmk_protocol::Command::Complete { success } => {
+                self.event_send.send(VpEvent::TestComplete { success });
+                self.stop.stop();
+            }
+        }
+        Ok(())
     }
 }
 

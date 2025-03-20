@@ -29,6 +29,7 @@ fs-err.workspace = true
 futures.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+zerocopy.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 virt_whp.workspace = true
