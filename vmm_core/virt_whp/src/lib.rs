@@ -638,6 +638,13 @@ impl virt::BindProcessor for WhpProcessorBinder {
                 }
             }
 
+            #[cfg(all(guest_arch = "aarch64", not(feature = "unstable_whp")))]
+            {
+                let _ = vp_info;
+                let _ = vtlp;
+                let _ = vtl;
+            }
+
             #[cfg(all(guest_arch = "aarch64", feature = "unstable_whp"))]
             {
                 let _ = vtlp;
