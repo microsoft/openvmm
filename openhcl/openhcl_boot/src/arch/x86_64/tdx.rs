@@ -7,6 +7,7 @@ use crate::single_threaded::SingleThreaded;
 use core::arch::asm;
 use core::cell::Cell;
 use memory_range::MemoryRange;
+use safe_intrinsics::cpuid;
 use tdcall::AcceptPagesError;
 use tdcall::Tdcall;
 use tdcall::TdcallInput;
@@ -113,9 +114,10 @@ pub fn get_tdx_tsc_reftime() -> Option<u64> {
     // This is first called by the BSP from openhcl_boot and the frequency
     // is saved in this gloabal variable. Subsequent calls use the global variable.
     if TSC_FREQUENCY.get() == 0 {
-        // TODO TDX: Getting tsc frequency from HV currently. Explore the option
-        // of getting it from more reliable source such as CPUID.
-        TSC_FREQUENCY.set(read_msr_tdcall(hvdef::HV_X64_MSR_TSC_FREQUENCY));
+        // The TDX module interprets frequencies as multiples of 25 MHz
+        const TDX_FREQ_MULTIPLIER: u32 = 25 * 1000 * 1000;
+        const CPUID_LEAF_TDX_TSC_FREQ: u32 = 0x15;
+        TSC_FREQUENCY.set((cpuid(CPUID_LEAF_TDX_TSC_FREQ, 0x0).ebx * TDX_FREQ_MULTIPLIER).into());
     }
 
     if TSC_FREQUENCY.get() != 0 {
