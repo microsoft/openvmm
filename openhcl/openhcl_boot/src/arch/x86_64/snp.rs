@@ -35,9 +35,9 @@ pub enum AcceptGpaError {
 impl Ghcb {
     /// # Safety
     ///
-    /// Callers must ensure the CPU is in a state where it is safe to issue
-    /// a `vmgexit` instruction.
-    unsafe fn sev_vmgexit() {
+    /// Regardless of the content of the GHCB page or MSR, this instruction should not be able
+    /// to cause memory safety issues.
+    fn sev_vmgexit() {
         // SAFETY: Using the `vmgexit` instruction forces an exit to the hypervisor but doesn't
         // directly change program state.
         unsafe {
