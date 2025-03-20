@@ -1800,10 +1800,9 @@ async fn new_underhill_vm(
     // ARM64 always bounces, as the OpenHCL kernel does not have access to VTL0
     // pages. Necessary until #273 is resolved.
     //
-    // Similarly, when hiding isolation from the guest, we must bounce because
-    // the guest buffers are in private memory, which the kernel does not have
-    // access to.
-    let always_bounce = cfg!(guest_arch = "aarch64") || hide_isolation;
+    // Currently we always bounce for CVM as well, due to underhill_mem not
+    // supporting registering shared or private memory with the kernel.
+    let always_bounce = cfg!(guest_arch = "aarch64") || isolation.is_hardware_isolated();
     resolver.add_async_resolver::<DiskHandleKind, _, OpenBlockDeviceConfig, _>(
         BlockDeviceResolver::new(
             Arc::new(tp.clone()),
