@@ -52,6 +52,42 @@ pub struct MshvX64<'a> {
     cpu_context: &'a UnsafeCell<hcl_cpu_context_x64>,
 }
 
+impl<'a> ProcessorRunner<'a, MshvX64<'a>> {
+    /// Flush any modified state.
+    pub fn flush_state(&mut self) {
+        // Flush contents of the register page and disable it, as it will not
+        // persist through servicing. The VTL level is not checked, instead the
+        // dirty bits are used to determine if the contents should be flushed.
+        let (gp_regs, rip) = if let Some(reg_page) = self.reg_page_mut() {
+            let gp_regs = if reg_page.dirty & (1 << hvdef::HV_X64_REGISTER_CLASS_GENERAL) != 0 {
+                Some(reg_page.gp_registers)
+            } else {
+                None
+            };
+            let rip = if (reg_page.dirty & (1 << hvdef::HV_X64_REGISTER_CLASS_IP)) != 0 {
+                Some(reg_page.rip)
+            } else {
+                None
+            };
+            // Disable the reg page so any future writes do not use it.
+            reg_page.is_valid = 0;
+            (gp_regs, rip)
+        } else {
+            (None, None)
+        };
+        if let Some(gp_regs) = gp_regs {
+            self.cpu_context_mut().gps = gp_regs;
+        }
+        if let Some(rip) = rip {
+            if let Err(err) =
+                self.set_vp_register(GuestVtl::Vtl0, HvX64RegisterName::Rip, rip.into())
+            {
+                tracing::error!(err = &err as &dyn std::error::Error, "Failed to flush RIP");
+            }
+        }
+    }
+}
+
 impl ProcessorRunner<'_, MshvX64<'_>> {
     fn reg_page(&self) -> Option<&HvX64RegisterPage> {
         // SAFETY: the register page will not be concurrently accessed by the
@@ -203,11 +239,73 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
         name: HvRegisterName,
         value: HvRegisterValue,
     ) -> Result<bool, Error> {
-        // Try to set the register in the CPU context, the fastest path. Only
-        // VTL-shared registers can be set this way: the CPU context only
-        // exposes the last VTL, and if we entered VTL2 on an interrupt,
-        // OpenHCL doesn't know what the last VTL is.
         let name = name.into();
+        // Try the shared registry page first. These values override any others
+        // when the page is in use.
+        if let Some(reg_page) = runner.reg_page_mut() {
+            if reg_page.vtl == vtl as u8 {
+                let set = match name {
+                    HvX64RegisterName::Rax
+                    | HvX64RegisterName::Rcx
+                    | HvX64RegisterName::Rdx
+                    | HvX64RegisterName::Rbx
+                    | HvX64RegisterName::Rsp
+                    | HvX64RegisterName::Rbp
+                    | HvX64RegisterName::Rsi
+                    | HvX64RegisterName::Rdi
+                    | HvX64RegisterName::R8
+                    | HvX64RegisterName::R9
+                    | HvX64RegisterName::R10
+                    | HvX64RegisterName::R11
+                    | HvX64RegisterName::R12
+                    | HvX64RegisterName::R13
+                    | HvX64RegisterName::R14
+                    | HvX64RegisterName::R15 => {
+                        reg_page.gp_registers[(name.0 - HvX64RegisterName::Rax.0) as usize] =
+                            value.as_u64();
+                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_GENERAL;
+                        true
+                    }
+                    HvX64RegisterName::Rip => {
+                        reg_page.rip = value.as_u64();
+                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_IP;
+                        true
+                    }
+                    HvX64RegisterName::Rflags => {
+                        reg_page.rflags = value.as_u64();
+                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_FLAGS;
+                        true
+                    }
+                    HvX64RegisterName::Es
+                    | HvX64RegisterName::Cs
+                    | HvX64RegisterName::Ss
+                    | HvX64RegisterName::Ds
+                    | HvX64RegisterName::Fs
+                    | HvX64RegisterName::Gs => {
+                        reg_page.segment[(name.0 - HvX64RegisterName::Es.0) as usize] =
+                            value.as_u128();
+                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_SEGMENT;
+                        true
+                    }
+
+                    // Skip unnecessary register updates.
+                    HvX64RegisterName::Cr0 => reg_page.cr0 == value.as_u64(),
+                    HvX64RegisterName::Cr3 => reg_page.cr3 == value.as_u64(),
+                    HvX64RegisterName::Cr4 => reg_page.cr4 == value.as_u64(),
+                    HvX64RegisterName::Cr8 => reg_page.cr8 == value.as_u64(),
+                    HvX64RegisterName::Efer => reg_page.efer == value.as_u64(),
+                    HvX64RegisterName::Dr7 => reg_page.dr7 == value.as_u64(),
+                    _ => false,
+                };
+                if set {
+                    return Ok(true);
+                }
+            }
+        }
+
+        // If the register is shared between VTL states, update the
+        // kernel-supplied CPU context value, which will be restored prior to
+        // switching VTLs.
         let set = match name {
             HvX64RegisterName::Rax
             | HvX64RegisterName::Rcx
@@ -253,53 +351,7 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
             return Ok(true);
         }
 
-        if let Some(reg_page) = runner.reg_page_mut() {
-            if reg_page.vtl == vtl as u8 {
-                let set = match name {
-                    HvX64RegisterName::Rsp => {
-                        reg_page.gp_registers[(name.0 - HvX64RegisterName::Rax.0) as usize] =
-                            value.as_u64();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_GENERAL;
-                        true
-                    }
-                    HvX64RegisterName::Rip => {
-                        reg_page.rip = value.as_u64();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_IP;
-                        true
-                    }
-                    HvX64RegisterName::Rflags => {
-                        reg_page.rflags = value.as_u64();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_FLAGS;
-                        true
-                    }
-                    HvX64RegisterName::Es
-                    | HvX64RegisterName::Cs
-                    | HvX64RegisterName::Ss
-                    | HvX64RegisterName::Ds
-                    | HvX64RegisterName::Fs
-                    | HvX64RegisterName::Gs => {
-                        reg_page.segment[(name.0 - HvX64RegisterName::Es.0) as usize] =
-                            value.as_u128();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_SEGMENT;
-                        true
-                    }
-
-                    // Skip unnecessary register updates.
-                    HvX64RegisterName::Cr0 => reg_page.cr0 == value.as_u64(),
-                    HvX64RegisterName::Cr3 => reg_page.cr3 == value.as_u64(),
-                    HvX64RegisterName::Cr4 => reg_page.cr4 == value.as_u64(),
-                    HvX64RegisterName::Cr8 => reg_page.cr8 == value.as_u64(),
-                    HvX64RegisterName::Efer => reg_page.efer == value.as_u64(),
-                    HvX64RegisterName::Dr7 => reg_page.dr7 == value.as_u64(),
-                    _ => false,
-                };
-                if set {
-                    return Ok(true);
-                }
-            }
-        }
-
-        Ok(false)
+        Ok(set)
     }
 
     fn must_flush_regs_on(runner: &ProcessorRunner<'_, Self>, name: HvRegisterName) -> bool {
@@ -315,6 +367,62 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
         name: HvRegisterName,
     ) -> Result<Option<HvRegisterValue>, Error> {
         let name = name.into();
+
+        // Try the shared registry page first. These values override any others
+        // when the page is in use.
+        if let Some(reg_page) = runner.reg_page() {
+            if reg_page.vtl == vtl as u8 {
+                let value = match name {
+                    HvX64RegisterName::Rax
+                    | HvX64RegisterName::Rcx
+                    | HvX64RegisterName::Rdx
+                    | HvX64RegisterName::Rbx
+                    | HvX64RegisterName::Rsp
+                    | HvX64RegisterName::Rbp
+                    | HvX64RegisterName::Rsi
+                    | HvX64RegisterName::Rdi
+                    | HvX64RegisterName::R8
+                    | HvX64RegisterName::R9
+                    | HvX64RegisterName::R10
+                    | HvX64RegisterName::R11
+                    | HvX64RegisterName::R12
+                    | HvX64RegisterName::R13
+                    | HvX64RegisterName::R14
+                    | HvX64RegisterName::R15 => Some(HvRegisterValue(
+                        reg_page.gp_registers[(name.0 - HvX64RegisterName::Rax.0) as usize].into(),
+                    )),
+                    HvX64RegisterName::Rip => Some(HvRegisterValue((reg_page.rip).into())),
+                    HvX64RegisterName::Rflags => Some(HvRegisterValue((reg_page.rflags).into())),
+                    HvX64RegisterName::Es
+                    | HvX64RegisterName::Cs
+                    | HvX64RegisterName::Ss
+                    | HvX64RegisterName::Ds
+                    | HvX64RegisterName::Fs
+                    | HvX64RegisterName::Gs => Some(HvRegisterValue(
+                        reg_page.segment[(name.0 - HvX64RegisterName::Es.0) as usize].into(),
+                    )),
+                    HvX64RegisterName::Cr0 => Some(HvRegisterValue((reg_page.cr0).into())),
+                    HvX64RegisterName::Cr3 => Some(HvRegisterValue((reg_page.cr3).into())),
+                    HvX64RegisterName::Cr4 => Some(HvRegisterValue((reg_page.cr4).into())),
+                    HvX64RegisterName::Cr8 => Some(HvRegisterValue((reg_page.cr8).into())),
+                    HvX64RegisterName::Efer => Some(HvRegisterValue((reg_page.efer).into())),
+                    HvX64RegisterName::Dr7 => Some(HvRegisterValue((reg_page.dr7).into())),
+                    HvX64RegisterName::InstructionEmulationHints => Some(HvRegisterValue(
+                        (u64::from(reg_page.instruction_emulation_hints)).into(),
+                    )),
+                    HvX64RegisterName::PendingInterruption => {
+                        Some(u64::from(reg_page.pending_interruption).into())
+                    }
+                    HvX64RegisterName::InterruptState => {
+                        Some(u64::from(reg_page.interrupt_state).into())
+                    }
+                    _ => None,
+                };
+                if let Some(value) = value {
+                    return Ok(Some(value));
+                }
+            }
+        }
 
         let value = match name {
             HvX64RegisterName::Rax
@@ -358,49 +466,6 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
             ),
             _ => None,
         };
-        if let Some(value) = value {
-            return Ok(Some(value));
-        }
-
-        if let Some(reg_page) = runner.reg_page() {
-            if reg_page.vtl == vtl as u8 {
-                let value = match name {
-                    HvX64RegisterName::Rsp => Some(HvRegisterValue(
-                        reg_page.gp_registers[(name.0 - HvX64RegisterName::Rax.0) as usize].into(),
-                    )),
-                    HvX64RegisterName::Rip => Some(HvRegisterValue((reg_page.rip).into())),
-                    HvX64RegisterName::Rflags => Some(HvRegisterValue((reg_page.rflags).into())),
-                    HvX64RegisterName::Es
-                    | HvX64RegisterName::Cs
-                    | HvX64RegisterName::Ss
-                    | HvX64RegisterName::Ds
-                    | HvX64RegisterName::Fs
-                    | HvX64RegisterName::Gs => Some(HvRegisterValue(
-                        reg_page.segment[(name.0 - HvX64RegisterName::Es.0) as usize].into(),
-                    )),
-                    HvX64RegisterName::Cr0 => Some(HvRegisterValue((reg_page.cr0).into())),
-                    HvX64RegisterName::Cr3 => Some(HvRegisterValue((reg_page.cr3).into())),
-                    HvX64RegisterName::Cr4 => Some(HvRegisterValue((reg_page.cr4).into())),
-                    HvX64RegisterName::Cr8 => Some(HvRegisterValue((reg_page.cr8).into())),
-                    HvX64RegisterName::Efer => Some(HvRegisterValue((reg_page.efer).into())),
-                    HvX64RegisterName::Dr7 => Some(HvRegisterValue((reg_page.dr7).into())),
-                    HvX64RegisterName::InstructionEmulationHints => Some(HvRegisterValue(
-                        (u64::from(reg_page.instruction_emulation_hints)).into(),
-                    )),
-                    HvX64RegisterName::PendingInterruption => {
-                        Some(u64::from(reg_page.pending_interruption).into())
-                    }
-                    HvX64RegisterName::InterruptState => {
-                        Some(u64::from(reg_page.interrupt_state).into())
-                    }
-                    _ => None,
-                };
-                if let Some(value) = value {
-                    return Ok(Some(value));
-                }
-            }
-        }
-
-        Ok(None)
+        Ok(value)
     }
 }

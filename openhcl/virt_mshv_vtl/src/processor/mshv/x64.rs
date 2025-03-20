@@ -1957,6 +1957,7 @@ mod save_restore {
             let startup_suspend = internal_activity
                 .map(|a| HvInternalActivityRegister::from(a.as_u64()).startup_suspend());
 
+            self.runner.flush_state();
             let [
                 rax,
                 rcx,
