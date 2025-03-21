@@ -54,6 +54,43 @@ impl PetriVmConfigOpenVmm {
             framebuffer_access,
         } = self;
 
+        if firmware.is_openhcl() {
+            // Add a pipette disk for VTL 2
+            const UH_CIDATA_SCSI_INSTANCE: Guid =
+                guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7c");
+
+            let uh_agent_disk = resources
+                .openhcl_agent_image
+                .as_ref()
+                .unwrap()
+                .build()
+                .context("failed to build agent image")?;
+
+            config.vmbus_devices.push((
+                DeviceVtl::Vtl2,
+                ScsiControllerHandle {
+                    instance_id: UH_CIDATA_SCSI_INSTANCE,
+                    max_sub_channel_count: 1,
+                    io_queue_depth: None,
+                    devices: vec![ScsiDeviceAndPath {
+                        path: ScsiPath {
+                            path: 0,
+                            target: 0,
+                            lun: 0,
+                        },
+                        device: SimpleScsiDiskHandle {
+                            read_only: true,
+                            parameters: Default::default(),
+                            disk: FileDiskHandle(uh_agent_disk.into_file()).into_resource(),
+                        }
+                        .into_resource(),
+                    }],
+                    requests: None,
+                }
+                .into_resource(),
+            ));
+        }
+
         // Add the GED and VTL 2 settings.
         if let Some(mut ged) = ged {
             ged.vtl2_settings = Some(prost::Message::encode_to_vec(&vtl2_settings.unwrap()));
@@ -183,44 +220,6 @@ impl PetriVmConfigOpenVmm {
                 DeviceVtl::Vtl0,
                 vmbfs_resources::VmbfsImcDeviceHandle {
                     file: imc_hive_file,
-                }
-                .into_resource(),
-            ));
-        }
-
-        if self.firmware.is_openhcl() {
-            // Add a second pipette disk for VTL 2
-            const UH_CIDATA_SCSI_INSTANCE: Guid =
-                guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7c");
-
-            let uh_agent_disk = self
-                .resources
-                .openhcl_agent_image
-                .as_ref()
-                .unwrap()
-                .build()
-                .context("failed to build agent image")?;
-
-            self.config.vmbus_devices.push((
-                DeviceVtl::Vtl2,
-                ScsiControllerHandle {
-                    instance_id: UH_CIDATA_SCSI_INSTANCE,
-                    max_sub_channel_count: 1,
-                    io_queue_depth: None,
-                    devices: vec![ScsiDeviceAndPath {
-                        path: ScsiPath {
-                            path: 0,
-                            target: 0,
-                            lun: 0,
-                        },
-                        device: SimpleScsiDiskHandle {
-                            read_only: true,
-                            parameters: Default::default(),
-                            disk: FileDiskHandle(uh_agent_disk.into_file()).into_resource(),
-                        }
-                        .into_resource(),
-                    }],
-                    requests: None,
                 }
                 .into_resource(),
             ));
