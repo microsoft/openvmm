@@ -19,7 +19,6 @@ use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
 use test_with_tracing::test;
 use user_driver::interrupt::DeviceInterrupt;
-use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
@@ -125,14 +124,13 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     const CPU_COUNT: u32 = 64;
 
     // Memory setup
-    let pages = 1000;
-    let device_test_memory = DeviceTestMemory::new(pages, allow_dma, "test_nvme_driver");
+    let pages = 1024; // 4MB
+    let device_test_memory = DeviceTestMemory::new(pages * 2, allow_dma, "test_nvme_driver");
     let guest_mem = device_test_memory.guest_memory();
     let dma_client = device_test_memory.dma_client();
 
     let driver_dma_mem = if allow_dma {
-        let range_half = (pages / 2) * PAGE_SIZE64;
-        guest_mem.subrange(0_u64, range_half, false).unwrap()
+        device_test_memory.guest_dma_memory()
     } else {
         guest_mem.clone()
     };
