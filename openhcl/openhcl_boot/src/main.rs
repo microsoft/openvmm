@@ -131,7 +131,7 @@ fn build_kernel_command_line(
         // this information doesn't seem useful without a dump anyways.
         // Additionally it may push important logs off the end of the kmsg
         // page logged by the host.
-        //"print_fatal_signals=0",
+        "print_fatal_signals=1",
         // RELIABILITY: Unlimited logging to /dev/kmsg from userspace.
         "printk.devkmsg=on",
         // RELIABILITY: Reboot using a triple fault as the fastest method.

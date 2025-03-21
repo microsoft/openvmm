@@ -140,7 +140,7 @@ impl OpenhclIgvmRecipe {
                 vtl0_kernel_type: None,
                 with_uefi: true,
                 with_interactive,
-                with_sidecar_details: false,
+                with_sidecar_details: true,
             },
             Self::X64CvmDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,

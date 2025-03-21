@@ -167,6 +167,37 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Specifies whether the UEFI frontpage app is enabled.
+    ///
+    /// If it is disabled, then the VM will shutdown if there are no configured
+    /// boot apps.
+    pub fn with_uefi_frontpage(mut self, enable_frontpage: bool) -> Self {
+        match self.config.load_mode {
+            LoadMode::Uefi {
+                ref mut disable_frontpage,
+                ..
+            } => {
+                *disable_frontpage = !enable_frontpage;
+            }
+            LoadMode::Igvm { .. } => {
+                let ged = self.ged.as_mut().expect("no GED to configure DPS");
+                match ged.firmware {
+                    get_resources::ged::GuestFirmwareConfig::Uefi {
+                        ref mut disable_frontpage,
+                        ..
+                    } => {
+                        *disable_frontpage = !enable_frontpage;
+                    }
+                    _ => {
+                        panic!("not a UEFI boot");
+                    }
+                }
+            }
+            _ => panic!("not a UEFI boot"),
+        }
+        self
+    }
+
     /// Add custom command line arguments to OpenHCL.
     pub fn with_openhcl_command_line(mut self, additional_cmdline: &str) -> Self {
         if !self.firmware.is_openhcl() {

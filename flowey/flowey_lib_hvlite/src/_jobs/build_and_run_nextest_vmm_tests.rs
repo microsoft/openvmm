@@ -83,6 +83,7 @@ impl SimpleFlowNode for Node {
                 linux: CommonTriple::X86_64_LINUX_MUSL,
                 openhcl_recipies: &[
                     OpenhclIgvmRecipe::X64,
+                    OpenhclIgvmRecipe::X64Devkern,
                     OpenhclIgvmRecipe::X64TestLinuxDirect,
                     OpenhclIgvmRecipe::X64Cvm,
                 ],
