@@ -9,13 +9,13 @@ use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 pub(crate) fn recipe_to_filename(flavor: &OpenhclIgvmRecipe) -> &str {
     match flavor {
         OpenhclIgvmRecipe::X64 => "openhcl",
-        OpenhclIgvmRecipe::X64Devkern => "openhcl-devkern",
+        OpenhclIgvmRecipe::X64Devkern => "openhcl-dev",
         OpenhclIgvmRecipe::X64TestLinuxDirect => "openhcl-direct",
-        OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => "openhcl-direct-devkern",
+        OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => "openhcl-direct-dev",
         OpenhclIgvmRecipe::X64Cvm => "openhcl-cvm",
-        OpenhclIgvmRecipe::X64CvmDevkern => "openhcl-cvm-devkern",
+        OpenhclIgvmRecipe::X64CvmDevkern => "openhcl-cvm-dev",
         OpenhclIgvmRecipe::Aarch64 => "openhcl-aarch64",
-        OpenhclIgvmRecipe::Aarch64Devkern => "openhcl-aarch64-devkern",
+        OpenhclIgvmRecipe::Aarch64Devkern => "openhcl-aarch64-dev",
         OpenhclIgvmRecipe::LocalOnlyCustom(_) => unreachable!(),
     }
 }
@@ -24,13 +24,13 @@ pub(crate) fn recipe_to_filename(flavor: &OpenhclIgvmRecipe) -> &str {
 pub(crate) fn filename_to_recipe(filename: &str) -> Option<OpenhclIgvmRecipe> {
     let ret = match filename {
         "openhcl" => OpenhclIgvmRecipe::X64,
-        "openhcl-devkern" => OpenhclIgvmRecipe::X64Devkern,
+        "openhcl-dev" => OpenhclIgvmRecipe::X64Devkern,
         "openhcl-direct" => OpenhclIgvmRecipe::X64TestLinuxDirect,
-        "openhcl-direct-devkern" => OpenhclIgvmRecipe::X64TestLinuxDirectDevkern,
+        "openhcl-direct-dev" => OpenhclIgvmRecipe::X64TestLinuxDirectDevkern,
         "openhcl-cvm" => OpenhclIgvmRecipe::X64Cvm,
-        "openhcl-cvm-devkern" => OpenhclIgvmRecipe::X64CvmDevkern,
+        "openhcl-cvm-dev" => OpenhclIgvmRecipe::X64CvmDevkern,
         "openhcl-aarch64" => OpenhclIgvmRecipe::Aarch64,
-        "openhcl-aarch64-devkern" => OpenhclIgvmRecipe::Aarch64Devkern,
+        "openhcl-aarch64-dev" => OpenhclIgvmRecipe::Aarch64Devkern,
         _ => return None,
     };
 
