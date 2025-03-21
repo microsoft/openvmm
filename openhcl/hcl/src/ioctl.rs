@@ -1571,11 +1571,17 @@ impl HclVp {
         let fd = &hcl.mshv_vtl.file;
         let run: MappedPage<hcl_run> =
             MappedPage::new(fd, vp as i64).map_err(|e| Error::MmapVp(e, None))?;
-        // SAFETY: `proxy_irr_blocked` is not accessed by any other VPs/kernel at this point (`HclVp` creation)
-        // so we know we have exclusive access.
-        let proxy_irr_blocked = unsafe { &mut (*run.as_ptr()).proxy_irr_blocked };
-        // Initializing to block all vectors by default.
-        proxy_irr_blocked.fill(0xFFFFFFFF);
+        // Block proxied interrupts on all vectors by default. The mask will be
+        // relaxed as the guest runs.
+        //
+        // This is only used on CVMs. Skip it otherwise, since run page accesses
+        // will fault on VPs that are still in the sidecar kernel.
+        if isolation_type.is_hardware_isolated() {
+            // SAFETY: `proxy_irr_blocked` is not accessed by any other VPs/kernel at this point (`HclVp` creation)
+            // so we know we have exclusive access.
+            let proxy_irr_blocked = unsafe { &mut (*run.as_ptr()).proxy_irr_blocked };
+            proxy_irr_blocked.fill(!0);
+        }
 
         let backing = match isolation_type {
             IsolationType::None | IsolationType::Vbs => BackingState::Mshv {
