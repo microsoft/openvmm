@@ -129,6 +129,7 @@ impl SimpleFlowNode for Node {
             let (_read_built_openvmm_hcl, built_openvmm_hcl) = ctx.new_var();
             let (read_built_openhcl_igvm, built_openhcl_igvm) = ctx.new_var();
             let (_read_built_openhcl_boot, built_openhcl_boot) = ctx.new_var();
+            let (_read_built_sidecar, built_sidecar) = ctx.new_var();
             ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
                 profile: match profile {
                     CommonProfile::Release => {
@@ -141,7 +142,7 @@ impl SimpleFlowNode for Node {
                 built_openvmm_hcl,
                 built_openhcl_boot,
                 built_openhcl_igvm,
-                built_sidecar: None,
+                built_sidecar,
             });
 
             register_openhcl_igvm_files.push(read_built_openhcl_igvm.map(ctx, {
