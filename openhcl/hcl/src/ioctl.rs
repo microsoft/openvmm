@@ -1613,10 +1613,65 @@ impl HclVp {
             backing,
         })
     }
+
+    /// Fetch dirty registers and disable the register page until the next VTL
+    /// transition.
+    fn scan_register_page_and_disable(&self) -> Vec<(HvX64RegisterName, HvRegisterValue)> {
+        let mut regs: Vec<(HvX64RegisterName, HvRegisterValue)> = Vec::new();
+        // If the registry page is not active or invalid, nothing to do.
+        let BackingState::Mshv { reg_page } = &self.backing else {
+            return regs;
+        };
+        let Some(reg_page) = reg_page else {
+            return regs;
+        };
+        // SAFETY: the register page will not be concurrently accessed by the
+        // hypervisor while this VP is in VTL2.
+        let reg_page = unsafe { &mut *reg_page.as_ptr() };
+        if reg_page.is_valid == 0 {
+            return regs;
+        }
+
+        // Collect any dirty registers.
+        if (reg_page.dirty & (1 << hvdef::HV_X64_REGISTER_CLASS_IP)) != 0 {
+            regs.push((HvX64RegisterName::Rip, reg_page.rip.into()));
+        }
+        if (reg_page.dirty & (1 << hvdef::HV_X64_REGISTER_CLASS_GENERAL)) != 0 {
+            regs.push((
+                HvX64RegisterName::Rsp,
+                reg_page.gp_registers
+                    [(HvX64RegisterName::Rsp.0 - HvX64RegisterName::Rax.0) as usize]
+                    .into(),
+            ));
+        }
+        if (reg_page.dirty & (1 << hvdef::HV_X64_REGISTER_CLASS_FLAGS)) != 0 {
+            regs.push((HvX64RegisterName::Rflags, reg_page.rflags.into()));
+        }
+        if (reg_page.dirty & (1 << hvdef::HV_X64_REGISTER_CLASS_SEGMENT)) != 0 {
+            let segment_regs = reg_page
+                .segment
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(i, val)| {
+                    (
+                        HvX64RegisterName::from(HvRegisterName(HvX64RegisterName::Es.0 + i as u32)),
+                        HvRegisterValue::from(val),
+                    )
+                })
+                .collect::<Vec<_>>();
+            regs.extend_from_slice(segment_regs.as_slice());
+        }
+
+        // Disable the reg page so future writes do not use it (until the state
+        // is reset at the next VTL transition).
+        reg_page.is_valid = 0;
+        regs
+    }
 }
 
 /// Object used to run and to access state for a specific VP.
-pub struct ProcessorRunner<'a, T> {
+pub struct ProcessorRunner<'a, T: Backing<'a>> {
     hcl: &'a Hcl,
     vp: &'a HclVp,
     sidecar: Option<SidecarVp<'a>>,
@@ -1661,25 +1716,25 @@ mod private {
         -> Result<Self, NoRunner>;
 
         fn try_set_reg(
-            runner: &mut ProcessorRunner<'_, Self>,
+            runner: &mut ProcessorRunner<'a, Self>,
             vtl: GuestVtl,
             name: HvRegisterName,
             value: HvRegisterValue,
         ) -> Result<bool, Error>;
 
-        fn must_flush_regs_on(runner: &ProcessorRunner<'_, Self>, name: HvRegisterName) -> bool;
+        fn must_flush_regs_on(runner: &ProcessorRunner<'a, Self>, name: HvRegisterName) -> bool;
 
         fn try_get_reg(
-            runner: &ProcessorRunner<'_, Self>,
+            runner: &ProcessorRunner<'a, Self>,
             vtl: GuestVtl,
             name: HvRegisterName,
         ) -> Result<Option<HvRegisterValue>, Error>;
     }
 }
 
-impl<T> Drop for ProcessorRunner<'_, T> {
+impl<'a, T: Backing<'a>> Drop for ProcessorRunner<'a, T> {
     fn drop(&mut self) {
-        self.flush_deferred_actions();
+        self.flush_deferred_state();
         let actions = DEFERRED_ACTIONS.with(|actions| actions.take());
         assert!(actions.is_none_or(|a| a.is_empty()));
         let old_state = std::mem::replace(&mut *self.vp.state.lock(), VpState::NotRunning);
@@ -1687,16 +1742,38 @@ impl<T> Drop for ProcessorRunner<'_, T> {
     }
 }
 
-impl<T> ProcessorRunner<'_, T> {
+impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
+    /// Flushes any deferred state. Must be called if preparing the partition
+    /// for save/restore (servicing).
+    pub fn flush_deferred_state(&mut self) {
+        self.flush_register_page();
+        self.flush_deferred_actions();
+    }
+
     /// Flushes any pending deferred actions. Must be called if preparing the
     /// partition for save/restore (servicing), since otherwise the deferred
     /// actions will be lost.
-    pub fn flush_deferred_actions(&mut self) {
+    fn flush_deferred_actions(&mut self) {
         if self.sidecar.is_none() {
             DEFERRED_ACTIONS.with(|actions| {
                 let mut actions = actions.borrow_mut();
                 actions.as_mut().unwrap().run_actions(self.hcl);
             })
+        }
+    }
+
+    /// Flushes any dirty registers from the register page to ensure the values
+    /// persist across a save/restore (servicing) since there is no guarantee
+    /// the page will be consumed without transitioning to another VTL.
+    fn flush_register_page(&mut self) {
+        let regs = self.vp.scan_register_page_and_disable();
+        if !regs.is_empty() {
+            if let Err(err) = self.set_vp_registers(GuestVtl::Vtl0, regs.as_slice()) {
+                tracing::error!(
+                    err = &err as &dyn std::error::Error,
+                    "Failed to flush register page"
+                );
+            }
         }
     }
 }

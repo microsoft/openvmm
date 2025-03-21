@@ -444,7 +444,7 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
     }
 
     fn try_set_reg(
-        _runner: &mut ProcessorRunner<'_, Self>,
+        _runner: &mut ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         _name: HvRegisterName,
         _value: HvRegisterValue,
@@ -452,12 +452,12 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
         Ok(false)
     }
 
-    fn must_flush_regs_on(_runner: &ProcessorRunner<'_, Self>, _name: HvRegisterName) -> bool {
+    fn must_flush_regs_on(_runner: &ProcessorRunner<'a, Self>, _name: HvRegisterName) -> bool {
         false
     }
 
     fn try_get_reg(
-        _runner: &ProcessorRunner<'_, Self>,
+        _runner: &ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         _name: HvRegisterName,
     ) -> Result<Option<HvRegisterValue>, super::Error> {

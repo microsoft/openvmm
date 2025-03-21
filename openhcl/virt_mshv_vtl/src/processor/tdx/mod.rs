@@ -310,7 +310,7 @@ impl VirtualRegister {
         Ok(())
     }
 
-    fn read(&self, runner: &ProcessorRunner<'_, Tdx<'_>>) -> u64 {
+    fn read<'a>(&self, runner: &ProcessorRunner<'a, Tdx<'a>>) -> u64 {
         let physical_reg = runner.read_vmcs64(self.vtl, self.register.physical_vmcs_field());
 
         // Get the bits owned by the host from the shadow and the bits owned by the

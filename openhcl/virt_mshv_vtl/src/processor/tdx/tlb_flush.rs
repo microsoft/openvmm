@@ -122,11 +122,11 @@ impl UhProcessor<'_, TdxBacked> {
 
     /// Performs any TLB flush by list that may be required. Returns true
     /// if successful, false if a flush entire is required instead.
-    fn try_flush_list(
+    fn try_flush_list<'a>(
         target_vtl: GuestVtl,
         partition_flush_state: &TdxPartitionFlushState,
         gva_list_count: &mut Wrapping<usize>,
-        runner: &mut ProcessorRunner<'_, Tdx<'_>>,
+        runner: &mut ProcessorRunner<'a, Tdx<'a>>,
         flush_page: &user_driver::memory::MemoryBlock,
     ) -> bool {
         // Check quickly to see whether any new addresses are in the list.
