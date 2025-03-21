@@ -222,7 +222,7 @@ impl CpuIo for IoHandler<'_> {
 }
 
 impl IoHandler<'_> {
-    fn read_str(&self, s: tmk_protocol::Str) -> anyhow::Result<String> {
+    fn read_str(&self, s: tmk_protocol::StrDescriptor) -> anyhow::Result<String> {
         let mut buf = vec![0; s.len as usize];
         self.guest_memory
             .read_at(s.gpa, &mut buf)

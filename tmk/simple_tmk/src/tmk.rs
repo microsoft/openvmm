@@ -19,7 +19,7 @@ unsafe fn command(command: &tmk_protocol::Command) {
 fn log_str(msg: &str) {
     // SAFETY: `msg`'s pointer and length are valid.
     unsafe {
-        command(&tmk_protocol::Command::Log(tmk_protocol::Str {
+        command(&tmk_protocol::Command::Log(tmk_protocol::StrDescriptor {
             gpa: msg.as_ptr() as u64,
             len: msg.len() as u64,
         }));
@@ -57,11 +57,11 @@ fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     // SAFETY: the command is valid.
     unsafe {
         command(&tmk_protocol::Command::Panic {
-            message: tmk_protocol::Str {
+            message: tmk_protocol::StrDescriptor {
                 gpa: msg.as_ptr() as u64,
                 len: msg.len() as u64,
             },
-            filename: tmk_protocol::Str {
+            filename: tmk_protocol::StrDescriptor {
                 gpa: filename.as_ptr() as u64,
                 len: filename.len() as u64,
             },
