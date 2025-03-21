@@ -7,17 +7,17 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures::StreamExt;
-use gdma_defs::Cqe;
-use gdma_defs::GDMA_EQE_COMPLETION;
-use gdma_defs::Sge;
-use gdma_defs::bnic::CQE_RX_OKAY;
-use gdma_defs::bnic::CQE_TX_OKAY;
-use gdma_defs::bnic::MANA_LONG_PKT_FMT;
-use gdma_defs::bnic::MANA_SHORT_PKT_FMT;
 use gdma_defs::bnic::ManaQueryStatisticsResponse;
 use gdma_defs::bnic::ManaRxcompOob;
 use gdma_defs::bnic::ManaTxCompOob;
 use gdma_defs::bnic::ManaTxOob;
+use gdma_defs::bnic::CQE_RX_OKAY;
+use gdma_defs::bnic::CQE_TX_OKAY;
+use gdma_defs::bnic::MANA_LONG_PKT_FMT;
+use gdma_defs::bnic::MANA_SHORT_PKT_FMT;
+use gdma_defs::Cqe;
+use gdma_defs::Sge;
+use gdma_defs::GDMA_EQE_COMPLETION;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -50,20 +50,20 @@ use net_backend::TxSegmentType;
 use pal_async::task::Spawn;
 use safeatomic::AtomicSliceOps;
 use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::Weak;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::Weak;
 use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
-use user_driver::DeviceBacking;
-use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE32;
 use user_driver::memory::PAGE_SIZE64;
+use user_driver::DeviceBacking;
+use user_driver::DmaClient;
 use vmcore::slim_event::SlimEvent;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
@@ -1398,20 +1398,19 @@ mod tests {
     use gdma::VportConfig;
     use gdma_defs::bnic::ManaQueryDeviceCfgResp;
     use mana_driver::mana::ManaDevice;
+    use net_backend::loopback::LoopbackEndpoint;
     use net_backend::Endpoint;
     use net_backend::QueueConfig;
     use net_backend::RxId;
     use net_backend::TxId;
     use net_backend::TxSegment;
-    use net_backend::loopback::LoopbackEndpoint;
-    use pal_async::DefaultDriver;
     use pal_async::async_test;
+    use pal_async::DefaultDriver;
     use pci_core::msi::MsiInterruptSet;
     use std::future::poll_fn;
     use test_with_tracing::test;
-    use user_driver_emulated_mock::DeviceSharedMemory;
+    use user_driver_emulated_mock::DeviceTestMemory;
     use user_driver_emulated_mock::EmulatedDevice;
-    use user_driver_emulated_mock::EmulatedDmaAllocator;
     use vmcore::vm_task::SingleDriverBackend;
     use vmcore::vm_task::VmTaskDriverSource;
 
@@ -1446,17 +1445,12 @@ mod tests {
         packet_len: usize,
         num_segments: usize,
     ) {
-        let base_len = 1 << 20;
-        let payload_len = 1 << 20;
-        let mem: DeviceSharedMemory = DeviceSharedMemory::new(base_len, payload_len);
-        let payload_mem = mem
-            .guest_memory()
-            .subrange(base_len as u64, payload_len as u64, false)
-            .unwrap();
-        let driver_dma_mem = if dma_mode == GuestDmaMode::DirectDma {
-            mem.guest_memory_for_driver_dma()
-                .subrange(base_len as u64, payload_len as u64, false)
-                .unwrap()
+        let pages = 256; // 1MB
+        let allow_dma = dma_mode == GuestDmaMode::DirectDma;
+        let mem: DeviceTestMemory = DeviceTestMemory::new(pages * 2, allow_dma, "test_endpoint");
+        let payload_mem = mem.guest_memory();
+        let driver_dma_mem = if allow_dma {
+            mem.guest_dma_memory()
         } else {
             payload_mem.clone()
         };
@@ -1471,8 +1465,8 @@ mod tests {
             }],
             &mut ExternallyManagedMmioIntercepts,
         );
-        let allocator = EmulatedDmaAllocator::new(mem.clone());
-        let device = EmulatedDevice::new(device, msi_set, allocator.into());
+        let dma_client = mem.dma_client();
+        let device = EmulatedDevice::new(device, msi_set, dma_client);
         let dev_config = ManaQueryDeviceCfgResp {
             pf_cap_flags1: 0.into(),
             pf_cap_flags2: 0,
@@ -1560,13 +1554,12 @@ mod tests {
 
     #[async_test]
     async fn test_vport_with_query_filter_state(driver: DefaultDriver) {
-        let base_len = 256 * 1024;
-        let payload_len = 1 << 20;
-        let mem = DeviceSharedMemory::new(base_len, payload_len);
+        let pages = 512; // 2MB
+        let mem = DeviceTestMemory::new(pages, false, "test_vport_with_query_filter_state");
         let mut msi_set = MsiInterruptSet::new();
         let device = gdma::GdmaDevice::new(
             &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
-            mem.guest_memory().clone(),
+            mem.guest_memory(),
             &mut msi_set,
             vec![VportConfig {
                 mac_address: [1, 2, 3, 4, 5, 6].into(),
@@ -1574,8 +1567,8 @@ mod tests {
             }],
             &mut ExternallyManagedMmioIntercepts,
         );
-        let allocator = EmulatedDmaAllocator::new(mem.clone());
-        let device = EmulatedDevice::new(device, msi_set, allocator.into());
+        let dma_client = mem.dma_client();
+        let device = EmulatedDevice::new(device, msi_set, dma_client);
         let cap_flags1 = gdma_defs::bnic::BasicNicDriverFlags::new().with_query_filter_state(1);
         let dev_config = ManaQueryDeviceCfgResp {
             pf_cap_flags1: cap_flags1,

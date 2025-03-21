@@ -18,6 +18,7 @@ inspect.workspace = true
 nvme.workspace = true
 nvme_driver.workspace = true
 nvme_spec.workspace = true
+page_pool_alloc.workspace = true
 pal_async.workspace = true
 parking_lot.workspace = true
 pci_core.workspace = true

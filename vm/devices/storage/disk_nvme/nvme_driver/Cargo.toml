@@ -10,7 +10,6 @@ rust-version.workspace = true
 guestmem.workspace = true
 inspect = { workspace = true, features = ["defer"] }
 inspect_counters.workspace = true
-memory_range.workspace = true
 mesh.workspace = true
 nvme_spec.workspace = true
 page_pool_alloc.workspace = true

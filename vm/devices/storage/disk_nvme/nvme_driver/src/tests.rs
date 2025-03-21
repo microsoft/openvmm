@@ -5,32 +5,26 @@ use crate::NvmeDriver;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
-use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
-use memory_range::MemoryRange;
 use nvme::NvmeControllerCaps;
-use nvme_spec::Cap;
 use nvme_spec::nvm::DsmRange;
-use page_pool_alloc::PagePool;
-use page_pool_alloc::PagePoolAllocator;
-use page_pool_alloc::TestMapper;
-use pal_async::DefaultDriver;
+use nvme_spec::Cap;
 use pal_async::async_test;
+use pal_async::DefaultDriver;
 use parking_lot::Mutex;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::sync::Arc;
 use test_with_tracing::test;
+use user_driver::interrupt::DeviceInterrupt;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
-use user_driver::interrupt::DeviceInterrupt;
-use user_driver::memory::PAGE_SIZE64;
+use user_driver_emulated_mock::DeviceTestMemory;
 use user_driver_emulated_mock::EmulatedDevice;
 use user_driver_emulated_mock::Mapping;
-use user_driver_emulated_mock::guest_memory_access_wrapper::GuestMemoryAccessWrapper;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::IntoBytes;
@@ -58,7 +52,9 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
 
     // Memory setup
     let pages = 1000;
-    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages, false);
+    let device_test_memory = DeviceTestMemory::new(pages, false, "test_nvme_ioqueue_max_mqes");
+    let guest_mem = device_test_memory.guest_memory();
+    let dma_client = device_test_memory.dma_client();
 
     // Controller Driver Setup
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -94,7 +90,9 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
 
     // Memory setup
     let pages = 1000;
-    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages, false);
+    let device_test_memory = DeviceTestMemory::new(pages, false, "test_nvme_ioqueue_invalid_mqes");
+    let guest_mem = device_test_memory.guest_memory();
+    let dma_client = device_test_memory.dma_client();
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
@@ -126,12 +124,13 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     const CPU_COUNT: u32 = 64;
 
     // Memory setup
-    let pages = 1000;
-    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages, allow_dma);
+    let pages = 1024; // 4MB
+    let device_test_memory = DeviceTestMemory::new(pages * 2, allow_dma, "test_nvme_driver");
+    let guest_mem = device_test_memory.guest_memory();
+    let dma_client = device_test_memory.dma_client();
 
     let driver_dma_mem = if allow_dma {
-        let range_half = (pages / 2) * PAGE_SIZE64;
-        guest_mem.subrange(0_u64, range_half, false).unwrap()
+        device_test_memory.guest_dma_memory()
     } else {
         guest_mem.clone()
     };
@@ -244,7 +243,9 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 
     // Memory setup
     let pages = 1000;
-    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages, false);
+    let device_test_memory = DeviceTestMemory::new(pages, false, "test_nvme_save_restore_inner");
+    let guest_mem = device_test_memory.guest_memory();
+    let dma_client = device_test_memory.dma_client();
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
     let mut msi_x = MsiInterruptSet::new();
@@ -312,8 +313,8 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 }
 
 #[derive(Inspect)]
-pub struct NvmeTestEmulatedDevice<T: InspectMut> {
-    device: EmulatedDevice<T, PagePoolAllocator>,
+pub struct NvmeTestEmulatedDevice<T: InspectMut, U: DmaClient> {
+    device: EmulatedDevice<T, U>,
     #[inspect(debug)]
     mocked_response_u32: Arc<Mutex<Option<(usize, u32)>>>,
     #[inspect(debug)]
@@ -329,9 +330,9 @@ pub struct NvmeTestMapping<T> {
     mocked_response_u64: Arc<Mutex<Option<(usize, u64)>>>,
 }
 
-impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
+impl<T: PciConfigSpace + MmioIntercept + InspectMut, U: DmaClient> NvmeTestEmulatedDevice<T, U> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-    pub fn new(device: T, msi_set: MsiInterruptSet, dma_client: Arc<PagePoolAllocator>) -> Self {
+    pub fn new(device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
         Self {
             device: EmulatedDevice::new(device, msi_set, dma_client.clone()),
             mocked_response_u32: Arc::new(Mutex::new(None)),
@@ -347,7 +348,9 @@ impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
 }
 
 /// Implementation of DeviceBacking trait for NvmeTestEmulatedDevice
-impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for NvmeTestEmulatedDevice<T> {
+impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + DmaClient> DeviceBacking
+    for NvmeTestEmulatedDevice<T, U>
+{
     type Registers = NvmeTestMapping<T>;
 
     fn id(&self) -> &str {
@@ -413,24 +416,4 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
     fn write_u64(&self, offset: usize, data: u64) {
         self.mapping.write_u64(offset, data);
     }
-}
-
-/// Creates test memory that leverages the [`TestMapper`]. Returned [`GuestMemory`] references the entire range
-/// and the returned [`PagePoolAllocator`] references only the second half of the range.
-fn create_test_memory(
-    num_pages: u64,
-    allow_dma: bool,
-) -> (GuestMemory, PagePool, Arc<PagePoolAllocator>) {
-    let test_mapper = TestMapper::new(num_pages).unwrap();
-    let sparse_mmap = test_mapper.sparse_mapping();
-    let guest_mem = GuestMemoryAccessWrapper::create_test_guest_memory(sparse_mmap, allow_dma);
-    let pool = PagePool::new(
-        &[MemoryRange::from_4k_gpn_range(num_pages / 2..num_pages)],
-        test_mapper,
-    )
-    .unwrap();
-
-    // Return page pool so that it is not dropped.
-    let allocator = pool.allocator("nvme_test_page_pool".into()).unwrap();
-    (guest_mem, pool, Arc::new(allocator))
 }
