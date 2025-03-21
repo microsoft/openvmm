@@ -130,6 +130,15 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 }
                 Ok(())
             }
+            HvX64RegisterName::CrInterceptControl
+            | HvX64RegisterName::CrInterceptCr0Mask
+            | HvX64RegisterName::CrInterceptCr4Mask
+            | HvX64RegisterName::CrInterceptIa32MiscEnableMask => {
+                if vtl != GuestVtl::Vtl1 {
+                    return Err(HvError::AccessDenied);
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -370,7 +379,24 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                 .lapic
                 .apic_base()
                 .into()),
-            // TODO: intercept control registers
+            control_reg @ (HvX64RegisterName::CrInterceptControl
+            | HvX64RegisterName::CrInterceptCr0Mask
+            | HvX64RegisterName::CrInterceptCr4Mask
+            | HvX64RegisterName::CrInterceptIa32MiscEnableMask) => {
+                let vtl1 = self.vp.backing.cvm_state_mut().vtl1.as_ref().unwrap();
+                Ok(match control_reg {
+                    HvX64RegisterName::CrInterceptControl => {
+                        u64::from(vtl1.reg_intercept.intercept_control)
+                    }
+                    HvX64RegisterName::CrInterceptCr0Mask => vtl1.reg_intercept.cr0_mask,
+                    HvX64RegisterName::CrInterceptCr4Mask => vtl1.reg_intercept.cr4_mask,
+                    HvX64RegisterName::CrInterceptIa32MiscEnableMask => {
+                        vtl1.reg_intercept.ia32_misc_enable_mask
+                    }
+                    _ => unreachable!(),
+                }
+                .into())
+            }
             _ => {
                 tracing::error!(
                     ?name,
@@ -612,10 +638,6 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             mask_reg @ (HvX64RegisterName::CrInterceptCr0Mask
             | HvX64RegisterName::CrInterceptCr4Mask
             | HvX64RegisterName::CrInterceptIa32MiscEnableMask) => {
-                if vtl != GuestVtl::Vtl1 {
-                    return Err(HvError::AccessDenied);
-                }
-
                 let vtl1 = self.vp.backing.cvm_state_mut().vtl1.as_mut().unwrap();
                 match mask_reg {
                     HvX64RegisterName::CrInterceptCr0Mask => {
@@ -625,7 +647,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                         vtl1.reg_intercept.cr4_mask = reg.value.as_u64();
                     }
                     HvX64RegisterName::CrInterceptIa32MiscEnableMask => {
-                        vtl1.reg_intercept.ia32_misc_enable_mask = reg.value.as_u64();
+                        vtl1.reg_intercept.ia32_misc_enable_mask = reg.value.as_u64(); // TODO is this ever used?
                     }
                     _ => unreachable!(),
                 }
