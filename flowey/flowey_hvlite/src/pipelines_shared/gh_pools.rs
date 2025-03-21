@@ -83,3 +83,13 @@ pub fn windows_arm_self_hosted_baremetal() -> GhRunner {
         "Baremetal".to_string(),
     ])
 }
+
+pub fn windows_tdx_self_hosted_baremetal() -> GhRunner {
+    GhRunner::SelfHosted(vec![
+        "self-hosted".to_string(),
+        "Windows".to_string(),
+        "X64".to_string(),
+        "TDX".to_string(),
+        "Baremetal".to_string(),
+    ])
+}
