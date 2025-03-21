@@ -389,6 +389,11 @@ async fn battery_capacity(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Er
 }
 
 // Sidecar currently requires the dev kernel build.
+//
+// Use UEFI so that the guest doesn't access the other APs, causing hot adds
+// into VTL2 Linux.
+//
+// Sidecar isn't supported on aarch64 yet.
 #[openvmm_test(openhcl_uefi_x64(none) [LATEST_STANDARD_DEV_KERNEL_X64])]
 async fn sidecar(
     config: PetriVmConfigOpenVmm,
@@ -399,9 +404,15 @@ async fn sidecar(
         .with_custom_openhcl(igvm)
         .with_custom_config(|c| {
             c.processor_topology.proc_count = proc_count;
+            // Sidecar will start one VP per socket. For this test, use just one
+            // socket.
             c.processor_topology.vps_per_socket = Some(proc_count);
             c.processor_topology.enable_smt = Some(false);
-            c.processor_topology.arch.x2apic = hvlite_defs::config::X2ApicConfig::Supported;
+            // Sidecar currently requires x2APIC.
+            #[cfg(guest_arch = "x86_64")]
+            {
+                c.processor_topology.arch.x2apic = hvlite_defs::config::X2ApicConfig::Supported;
+            }
         })
         .with_uefi_frontpage(true)
         .run_without_agent()
