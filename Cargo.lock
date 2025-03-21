@@ -2195,6 +2195,7 @@ dependencies = [
  "nvme",
  "nvme_driver",
  "nvme_spec",
+ "page_pool_alloc",
  "pal_async",
  "parking_lot",
  "pci_core",

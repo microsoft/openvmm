@@ -35,6 +35,7 @@ use user_driver::interrupt::DeviceInterrupt;
 use user_driver::interrupt::DeviceInterruptSource;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
+use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
@@ -322,6 +323,7 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for Mapping<T> {
 /// by the same underlying memory. Meant to provide shared memory for testing devices.
 pub struct DeviceTestMemory {
     guest_mem: GuestMemory,
+    guest_dma_mem: GuestMemory,
     _pool: PagePool,
     allocator: Arc<PagePoolAllocator>,
 }
@@ -342,16 +344,23 @@ impl DeviceTestMemory {
 
         // Return page pool so that it is not dropped.
         let allocator = pool.allocator(pool_name.into()).unwrap();
+        let range_half = num_pages / 2 * PAGE_SIZE64;
         Self {
-            guest_mem,
+            guest_mem: guest_mem.subrange(0, range_half * 2, false).unwrap(),
+            guest_dma_mem: guest_mem.subrange(0, range_half, false).unwrap(),
             _pool: pool,
             allocator: Arc::new(allocator),
         }
     }
 
-    /// Returns [`GuestMemory`] with access to the entire range of underlying memory.
+    /// Returns [`GuestMemory`] with the same access as the dma_client.
     pub fn guest_memory(&self) -> GuestMemory {
         self.guest_mem.clone()
+    }
+
+    /// Returns Dma-able [`GuestMemory`].
+    pub fn guest_dma_memory(&self) -> GuestMemory {
+        self.guest_dma_mem.clone()
     }
 
     /// Returns [`PagePoolAllocator`] with access to the second half of the underlying memory.
