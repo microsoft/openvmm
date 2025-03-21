@@ -388,6 +388,25 @@ async fn battery_capacity(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Er
     Ok(())
 }
 
+fn configure_for_sidecar(
+    config: PetriVmConfigOpenVmm,
+    igvm: ResolvedArtifact<LATEST_STANDARD_DEV_KERNEL_X64>,
+    proc_count: u32,
+) -> PetriVmConfigOpenVmm {
+    config.with_custom_openhcl(igvm).with_custom_config(|c| {
+        c.processor_topology.proc_count = proc_count;
+        // Sidecar will start one VP per socket. For this test, use just one
+        // socket.
+        c.processor_topology.vps_per_socket = Some(proc_count);
+        c.processor_topology.enable_smt = Some(false);
+        // Sidecar currently requires x2APIC.
+        #[cfg(guest_arch = "x86_64")]
+        {
+            c.processor_topology.arch.x2apic = hvlite_defs::config::X2ApicConfig::Supported;
+        }
+    })
+}
+
 // Sidecar currently requires the dev kernel build.
 //
 // Use UEFI so that the guest doesn't access the other APs, causing hot adds
@@ -395,25 +414,12 @@ async fn battery_capacity(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Er
 //
 // Sidecar isn't supported on aarch64 yet.
 #[openvmm_test(openhcl_uefi_x64(none) [LATEST_STANDARD_DEV_KERNEL_X64])]
-async fn sidecar(
+async fn sidecar_aps_unused(
     config: PetriVmConfigOpenVmm,
     (igvm,): (ResolvedArtifact<LATEST_STANDARD_DEV_KERNEL_X64>,),
 ) -> Result<(), anyhow::Error> {
     let proc_count = 4;
-    let mut vm = config
-        .with_custom_openhcl(igvm)
-        .with_custom_config(|c| {
-            c.processor_topology.proc_count = proc_count;
-            // Sidecar will start one VP per socket. For this test, use just one
-            // socket.
-            c.processor_topology.vps_per_socket = Some(proc_count);
-            c.processor_topology.enable_smt = Some(false);
-            // Sidecar currently requires x2APIC.
-            #[cfg(guest_arch = "x86_64")]
-            {
-                c.processor_topology.arch.x2apic = hvlite_defs::config::X2ApicConfig::Supported;
-            }
-        })
+    let mut vm = configure_for_sidecar(config, igvm, proc_count)
         .with_uefi_frontpage(true)
         .run_without_agent()
         .await?;
@@ -438,5 +444,16 @@ async fn sidecar(
 
     // No way to shut down cleanly, currently.
     tracing::info!("dropping VM");
+    Ok(())
+}
+
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)) [LATEST_STANDARD_DEV_KERNEL_X64])]
+async fn sidecar_boot(
+    config: PetriVmConfigOpenVmm,
+    (igvm,): (ResolvedArtifact<LATEST_STANDARD_DEV_KERNEL_X64>,),
+) -> Result<(), anyhow::Error> {
+    let (vm, agent) = configure_for_sidecar(config, igvm, 4).run().await?;
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
 }
