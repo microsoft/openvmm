@@ -1795,7 +1795,10 @@ async fn new_underhill_vm(
 
     // ARM64 always bounces, as the OpenHCL kernel does not
     // have access to VTL0 pages. Necessary until #273 is resolved.
-    let always_bounce = cfg!(guest_arch = "aarch64");
+    //
+    // Currently we always bounce for CVM as well, due to underhill_mem not
+    // supporting registering shared or private memory with the kernel.
+    let always_bounce = cfg!(guest_arch = "aarch64") || isolation.is_hardware_isolated();
     resolver.add_async_resolver::<DiskHandleKind, _, OpenBlockDeviceConfig, _>(
         BlockDeviceResolver::new(
             Arc::new(tp.clone()),

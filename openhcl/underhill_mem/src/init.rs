@@ -283,11 +283,15 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // Create the shared mapping with the complete memory map, to include
         // the shared pool. This memory is not private to VTL2 and is expected
         // that devices will access it via DMA.
+        //
+        // Don't allow kernel access here either--the kernel seems to get
+        // confused about shared memory, and our current use of kernel-mode
+        // guest memory access is limited to low-perf paths where we can use
+        // bounce buffering.
         tracing::debug!("Building shared memory map");
         let shared_mapping = Arc::new({
             let _span = tracing::info_span!("map_shared_memory").entered();
             GuestMemoryMapping::builder(shared_offset)
-                .for_kernel_access(true)
                 .shared(true)
                 .use_bitmap(Some(false))
                 .ignore_registration_failure(!params.boot_init)
