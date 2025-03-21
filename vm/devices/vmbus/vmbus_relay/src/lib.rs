@@ -58,6 +58,7 @@ use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::FeatureFlags;
 use vmbus_core::protocol::GpadlId;
 use vmbus_server::HvsockRelayChannelHalf;
+use vmbus_server::MnfUsage;
 use vmbus_server::ModifyConnectionResponse;
 use vmbus_server::OfferInfo;
 use vmbus_server::OfferParamsInternal;
@@ -668,7 +669,16 @@ impl RelayTask {
             tracing::warn!(offer = ?offer.offer, "All offers should be dedicated with Win8+ host")
         }
 
-        let use_mnf = offer.offer.monitor_allocated != 0;
+        // If the vmbus server is handling MnF, instead of relaying it, it will ignore this monitor
+        // ID and allocate its own.
+        let use_mnf = if offer.offer.monitor_allocated != 0 {
+            MnfUsage::Relayed {
+                monitor_id: offer.offer.monitor_id,
+            }
+        } else {
+            MnfUsage::Disabled
+        };
+
         let params = OfferParamsInternal {
             interface_name: "host relay".to_owned(),
             instance_id: offer.offer.instance_id,
@@ -676,7 +686,6 @@ impl RelayTask {
             mmio_megabytes: offer.offer.mmio_megabytes,
             mmio_megabytes_optional: offer.offer.mmio_megabytes_optional,
             subchannel_index: offer.offer.subchannel_index,
-            // The vmbus server will ignore this field if MNF is being relayed to the host.
             use_mnf,
             // Preserve channel enumeration order from the host within the same
             // interface type.
@@ -688,7 +697,6 @@ impl RelayTask {
                 .with_confidential_ring_buffer(false)
                 .with_confidential_external_memory(false),
             user_defined: offer.offer.user_defined,
-            monitor_id: use_mnf.then_some(offer.offer.monitor_id),
         };
 
         let key = params.key();
