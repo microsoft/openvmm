@@ -11,7 +11,6 @@ use inspect::InspectMut;
 use nvme::NvmeControllerCaps;
 use nvme_spec::nvm::DsmRange;
 use nvme_spec::Cap;
-use page_pool_alloc::PagePoolAllocator;
 use pal_async::async_test;
 use pal_async::DefaultDriver;
 use parking_lot::Mutex;
@@ -24,7 +23,7 @@ use user_driver::memory::PAGE_SIZE64;
 use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
-use user_driver_emulated_mock::create_test_memory;
+use user_driver_emulated_mock::DeviceTestMemory;
 use user_driver_emulated_mock::EmulatedDevice;
 use user_driver_emulated_mock::Mapping;
 use vmcore::vm_task::SingleDriverBackend;
@@ -54,8 +53,9 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
 
     // Memory setup
     let pages = 1000;
-    let (guest_mem, _page_pool, dma_client) =
-        create_test_memory(pages, false, "test_nvme_ioqueue_max_mqes");
+    let device_test_memory = DeviceTestMemory::new(pages, false, "test_nvme_ioqueue_max_mqes");
+    let guest_mem = device_test_memory.guest_memory();
+    let dma_client = device_test_memory.dma_client();
 
     // Controller Driver Setup
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -91,8 +91,9 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
 
     // Memory setup
     let pages = 1000;
-    let (guest_mem, _page_pool, dma_client) =
-        create_test_memory(pages, false, "test_nvme_ioqueue_invalid_mqes");
+    let device_test_memory = DeviceTestMemory::new(pages, false, "test_nvme_ioqueue_invalid_mqes");
+    let guest_mem = device_test_memory.guest_memory();
+    let dma_client = device_test_memory.dma_client();
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
@@ -125,8 +126,9 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
 
     // Memory setup
     let pages = 1000;
-    let (guest_mem, _page_pool, dma_client) =
-        create_test_memory(pages, allow_dma, "test_nvme_driver");
+    let device_test_memory = DeviceTestMemory::new(pages, allow_dma, "test_nvme_driver");
+    let guest_mem = device_test_memory.guest_memory();
+    let dma_client = device_test_memory.dma_client();
 
     let driver_dma_mem = if allow_dma {
         let range_half = (pages / 2) * PAGE_SIZE64;
@@ -243,8 +245,9 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 
     // Memory setup
     let pages = 1000;
-    let (guest_mem, _page_pool, dma_client) =
-        create_test_memory(pages, false, "test_nvme_save_restore");
+    let device_test_memory = DeviceTestMemory::new(pages, false, "test_nvme_save_restore_inner");
+    let guest_mem = device_test_memory.guest_memory();
+    let dma_client = device_test_memory.dma_client();
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
     let mut msi_x = MsiInterruptSet::new();
@@ -312,8 +315,8 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 }
 
 #[derive(Inspect)]
-pub struct NvmeTestEmulatedDevice<T: InspectMut> {
-    device: EmulatedDevice<T, PagePoolAllocator>,
+pub struct NvmeTestEmulatedDevice<T: InspectMut, U: DmaClient> {
+    device: EmulatedDevice<T, U>,
     #[inspect(debug)]
     mocked_response_u32: Arc<Mutex<Option<(usize, u32)>>>,
     #[inspect(debug)]
@@ -329,9 +332,9 @@ pub struct NvmeTestMapping<T> {
     mocked_response_u64: Arc<Mutex<Option<(usize, u64)>>>,
 }
 
-impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
+impl<T: PciConfigSpace + MmioIntercept + InspectMut, U: DmaClient> NvmeTestEmulatedDevice<T, U> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-    pub fn new(device: T, msi_set: MsiInterruptSet, dma_client: Arc<PagePoolAllocator>) -> Self {
+    pub fn new(device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
         Self {
             device: EmulatedDevice::new(device, msi_set, dma_client.clone()),
             mocked_response_u32: Arc::new(Mutex::new(None)),
@@ -347,7 +350,9 @@ impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
 }
 
 /// Implementation of DeviceBacking trait for NvmeTestEmulatedDevice
-impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for NvmeTestEmulatedDevice<T> {
+impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + DmaClient> DeviceBacking
+    for NvmeTestEmulatedDevice<T, U>
+{
     type Registers = NvmeTestMapping<T>;
 
     fn id(&self) -> &str {

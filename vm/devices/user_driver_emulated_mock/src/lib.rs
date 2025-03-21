@@ -318,23 +318,45 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for Mapping<T> {
     }
 }
 
-/// Creates test memory that leverages the [`TestMapper`]. Returned [`GuestMemory`] references the entire range
-/// and the returned [`PagePoolAllocator`] references only the second half of the range.
-pub fn create_test_memory(
-    num_pages: u64,
-    allow_dma: bool,
-    pool_name: &str,
-) -> (GuestMemory, PagePool, Arc<PagePoolAllocator>) {
-    let test_mapper = TestMapper::new(num_pages).unwrap();
-    let sparse_mmap = test_mapper.sparse_mapping();
-    let guest_mem = GuestMemoryAccessWrapper::create_test_guest_memory(sparse_mmap, allow_dma);
-    let pool = PagePool::new(
-        &[MemoryRange::from_4k_gpn_range(num_pages / 2..num_pages)],
-        test_mapper,
-    )
-    .unwrap();
+/// A wrapper around the [`TestMapper`] that generates both [`GuestMemory`] and [`PagePoolAllocator`] backed
+/// by the same underlying memory. Meant to provide shared memory for testing devices.
+pub struct DeviceTestMemory {
+    guest_mem: GuestMemory,
+    _pool: PagePool,
+    allocator: Arc<PagePoolAllocator>,
+}
 
-    // Return page pool so that it is not dropped.
-    let allocator = pool.allocator(pool_name.into()).unwrap();
-    (guest_mem, pool, Arc::new(allocator))
+impl DeviceTestMemory {
+    /// Creates test memory that leverages the [`TestMapper`]. Has 2 possible ways to access the memory: [`GuestMemory`] and [`PagePoolAllocator`].
+    /// The [`GuestMemory`] has access to the entire range of memory while the [`PagePoolAllocator`] only has access to the second half of the memory.
+    /// If the `allow_dma` switch is enabled, dma memory will start at page 0.
+    pub fn new(num_pages: u64, allow_dma: bool, pool_name: &str) -> Self {
+        let test_mapper = TestMapper::new(num_pages).unwrap();
+        let sparse_mmap = test_mapper.sparse_mapping();
+        let guest_mem = GuestMemoryAccessWrapper::create_test_guest_memory(sparse_mmap, allow_dma);
+        let pool = PagePool::new(
+            &[MemoryRange::from_4k_gpn_range(num_pages / 2..num_pages)],
+            test_mapper,
+        )
+        .unwrap();
+
+        // Return page pool so that it is not dropped.
+        let allocator = pool.allocator(pool_name.into()).unwrap();
+        Self {
+            guest_mem,
+            _pool: pool,
+            allocator: Arc::new(allocator),
+        }
+    }
+
+    /// Returns [`GuestMemory`] with access to the entire range of underlying memory.
+    pub fn guest_memory(&self) -> GuestMemory {
+        self.guest_mem.clone()
+    }
+
+    /// Returns [`PagePoolAllocator`] with access to the second half of the underlying memory.
+    /// For eg. If 10 pages are created, this will only have access to pages 5-10.
+    pub fn dma_client(&self) -> Arc<PagePoolAllocator> {
+        self.allocator.clone()
+    }
 }
