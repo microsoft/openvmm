@@ -242,6 +242,8 @@ mod private {
             dev: &impl CpuIo,
         ) -> Result<bool, UhRunVpError>;
 
+        fn deliver_exit_pending_event(this: &mut UhProcessor<'_, Self>);
+
         fn handle_vp_start_enable_vtl_wake(
             _this: &mut UhProcessor<'_, Self>,
             _vtl: GuestVtl,
@@ -294,6 +296,15 @@ trait HardwareIsolatedBacking: Backing {
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
     ) -> TranslationRegisters;
+    /// Vector of the event that is pending injection into the guest state, if
+    /// valid.
+    fn pending_event_vector(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> Option<u8>;
+    /// Sets the pending exception for the guest state.
+    fn set_pending_exception(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        event: hvdef::HvX64PendingExceptionEvent,
+    );
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -682,6 +693,8 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     } else {
                         [false, false].into()
                     };
+
+                    T::deliver_exit_pending_event(self);
 
                     if self.backing.untrusted_synic().is_some() {
                         self.update_synic(GuestVtl::Vtl0, true);
