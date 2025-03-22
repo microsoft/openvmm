@@ -140,6 +140,27 @@ impl SnpBacked {
     pub fn shared_pages_required_per_cpu() -> u64 {
         UhDirectOverlay::Count as u64
     }
+
+    fn generate_intercept_message_header(
+        this: &UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        vp_index: VpIndex,
+    ) -> hvdef::HvX64InterceptMessageHeader {
+        let vmsa = this.runner.vmsa(vtl);
+
+        hvdef::HvX64InterceptMessageHeader {
+            vp_index: vp_index.index(),
+            instruction_length_and_cr8: (vmsa.next_rip() - vmsa.rip()) as u8,
+            intercept_access_type: hvdef::HvInterceptAccessType::WRITE,
+            execution_state: hvdef::HvX64VpExecutionState::new()
+                .with_cpl(vmsa.cpl())
+                .with_vtl(vtl.into())
+                .with_efer_lma(vmsa.efer() & x86defs::X64_EFER_LMA != 0),
+            cs_segment: hvdef::HvRegisterValue::from(vmsa.cs().as_u128()).into(),
+            rip: vmsa.rip(),
+            rflags: vmsa.rflags(),
+        }
+    }
 }
 
 impl HardwareIsolatedBacking for SnpBacked {
@@ -288,31 +309,35 @@ impl HardwareIsolatedBacking for SnpBacked {
     }
 
     fn generate_register_intercept_message(
-        this: &mut UhProcessor<'_, Self>,
+        this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
         vp_index: VpIndex,
         reg: HvX64RegisterName,
         value: u64,
     ) -> hvdef::HvX64RegisterInterceptMessage {
-        let vmsa = this.runner.vmsa(vtl);
         hvdef::HvX64RegisterInterceptMessage {
-            header: hvdef::HvX64InterceptMessageHeader {
-                vp_index: vp_index.index(),
-                instruction_length_and_cr8: (vmsa.next_rip() - vmsa.rip()) as u8,
-                intercept_access_type: hvdef::HvInterceptAccessType::WRITE,
-                execution_state: hvdef::HvX64VpExecutionState::new()
-                    .with_cpl(vmsa.cpl())
-                    .with_vtl(vtl.into())
-                    .with_efer_lma(vmsa.efer() & x86defs::X64_EFER_LMA != 0),
-                cs_segment: hvdef::HvRegisterValue::from(vmsa.cs().as_u128()).into(),
-                rip: vmsa.rip(),
-                rflags: vmsa.rflags(),
-            },
+            header: Self::generate_intercept_message_header(this, vtl, vp_index),
             flags: hvdef::HvX64RegisterInterceptMessageFlags::new(),
             rsvd: 0,
             rsvd2: 0,
             register_name: reg,
             access_info: value as u128,
+        }
+    }
+
+    fn generate_msr_intercept_message(
+        this: &UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        vp_index: VpIndex,
+        msr: u32,
+    ) -> hvdef::HvX64MsrInterceptMessage {
+        let vmsa = this.runner.vmsa(vtl);
+        hvdef::HvX64MsrInterceptMessage {
+            header: Self::generate_intercept_message_header(this, vtl, vp_index),
+            msr_number: msr,
+            rax: vmsa.rax(),
+            rdx: vmsa.rdx(),
+            reserved: 0,
         }
     }
 }
@@ -982,6 +1007,103 @@ impl UhProcessor<'_, SnpBacked> {
         Ok(())
     }
 
+    fn handle_msr_access(
+        &mut self,
+        dev: &impl CpuIo,
+        entered_from_vtl: GuestVtl,
+        msr: u32,
+        is_write: bool,
+    ) {
+        if is_write && self.cvm_is_protected_msr_write(entered_from_vtl, msr) {
+            // An intercept message has been posted, no further processing is
+            // required. Return without advancing instruction pointer, it must
+            // continue to point to the instruction that generated the
+            // intercept.
+            return;
+        }
+
+        let vmsa = self.runner.vmsa_mut(entered_from_vtl);
+        let gp = if is_write {
+            let value = (vmsa.rax() as u32 as u64) | ((vmsa.rdx() as u32 as u64) << 32);
+
+            let r = self.backing.cvm.lapics[entered_from_vtl]
+                .lapic
+                .access(&mut SnpApicClient {
+                    partition: self.partition,
+                    vmsa,
+                    dev,
+                    vmtime: &self.vmtime,
+                    vtl: entered_from_vtl,
+                })
+                .msr_write(msr, value)
+                .or_else_if_unknown(|| self.write_msr_cvm(msr, value, entered_from_vtl))
+                .or_else_if_unknown(|| self.write_msr(msr, value, entered_from_vtl))
+                .or_else_if_unknown(|| self.write_msr_snp(dev, msr, value, entered_from_vtl));
+
+            match r {
+                Ok(()) => false,
+                Err(MsrError::Unknown) => {
+                    tracing::debug!(msr, value, "unknown cvm msr write");
+                    false
+                }
+                Err(MsrError::InvalidAccess) => true,
+            }
+        } else {
+            let r = self.backing.cvm.lapics[entered_from_vtl]
+                .lapic
+                .access(&mut SnpApicClient {
+                    partition: self.partition,
+                    vmsa,
+                    dev,
+                    vmtime: &self.vmtime,
+                    vtl: entered_from_vtl,
+                })
+                .msr_read(msr)
+                .or_else_if_unknown(|| self.read_msr(msr, entered_from_vtl))
+                .or_else_if_unknown(|| self.read_msr_cvm(dev, msr, entered_from_vtl))
+                .or_else_if_unknown(|| match msr {
+                    hvdef::HV_X64_MSR_GUEST_IDLE => {
+                        self.backing.cvm.lapics[entered_from_vtl].activity = MpState::Idle;
+                        let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
+                        vmsa.v_intr_cntrl_mut().set_intr_shadow(false);
+                        Ok(0)
+                    }
+                    _ => Err(MsrError::Unknown),
+                });
+
+            let value = match r {
+                Ok(v) => Some(v),
+                Err(MsrError::Unknown) => {
+                    tracing::debug!(msr, "unknown cvm msr read");
+                    Some(0)
+                }
+                Err(MsrError::InvalidAccess) => None,
+            };
+
+            if let Some(value) = value {
+                let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
+                vmsa.set_rax((value as u32).into());
+                vmsa.set_rdx(((value >> 32) as u32).into());
+                false
+            } else {
+                true
+            }
+        };
+
+        let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
+        if gp {
+            vmsa.set_event_inject(
+                SevEventInjectInfo::new()
+                    .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT)
+                    .with_vector(x86defs::Exception::GENERAL_PROTECTION_FAULT.0)
+                    .with_deliver_error_code(true)
+                    .with_valid(true),
+            );
+        } else {
+            advance_to_next_instruction(&mut vmsa);
+        }
+    }
+
     #[must_use]
     fn sync_lazy_eoi(&mut self, vtl: GuestVtl) -> bool {
         if self.backing.cvm.lapics[vtl].lapic.is_lazy_eoi_pending() {
@@ -1099,86 +1221,7 @@ impl UhProcessor<'_, SnpBacked> {
                 let is_write = vmsa.exit_info1() & 1 != 0;
                 let msr = vmsa.rcx() as u32;
 
-                let gp = if is_write {
-                    let value = (vmsa.rax() as u32 as u64) | ((vmsa.rdx() as u32 as u64) << 32);
-                    let r = self.backing.cvm.lapics[entered_from_vtl]
-                        .lapic
-                        .access(&mut SnpApicClient {
-                            partition: self.partition,
-                            vmsa,
-                            dev,
-                            vmtime: &self.vmtime,
-                            vtl: entered_from_vtl,
-                        })
-                        .msr_write(msr, value)
-                        .or_else_if_unknown(|| self.write_msr_cvm(msr, value, entered_from_vtl))
-                        .or_else_if_unknown(|| self.write_msr(msr, value, entered_from_vtl))
-                        .or_else_if_unknown(|| {
-                            self.write_msr_snp(dev, msr, value, entered_from_vtl)
-                        });
-
-                    match r {
-                        Ok(()) => false,
-                        Err(MsrError::Unknown) => {
-                            tracing::debug!(msr, value, "unknown cvm msr write");
-                            false
-                        }
-                        Err(MsrError::InvalidAccess) => true,
-                    }
-                } else {
-                    let r = self.backing.cvm.lapics[entered_from_vtl]
-                        .lapic
-                        .access(&mut SnpApicClient {
-                            partition: self.partition,
-                            vmsa,
-                            dev,
-                            vmtime: &self.vmtime,
-                            vtl: entered_from_vtl,
-                        })
-                        .msr_read(msr)
-                        .or_else_if_unknown(|| self.read_msr(msr, entered_from_vtl))
-                        .or_else_if_unknown(|| self.read_msr_cvm(dev, msr, entered_from_vtl))
-                        .or_else_if_unknown(|| match msr {
-                            hvdef::HV_X64_MSR_GUEST_IDLE => {
-                                self.backing.cvm.lapics[entered_from_vtl].activity = MpState::Idle;
-                                let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
-                                vmsa.v_intr_cntrl_mut().set_intr_shadow(false);
-                                Ok(0)
-                            }
-                            _ => Err(MsrError::Unknown),
-                        });
-
-                    let value = match r {
-                        Ok(v) => Some(v),
-                        Err(MsrError::Unknown) => {
-                            tracing::debug!(msr, "unknown cvm msr read");
-                            Some(0)
-                        }
-                        Err(MsrError::InvalidAccess) => None,
-                    };
-
-                    if let Some(value) = value {
-                        let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
-                        vmsa.set_rax((value as u32).into());
-                        vmsa.set_rdx(((value >> 32) as u32).into());
-                        false
-                    } else {
-                        true
-                    }
-                };
-
-                let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
-                if gp {
-                    vmsa.set_event_inject(
-                        SevEventInjectInfo::new()
-                            .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT)
-                            .with_vector(x86defs::Exception::GENERAL_PROTECTION_FAULT.0)
-                            .with_deliver_error_code(true)
-                            .with_valid(true),
-                    );
-                } else {
-                    advance_to_next_instruction(&mut vmsa);
-                }
+                self.handle_msr_access(dev, entered_from_vtl, msr, is_write);
 
                 if is_write {
                     &mut self.backing.exit_stats[entered_from_vtl].msr_write
