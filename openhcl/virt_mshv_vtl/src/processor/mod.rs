@@ -325,17 +325,19 @@ trait HardwareIsolatedBacking: Backing {
 =======
 
     fn generate_register_intercept_message(
-        this: &mut UhProcessor<'_, Self>,
+        this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
         vp_index: VpIndex,
         reg: HvX64RegisterName,
         value: u64,
     ) -> hvdef::HvX64RegisterInterceptMessage;
 
-    // fn generate_msr_intercept(
-    //     this: &mut UhProcessor<'_, Self>,
-    //     vtl: GuestVtl,
-    // ) -> hvdef::HvX64MsrInterceptMessage;
+    fn generate_msr_intercept_message(
+        this: &UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        vp_index: VpIndex,
+        msr: u32,
+    ) -> hvdef::HvX64MsrInterceptMessage;
 
     fn cr0(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
     fn cr4(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;

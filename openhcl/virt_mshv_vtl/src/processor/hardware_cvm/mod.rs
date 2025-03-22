@@ -1929,7 +1929,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         value: u64,
     ) {
         tracing::info!(?reg, ?value, "handling write to secure register");
-        if vtl == GuestVtl::Vtl0 {
+        if vtl == GuestVtl::Vtl0 && self.backing.cvm_state().vtl1.is_some() {
             let configured_intercepts = self
                 .backing
                 .cvm_state()
@@ -2004,6 +2004,62 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         }
 
         B::advance_to_next_instruction(self, vtl);
+    }
+
+    pub(crate) fn cvm_is_protected_msr_write(&self, vtl: GuestVtl, msr: u32) -> bool {
+        if vtl == GuestVtl::Vtl0 && self.backing.cvm_state().vtl1.is_some() {
+            let configured_intercepts = self
+                .backing
+                .cvm_state()
+                .vtl1
+                .as_ref()
+                .unwrap()
+                .reg_intercept
+                .intercept_control;
+            let generate_intercept = match msr {
+                x86defs::X86X_MSR_LSTAR => configured_intercepts.msr_lstar_write(),
+                x86defs::X86X_MSR_STAR => configured_intercepts.msr_star_write(),
+                x86defs::X86X_MSR_CSTAR => configured_intercepts.msr_cstar_write(),
+                x86defs::X86X_MSR_APIC_BASE => configured_intercepts.apic_base_msr_write(),
+                x86defs::X86X_MSR_EFER => configured_intercepts.msr_efer_write(),
+                x86defs::X86X_MSR_SYSENTER_CS => configured_intercepts.msr_sysenter_cs_write(),
+                x86defs::X86X_MSR_SYSENTER_EIP => configured_intercepts.msr_sysenter_eip_write(),
+                x86defs::X86X_MSR_SYSENTER_ESP => configured_intercepts.msr_sysenter_esp_write(),
+                x86defs::X86X_MSR_SFMASK => configured_intercepts.msr_sfmask_write(),
+                x86defs::X86X_MSR_TSC_AUX => configured_intercepts.msr_tsc_aux_write(),
+                x86defs::X86X_MSR_XSS => configured_intercepts.msr_xss_write(),
+                x86defs::X86X_MSR_S_CET => configured_intercepts.msr_scet_write(),
+                x86defs::X86X_MSR_PL0_SSP
+                | x86defs::X86X_MSR_PL1_SSP
+                | x86defs::X86X_MSR_PL2_SSP => configured_intercepts.msr_pls_ssp_write(),
+                x86defs::X86X_MSR_INTERRUPT_SSP_TABLE_ADDR => {
+                    configured_intercepts.msr_interrupt_ssp_table_addr_write()
+                }
+                _ => false,
+            };
+
+            if generate_intercept {
+                let intercept_message =
+                    B::generate_msr_intercept_message(self, vtl, self.vp_index(), msr);
+
+                let hv_message = hvdef::HvMessage::new(
+                    hvdef::HvMessageType::HvMessageTypeMsrIntercept,
+                    0,
+                    intercept_message.as_bytes(),
+                );
+
+                tracing::info!(?msr, "sending intercept to vtl 1 for secure msr write");
+
+                self.inner.post_message(
+                    GuestVtl::Vtl1,
+                    hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX,
+                    &hv_message,
+                );
+
+                return true;
+            }
+        }
+        false
     }
 
     fn get_vsm_vp_secure_config_vtl(
