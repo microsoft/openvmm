@@ -463,6 +463,8 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
     ) -> Result<Option<HvRegisterValue>, super::Error> {
         Ok(None)
     }
+
+    fn flush_register_page(_runner: &mut ProcessorRunner<'a, Self>) {}
 }
 
 /// Private registers that are copied to/from the kernel's shared run page.

@@ -205,6 +205,8 @@ impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
     ) -> Result<Option<HvRegisterValue>, super::Error> {
         Ok(None)
     }
+
+    fn flush_register_page(_runner: &mut ProcessorRunner<'a, Self>) {}
 }
 
 impl<'a> ProcessorRunner<'a, Snp<'a>> {
