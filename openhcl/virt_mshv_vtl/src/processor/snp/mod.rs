@@ -141,12 +141,14 @@ impl SnpBacked {
         UhDirectOverlay::Count as u64
     }
 
-    fn generate_intercept_message_header(
+    fn generate_write_intercept_message_header(
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
         vp_index: VpIndex,
     ) -> hvdef::HvX64InterceptMessageHeader {
         let vmsa = this.runner.vmsa(vtl);
+
+        tracing::info!("next_rip {:x} rip {:x}", vmsa.next_rip(), vmsa.rip());
 
         hvdef::HvX64InterceptMessageHeader {
             vp_index: vp_index.index(),
@@ -156,7 +158,7 @@ impl SnpBacked {
                 .with_cpl(vmsa.cpl())
                 .with_vtl(vtl.into())
                 .with_efer_lma(vmsa.efer() & x86defs::X64_EFER_LMA != 0),
-            cs_segment: hvdef::HvRegisterValue::from(vmsa.cs().as_u128()).into(),
+            cs_segment: virt_seg_from_snp(vmsa.cs()).into(),
             rip: vmsa.rip(),
             rflags: vmsa.rflags(),
         }
@@ -316,7 +318,7 @@ impl HardwareIsolatedBacking for SnpBacked {
         value: u64,
     ) -> hvdef::HvX64RegisterInterceptMessage {
         hvdef::HvX64RegisterInterceptMessage {
-            header: Self::generate_intercept_message_header(this, vtl, vp_index),
+            header: Self::generate_write_intercept_message_header(this, vtl, vp_index),
             flags: hvdef::HvX64RegisterInterceptMessageFlags::new(),
             rsvd: 0,
             rsvd2: 0,
@@ -333,7 +335,7 @@ impl HardwareIsolatedBacking for SnpBacked {
     ) -> hvdef::HvX64MsrInterceptMessage {
         let vmsa = this.runner.vmsa(vtl);
         hvdef::HvX64MsrInterceptMessage {
-            header: Self::generate_intercept_message_header(this, vtl, vp_index),
+            header: Self::generate_write_intercept_message_header(this, vtl, vp_index),
             msr_number: msr,
             rax: vmsa.rax(),
             rdx: vmsa.rdx(),
@@ -1104,6 +1106,28 @@ impl UhProcessor<'_, SnpBacked> {
         }
     }
 
+    fn handle_xsetbv(&mut self, entered_from_vtl: GuestVtl) {
+        let vmsa = self.runner.vmsa(entered_from_vtl);
+        if let Some(value) = hardware_cvm::validate_xsetbv_exit(hardware_cvm::XsetbvExitInput {
+            rax: vmsa.rax(),
+            rcx: vmsa.rcx(),
+            rdx: vmsa.rdx(),
+            cr4: vmsa.cr4(),
+            cpl: vmsa.cpl(),
+        }) {
+            self.cvm_handle_secure_register_write(entered_from_vtl, HvX64RegisterName::Xfem, value);
+        } else {
+            let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
+            vmsa.set_event_inject(
+                SevEventInjectInfo::new()
+                    .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT)
+                    .with_vector(x86defs::Exception::GENERAL_PROTECTION_FAULT.0)
+                    .with_deliver_error_code(true)
+                    .with_valid(true),
+            );
+        }
+    }
+
     #[must_use]
     fn sync_lazy_eoi(&mut self, vtl: GuestVtl) -> bool {
         if self.backing.cvm.lapics[vtl].lapic.is_lazy_eoi_pending() {
@@ -1420,27 +1444,7 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::XSETBV => {
-                if let Some(value) =
-                    hardware_cvm::validate_xsetbv_exit(hardware_cvm::XsetbvExitInput {
-                        rax: vmsa.rax(),
-                        rcx: vmsa.rcx(),
-                        rdx: vmsa.rdx(),
-                        cr4: vmsa.cr4(),
-                        cpl: vmsa.cpl(),
-                    })
-                {
-                    // TODO GUEST VSM: determine if this should send an interrupt to VTL 1
-                    vmsa.set_xcr0(value);
-                    advance_to_next_instruction(&mut vmsa);
-                } else {
-                    vmsa.set_event_inject(
-                        SevEventInjectInfo::new()
-                            .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT)
-                            .with_vector(x86defs::Exception::GENERAL_PROTECTION_FAULT.0)
-                            .with_deliver_error_code(true)
-                            .with_valid(true),
-                    );
-                }
+                self.handle_xsetbv(entered_from_vtl);
                 &mut self.backing.exit_stats[entered_from_vtl].xsetbv
             }
 
