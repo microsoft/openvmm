@@ -530,6 +530,24 @@ struct CvmVtl1State {
     pub mbec_enabled: bool,
     /// Whether shadow supervisor stack is enabled.
     pub shadow_supervisor_stack_enabled: bool,
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+    #[inspect(skip)]
+    io_read_intercepts: BitBox<u64>,
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+    #[inspect(skip)]
+    io_write_intercepts: BitBox<u64>,
+}
+
+impl CvmVtl1State {
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+    fn new(mbec_enabled: bool) -> Self {
+        Self {
+            mbec_enabled,
+            io_read_intercepts: BitVec::repeat(false, u16::MAX as usize + 1).into_boxed_bitslice(),
+            io_write_intercepts: BitVec::repeat(false, u16::MAX as usize + 1).into_boxed_bitslice(),
+            ..Default::default()
+        }
+    }
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]

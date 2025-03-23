@@ -7,6 +7,7 @@ use super::BackingParams;
 use super::BackingPrivate;
 use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
+use super::InterceptMessageOptionalState;
 use super::InterceptMessageState;
 use super::UhEmulationState;
 use super::UhRunVpError;
@@ -71,6 +72,7 @@ use x86defs::snp::SevExitCode;
 use x86defs::snp::SevInvlpgbEcx;
 use x86defs::snp::SevInvlpgbEdx;
 use x86defs::snp::SevInvlpgbRax;
+use x86defs::snp::SevIoAccessInfo;
 use x86defs::snp::SevSelector;
 use x86defs::snp::SevStatusMsr;
 use x86defs::snp::SevVmsa;
@@ -273,6 +275,7 @@ impl HardwareIsolatedBacking for SnpBacked {
     fn intercept_message_state(
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
+        include_optional_state: bool,
     ) -> InterceptMessageState {
         let vmsa = this.runner.vmsa(vtl);
 
@@ -280,11 +283,22 @@ impl HardwareIsolatedBacking for SnpBacked {
             instruction_length_and_cr8: (vmsa.next_rip() - vmsa.rip()) as u8,
             cpl: vmsa.cpl(),
             efer_lma: vmsa.efer() & x86defs::X64_EFER_LMA != 0,
-            cs_segment: virt_seg_from_snp(vmsa.cs()).into(),
+            cs: virt_seg_from_snp(vmsa.cs()).into(),
             rip: vmsa.rip(),
             rflags: vmsa.rflags(),
             rax: vmsa.rax(),
             rdx: vmsa.rdx(),
+            optional: if include_optional_state {
+                Some(InterceptMessageOptionalState {
+                    ds: virt_seg_from_snp(vmsa.ds()).into(),
+                    es: virt_seg_from_snp(vmsa.es()).into(),
+                })
+            } else {
+                None
+            },
+            rcx: vmsa.rcx(),
+            rsi: vmsa.rsi(),
+            rdi: vmsa.rdi(),
         }
     }
 
@@ -732,6 +746,7 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
             hv1_hypercall::HvX64TranslateVirtualAddress,
             hv1_hypercall::HvSendSyntheticClusterIpi,
             hv1_hypercall::HvSendSyntheticClusterIpiEx,
+            hv1_hypercall::HvInstallIntercept,
         ],
     );
 
@@ -1266,35 +1281,54 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::IOIO => {
-                let io_info = x86defs::snp::SevIoAccessInfo::from(vmsa.exit_info1() as u32);
-                if io_info.string_access() || io_info.rep_access() {
-                    let interruption_pending = vmsa.event_inject().valid()
-                        || SevEventInjectInfo::from(vmsa.exit_int_info()).valid();
-                    self.emulate(dev, interruption_pending, entered_from_vtl, ())
-                        .await?;
+                let io_info =
+                    SevIoAccessInfo::from(self.runner.vmsa(entered_from_vtl).exit_info1() as u32);
+
+                let access_size = if io_info.access_size32() {
+                    4
+                } else if io_info.access_size16() {
+                    2
                 } else {
-                    let len = if io_info.access_size32() {
-                        4
-                    } else if io_info.access_size16() {
-                        2
+                    1
+                };
+
+                let port_access_protected = self.cvm_try_protect_io_port_access(
+                    entered_from_vtl,
+                    io_info.port(),
+                    io_info.read_access(),
+                    access_size,
+                    io_info.string_access(),
+                    io_info.rep_access(),
+                );
+
+                let vmsa = self.runner.vmsa(entered_from_vtl);
+                if !port_access_protected {
+                    if io_info.string_access() || io_info.rep_access() {
+                        let interruption_pending = vmsa.event_inject().valid()
+                            || SevEventInjectInfo::from(vmsa.exit_int_info()).valid();
+
+                        // TODO GUEST VSM: figure out whether emulation will
+                        // involve additional io port accesses that need to be
+                        // intercepted as well.
+
+                        self.emulate(dev, interruption_pending, entered_from_vtl, ())
+                            .await?;
                     } else {
-                        1
-                    };
+                        let mut rax = vmsa.rax();
+                        emulate_io(
+                            self.inner.vp_info.base.vp_index,
+                            !io_info.read_access(),
+                            io_info.port(),
+                            &mut rax,
+                            access_size,
+                            dev,
+                        )
+                        .await;
 
-                    let mut rax = vmsa.rax();
-                    emulate_io(
-                        self.inner.vp_info.base.vp_index,
-                        !io_info.read_access(),
-                        io_info.port(),
-                        &mut rax,
-                        len,
-                        dev,
-                    )
-                    .await;
-
-                    let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
-                    vmsa.set_rax(rax);
-                    advance_to_next_instruction(&mut vmsa);
+                        let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
+                        vmsa.set_rax(rax);
+                        advance_to_next_instruction(&mut vmsa);
+                    }
                 }
                 &mut self.backing.exit_stats[entered_from_vtl].ioio
             }

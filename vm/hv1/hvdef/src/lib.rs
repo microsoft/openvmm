@@ -2647,7 +2647,7 @@ const_assert!(size_of::<HvArm64InterceptMessageHeader>() == 0x18);
 impl MessagePayload for HvArm64InterceptMessageHeader {}
 
 #[repr(transparent)]
-#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64IoPortAccessInfo(pub u8);
 
 impl HvX64IoPortAccessInfo {

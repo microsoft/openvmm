@@ -531,6 +531,7 @@ impl HardwareIsolatedBacking for TdxBacked {
     fn intercept_message_state(
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
+        include_optional_state: bool,
     ) -> super::InterceptMessageState {
         let exit = TdxExit(this.runner.tdx_vp_enter_exit_info());
         let backing_vtl = &this.backing.vtls[vtl];
@@ -540,11 +541,22 @@ impl HardwareIsolatedBacking for TdxBacked {
             instruction_length_and_cr8: exit.instr_info().length() as u8,
             cpl: exit.cpl(),
             efer_lma: backing_vtl.efer & X64_EFER_LMA != 0,
-            cs_segment: exit.cs().into(),
+            cs: exit.cs().into(),
             rip: backing_vtl.private_regs.rip,
             rflags: backing_vtl.private_regs.rflags,
             rax: shared_gps[TdxGp::RAX],
             rdx: shared_gps[TdxGp::RDX],
+            optional: if include_optional_state {
+                Some(super::InterceptMessageOptionalState {
+                    ds: this.read_segment(vtl, TdxSegmentReg::Ds).into(),
+                    es: this.read_segment(vtl, TdxSegmentReg::Es).into(),
+                })
+            } else {
+                None
+            },
+            rcx: shared_gps[TdxGp::RCX],
+            rsi: shared_gps[TdxGp::RSI],
+            rdi: shared_gps[TdxGp::RDI],
         }
     }
 
@@ -1712,6 +1724,7 @@ impl UhProcessor<'_, TdxBacked> {
         let mut breakpoint_debug_exception = false;
         let stat = match vmx_exit.basic_reason() {
             VmxExitBasic::IO_INSTRUCTION => {
+                // TODO GUEST VSM: io port intercept check
                 let io_qual = ExitQualificationIo::from(exit_info.qualification() as u32);
 
                 if io_qual.is_string() || io_qual.rep_prefix() {

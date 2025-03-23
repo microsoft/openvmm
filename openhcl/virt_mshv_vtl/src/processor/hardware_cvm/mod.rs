@@ -34,6 +34,8 @@ use hvdef::HvVtlEntryReason;
 use hvdef::HvX64PendingExceptionEvent;
 use hvdef::HvX64RegisterName;
 use hvdef::Vtl;
+use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_READ;
+use hvdef::hypercall::HV_INTERCEPT_ACCESS_MASK_WRITE;
 use hvdef::hypercall::HostVisibilityType;
 use hvdef::hypercall::HvFlushFlags;
 use hvdef::hypercall::TranslateGvaResultCode;
@@ -1231,10 +1233,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
         )?;
 
         *gvsm_state = GuestVsmState::Enabled {
-            vtl1: CvmVtl1State {
-                mbec_enabled: flags.enable_mbec(),
-                ..Default::default()
-            },
+            vtl1: CvmVtl1State::new(flags.enable_mbec()),
         };
 
         let protector = &self.vp.cvm_partition().isolated_memory_protector;
@@ -2059,12 +2058,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     ) -> bool {
         let send_intercept = self.cvm_is_protected_register_write(vtl, reg, value);
         if send_intercept {
-            let message_state = B::intercept_message_state(self, vtl);
+            let message_state = B::intercept_message_state(self, vtl, false);
 
             self.send_intercept_message(
                 GuestVtl::Vtl1,
                 &crate::processor::InterceptMessageType::Register { reg, value }
-                    .generate_hv_message(self.vp_index(), vtl, message_state),
+                    .generate_hv_message(self.vp_index(), vtl, message_state, false),
             );
         }
 
@@ -2093,7 +2092,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             // Note: writes to X86X_IA32_MSR_MISC_ENABLE are dropped, so don't
             // need to check the mask.
 
-            let generate_intercept = match msr {
+            let send_intercept = match msr {
                 x86defs::X86X_MSR_LSTAR => configured_intercepts.msr_lstar_write(),
                 x86defs::X86X_MSR_STAR => configured_intercepts.msr_star_write(),
                 x86defs::X86X_MSR_CSTAR => configured_intercepts.msr_cstar_write(),
@@ -2115,8 +2114,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 _ => false,
             };
 
-            if generate_intercept {
-                let message_state = B::intercept_message_state(self, vtl);
+            if send_intercept {
+                let message_state = B::intercept_message_state(self, vtl, false);
 
                 self.send_intercept_message(
                     GuestVtl::Vtl1,
@@ -2124,12 +2123,68 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                         self.vp_index(),
                         vtl,
                         message_state,
+                        false,
                     ),
                 );
 
                 return true;
             }
         }
+        false
+    }
+
+    /// Checks if a higher VTL registered for intercepts on io port and sends
+    /// the intercept as required.
+    ///
+    /// If an intercept message is posted then no further processing is
+    /// required. The instruction pointer should not be advanced, since the
+    /// instruction pointer must continue to point to the instruction that
+    /// generated the intercept.
+    pub(crate) fn cvm_try_protect_io_port_access(
+        &mut self,
+        vtl: GuestVtl,
+        port_number: u16,
+        is_read: bool,
+        access_size: u8,
+        string_access: bool,
+        rep_access: bool,
+    ) -> bool {
+        if vtl == GuestVtl::Vtl0 {
+            let send_intercept = {
+                if let GuestVsmState::Enabled { vtl1 } = &*self.cvm_partition().guest_vsm.read() {
+                    if is_read {
+                        vtl1.io_read_intercepts[port_number as usize]
+                    } else {
+                        vtl1.io_write_intercepts[port_number as usize]
+                    }
+                } else {
+                    false
+                }
+            };
+
+            if send_intercept {
+                let message_state = B::intercept_message_state(self, vtl, true);
+
+                self.send_intercept_message(
+                    GuestVtl::Vtl1,
+                    &crate::processor::InterceptMessageType::IoPort {
+                        port_number,
+                        access_size,
+                        string_access,
+                        rep_access,
+                    }
+                    .generate_hv_message(
+                        self.vp_index(),
+                        vtl,
+                        message_state,
+                        is_read,
+                    ),
+                );
+
+                return true;
+            }
+        }
+
         false
     }
 
@@ -2362,5 +2417,63 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SendSyntheticClusterIpiEx
 
         self.vp
             .cvm_send_synthetic_cluster_ipi(target_vtl, vector, processor_set)
+    }
+}
+
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::InstallIntercept
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn install_intercept(
+        &mut self,
+        partition_id: u64,
+        access_type_mask: u32,
+        intercept_type: hvdef::hypercall::HvInterceptType,
+        intercept_parameters: hvdef::hypercall::HvInterceptParameters,
+    ) -> HvResult<()> {
+        tracing::debug!(
+            vp_index = self.vp.vp_index().index(),
+            ?access_type_mask,
+            ?intercept_type,
+            ?intercept_parameters,
+            "HvInstallIntercept"
+        );
+
+        if partition_id != hvdef::HV_PARTITION_ID_SELF {
+            return Err(HvError::AccessDenied);
+        }
+
+        if self.intercepted_vtl == GuestVtl::Vtl0 {
+            return Err(HvError::AccessDenied);
+        }
+
+        match intercept_type {
+            hvdef::hypercall::HvInterceptType::HvInterceptTypeX64IoPort => {
+                if access_type_mask
+                    & !(HV_INTERCEPT_ACCESS_MASK_READ | HV_INTERCEPT_ACCESS_MASK_WRITE)
+                    != 0
+                {
+                    return Err(HvError::InvalidParameter);
+                }
+
+                let mut gvsm_lock = self.vp.cvm_partition().guest_vsm.write();
+
+                let GuestVsmState::Enabled { vtl1, .. } = &mut *gvsm_lock else {
+                    return Err(HvError::InvalidVtlState);
+                };
+
+                let io_port = intercept_parameters.io_port() as usize;
+
+                vtl1.io_read_intercepts.set(
+                    io_port,
+                    access_type_mask & HV_INTERCEPT_ACCESS_MASK_READ != 0,
+                );
+
+                vtl1.io_write_intercepts
+                    .set(io_port, HV_INTERCEPT_ACCESS_MASK_WRITE != 0);
+            }
+            _ => return Err(HvError::InvalidParameter),
+        }
+
+        Ok(())
     }
 }

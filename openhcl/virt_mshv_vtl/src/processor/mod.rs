@@ -294,6 +294,13 @@ enum InterceptMessageType {
     Msr {
         msr: u32,
     },
+    #[cfg(guest_arch = "x86_64")]
+    IoPort {
+        port_number: u16,
+        access_size: u8,
+        string_access: bool,
+        rep_access: bool,
+    },
 }
 
 /// Per-arch state required to generate an intercept message.
@@ -302,11 +309,24 @@ struct InterceptMessageState {
     instruction_length_and_cr8: u8,
     cpl: u8,
     efer_lma: bool,
-    cs_segment: hvdef::HvX64SegmentRegister,
+    cs: hvdef::HvX64SegmentRegister,
     rip: u64,
     rflags: u64,
     rax: u64,
     rdx: u64,
+    rcx: u64,
+    rsi: u64,
+    rdi: u64,
+    optional: Option<InterceptMessageOptionalState>,
+}
+
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+/// Additional per-arch state required to generate an intercept message. Used
+/// for state that is not common across the intercept message types and that
+/// might be slower to retrieve on certain architectures.
+struct InterceptMessageOptionalState {
+    ds: hvdef::HvX64SegmentRegister,
+    es: hvdef::HvX64SegmentRegister,
 }
 
 impl InterceptMessageType {
@@ -316,23 +336,28 @@ impl InterceptMessageType {
         vp_index: VpIndex,
         vtl: GuestVtl,
         state: InterceptMessageState,
+        is_read: bool,
     ) -> HvMessage {
-        let write_header = hvdef::HvX64InterceptMessageHeader {
+        let header = hvdef::HvX64InterceptMessageHeader {
             vp_index: vp_index.index(),
             instruction_length_and_cr8: state.instruction_length_and_cr8,
-            intercept_access_type: hvdef::HvInterceptAccessType::WRITE,
+            intercept_access_type: if is_read {
+                hvdef::HvInterceptAccessType::READ
+            } else {
+                hvdef::HvInterceptAccessType::WRITE
+            },
             execution_state: hvdef::HvX64VpExecutionState::new()
                 .with_cpl(state.cpl)
                 .with_vtl(vtl.into())
                 .with_efer_lma(state.efer_lma),
-            cs_segment: state.cs_segment,
+            cs_segment: state.cs,
             rip: state.rip,
             rflags: state.rflags,
         };
         match self {
             InterceptMessageType::Register { reg, value } => {
                 let intercept_message = hvdef::HvX64RegisterInterceptMessage {
-                    header: write_header,
+                    header,
                     flags: hvdef::HvX64RegisterInterceptMessageFlags::new(),
                     rsvd: 0,
                     rsvd2: 0,
@@ -349,7 +374,7 @@ impl InterceptMessageType {
             }
             InterceptMessageType::Msr { msr } => {
                 let intercept_message = hvdef::HvX64MsrInterceptMessage {
-                    header: write_header,
+                    header,
                     msr_number: *msr,
                     rax: state.rax,
                     rdx: state.rdx,
@@ -358,6 +383,35 @@ impl InterceptMessageType {
 
                 HvMessage::new(
                     hvdef::HvMessageType::HvMessageTypeMsrIntercept,
+                    0,
+                    intercept_message.as_bytes(),
+                )
+            }
+            InterceptMessageType::IoPort {
+                port_number,
+                access_size,
+                string_access,
+                rep_access,
+            } => {
+                let access_info =
+                    hvdef::HvX64IoPortAccessInfo::new(*access_size, *string_access, *rep_access);
+                let intercept_message = hvdef::HvX64IoPortInterceptMessage {
+                    header,
+                    port_number: *port_number,
+                    access_info,
+                    instruction_byte_count: 0,
+                    reserved: 0,
+                    rax: state.rax,
+                    instruction_bytes: [0u8; 16],
+                    ds_segment: state.optional.as_ref().unwrap().ds,
+                    es_segment: state.optional.as_ref().unwrap().es,
+                    rcx: state.rcx,
+                    rsi: state.rsi,
+                    rdi: state.rdi,
+                };
+
+                HvMessage::new(
+                    hvdef::HvMessageType::HvMessageTypeX64IoPortIntercept,
                     0,
                     intercept_message.as_bytes(),
                 )
@@ -407,6 +461,7 @@ trait HardwareIsolatedBacking: Backing {
     fn intercept_message_state(
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
+        include_optional_state: bool,
     ) -> InterceptMessageState;
 
     /// Individual register for CPUID and crx intercept handling, since
