@@ -782,7 +782,7 @@ fn resolve_flow_as_github_yaml_steps(
             } => {
                 let var_db_cmd = |var: &str,
                                   is_secret,
-                                  update_from_file: Option<String>,
+                                  update_from_stdin,
                                   is_raw_string,
                                   write_to_gh_env: Option<String>,
                                   condvar: Option<String>| {
@@ -791,8 +791,8 @@ fn resolve_flow_as_github_yaml_steps(
                         job_idx,
                         var,
                         is_secret,
-                        false,
-                        update_from_file.as_deref(),
+                        update_from_stdin,
+                        None,
                         is_raw_string,
                         write_to_gh_env.as_deref(),
                         condvar.as_deref(),
@@ -826,7 +826,7 @@ fn resolve_flow_as_github_yaml_steps(
                     let set_gh_env_var = var_db_cmd(
                         &gh_var_state.backing_var,
                         gh_var_state.is_secret,
-                        None,
+                        false,
                         !gh_var_state.is_object,
                         gh_var_state.raw_name,
                         condvar.clone(),
@@ -845,7 +845,7 @@ fn resolve_flow_as_github_yaml_steps(
                         let set_condvar = var_db_cmd(
                             condvar,
                             false,
-                            None,
+                            false,
                             false,
                             Some("FLOWEY_CONDITION".to_string()),
                             None,
@@ -880,21 +880,22 @@ fn resolve_flow_as_github_yaml_steps(
                         .raw_name
                         .expect("couldn't get raw name for variable");
 
-                    let file = if gh_var_state.is_object {
+                    let value = if gh_var_state.is_object {
                         format!(r#"${{{{ toJSON({}) }}}}"#, raw_name)
                     } else {
                         format!(r#"${{{{ {} }}}}"#, raw_name)
                     };
 
-                    let cmd = var_db_cmd(
+                    let write_var = var_db_cmd(
                         &gh_var_state.backing_var,
                         gh_var_state.is_secret,
-                        Some(file),
+                        true,
                         !gh_var_state.is_object,
                         None,
                         condvar.clone(),
                     );
 
+                    let cmd = format!("{write_var} <<EOF\n{value}\nEOF",);
                     bash_commands.push_minor(cmd);
                 }
             }

@@ -133,7 +133,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 0 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey v 0 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey e 0 flowey_lib_common::cache 2
         flowey e 0 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -168,7 +170,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 0 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey v 0 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey e 0 flowey_lib_common::git_checkout 3
         flowey e 0 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey e 0 flowey_lib_hvlite::build_guide 0
@@ -302,7 +306,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey.exe v 1 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey.exe v 1 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey.exe e 1 flowey_lib_common::git_checkout 3
         flowey.exe e 1 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
@@ -326,7 +332,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 1 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 1 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey.exe e 1 flowey_lib_common::cache 2
         flowey.exe e 1 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -512,7 +520,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 10 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }} --is-raw-string
+        flowey v 10 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
+        EOF
         flowey e 10 flowey_lib_common::cache 6
         flowey e 10 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -535,7 +545,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 10 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey v 10 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey e 10 flowey_lib_common::git_checkout 3
         flowey e 10 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey e 10 flowey_lib_hvlite::cfg_openvmm_magicpath 0
@@ -678,7 +690,9 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: report $CARGO_HOME
       run: |-
-        flowey v 10 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey v 10 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey e 10 flowey_lib_common::cache 2
         flowey e 10 flowey_lib_common::cfg_persistent_dir_cargo_install 0
         flowey e 10 flowey_lib_common::install_rust 2
@@ -860,7 +874,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 11 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey v 11 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey e 11 flowey_lib_common::cache 2
         flowey e 11 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -891,7 +907,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 11 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey v 11 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey e 11 flowey_lib_common::git_checkout 3
         flowey e 11 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
@@ -1185,7 +1203,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 12 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey v 12 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey e 12 flowey_lib_common::cache 2
         flowey e 12 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -1216,7 +1236,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 12 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey v 12 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey e 12 flowey_lib_common::git_checkout 3
         flowey e 12 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
@@ -1608,7 +1630,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 13 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey v 13 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey e 13 flowey_lib_common::git_checkout 3
         flowey e 13 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
@@ -1632,7 +1656,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 13 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }} --is-raw-string
+        flowey v 13 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
+        EOF
         flowey e 13 flowey_lib_common::cache 6
         flowey e 13 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -1702,10 +1728,14 @@ jobs:
       name: 'Restore cache: gh-cli'
     - name: installing gh
       run: |-
-        flowey v 13 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey v 13 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey e 13 flowey_lib_common::cache 2
         flowey e 13 flowey_lib_common::download_gh_cli 1
-        flowey v 13 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:2:flowey_core/src/node/github_context.rs:42:41' --is-secret --update-from-file ${{ github.token }} --is-raw-string
+        flowey v 13 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:2:flowey_core/src/node/github_context.rs:42:41' --is-secret --update-from-stdin --is-raw-string <<EOF
+        ${{ github.token }}
+        EOF
       shell: bash
     - name: setup gh cli
       run: flowey e 13 flowey_lib_common::use_gh_cli 0
@@ -1846,7 +1876,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey.exe v 14 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey.exe v 14 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey.exe e 14 flowey_lib_common::git_checkout 3
         flowey.exe e 14 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
@@ -1870,7 +1902,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 14 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 14 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
+        EOF
         flowey.exe e 14 flowey_lib_common::cache 6
         flowey.exe e 14 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -1938,7 +1972,9 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: report $CARGO_HOME
       run: |-
-        flowey.exe v 14 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 14 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey.exe e 14 flowey_lib_common::cache 2
         flowey.exe e 14 flowey_lib_common::cfg_persistent_dir_cargo_install 0
         flowey.exe e 14 flowey_lib_common::install_rust 2
@@ -2116,7 +2152,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 15 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }} --is-raw-string
+        flowey v 15 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
+        EOF
         flowey e 15 flowey_lib_common::cache 6
         flowey e 15 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -2142,7 +2180,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 15 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey v 15 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey e 15 flowey_lib_common::git_checkout 3
         flowey e 15 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey e 15 flowey_lib_hvlite::cfg_openvmm_magicpath 0
@@ -2241,7 +2281,9 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: report $CARGO_HOME
       run: |-
-        flowey v 15 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey v 15 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey e 15 flowey_lib_common::cache 2
         flowey e 15 flowey_lib_common::cfg_persistent_dir_cargo_install 0
         flowey e 15 flowey_lib_common::install_rust 2
@@ -2419,7 +2461,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 16 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey v 16 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey e 16 flowey_lib_common::git_checkout 3
         flowey e 16 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey e 16 flowey_lib_hvlite::cfg_openvmm_magicpath 0
@@ -2447,7 +2491,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 16 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }} --is-raw-string
+        flowey v 16 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
+        EOF
         flowey e 16 flowey_lib_common::cache 6
         flowey e 16 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -2552,7 +2598,9 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: report $CARGO_HOME
       run: |-
-        flowey v 16 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey v 16 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey e 16 flowey_lib_common::cache 2
         flowey e 16 flowey_lib_common::cfg_persistent_dir_cargo_install 0
         flowey e 16 flowey_lib_common::install_rust 2
@@ -2726,7 +2774,9 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: install Rust
       run: |-
-        flowey.exe v 17 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 17 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey.exe e 17 flowey_lib_common::cache 2
         flowey.exe e 17 flowey_lib_common::cfg_persistent_dir_cargo_install 0
         flowey.exe e 17 flowey_lib_common::install_rust 0
@@ -2756,7 +2806,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey.exe v 17 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey.exe v 17 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey.exe e 17 flowey_lib_common::git_checkout 3
         flowey.exe e 17 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
@@ -2780,7 +2832,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 17 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 17 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
+        EOF
         flowey.exe e 17 flowey_lib_common::cache 6
         flowey.exe e 17 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -2938,7 +2992,9 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: installing cargo-nextest
       run: |-
-        flowey.exe v 18 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 18 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
+        EOF
         flowey.exe e 18 flowey_lib_common::cache 6
         flowey.exe e 18 flowey_lib_common::download_cargo_nextest 1
       shell: bash
@@ -2959,7 +3015,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 18 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 18 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
+        EOF
         flowey.exe e 18 flowey_lib_common::cache 10
         flowey.exe e 18 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -2982,7 +3040,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey.exe v 18 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey.exe v 18 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey.exe e 18 flowey_lib_common::git_checkout 3
         flowey.exe e 18 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey.exe e 18 flowey_lib_hvlite::cfg_openvmm_magicpath 0
@@ -3030,7 +3090,9 @@ jobs:
       name: 'Restore cache: azcopy'
     - name: installing azcopy
       run: |-
-        flowey.exe v 18 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 18 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey.exe e 18 flowey_lib_common::cache 2
         flowey.exe e 18 flowey_lib_common::download_azcopy 1
       shell: bash
@@ -3210,7 +3272,9 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: installing cargo-nextest
       run: |-
-        flowey.exe v 19 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 19 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
+        EOF
         flowey.exe e 19 flowey_lib_common::cache 6
         flowey.exe e 19 flowey_lib_common::download_cargo_nextest 1
       shell: bash
@@ -3231,7 +3295,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 19 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 19 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
+        EOF
         flowey.exe e 19 flowey_lib_common::cache 10
         flowey.exe e 19 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -3254,7 +3320,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey.exe v 19 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey.exe v 19 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey.exe e 19 flowey_lib_common::git_checkout 3
         flowey.exe e 19 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey.exe e 19 flowey_lib_hvlite::cfg_openvmm_magicpath 0
@@ -3302,7 +3370,9 @@ jobs:
       name: 'Restore cache: azcopy'
     - name: installing azcopy
       run: |-
-        flowey.exe v 19 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 19 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey.exe e 19 flowey_lib_common::cache 2
         flowey.exe e 19 flowey_lib_common::download_azcopy 1
       shell: bash
@@ -3499,7 +3569,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 2 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey v 2 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey e 2 flowey_lib_common::git_checkout 3
         flowey e 2 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
@@ -3523,7 +3595,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 2 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey v 2 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey e 2 flowey_lib_common::cache 2
         flowey e 2 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -3667,7 +3741,9 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: installing cargo-nextest
       run: |-
-        flowey v 20 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }} --is-raw-string
+        flowey v 20 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
+        EOF
         flowey e 20 flowey_lib_common::cache 6
         flowey e 20 flowey_lib_common::download_cargo_nextest 1
       shell: bash
@@ -3694,7 +3770,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 20 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }} --is-raw-string
+        flowey v 20 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
+        EOF
         flowey e 20 flowey_lib_common::cache 10
         flowey e 20 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -3717,7 +3795,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 20 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey v 20 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey e 20 flowey_lib_common::git_checkout 3
         flowey e 20 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey e 20 flowey_lib_hvlite::cfg_openvmm_magicpath 0
@@ -3759,7 +3839,9 @@ jobs:
       name: 'Restore cache: azcopy'
     - name: installing azcopy
       run: |-
-        flowey v 20 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey v 20 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey e 20 flowey_lib_common::cache 2
         flowey e 20 flowey_lib_common::download_azcopy 1
       shell: bash
@@ -3999,7 +4081,9 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: installing cargo-nextest
       run: |-
-        flowey.exe v 21 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 21 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
+        EOF
         flowey.exe e 21 flowey_lib_common::cache 6
         flowey.exe e 21 flowey_lib_common::download_cargo_nextest 1
       shell: bash
@@ -4020,7 +4104,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 21 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 21 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
+        EOF
         flowey.exe e 21 flowey_lib_common::cache 10
         flowey.exe e 21 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -4043,7 +4129,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey.exe v 21 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey.exe v 21 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey.exe e 21 flowey_lib_common::git_checkout 3
         flowey.exe e 21 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey.exe e 21 flowey_lib_hvlite::cfg_openvmm_magicpath 0
@@ -4091,7 +4179,9 @@ jobs:
       name: 'Restore cache: azcopy'
     - name: installing azcopy
       run: |-
-        flowey.exe v 21 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 21 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey.exe e 21 flowey_lib_common::cache 2
         flowey.exe e 21 flowey_lib_common::download_azcopy 1
       shell: bash
@@ -4286,14 +4376,18 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 22 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey v 22 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey e 22 flowey_lib_common::git_checkout 3
         flowey e 22 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
     - name: install Rust
       run: |-
         flowey e 22 flowey_lib_common::install_rust 0
-        flowey v 22 'flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm:2:flowey_core/src/node/github_context.rs:42:41' --is-secret --update-from-file ${{ github.token }} --is-raw-string
+        flowey v 22 'flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm:2:flowey_core/src/node/github_context.rs:42:41' --is-secret --update-from-stdin --is-raw-string <<EOF
+        ${{ github.token }}
+        EOF
       shell: bash
     - name: test cargo xflowey build-igvm x64 --install-missing-deps
       run: flowey e 22 flowey_lib_hvlite::_jobs::test_local_flowey_build_igvm 1
@@ -4466,7 +4560,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey.exe v 3 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey.exe v 3 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey.exe e 3 flowey_lib_common::git_checkout 3
         flowey.exe e 3 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
@@ -4498,7 +4594,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 3 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 3 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey.exe e 3 flowey_lib_common::cache 2
         flowey.exe e 3 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -4633,7 +4731,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 4 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey v 4 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey e 4 flowey_lib_common::git_checkout 3
         flowey e 4 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
@@ -4665,7 +4765,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 4 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey v 4 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey e 4 flowey_lib_common::cache 2
         flowey e 4 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -4830,7 +4932,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey.exe v 5 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey.exe v 5 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey.exe e 5 flowey_lib_common::git_checkout 3
         flowey.exe e 5 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
@@ -4854,7 +4958,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 5 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 5 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey.exe e 5 flowey_lib_common::cache 2
         flowey.exe e 5 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -5079,7 +5185,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 6 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 6 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
+        EOF
         flowey.exe e 6 flowey_lib_common::cache 6
         flowey.exe e 6 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -5102,7 +5210,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey.exe v 6 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey.exe v 6 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey.exe e 6 flowey_lib_common::git_checkout 3
         flowey.exe e 6 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey.exe e 6 flowey_lib_hvlite::cfg_openvmm_magicpath 0
@@ -5159,7 +5269,9 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: report $CARGO_HOME
       run: |-
-        flowey.exe v 6 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 6 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey.exe e 6 flowey_lib_common::cache 2
         flowey.exe e 6 flowey_lib_common::cfg_persistent_dir_cargo_install 0
         flowey.exe e 6 flowey_lib_common::install_rust 2
@@ -5325,7 +5437,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey.exe v 7 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey.exe v 7 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey.exe e 7 flowey_lib_common::git_checkout 3
         flowey.exe e 7 flowey_lib_hvlite::git_checkout_openvmm_repo 0
       shell: bash
@@ -5349,7 +5463,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 7 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 7 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey.exe e 7 flowey_lib_common::cache 2
         flowey.exe e 7 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -5577,7 +5693,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 8 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 8 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
+        EOF
         flowey.exe e 8 flowey_lib_common::cache 6
         flowey.exe e 8 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -5600,7 +5718,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey.exe v 8 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey.exe v 8 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey.exe e 8 flowey_lib_common::git_checkout 3
         flowey.exe e 8 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey.exe e 8 flowey_lib_hvlite::cfg_openvmm_magicpath 0
@@ -5657,7 +5777,9 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: report $CARGO_HOME
       run: |-
-        flowey.exe v 8 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey.exe v 8 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey.exe e 8 flowey_lib_common::cache 2
         flowey.exe e 8 flowey_lib_common::cfg_persistent_dir_cargo_install 0
         flowey.exe e 8 flowey_lib_common::install_rust 2
@@ -5841,7 +5963,9 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 9 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-file ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }} --is-raw-string
+        flowey v 9 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
+        EOF
         flowey e 9 flowey_lib_common::cache 2
         flowey e 9 flowey_lib_common::download_gh_release 1
       shell: bash
@@ -5864,7 +5988,9 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 9 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-file ${{ github.workspace }} --is-raw-string
+        flowey v 9 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        ${{ github.workspace }}
+        EOF
         flowey e 9 flowey_lib_common::git_checkout 3
         flowey e 9 flowey_lib_hvlite::git_checkout_openvmm_repo 0
         flowey e 9 flowey_lib_hvlite::cfg_openvmm_magicpath 0
