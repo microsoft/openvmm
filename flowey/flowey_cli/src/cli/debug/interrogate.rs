@@ -112,6 +112,7 @@ impl flowey_core::node::NodeCtxBackend for InterrogateCtx {
     fn on_emit_rust_step(
         &mut self,
         label: &str,
+        _can_merge: bool,
         _code: Box<
             dyn for<'a> FnOnce(&'a mut RustRuntimeServices<'_>) -> anyhow::Result<()> + 'static,
         >,

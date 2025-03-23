@@ -181,6 +181,7 @@ pub fn viz_flow_toposort(
             crate::flow_resolver::stage1_dag::Step::Rust {
                 idx: _,
                 label,
+                can_merge: _,
                 code: _,
             } => {
                 println!(
@@ -365,6 +366,7 @@ pub fn viz_flow_dot(
                     crate::flow_resolver::stage1_dag::Step::Rust {
                         idx,
                         label,
+                        can_merge: _,
                         code: _,
                     } => format!("rust{idx}\n\n{}", label),
                     crate::flow_resolver::stage1_dag::Step::AdoYaml {

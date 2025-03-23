@@ -113,12 +113,11 @@ impl FlowNode for Node {
                 }
             }
 
-            ctx.emit_rust_step("inject cross env", |ctx| {
+            ctx.emit_minor_rust_step("inject cross env", |ctx| {
                 pre_build_deps.claim(ctx);
                 let injected_env_write = injected_env_write.claim(ctx);
                 move |rt| {
                     rt.write(injected_env_write, &injected_env);
-                    Ok(())
                 }
             });
         }

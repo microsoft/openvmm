@@ -46,7 +46,7 @@ impl SimpleFlowNode for Node {
             output: v,
         });
 
-        ctx.emit_rust_step("report built xtask", |ctx| {
+        ctx.emit_minor_rust_step("report built xtask", |ctx| {
             let xtask = xtask.claim(ctx);
             let output = output.claim(ctx);
             move |rt| {
@@ -64,8 +64,6 @@ impl SimpleFlowNode for Node {
                 };
 
                 rt.write(xtask, &output);
-
-                Ok(())
             }
         });
 

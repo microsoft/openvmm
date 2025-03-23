@@ -50,7 +50,7 @@ impl SimpleFlowNode for Node {
             output: v,
         });
 
-        ctx.emit_rust_step("report built ohcldiag_dev", |ctx| {
+        ctx.emit_minor_rust_step("report built ohcldiag_dev", |ctx| {
             let ohcldiag_dev = ohcldiag_dev.claim(ctx);
             let output = output.claim(ctx);
             move |rt| {
@@ -68,8 +68,6 @@ impl SimpleFlowNode for Node {
                 };
 
                 rt.write(ohcldiag_dev, &output);
-
-                Ok(())
             }
         });
 

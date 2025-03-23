@@ -205,15 +205,13 @@ impl SimpleFlowNode for Node {
             ReadVar::from_static(()).into_side_effect()
         };
 
-        ctx.emit_rust_step("report built vmgs_lib", |ctx| {
+        ctx.emit_minor_rust_step("report built vmgs_lib", |ctx| {
             did_test.claim(ctx);
             let built_vmgs_lib = built_vmgs_lib.claim(ctx);
             let vmgs_lib = vmgs_lib.claim(ctx);
             move |rt| {
                 let built_vmgs_lib = rt.read(built_vmgs_lib);
                 rt.write(vmgs_lib, &built_vmgs_lib);
-
-                Ok(())
             }
         });
 

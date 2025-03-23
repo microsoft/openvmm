@@ -48,7 +48,7 @@ pub mod publish {
                 done,
             } = request;
 
-            let files = ctx.emit_rust_stepv("describe OpenHCL igvm extras artifact", |ctx| {
+            let files = ctx.emit_minor_rust_stepv("describe OpenHCL igvm extras artifact", |ctx| {
                 let extras = extras.claim(ctx);
                 |rt| {
                     let mut files = Vec::new();
@@ -87,7 +87,7 @@ pub mod publish {
                             files.push((format!("{folder_name}/sidecar.dbg").into(), dbg));
                         }
                     }
-                    Ok(files)
+                    files
                 }
             });
 
