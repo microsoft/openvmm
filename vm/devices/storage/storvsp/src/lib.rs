@@ -59,7 +59,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
-use storvs_protocol::protocol;
+use storvsp_protocol::protocol;
 use storvsp_resources::ScsiPath;
 use task_control::AsyncRun;
 use task_control::InspectTask;

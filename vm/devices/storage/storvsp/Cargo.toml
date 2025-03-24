@@ -22,7 +22,7 @@ scsi_buffers.workspace = true
 scsi_core.workspace = true
 scsi_defs.workspace = true
 scsidisk.workspace = true
-storvs_protocol.workspace = true
+storvsp_protocol.workspace = true
 storvsp_resources.workspace = true
 
 vmbus_async.workspace = true

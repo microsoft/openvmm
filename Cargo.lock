@@ -2239,8 +2239,8 @@ dependencies = [
  "pal_async",
  "scsi_defs",
  "scsidisk",
- "storvs_protocol",
  "storvsp",
+ "storvsp_protocol",
  "storvsp_resources",
  "vmbus_async",
  "vmbus_channel",
@@ -6511,17 +6511,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "storvs_protocol"
-version = "0.0.0"
-dependencies = [
- "arbitrary",
- "guid",
- "open_enum",
- "scsi_defs",
- "zerocopy 0.8.23",
-]
-
-[[package]]
 name = "storvsp"
 version = "0.0.0"
 dependencies = [
@@ -6545,7 +6534,7 @@ dependencies = [
  "scsi_defs",
  "scsidisk",
  "slab",
- "storvs_protocol",
+ "storvsp_protocol",
  "storvsp_resources",
  "task_control",
  "test_with_tracing",
@@ -6560,6 +6549,17 @@ dependencies = [
  "vmbus_core",
  "vmbus_ring",
  "vmcore",
+ "zerocopy 0.8.23",
+]
+
+[[package]]
+name = "storvsp_protocol"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "guid",
+ "open_enum",
+ "scsi_defs",
  "zerocopy 0.8.23",
 ]
 

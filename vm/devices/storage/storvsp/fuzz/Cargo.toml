@@ -16,8 +16,8 @@ guestmem.workspace = true
 pal_async.workspace = true
 scsi_defs = {workspace = true, features = ["arbitrary"]}
 scsidisk.workspace = true
-storvs_protocol = {workspace = true, features = ["arbitrary"]}
 storvsp = {workspace = true, features = ["arbitrary", "fuzz_helpers"]}
+storvsp_protocol = {workspace = true, features = ["arbitrary"]}
 storvsp_resources = {workspace = true, features = ["arbitrary"]}
 vmbus_async.workspace = true
 vmbus_channel.workspace = true
