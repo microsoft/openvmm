@@ -7942,6 +7942,7 @@ dependencies = [
  "aarch64defs",
  "anyhow",
  "arrayvec",
+ "bitvec",
  "build_rs_guest_arch",
  "chipset_device",
  "guestmem",
@@ -8447,6 +8448,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bitvec",
  "futures",
  "futures-concurrency",
  "getrandom 0.3.1",

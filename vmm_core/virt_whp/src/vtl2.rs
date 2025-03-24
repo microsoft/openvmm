@@ -2,6 +2,8 @@
 // Licensed under the MIT License.
 
 use crate::memory::VtlAccess;
+use bitvec::boxed::BitBox;
+use bitvec::vec::BitVec;
 use hvdef::HvRegisterVsmPartitionConfig;
 use inspect::Inspect;
 use parking_lot::RwLock;
@@ -15,7 +17,7 @@ use virt::LateMapVtl0MemoryPolicy;
 #[derive(Debug)]
 pub(crate) struct Vtl2InterceptState {
     /// Bitmap representing all possible io ports.
-    io_ports: AtomicBitmap,
+    io_ports: BitBox<AtomicU64>,
     /// MSR intercepts are all or nothing.
     pub msr: AtomicBool,
     /// Indicates if calls to unknown synic connections should trap to VTL2.
@@ -30,7 +32,7 @@ pub(crate) struct Vtl2InterceptState {
 impl Vtl2InterceptState {
     fn new() -> Self {
         Self {
-            io_ports: AtomicBitmap::new(u16::MAX as usize + 1),
+            io_ports: BitVec::repeat(false, u16::MAX as usize + 1).into_boxed_bitslice(),
             msr: false.into(),
             unknown_synic_connection: false.into(),
             retarget_unknown_device_id: false.into(),
@@ -47,7 +49,7 @@ impl Vtl2InterceptState {
             retarget_unknown_device_id,
             eoi,
         } = self;
-        for v in &io_ports.0 {
+        for v in io_ports.as_raw_slice() {
             v.store(0, Ordering::Relaxed);
         }
         msr.store(false, Ordering::Relaxed);
@@ -66,32 +68,11 @@ pub(crate) enum InterceptType {
     Eoi,
 }
 
-#[derive(Debug)]
-struct AtomicBitmap(Vec<AtomicU64>);
-
-impl AtomicBitmap {
-    fn new(n: usize) -> Self {
-        Self((0..(n + 63) / 64).map(|_| AtomicU64::new(0)).collect())
-    }
-
-    fn set(&self, n: usize) -> bool {
-        self.0[n / 64].fetch_or(1 << (n % 64), Ordering::Relaxed) & (1 << (n % 64)) != 0
-    }
-
-    fn clear(&self, n: usize) -> bool {
-        self.0[n / 64].fetch_and(!(1 << (n % 64)), Ordering::Relaxed) & (1 << (n % 64)) != 0
-    }
-
-    fn is_set(&self, n: usize) -> bool {
-        self.0[n / 64].load(Ordering::Relaxed) & (1 << (n % 64)) != 0
-    }
-}
-
 impl Vtl2InterceptState {
     /// Install the given intercept. Returns true if the intercept was not previously installed.
     pub fn install(&self, intercept: InterceptType) -> bool {
         match intercept {
-            InterceptType::IoPort(port) => !self.io_ports.set(port.into()),
+            InterceptType::IoPort(port) => !self.io_ports.set_aliased(port.into(), true),
             InterceptType::Msr => !self.msr.swap(true, Ordering::SeqCst), // TODO: ordering req?
             InterceptType::UnknownSynicConnection => {
                 !self.unknown_synic_connection.swap(true, Ordering::SeqCst)
@@ -106,7 +87,7 @@ impl Vtl2InterceptState {
     /// Remove the given intercept. Returns true if the intercept was previously installed.
     pub fn remove(&self, intercept: InterceptType) -> bool {
         match intercept {
-            InterceptType::IoPort(port) => self.io_ports.clear(port.into()),
+            InterceptType::IoPort(port) => self.io_ports.set_aliased(port.into(), false),
             InterceptType::Msr => self.msr.swap(false, Ordering::SeqCst), // TODO: ordering req?
             InterceptType::UnknownSynicConnection => {
                 self.unknown_synic_connection.swap(false, Ordering::SeqCst)
@@ -121,7 +102,7 @@ impl Vtl2InterceptState {
     /// Check if the given intercept is installed. Returns true if the intercept is installed.
     pub fn contains(&self, intercept: InterceptType) -> bool {
         match intercept {
-            InterceptType::IoPort(port) => self.io_ports.is_set(port.into()),
+            InterceptType::IoPort(port) => self.io_ports[port as usize],
             InterceptType::Msr => self.msr.load(Ordering::SeqCst),
             InterceptType::UnknownSynicConnection => {
                 self.unknown_synic_connection.load(Ordering::SeqCst)
@@ -142,7 +123,7 @@ impl Inspect for Vtl2InterceptState {
                 let mut low_set_base = None;
                 for i in 0..=0xffff {
                     // Print contiguous ranges that have intercepts installed.
-                    if self.io_ports.is_set(i) {
+                    if self.io_ports[i] {
                         if low_set_base.is_none() {
                             low_set_base = Some(i);
                         }
@@ -154,7 +135,7 @@ impl Inspect for Vtl2InterceptState {
 
                 // Handle the case where 0xffff is set.
                 match low_set_base {
-                    Some(base) if self.io_ports.is_set(0xffff) => {
+                    Some(base) if self.io_ports[0xffff] => {
                         resp.field(&format!("{:04x}-{:04x}", base, 0xffff), true);
                     }
                     _ => {}
