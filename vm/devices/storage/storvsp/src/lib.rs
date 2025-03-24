@@ -8,13 +8,8 @@
 pub mod ioperf;
 
 #[cfg(feature = "fuzz_helpers")]
-pub mod protocol;
-#[cfg(feature = "fuzz_helpers")]
 pub mod test_helpers;
 
-#[cfg(not(feature = "fuzz_helpers"))]
-#[expect(dead_code)]
-mod protocol;
 #[cfg(not(feature = "fuzz_helpers"))]
 mod test_helpers;
 
@@ -42,7 +37,6 @@ use inspect_counters::Histogram;
 use oversized_box::OversizedBox;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
-use protocol::NtStatus;
 use ring::OutgoingPacketType;
 use scsi::AdditionalSenseCode;
 use scsi::ScsiOp;
@@ -65,6 +59,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use storvs_core::protocol;
 use storvsp_resources::ScsiPath;
 use task_control::AsyncRun;
 use task_control::InspectTask;
@@ -446,7 +441,7 @@ impl WorkerInner {
         request_size: usize,
         transaction_id: u64,
         operation: protocol::Operation,
-        status: NtStatus,
+        status: protocol::NtStatus,
         payload: &[u8],
     ) -> Result<(), WorkerError> {
         let header = protocol::Packet {
@@ -488,7 +483,7 @@ impl WorkerInner {
         &mut self,
         writer: &mut queue::WriteHalf<'_, M>,
         operation: protocol::Operation,
-        status: NtStatus,
+        status: protocol::NtStatus,
         payload: &P,
     ) -> Result<(), WorkerError> {
         self.send_vmbus_packet(
@@ -506,7 +501,7 @@ impl WorkerInner {
         &mut self,
         writer: &mut queue::WriteHalf<'_, M>,
         packet: &Packet,
-        status: NtStatus,
+        status: protocol::NtStatus,
         payload: &P,
     ) -> Result<(), WorkerError> {
         self.send_vmbus_packet(
@@ -880,7 +875,7 @@ impl<T: RingMem> Worker<T> {
                             _ = self.fast_select.select((self.rescan_notification.select_next_some(),)).fuse() => {
                                 if version >= Version::Win7
                                 {
-                                    self.inner.send_packet(&mut self.queue.split().1, protocol::Operation::ENUMERATE_BUS, NtStatus::SUCCESS, &())?;
+                                    self.inner.send_packet(&mut self.queue.split().1, protocol::Operation::ENUMERATE_BUS, protocol::NtStatus::SUCCESS, &())?;
                                 }
                             }
                         }
@@ -901,7 +896,7 @@ impl<T: RingMem> Worker<T> {
                                 self.inner.send_completion(
                                     &mut writer,
                                     &packet,
-                                    NtStatus::SUCCESS,
+                                    protocol::NtStatus::SUCCESS,
                                     &(),
                                 )?;
                                 *self.inner.protocol.state.write() =
@@ -911,7 +906,7 @@ impl<T: RingMem> Worker<T> {
                                 self.inner.send_completion(
                                     &mut writer,
                                     &packet,
-                                    NtStatus::INVALID_DEVICE_STATE,
+                                    protocol::NtStatus::INVALID_DEVICE_STATE,
                                     &(),
                                 )?;
                             }
@@ -923,7 +918,7 @@ impl<T: RingMem> Worker<T> {
                                     self.inner.send_completion(
                                         &mut writer,
                                         &packet,
-                                        NtStatus::SUCCESS,
+                                        protocol::NtStatus::SUCCESS,
                                         &protocol::ProtocolVersion {
                                             major_minor,
                                             reserved: 0,
@@ -941,7 +936,7 @@ impl<T: RingMem> Worker<T> {
                                     self.inner.send_completion(
                                         &mut writer,
                                         &packet,
-                                        NtStatus::REVISION_MISMATCH,
+                                        protocol::NtStatus::REVISION_MISMATCH,
                                         &protocol::ProtocolVersion {
                                             major_minor,
                                             reserved: 0,
@@ -955,7 +950,7 @@ impl<T: RingMem> Worker<T> {
                                 self.inner.send_completion(
                                     &mut writer,
                                     &packet,
-                                    NtStatus::INVALID_DEVICE_STATE,
+                                    protocol::NtStatus::INVALID_DEVICE_STATE,
                                     &(),
                                 )?;
                             }
@@ -968,7 +963,7 @@ impl<T: RingMem> Worker<T> {
                                 self.inner.send_completion(
                                     &mut writer,
                                     &packet,
-                                    NtStatus::SUCCESS,
+                                    protocol::NtStatus::SUCCESS,
                                     &protocol::ChannelProperties {
                                         max_transfer_bytes: 0x40000, // 256KB
                                         flags: {
@@ -1002,7 +997,7 @@ impl<T: RingMem> Worker<T> {
                                 self.inner.send_completion(
                                     &mut writer,
                                     &packet,
-                                    NtStatus::INVALID_DEVICE_STATE,
+                                    protocol::NtStatus::INVALID_DEVICE_STATE,
                                     &(),
                                 )?;
                             }
@@ -1028,14 +1023,14 @@ impl<T: RingMem> Worker<T> {
                                         self.inner.send_completion(
                                             &mut writer,
                                             &packet,
-                                            NtStatus::INVALID_PARAMETER,
+                                            protocol::NtStatus::INVALID_PARAMETER,
                                             &(),
                                         )?;
                                     } else {
                                         self.inner.send_completion(
                                             &mut writer,
                                             &packet,
-                                            NtStatus::SUCCESS,
+                                            protocol::NtStatus::SUCCESS,
                                             &(),
                                         )?;
                                         *self.inner.protocol.state.write() =
@@ -1049,7 +1044,7 @@ impl<T: RingMem> Worker<T> {
                                     self.inner.send_completion(
                                         &mut writer,
                                         &packet,
-                                        NtStatus::SUCCESS,
+                                        protocol::NtStatus::SUCCESS,
                                         &(),
                                     )?;
                                     // Reset the rescan notification event now, before the guest has a
@@ -1068,7 +1063,7 @@ impl<T: RingMem> Worker<T> {
                                     self.inner.send_completion(
                                         &mut writer,
                                         &packet,
-                                        NtStatus::INVALID_DEVICE_STATE,
+                                        protocol::NtStatus::INVALID_DEVICE_STATE,
                                         &(),
                                     )?;
                                 }
@@ -1081,23 +1076,23 @@ impl<T: RingMem> Worker<T> {
     }
 }
 
-fn convert_srb_status_to_nt_status(srb_status: SrbStatus) -> NtStatus {
+fn convert_srb_status_to_nt_status(srb_status: SrbStatus) -> protocol::NtStatus {
     match srb_status {
-        SrbStatus::BUSY => NtStatus::DEVICE_BUSY,
-        SrbStatus::SUCCESS => NtStatus::SUCCESS,
+        SrbStatus::BUSY => protocol::NtStatus::DEVICE_BUSY,
+        SrbStatus::SUCCESS => protocol::NtStatus::SUCCESS,
         SrbStatus::INVALID_LUN
         | SrbStatus::INVALID_TARGET_ID
         | SrbStatus::NO_DEVICE
-        | SrbStatus::NO_HBA => NtStatus::DEVICE_DOES_NOT_EXIST,
-        SrbStatus::COMMAND_TIMEOUT | SrbStatus::TIMEOUT => NtStatus::IO_TIMEOUT,
-        SrbStatus::SELECTION_TIMEOUT => NtStatus::DEVICE_NOT_CONNECTED,
+        | SrbStatus::NO_HBA => protocol::NtStatus::DEVICE_DOES_NOT_EXIST,
+        SrbStatus::COMMAND_TIMEOUT | SrbStatus::TIMEOUT => protocol::NtStatus::IO_TIMEOUT,
+        SrbStatus::SELECTION_TIMEOUT => protocol::NtStatus::DEVICE_NOT_CONNECTED,
         SrbStatus::BAD_FUNCTION | SrbStatus::BAD_SRB_BLOCK_LENGTH => {
-            NtStatus::INVALID_DEVICE_REQUEST
+            protocol::NtStatus::INVALID_DEVICE_REQUEST
         }
-        SrbStatus::DATA_OVERRUN => NtStatus::BUFFER_OVERFLOW,
-        SrbStatus::REQUEST_FLUSHED => NtStatus::UNSUCCESSFUL,
-        SrbStatus::ABORTED => NtStatus::CANCELLED,
-        _ => NtStatus::IO_DEVICE_ERROR,
+        SrbStatus::DATA_OVERRUN => protocol::NtStatus::BUFFER_OVERFLOW,
+        SrbStatus::REQUEST_FLUSHED => protocol::NtStatus::UNSUCCESSFUL,
+        SrbStatus::ABORTED => protocol::NtStatus::CANCELLED,
+        _ => protocol::NtStatus::IO_DEVICE_ERROR,
     }
 }
 
@@ -1296,7 +1291,7 @@ impl WorkerInner {
             }
             PacketData::ResetAdapter | PacketData::ResetBus | PacketData::ResetLun => {
                 // These operations have always been no-ops.
-                self.send_completion(writer, &packet, NtStatus::SUCCESS, &())?;
+                self.send_completion(writer, &packet, protocol::NtStatus::SUCCESS, &())?;
                 false
             }
             PacketData::CreateSubChannels(new_subchannel_count) if self.channel_index == 0 => {
@@ -1305,7 +1300,12 @@ impl WorkerInner {
                     .enable_subchannels(new_subchannel_count)
                 {
                     tracelimit::warn_ratelimited!(?err, "cannot create subchannels");
-                    self.send_completion(writer, &packet, NtStatus::INVALID_PARAMETER, &())?;
+                    self.send_completion(
+                        writer,
+                        &packet,
+                        protocol::NtStatus::INVALID_PARAMETER,
+                        &(),
+                    )?;
                     false
                 } else {
                     // Update the subchannel count in the protocol state for save.
@@ -1318,13 +1318,18 @@ impl WorkerInner {
                         unreachable!()
                     }
 
-                    self.send_completion(writer, &packet, NtStatus::SUCCESS, &())?;
+                    self.send_completion(writer, &packet, protocol::NtStatus::SUCCESS, &())?;
                     false
                 }
             }
             _ => {
                 tracelimit::warn_ratelimited!(data = ?packet.data, "unexpected packet on ready");
-                self.send_completion(writer, &packet, NtStatus::INVALID_DEVICE_STATE, &())?;
+                self.send_completion(
+                    writer,
+                    &packet,
+                    protocol::NtStatus::INVALID_DEVICE_STATE,
+                    &(),
+                )?;
                 false
             }
         };
@@ -1853,7 +1858,7 @@ mod tests {
         let negotiate_packet = protocol::Packet {
             operation: protocol::Operation::BEGIN_INITIALIZATION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])
@@ -1864,7 +1869,7 @@ mod tests {
         let header = protocol::Packet {
             operation: protocol::Operation::QUERY_PROTOCOL_VERSION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: protocol::NtStatus::SUCCESS,
         };
 
         let mut buf = [0u8; 128];
@@ -1892,7 +1897,7 @@ mod tests {
                             .read_plain::<protocol::Packet>()
                             .unwrap()
                             .status,
-                        NtStatus::REVISION_MISMATCH
+                        protocol::NtStatus::REVISION_MISMATCH
                     );
                     Ok(())
                 })
@@ -1926,7 +1931,7 @@ mod tests {
         let negotiate_packet = protocol::Packet {
             operation: protocol::Operation::END_INITIALIZATION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])
@@ -1943,7 +1948,7 @@ mod tests {
                         .read_plain::<protocol::Packet>()
                         .unwrap()
                         .status,
-                    NtStatus::INVALID_DEVICE_STATE
+                    protocol::NtStatus::INVALID_DEVICE_STATE
                 );
                 Ok(())
             })
@@ -1976,7 +1981,7 @@ mod tests {
         let negotiate_packet = protocol::Packet {
             operation: protocol::Operation::REMOVE_DEVICE,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])
@@ -2015,7 +2020,7 @@ mod tests {
         let negotiate_packet = protocol::Packet {
             operation: protocol::Operation::BEGIN_INITIALIZATION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])
@@ -2025,7 +2030,7 @@ mod tests {
         let version_packet = protocol::Packet {
             operation: protocol::Operation::QUERY_PROTOCOL_VERSION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: protocol::NtStatus::SUCCESS,
         };
         let version = protocol::ProtocolVersion {
             major_minor: protocol::VERSION_BLUE,
@@ -2039,7 +2044,7 @@ mod tests {
         let properties_packet = protocol::Packet {
             operation: protocol::Operation::QUERY_PROPERTIES,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[properties_packet.as_bytes()])
@@ -2050,7 +2055,7 @@ mod tests {
         let negotiate_packet = protocol::Packet {
             operation: protocol::Operation::CREATE_SUB_CHANNELS,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: protocol::NtStatus::SUCCESS,
         };
         // Create sub channels more than maximum_sub_channel_count
         guest
@@ -2068,7 +2073,7 @@ mod tests {
                         .read_plain::<protocol::Packet>()
                         .unwrap()
                         .status,
-                    NtStatus::INVALID_PARAMETER
+                    protocol::NtStatus::INVALID_PARAMETER
                 );
                 Ok(())
             })
@@ -2103,7 +2108,7 @@ mod tests {
         let negotiate_packet = protocol::Packet {
             operation: protocol::Operation::BEGIN_INITIALIZATION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])
@@ -2111,7 +2116,11 @@ mod tests {
 
         guest
             .verify_completion(|p| {
-                parse_guest_completion_check_flags_status(p, 0, NtStatus::INVALID_DEVICE_STATE)
+                parse_guest_completion_check_flags_status(
+                    p,
+                    0,
+                    protocol::NtStatus::INVALID_DEVICE_STATE,
+                )
             })
             .await;
     }
@@ -2318,7 +2327,7 @@ mod tests {
         let negotiate_packet = protocol::Packet {
             operation: protocol::Operation::BEGIN_INITIALIZATION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])
@@ -2328,7 +2337,7 @@ mod tests {
         let version_packet = protocol::Packet {
             operation: protocol::Operation::QUERY_PROTOCOL_VERSION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: protocol::NtStatus::SUCCESS,
         };
         let version = protocol::ProtocolVersion {
             major_minor: protocol::VERSION_BLUE,
@@ -2342,7 +2351,7 @@ mod tests {
         let properties_packet = protocol::Packet {
             operation: protocol::Operation::QUERY_PROPERTIES,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[properties_packet.as_bytes()])
@@ -2352,7 +2361,7 @@ mod tests {
         let negotiate_packet = protocol::Packet {
             operation: protocol::Operation::END_INITIALIZATION,
             flags: 0,
-            status: NtStatus::SUCCESS,
+            status: protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])

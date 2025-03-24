@@ -1,0 +1,26 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "storvs_core"
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+# Enable generating arbitrary values of types useful for fuzzing.
+arbitrary = ["dep:arbitrary", "scsi_defs/arbitrary"]
+
+# Expose some implementation details publicly, used for fuzzing.
+fuzz_helpers = []
+
+[dependencies]
+arbitrary = { workspace = true, optional = true, features = ["derive"] }
+scsi_defs.workspace = true
+
+guid.workspace = true
+open_enum.workspace = true
+zerocopy.workspace = true
+[dev-dependencies]
+
+[lints]
+workspace = true

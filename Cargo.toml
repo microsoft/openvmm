@@ -273,6 +273,7 @@ scsi_core = { path = "vm/devices/storage/scsi_core" }
 scsi_defs = { path = "vm/devices/storage/scsi_defs" }
 scsidisk = { path = "vm/devices/storage/scsidisk" }
 scsidisk_resources = { path = "vm/devices/storage/scsidisk_resources" }
+storvs_core = { path = "vm/devices/storage/storvs_core" }
 storvsp = { path = "vm/devices/storage/storvsp" }
 storvsp_resources = { path = "vm/devices/storage/storvsp_resources" }
 device_emulators = { path = "vm/devices/support/device_emulators" }
