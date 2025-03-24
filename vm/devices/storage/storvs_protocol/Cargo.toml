@@ -2,7 +2,7 @@
 # Licensed under the MIT License.
 
 [package]
-name = "storvs_core"
+name = "storvs_protocol"
 edition.workspace = true
 rust-version.workspace = true
 

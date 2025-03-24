@@ -15,7 +15,7 @@ use scsi_defs::Cdb10;
 use scsi_defs::ScsiOp;
 use std::pin::pin;
 use std::sync::Arc;
-use storvs_core::protocol;
+use storvs_protocol::protocol;
 use storvsp::ScsiController;
 use storvsp::ScsiControllerDisk;
 use storvsp::test_helpers::TestGuest;

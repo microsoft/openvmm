@@ -2239,7 +2239,7 @@ dependencies = [
  "pal_async",
  "scsi_defs",
  "scsidisk",
- "storvs_core",
+ "storvs_protocol",
  "storvsp",
  "storvsp_resources",
  "vmbus_async",
@@ -6511,7 +6511,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "storvs_core"
+name = "storvs_protocol"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
@@ -6545,7 +6545,7 @@ dependencies = [
  "scsi_defs",
  "scsidisk",
  "slab",
- "storvs_core",
+ "storvs_protocol",
  "storvsp_resources",
  "task_control",
  "test_with_tracing",
