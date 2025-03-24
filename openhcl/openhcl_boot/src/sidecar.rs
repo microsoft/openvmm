@@ -106,8 +106,10 @@ pub fn start_sidecar<'a>(
     }
 
     #[cfg(target_arch = "x86_64")]
-    if safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx
-        & (1 << 21) == 0
+    if !x86defs::cpuid::VersionAndFeaturesEcx::from(
+        safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx,
+    )
+    .x2_apic()
     {
         // Currently, sidecar needs x2apic to communicate with the kernel
         log!("sidecar: x2apic not available; not using sidecar");
