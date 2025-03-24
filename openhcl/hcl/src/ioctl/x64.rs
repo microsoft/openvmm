@@ -436,9 +436,8 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
                         HvX64RegisterName::from(HvRegisterName(HvX64RegisterName::Es.0 + i as u32)),
                         HvRegisterValue::from(val),
                     )
-                })
-                .collect::<Vec<_>>();
-            regs.extend_from_slice(segment_regs.as_slice());
+                });
+            regs.extend(segment_regs);
         }
 
         // Disable the reg page so future writes do not use it (until the state
@@ -448,9 +447,9 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
         // Set the registers now that the register page is marked invalid.
         if !regs.is_empty() {
             if let Err(err) = runner.set_vp_registers(GuestVtl::Vtl0, regs.as_slice()) {
-                tracing::error!(
-                    err = &err as &dyn std::error::Error,
-                    "Failed to flush register page"
+                panic!(
+                    "Failed to flush register page: {}",
+                    &err as &dyn std::error::Error
                 );
             }
         }
