@@ -13,8 +13,8 @@ use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
 open_enum! {
-    /// VMX exit reason
-    pub enum VmxExit: u32 {
+    /// VMX basic exit reason
+    pub enum VmxExitBasic: u16 {
         EXCEPTION = 0x0,
         HW_INTERRUPT = 0x1,
         TRIPLE_FAULT = 0x2,
@@ -30,6 +30,7 @@ open_enum! {
         IO_INSTRUCTION = 0x1E,
         MSR_READ = 0x1F,
         MSR_WRITE = 0x20,
+        BAD_GUEST_STATE = 0x21,
         TPR_BELOW_THRESHOLD = 0x2B,
         EPT_VIOLATION = 0x30,
         XSETBV = 0x37,
@@ -37,14 +38,34 @@ open_enum! {
     }
 }
 
-impl VmxExit {
+impl VmxExitBasic {
     pub(crate) const fn from_bits(value: u64) -> Self {
-        Self(value as u32)
+        Self(value as u16)
     }
 
     pub(crate) const fn into_bits(self) -> u64 {
         self.0 as u64
     }
+}
+
+/// VMX exit reason
+#[bitfield(u32)]
+#[derive(PartialEq, Eq)]
+pub struct VmxExit {
+    #[bits(16)]
+    pub basic_reason: VmxExitBasic,
+    #[bits(10)]
+    rsvd_0: u64,
+    #[bits(1)]
+    pub bus_lock_preempted: bool,
+    #[bits(1)]
+    pub enclave_interruption: bool,
+    #[bits(1)]
+    pub pending_mtf: bool,
+    #[bits(2)]
+    rsvd_1: u8,
+    #[bits(1)]
+    pub vm_enter_failed: bool,
 }
 
 pub const VMX_ENTRY_CONTROL_LONG_MODE_GUEST: u32 = 0x00000200;

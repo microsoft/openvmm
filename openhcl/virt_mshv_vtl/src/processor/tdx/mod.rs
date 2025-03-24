@@ -117,6 +117,7 @@ use x86defs::vmx::VMX_FEATURE_CONTROL_LOCKED;
 use x86defs::vmx::VmcsField;
 use x86defs::vmx::VmxEptExitQualification;
 use x86defs::vmx::VmxExit;
+use x86defs::vmx::VmxExitBasic;
 use x86emu::Gp;
 use x86emu::Segment;
 
@@ -1429,7 +1430,10 @@ impl UhProcessor<'_, TdxBacked> {
                 // the L1.
                 //
                 // There is nothing to do here.
-                assert_eq!(exit_info.code().vmx_exit(), VmxExit::TDCALL);
+                assert_eq!(
+                    exit_info.code().vmx_exit(),
+                    VmxExit::new().with_basic_reason(VmxExitBasic::TDCALL)
+                );
                 &mut self.backing.vtls[entered_from_vtl]
                     .enter_stats
                     .host_routed_td_vmcall
@@ -1543,9 +1547,70 @@ impl UhProcessor<'_, TdxBacked> {
             }
         }
 
+        // First, check that the VM entry was even successful.
+        let vmx_exit = exit_info.code().vmx_exit();
+        if vmx_exit.vm_enter_failed() {
+            match vmx_exit.basic_reason() {
+                VmxExitBasic::BAD_GUEST_STATE => {
+                    // Log system register state for debugging why we were
+                    // unable to enter the guest. This is a VMM bug.
+                    tracing::error!("VP.ENTER failed with bad guest state");
+
+                    let physical_cr0 = self
+                        .runner
+                        .read_vmcs64(intercepted_vtl, VmcsField::VMX_VMCS_GUEST_CR0);
+                    let shadow_cr0 = self
+                        .runner
+                        .read_vmcs64(intercepted_vtl, VmcsField::VMX_VMCS_CR0_READ_SHADOW);
+                    let cr0_guest_host_mask = self
+                        .runner
+                        .read_vmcs64(intercepted_vtl, VmcsField::VMX_VMCS_CR0_GUEST_HOST_MASK);
+                    tracing::error!(physical_cr0, shadow_cr0, cr0_guest_host_mask, "cr0 values");
+
+                    let physical_cr4 = self
+                        .runner
+                        .read_vmcs64(intercepted_vtl, VmcsField::VMX_VMCS_GUEST_CR4);
+                    let shadow_cr4 = self
+                        .runner
+                        .read_vmcs64(intercepted_vtl, VmcsField::VMX_VMCS_CR4_READ_SHADOW);
+                    let cr4_guest_host_mask = self
+                        .runner
+                        .read_vmcs64(intercepted_vtl, VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK);
+                    tracing::error!(physical_cr4, shadow_cr4, cr4_guest_host_mask, "cr4 values");
+
+                    let efer = self.backing.vtls[intercepted_vtl].efer;
+                    let entry_controls = self
+                        .runner
+                        .read_vmcs32(intercepted_vtl, VmcsField::VMX_VMCS_ENTRY_CONTROLS);
+                    tracing::error!(efer, entry_controls, "efer & entry controls");
+
+                    let cs = self.read_segment(intercepted_vtl, TdxSegmentReg::Cs);
+                    let ds = self.read_segment(intercepted_vtl, TdxSegmentReg::Ds);
+                    let es = self.read_segment(intercepted_vtl, TdxSegmentReg::Es);
+                    let fs = self.read_segment(intercepted_vtl, TdxSegmentReg::Fs);
+                    let gs = self.read_segment(intercepted_vtl, TdxSegmentReg::Gs);
+                    let ss = self.read_segment(intercepted_vtl, TdxSegmentReg::Ss);
+                    let tr = self.read_segment(intercepted_vtl, TdxSegmentReg::Tr);
+                    let ldtr = self.read_segment(intercepted_vtl, TdxSegmentReg::Ldtr);
+
+                    tracing::error!(?cs, ?ds, ?es, ?fs, ?gs, ?ss, ?tr, ?ldtr, "segment values");
+
+                    // TODO: panic instead?
+                    return Err(VpHaltReason::Hypervisor(UhRunVpError::VmxBadGuestState));
+                }
+                _ => {
+                    // The TDX module is not supposed to give us any other exit
+                    // types.
+                    return Err(VpHaltReason::Hypervisor(UhRunVpError::UnknownVmxExit(
+                        vmx_exit,
+                    )));
+                }
+            }
+        }
+
         let mut breakpoint_debug_exception = false;
-        let stat = match exit_info.code().vmx_exit() {
-            VmxExit::IO_INSTRUCTION => {
+        let stat = match vmx_exit.basic_reason() {
+            VmxExitBasic::IO_INSTRUCTION => {
                 let io_qual = ExitQualificationIo::from(exit_info.qualification() as u32);
 
                 if io_qual.is_string() || io_qual.rep_prefix() {
@@ -1585,7 +1650,7 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.io
             }
-            VmxExit::MSR_READ => {
+            VmxExitBasic::MSR_READ => {
                 let msr = self.runner.tdx_enter_guest_gps()[TdxGp::RCX] as u32;
 
                 let result = self.backing.cvm.lapics[intercepted_vtl]
@@ -1635,7 +1700,7 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.msr_read
             }
-            VmxExit::MSR_WRITE => {
+            VmxExitBasic::MSR_WRITE => {
                 let gps = self.runner.tdx_enter_guest_gps();
                 let msr = gps[TdxGp::RCX] as u32;
                 let value =
@@ -1671,7 +1736,7 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.msr_write
             }
-            VmxExit::CPUID => {
+            VmxExitBasic::CPUID => {
                 let xss = self.backing.vtls[intercepted_vtl].private_regs.msr_xss;
                 let gps = self.runner.tdx_enter_guest_gps();
                 let leaf = gps[TdxGp::RAX] as u32;
@@ -1709,7 +1774,7 @@ impl UhProcessor<'_, TdxBacked> {
                 self.advance_to_next_instruction(intercepted_vtl);
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.cpuid
             }
-            VmxExit::VMCALL_INSTRUCTION => {
+            VmxExitBasic::VMCALL_INSTRUCTION => {
                 if exit_info.cpl() != 0 {
                     self.inject_gpf(intercepted_vtl);
                 } else {
@@ -1729,13 +1794,13 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.vmcall
             }
-            VmxExit::HLT_INSTRUCTION => {
+            VmxExitBasic::HLT_INSTRUCTION => {
                 self.backing.cvm.lapics[intercepted_vtl].activity = MpState::Halted;
                 self.clear_interrupt_shadow(intercepted_vtl);
                 self.advance_to_next_instruction(intercepted_vtl);
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.hlt
             }
-            VmxExit::CR_ACCESS => {
+            VmxExitBasic::CR_ACCESS => {
                 let qual = CrAccessQualification::from(exit_info.qualification());
                 let cr;
                 let value;
@@ -1770,7 +1835,7 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.cr_access
             }
-            VmxExit::XSETBV => {
+            VmxExitBasic::XSETBV => {
                 let gps = self.runner.tdx_enter_guest_gps();
                 if let Some(value) =
                     hardware_cvm::validate_xsetbv_exit(hardware_cvm::XsetbvExitInput {
@@ -1792,7 +1857,7 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.xsetbv
             }
-            VmxExit::WBINVD_INSTRUCTION => {
+            VmxExitBasic::WBINVD_INSTRUCTION => {
                 // Ask the kernel to flush the cache before issuing VP.ENTER.
                 let no_invalidate = exit_info.qualification() != 0;
                 if no_invalidate {
@@ -1804,7 +1869,7 @@ impl UhProcessor<'_, TdxBacked> {
                 self.advance_to_next_instruction(intercepted_vtl);
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.wbinvd
             }
-            VmxExit::EPT_VIOLATION => {
+            VmxExitBasic::EPT_VIOLATION => {
                 // TODO TDX: If this is an access to a shared gpa, we need to
                 // check the intercept page to see if this is a real exit or
                 // spurious. This exit is only real if the hypervisor has
@@ -1861,23 +1926,23 @@ impl UhProcessor<'_, TdxBacked> {
 
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.ept_violation
             }
-            VmxExit::TPR_BELOW_THRESHOLD => {
+            VmxExitBasic::TPR_BELOW_THRESHOLD => {
                 // Loop around to reevaluate the APIC.
                 &mut self.backing.vtls[intercepted_vtl]
                     .exit_stats
                     .tpr_below_threshold
             }
-            VmxExit::INTERRUPT_WINDOW => {
+            VmxExitBasic::INTERRUPT_WINDOW => {
                 // Loop around to reevaluate the APIC.
                 &mut self.backing.vtls[intercepted_vtl]
                     .exit_stats
                     .interrupt_window
             }
-            VmxExit::NMI_WINDOW => {
+            VmxExitBasic::NMI_WINDOW => {
                 // Loop around to reevaluate pending NMIs.
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.nmi_window
             }
-            VmxExit::HW_INTERRUPT => {
+            VmxExitBasic::HW_INTERRUPT => {
                 if cfg!(feature = "gdb") {
                     // Check if the interrupt was triggered by a hardware breakpoint.
                     let debug_regs = self
@@ -1890,9 +1955,11 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.hw_interrupt
             }
-            VmxExit::SMI_INTR => &mut self.backing.vtls[intercepted_vtl].exit_stats.smi_intr,
-            VmxExit::PAUSE_INSTRUCTION => &mut self.backing.vtls[intercepted_vtl].exit_stats.pause,
-            VmxExit::TDCALL => {
+            VmxExitBasic::SMI_INTR => &mut self.backing.vtls[intercepted_vtl].exit_stats.smi_intr,
+            VmxExitBasic::PAUSE_INSTRUCTION => {
+                &mut self.backing.vtls[intercepted_vtl].exit_stats.pause
+            }
+            VmxExitBasic::TDCALL => {
                 // If the proxy synic is local, then the host did not get this
                 // instruction, and we need to handle it.
                 if self.backing.untrusted_synic.is_some() {
@@ -1908,7 +1975,7 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.tdcall
             }
-            VmxExit::EXCEPTION => {
+            VmxExitBasic::EXCEPTION => {
                 tracing::trace!(
                     "Caught Exception: {:?}",
                     exit_info._exit_interruption_info()
@@ -1918,7 +1985,7 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.exception
             }
-            VmxExit::TRIPLE_FAULT => {
+            VmxExitBasic::TRIPLE_FAULT => {
                 return Err(VpHaltReason::TripleFault {
                     vtl: intercepted_vtl.into(),
                 });
@@ -1970,8 +2037,8 @@ impl UhProcessor<'_, TdxBacked> {
         let regs = self.runner.tdx_enter_guest_gps();
         if regs[TdxGp::R10] == 0 {
             // Architectural VMCALL.
-            let result = match VmxExit(regs[TdxGp::R11] as u32) {
-                VmxExit::MSR_WRITE => {
+            let result = match VmxExitBasic(regs[TdxGp::R11] as u16) {
+                VmxExitBasic::MSR_WRITE => {
                     let msr = regs[TdxGp::R12] as u32;
                     let value = regs[TdxGp::R13];
                     match self.write_tdvmcall_msr(msr, value, intercepted_vtl) {
@@ -1990,7 +2057,7 @@ impl UhProcessor<'_, TdxBacked> {
                         }
                     }
                 }
-                VmxExit::MSR_READ => {
+                VmxExitBasic::MSR_READ => {
                     let msr = regs[TdxGp::R12] as u32;
                     match self.read_tdvmcall_msr(msr, intercepted_vtl) {
                         Ok(value) => {
