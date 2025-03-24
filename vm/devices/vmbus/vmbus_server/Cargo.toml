@@ -25,7 +25,7 @@ pal_async.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
-bitvec.workspace = true
+bitvec = { workspace = true, features = ["std", "atomic"] }
 futures.workspace = true
 futures-concurrency.workspace = true
 parking_lot.workspace = true

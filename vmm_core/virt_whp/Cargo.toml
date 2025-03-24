@@ -40,7 +40,7 @@ tracing_helpers.workspace = true
 
 anyhow.workspace = true
 arrayvec.workspace = true
-bitvec.workspace = true
+bitvec = { workspace = true, features = ["std", "atomic"] }
 parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
