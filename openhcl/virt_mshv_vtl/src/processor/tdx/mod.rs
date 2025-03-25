@@ -889,12 +889,6 @@ impl BackingPrivate for TdxBacked {
                 return true;
             }
 
-            if check_rflags
-                && !RFlags::from_bits(backing_vtl.private_regs.rflags).interrupt_enable()
-            {
-                return false;
-            }
-
             let (vector, ppr) = if this.backing.cvm.lapics[vtl].lapic.is_offloaded() {
                 let vector = backing_vtl.private_regs.rvi;
                 let ppr = std::cmp::max(
@@ -920,6 +914,12 @@ impl BackingPrivate for TdxBacked {
             let ppr_priority = ppr >> 4;
 
             if vector_priority <= ppr_priority {
+                return false;
+            }
+
+            if check_rflags
+                && !RFlags::from_bits(backing_vtl.private_regs.rflags).interrupt_enable()
+            {
                 return false;
             }
 
