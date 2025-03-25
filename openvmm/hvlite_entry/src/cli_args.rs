@@ -491,9 +491,9 @@ flags:
     #[clap(long)]
     pub guest_watchdog: bool,
 
-    /// enable Underhill's guest crash dump device, targeting the specified path
+    /// enable OpenHCL's guest crash dump device, targeting the specified path
     #[clap(long)]
-    pub underhill_dump_path: Option<PathBuf>,
+    pub openhcl_dump_path: Option<PathBuf>,
 
     /// halt the VM when the guest requests a reset, instead of resetting it
     #[clap(long)]

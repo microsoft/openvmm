@@ -33,6 +33,8 @@ use crate::emuplat::netvsp::HclNetworkVFManagerShutdownInProgress;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::emuplat::tpm::resources::GetTpmRequestAkCertHelperHandle;
 use crate::emuplat::vga_proxy::UhRegisterHostIoFastPath;
+use crate::emuplat::watchdog::UnderhillWatchdog;
+use crate::emuplat::watchdog::WatchdogTimeout;
 use crate::emuplat::EmuplatServicing;
 use crate::loader::vtl0_config::MeasuredVtl0Info;
 use crate::loader::vtl2_config::RuntimeParameters;
@@ -2034,36 +2036,21 @@ async fn new_underhill_vm(
                     .await
                     .expect("first time taking chan"),
                 watchdog_platform: {
-                    use crate::emuplat::watchdog::UnderhillWatchdog;
-
                     // UEFI watchdog doesn't persist to VMGS at this time
                     let store = EphemeralNonVolatileStore::new_boxed();
 
                     #[cfg(guest_arch = "x86_64")]
-                    let watchdog_reset = {
-                        let partition = partition.clone();
-                        Box::new(move || {
-                            // Unlike Hyper-V, we only send the NMI to the BSP.
-                            partition.request_msi(
-                                Vtl::Vtl0,
-                                MsiRequest::new_x86(
-                                    virt::irqcon::DeliveryMode::NMI,
-                                    0,
-                                    false,
-                                    0,
-                                    false,
-                                ),
-                            );
-                        })
+                    let watchdog_reset = WatchdogTimeoutNmi {
+                        partition: partition.clone(),
                     };
                     #[cfg(guest_arch = "aarch64")]
-                    let watchdog_reset = {
-                        let halt = halt_vps.clone();
-                        Box::new(move || halt.halt(HaltReason::Reset))
+                    let watchdog_reset = WatchdogTimeoutHalt {
+                        halt_vps: halt_vps.clone(),
                     };
 
                     Box::new(
-                        UnderhillWatchdog::new(store, get_client.clone(), watchdog_reset).await?,
+                        UnderhillWatchdog::new(store, get_client.clone(), Box::new(watchdog_reset))
+                            .await?,
                     )
                 },
                 vsm_config: Some(Box::new(UnderhillVsmConfig {
@@ -2377,17 +2364,17 @@ async fn new_underhill_vm(
         Some(dev::HyperVGuestWatchdogDeps {
             port_base: WDAT_PORT,
             watchdog_platform: {
-                use crate::emuplat::watchdog::UnderhillWatchdog;
-
                 let store = vmgs_client
                     .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
                     .context("failed to instantiate guest watchdog store")?;
-                let trigger_reset = {
-                    let halt = halt_vps.clone();
-                    Box::new(move || halt.halt(HaltReason::Reset))
+                let trigger_reset = WatchdogTimeoutHalt {
+                    halt_vps: halt_vps.clone(),
                 };
 
-                Box::new(UnderhillWatchdog::new(store, get_client.clone(), trigger_reset).await?)
+                Box::new(
+                    UnderhillWatchdog::new(store, get_client.clone(), Box::new(trigger_reset))
+                        .await?,
+                )
             },
         })
     } else {
@@ -3326,5 +3313,37 @@ impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
 impl ChipsetDevice for FallbackMmioDevice {
     fn supports_mmio(&mut self) -> Option<&mut dyn chipset_device::mmio::MmioIntercept> {
         Some(self)
+    }
+}
+
+#[cfg(guest_arch = "x86_64")]
+struct WatchdogTimeoutNmi {
+    partition: Arc<UhPartition>,
+}
+
+#[cfg(guest_arch = "x86_64")]
+#[async_trait::async_trait]
+impl WatchdogTimeout for WatchdogTimeoutNmi {
+    async fn on_timeout(&self) {
+        crate::livedump::livedump().await;
+
+        // Unlike Hyper-V, we only send the NMI to the BSP.
+        self.partition.request_msi(
+            Vtl::Vtl0,
+            MsiRequest::new_x86(virt::irqcon::DeliveryMode::NMI, 0, false, 0, false),
+        );
+    }
+}
+
+struct WatchdogTimeoutHalt {
+    halt_vps: Arc<Halt>,
+}
+
+#[async_trait::async_trait]
+impl WatchdogTimeout for WatchdogTimeoutHalt {
+    async fn on_timeout(&self) {
+        crate::livedump::livedump().await;
+
+        self.halt_vps.halt(HaltReason::Reset)
     }
 }
