@@ -428,13 +428,6 @@ impl BackingPrivate for SnpBacked {
                 return true;
             }
 
-            if (check_rflags && !RFlags::from_bits(vmsa.rflags()).interrupt_enable())
-                || vmsa.v_intr_cntrl().intr_shadow()
-                || !vmsa.v_intr_cntrl().irq()
-            {
-                return false;
-            }
-
             let vmsa_priority = vmsa.v_intr_cntrl().priority() as u32;
             let lapic = &mut this.backing.cvm.lapics[vtl].lapic;
             let ppr = lapic
@@ -447,7 +440,19 @@ impl BackingPrivate for SnpBacked {
                 })
                 .get_ppr();
             let ppr_priority = ppr >> 4;
-            vmsa_priority > ppr_priority
+            if vmsa_priority <= ppr_priority {
+                return false;
+            }
+
+            let vmsa = this.runner.vmsa_mut(vtl);
+            if (check_rflags && !RFlags::from_bits(vmsa.rflags()).interrupt_enable())
+                || vmsa.v_intr_cntrl().intr_shadow()
+                || !vmsa.v_intr_cntrl().irq()
+            {
+                return false;
+            }
+
+            true
         })
     }
 

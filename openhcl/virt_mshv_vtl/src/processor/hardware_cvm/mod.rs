@@ -1436,8 +1436,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     /// true if an interrupt of appropriate priority, or an NMI, is pending for
     /// the given VTL. The boolean specifies whether RFLAGS.IF should be checked.
     /// Returns true if interrupt reprocessing is required.
-    // DEVNOTE: Calling is_interrupt_pending may be expensive, so it should always
-    // be called last in these if statements.
     pub(crate) fn cvm_handle_cross_vtl_interrupts(
         &mut self,
         is_interrupt_pending: impl Fn(&mut Self, GuestVtl, bool) -> bool,
@@ -1467,8 +1465,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         // Check for VINA
         if cvm_state.exit_vtl == GuestVtl::Vtl1
             && vina.enabled()
-            && !hv.vina_asserted().map_err(UhRunVpError::VpAssistPage)?
             && is_interrupt_pending(self, GuestVtl::Vtl0, true)
+            && !self.backing.cvm_state().hv[GuestVtl::Vtl1]
+                .vina_asserted()
+                .map_err(UhRunVpError::VpAssistPage)?
         {
             self.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
                 .set_vina_asserted(true)
