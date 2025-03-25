@@ -3616,11 +3616,17 @@ pub struct HvRegisterVpAssistPage {
     pub gpa_page_number: u64,
 }
 
-pub const HV_X64_REGISTER_CLASS_GENERAL: u8 = 0;
-pub const HV_X64_REGISTER_CLASS_IP: u8 = 1;
-pub const HV_X64_REGISTER_CLASS_XMM: u8 = 2;
-pub const HV_X64_REGISTER_CLASS_SEGMENT: u8 = 3;
-pub const HV_X64_REGISTER_CLASS_FLAGS: u8 = 4;
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct X64RegisterPageDirtyFlags {
+    pub general_purpose: bool,
+    pub instruction_pointer: bool,
+    pub xmm: bool,
+    pub segments: bool,
+    pub flags: bool,
+    #[bits(27)]
+    reserved: u32,
+}
 
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
@@ -3628,7 +3634,7 @@ pub struct HvX64RegisterPage {
     pub version: u16,
     pub is_valid: u8,
     pub vtl: u8,
-    pub dirty: u32,
+    pub dirty: X64RegisterPageDirtyFlags,
     pub gp_registers: [u64; 16],
     pub rip: u64,
     pub rflags: u64,

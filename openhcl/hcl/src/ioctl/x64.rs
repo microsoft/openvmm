@@ -259,17 +259,17 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
                     HvX64RegisterName::Rsp => {
                         reg_page.gp_registers[(name.0 - HvX64RegisterName::Rax.0) as usize] =
                             value.as_u64();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_GENERAL;
+                        reg_page.dirty.set_general_purpose(true);
                         true
                     }
                     HvX64RegisterName::Rip => {
                         reg_page.rip = value.as_u64();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_IP;
+                        reg_page.dirty.set_instruction_pointer(true);
                         true
                     }
                     HvX64RegisterName::Rflags => {
                         reg_page.rflags = value.as_u64();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_FLAGS;
+                        reg_page.dirty.set_flags(true);
                         true
                     }
                     HvX64RegisterName::Es
@@ -280,7 +280,7 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
                     | HvX64RegisterName::Gs => {
                         reg_page.segment[(name.0 - HvX64RegisterName::Es.0) as usize] =
                             value.as_u128();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_SEGMENT;
+                        reg_page.dirty.set_segments(true);
                         true
                     }
 
@@ -411,10 +411,10 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
 
         // Collect any dirty registers.
         let mut regs: Vec<(HvX64RegisterName, HvRegisterValue)> = Vec::new();
-        if (reg_page.dirty & (1 << hvdef::HV_X64_REGISTER_CLASS_IP)) != 0 {
+        if reg_page.dirty.instruction_pointer() {
             regs.push((HvX64RegisterName::Rip, reg_page.rip.into()));
         }
-        if (reg_page.dirty & (1 << hvdef::HV_X64_REGISTER_CLASS_GENERAL)) != 0 {
+        if reg_page.dirty.general_purpose() {
             regs.push((
                 HvX64RegisterName::Rsp,
                 reg_page.gp_registers
@@ -422,10 +422,10 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
                     .into(),
             ));
         }
-        if (reg_page.dirty & (1 << hvdef::HV_X64_REGISTER_CLASS_FLAGS)) != 0 {
+        if reg_page.dirty.flags() {
             regs.push((HvX64RegisterName::Rflags, reg_page.rflags.into()));
         }
-        if (reg_page.dirty & (1 << hvdef::HV_X64_REGISTER_CLASS_SEGMENT)) != 0 {
+        if reg_page.dirty.segments() {
             let segment_regs = reg_page
                 .segment
                 .iter()
@@ -443,16 +443,14 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
         // Disable the reg page so future writes do not use it (until the state
         // is reset at the next VTL transition).
         reg_page.is_valid = 0;
-        reg_page.dirty = 0;
+        reg_page.dirty = 0.into();
 
         // Set the registers now that the register page is marked invalid.
-        if !regs.is_empty() {
-            if let Err(err) = runner.set_vp_registers(GuestVtl::Vtl0, regs.as_slice()) {
-                panic!(
-                    "Failed to flush register page: {}",
-                    &err as &dyn std::error::Error
-                );
-            }
+        if let Err(err) = runner.set_vp_registers(GuestVtl::Vtl0, regs.as_slice()) {
+            panic!(
+                "Failed to flush register page: {}",
+                &err as &dyn std::error::Error
+            );
         }
     }
 }
