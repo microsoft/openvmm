@@ -443,6 +443,7 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
         // Disable the reg page so future writes do not use it (until the state
         // is reset at the next VTL transition).
         reg_page.is_valid = 0;
+        reg_page.dirty = 0;
 
         // Set the registers now that the register page is marked invalid.
         if !regs.is_empty() {
