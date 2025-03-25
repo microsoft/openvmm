@@ -12,7 +12,6 @@ use crate::ScsiRequestState;
 use crate::StorageDevice;
 use crate::UnsupportedVersion;
 use crate::Version;
-use crate::protocol;
 use scsi_core::save_restore::ScsiSavedState;
 use std::sync::Arc;
 use thiserror::Error;
@@ -217,7 +216,7 @@ impl state::ScsiRequestSavedState {
             request,
         } = self;
 
-        let mut protocol_request = protocol::ScsiRequest::new_zeroed();
+        let mut protocol_request = storvsp_protocol::ScsiRequest::new_zeroed();
         protocol_request
             .as_mut_bytes()
             .get_mut(..request.len())
