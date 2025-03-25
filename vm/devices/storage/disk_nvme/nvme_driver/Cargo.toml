@@ -12,7 +12,6 @@ inspect = { workspace = true, features = ["defer"] }
 inspect_counters.workspace = true
 mesh.workspace = true
 nvme_spec.workspace = true
-page_pool_alloc.workspace = true
 pal_async.workspace = true
 task_control.workspace = true
 user_driver.workspace = true
