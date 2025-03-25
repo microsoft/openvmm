@@ -2041,9 +2041,7 @@ async fn new_underhill_vm(
                     };
                     #[cfg(guest_arch = "aarch64")]
                     let watchdog_reset = WatchdogTimeoutHalt {
-                        partition: partition.clone(),
                         halt_vps: halt_vps.clone(),
-                        driver: driver_source.simple(),
                     };
 
                     Box::new(
