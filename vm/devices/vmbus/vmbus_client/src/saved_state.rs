@@ -49,12 +49,14 @@ impl super::ClientTask {
                 }
             },
             channels: self
-                .inner
                 .channels
                 .0
                 .iter()
                 .filter_map(|(&id, v)| {
-                    let Some(v) = v else {
+                    let Some(state) = ChannelState::save(&v.state) else {
+                        if let Some(request) = v.pending_request() {
+                            panic!("revoked channel {id} has pending request '{request}' that should be drained", id = id.0);
+                        }
                         // The channel has been revoked, but the user is not
                         // done with it. The channel won't be available for use
                         // when we restore, so don't save it, but do save a
@@ -75,23 +77,20 @@ impl super::ClientTask {
                     tracing::info!(%key, %v.state, "channel saved");
                     Some(Channel {
                         id: id.0,
-                        state: ChannelState::save(&v.state),
+                        state,
                         offer: v.offer.into(),
                     })
                 })
                 .collect(),
             gpadls: self
-                .inner
                 .channels
                 .0
                 .iter()
                 .flat_map(|(channel_id, channel)| {
-                    channel.iter().flat_map(|c| {
-                        c.gpadls.iter().map(|(gpadl_id, gpadl_state)| Gpadl {
-                            gpadl_id: gpadl_id.0,
-                            channel_id: channel_id.0,
-                            state: GpadlState::save(gpadl_state),
-                        })
+                    channel.gpadls.iter().map(|(gpadl_id, gpadl_state)| Gpadl {
+                        gpadl_id: gpadl_id.0,
+                        channel_id: channel_id.0,
+                        state: GpadlState::save(gpadl_state),
                     })
                 })
                 .collect(),
@@ -157,11 +156,9 @@ impl super::ClientTask {
             let tearing_down = matches!(gpadl_state, super::GpadlState::TearingDown { .. });
 
             let channel = self
-                .inner
                 .channels
                 .0
                 .get_mut(&channel_id)
-                .and_then(|v| v.as_mut())
                 .ok_or(RestoreError::GpadlForUnknownChannelId(channel_id.0))?;
 
             if channel.gpadls.insert(gpadl_id, gpadl_state).is_some() {
@@ -197,8 +194,7 @@ impl super::ClientTask {
         assert!(!self.running);
 
         // Close restored channels that have not been claimed.
-        for (&channel_id, channel) in &mut self.inner.channels.0 {
-            let Some(channel) = channel else { continue };
+        for (&channel_id, channel) in &mut self.channels.0 {
             if let super::ChannelState::Restored = channel.state {
                 tracing::info!(
                     channel_id = channel_id.0,
@@ -293,14 +289,18 @@ pub enum ChannelState {
 }
 
 impl ChannelState {
-    fn save(state: &super::ChannelState) -> Self {
-        match state {
+    fn save(state: &super::ChannelState) -> Option<Self> {
+        let s = match state {
             super::ChannelState::Offered => Self::Offered,
             super::ChannelState::Opening { .. } => {
                 unreachable!("Cannot save channel in opening state.")
             }
-            super::ChannelState::Restored | super::ChannelState::Opened { .. } => Self::Opened,
-        }
+            super::ChannelState::Restored | super::ChannelState::Opened { .. } => {
+                Self::Opened
+            }
+            super::ChannelState::Revoked => return None,
+        };
+        Some(s)
     }
 
     fn restore(self) -> super::ChannelState {
