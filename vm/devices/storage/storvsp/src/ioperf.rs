@@ -6,7 +6,6 @@
 use crate::ScsiController;
 use crate::ScsiControllerDisk;
 use crate::ScsiPath;
-use crate::protocol;
 use crate::test_helpers;
 use crate::test_helpers::TestGuest;
 use crate::test_helpers::TestWorker;
@@ -61,10 +60,10 @@ impl PerfTester {
             io_queue_depth,
         );
 
-        let negotiate_packet = protocol::Packet {
-            operation: protocol::Operation::BEGIN_INITIALIZATION,
+        let negotiate_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::BEGIN_INITIALIZATION,
             flags: 0,
-            status: protocol::NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])
@@ -73,13 +72,13 @@ impl PerfTester {
             .verify_completion(test_helpers::parse_guest_completion)
             .await;
 
-        let version_packet = protocol::Packet {
-            operation: protocol::Operation::QUERY_PROTOCOL_VERSION,
+        let version_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::QUERY_PROTOCOL_VERSION,
             flags: 0,
-            status: protocol::NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
-        let version = protocol::ProtocolVersion {
-            major_minor: protocol::VERSION_BLUE,
+        let version = storvsp_protocol::ProtocolVersion {
+            major_minor: storvsp_protocol::VERSION_BLUE,
             reserved: 0,
         };
         guest
@@ -89,10 +88,10 @@ impl PerfTester {
             .verify_completion(test_helpers::parse_guest_completion)
             .await;
 
-        let properties_packet = protocol::Packet {
-            operation: protocol::Operation::QUERY_PROPERTIES,
+        let properties_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::QUERY_PROPERTIES,
             flags: 0,
-            status: protocol::NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[properties_packet.as_bytes()])
@@ -101,10 +100,10 @@ impl PerfTester {
             .verify_completion(test_helpers::parse_guest_completion)
             .await;
 
-        let negotiate_packet = protocol::Packet {
-            operation: protocol::Operation::END_INITIALIZATION,
+        let negotiate_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::END_INITIALIZATION,
             flags: 0,
-            status: protocol::NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         guest
             .send_data_packet_sync(&[negotiate_packet.as_bytes()])
