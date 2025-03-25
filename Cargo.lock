@@ -6124,6 +6124,7 @@ dependencies = [
  "scsi_defs",
  "scsidisk_resources",
  "stackfuture",
+ "test_with_tracing",
  "thiserror 2.0.12",
  "tracelimit",
  "tracing",
@@ -6623,7 +6624,7 @@ dependencies = [
  "tracing",
  "user_driver",
  "vmcore",
- "zerocopy 0.8.14",
+ "zerocopy 0.8.23",
 ]
 
 [[package]]
