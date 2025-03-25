@@ -2592,9 +2592,12 @@ impl UhProcessor<'_, TdxBacked> {
         }
 
         // Update the local value of EFER and the VMCS.
-        self.backing.vtls[vtl].efer = efer;
-        self.runner
-            .write_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_EFER, !0, efer);
+        if self.backing.vtls[vtl].efer != efer {
+            self.backing.vtls[vtl].efer = efer;
+            self.runner
+                .write_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_EFER, !0, efer);
+        }
+
         Ok(())
     }
 
@@ -2663,17 +2666,16 @@ impl UhProcessor<'_, TdxBacked> {
             self.write_efer(vtl, new_efer)?;
         }
 
-        let mut entry_controls = self
-            .runner
-            .read_vmcs32(vtl, VmcsField::VMX_VMCS_ENTRY_CONTROLS);
-        if lma {
-            entry_controls |= VMX_ENTRY_CONTROL_LONG_MODE_GUEST;
-        } else {
-            entry_controls &= !VMX_ENTRY_CONTROL_LONG_MODE_GUEST;
-        }
-
-        self.runner
-            .write_vmcs32(vtl, VmcsField::VMX_VMCS_ENTRY_CONTROLS, !0, entry_controls);
+        self.runner.write_vmcs32(
+            vtl,
+            VmcsField::VMX_VMCS_ENTRY_CONTROLS,
+            VMX_ENTRY_CONTROL_LONG_MODE_GUEST,
+            if lma {
+                VMX_ENTRY_CONTROL_LONG_MODE_GUEST
+            } else {
+                0
+            },
+        );
         Ok(())
     }
 }
