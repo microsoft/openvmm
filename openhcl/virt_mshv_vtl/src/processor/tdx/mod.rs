@@ -889,15 +889,8 @@ impl BackingPrivate for TdxBacked {
                 return true;
             }
 
-            let interruptibility: Interruptibility = this
-                .runner
-                .read_vmcs32(vtl, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY)
-                .into();
-
-            if (check_rflags
-                && !RFlags::from_bits(backing_vtl.private_regs.rflags).interrupt_enable())
-                || interruptibility.blocked_by_sti()
-                || interruptibility.blocked_by_movss()
+            if check_rflags
+                && !RFlags::from_bits(backing_vtl.private_regs.rflags).interrupt_enable()
             {
                 return false;
             }
@@ -925,7 +918,21 @@ impl BackingPrivate for TdxBacked {
             };
             let vector_priority = (vector as u32) >> 4;
             let ppr_priority = ppr >> 4;
-            vector_priority > ppr_priority
+
+            if vector_priority <= ppr_priority {
+                return false;
+            }
+
+            let interruptibility: Interruptibility = this
+                .runner
+                .read_vmcs32(vtl, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY)
+                .into();
+
+            if interruptibility.blocked_by_sti() || interruptibility.blocked_by_movss() {
+                return false;
+            }
+
+            true
         })
     }
 
