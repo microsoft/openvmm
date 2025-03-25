@@ -2517,7 +2517,35 @@ mod tests {
             },
         ));
         c0.revoke_recv.await.unwrap();
-        server.stop_client(&mut client).await;
+        let rpc = c0.request_send.call(
+            ChannelRequest::Modify,
+            ModifyRequest::TargetVp { target_vp: 1 },
+        );
+
+        check_message(
+            server.next().await.unwrap(),
+            protocol::ModifyChannel {
+                channel_id: ChannelId(0),
+                target_vp: 1,
+            },
+        );
+
+        let client_stop = client.stop();
+        let server_stop = async {
+            server.send(in_msg(
+                MessageType::MODIFY_CHANNEL_RESPONSE,
+                protocol::ModifyChannelResponse {
+                    channel_id: ChannelId(0),
+                    status: protocol::STATUS_SUCCESS,
+                },
+            ));
+            check_message(server.next().await.unwrap(), protocol::Pause);
+            server.send(in_msg(MessageType::PAUSE_RESPONSE, protocol::PauseResponse));
+        };
+        (client_stop, server_stop).join().await;
+
+        rpc.await.unwrap();
+
         let s0 = client.save().await;
         let builder = client.sever().await;
         let mut client = builder.build(&driver);
@@ -2684,7 +2712,7 @@ mod tests {
         let (mut server, mut client) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
         let channel_id = ChannelId(0);
-        let gpadl_id = GpadlId(1);
+        for gpadl_id in [1, 2, 3].map(GpadlId) {
         let recv = channel.request_send.call(
             ChannelRequest::Gpadl,
             GpadlRequest {
@@ -2715,16 +2743,17 @@ mod tests {
         ));
 
         recv.await.unwrap().unwrap();
+        }
 
         let rpc = channel
             .request_send
-            .call(ChannelRequest::TeardownGpadl, gpadl_id);
+            .call(ChannelRequest::TeardownGpadl, GpadlId(1));
 
         check_message(
             server.next().await.unwrap(),
             protocol::GpadlTeardown {
                 channel_id,
-                gpadl_id,
+                gpadl_id: GpadlId(1),
             },
         );
 
@@ -2733,10 +2762,68 @@ mod tests {
             protocol::RescindChannelOffer { channel_id },
         ));
 
+        let recv = channel.request_send.call_failable(
+            ChannelRequest::Gpadl,
+            GpadlRequest {
+                id: GpadlId(4),
+                count: 1,
+                buf: vec![3],
+            },
+        );
+
+        check_message_with_data(
+            server.next().await.unwrap(),
+            protocol::GpadlHeader {
+                channel_id,
+                gpadl_id: GpadlId(4),
+                len: 8,
+                count: 1,
+            },
+            0x3u64.as_bytes(),
+        );
+
+        server.send(in_msg(
+            MessageType::GPADL_CREATED,
+            protocol::GpadlCreated {
+                channel_id,
+                gpadl_id: GpadlId(4),
+                status: protocol::STATUS_UNSUCCESSFUL,
+            },
+        ));
+
+        server.send(in_msg(
+            MessageType::GPADL_TORNDOWN,
+            protocol::GpadlTorndown {
+                gpadl_id: GpadlId(1),
+            },
+        ));
+
         rpc.await.unwrap();
+        recv.await.unwrap_err();
 
         channel.revoke_recv.await.unwrap();
+
+        let rpc = channel
+            .request_send
+            .call(ChannelRequest::TeardownGpadl, GpadlId(2));
         drop(channel.request_send);
+
+        check_message(
+            server.next().await.unwrap(),
+            protocol::GpadlTeardown {
+                channel_id,
+                gpadl_id: GpadlId(2),
+            },
+        );
+
+        server.send(in_msg(
+            MessageType::GPADL_TORNDOWN,
+            protocol::GpadlTorndown {
+                gpadl_id: GpadlId(2),
+            },
+        ));
+
+        rpc.await.unwrap();
 
         check_message(
             server.next().await.unwrap(),
@@ -2905,7 +2992,7 @@ mod tests {
 
         channel
             .request_send
-            .call(
+            .call_failable(
                 ChannelRequest::Open,
                 OpenRequest {
                     open_data: OpenData {
