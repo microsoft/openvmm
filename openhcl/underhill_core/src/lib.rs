@@ -14,6 +14,7 @@ mod emuplat;
 mod get_tracing;
 mod inspect_internal;
 mod inspect_proc;
+mod livedump;
 mod loader;
 mod nvme_manager;
 mod options;

@@ -40,7 +40,6 @@ use std::io::ErrorKind;
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::pin::pin;
-use tracing_subscriber::fmt::time::uptime;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_async::pipe::MessagePipe;
@@ -249,12 +248,14 @@ pub fn main() -> ! {
     let options = Options::parse();
 
     // Now set stderr and stdout to /dev/ttyprintk to catch any other output.
-    let ttyprintk = OpenOptions::new().write(true).open("/dev/ttyprintk");
-    if let Ok(ttyprintk) = &ttyprintk {
-        // SAFETY: calling as documented.
-        unsafe {
-            libc::dup2(ttyprintk.as_raw_fd(), STDOUT_FILENO);
-            libc::dup2(ttyprintk.as_raw_fd(), STDERR_FILENO);
+    if !options.no_redirect {
+        let ttyprintk = OpenOptions::new().write(true).open("/dev/ttyprintk");
+        if let Ok(ttyprintk) = &ttyprintk {
+            // SAFETY: calling as documented.
+            unsafe {
+                libc::dup2(ttyprintk.as_raw_fd(), STDOUT_FILENO);
+                libc::dup2(ttyprintk.as_raw_fd(), STDERR_FILENO);
+            }
         }
     }
 
@@ -266,7 +267,7 @@ pub fn main() -> ! {
             tracing::Level::INFO
         })
         .log_internal_errors(true)
-        .with_timer(uptime())
+        .with_timer(tracing_subscriber::fmt::time::uptime())
         .compact()
         .with_ansi(false)
         .init();

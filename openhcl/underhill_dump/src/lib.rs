@@ -49,6 +49,9 @@ pub fn do_main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .log_internal_errors(true)
         .with_max_level(level)
+        .with_timer(tracing_subscriber::fmt::time::uptime())
+        .compact()
+        .with_ansi(false)
         .init();
 
     let pid: i32 = args

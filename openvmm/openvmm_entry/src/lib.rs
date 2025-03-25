@@ -1078,7 +1078,7 @@ fn vm_config_from_command_line(
         DEFAULT_MMIO_GAPS.into()
     };
 
-    if let Some(path) = &opt.underhill_dump_path {
+    if let Some(path) = &opt.openhcl_dump_path {
         let (resource, task) = spawn_dump_handler(&spawner, path.clone(), None);
         task.detach();
         vmbus_devices.push((openhcl_vtl, resource));
