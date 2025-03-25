@@ -17,7 +17,7 @@ async fn livedump_core() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let (dump_read, dump_write) = pal::unix::pipe::pair().unwrap();
+    let (dump_read, dump_write) = pal::unix::pipe::pair()?;
 
     // Spawn underhill-crash to forward the crash dump to the host.
     // Give it what arguments we can, but as this is a live dump they're not quite as relevant.
@@ -57,17 +57,11 @@ async fn livedump_core() -> anyhow::Result<()> {
         for line in crash_output.lines() {
             tracing::info!("underhill-crash output: {}", line);
         }
-        return Err(anyhow::anyhow!(
-            "underhill-crash failed: {}",
-            crash_result.status
-        ));
+        anyhow::bail!("underhill-crash failed: {}", crash_result.status);
     }
 
     if !dump_result.status.success() {
-        return Err(anyhow::anyhow!(
-            "underhill-dump failed: {}",
-            dump_result.status
-        ));
+        anyhow::bail!("underhill-dump failed: {}", dump_result.status);
     }
 
     Ok(())
