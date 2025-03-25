@@ -275,7 +275,7 @@ pub fn main() -> ! {
     // We should have checks in our callers so this is never hit, but let's be safe.
     if underhill_confidentiality::confidential_filtering_enabled() {
         tracing::info!("crash reporting disabled due to CVM");
-        std::process::exit(libc::EXIT_SUCCESS);
+        std::process::exit(libc::EXIT_FAILURE);
     }
 
     let os_version = OsVersionInfo::new();
