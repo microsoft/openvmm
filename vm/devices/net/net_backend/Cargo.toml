@@ -24,5 +24,7 @@ futures-concurrency.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
 
+mana_save_restore.workspace = true
+
 [lints]
 workspace = true

@@ -27,6 +27,12 @@ use gdma_defs::bnic::ManaQueryStatisticsResponse;
 use gdma_defs::bnic::ManaQueryVportCfgResp;
 use gdma_defs::bnic::STATISTICS_FLAGS_ALL;
 use inspect::Inspect;
+use mana_save_restore::save_restore::BnicEqSavedState;
+use mana_save_restore::save_restore::BnicWqSavedState;
+use mana_save_restore::save_restore::DoorbellSavedState;
+use mana_save_restore::save_restore::QueueSavedState;
+use mana_save_restore::save_restore::SavedMemoryState;
+use mana_save_restore::save_restore::VportSavedState;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
@@ -87,6 +93,39 @@ impl<T: DeviceBacking> ManaDevice<T> {
             tracing::info!("Creating a new gdma driver");
             GdmaDriver::new(driver, device, num_vps).await?
         };
+
+        // let dma_client = gdma.device().dma_client();
+        // if let Some(ref mana_state) = mana_state {
+        //     for queue in &mana_state.queues {
+        //         match queue {
+        //             QueueSavedState::ManaQueue(queue) => {
+        //                 let _eq_mem =
+        //                     dma_client.attach_dma_buffer(queue.eq.mem.len, queue.eq.mem.base)?;
+        //                 let _txq_mem = dma_client.attach_dma_buffer(
+        //                     queue.tx_wq.mem.len + queue.tx_cq.mem.len,
+        //                     queue.tx_wq.mem.base,
+        //                 )?;
+        //                 let _rxq_mem = dma_client.attach_dma_buffer(
+        //                     queue.rx_wq.mem.len + queue.rx_cq.mem.len,
+        //                     queue.rx_wq.mem.base,
+        //                 )?;
+
+        //                 let _rx_bounce_mem =
+        //                     queue.rx_bounce_buffer.as_ref().map(|rx_bounce_buffer| {
+        //                         dma_client.attach_dma_buffer(
+        //                             rx_bounce_buffer.mem.len,
+        //                             rx_bounce_buffer.mem.base,
+        //                         )
+        //                     });
+
+        //                 let _tx_bounce_mem = dma_client.attach_dma_buffer(
+        //                     queue.tx_bounce_buffer.mem.len,
+        //                     queue.tx_bounce_buffer.mem.base,
+        //                 );
+        //             }
+        //         }
+        //     }
+        // }
 
         gdma.test_eq().await?;
 
@@ -360,6 +399,8 @@ impl<T: DeviceBacking> Vport<T> {
     ) -> anyhow::Result<BnicEq> {
         let mut gdma = self.inner.gdma.lock().await;
         let dma_client = gdma.device().dma_client();
+        tracing::info!("allocating eq memory");
+
         let mem = dma_client
             .allocate_dma_buffer(size as usize)
             .context("Failed to allocate DMA buffer")?;
@@ -402,6 +443,8 @@ impl<T: DeviceBacking> Vport<T> {
         let mut gdma = self.inner.gdma.lock().await;
 
         let dma_client = gdma.device().dma_client();
+
+        tracing::info!("allocating wq memory");
 
         let mem = dma_client
             .allocate_dma_buffer((wq_size + cq_size) as usize)
@@ -569,6 +612,18 @@ impl<T: DeviceBacking> Vport<T> {
     pub async fn dma_client(&self) -> Arc<dyn DmaClient> {
         self.inner.gdma.lock().await.device().dma_client()
     }
+
+    /// Save the state of the vport for restoration after servicing.
+    pub fn save(&self) -> VportSavedState {
+        VportSavedState {
+            id: self.id,
+            direction_to_vtl0: self.vport_state.get_direction_to_vtl0(),
+        }
+    }
+
+    pub async fn doorbell(&self) -> Arc<dyn Doorbell> {
+        self.inner.gdma.lock().await.doorbell()
+    }
 }
 
 /// Transmit configuration.
@@ -599,6 +654,23 @@ impl BnicEq {
     /// Gets an object to access the queue's entries.
     pub fn queue(&self) -> queues::Eq {
         queues::Eq::new_eq(self.mem.clone(), self.doorbell.clone(), self.id)
+    }
+
+    /// Save the state of the event queue for restoration after servicing.
+    pub fn save(&self) -> BnicEqSavedState {
+        tracing::info!("base pfn of eq: {:#x}", self.mem.pfns()[0]);
+
+        BnicEqSavedState {
+            queue: self.queue().save(),
+            memory: SavedMemoryState {
+                base_pfn: self.mem.pfns()[0],
+                len: self.mem.len(),
+            },
+            doorbell: DoorbellSavedState {
+                doorbell_id: self.doorbell.doorbell_id as u64,
+                page_count: self.doorbell.doorbell.page_count(),
+            },
+        }
     }
 }
 
@@ -631,5 +703,18 @@ impl BnicWq {
     /// Gets the work queue object ID.
     pub fn wq_obj(&self) -> u64 {
         self.wq_obj
+    }
+
+    /// Saves the state of the work queue for restoration after servicing.
+    pub fn save(&self) -> BnicWqSavedState {
+        tracing::info!("base pfn of wq: {:#x}", self.wq_mem.pfns()[0]);
+
+        BnicWqSavedState {
+            memory: SavedMemoryState {
+                base_pfn: self.wq_mem.pfns()[0],
+                len: self.wq_mem.len() + self.cq_mem.len(),
+            },
+            queue: self.wq().save(),
+        }
     }
 }

@@ -69,4 +69,7 @@ pub trait DmaClient: Send + Sync + Inspect {
 
     /// Attach to a previously allocated memory block.
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
+
+    /// Get a previously allocated memory block.
+    fn get_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 }

@@ -236,6 +236,10 @@ impl DmaClient for EmulatedDmaAllocator {
     fn attach_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
         anyhow::bail!("restore is not supported for emulated DMA")
     }
+
+    fn get_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+        anyhow::bail!("get is not supported for emulated DMA")
+    }
 }
 
 impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + Send + DmaClient> DeviceBacking

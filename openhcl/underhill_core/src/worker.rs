@@ -512,10 +512,29 @@ impl UnderhillVmWorker {
 
         let is_post_servicing = servicing_state.is_some();
         let correlation_id = (servicing_state.as_ref()).and_then(|s| s.init_state.correlation_id);
-        let (servicing_init_state, servicing_unit_state) = match servicing_state {
+        let (mut servicing_init_state, servicing_unit_state) = match servicing_state {
             None => (None, None),
             Some(ServicingState { init_state, units }) => (Some(init_state), Some(units)),
         };
+
+        if let Some(state) = servicing_unit_state.as_ref() {
+            if let Some(s) = state.iter().find(|s| s.name.contains("net:")) {
+                if let Ok(netvsp_state) = s.state.parse::<netvsp::saved_state::SavedState>() {
+                    tracing::info!("servicing netvsp state: {:?}", netvsp_state.endpoint);
+                    if let Some(init_state) = servicing_init_state.as_mut() {
+                        if let Some(mana_state) = init_state.mana_state.as_mut() {
+                            if let Some(endpoint) = netvsp_state.endpoint {
+                                mana_state[0].endpoints.push(endpoint);
+                            }
+
+                            if let Some(queues) = netvsp_state.saved_queues {
+                                mana_state[0].queues = queues;
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Build the VM.
         let mut vm = new_underhill_vm(
@@ -825,12 +844,17 @@ impl UhVmNetworkSettings {
                     })
                     .await?,
             );
-            let nic = nic_builder.build(
+            let nic = nic_builder.build_with_saved_state(
                 driver_source,
                 vmbus_instance_id,
                 endpoint,
                 mac_address,
                 adapter_index,
+                servicing_mana_state
+                    .as_ref()
+                    .map(|s| &s[0].endpoints[0])
+                    .cloned(),
+                servicing_mana_state.as_ref().map(|s| &s[0].queues).cloned(),
             );
 
             let channel = offer_channel_unit(

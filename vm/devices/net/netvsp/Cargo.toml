@@ -7,6 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+mana_save_restore.workspace = true
 net_backend.workspace = true
 net_backend_resources.workspace = true
 netvsp_resources.workspace = true

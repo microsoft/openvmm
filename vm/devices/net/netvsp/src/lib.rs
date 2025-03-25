@@ -11,7 +11,7 @@ mod protocol;
 pub mod resolver;
 mod rndisprot;
 mod rx_bufs;
-mod saved_state;
+pub mod saved_state;
 mod test;
 
 use crate::buffers::GuestBuffers;
@@ -46,6 +46,7 @@ use inspect::InspectMut;
 use inspect::SensitivityLevel;
 use inspect_counters::Counter;
 use inspect_counters::Histogram;
+use mana_save_restore::save_restore::QueueSavedState;
 use mesh::rpc::Rpc;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
@@ -54,6 +55,7 @@ use net_backend::QueueConfig;
 use net_backend::RxId;
 use net_backend::TxId;
 use net_backend::TxSegment;
+use net_backend::save_restore::EndpointSavedState;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::timer::Instant;
 use pal_async::timer::PolledTimer;
@@ -308,6 +310,12 @@ struct QueueState {
     queue: Box<dyn net_backend::Queue>,
     rx_buffer_range: RxBufferRange,
     target_vp_set: bool,
+}
+
+impl Drop for QueueState {
+    fn drop(&mut self) {
+        tracing::info!("dropping queue state");
+    }
 }
 
 struct RxBufferRange {
@@ -984,6 +992,100 @@ impl NicBuilder {
         self
     }
 
+    /// Creates a new NIC or restores it from saved state
+    pub fn build_with_saved_state(
+        self,
+        driver_source: &VmTaskDriverSource,
+        instance_id: Guid,
+        endpoint: Box<dyn Endpoint>,
+        mac_address: MacAddress,
+        adapter_index: u32,
+        endpoint_saved_state: Option<EndpointSavedState>,
+        queue_saved_state: Option<Vec<QueueSavedState>>,
+    ) -> Nic {
+        let multiqueue = endpoint.multiqueue_support();
+
+        let max_queues = self.max_queues.clamp(
+            1,
+            multiqueue.max_queues.min(NETVSP_MAX_SUBCHANNELS_PER_VNIC),
+        );
+
+        // If requested, limit the effective size of the outgoing ring buffer.
+        // In a configuration where the NIC is processed synchronously, this
+        // will ensure that we don't process incoming rx packets and tx packet
+        // completions until the guest has processed the data it already has.
+        let ring_size_limit = if self.limit_ring_buffer { 1024 } else { 0 };
+
+        // If the endpoint completes tx packets quickly, then avoid polling the
+        // incoming ring (and thus avoid arming the signal from the guest) as
+        // long as there are any tx packets in flight. This can significantly
+        // reduce the signal rate from the guest, improving batching.
+        let free_tx_packet_threshold = if endpoint.tx_fast_completions() {
+            TX_PACKET_QUOTA
+        } else {
+            // Avoid getting into a situation where there is always barely
+            // enough quota.
+            TX_PACKET_QUOTA / 4
+        };
+
+        let tx_offloads = endpoint.tx_offload_support();
+
+        // Always claim support for rx offloads since we can mark any given
+        // packet as having unknown checksum state.
+        let offload_support = OffloadConfig {
+            checksum_rx: ChecksumOffloadConfig {
+                ipv4_header: true,
+                tcp4: true,
+                udp4: true,
+                tcp6: true,
+                udp6: true,
+            },
+            checksum_tx: ChecksumOffloadConfig {
+                ipv4_header: tx_offloads.ipv4_header,
+                tcp4: tx_offloads.tcp,
+                tcp6: tx_offloads.tcp,
+                udp4: tx_offloads.udp,
+                udp6: tx_offloads.udp,
+            },
+            lso4: tx_offloads.tso,
+            lso6: tx_offloads.tso,
+        };
+
+        let driver = driver_source.simple();
+        let adapter = Arc::new(Adapter {
+            driver,
+            mac_address,
+            max_queues,
+            indirection_table_size: multiqueue.indirection_table_size,
+            offload_support,
+            free_tx_packet_threshold,
+            ring_size_limit: ring_size_limit.into(),
+            tx_fast_completions: endpoint.tx_fast_completions(),
+            adapter_index,
+            get_guest_os_id: self.get_guest_os_id,
+            num_sub_channels_opened: AtomicUsize::new(0),
+            link_speed: endpoint.link_speed(),
+        });
+
+        let coordinator = TaskControl::new(CoordinatorState {
+            endpoint,
+            adapter: adapter.clone(),
+            virtual_function: self.virtual_function,
+            pending_vf_state: CoordinatorStatePendingVfState::Ready,
+            saved_endpoint: endpoint_saved_state,
+            saved_queues: queue_saved_state,
+        });
+
+        Nic {
+            instance_id,
+            resources: Default::default(),
+            coordinator,
+            coordinator_send: None,
+            adapter,
+            driver_source: driver_source.clone(),
+        }
+    }
+
     /// Creates a new NIC.
     pub fn build(
         self,
@@ -1062,6 +1164,8 @@ impl NicBuilder {
             adapter: adapter.clone(),
             virtual_function: self.virtual_function,
             pending_vf_state: CoordinatorStatePendingVfState::Ready,
+            saved_endpoint: None,
+            saved_queues: None,
         });
 
         Nic {
@@ -1217,6 +1321,7 @@ impl VmbusDevice for Nic {
                 worker.task_mut().queue_state = None;
             }
 
+            tracing::info!("stopping endpoint for vmbus channel");
             // Note that this await is not restartable.
             self.coordinator.task_mut().endpoint.stop().await;
 
@@ -1269,6 +1374,7 @@ impl VmbusDevice for Nic {
     }
 
     async fn stop(&mut self) {
+        tracing::info!("stopping nic and dropping queues");
         self.coordinator.stop().await;
         if let Some(coordinator) = self.coordinator.state_mut() {
             coordinator.stop_workers().await;
@@ -1284,6 +1390,9 @@ impl VmbusDevice for Nic {
 impl SaveRestoreVmbusDevice for Nic {
     async fn save(&mut self) -> Result<SavedStateBlob, SaveError> {
         let state = self.saved_state();
+
+        tracing::info!("returning saved state: {:?}", state);
+
         Ok(SavedStateBlob::new(state))
     }
 
@@ -1800,7 +1909,27 @@ impl Nic {
             None
         };
 
-        saved_state::SavedState { open }
+        let queues: Vec<_> = self
+            .coordinator
+            .state()
+            .unwrap()
+            .workers
+            .iter()
+            .filter_map(|w| {
+                w.task()
+                    .queue_state
+                    .as_ref()
+                    .and_then(|q| q.queue.save().ok())
+            })
+            .collect();
+
+        tracing::info!("queue saved state: {:?}", queues);
+
+        saved_state::SavedState {
+            open,
+            endpoint: self.coordinator.task().endpoint.save().unwrap(),
+            saved_queues: Some(queues),
+        }
     }
 }
 
@@ -3594,6 +3723,8 @@ struct CoordinatorState {
     adapter: Arc<Adapter>,
     virtual_function: Option<Box<dyn VirtualFunction>>,
     pending_vf_state: CoordinatorStatePendingVfState,
+    saved_endpoint: Option<EndpointSavedState>,
+    saved_queues: Option<Vec<QueueSavedState>>,
 }
 
 impl InspectTaskMut<Coordinator> for CoordinatorState {
@@ -3683,6 +3814,7 @@ impl Coordinator {
         let mut sleep_duration: Option<Instant> = None;
         loop {
             if self.restart {
+                tracing::info!("stopping workers and restarting endpoint in netvsp coordinator");
                 stop.until_stopped(self.stop_workers()).await?;
                 // The queue restart operation is not restartable, so do not
                 // poll on `stop` here.
@@ -4077,6 +4209,11 @@ impl Coordinator {
     }
 
     async fn restart_queues(&mut self, c_state: &mut CoordinatorState) -> Result<(), WorkerError> {
+        tracing::info!(
+            "coordinator saved queues state on restart: {:?}",
+            c_state.saved_queues
+        );
+
         // Drop all the queues and stop the endpoint. Collect the worker drivers to pass to the queues.
         let drivers = self
             .workers
@@ -4245,11 +4382,24 @@ impl Coordinator {
                     flags: 0,
                 });
 
-            c_state
-                .endpoint
-                .get_queues(queue_config, rss.as_ref(), &mut queues)
-                .await
-                .map_err(WorkerError::Endpoint)?;
+            tracing::info!(
+                "getting queues with saved state: {:?}",
+                c_state.saved_endpoint
+            );
+
+            if let Some(saved_queues) = &c_state.saved_queues {
+                c_state
+                    .endpoint
+                    .restore_queues(saved_queues.clone(), &mut queues)
+                    .await
+                    .map_err(WorkerError::Endpoint)?;
+            } else {
+                c_state
+                    .endpoint
+                    .get_queues(queue_config, rss.as_ref(), &mut queues)
+                    .await
+                    .map_err(WorkerError::Endpoint)?;
+            }
 
             assert_eq!(queues.len(), num_queues as usize);
 

@@ -11,6 +11,7 @@ pub mod null;
 pub mod resolve;
 pub mod tests;
 
+use anyhow::Error;
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -20,6 +21,7 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::InspectMut;
+use mana_save_restore::save_restore::QueueSavedState;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use null::NullEndpoint;
@@ -111,7 +113,13 @@ pub trait Endpoint: Send + Sync + InspectMut {
     }
 
     /// Restore the endpoint state from saved state.
-    fn restore(&mut self) -> anyhow::Result<()>;
+    async fn restore_queues(
+        &mut self,
+        _saved_state: Vec<QueueSavedState>,
+        _queues: &mut Vec<Box<dyn Queue>>,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("Endpoint does not support restoring queues")
+    }
 }
 
 /// Multi-queue related support.
@@ -170,6 +178,11 @@ pub trait Queue: Send + InspectMut {
 
     /// Get the buffer access.
     fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess>;
+
+    /// Save the state of the queue for restoration after servicing.
+    fn save(&self) -> anyhow::Result<QueueSavedState> {
+        anyhow::bail!("Saving queue state not supported for this queue type")
+    }
 }
 
 /// A trait for providing access to guest memory buffers.
@@ -606,13 +619,18 @@ impl Endpoint for DisconnectableEndpoint {
         self.current().save()
     }
 
-    fn restore(&mut self) -> anyhow::Result<()> {
-        self.current_mut().restore()?;
-        Ok(())
+    async fn restore_queues(
+        &mut self,
+        saved_state: Vec<QueueSavedState>,
+        queues: &mut Vec<Box<dyn Queue>>,
+    ) -> anyhow::Result<()> {
+        self.current_mut().restore_queues(saved_state, queues).await
     }
 }
 
 pub mod save_restore {
+    use mana_save_restore::save_restore::QueueResourcesSavedState;
+    use mana_save_restore::save_restore::VportSavedState;
     use mesh::payload::Protobuf;
 
     /// The saved state of the endpoint.
@@ -627,5 +645,10 @@ pub mod save_restore {
     /// Saved state of a MANA endpoint for restoration during servicing
     #[derive(Protobuf, Clone, Debug)]
     #[mesh(package = "net_backend")]
-    pub struct ManaEndpointSavedState {}
+    pub struct ManaEndpointSavedState {
+        #[mesh(1)]
+        pub vport: VportSavedState,
+        #[mesh(2)]
+        pub queue_resources: Vec<QueueResourcesSavedState>,
+    }
 }

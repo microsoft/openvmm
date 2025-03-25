@@ -104,4 +104,140 @@ pub mod save_restore {
         #[mesh(7)]
         pub mask: u32,
     }
+
+    /// Saved state for a MANA vport
+    #[derive(Debug, Protobuf, Clone)]
+    #[mesh(package = "mana_driver")]
+    pub struct VportSavedState {
+        // The vport configuration from the device
+        // #[mesh(1)]
+        // pub config: ManaQueryVportCfgResp,
+        /// The vport's ID
+        #[mesh(2)]
+        pub id: u32,
+
+        /// The current filter direction state (if any)
+        #[mesh(3)]
+        pub direction_to_vtl0: Option<bool>,
+    }
+
+    /// Saved state for queue resources
+    #[derive(Debug, Protobuf, Clone)]
+    #[mesh(package = "mana_driver")]
+    pub struct QueueResourcesSavedState {
+        #[mesh(1)]
+        pub _eq: BnicEqSavedState,
+        #[mesh(2)]
+        pub rxq: BnicWqSavedState,
+        #[mesh(3)]
+        pub _txq: BnicWqSavedState,
+    }
+
+    #[derive(Protobuf, Clone, Debug)]
+    #[mesh(package = "mana_driver")]
+    pub struct BnicEqSavedState {
+        #[mesh(1)]
+        pub memory: SavedMemoryState,
+        #[mesh(2)]
+        pub queue: CqEqSavedState,
+        #[mesh(3)]
+        pub doorbell: DoorbellSavedState,
+    }
+
+    #[derive(Protobuf, Clone, Debug)]
+    #[mesh(package = "mana_driver")]
+    pub struct BnicWqSavedState {
+        #[mesh(1)]
+        pub memory: SavedMemoryState,
+        #[mesh(2)]
+        pub queue: WqSavedState,
+    }
+
+    /// Saved state for the memory region used by the driver
+    /// to be restored by a DMA client during servicing
+    #[derive(Debug, Protobuf, Clone)]
+    #[mesh(package = "mana_driver")]
+    pub struct SavedMemoryState {
+        /// The base page frame number of the memory region
+        #[mesh(1)]
+        pub base_pfn: u64,
+
+        /// How long the memory region is
+        #[mesh(2)]
+        pub len: usize,
+    }
+
+    #[derive(Debug, Protobuf, Clone)]
+    #[mesh(package = "mana_driver")]
+    pub struct ContiguousBufferManagerSavedState {
+        #[mesh(1)]
+        pub len: u32,
+        #[mesh(2)]
+        pub head: u32,
+        #[mesh(3)]
+        pub tail: u32,
+        #[mesh(4)]
+        pub mem: MemoryBlockSavedState,
+        #[mesh(5)]
+        pub split_headers: u64,
+        #[mesh(6)]
+        pub failed_allocations: u64,
+    }
+
+    #[derive(Debug, Protobuf, Clone)]
+    #[mesh(package = "mana_driver")]
+    pub enum QueueSavedState {
+        #[mesh(1)]
+        ManaQueue(ManaQueueSavedState),
+    }
+
+    #[derive(Debug, Protobuf, Clone)]
+    #[mesh(package = "mana_driver")]
+    pub struct ManaQueueSavedState {
+        #[mesh(1)]
+        pub rx_bounce_buffer: Option<ContiguousBufferManagerSavedState>,
+        #[mesh(2)]
+        pub tx_bounce_buffer: ContiguousBufferManagerSavedState,
+
+        // vport: Weak<Vport<T>>,
+        // queue_tracker: Arc<(AtomicUsize, SlimEvent)>,
+        #[mesh(3)]
+        pub eq: CqEqSavedState,
+        #[mesh(4)]
+        pub eq_armed: bool,
+        // interrupt: DeviceInterrupt,
+        #[mesh(5)]
+        pub tx_cq_armed: bool,
+        #[mesh(6)]
+        pub rx_cq_armed: bool,
+
+        #[mesh(7)]
+        pub vp_offset: u16,
+        #[mesh(8)]
+        pub mem_key: u32,
+
+        #[mesh(9)]
+        pub tx_wq: WqSavedState,
+        #[mesh(10)]
+        pub tx_cq: CqEqSavedState,
+
+        #[mesh(11)]
+        pub rx_wq: WqSavedState,
+        #[mesh(12)]
+        pub rx_cq: CqEqSavedState,
+
+        // avail_rx: VecDeque<RxId>,
+        // posted_rx: VecDeque<PostedRx>,
+        #[mesh(13)]
+        pub rx_max: usize,
+
+        // posted_tx: VecDeque<PostedTx>,
+        // dropped_tx: VecDeque<TxId>,
+        #[mesh(14)]
+        pub tx_max: usize,
+
+        #[mesh(15)]
+        pub force_tx_header_bounce: bool,
+        // stats: QueueStats,
+    }
 }

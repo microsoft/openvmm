@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 guestmem.workspace = true
 net_backend.workspace = true
+mana_save_restore.workspace = true
 mesh.workspace = true
 inspect.workspace = true
 

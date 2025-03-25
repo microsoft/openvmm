@@ -27,6 +27,8 @@ tracing.workspace = true
 zerocopy.workspace = true
 safe_intrinsics.workspace = true
 
+mana_save_restore.workspace = true
+
 [dev-dependencies]
 gdma.workspace = true
 pci_core.workspace = true

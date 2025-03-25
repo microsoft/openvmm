@@ -710,7 +710,8 @@ impl HclNetworkVFManagerWorker {
 
                         ManaSavedState {
                             mana_device: self.mana_device.as_ref().unwrap().save().await.unwrap(),
-                            endpoints: Vec::new(),
+                            endpoints: Vec::new(), // Filled in by VMBus level save/restore
+                            queues: Vec::new(),    // Filled in by VMBus level save/restore
                         }
                     })
                     .await;
@@ -931,9 +932,24 @@ impl HclNetworkVFManager {
             vp_count,
             max_sub_channels,
             dma_client.clone(),
-            mana_state,
+            mana_state.clone(),
         )
         .await?;
+
+        tracing::info!("device vport count: {:?}", device.num_vports());
+
+        let mana_endpoints = if let Some(mana_state) = mana_state {
+            assert_eq!(
+                mana_state.endpoints.len() as u32,
+                device.num_vports(),
+                "Number of endpoints in saved state does not match number of vports"
+            );
+
+            Some(mana_state.endpoints)
+        } else {
+            None
+        };
+
         let (mut endpoints, endpoint_controls): (Vec<_>, Vec<_>) = (0..device.num_vports())
             .map(|_| {
                 let (endpoint, endpoint_control) = DisconnectableEndpoint::new();

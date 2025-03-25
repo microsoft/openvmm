@@ -744,6 +744,14 @@ impl PagePoolAllocator {
                 None
             };
 
+            tracing::warn!(
+                base_pfn = allocation_slot.base_pfn,
+                pfn_bias = allocation_slot.size_pages,
+                size_pages = allocation_slot.size_pages,
+                tag = tag.as_str(),
+                "allocation"
+            );
+
             (allocation_slot, free_slot)
         };
 
@@ -782,6 +790,12 @@ impl PagePoolAllocator {
         base_pfn: u64,
         size_pages: NonZeroU64,
     ) -> Result<PagePoolHandle, Error> {
+        tracing::warn!(
+            base_pfn = base_pfn,
+            size_pages = size_pages,
+            "restoring allocation"
+        );
+
         let size_pages = size_pages.get();
         let mut inner = self.inner.state.lock();
         let inner = &mut *inner;
@@ -794,6 +808,12 @@ impl PagePoolAllocator {
                         && slot.base_pfn == base_pfn
                         && slot.size_pages == size_pages
                 } else {
+                    tracing::warn!(
+                        base_pfn = slot.base_pfn,
+                        size_pages = slot.size_pages,
+                        "skipping slot {:?}",
+                        slot.state
+                    );
                     false
                 }
             })
@@ -860,9 +880,52 @@ impl user_driver::DmaClient for PagePoolAllocator {
             .restore_alloc(base_pfn, size_pages)
             .context("failed to restore allocation")?;
 
+        tracing::info!("restored allocation: {:x}", base_pfn);
+
         // Preserve the existing contents of memory and do not zero the restored
         // allocation.
         alloc.into_memory_block()
+    }
+
+    fn get_dma_buffer(
+        &self,
+        len: usize,
+        base_pfn: u64,
+    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+        tracing::info!("looking for slot: {:x}", base_pfn);
+        tracing::info!("slot state: {:?}", self.inner.state.lock().slots);
+
+        let size_pages = NonZeroU64::new(len as u64 / PAGE_SIZE)
+            .context("allocation of size 0 not supported")?
+            .get();
+
+        let mut inner = self.inner.state.lock();
+        let inner = &mut *inner;
+        let slot = inner.slots.iter().find(|slot| {
+            if let SlotState::Leaked {
+                device_id: _,
+                tag: _,
+            } = &slot.state
+            {
+                slot.base_pfn == base_pfn
+            } else {
+                false
+            }
+        });
+
+        if slot.is_none() {
+            anyhow::bail!("allocation doesn't exist");
+        }
+
+        let handle = PagePoolHandle {
+            inner: self.inner.clone(),
+            base_pfn,
+            size_pages,
+            mapping_offset: slot.unwrap().mapping_offset,
+        };
+
+        tracing::info!("successfully got memory block");
+        handle.into_memory_block()
     }
 }
 

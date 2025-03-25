@@ -93,10 +93,6 @@ impl Endpoint for NullEndpoint {
             indirection_table_size: 128,
         }
     }
-
-    fn restore(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
 }
 
 /// A queue that never sends or receives data.

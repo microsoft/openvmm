@@ -3,10 +3,6 @@
 
 //! Types to access work, completion, and event queues.
 
-use crate::save_restore::CqEqSavedState;
-use crate::save_restore::DoorbellSavedState;
-use crate::save_restore::MemoryBlockSavedState;
-use crate::save_restore::WqSavedState;
 use gdma_defs::CLIENT_OOB_8;
 use gdma_defs::CLIENT_OOB_24;
 use gdma_defs::CLIENT_OOB_32;
@@ -26,6 +22,10 @@ use gdma_defs::WqDoorbellValue;
 use gdma_defs::WqeHeader;
 use gdma_defs::WqeParams;
 use inspect::Inspect;
+use mana_save_restore::save_restore::CqEqSavedState;
+use mana_save_restore::save_restore::DoorbellSavedState;
+use mana_save_restore::save_restore::MemoryBlockSavedState;
+use mana_save_restore::save_restore::WqSavedState;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Acquire;
@@ -65,8 +65,8 @@ impl Doorbell for NullDoorbell {
 /// A single GDMA doorbell page.
 #[derive(Clone)]
 pub struct DoorbellPage {
-    doorbell: Arc<dyn Doorbell>,
-    doorbell_id: u32,
+    pub doorbell: Arc<dyn Doorbell>,
+    pub doorbell_id: u32,
 }
 
 impl DoorbellPage {
@@ -207,7 +207,7 @@ impl<T: IntoBytes + FromBytes + Immutable + KnownLayout> CqEq<T> {
             },
             doorbell_addr: self.doorbell_addr,
             mem: MemoryBlockSavedState {
-                base: self.mem.base() as u64,
+                base: self.mem.pfns()[0],
                 len: self.mem.len(),
                 pfns: self.mem.pfns().to_vec(),
                 pfn_bias: self.mem.pfn_bias(),
@@ -367,7 +367,7 @@ impl Wq {
             },
             doorbell_addr: self.doorbell_addr,
             mem: MemoryBlockSavedState {
-                base: self.mem.base() as u64,
+                base: self.mem.pfns()[0],
                 len: self.mem.len(),
                 pfns: self.mem.pfns().to_vec(),
                 pfn_bias: self.mem.pfn_bias(),

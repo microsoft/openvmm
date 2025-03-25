@@ -138,4 +138,12 @@ impl crate::DmaClient for LockedMemorySpawner {
     ) -> anyhow::Result<crate::memory::MemoryBlock> {
         anyhow::bail!("restore not supported for lockmem")
     }
+
+    fn get_dma_buffer(
+        &self,
+        len: usize,
+        base_pfn: u64,
+    ) -> anyhow::Result<crate::memory::MemoryBlock> {
+        anyhow::bail!("get not supported for lockmem")
+    }
 }
