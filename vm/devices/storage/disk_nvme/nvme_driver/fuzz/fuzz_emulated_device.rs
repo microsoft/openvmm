@@ -14,9 +14,9 @@ use chipset_device::pci::PciConfigSpace;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pci_core::msi::MsiInterruptSet;
-use user_driver::interrupt::DeviceInterrupt;
 use user_driver::DeviceBacking;
 use user_driver::DmaClient;
+use user_driver::interrupt::DeviceInterrupt;
 use user_driver_emulated_mock::EmulatedDevice;
 use user_driver_emulated_mock::Mapping;
 
