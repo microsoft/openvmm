@@ -12,6 +12,11 @@ pub(crate) async fn livedump() {
 }
 
 async fn livedump_core() -> anyhow::Result<()> {
+    if underhill_confidentiality::confidential_filtering_enabled() {
+        tracing::info!("livedump disabled due to CVM");
+        return Ok(());
+    }
+
     let (dump_read, dump_write) = pal::unix::pipe::pair().unwrap();
 
     // Spawn underhill-crash to forward the crash dump to the host.

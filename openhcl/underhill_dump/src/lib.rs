@@ -54,6 +54,12 @@ pub fn do_main() -> anyhow::Result<()> {
         .with_ansi(false)
         .init();
 
+    // We should have checks in our callers so this is never hit, but let's be safe.
+    if underhill_confidentiality::confidential_filtering_enabled() {
+        tracing::info!("crash reporting disabled due to CVM");
+        std::process::exit(libc::EXIT_SUCCESS);
+    }
+
     let pid: i32 = args
         .next()
         .context("missing pid")?

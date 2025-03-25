@@ -7414,6 +7414,7 @@ dependencies = [
  "thiserror 2.0.12",
  "tracing",
  "tracing-subscriber",
+ "underhill_confidentiality",
  "vergen",
  "vmbus_async",
  "vmbus_user_channel",
@@ -7429,6 +7430,7 @@ dependencies = [
  "libc",
  "tracing",
  "tracing-subscriber",
+ "underhill_confidentiality",
 ]
 
 [[package]]

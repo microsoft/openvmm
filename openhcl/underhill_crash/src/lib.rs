@@ -272,6 +272,12 @@ pub fn main() -> ! {
         .with_ansi(false)
         .init();
 
+    // We should have checks in our callers so this is never hit, but let's be safe.
+    if underhill_confidentiality::confidential_filtering_enabled() {
+        tracing::info!("crash reporting disabled due to CVM");
+        std::process::exit(libc::EXIT_SUCCESS);
+    }
+
     let os_version = OsVersionInfo::new();
 
     let crate_revision = option_env!("VERGEN_GIT_SHA").unwrap_or("UNKNOWN_REVISION");
