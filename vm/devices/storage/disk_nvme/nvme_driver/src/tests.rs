@@ -123,16 +123,14 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     const IO_QUEUE_COUNT: u16 = 64;
     const CPU_COUNT: u32 = 64;
 
-    // Memory setup
+    // Arrange: Create 8MB of space. First 4MB for the device and second 4MB for the payload.
     let pages = 1024; // 4MB
     let device_test_memory = DeviceTestMemory::new(pages * 2, allow_dma, "test_nvme_driver");
-    let guest_mem = device_test_memory.guest_memory();
-    let dma_client = device_test_memory.dma_client();
+    let guest_mem = device_test_memory.guest_memory(); // Access to 0-8MB
+    let dma_client = device_test_memory.dma_client(); // Access 0-4MB
+    let payload_mem = device_test_memory.payload_mem(); // Access 4-8MB. This will allow dma if the `allow_dma` flag is set.
 
-    let payload_mem = device_test_memory.payload_mem();
-
-    let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
-
+    // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
     let nvme = nvme::NvmeController::new(
@@ -146,19 +144,19 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
             subsystem_id: Guid::new_random(),
         },
     );
-    nvme.client()
+
+    nvme.client() // 2MB namespace
         .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
         .await
         .unwrap();
-
     let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
-
     let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
         .await
         .unwrap();
-
     let namespace = driver.namespace(1).await.unwrap();
 
+    // Act: Write 1024 bytes of data to disk starting at LBA 1.
+    let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // 32 blocks
     payload_mem.write_at(0, &[0xcc; 4096]).unwrap();
     namespace
         .write(
@@ -172,6 +170,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
         .await
         .unwrap();
 
+    // Act: Read 16384 bytes of data from disk starting at LBA 0.
     namespace
         .read(
             1,
@@ -184,6 +183,8 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
         .unwrap();
     let mut v = [0; 4096];
     payload_mem.read_at(0, &mut v).unwrap();
+
+    // Assert: First block should be 0x00 since we never wrote to it. Followed by 1024 bytes of 0xcc.
     assert_eq!(&v[..512], &[0; 512]);
     assert_eq!(&v[512..1536], &[0xcc; 1024]);
     assert!(v[1536..].iter().all(|&x| x == 0));

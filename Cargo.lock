@@ -4607,7 +4607,6 @@ dependencies = [
  "mesh",
  "nvme",
  "nvme_spec",
- "page_pool_alloc",
  "pal_async",
  "parking_lot",
  "pci_core",
@@ -7597,7 +7596,6 @@ dependencies = [
  "page_pool_alloc",
  "parking_lot",
  "pci_core",
- "safeatomic",
  "tracing",
  "user_driver",
 ]

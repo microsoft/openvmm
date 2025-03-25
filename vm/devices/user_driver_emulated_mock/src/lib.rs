@@ -250,18 +250,17 @@ impl DeviceTestMemory {
         }
     }
 
-    /// Returns [`GuestMemory`] with the same access as the dma_client.
+    /// Returns [`GuestMemory`] accessor to the underlying memory. Reports base_iova as 0 if `allow_dma` switch is enabled.
     pub fn guest_memory(&self) -> GuestMemory {
         self.guest_mem.clone()
     }
 
-    /// Returns Dma-able [`GuestMemory`].
+    /// Returns [`GuestMemory`] accessor to the second half of underlying memory. Reports base_iova as 0 if `allow_dma` switch is enabled.
     pub fn payload_mem(&self) -> GuestMemory {
         self.payload_mem.clone()
     }
 
-    /// Returns [`PagePoolAllocator`] with access to the second half of the underlying memory.
-    /// For eg. If 10 pages are created, this will only have access to pages 5-10.
+    /// Returns [`PagePoolAllocator`] with access to the first half of the underlying memory.
     pub fn dma_client(&self) -> Arc<PagePoolAllocator> {
         self.allocator.clone()
     }
