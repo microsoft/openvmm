@@ -129,11 +129,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     let guest_mem = device_test_memory.guest_memory();
     let dma_client = device_test_memory.dma_client();
 
-    let driver_dma_mem = if allow_dma {
-        device_test_memory.guest_dma_memory()
-    } else {
-        guest_mem.clone()
-    };
+    let payload_mem = device_test_memory.payload_mem();
 
     let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
 
@@ -163,15 +159,15 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
 
     let namespace = driver.namespace(1).await.unwrap();
 
-    guest_mem.write_at(0, &[0xcc; 8192]).unwrap();
+    payload_mem.write_at(0, &[0xcc; 4096]).unwrap();
     namespace
         .write(
             0,
             1,
             2,
             false,
-            &driver_dma_mem,
-            buf_range.buffer(&guest_mem).range(),
+            &payload_mem,
+            buf_range.buffer(&payload_mem).range(),
         )
         .await
         .unwrap();
@@ -181,13 +177,13 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
             1,
             0,
             32,
-            &driver_dma_mem,
-            buf_range.buffer(&guest_mem).range(),
+            &payload_mem,
+            buf_range.buffer(&payload_mem).range(),
         )
         .await
         .unwrap();
     let mut v = [0; 4096];
-    guest_mem.read_at(0, &mut v).unwrap();
+    payload_mem.read_at(0, &mut v).unwrap();
     assert_eq!(&v[..512], &[0; 512]);
     assert_eq!(&v[512..1536], &[0xcc; 1024]);
     assert!(v[1536..].iter().all(|&x| x == 0));
@@ -219,7 +215,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
             63,
             0,
             32,
-            &driver_dma_mem,
+            &payload_mem,
             buf_range.buffer(&guest_mem).range(),
         )
         .await
@@ -228,7 +224,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     assert_eq!(driver.fallback_cpu_count(), 1);
 
     let mut v = [0; 4096];
-    guest_mem.read_at(0, &mut v).unwrap();
+    payload_mem.read_at(0, &mut v).unwrap();
     assert_eq!(&v[..512], &[0; 512]);
     assert_eq!(&v[512..1024], &[0xcc; 512]);
     assert!(v[1024..].iter().all(|&x| x == 0));

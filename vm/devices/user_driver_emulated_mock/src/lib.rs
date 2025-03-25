@@ -218,31 +218,33 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for Mapping<T> {
 /// by the same underlying memory. Meant to provide shared memory for testing devices.
 pub struct DeviceTestMemory {
     guest_mem: GuestMemory,
-    guest_dma_mem: GuestMemory,
+    payload_mem: GuestMemory,
     _pool: PagePool,
     allocator: Arc<PagePoolAllocator>,
 }
 
 impl DeviceTestMemory {
-    /// Creates test memory that leverages the [`TestMapper`]. Has 2 possible ways to access the memory: [`GuestMemory`] and [`PagePoolAllocator`].
-    /// The [`GuestMemory`] has access to the entire range of memory while the [`PagePoolAllocator`] only has access to the second half of the memory.
-    /// If the `allow_dma` switch is enabled, dma memory will start at page 0.
+    /// Creates test memory that leverages the [`TestMapper`] as the backing. It creates 3 accessors for the underlying memory:
+    /// * guest_memory [`GuestMemory`] - Has access to the entire range.
+    /// * payload_memory [`GuestMemory`] - Has access to the second half of the range.
+    /// * dma_client [`PagePoolAllocator`] - Has access to the first half of the range.
+    /// If the `allow_dma` switch is enabled, both guest_memory and payload_memory will report a base_iova of 0.
     pub fn new(num_pages: u64, allow_dma: bool, pool_name: &str) -> Self {
         let test_mapper = TestMapper::new(num_pages).unwrap();
         let sparse_mmap = test_mapper.sparse_mapping();
         let guest_mem = GuestMemoryAccessWrapper::create_test_guest_memory(sparse_mmap, allow_dma);
         let pool = PagePool::new(
-            &[MemoryRange::from_4k_gpn_range(num_pages / 2..num_pages)],
+            &[MemoryRange::from_4k_gpn_range(0..num_pages / 2)],
             test_mapper,
         )
         .unwrap();
 
-        // Return page pool so that it is not dropped.
+        // Save page pool so that it is not dropped.
         let allocator = pool.allocator(pool_name.into()).unwrap();
         let range_half = num_pages / 2 * PAGE_SIZE64;
         Self {
-            guest_mem: guest_mem.subrange(0, range_half * 2, false).unwrap(),
-            guest_dma_mem: guest_mem.subrange(0, range_half, false).unwrap(),
+            guest_mem: guest_mem.clone(),
+            payload_mem: guest_mem.subrange(range_half, range_half, false).unwrap(),
             _pool: pool,
             allocator: Arc::new(allocator),
         }
@@ -254,8 +256,8 @@ impl DeviceTestMemory {
     }
 
     /// Returns Dma-able [`GuestMemory`].
-    pub fn guest_dma_memory(&self) -> GuestMemory {
-        self.guest_dma_mem.clone()
+    pub fn payload_mem(&self) -> GuestMemory {
+        self.payload_mem.clone()
     }
 
     /// Returns [`PagePoolAllocator`] with access to the second half of the underlying memory.

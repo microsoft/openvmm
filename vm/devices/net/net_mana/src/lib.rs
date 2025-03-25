@@ -1448,16 +1448,12 @@ mod tests {
         let pages = 256; // 1MB
         let allow_dma = dma_mode == GuestDmaMode::DirectDma;
         let mem: DeviceTestMemory = DeviceTestMemory::new(pages * 2, allow_dma, "test_endpoint");
-        let payload_mem = mem.guest_memory();
-        let driver_dma_mem = if allow_dma {
-            mem.guest_dma_memory()
-        } else {
-            payload_mem.clone()
-        };
+        let payload_mem = mem.payload_mem();
+
         let mut msi_set = MsiInterruptSet::new();
         let device = gdma::GdmaDevice::new(
             &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
-            mem.guest_memory().clone(),
+            mem.guest_memory(),
             &mut msi_set,
             vec![VportConfig {
                 mac_address: [1, 2, 3, 4, 5, 6].into(),
@@ -1465,8 +1461,7 @@ mod tests {
             }],
             &mut ExternallyManagedMmioIntercepts,
         );
-        let dma_client = mem.dma_client();
-        let device = EmulatedDevice::new(device, msi_set, dma_client);
+        let device = EmulatedDevice::new(device, msi_set, mem.dma_client());
         let dev_config = ManaQueryDeviceCfgResp {
             pf_cap_flags1: 0.into(),
             pf_cap_flags2: 0,
@@ -1480,7 +1475,7 @@ mod tests {
         let vport = thing.new_vport(0, None, &dev_config).await.unwrap();
         let mut endpoint = ManaEndpoint::new(driver.clone(), vport, dma_mode).await;
         let mut queues = Vec::new();
-        let pool = net_backend::tests::Bufs::new(driver_dma_mem);
+        let pool = net_backend::tests::Bufs::new(payload_mem.clone());
         endpoint
             .get_queues(
                 vec![QueueConfig {
