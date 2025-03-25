@@ -201,7 +201,7 @@ impl WatchdogServices {
     }
 
     fn start_timer(&mut self) -> Result<(), WatchdogServiceError> {
-        let seconds = self.state.count * self.state.resolution;
+        let seconds = 0; //self.state.count * self.state.resolution;
 
         let next_tick = self
             .vmtime

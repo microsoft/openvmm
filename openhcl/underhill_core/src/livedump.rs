@@ -4,8 +4,8 @@
 use std::process::Stdio;
 
 pub(crate) async fn livedump() {
-    let r = livedump_core().await;
-    match r {
+    // If a livedump fails we don't want to panic, just log the error.
+    match livedump_core().await {
         Err(e) => tracing::error!(?e, "livedump failed"),
         Ok(()) => tracing::info!("livedump succeeded"),
     }
@@ -44,16 +44,12 @@ async fn livedump_core() -> anyhow::Result<()> {
     // underhill-dump should finish first, as it's the producer.
     let crash_result = crash_proc.wait_with_output()?;
 
-    // Check for errors.
+    // Check for errors. If both failed log both outputs, as one crashing may cause the other to fail.
     if !dump_result.status.success() {
         let dump_output = String::from_utf8_lossy(&dump_result.stderr);
         for line in dump_output.lines() {
             tracing::info!("underhill-dump output: {}", line);
         }
-        return Err(anyhow::anyhow!(
-            "underhill-dump failed: {}",
-            dump_result.status
-        ));
     }
 
     if !crash_result.status.success() {
@@ -64,6 +60,13 @@ async fn livedump_core() -> anyhow::Result<()> {
         return Err(anyhow::anyhow!(
             "underhill-crash failed: {}",
             crash_result.status
+        ));
+    }
+
+    if !dump_result.status.success() {
+        return Err(anyhow::anyhow!(
+            "underhill-dump failed: {}",
+            dump_result.status
         ));
     }
 
