@@ -1550,62 +1550,7 @@ impl UhProcessor<'_, TdxBacked> {
         // First, check that the VM entry was even successful.
         let vmx_exit = exit_info.code().vmx_exit();
         if vmx_exit.vm_enter_failed() {
-            match vmx_exit.basic_reason() {
-                VmxExitBasic::BAD_GUEST_STATE => {
-                    // Log system register state for debugging why we were
-                    // unable to enter the guest. This is a VMM bug.
-                    tracing::error!("VP.ENTER failed with bad guest state");
-
-                    let physical_cr0 = self
-                        .runner
-                        .read_vmcs64(intercepted_vtl, VmcsField::VMX_VMCS_GUEST_CR0);
-                    let shadow_cr0 = self
-                        .runner
-                        .read_vmcs64(intercepted_vtl, VmcsField::VMX_VMCS_CR0_READ_SHADOW);
-                    let cr0_guest_host_mask = self
-                        .runner
-                        .read_vmcs64(intercepted_vtl, VmcsField::VMX_VMCS_CR0_GUEST_HOST_MASK);
-                    tracing::error!(physical_cr0, shadow_cr0, cr0_guest_host_mask, "cr0 values");
-
-                    let physical_cr4 = self
-                        .runner
-                        .read_vmcs64(intercepted_vtl, VmcsField::VMX_VMCS_GUEST_CR4);
-                    let shadow_cr4 = self
-                        .runner
-                        .read_vmcs64(intercepted_vtl, VmcsField::VMX_VMCS_CR4_READ_SHADOW);
-                    let cr4_guest_host_mask = self
-                        .runner
-                        .read_vmcs64(intercepted_vtl, VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK);
-                    tracing::error!(physical_cr4, shadow_cr4, cr4_guest_host_mask, "cr4 values");
-
-                    let efer = self.backing.vtls[intercepted_vtl].efer;
-                    let entry_controls = self
-                        .runner
-                        .read_vmcs32(intercepted_vtl, VmcsField::VMX_VMCS_ENTRY_CONTROLS);
-                    tracing::error!(efer, entry_controls, "efer & entry controls");
-
-                    let cs = self.read_segment(intercepted_vtl, TdxSegmentReg::Cs);
-                    let ds = self.read_segment(intercepted_vtl, TdxSegmentReg::Ds);
-                    let es = self.read_segment(intercepted_vtl, TdxSegmentReg::Es);
-                    let fs = self.read_segment(intercepted_vtl, TdxSegmentReg::Fs);
-                    let gs = self.read_segment(intercepted_vtl, TdxSegmentReg::Gs);
-                    let ss = self.read_segment(intercepted_vtl, TdxSegmentReg::Ss);
-                    let tr = self.read_segment(intercepted_vtl, TdxSegmentReg::Tr);
-                    let ldtr = self.read_segment(intercepted_vtl, TdxSegmentReg::Ldtr);
-
-                    tracing::error!(?cs, ?ds, ?es, ?fs, ?gs, ?ss, ?tr, ?ldtr, "segment values");
-
-                    // TODO: panic instead?
-                    return Err(VpHaltReason::Hypervisor(UhRunVpError::VmxBadGuestState));
-                }
-                _ => {
-                    // The TDX module is not supposed to give us any other exit
-                    // types.
-                    return Err(VpHaltReason::Hypervisor(UhRunVpError::UnknownVmxExit(
-                        vmx_exit,
-                    )));
-                }
-            }
+            return Err(self.handle_vm_enter_failed(intercepted_vtl, vmx_exit));
         }
 
         let mut breakpoint_debug_exception = false;
@@ -2005,6 +1950,60 @@ impl UhProcessor<'_, TdxBacked> {
         }
 
         Ok(())
+    }
+
+    fn handle_vm_enter_failed(
+        &self,
+        vtl: GuestVtl,
+        vmx_exit: VmxExit,
+    ) -> VpHaltReason<UhRunVpError> {
+        assert!(vmx_exit.vm_enter_failed());
+        match vmx_exit.basic_reason() {
+            VmxExitBasic::BAD_GUEST_STATE => {
+                // Log system register state for debugging why we were
+                // unable to enter the guest. This is a VMM bug.
+                tracing::error!("VP.ENTER failed with bad guest state");
+
+                let physical_cr0 = self.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR0);
+                let shadow_cr0 = self
+                    .runner
+                    .read_vmcs64(vtl, VmcsField::VMX_VMCS_CR0_READ_SHADOW);
+                let cr0_guest_host_mask: u64 = self
+                    .runner
+                    .read_vmcs64(vtl, VmcsField::VMX_VMCS_CR0_GUEST_HOST_MASK);
+                tracing::error!(physical_cr0, shadow_cr0, cr0_guest_host_mask, "cr0 values");
+
+                let physical_cr4 = self.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR4);
+                let shadow_cr4 = self
+                    .runner
+                    .read_vmcs64(vtl, VmcsField::VMX_VMCS_CR4_READ_SHADOW);
+                let cr4_guest_host_mask = self
+                    .runner
+                    .read_vmcs64(vtl, VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK);
+                tracing::error!(physical_cr4, shadow_cr4, cr4_guest_host_mask, "cr4 values");
+
+                let efer = self.backing.vtls[vtl].efer;
+                let entry_controls = self
+                    .runner
+                    .read_vmcs32(vtl, VmcsField::VMX_VMCS_ENTRY_CONTROLS);
+                tracing::error!(efer, entry_controls, "efer & entry controls");
+
+                let cs = self.read_segment(vtl, TdxSegmentReg::Cs);
+                let ds = self.read_segment(vtl, TdxSegmentReg::Ds);
+                let es = self.read_segment(vtl, TdxSegmentReg::Es);
+                let fs = self.read_segment(vtl, TdxSegmentReg::Fs);
+                let gs = self.read_segment(vtl, TdxSegmentReg::Gs);
+                let ss = self.read_segment(vtl, TdxSegmentReg::Ss);
+                let tr = self.read_segment(vtl, TdxSegmentReg::Tr);
+                let ldtr = self.read_segment(vtl, TdxSegmentReg::Ldtr);
+
+                tracing::error!(?cs, ?ds, ?es, ?fs, ?gs, ?ss, ?tr, ?ldtr, "segment values");
+
+                // TODO: panic instead?
+                VpHaltReason::Hypervisor(UhRunVpError::VmxBadGuestState)
+            }
+            _ => VpHaltReason::Hypervisor(UhRunVpError::UnknownVmxExit(vmx_exit)),
+        }
     }
 
     fn advance_to_next_instruction(&mut self, vtl: GuestVtl) {
