@@ -225,9 +225,9 @@ pub struct DeviceTestMemory {
 
 impl DeviceTestMemory {
     /// Creates test memory that leverages the [`TestMapper`] as the backing. It creates 3 accessors for the underlying memory:
-    /// * guest_memory [`GuestMemory`] - Has access to the entire range.
-    /// * payload_memory [`GuestMemory`] - Has access to the second half of the range.
-    /// * dma_client [`PagePoolAllocator`] - Has access to the first half of the range.
+    /// guest_memory [`GuestMemory`] - Has access to the entire range.
+    /// payload_memory [`GuestMemory`] - Has access to the second half of the range.
+    /// dma_client [`PagePoolAllocator`] - Has access to the first half of the range.
     /// If the `allow_dma` switch is enabled, both guest_memory and payload_memory will report a base_iova of 0.
     pub fn new(num_pages: u64, allow_dma: bool, pool_name: &str) -> Self {
         let test_mapper = TestMapper::new(num_pages).unwrap();
