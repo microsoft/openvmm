@@ -90,6 +90,7 @@ use x86defs::vmx::SecondaryProcessorControls;
 use x86defs::vmx::VmcsField;
 use x86defs::vmx::VmxEptExitQualification;
 use x86defs::vmx::VmxExit;
+use x86defs::vmx::VmxExitBasic;
 use x86defs::vmx::CR_ACCESS_TYPE_LMSW;
 use x86defs::vmx::CR_ACCESS_TYPE_MOV_TO_CR;
 use x86defs::vmx::INTERRUPT_TYPE_EXTERNAL;
@@ -1253,7 +1254,10 @@ impl UhProcessor<'_, TdxBacked> {
                 // the L1.
                 //
                 // There is nothing to do here.
-                assert_eq!(exit_info.code().vmx_exit(), VmxExit::TDCALL);
+                assert_eq!(
+                    exit_info.code().vmx_exit(),
+                    VmxExit::new().with_basic_reason(VmxExitBasic::TDCALL)
+                );
                 &mut self.backing.enter_stats.host_routed_td_vmcall
             }
             _ => panic!("unexpected tdx exit code {:?}", exit_info.code()),
@@ -1341,9 +1345,15 @@ impl UhProcessor<'_, TdxBacked> {
             }
         }
 
+        // First, check that the VM entry was even successful.
+        let vmx_exit = exit_info.code().vmx_exit();
+        if vmx_exit.vm_enter_failed() {
+            return Err(self.handle_vm_enter_failed(intercepted_vtl, vmx_exit));
+        }
+
         let mut breakpoint_debug_exception = false;
-        let stat = match exit_info.code().vmx_exit() {
-            VmxExit::IO_INSTRUCTION => {
+        let stat = match vmx_exit.basic_reason() {
+            VmxExitBasic::IO_INSTRUCTION => {
                 let io_qual = ExitQualificationIo::from(exit_info.qualification() as u32);
 
                 if io_qual.is_string() || io_qual.rep_prefix() {
@@ -1380,7 +1390,7 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.exit_stats.io
             }
-            VmxExit::MSR_READ => {
+            VmxExitBasic::MSR_READ => {
                 let enter_state = self.runner.tdx_enter_guest_state();
                 let msr = enter_state.rcx() as u32;
 
@@ -1434,7 +1444,7 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.exit_stats.msr_read
             }
-            VmxExit::MSR_WRITE => {
+            VmxExitBasic::MSR_WRITE => {
                 let enter_state = self.runner.tdx_enter_guest_state();
                 let msr = enter_state.rcx() as u32;
                 let value =
@@ -1470,7 +1480,7 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.exit_stats.msr_write
             }
-            VmxExit::CPUID => {
+            VmxExitBasic::CPUID => {
                 let xss = self.runner.tdx_vp_state().msr_xss;
                 let enter_state = self.runner.tdx_enter_guest_state();
                 let leaf = enter_state.rax() as u32;
@@ -1513,7 +1523,7 @@ impl UhProcessor<'_, TdxBacked> {
                 self.advance_to_next_instruction();
                 &mut self.backing.exit_stats.cpuid
             }
-            VmxExit::VMCALL_INSTRUCTION => {
+            VmxExitBasic::VMCALL_INSTRUCTION => {
                 if exit_info.cpl() != 0 {
                     self.inject_gpf();
                 } else {
@@ -1535,7 +1545,7 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.exit_stats.vmcall
             }
-            VmxExit::HLT_INSTRUCTION => {
+            VmxExitBasic::HLT_INSTRUCTION => {
                 self.backing.lapic.halted = true;
 
                 // TODO: see lots of these exits while waiting at frontpage.
@@ -1545,7 +1555,7 @@ impl UhProcessor<'_, TdxBacked> {
                 self.advance_to_next_instruction();
                 &mut self.backing.exit_stats.hlt
             }
-            VmxExit::CR_ACCESS => {
+            VmxExitBasic::CR_ACCESS => {
                 let qual = CrAccessQualification::from(exit_info.qualification());
                 let cr;
                 let value;
@@ -1577,7 +1587,7 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.exit_stats.cr_access
             }
-            VmxExit::XSETBV => {
+            VmxExitBasic::XSETBV => {
                 let enter_state = self.runner.tdx_enter_guest_state();
                 if let Some(value) =
                     hardware_cvm::validate_xsetbv_exit(hardware_cvm::XsetbvExitInput {
@@ -1600,7 +1610,7 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.exit_stats.xsetbv
             }
-            VmxExit::WBINVD_INSTRUCTION => {
+            VmxExitBasic::WBINVD_INSTRUCTION => {
                 // Ask the kernel to flush the cache before issuing VP.ENTER.
                 let no_invalidate = exit_info.qualification() != 0;
                 if no_invalidate {
@@ -1612,7 +1622,7 @@ impl UhProcessor<'_, TdxBacked> {
                 self.advance_to_next_instruction();
                 &mut self.backing.exit_stats.wbinvd
             }
-            VmxExit::EPT_VIOLATION => {
+            VmxExitBasic::EPT_VIOLATION => {
                 // TODO TDX: If this is an access to a shared gpa, we need to
                 // check the intercept page to see if this is a real exit or
                 // spurious. This exit is only real if the hypervisor has
@@ -1666,19 +1676,19 @@ impl UhProcessor<'_, TdxBacked> {
 
                 &mut self.backing.exit_stats.ept_violation
             }
-            VmxExit::TPR_BELOW_THRESHOLD => {
+            VmxExitBasic::TPR_BELOW_THRESHOLD => {
                 // Loop around to reevaluate the APIC.
                 &mut self.backing.exit_stats.tpr_below_threshold
             }
-            VmxExit::INTERRUPT_WINDOW => {
+            VmxExitBasic::INTERRUPT_WINDOW => {
                 // Loop around to reevaluate the APIC.
                 &mut self.backing.exit_stats.interrupt_window
             }
-            VmxExit::NMI_WINDOW => {
+            VmxExitBasic::NMI_WINDOW => {
                 // Loop around to reevaluate pending NMIs.
                 &mut self.backing.exit_stats.nmi_window
             }
-            VmxExit::HW_INTERRUPT => {
+            VmxExitBasic::HW_INTERRUPT => {
                 if cfg!(feature = "gdb") {
                     //Check if the interrupt was triggered by a hardware breakpoint.
                     let debug_regs = self
@@ -1692,9 +1702,9 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.exit_stats.hw_interrupt
             }
-            VmxExit::SMI_INTR => &mut self.backing.exit_stats.smi_intr,
-            VmxExit::PAUSE_INSTRUCTION => &mut self.backing.exit_stats.pause,
-            VmxExit::TDCALL => {
+            VmxExitBasic::SMI_INTR => &mut self.backing.exit_stats.smi_intr,
+            VmxExitBasic::PAUSE_INSTRUCTION => &mut self.backing.exit_stats.pause,
+            VmxExitBasic::TDCALL => {
                 // If the proxy synic is local, then the host did not get this
                 // instruction, and we need to handle it.
                 if self.backing.untrusted_synic.is_some() {
@@ -1702,7 +1712,7 @@ impl UhProcessor<'_, TdxBacked> {
                 }
                 &mut self.backing.exit_stats.tdcall
             }
-            VmxExit::TRIPLE_FAULT => {
+            VmxExitBasic::TRIPLE_FAULT => {
                 return Err(VpHaltReason::TripleFault {
                     vtl: intercepted_vtl.into(),
                 })
@@ -1722,6 +1732,60 @@ impl UhProcessor<'_, TdxBacked> {
         }
 
         Ok(())
+    }
+
+    fn handle_vm_enter_failed(
+        &self,
+        vtl: GuestVtl,
+        vmx_exit: VmxExit,
+    ) -> VpHaltReason<UhRunVpError> {
+        assert!(vmx_exit.vm_enter_failed());
+        match vmx_exit.basic_reason() {
+            VmxExitBasic::BAD_GUEST_STATE => {
+                // Log system register state for debugging why we were
+                // unable to enter the guest. This is a VMM bug.
+                tracing::error!("VP.ENTER failed with bad guest state");
+
+                let physical_cr0 = self.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR0);
+                let shadow_cr0 = self
+                    .runner
+                    .read_vmcs64(vtl, VmcsField::VMX_VMCS_CR0_READ_SHADOW);
+                let cr0_guest_host_mask: u64 = self
+                    .runner
+                    .read_vmcs64(vtl, VmcsField::VMX_VMCS_CR0_GUEST_HOST_MASK);
+                tracing::error!(physical_cr0, shadow_cr0, cr0_guest_host_mask, "cr0 values");
+
+                let physical_cr4 = self.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR4);
+                let shadow_cr4 = self
+                    .runner
+                    .read_vmcs64(vtl, VmcsField::VMX_VMCS_CR4_READ_SHADOW);
+                let cr4_guest_host_mask = self
+                    .runner
+                    .read_vmcs64(vtl, VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK);
+                tracing::error!(physical_cr4, shadow_cr4, cr4_guest_host_mask, "cr4 values");
+
+                let efer = self.backing.efer;
+                let entry_controls = self
+                    .runner
+                    .read_vmcs32(vtl, VmcsField::VMX_VMCS_ENTRY_CONTROLS);
+                tracing::error!(efer, entry_controls, "efer & entry controls");
+
+                let cs = self.read_segment(vtl, TdxSegmentReg::Cs);
+                let ds = self.read_segment(vtl, TdxSegmentReg::Ds);
+                let es = self.read_segment(vtl, TdxSegmentReg::Es);
+                let fs = self.read_segment(vtl, TdxSegmentReg::Fs);
+                let gs = self.read_segment(vtl, TdxSegmentReg::Gs);
+                let ss = self.read_segment(vtl, TdxSegmentReg::Ss);
+                let tr = self.read_segment(vtl, TdxSegmentReg::Tr);
+                let ldtr = self.read_segment(vtl, TdxSegmentReg::Ldtr);
+
+                tracing::error!(?cs, ?ds, ?es, ?fs, ?gs, ?ss, ?tr, ?ldtr, "segment values");
+
+                // TODO: panic instead?
+                VpHaltReason::Hypervisor(UhRunVpError::VmxBadGuestState)
+            }
+            _ => VpHaltReason::Hypervisor(UhRunVpError::UnknownVmxExit(vmx_exit)),
+        }
     }
 
     fn advance_to_next_instruction(&mut self) {
@@ -1754,8 +1818,8 @@ impl UhProcessor<'_, TdxBacked> {
         let regs = self.runner.tdx_enter_guest_state();
         if regs.r10() == 0 {
             // Architectural VMCALL.
-            let result = match VmxExit(regs.r11() as u32) {
-                VmxExit::MSR_WRITE => {
+            let result = match VmxExitBasic(regs.r11() as u16) {
+                VmxExitBasic::MSR_WRITE => {
                     let msr = regs.r12() as u32;
                     let value = regs.r13();
                     match self.write_tdvmcall_msr(msr, value, intercepted_vtl) {
@@ -1774,7 +1838,7 @@ impl UhProcessor<'_, TdxBacked> {
                         }
                     }
                 }
-                VmxExit::MSR_READ => {
+                VmxExitBasic::MSR_READ => {
                     let msr = regs.r12() as u32;
                     match self.read_tdvmcall_msr(msr, intercepted_vtl) {
                         Ok(value) => {
