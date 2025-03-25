@@ -1460,7 +1460,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
         let mut reprocessing_required = false;
         let cvm_state = self.backing.cvm_state();
-        let hv = &self.backing.cvm_state().hv[GuestVtl::Vtl1];
+        let hv = &cvm_state.hv[GuestVtl::Vtl1];
         let vina = hv.synic.vina();
         let vp_index = self.vp_index();
 
