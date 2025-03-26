@@ -1992,11 +1992,13 @@ impl UhProcessor<'_, TdxBacked> {
                     .read_vmcs64(vtl, VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK);
                 tracing::error!(physical_cr4, shadow_cr4, cr4_guest_host_mask, "cr4 values");
 
-                let efer = self.backing.vtls[vtl].efer;
+                let cached_efer = self.backing.vtls[vtl].efer;
+                let vmcs_efer = self.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_EFER);
                 let entry_controls = self
                     .runner
                     .read_vmcs32(vtl, VmcsField::VMX_VMCS_ENTRY_CONTROLS);
-                tracing::error!(efer, entry_controls, "efer & entry controls");
+                tracing::error!(cached_efer, vmcs_efer, "efer");
+                tracing::error!(entry_controls, "entry controls");
 
                 let cs = self.read_segment(vtl, TdxSegmentReg::Cs);
                 let ds = self.read_segment(vtl, TdxSegmentReg::Ds);
