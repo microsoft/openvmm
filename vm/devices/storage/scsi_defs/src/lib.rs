@@ -19,6 +19,7 @@ type U64BE = zerocopy::byteorder::U64<zerocopy::byteorder::BigEndian>;
 
 open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
     pub enum ScsiOp: u8 {
         TEST_UNIT_READY = 0x00,
         REZERO_UNIT = 0x01,
@@ -234,7 +235,7 @@ pub const MEDIUM_NOT_PRESENT_TRAY_OPEN: u8 = 0x02;
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct CdbInquiry {
-    pub operation_code: u8, // 0x12 - SCSIOP_INQUIRY
+    pub operation_code: ScsiOp, // 0x12 - SCSIOP_INQUIRY
     pub flags: InquiryFlags,
     pub page_code: u8,
     pub allocation_length: U16BE,
@@ -996,7 +997,7 @@ pub struct Cdb10 {
 #[repr(C)]
 #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct Cdb6ReadWrite {
-    pub operation_code: u8, // 0x08, 0x0A - SCSIOP_READ, SCSIOP_WRITE
+    pub operation_code: ScsiOp, // 0x08, 0x0A - SCSIOP_READ, SCSIOP_WRITE
     pub logical_block: [u8; 3],
     pub transfer_blocks: u8,
     pub control: u8,
@@ -1026,6 +1027,7 @@ pub struct Cdb16 {
 
 #[bitfield(u8)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct CdbFlags {
     pub relative_address: bool,
     #[bits(2)]
@@ -1038,6 +1040,7 @@ pub struct CdbFlags {
 
 #[bitfield(u8)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Cdb16Flags {
     #[bits(3)]
     pub reserved1: u8,

@@ -1431,7 +1431,7 @@ impl StorageDevice {
             lun: 0,
         };
 
-        let controller = ScsiController::new();
+        let controller = Arc::new(ScsiController::new());
         controller.attach(path, disk).unwrap();
 
         // Construct the specific GUID that drivers in the guest expect for this
@@ -1766,7 +1766,7 @@ mod tests {
         let guest_queue = Queue::new(guest).unwrap();
 
         let test_guest_mem = GuestMemory::allocate(16384);
-        let controller = ScsiController::new();
+        let controller = Arc::new(ScsiController::new());
         let disk = scsidisk::SimpleScsiDisk::new(
             disklayer_ram::ram_disk(10 * 1024 * 1024, false).unwrap(),
             Default::default(),
@@ -1783,7 +1783,7 @@ mod tests {
             .unwrap();
 
         let test_worker = TestWorker::start(
-            controller.clone(),
+            &controller,
             driver.clone(),
             test_guest_mem.clone(),
             host,
@@ -1835,15 +1835,9 @@ mod tests {
         let guest_queue = Queue::new(guest).unwrap();
 
         let test_guest_mem = GuestMemory::allocate(1024);
-        let controller = ScsiController::new();
+        let controller = Arc::new(ScsiController::new());
 
-        let _worker = TestWorker::start(
-            controller.clone(),
-            driver.clone(),
-            test_guest_mem,
-            host,
-            None,
-        );
+        let _worker = TestWorker::start(&controller, driver.clone(), test_guest_mem, host, None);
 
         let mut guest = test_helpers::TestGuest {
             queue: guest_queue,
@@ -1907,15 +1901,9 @@ mod tests {
         let guest_queue = Queue::new(guest).unwrap();
 
         let test_guest_mem = GuestMemory::allocate(1024);
-        let controller = ScsiController::new();
+        let controller = Arc::new(ScsiController::new());
 
-        let _worker = TestWorker::start(
-            controller.clone(),
-            driver.clone(),
-            test_guest_mem,
-            host,
-            None,
-        );
+        let _worker = TestWorker::start(&controller, driver.clone(), test_guest_mem, host, None);
 
         let mut guest = test_helpers::TestGuest {
             queue: guest_queue,
@@ -1957,15 +1945,9 @@ mod tests {
         let guest_queue = Queue::new(guest).unwrap();
 
         let test_guest_mem = GuestMemory::allocate(1024);
-        let controller = ScsiController::new();
+        let controller = Arc::new(ScsiController::new());
 
-        let worker = TestWorker::start(
-            controller.clone(),
-            driver.clone(),
-            test_guest_mem,
-            host,
-            None,
-        );
+        let worker = TestWorker::start(&controller, driver.clone(), test_guest_mem, host, None);
 
         let mut guest = test_helpers::TestGuest {
             queue: guest_queue,
@@ -1997,15 +1979,9 @@ mod tests {
         let guest_queue = Queue::new(guest).unwrap();
 
         let test_guest_mem = GuestMemory::allocate(1024);
-        let controller = ScsiController::new();
+        let controller = Arc::new(ScsiController::new());
 
-        let _worker = TestWorker::start(
-            controller.clone(),
-            driver.clone(),
-            test_guest_mem,
-            host,
-            None,
-        );
+        let _worker = TestWorker::start(&controller, driver.clone(), test_guest_mem, host, None);
 
         let mut guest = test_helpers::TestGuest {
             queue: guest_queue,
@@ -2082,15 +2058,9 @@ mod tests {
         let guest_queue = Queue::new(guest).unwrap();
 
         let test_guest_mem = GuestMemory::allocate(1024);
-        let controller = ScsiController::new();
+        let controller = Arc::new(ScsiController::new());
 
-        let _worker = TestWorker::start(
-            controller.clone(),
-            driver.clone(),
-            test_guest_mem,
-            host,
-            None,
-        );
+        let _worker = TestWorker::start(&controller, driver.clone(), test_guest_mem, host, None);
 
         let mut guest = test_helpers::TestGuest {
             queue: guest_queue,
@@ -2124,10 +2094,10 @@ mod tests {
 
         let test_guest_mem = GuestMemory::allocate(16384);
         // create a controller with no disk yet.
-        let controller = ScsiController::new();
+        let controller = Arc::new(ScsiController::new());
 
         let test_worker = TestWorker::start(
-            controller.clone(),
+            &controller,
             driver.clone(),
             test_guest_mem.clone(),
             host,
@@ -2282,7 +2252,7 @@ mod tests {
     #[async_test]
     pub async fn test_async_disk(driver: DefaultDriver) {
         let device = disklayer_ram::ram_disk(64 * 1024, false).unwrap();
-        let controller = ScsiController::new();
+        let controller = Arc::new(ScsiController::new());
         let disk = ScsiControllerDisk::new(Arc::new(scsidisk::SimpleScsiDisk::new(
             device,
             Default::default(),
@@ -2307,13 +2277,7 @@ mod tests {
         };
 
         let test_guest_mem = GuestMemory::allocate(16384);
-        let worker = TestWorker::start(
-            controller.clone(),
-            &driver,
-            test_guest_mem.clone(),
-            host,
-            None,
-        );
+        let worker = TestWorker::start(&controller, &driver, test_guest_mem.clone(), host, None);
 
         let negotiate_packet = protocol::Packet {
             operation: protocol::Operation::BEGIN_INITIALIZATION,
