@@ -240,9 +240,6 @@ pub struct SavedState {
     pub channels: Vec<Channel>,
     #[mesh(3)]
     pub gpadls: Vec<Gpadl>,
-    /// Added in Feb 2025, but not yet used in practice (we flush pending
-    /// messages during stop) since we need to support restoring on older
-    /// versions.
     #[mesh(4)]
     pub pending_messages: Vec<PendingMessage>,
 }
