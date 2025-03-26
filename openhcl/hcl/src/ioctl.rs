@@ -1637,7 +1637,7 @@ impl HclVp {
 }
 
 /// Object used to run and to access state for a specific VP.
-pub struct ProcessorRunner<'a, T> {
+pub struct ProcessorRunner<'a, T: Backing> {
     hcl: &'a Hcl,
     vp: &'a HclVp,
     sidecar: Option<SidecarVp<'a>>,
@@ -1693,12 +1693,14 @@ mod private {
             vtl: GuestVtl,
             name: HvRegisterName,
         ) -> Result<Option<HvRegisterValue>, Error>;
+
+        fn flush_register_page(runner: &mut ProcessorRunner<'_, Self>);
     }
 }
 
-impl<T> Drop for ProcessorRunner<'_, T> {
+impl<T: Backing> Drop for ProcessorRunner<'_, T> {
     fn drop(&mut self) {
-        self.flush_deferred_actions();
+        self.flush_deferred_state();
         let actions = DEFERRED_ACTIONS.with(|actions| actions.take());
         assert!(actions.is_none_or(|a| a.is_empty()));
         let old_state = std::mem::replace(&mut *self.vp.state.lock(), VpState::NotRunning);
@@ -1706,11 +1708,18 @@ impl<T> Drop for ProcessorRunner<'_, T> {
     }
 }
 
-impl<T> ProcessorRunner<'_, T> {
+impl<T: Backing> ProcessorRunner<'_, T> {
+    /// Flushes any deferred state. Must be called if preparing the partition
+    /// for save/restore (servicing).
+    pub fn flush_deferred_state(&mut self) {
+        T::flush_register_page(self);
+        self.flush_deferred_actions();
+    }
+
     /// Flushes any pending deferred actions. Must be called if preparing the
     /// partition for save/restore (servicing), since otherwise the deferred
     /// actions will be lost.
-    pub fn flush_deferred_actions(&mut self) {
+    fn flush_deferred_actions(&mut self) {
         if self.sidecar.is_none() {
             DEFERRED_ACTIONS.with(|actions| {
                 let mut actions = actions.borrow_mut();

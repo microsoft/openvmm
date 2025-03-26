@@ -159,4 +159,6 @@ impl super::BackingPrivate for MshvArm64 {
         };
         Ok(value)
     }
+
+    fn flush_register_page(_runner: &mut ProcessorRunner<'_, Self>) {}
 }

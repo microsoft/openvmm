@@ -341,6 +341,8 @@ impl super::private::BackingPrivate for Tdx {
     ) -> Result<Option<HvRegisterValue>, super::Error> {
         Ok(None)
     }
+
+    fn flush_register_page(_runner: &mut ProcessorRunner<'_, Self>) {}
 }
 
 struct MshvVtlTdcall<'a>(&'a MshvVtl);
