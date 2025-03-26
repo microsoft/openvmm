@@ -605,22 +605,6 @@ impl BackingPrivate for TdxBacked {
         params: super::BackingParams<'_, '_, Self>,
         shared: &TdxBackedShared,
     ) -> Result<Self, crate::Error> {
-        // TODO TDX: TDX shares the vp context page for xmm registers only. It
-        // should probably move to its own page.
-        //
-        // FX regs and XMM registers are zero-initialized by the kernel. Set
-        // them to the arch default.
-        *params.runner.fx_state_mut() =
-            vp::Xsave::at_reset(&params.partition.caps, params.vp_info).fxsave();
-
-        let regs = Registers::at_reset(&params.partition.caps, params.vp_info);
-
-        let gps = params.runner.tdx_enter_guest_gps_mut();
-        *gps = [
-            regs.rax, regs.rcx, regs.rdx, regs.rbx, regs.rsp, regs.rbp, regs.rsi, regs.rdi,
-            regs.r8, regs.r9, regs.r10, regs.r11, regs.r12, regs.r13, regs.r14, regs.r15,
-        ];
-
         // TODO TDX: ssp is for shadow stack
         // TODO TDX: direct overlay like snp?
         // TODO TDX: lapic / APIC setup?
@@ -733,12 +717,23 @@ impl BackingPrivate for TdxBacked {
             vtls: VtlArray::from_fn(|vtl| {
                 let vtl: GuestVtl = vtl.try_into().unwrap();
                 TdxVtl {
-                    efer: regs.efer,
-                    cr0: VirtualRegister::new(ShadowedRegister::Cr0, vtl, regs.cr0, None),
+                    efer: params
+                        .runner
+                        .read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_EFER),
+                    cr0: VirtualRegister::new(
+                        ShadowedRegister::Cr0,
+                        vtl,
+                        params
+                            .runner
+                            .read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR0),
+                        None,
+                    ),
                     cr4: VirtualRegister::new(
                         ShadowedRegister::Cr4,
                         vtl,
-                        regs.cr4,
+                        params
+                            .runner
+                            .read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR4),
                         Some(allowed_cr4_bits),
                     ),
                     tpr_threshold: 0,
@@ -754,7 +749,7 @@ impl BackingPrivate for TdxBacked {
                     exception_error_code: 0,
                     interruption_set: false,
                     flush_state: TdxFlushState::new(),
-                    private_regs: TdxPrivateRegs::new(regs.rflags, regs.rip, vtl),
+                    private_regs: TdxPrivateRegs::new(vtl),
                     enter_stats: Default::default(),
                     exit_stats: Default::default(),
                 }
@@ -833,6 +828,21 @@ impl BackingPrivate for TdxBacked {
         this.backing.cvm.lapics[GuestVtl::Vtl0]
             .lapic
             .enable_offload();
+
+        // Initialize registers to the reset state, since this may be different
+        // than what's on the VMCS and is certainly different than what's in the
+        // VP enter and private register state (which was mostly zero
+        // initialized).
+        for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
+            let registers = Registers::at_reset(&this.partition.caps, &this.inner.vp_info);
+
+            let mut state = this.access_state(vtl.into());
+            state
+                .set_registers(&registers)
+                .expect("Resetting to architectural state should succeed");
+
+            state.commit().expect("committing state should succeed");
+        }
     }
 
     async fn run_vp(

@@ -337,7 +337,7 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Registers {
             r14: 0,
             r15: 0,
             rip: 0xfff0,
-            rflags: RFlags::default().into(),
+            rflags: RFlags::at_reset().into(),
             cs,
             ds,
             es: ds,

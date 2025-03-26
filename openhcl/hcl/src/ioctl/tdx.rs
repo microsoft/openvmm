@@ -490,10 +490,10 @@ pub struct TdxPrivateRegs {
 impl TdxPrivateRegs {
     /// Creates a new register set with the given values.
     /// Other values are initialized to zero.
-    pub fn new(rflags: u64, rip: u64, vtl: GuestVtl) -> Self {
+    pub fn new(vtl: GuestVtl) -> Self {
         Self {
-            rflags,
-            rip,
+            rflags: x86defs::RFlags::at_reset().into(),
+            rip: 0,
             ssp: 0,
             rvi: 0,
             svi: 0,
