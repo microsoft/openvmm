@@ -14,6 +14,7 @@ use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::OptionFuture;
 use futures::stream::SelectAll;
+use futures_concurrency::future::Race;
 use guid::Guid;
 use inspect::Inspect;
 use mesh::rpc::FailableRpc;
@@ -34,7 +35,6 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
-use std::task::ready;
 use thiserror::Error;
 use vmbus_async::async_dgram::AsyncRecv;
 use vmbus_async::async_dgram::AsyncRecvExt;
@@ -152,6 +152,7 @@ impl VmbusClientBuilder {
             messages: OutgoingMessages {
                 poster: self.msg_client,
                 queued: VecDeque::new(),
+                state: OutgoingMessageState::Paused,
             },
             teardown_gpadls: HashMap::new(),
             channel_requests: SelectAll::new(),
@@ -1393,6 +1394,7 @@ impl ClientTask {
     fn handle_start(&mut self) {
         assert!(!self.running);
         self.msg_source.resume_message_stream();
+        self.inner.messages.resume();
         self.running = true;
     }
 
@@ -1400,62 +1402,45 @@ impl ClientTask {
         assert!(self.running);
 
         loop {
-            // Wait until there are no more channels waiting for responses. This
-            // is necessary to ensure that the saved state does not have to
-            // support encoding revoked channels for which we are waiting for
-            // GPADL or modify responses.
-            if let Some((id, request)) = self.channels.revoked_channel_with_pending_request() {
-                tracing::info!(
+            // Process messages until there are no more channels waiting for
+            // responses. This is necessary to ensure that the saved state does
+            // not have to support encoding revoked channels for which we are
+            // waiting for GPADL or modify responses.
+            while let Some((id, request)) = self.channels.revoked_channel_with_pending_request() {
+                tracelimit::info_ratelimited!(
                     channel_id = id.0,
                     request,
                     "waiting for responses for channel"
                 );
                 assert!(self.process_next_message().await);
-                continue;
             }
 
             if self.can_pause_resume() {
-                // Send a pause and flush any queued messages to ensure the host
-                // sees it.
-                self.inner.messages.send(&protocol::Pause {});
-                self.inner.messages.flush_messages().await;
-                // Push the resume message onto the queue now. This ensures the
-                // resume message is sent before any other messages, that new
-                // messages sent during processing below will be queued rather
-                // than sent immediately, and it means we don't need to save the
-                // paused state in the saved state.
-                self.inner
-                    .messages
-                    .queued
-                    .push_back(OutgoingMessage::new(&protocol::Resume));
+                self.inner.messages.pause();
             } else {
                 // Mask the sint to pause the message stream. The host will
                 // retry any queued messages after the sint is unmasked.
                 self.msg_source.pause_message_stream();
+                self.inner.messages.force_pause();
             }
 
-            while self.process_next_message().await {
-                // Continue processing messages until we hit EOF.
-            }
+            // Continue processing messages until we hit EOF or get a pause
+            // response.
+            while self.process_next_message().await {}
 
-            // Flush any pending outgoing messages. This needs to be done with
-            // the incoming message stream active; otherwise, the host may stop
-            // reading our sent messages.
-            //
-            // FUTURE: We can save these pending messages instead, but older
-            // versions of OpenHCL cannot restore them. Remove this code once
-            // those older versions are no longer supported (e.g. late 2025).
-            //
-            // When pause/resume is supported, we assume that we can save
-            // pending messages safely, though, since a rollback to a version
-            // that doesn't support pause/resume will not be able to restore the
-            // paused state anyway.
-            if self.inner.messages.is_empty() || self.can_pause_resume() {
+            // Ensure there are still no pending requests. If there are, resume
+            // and go around again.
+            if self
+                .channels
+                .revoked_channel_with_pending_request()
+                .is_none()
+            {
                 break;
             }
-            tracing::info!("flushing outgoing messages");
-            self.msg_source.resume_message_stream();
-            self.inner.messages.flush_messages().await;
+            if !self.can_pause_resume() {
+                self.msg_source.resume_message_stream();
+            }
+            self.inner.messages.resume();
         }
 
         tracing::debug!("messages drained");
@@ -1464,19 +1449,21 @@ impl ClientTask {
     }
 
     async fn process_next_message(&mut self) -> bool {
-        // Process messages until we hit EOF.
-        tracing::debug!("draining messages");
         let mut buf = [0; protocol::MAX_MESSAGE_SIZE];
-        let size = self
-            .msg_source
-            .recv(&mut buf)
+        let recv = self.msg_source.recv(&mut buf);
+        // Concurrently flush until there is no more work to do, since pending
+        // messages may be blocking responses from the host.
+        let flush = async {
+            self.inner.messages.flush_messages().await;
+            std::future::pending().await
+        };
+        let size = (recv, flush)
+            .race()
             .await
             .expect("Fatal error reading messages from synic");
-
         if size == 0 {
             return false;
         }
-
         self.handle_synic_message(&buf[..size])
     }
 
@@ -1613,6 +1600,14 @@ struct OutgoingMessages {
     poster: Box<dyn PollPostMessage>,
     #[inspect(with = "|x| x.len()")]
     queued: VecDeque<OutgoingMessage>,
+    state: OutgoingMessageState,
+}
+
+#[derive(Inspect, PartialEq, Eq, Debug)]
+enum OutgoingMessageState {
+    Running,
+    SendingPauseMessage,
+    Paused,
 }
 
 impl OutgoingMessages {
@@ -1632,7 +1627,7 @@ impl OutgoingMessages {
     ) {
         tracing::trace!(typ = ?T::MESSAGE_TYPE, "Sending message to host");
         let msg = OutgoingMessage::with_data(msg, data);
-        if self.queued.is_empty() {
+        if self.queued.is_empty() && self.state == OutgoingMessageState::Running {
             let r = self.poster.poll_post_message(
                 &mut Context::from_waker(std::task::Waker::noop()),
                 protocol::VMBUS_MESSAGE_REDIRECT_CONNECTION_ID,
@@ -1648,20 +1643,55 @@ impl OutgoingMessages {
     }
 
     async fn flush_messages(&mut self) {
-        poll_fn(|cx| {
-            while let Some(msg) = self.queued.front() {
-                ready!(self.poster.poll_post_message(
+        let mut send = async |msg: &OutgoingMessage| {
+            poll_fn(|cx| {
+                self.poster.poll_post_message(
                     cx,
                     protocol::VMBUS_MESSAGE_REDIRECT_CONNECTION_ID,
                     1,
                     msg.data(),
-                ));
-                tracing::trace!("sent queued message");
-                self.queued.pop_front();
+                )
+            })
+            .await
+        };
+        match self.state {
+            OutgoingMessageState::Running => {
+                while let Some(msg) = self.queued.front() {
+                    send(msg).await;
+                    tracing::trace!("sent queued message");
+                    self.queued.pop_front();
+                }
             }
-            Poll::Ready(())
-        })
-        .await
+            OutgoingMessageState::SendingPauseMessage => {
+                send(&OutgoingMessage::new(&protocol::Pause)).await;
+                tracing::trace!("sent pause message");
+                self.state = OutgoingMessageState::Paused;
+            }
+            OutgoingMessageState::Paused => {}
+        }
+    }
+
+    /// Pause by sending a pause message to the host. This will cause the host
+    /// to stop sending messages after sending a pause response.
+    fn pause(&mut self) {
+        assert_eq!(self.state, OutgoingMessageState::Running);
+        self.state = OutgoingMessageState::SendingPauseMessage;
+        // Queue a resume message to be sent later.
+        self.queued
+            .push_front(OutgoingMessage::new(&protocol::Resume));
+    }
+
+    /// Force a pause by setting the state to Paused. This is used when the
+    /// host does not support in-band pause/resume messages, in which case
+    /// the SINT is masked to force the host to stop sending messages.
+    fn force_pause(&mut self) {
+        assert_eq!(self.state, OutgoingMessageState::Running);
+        self.state = OutgoingMessageState::Paused;
+    }
+
+    fn resume(&mut self) {
+        assert_eq!(self.state, OutgoingMessageState::Paused);
+        self.state = OutgoingMessageState::Running;
     }
 
     fn is_empty(&self) -> bool {
