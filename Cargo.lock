@@ -6614,6 +6614,7 @@ dependencies = [
  "guid",
  "nvme",
  "nvme_driver",
+ "page_pool_alloc",
  "pal_async",
  "pci_core",
  "scsi_buffers",
@@ -6622,7 +6623,7 @@ dependencies = [
  "scsidisk",
  "test_with_tracing",
  "tracing",
- "user_driver",
+ "user_driver_emulated_mock",
  "vmcore",
  "zerocopy 0.8.23",
 ]
