@@ -12,6 +12,7 @@ use guid::Guid;
 use nvme::NvmeController;
 use nvme::NvmeControllerCaps;
 use nvme_driver::NvmeDriver;
+use page_pool_alloc::PagePoolAllocator;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pci_core::msi::MsiInterruptSet;
@@ -23,15 +24,15 @@ use scsi_defs::ISO_SECTOR_SIZE;
 use scsi_defs::ScsiOp;
 use scsidisk::scsidvd::SimpleScsiDvd;
 use test_with_tracing::test;
-use user_driver::emulated::DeviceSharedMemory;
-use user_driver::emulated::EmulatedDevice;
+use user_driver_emulated_mock::DeviceTestMemory;
+use user_driver_emulated_mock::EmulatedDevice;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::IntoBytes;
 
 struct ScsiDvdNvmeTest {
     scsi_dvd: SimpleScsiDvd,
-    _nvme_driver: NvmeDriver<EmulatedDevice<NvmeController>>, // We need to store this to keep it from going out of scope
+    _nvme_driver: NvmeDriver<EmulatedDevice<NvmeController, PagePoolAllocator>>, // We need to store this to keep it from going out of scope
 }
 
 impl ScsiDvdNvmeTest {
@@ -46,13 +47,17 @@ impl ScsiDvdNvmeTest {
         const CPU_COUNT: u32 = 64;
 
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
-        let base_len = 64 << 20;
-        let payload_len = 4 << 20;
-        let mem = DeviceSharedMemory::new(base_len, payload_len);
+        // First 4MB for the device and second 4MB for the payload
+        let pages = 1024; // 4MB
+        let mem = DeviceTestMemory::new(pages * 2, false, "storage_tests_scsidvd_nvme");
+        let guest_mem = mem.guest_memory();
+        let dma_client = mem.dma_client();
+        let payload_mem = mem.payload_mem();
+
         let mut msi_set = MsiInterruptSet::new();
         let nvme = NvmeController::new(
             &driver_source,
-            mem.guest_memory().clone(),
+            guest_mem.clone(),
             &mut msi_set,
             &mut ExternallyManagedMmioIntercepts,
             NvmeControllerCaps {
@@ -61,11 +66,6 @@ impl ScsiDvdNvmeTest {
                 subsystem_id: Guid::new_random(),
             },
         );
-
-        let payload_mem = mem
-            .guest_memory()
-            .subrange(base_len as u64, payload_len as u64, false)
-            .unwrap();
 
         let buf = make_repeat_data_buffer(sector_count as usize, sector_size as usize);
         payload_mem.write_at(0, &buf).unwrap();
@@ -78,7 +78,7 @@ impl ScsiDvdNvmeTest {
             .await
             .unwrap();
 
-        let device = EmulatedDevice::new(nvme, msi_set, mem);
+        let device = EmulatedDevice::new(nvme, msi_set, dma_client.clone());
         let nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
             .await
             .unwrap();

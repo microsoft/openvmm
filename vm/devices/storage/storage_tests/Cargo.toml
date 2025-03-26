@@ -15,6 +15,7 @@ guestmem.workspace = true
 guid = { workspace = true, features = ["mesh", "inspect"] }
 nvme.workspace = true
 nvme_driver.workspace = true
+page_pool_alloc.workspace = true
 pal_async.workspace = true
 pci_core.workspace = true
 scsi_buffers.workspace = true
@@ -23,7 +24,7 @@ scsi_defs.workspace = true
 scsidisk.workspace = true
 test_with_tracing.workspace = true
 tracing.workspace = true
-user_driver.workspace = true
+user_driver_emulated_mock.workspace = true
 vmcore.workspace = true
 zerocopy.workspace = true
 
