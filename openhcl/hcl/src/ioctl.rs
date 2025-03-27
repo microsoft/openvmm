@@ -31,6 +31,7 @@ use hv1_structs::VtlArray;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HV_PARTITION_ID_SELF;
 use hvdef::HV_VP_INDEX_SELF;
+use hvdef::HvAarch64RegisterPage;
 use hvdef::HvAllArchRegisterName;
 #[cfg(guest_arch = "aarch64")]
 use hvdef::HvArm64RegisterName;
@@ -1543,7 +1544,10 @@ struct HclVp {
 
 #[derive(Debug)]
 enum BackingState {
-    Mshv {
+    MshvAarch64 {
+        reg_page: Option<MappedPage<HvAarch64RegisterPage>>,
+    },
+    MshvX64 {
         reg_page: Option<MappedPage<HvX64RegisterPage>>,
     },
     Snp {
@@ -1585,7 +1589,19 @@ impl HclVp {
         }
 
         let backing = match isolation_type {
-            IsolationType::None | IsolationType::Vbs => BackingState::Mshv {
+            IsolationType::None | IsolationType::Vbs if cfg!(guest_arch = "aarch64") => {
+                BackingState::MshvAarch64 {
+                    reg_page: if map_reg_page {
+                        Some(
+                            MappedPage::new(fd, HCL_REG_PAGE_OFFSET | vp as i64)
+                                .map_err(Error::MmapRegPage)?,
+                        )
+                    } else {
+                        None
+                    },
+                }
+            }
+            IsolationType::None | IsolationType::Vbs => BackingState::MshvX64 {
                 reg_page: if map_reg_page {
                     Some(
                         MappedPage::new(fd, HCL_REG_PAGE_OFFSET | vp as i64)

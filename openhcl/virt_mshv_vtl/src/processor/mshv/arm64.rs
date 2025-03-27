@@ -98,7 +98,7 @@ struct ProcessorStatsArm64 {
 
 #[expect(private_interfaces)]
 impl BackingPrivate for HypervisorBackedArm64 {
-    type HclBacking<'mshv> = MshvArm64;
+    type HclBacking<'mshv> = MshvArm64<'mshv>;
     type EmulationCache = UhCpuStateCache;
     type Shared = HypervisorBackedArm64Shared;
 

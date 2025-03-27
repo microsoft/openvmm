@@ -3678,7 +3678,7 @@ pub struct HvRegisterVpAssistPage {
 
 #[bitfield(u32)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct X64RegisterPageDirtyFlags {
+pub struct HvX64RegisterPageDirtyFlags {
     pub general_purpose: bool,
     pub instruction_pointer: bool,
     pub xmm: bool,
@@ -3694,7 +3694,7 @@ pub struct HvX64RegisterPage {
     pub version: u16,
     pub is_valid: u8,
     pub vtl: u8,
-    pub dirty: X64RegisterPageDirtyFlags,
+    pub dirty: HvX64RegisterPageDirtyFlags,
     pub gp_registers: [u64; 16],
     pub rip: u64,
     pub rflags: u64,
@@ -3715,6 +3715,39 @@ pub struct HvX64RegisterPage {
 }
 
 const _: () = assert!(size_of::<HvX64RegisterPage>() == HV_PAGE_SIZE_USIZE);
+
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HvAarch64RegisterPageDirtyFlags {
+    _unused: bool,
+    pub instruction_pointer: bool,
+    pub processor_state: bool,
+    pub control_registers: bool,
+    #[bits(28)]
+    reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HvAarch64RegisterPage {
+    pub version: u16,
+    pub is_valid: u8,
+    pub vtl: u8,
+    pub dirty: HvAarch64RegisterPageDirtyFlags,
+    // Reserved.
+    pub _rsvd: [u64; 33],
+    // Instruction pointer.
+    pub pc: u64,
+    // Processor state.
+    pub cpsr: u64,
+    // Control registers.
+    pub sctlr_el1: u64,
+    pub tcr_el1: u64,
+    // Reserved.
+    pub reserved_end: [u8; 3792],
+}
+
+const _: () = assert!(size_of::<HvAarch64RegisterPage>() == HV_PAGE_SIZE_USIZE);
 
 #[bitfield(u64)]
 pub struct HvRegisterVsmWpWaitForTlbLock {
