@@ -766,12 +766,13 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
 
     fn vtl_call(&mut self) {
         tracing::trace!("handling vtl call");
-
-        B::switch_vtl(self.vp, self.intercepted_vtl, GuestVtl::Vtl1);
-
-        self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
-            .set_return_reason(HvVtlEntryReason::VTL_CALL)
-            .expect("setting return reason cannot fail");
+        self.vp
+            .raise_vtl(
+                self.intercepted_vtl,
+                GuestVtl::Vtl1,
+                HvVtlEntryReason::VTL_CALL,
+            )
+            .unwrap();
     }
 }
 
@@ -1450,10 +1451,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         // Check for VTL preemption - which ignores RFLAGS.IF
         if cvm_state.exit_vtl == GuestVtl::Vtl0 && is_interrupt_pending(self, GuestVtl::Vtl1, false)
         {
-            B::switch_vtl(self, GuestVtl::Vtl0, GuestVtl::Vtl1);
-            self.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
-                .set_return_reason(HvVtlEntryReason::INTERRUPT)
-                .map_err(UhRunVpError::VpAssistPage)?;
+            self.raise_vtl(GuestVtl::Vtl0, GuestVtl::Vtl1, HvVtlEntryReason::INTERRUPT)?;
         }
 
         let mut reprocessing_required = false;
@@ -1609,6 +1607,19 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         };
 
         Ok(())
+    }
+
+    fn raise_vtl(
+        &mut self,
+        source_vtl: GuestVtl,
+        target_vtl: GuestVtl,
+        entry_reason: HvVtlEntryReason,
+    ) -> Result<(), UhRunVpError> {
+        assert!(source_vtl < target_vtl);
+        B::switch_vtl(self, source_vtl, target_vtl);
+        self.backing.cvm_state_mut().hv[target_vtl]
+            .set_return_reason(entry_reason)
+            .map_err(UhRunVpError::VpAssistPage)
     }
 }
 
