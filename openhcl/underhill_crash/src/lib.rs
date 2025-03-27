@@ -124,6 +124,7 @@ async fn send_dump(
     mut pipe: MessagePipe<MappedRingMem>,
     dump_stream: &mut (impl AsyncRead + Unpin),
     os_version: &OsVersionInfo,
+    include_kmsg: bool,
 ) -> anyhow::Result<()> {
     let (mut reader, mut writer) = pipe.split();
 
@@ -188,8 +189,10 @@ async fn send_dump(
             max_dump_size as usize,
         );
 
-        if let Err(e) = streamer.insert_kmsg_note(&mut buf).await {
-            tracing::error!("Error occurred while adding kmsg note: {:?}", e);
+        if include_kmsg {
+            if let Err(e) = streamer.insert_kmsg_note(&mut buf).await {
+                tracing::error!("Error occurred while adding kmsg note: {:?}", e);
+            }
         }
 
         if let Err(e) = streamer.stream_all(&mut buf).await {
@@ -312,7 +315,7 @@ pub fn main() -> ! {
             &driver,
             vmbus_user_channel::open_uio_device(&crash::CRASHDUMP_GUID)?,
         )?;
-        send_dump(pipe, &mut dump_stream, &os_version).await?;
+        send_dump(pipe, &mut dump_stream, &os_version, !options.no_kmsg).await?;
 
         Ok::<(), anyhow::Error>(())
     }) {

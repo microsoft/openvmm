@@ -25,7 +25,10 @@ async fn livedump_core() -> anyhow::Result<()> {
         .stdin(dump_read)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        // Don't redirect output so we can capture it.
         .env("UNDERHILL_CRASH_NO_REDIRECT", "1")
+        // Don't include kmsg, since underhill-dump will do that.
+        .env("UNDERHILL_CRASH_NO_KMSG", "1")
         .arg(std::process::id().to_string()) // pid
         .arg(0.to_string()) // tid
         .arg(0.to_string()) // sig
