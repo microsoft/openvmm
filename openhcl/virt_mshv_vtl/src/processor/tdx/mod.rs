@@ -844,9 +844,6 @@ impl BackingPrivate for TdxBacked {
             state.commit().expect("committing state should succeed");
         }
 
-        // TODO TDX: TDX shares the vp context page for xmm registers only. It
-        // should probably move to its own page.
-        //
         // FX regs and XMM registers are zero-initialized by the kernel. Set
         // them to the arch default.
         *this.runner.fx_state_mut() =
