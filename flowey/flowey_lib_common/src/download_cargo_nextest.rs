@@ -73,8 +73,8 @@ impl FlowNode for Node {
             }
         });
 
-        let rust_deps = if !install_with_cargo.is_empty() {
-            // in case we end up doing a cargo-install
+        // in case we end up doing a cargo-install
+        let rust_deps = {
             let cargo_install_persistent_dir =
                 ctx.reqv(crate::cfg_persistent_dir_cargo_install::Request);
 
@@ -82,9 +82,14 @@ impl FlowNode for Node {
 
             let cargo_home = ctx.reqv(crate::install_rust::Request::GetCargoHome);
 
-            Some((cargo_install_persistent_dir, rust_toolchain, cargo_home))
-        } else {
-            None
+            let rust_installed = ctx.reqv(crate::install_rust::Request::EnsureInstalled);
+
+            Some((
+                cargo_install_persistent_dir,
+                rust_toolchain,
+                cargo_home,
+                rust_installed,
+            ))
         };
 
         ctx.emit_rust_step("installing cargo-nextest", |ctx| {
@@ -93,11 +98,12 @@ impl FlowNode for Node {
             let install_standalone = install_standalone.claim(ctx);
             let cache_dir = cache_dir.claim(ctx);
             let hitvar = hitvar.claim(ctx);
-            let rust_deps = rust_deps.map(|(a, b, c)| (a.claim(ctx), b.claim(ctx), c.claim(ctx)));
+            let rust_deps = rust_deps
+                .map(|(a, b, c, d)| (a.claim(ctx), b.claim(ctx), c.claim(ctx), d.claim(ctx)));
 
             move |rt| {
                 let cache_dir = rt.read(cache_dir);
-                let rust_deps = rust_deps.map(|(a, b, c)| (rt.read(a), rt.read(b), rt.read(c)));
+                let rust_deps = rust_deps.map(|(a, b, c, _)| (rt.read(a), rt.read(b), rt.read(c)));
 
                 let cached_bin_path = cache_dir.join(&cargo_nextest_bin);
                 let cached = if matches!(rt.read(hitvar), CacheHit::Hit) {
