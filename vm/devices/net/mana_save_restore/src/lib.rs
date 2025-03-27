@@ -200,7 +200,6 @@ pub mod save_restore {
         pub tx_bounce_buffer: ContiguousBufferManagerSavedState,
 
         // vport: Weak<Vport<T>>,
-        // queue_tracker: Arc<(AtomicUsize, SlimEvent)>,
         #[mesh(3)]
         pub eq: CqEqSavedState,
         #[mesh(4)]

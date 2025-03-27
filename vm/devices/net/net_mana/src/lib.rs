@@ -93,6 +93,7 @@ pub struct ManaEndpoint<T: DeviceBacking> {
     receive_update: mesh::Receiver<bool>,
     queue_tracker: Arc<(AtomicUsize, SlimEvent)>,
     bounce_buffer: bool,
+    mana_keepalive: bool,
 }
 
 struct QueueResources {
@@ -112,6 +113,7 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
         spawner: impl 'static + Spawn,
         vport: Vport<T>,
         dma_mode: GuestDmaMode,
+        mana_keepalive: bool,
     ) -> Self {
         let (endpoint_tx, endpoint_rx) = mesh::channel();
         vport.register_link_status_notifier(endpoint_tx).await;
@@ -126,6 +128,7 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
                 GuestDmaMode::DirectDma => false,
                 GuestDmaMode::BounceBuffer => true,
             },
+            mana_keepalive,
         }
     }
 
@@ -148,6 +151,7 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
                 GuestDmaMode::DirectDma => false,
                 GuestDmaMode::BounceBuffer => true,
             },
+            mana_keepalive: true,
         }
     }
 }
@@ -490,31 +494,36 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
     }
 
     async fn stop(&mut self) {
-        if let Err(err) = self
-            .vport
-            .config_rx(&RxConfig {
-                rx_enable: Some(false),
-                rss_enable: None,
-                hash_key: None,
-                default_rxobj: None,
-                indirection_table: None,
-            })
-            .await
-        {
-            tracing::warn!(
-                error = err.as_ref() as &dyn std::error::Error,
-                "failed to stop rx"
-            );
-        }
+        if (!self.mana_keepalive) {
+            tracing::info!("stopping endpoint");
+            if let Err(err) = self
+                .vport
+                .config_rx(&RxConfig {
+                    rx_enable: Some(false),
+                    rss_enable: None,
+                    hash_key: None,
+                    default_rxobj: None,
+                    indirection_table: None,
+                })
+                .await
+            {
+                tracing::warn!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "failed to stop rx"
+                );
+            }
 
-        tracing::info!("clearing mana queues. length was {}", self.queues.len());
-        self.queues.clear();
-        self.vport.destroy(std::mem::take(&mut self.arena)).await;
-        // Wait for all outstanding queues. There can be a delay switching out
-        // the queues when an endpoint is removed, and the queue has access to
-        // the vport which is being stopped here.
-        if self.queue_tracker.0.load(Ordering::Acquire) > 0 {
-            self.queue_tracker.1.wait().await;
+            tracing::info!("clearing mana queues. length was {}", self.queues.len());
+            self.queues.clear();
+            self.vport.destroy(std::mem::take(&mut self.arena)).await;
+            // Wait for all outstanding queues. There can be a delay switching out
+            // the queues when an endpoint is removed, and the queue has access to
+            // the vport which is being stopped here.
+            if self.queue_tracker.0.load(Ordering::Acquire) > 0 {
+                self.queue_tracker.1.wait().await;
+            }
+        } else {
+            tracing::info!("not stopping endpoint, keepalive specified");
         }
     }
 
@@ -592,33 +601,70 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
 
     async fn restore_queues(
         &mut self,
+        mut queue_configs: Vec<QueueConfig<'_>>,
         saved_state: Vec<QueueSavedState>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
         tracing::info!("restoring endpoint using saved_state: {:?}", saved_state);
 
-        for saved_queue in saved_state {
+        for (i, saved_queue) in saved_state.iter().enumerate() {
             match saved_queue {
                 QueueSavedState::ManaQueue(mana_queue) => {
                     let dma_client = self.vport.dma_client().await;
                     let doorbell = self.vport.doorbell().await;
+                    let doorbell_page = DoorbellPage::new(doorbell, self.vport.db_id())?;
 
-                    let eq_mem =
+                    let eq =
                         dma_client.get_dma_buffer(mana_queue.eq.mem.len, mana_queue.eq.mem.base)?;
                     let txq_mem = dma_client.get_dma_buffer(
                         mana_queue.tx_wq.mem.len + mana_queue.tx_cq.mem.len,
                         mana_queue.tx_wq.mem.base,
                     )?;
+
+                    let tx_wq = txq_mem.subblock(0, mana_queue.tx_wq.mem.len);
+                    let tx_cq =
+                        txq_mem.subblock(mana_queue.tx_wq.mem.len, mana_queue.tx_cq.mem.len);
+
                     let rxq_mem = dma_client.get_dma_buffer(
                         mana_queue.rx_wq.mem.len + mana_queue.rx_cq.mem.len,
                         mana_queue.rx_wq.mem.base,
                     )?;
+                    let rx_wq = rxq_mem.subblock(0, mana_queue.rx_wq.mem.len);
+                    let rx_cq =
+                        rxq_mem.subblock(mana_queue.rx_wq.mem.len, mana_queue.rx_cq.mem.len);
 
-                    let queue: ManaQueue<T> = ManaQueue::restore(mana_queue);
+                    let rx_bounce_buffer =
+                        mana_queue.rx_bounce_buffer.as_ref().and_then(|buffer| {
+                            dma_client
+                                .get_dma_buffer(buffer.mem.len, buffer.mem.base)
+                                .ok()
+                        });
+
+                    let tx_bounce_buffer = dma_client.get_dma_buffer(
+                        mana_queue.tx_bounce_buffer.mem.len,
+                        mana_queue.tx_bounce_buffer.mem.base,
+                    )?;
+
+                    let queue: ManaQueue<T> = ManaQueue::restore(
+                        Arc::downgrade(&self.vport),
+                        doorbell_page,
+                        queue_configs.remove(i),
+                        mana_queue.clone(),
+                        ManaQueueRestoredMemory {
+                            eq,
+                            tx_wq,
+                            tx_cq,
+                            rx_wq,
+                            rx_cq,
+                            rx_bounce_buffer,
+                            tx_bounce_buffer,
+                        },
+                        self.queue_tracker.clone(),
+                    )?;
                     queues.push(Box::new(queue));
                 }
                 _ => {
-                    anyhow::bail!("Can only restore mana queues");
+                    anyhow::bail!("mana endpoints should only restore mana queues");
                 }
             }
         }
@@ -1050,6 +1096,16 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
     }
 }
 
+struct ManaQueueRestoredMemory {
+    eq: MemoryBlock,
+    tx_wq: MemoryBlock,
+    tx_cq: MemoryBlock,
+    rx_wq: MemoryBlock,
+    rx_cq: MemoryBlock,
+    rx_bounce_buffer: Option<MemoryBlock>,
+    tx_bounce_buffer: MemoryBlock,
+}
+
 impl<T: DeviceBacking> ManaQueue<T> {
     fn handle_tx(&mut self, segments: &[TxSegment]) -> anyhow::Result<Option<PostedTx>> {
         let head = &segments[0];
@@ -1338,34 +1394,46 @@ impl<T: DeviceBacking> ManaQueue<T> {
     }
 
     /// Restore a ManaQueue from given saved state
-    fn restore(saved_state: ManaQueueSavedState) -> Self {
-        ManaQueue {
-            pool: todo!(),
-            guest_memory: todo!(),
-            rx_bounce_buffer: todo!(),
-            tx_bounce_buffer: todo!(),
-            vport: todo!(),
-            queue_tracker: todo!(),
-            eq: todo!(),
-            eq_armed: todo!(),
+    fn restore(
+        vport: Weak<Vport<T>>,
+        doorbell_page: DoorbellPage,
+        queue_config: QueueConfig<'_>,
+        saved_state: ManaQueueSavedState,
+        mem: ManaQueueRestoredMemory,
+        queue_tracker: Arc<(AtomicUsize, SlimEvent)>,
+    ) -> anyhow::Result<Self> {
+        Ok(ManaQueue {
+            guest_memory: queue_config.pool.guest_memory().clone(),
+            pool: queue_config.pool,
+            rx_bounce_buffer: saved_state.rx_bounce_buffer.map(|state| {
+                ContiguousBufferManager::restore(mem.rx_bounce_buffer.unwrap(), state)
+            }),
+            tx_bounce_buffer: ContiguousBufferManager::restore(
+                mem.tx_bounce_buffer,
+                saved_state.tx_bounce_buffer,
+            ),
+            vport,
+            queue_tracker,
+            eq: Eq::restore(mem.eq, saved_state.eq, doorbell_page)?,
+            eq_armed: saved_state.eq_armed,
             interrupt: todo!(),
-            tx_cq_armed: todo!(),
-            rx_cq_armed: todo!(),
-            vp_offset: todo!(),
-            mem_key: todo!(),
-            tx_wq: todo!(),
-            tx_cq: todo!(),
-            rx_wq: todo!(),
-            rx_cq: todo!(),
-            avail_rx: todo!(),
-            posted_rx: todo!(),
-            rx_max: todo!(),
-            posted_tx: todo!(),
-            dropped_tx: todo!(),
-            tx_max: todo!(),
-            force_tx_header_bounce: todo!(),
-            stats: todo!(),
-        }
+            tx_cq_armed: saved_state.tx_cq_armed,
+            rx_cq_armed: saved_state.rx_cq_armed,
+            vp_offset: saved_state.vp_offset,
+            mem_key: saved_state.mem_key,
+            tx_wq: Wq::restore_sq(mem.tx_wq, saved_state.tx_wq, doorbell_page)?,
+            tx_cq: Cq::restore(mem.tx_cq, saved_state.tx_cq, doorbell_page)?,
+            rx_wq: Wq::restore_rq(mem.rx_wq, saved_state.rx_wq, doorbell_page)?,
+            rx_cq: Cq::restore(mem.rx_cq, saved_state.rx_cq, doorbell_page)?,
+            avail_rx: VecDeque::new(),
+            posted_rx: VecDeque::new(),
+            rx_max: saved_state.rx_max,
+            posted_tx: VecDeque::new(),
+            dropped_tx: VecDeque::new(),
+            tx_max: saved_state.tx_max,
+            force_tx_header_bounce: saved_state.force_tx_header_bounce,
+            stats: QueueStats::default(),
+        })
     }
 }
 
@@ -1535,6 +1603,17 @@ impl ContiguousBufferManager {
             failed_allocations: self.failed_allocations,
         }
     }
+
+    pub fn restore(mem: MemoryBlock, saved_state: ContiguousBufferManagerSavedState) -> Self {
+        ContiguousBufferManager {
+            len: saved_state.len,
+            head: saved_state.head,
+            tail: saved_state.tail,
+            mem,
+            split_headers: saved_state.split_headers,
+            failed_allocations: saved_state.failed_allocations,
+        }
+    }
 }
 
 impl Inspect for ContiguousBufferManager {
@@ -1637,9 +1716,11 @@ mod tests {
             reserved: 0,
             max_num_eqs: 64,
         };
-        let thing = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
+        let thing = ManaDevice::new(&driver, device, 1, 1, None, false)
+            .await
+            .unwrap();
         let vport = thing.new_vport(0, None, &dev_config).await.unwrap();
-        let mut endpoint = ManaEndpoint::new(driver.clone(), vport, dma_mode).await;
+        let mut endpoint = ManaEndpoint::new(driver.clone(), vport, dma_mode, false).await;
         let mut queues = Vec::new();
         let pool = net_backend::tests::Bufs::new(driver_dma_mem);
         endpoint
@@ -1741,7 +1822,9 @@ mod tests {
             reserved: 0,
             max_num_eqs: 64,
         };
-        let thing = ManaDevice::new(&driver, device, 1, 1, None).await.unwrap();
+        let thing = ManaDevice::new(&driver, device, 1, 1, None, false)
+            .await
+            .unwrap();
         let _ = thing.new_vport(0, None, &dev_config).await.unwrap();
     }
 }

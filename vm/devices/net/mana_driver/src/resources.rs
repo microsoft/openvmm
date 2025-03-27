@@ -63,6 +63,8 @@ impl ResourceArena {
     }
 
     pub(crate) async fn destroy<T: DeviceBacking>(mut self, gdma: &mut GdmaDriver<T>) {
+        tracing::info!("destroying mana driver resource arena");
+
         for resource in self.resources.drain(..).rev() {
             let r = match resource {
                 Resource::MemoryBlock(mem) => {

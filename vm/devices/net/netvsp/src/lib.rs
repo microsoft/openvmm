@@ -4390,7 +4390,7 @@ impl Coordinator {
             if let Some(saved_queues) = &c_state.saved_queues {
                 c_state
                     .endpoint
-                    .restore_queues(saved_queues.clone(), &mut queues)
+                    .restore_queues(queue_config, saved_queues.clone(), &mut queues)
                     .await
                     .map_err(WorkerError::Endpoint)?;
             } else {

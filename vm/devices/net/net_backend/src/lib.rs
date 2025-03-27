@@ -115,6 +115,7 @@ pub trait Endpoint: Send + Sync + InspectMut {
     /// Restore the endpoint state from saved state.
     async fn restore_queues(
         &mut self,
+        _queue_configs: Vec<QueueConfig<'_>>,
         _saved_state: Vec<QueueSavedState>,
         _queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
@@ -621,10 +622,13 @@ impl Endpoint for DisconnectableEndpoint {
 
     async fn restore_queues(
         &mut self,
+        queue_configs: Vec<QueueConfig<'_>>,
         saved_state: Vec<QueueSavedState>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
-        self.current_mut().restore_queues(saved_state, queues).await
+        self.current_mut()
+            .restore_queues(queue_configs, saved_state, queues)
+            .await
     }
 }
 

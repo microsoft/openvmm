@@ -29,8 +29,8 @@ use gdma_defs::bnic::STATISTICS_FLAGS_ALL;
 use inspect::Inspect;
 use mana_save_restore::save_restore::BnicEqSavedState;
 use mana_save_restore::save_restore::BnicWqSavedState;
+use mana_save_restore::save_restore::CqEqSavedState;
 use mana_save_restore::save_restore::DoorbellSavedState;
-use mana_save_restore::save_restore::QueueSavedState;
 use mana_save_restore::save_restore::SavedMemoryState;
 use mana_save_restore::save_restore::VportSavedState;
 use net_backend_resources::mac_address::MacAddress;
@@ -60,6 +60,9 @@ pub struct ManaDevice<T: DeviceBacking> {
     inspect_task: Task<()>,
     hwc_task: Option<Task<()>>,
     inspect_send: mesh::Sender<inspect::Deferred>,
+
+    /// Whether the device should be left untouched during servicing or not
+    pub keepalive: bool,
 }
 
 impl<T: DeviceBacking> Inspect for ManaDevice<T> {
@@ -85,47 +88,15 @@ impl<T: DeviceBacking> ManaDevice<T> {
         num_vps: u32,
         max_queues_per_vport: u16,
         mana_state: Option<ManaSavedState>,
+        mana_keepalive: bool,
     ) -> anyhow::Result<Self> {
         let mut gdma = if let Some(ref mana_state) = mana_state {
             tracing::info!("Restoring gdma driver from saved state");
             GdmaDriver::restore(mana_state.mana_device.gdma.clone(), device).await?
         } else {
             tracing::info!("Creating a new gdma driver");
-            GdmaDriver::new(driver, device, num_vps).await?
+            GdmaDriver::new(driver, device, num_vps, mana_keepalive).await?
         };
-
-        // let dma_client = gdma.device().dma_client();
-        // if let Some(ref mana_state) = mana_state {
-        //     for queue in &mana_state.queues {
-        //         match queue {
-        //             QueueSavedState::ManaQueue(queue) => {
-        //                 let _eq_mem =
-        //                     dma_client.attach_dma_buffer(queue.eq.mem.len, queue.eq.mem.base)?;
-        //                 let _txq_mem = dma_client.attach_dma_buffer(
-        //                     queue.tx_wq.mem.len + queue.tx_cq.mem.len,
-        //                     queue.tx_wq.mem.base,
-        //                 )?;
-        //                 let _rxq_mem = dma_client.attach_dma_buffer(
-        //                     queue.rx_wq.mem.len + queue.rx_cq.mem.len,
-        //                     queue.rx_wq.mem.base,
-        //                 )?;
-
-        //                 let _rx_bounce_mem =
-        //                     queue.rx_bounce_buffer.as_ref().map(|rx_bounce_buffer| {
-        //                         dma_client.attach_dma_buffer(
-        //                             rx_bounce_buffer.mem.len,
-        //                             rx_bounce_buffer.mem.base,
-        //                         )
-        //                     });
-
-        //                 let _tx_bounce_mem = dma_client.attach_dma_buffer(
-        //                     queue.tx_bounce_buffer.mem.len,
-        //                     queue.tx_bounce_buffer.mem.base,
-        //                 );
-        //             }
-        //         }
-        //     }
-        // }
 
         gdma.test_eq().await?;
 
@@ -195,6 +166,7 @@ impl<T: DeviceBacking> ManaDevice<T> {
             inspect_send,
             inspect_task,
             hwc_task: None,
+            keepalive: mana_keepalive,
         };
         Ok(device)
     }
@@ -360,6 +332,11 @@ pub struct Vport<T: DeviceBacking> {
 }
 
 impl<T: DeviceBacking> Vport<T> {
+    /// Returns the doorbell id
+    pub fn db_id(&self) -> u32 {
+        self.inner.dev_data.db_id
+    }
+
     /// Returns the maximum number of transmit queues.
     pub fn max_tx_queues(&self) -> u32 {
         self.config.max_num_sq
@@ -426,6 +403,26 @@ impl<T: DeviceBacking> Vport<T> {
             mem,
             id,
             interrupt,
+        })
+    }
+
+    /// Restore an eq after servicing
+    pub async fn restore_eq(
+        &self,
+        arena: &mut ResourceArena,
+        cpu: u32,
+        saved_queue: CqEqSavedState,
+    ) -> anyhow::Result<BnicEq> {
+        let gdma = self.inner.gdma.lock().await;
+        let mem = gdma
+            .device()
+            .dma_client()
+            .get_dma_buffer(saved_queue.mem.len, saved_queue.mem.base)?;
+        Ok(BnicEq {
+            doorbell: DoorbellPage::new(self.inner.doorbell.clone(), self.inner.dev_data.db_id)?,
+            mem,
+            id: todo!(),
+            interrupt: todo!(),
         })
     }
 

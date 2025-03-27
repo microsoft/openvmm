@@ -44,7 +44,7 @@ async fn test_gdma(driver: DefaultDriver) {
     let allocator = EmulatedDmaAllocator::new(mem.clone());
     let device = EmulatedDevice::new(device, msi_set, allocator.into());
 
-    let mut gdma = GdmaDriver::new(&driver, device, 1).await.unwrap();
+    let mut gdma = GdmaDriver::new(&driver, device, 1, false).await.unwrap();
     gdma.test_eq().await.unwrap();
     gdma.verify_vf_driver_version().await.unwrap();
     let dev_id = gdma

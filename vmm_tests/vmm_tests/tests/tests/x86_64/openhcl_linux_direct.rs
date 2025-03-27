@@ -108,6 +108,40 @@ async fn mana_nic_servicing(
     Ok(())
 }
 
+/// Test an OpenHCL Linux direct VM with a MANA nic assigned to VTL2 (backed by
+/// the MANA emulator), and vmbus relay. Perform servicing and validate that the
+/// nic is still functional.
+#[openvmm_test(openhcl_linux_direct_x64 [LATEST_LINUX_DIRECT_TEST_X64])]
+async fn mana_nic_servicing_keepalive(
+    config: PetriVmConfigOpenVmm,
+    (igvm_file,): (ResolvedArtifact<LATEST_LINUX_DIRECT_TEST_X64>,),
+) -> Result<(), anyhow::Error> {
+    let (mut vm, agent) = config
+        .with_vmbus_redirect()
+        .with_nic()
+        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_MANA_KEEP_ALIVE=1")
+        .run()
+        .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    vm.restart_openhcl(
+        igvm_file,
+        OpenHclServicingFlags {
+            enable_nvme_keepalive: false,
+            enable_mana_keepalive: true,
+        },
+    )
+    .await?;
+
+    validate_mana_nic(&agent).await?;
+
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+
+    Ok(())
+}
+
 /// Test an OpenHCL Linux direct VM with a SCSI disk assigned to VTL2, and
 /// vmbus relay. This should expose a disk to VTL0 via vmbus.
 #[openvmm_test(openhcl_linux_direct_x64)]

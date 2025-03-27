@@ -69,6 +69,7 @@ async fn create_mana_device(
     max_sub_channels: u16,
     dma_client: Arc<dyn DmaClient>,
     mana_state: Option<ManaSavedState>,
+    mana_keepalive: bool,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
     // Don't do anything to the device in servicing mode
     if let Some(mana_state) = mana_state {
@@ -84,6 +85,7 @@ async fn create_mana_device(
             max_sub_channels,
             dma_client.clone(),
             Some(mana_state.clone()),
+            mana_keepalive,
         )
         .await;
     }
@@ -112,6 +114,7 @@ async fn create_mana_device(
             max_sub_channels,
             dma_client.clone(),
             mana_state.clone(),
+            mana_keepalive,
         )
         .await
         {
@@ -142,6 +145,7 @@ async fn try_create_mana_device(
     max_sub_channels: u16,
     dma_client: Arc<dyn DmaClient>,
     mana_state: Option<ManaSavedState>,
+    mana_keepalive: bool,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
     let device = if mana_state.is_some() {
         tracing::info!("restoring mana vfio device with pci_id {:?}", pci_id);
@@ -163,6 +167,7 @@ async fn try_create_mana_device(
         vp_count,
         max_sub_channels + 1,
         mana_state,
+        mana_keepalive,
     )
     .instrument(tracing::info_span!("new_mana_device"))
     .await
@@ -313,6 +318,7 @@ impl HclNetworkVFManagerWorker {
                                 self.driver_source.simple(),
                                 vport,
                                 self.dma_mode,
+                                device.keepalive,
                             )
                             .await,
                         );
@@ -740,6 +746,7 @@ impl HclNetworkVFManagerWorker {
                         self.max_sub_channels,
                         self.dma_client.clone(),
                         None,
+                        false,
                     )
                     .await
                     {
@@ -917,6 +924,7 @@ impl HclNetworkVFManager {
         mana_state: &Option<Vec<ManaSavedState>>,
         dma_mode: GuestDmaMode,
         dma_client: Arc<dyn DmaClient>,
+        mana_keepalive: bool,
     ) -> anyhow::Result<(
         Self,
         Vec<HclNetworkVFManagerEndpointInfo>,
@@ -933,6 +941,7 @@ impl HclNetworkVFManager {
             max_sub_channels,
             dma_client.clone(),
             mana_state.clone(),
+            mana_keepalive,
         )
         .await?;
 

@@ -663,7 +663,13 @@ impl UhVmNetworkSettings {
         vf_managers: &mut Vec<(Guid, Arc<HclNetworkVFManager>)>,
         remove_vtl0_vf: bool,
         keep_vf_alive: bool,
+        mana_keepalive: bool,
     ) {
+        if mana_keepalive {
+            tracing::info!("skipping shutdown vf devices");
+            return;
+        }
+
         // Notify VF managers of shutdown so that the subsequent teardown of
         // the NICs does not modify VF state.
         let mut vf_managers = vf_managers
@@ -754,6 +760,7 @@ impl UhVmNetworkSettings {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
+        mana_keepalive: bool,
     ) -> anyhow::Result<RuntimeSavedState> {
         let instance_id = nic_config.instance_id;
         let nic_max_sub_channels = nic_config
@@ -785,6 +792,7 @@ impl UhVmNetworkSettings {
             servicing_mana_state,
             self.dma_mode,
             dma_client,
+            mana_keepalive,
         )
         .await?;
 
@@ -906,6 +914,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
+        mana_keepalive: bool,
     ) -> anyhow::Result<RuntimeSavedState> {
         if self.vf_managers.contains_key(&instance_id) {
             return Err(NetworkSettingsError::VFManagerExists(instance_id).into());
@@ -940,6 +949,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
                 vmbus_server,
                 dma_client_spawner,
                 is_isolated,
+                mana_keepalive,
             )
             .await?;
 
@@ -952,15 +962,15 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
             .remove_entry(&instance_id)
             .ok_or(NetworkSettingsError::VFManagerMissing(instance_id));
 
-        self.shutdown_vf_devices(&mut vec![vf_manager.unwrap()], true, false)
+        self.shutdown_vf_devices(&mut vec![vf_manager.unwrap()], true, false, false)
             .await;
         Ok(())
     }
 
-    async fn unload_for_servicing(&mut self) {
+    async fn unload_for_servicing(&mut self, mana_keepalive: bool) {
         let mut vf_managers: Vec<(Guid, Arc<HclNetworkVFManager>)> =
             self.vf_managers.drain().collect();
-        self.shutdown_vf_devices(&mut vf_managers, false, true)
+        self.shutdown_vf_devices(&mut vf_managers, false, true, mana_keepalive)
             .await;
     }
 
@@ -2843,6 +2853,10 @@ async fn new_underhill_vm(
     let mut netvsp_state = Vec::with_capacity(controllers.mana.len());
     if !controllers.mana.is_empty() {
         let _span = tracing::info_span!("network_settings").entered();
+
+        let private_pool_available = !runtime_params.private_pool_ranges().is_empty();
+        let save_restore_supported = env_cfg.mana_keep_alive && private_pool_available;
+
         for nic_config in controllers.mana.into_iter() {
             let save_state = uh_network_settings
                 .add_network(
@@ -2858,6 +2872,7 @@ async fn new_underhill_vm(
                     &vmbus_server,
                     dma_manager.client_spawner(),
                     isolation.is_isolated(),
+                    save_restore_supported,
                 )
                 .await?;
 

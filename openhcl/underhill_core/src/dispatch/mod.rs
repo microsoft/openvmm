@@ -113,13 +113,14 @@ pub trait LoadedVmNetworkSettings: Inspect {
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
         is_isolated: bool,
+        mana_keepalive: bool,
     ) -> anyhow::Result<RuntimeSavedState>;
 
     /// Callback when network is removed externally.
     async fn remove_network(&mut self, instance_id: Guid) -> anyhow::Result<()>;
 
     /// Callback after stopping the VM and all workers, in preparation for a VTL2 reboot.
-    async fn unload_for_servicing(&mut self);
+    async fn unload_for_servicing(&mut self, mana_keepalive: bool);
 
     async fn save(
         &mut self,
@@ -542,7 +543,7 @@ impl LoadedVm {
             let shutdown_mana = async {
                 if let Some(network_settings) = self.network_settings.as_mut() {
                     network_settings
-                        .unload_for_servicing()
+                        .unload_for_servicing(mana_keepalive)
                         .instrument(tracing::info_span!("shutdown_mana"))
                         .await;
                 }
@@ -837,6 +838,7 @@ impl LoadedVm {
                 &self.vmbus_server,
                 self.dma_manager.client_spawner(),
                 self.isolation.is_isolated(),
+                self.mana_keep_alive,
             )
             .await?;
 
