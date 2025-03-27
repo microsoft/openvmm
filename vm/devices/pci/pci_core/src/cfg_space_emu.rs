@@ -409,6 +409,7 @@ impl ConfigSpaceType0Emulator {
             }
             // rest of the range is reserved for extended device capabilities
             _ if (0x40..0x100).contains(&offset) => {
+                tracing::info!(offset, "extended device capabilities");
                 if let Some((cap_index, cap_offset)) =
                     self.get_capability_index_and_offset(offset - 0x40)
                 {
@@ -424,26 +425,37 @@ impl ConfigSpaceType0Emulator {
                     }
                     value
                 } else {
-                    tracelimit::warn_ratelimited!(offset, "unhandled config space read");
+                    //tracelimit::warn_ratelimited!(offset, "unhandled config space read");
+                    tracing::warn!(offset, "unhandled config space read");
                     return IoResult::Err(IoError::InvalidRegister);
                 }
             }
             _ if (0x100..0x1000).contains(&offset) => {
                 // TODO: properly support extended pci express configuration space
                 if offset == 0x100 {
-                    tracelimit::warn_ratelimited!(offset, "unexpected pci express probe");
+                    //tracelimit::warn_ratelimited!(offset, "unexpected pci express probe");
+                    tracing::warn!(offset, "unexpected pci express probe");
                     0x000ffff
                 } else {
-                    tracelimit::warn_ratelimited!(offset, "unhandled extended config space read");
+                    //tracelimit::warn_ratelimited!(offset, "unhandled extended config space read");
+                    tracing::warn!(offset, "unhandled extended config space read");
                     return IoResult::Err(IoError::InvalidRegister);
                 }
             }
             _ => {
-                tracelimit::warn_ratelimited!(offset, "unexpected config space read");
+                //tracelimit::warn_ratelimited!(offset, "unexpected config space read");
+                tracing::warn!(offset, "unexpected config space read");
                 return IoResult::Err(IoError::InvalidRegister);
             }
         };
 
+        tracing::info!(
+            offset,
+            value,
+            "config space read {:x} -> {:x}",
+            offset,
+            value
+        );
         IoResult::Ok
     }
 

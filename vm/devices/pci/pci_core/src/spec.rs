@@ -332,6 +332,7 @@ pub mod cfg_space {
 
 /// Capabilities
 pub mod caps {
+
     open_enum::open_enum! {
         /// Capability IDs
         ///
@@ -342,8 +343,126 @@ pub mod caps {
         pub enum CapabilityId: u8 {
             #![expect(missing_docs)] // self explanatory variants
             VENDOR_SPECIFIC = 0x09,
+            PCI_EXPRESS     = 0x10,
             MSIX            = 0x11,
         }
+    }
+
+    /// PCIe
+    #[expect(missing_docs)] // primarily enums/structs with self-explanatory variants
+    pub mod pcie {
+        use bitfield_struct::bitfield;
+        use static_assertions::const_assert_eq;
+        use zerocopy::Immutable;
+        use zerocopy::IntoBytes;
+        use zerocopy::KnownLayout;
+        use zerocopy::TryFromBytes;
+
+        open_enum::open_enum! {
+            pub enum PciExpressDeviceType: u8 {
+                ENDPOINT = 0x00,
+            }
+        }
+
+        #[bitfield(u16)]
+        #[derive(TryFromBytes, IntoBytes, Immutable, KnownLayout)]
+        pub struct PciCapabilitiesHeader {
+            pub capability_id: u8,
+            pub next: u8,
+        }
+
+        #[bitfield(u16)]
+        #[derive(TryFromBytes, IntoBytes, Immutable, KnownLayout)]
+        pub struct PciExpressCapabilitiesRegister {
+            #[bits(4)]
+            pub capability_version: u8,
+            #[bits(4)]
+            pub device_type: u8,
+            pub slot_implemented: bool,
+            #[bits(5)]
+            pub interrupt_message_number: u16,
+            _reserved: bool,
+            pub flit_mode_supported: bool,
+        }
+
+        #[bitfield(u32)]
+        #[derive(TryFromBytes, IntoBytes, Immutable, KnownLayout)]
+        pub struct PciExpressDeviceCapabilitiesRegister {
+            #[bits(3)]
+            pub max_payload_size_supported: u8,
+            #[bits(2)]
+            pub phantom_functions_supported: u8,
+            pub extended_tag_field_supported: bool,
+            #[bits(3)]
+            pub endpoint_l0s_acceptable_latency: u8,
+            #[bits(3)]
+            pub endpoint_l1_acceptable_latency: u8,
+            #[bits(3)]
+            pub _undefined: u8,
+            pub role_based_error_reporting: bool,
+            #[bits(2)]
+            pub _rsvd1: u8,
+            pub captured_slot_power_limit_value: u8,
+            #[bits(2)]
+            pub captured_slot_power_limit_scale: u8,
+            pub function_level_reset_capable: bool,
+            pub mixed_mps_supported: bool,
+            pub teeios_supported: bool,
+            pub _rsvd2: bool,
+        }
+
+        #[bitfield(u32)]
+        #[derive(TryFromBytes, IntoBytes, Immutable, KnownLayout)]
+        pub struct PciExpressLinkCapabilitiesRegister {
+            #[bits(4)]
+            pub maximum_link_speed: u8,
+            #[bits(6)]
+            pub maximum_link_width: u8,
+            #[bits(2)]
+            pub active_state_pm_support: u8,
+            #[bits(3)]
+            pub l0s_exit_latency: u8,
+            #[bits(3)]
+            pub l1_exit_latency: u8,
+            pub clock_power_management: bool,
+            pub surprise_down_error_reporting_capable: bool,
+            pub data_link_layer_active_reporting_capable: bool,
+            pub link_bandwidth_notification_capability: bool,
+            pub aspm_optionality_compliance: bool,
+            _rsvd: bool,
+            pub port_number: u8,
+        }
+
+        #[bitfield(u16)]
+        #[derive(TryFromBytes, IntoBytes, Immutable, KnownLayout)]
+        pub struct PciExpressLinkStatusRegister {
+            #[bits(4)]
+            pub current_link_speed: u8,
+            #[bits(6)]
+            pub current_link_width: u8,
+            _undefined: bool,
+            pub link_training: bool,
+            pub slot_clock_config: bool,
+            pub data_link_layer_active: bool,
+            pub bandwidth_management_status: bool,
+            pub autonomous_management_status: bool,
+        }
+
+        #[repr(C)]
+        #[derive(IntoBytes, Immutable, KnownLayout, Debug)]
+        pub struct PciExpressCapability {
+            pub header: PciCapabilitiesHeader,
+            pub register: PciExpressCapabilitiesRegister,
+            pub device_capabilities: PciExpressDeviceCapabilitiesRegister,
+            pub _pci_device_control: u16,
+            pub _pci_device_status: u16,
+            pub link_capabilities: PciExpressLinkCapabilitiesRegister,
+            pub _link_control: u16,
+            pub link_status: PciExpressLinkStatusRegister,
+            pub _padding: [u8; 0x34 - 0x14], // remaining fields not yet used
+        }
+
+        const_assert_eq!(0x34, size_of::<PciExpressCapability>());
     }
 
     /// MSI-X

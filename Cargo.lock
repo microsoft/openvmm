@@ -5198,6 +5198,7 @@ dependencies = [
  "mesh",
  "open_enum",
  "parking_lot",
+ "static_assertions",
  "thiserror 2.0.0",
  "tracelimit",
  "tracing",

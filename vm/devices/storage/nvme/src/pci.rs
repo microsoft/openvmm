@@ -31,10 +31,19 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use parking_lot::Mutex;
 use pci_core::capabilities::msix::MsixEmulator;
+use pci_core::capabilities::ReadOnlyCapability;
 use pci_core::cfg_space_emu::BarMemoryKind;
 use pci_core::cfg_space_emu::ConfigSpaceType0Emulator;
 use pci_core::cfg_space_emu::DeviceBars;
 use pci_core::msi::RegisterMsi;
+use pci_core::spec::caps::pcie::PciCapabilitiesHeader;
+use pci_core::spec::caps::pcie::PciExpressCapabilitiesRegister;
+use pci_core::spec::caps::pcie::PciExpressCapability;
+use pci_core::spec::caps::pcie::PciExpressDeviceCapabilitiesRegister;
+use pci_core::spec::caps::pcie::PciExpressDeviceType;
+use pci_core::spec::caps::pcie::PciExpressLinkCapabilitiesRegister;
+use pci_core::spec::caps::pcie::PciExpressLinkStatusRegister;
+use pci_core::spec::caps::CapabilityId;
 use pci_core::spec::hwid::ClassCode;
 use pci_core::spec::hwid::HardwareIds;
 use pci_core::spec::hwid::ProgrammingInterface;
@@ -131,6 +140,43 @@ impl NvmeController {
                 BarMemoryKind::Intercept(register_mmio.new_io_region("msix", msix.bar_len())),
             );
 
+        // let mut caps: Vec<Box<dyn PciCapability>> = vec![
+        //     Box::new(ReadOnlyCapability::new(
+        //         "virtio-common",
+        //         VirtioCapability::new(VIRTIO_PCI_CAP_COMMON_CFG, 0, 0, 0, 56),
+        //     )),
+
+        //PciExpressCapability::new().with_device_type(0x00).into();
+        let pcie_cap = ReadOnlyCapability::new(
+            "pcie",
+            PciExpressCapability {
+                header: PciCapabilitiesHeader::new()
+                    .with_next(0)
+                    .with_capability_id(CapabilityId::PCI_EXPRESS.0)
+                    .into(),
+                register: PciExpressCapabilitiesRegister::new()
+                    .with_device_type(PciExpressDeviceType::ENDPOINT.0)
+                    .with_capability_version(0x2)
+                    .with_slot_implemented(false)
+                    .into(),
+                device_capabilities: PciExpressDeviceCapabilitiesRegister::new()
+                    .with_function_level_reset_capable(true)
+                    .into(),
+                _pci_device_control: 0,
+                _pci_device_status: 0,
+                link_capabilities: PciExpressLinkCapabilitiesRegister::new()
+                    .with_maximum_link_speed(0x2)
+                    .with_maximum_link_width(0x4)
+                    .into(),
+                _link_control: 0,
+                link_status: PciExpressLinkStatusRegister::new()
+                    .with_current_link_speed(0x2)
+                    .with_current_link_width(0x4)
+                    .into(),
+                _padding: [0u8; 0x20],
+            },
+        );
+
         let cfg_space = ConfigSpaceType0Emulator::new(
             HardwareIds {
                 vendor_id: VENDOR_ID,
@@ -148,7 +194,7 @@ impl NvmeController {
                 type0_sub_vendor_id: 0,
                 type0_sub_system_id: 0,
             },
-            vec![Box::new(msix_cap)],
+            vec![Box::new(msix_cap), Box::new(pcie_cap)],
             bars,
         );
 
@@ -459,6 +505,7 @@ impl ChipsetDevice for NvmeController {
 
 impl MmioIntercept for NvmeController {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
+        tracing::warn!(?addr, "mmio_read");
         match self.cfg_space.find_bar(addr) {
             Some((0, offset)) => self.read_bar0(offset, data),
             Some((4, offset)) => {
