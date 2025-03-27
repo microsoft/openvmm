@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 mesh.workspace = true
+mesh_channel.workspace = true
 vm_resource.workspace = true
 
 [lints]

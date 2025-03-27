@@ -27,7 +27,6 @@ use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_async::pipe::MessagePipe;
 use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::channel::ChannelOpenError;
-use vmbus_relay_intercept_device::OfferResponse;
 use vmbus_relay_intercept_device::SaveRestoreSimpleVmbusClientDevice;
 use vmbus_relay_intercept_device::SimpleVmbusClientDevice;
 use vmbus_relay_intercept_device::SimpleVmbusClientDeviceAsync;
@@ -38,7 +37,10 @@ use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
-const E_FAIL: u32 = 0x80004005;
+/// Shutdown request failed.
+pub const E_FAIL: u32 = 0x80004005;
+/// Shutdown component is not ready.
+pub const E_NOTREADY: u32 = 0x80000015;
 
 /// A shutdown IC client device.
 #[derive(InspectMut)]
@@ -290,7 +292,11 @@ impl ShutdownGuestChannel {
         };
 
         // Notify the internal listener and wait for a response.
-        let result = ic.send_shutdown_notification.call(|x| x, params).await;
+        let status = match ic.send_shutdown_notification.call(|x| x, params).await {
+            Ok(ShutdownResult::Ok) => 0,
+            Ok(ShutdownResult::Failed(x)) => x,
+            Ok(ShutdownResult::NotReady) | Ok(ShutdownResult::AlreadyInProgress) | Err(_) => E_FAIL,
+        };
 
         // Respond to the request.
         let response = hyperv_ic_protocol::Header {
@@ -298,7 +304,7 @@ impl ShutdownGuestChannel {
             message_version: *message_version,
             message_type: hyperv_ic_protocol::MessageType::SHUTDOWN,
             message_size: 0,
-            status: if result.is_ok() { 0 } else { E_FAIL },
+            status,
             transaction_id: header.transaction_id,
             flags: hyperv_ic_protocol::HeaderFlags::new()
                 .with_transaction(header.flags.transaction())
@@ -327,9 +333,7 @@ impl SimpleVmbusClientDevice for ShutdownGuestIc {
         INSTANCE_ID
     }
 
-    fn offer(&self, _offer: &vmbus_core::protocol::OfferChannel) -> OfferResponse {
-        OfferResponse::Open
-    }
+    fn offer(&self, _offer: &vmbus_core::protocol::OfferChannel) {}
 
     fn inspect(&mut self, req: inspect::Request<'_>, runner: Option<&mut Self::Runner>) {
         req.respond().merge(self).merge(runner);

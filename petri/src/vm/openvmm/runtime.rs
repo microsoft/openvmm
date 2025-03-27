@@ -14,10 +14,13 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use hvlite_defs::rpc::PulseSaveRestoreError;
+use hyperv_ic_resources::shutdown::ShutdownParams;
+use hyperv_ic_resources::shutdown::ShutdownResult;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::CancelContext;
 use mesh::Receiver;
 use mesh::RecvError;
+use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use mesh_process::Mesh;
@@ -169,7 +172,7 @@ impl PetriVmOpenVmm {
     petri_vm_fn!(
         /// Waits for the Hyper-V shutdown IC to be ready, returning a receiver
         /// that will be closed when it is no longer ready.
-        pub async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<mesh::OneshotReceiver<()>>
+        pub async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<(mesh::Sender<Rpc<ShutdownParams, ShutdownResult>>, mesh::OneshotReceiver<()>)>
     );
     petri_vm_fn!(
         /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
@@ -321,19 +324,20 @@ impl PetriVmInner {
 
     async fn wait_for_enlightened_shutdown_ready(
         &mut self,
-    ) -> anyhow::Result<mesh::OneshotReceiver<()>> {
+    ) -> anyhow::Result<(
+        mesh::Sender<Rpc<ShutdownParams, ShutdownResult>>,
+        mesh::OneshotReceiver<()>,
+    )> {
         tracing::info!("Waiting for shutdown ic ready");
-        let recv = self
-            .resources
+        self.resources
             .shutdown_ic_send
             .call(ShutdownRpc::WaitReady, ())
-            .await?;
-
-        Ok(recv)
+            .await
+            .map_err(anyhow::Error::from)
     }
 
     async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
-        self.wait_for_enlightened_shutdown_ready().await?;
+        let (notify_shutdown, _) = self.wait_for_enlightened_shutdown_ready().await?;
         if let Some(duration) = self.quirks.hyperv_shutdown_ic_sleep {
             tracing::info!("QUIRK: Waiting for {:?}", duration);
             PolledTimer::new(&self.resources.driver)
@@ -342,12 +346,10 @@ impl PetriVmInner {
         }
 
         tracing::info!("Sending shutdown command");
-        let shutdown_result = self
-            .resources
-            .shutdown_ic_send
+        let shutdown_result = notify_shutdown
             .call(
-                ShutdownRpc::Shutdown,
-                hyperv_ic_resources::shutdown::ShutdownParams {
+                |x| x,
+                ShutdownParams {
                     shutdown_type: match kind {
                         ShutdownKind::Shutdown => {
                             hyperv_ic_resources::shutdown::ShutdownType::PowerOff
@@ -361,7 +363,7 @@ impl PetriVmInner {
 
         tracing::info!(?shutdown_result, "Shutdown sent");
         anyhow::ensure!(
-            shutdown_result == hyperv_ic_resources::shutdown::ShutdownResult::Ok,
+            shutdown_result == ShutdownResult::Ok,
             "Got non-Ok shutdown response"
         );
 

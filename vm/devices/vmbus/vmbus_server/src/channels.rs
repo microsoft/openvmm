@@ -53,8 +53,8 @@ use zerocopy::KnownLayout;
 /// An error caused by a channel operation.
 #[derive(Debug, Error)]
 pub enum ChannelError {
-    #[error("unknown channel ID")]
-    UnknownChannelId,
+    #[error("unknown channel ID {0}")]
+    UnknownChannelId(u32),
     #[error("unknown GPADL ID")]
     UnknownGpadlId,
     #[error("parse error")]
@@ -981,7 +981,7 @@ impl ChannelList {
     ) -> Result<(OfferId, &mut Channel), ChannelError> {
         let offer_id = assigned_channels
             .get(channel_id)
-            .ok_or(ChannelError::UnknownChannelId)?;
+            .ok_or(ChannelError::UnknownChannelId(channel_id.0))?;
         let channel = &mut self[offer_id];
         if channel.state.is_released() {
             return Err(ChannelError::ChannelReleased);
@@ -1001,7 +1001,7 @@ impl ChannelList {
     ) -> Result<(OfferId, &Channel), ChannelError> {
         let offer_id = assigned_channels
             .get(channel_id)
-            .ok_or(ChannelError::UnknownChannelId)?;
+            .ok_or(ChannelError::UnknownChannelId(channel_id.0))?;
         let channel = &self[offer_id];
         if channel.state.is_released() {
             return Err(ChannelError::ChannelReleased);

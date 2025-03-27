@@ -16,6 +16,8 @@ use crate::reference_time::ReferenceTime;
 use crate::servicing;
 use crate::servicing::NvmeSavedState;
 use crate::servicing::ServicingState;
+use crate::shutdown_relay::ShutdownRelayDevice;
+use crate::shutdown_relay::ShutdownRelayMessage;
 use crate::vmbus_relay_unit::VmbusRelayHandle;
 use crate::worker::FirmwareType;
 use crate::worker::NetworkSettingsError;
@@ -27,9 +29,7 @@ use futures_concurrency::future::Join;
 use get_protocol::SaveGuestVtl2StateFlags;
 use guest_emulation_transport::api::GuestSaveRequest;
 use guid::Guid;
-use hyperv_ic_resources::shutdown::ShutdownParams;
 use hyperv_ic_resources::shutdown::ShutdownResult;
-use hyperv_ic_resources::shutdown::ShutdownRpc;
 use hyperv_ic_resources::shutdown::ShutdownType;
 use igvm_defs::MemoryMapEntryType;
 use inspect::Inspect;
@@ -155,14 +155,9 @@ pub(crate) struct LoadedVm {
     pub host_vmbus_relay: Option<VmbusRelayHandle>,
     // channels are revoked when dropped, so make sure to keep them alive
     pub _vmbus_devices: Vec<SpawnedUnit<ChannelUnit<dyn VmbusDevice>>>,
-    pub _vmbus_intercept_devices: Vec<mesh::OneshotSender<()>>,
     pub _ide_accel_devices: Vec<SpawnedUnit<ChannelUnit<storvsp::StorageDevice>>>,
     pub network_settings: Option<Box<dyn LoadedVmNetworkSettings>>,
-    pub shutdown_relay: Option<(
-        mesh::Receiver<Rpc<ShutdownParams, ShutdownResult>>,
-        mesh::Sender<ShutdownRpc>,
-    )>,
-
+    pub shutdown_relay: Option<ShutdownRelayDevice>,
     pub vmgs_thin_client: vmgs_broker::VmgsThinClient,
     pub vmgs_disk_metadata: disk_get_vmgs::save_restore::SavedBlockStorageMetadata,
     pub _vmgs_handle: Task<()>,
@@ -243,22 +238,23 @@ impl LoadedVm {
                 UhVmRpc(UhVmRpc),
                 VtlCrash(VtlCrash),
                 ServicingRequest(GuestSaveRequest),
-                ShutdownRequest(Rpc<ShutdownParams, ShutdownResult>),
+                ShutdownRelay(ShutdownRelayMessage),
             }
 
-            let event: Event<T> = futures::select! { // merge semantics
-                message = worker_rpc.next() => message.map_or(Event::WorkerRpcGone, Event::WorkerRpc),
-                message = device_config_recv.select_next_some() => Event::Vtl2ConfigNicRpc(message),
-                message = vm_rpc.select_next_some() => Event::UhVmRpc(message),
-                message = self.crash_notification_recv.select_next_some() => Event::VtlCrash(message),
-                message = save_request_recv.select_next_some() => Event::ServicingRequest(message),
-                message = async {
-                    if self.shutdown_relay.is_none() {
-                        std::future::pending::<()>().await;
-                    }
-                    let (recv, _) = self.shutdown_relay.as_mut().unwrap();
-                    recv.select_next_some().await
-                }.fuse() => Event::ShutdownRequest(message),
+            let event: Event<T> = {
+                futures::select! { // merge semantics
+                    message = worker_rpc.next() => message.map_or(Event::WorkerRpcGone, Event::WorkerRpc),
+                    message = device_config_recv.select_next_some() => Event::Vtl2ConfigNicRpc(message),
+                    message = vm_rpc.select_next_some() => Event::UhVmRpc(message),
+                    message = self.crash_notification_recv.select_next_some() => Event::VtlCrash(message),
+                    message = save_request_recv.select_next_some() => Event::ServicingRequest(message),
+                    message = async {
+                        if self.shutdown_relay.is_none() {
+                            std::future::pending::<()>().await;
+                        }
+                        self.shutdown_relay.as_mut().unwrap().next_message().await
+                    }.fuse() => Event::ShutdownRelay(message),
+                }
             };
 
             match event {
@@ -381,26 +377,37 @@ impl LoadedVm {
                         }
                     }
                 }
-                Event::ShutdownRequest(rpc) => {
+                Event::ShutdownRelay(ShutdownRelayMessage::GuestConnectivityChange(connected)) => {
+                    let connected = match connected {
+                        Ok(connected) => connected,
+                        Err(err) => {
+                            tracing::error!(
+                                error = &err as &dyn std::error::Error,
+                                "Failed polling shutdown device connection state"
+                            );
+                            break None;
+                        }
+                    };
+                    let shutdown_relay =
+                        self.shutdown_relay.as_mut().expect("active shutdown relay");
+                    if connected {
+                        shutdown_relay.connect_to_host();
+                    } else {
+                        shutdown_relay.disconnect_from_host();
+                    }
+                }
+                Event::ShutdownRelay(ShutdownRelayMessage::ShutdownRequest(rpc)) => {
                     rpc.handle(async |msg| {
-                        if matches!(msg.shutdown_type, ShutdownType::Hibernate) {
+                        let shutdown_type = msg.shutdown_type;
+                        if matches!(shutdown_type, ShutdownType::Hibernate) {
                             self.handle_hibernate_request(false).await;
                         }
-                        let (_, send_guest) =
+                        let shutdown_relay =
                             self.shutdown_relay.as_mut().expect("active shutdown_relay");
-                        tracing::info!(params = ?msg, "Relaying shutdown message");
-                        let result = match send_guest.call(ShutdownRpc::Shutdown, msg).await {
-                            Ok(result) => result,
-                            Err(err) => {
-                                tracing::error!(
-                                    error = &err as &dyn std::error::Error,
-                                    "Failed to relay shutdown notification to guest"
-                                );
-                                ShutdownResult::Failed(0x80000001)
-                            }
-                        };
-                        if !matches!(result, ShutdownResult::Ok) {
-                            tracing::warn!(?result, "Shutdown request failed");
+                        let result = shutdown_relay.send_shutdown_to_guest(msg).await;
+                        if matches!(result, ShutdownResult::Failed(_) | ShutdownResult::NotReady)
+                            && matches!(shutdown_type, ShutdownType::Hibernate)
+                        {
                             self.handle_hibernate_request(true).await;
                         }
                         result
@@ -606,6 +613,13 @@ impl LoadedVm {
 
     async fn start(&mut self, correlation_id: Option<Guid>) {
         self.state_units.start().await;
+        if self.shutdown_relay.is_some() {
+            self.shutdown_relay
+                .as_mut()
+                .unwrap()
+                .start(&self.state_units, self.vmbus_server.as_ref().unwrap())
+                .await;
+        }
 
         // Log the boot/blackout time.
         let reference_time = ReferenceTime::new(self.partition.reference_time());
@@ -637,6 +651,9 @@ impl LoadedVm {
         if self.state_units.is_running() {
             self.last_state_unit_stop = Some(ReferenceTime::new(self.partition.reference_time()));
             tracing::info!("stopping VM");
+            if self.shutdown_relay.is_some() {
+                self.shutdown_relay.as_mut().unwrap().stop().await;
+            }
             self.state_units.stop().await;
             true
         } else {

@@ -73,12 +73,14 @@ use hvlite_defs::rpc::VmRpc;
 use hvlite_defs::worker::VM_WORKER;
 use hvlite_defs::worker::VmWorkerParameters;
 use hvlite_helpers::disk::open_disk_type;
+use hyperv_ic_resources::shutdown;
 use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
 use inspect::InspectionBuilder;
 use io::Read;
 use mesh::CancelContext;
 use mesh::error::RemoteError;
+use mesh::rpc::PendingRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
@@ -178,7 +180,7 @@ pub fn hvlite_main() {
 struct VmResources {
     console_in: Option<Box<dyn AsyncWrite + Send + Unpin>>,
     framebuffer_access: Option<FramebufferAccess>,
-    shutdown_ic: Option<mesh::Sender<hyperv_ic_resources::shutdown::ShutdownRpc>>,
+    shutdown_ic: Option<mesh::Sender<shutdown::ShutdownRpc>>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     ged_rpc: Option<mesh::Sender<get_resources::ged::GuestEmulationRequest>>,
     #[cfg(windows)]
@@ -1118,7 +1120,7 @@ fn vm_config_from_command_line(
         resources.shutdown_ic = Some(send);
         vmbus_devices.push((
             DeviceVtl::Vtl0,
-            hyperv_ic_resources::shutdown::ShutdownIcHandle { recv }.into_resource(),
+            shutdown::ShutdownIcHandle { recv }.into_resource(),
         ));
     }
 
@@ -2134,13 +2136,25 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
 
     let mut state_change_task = None::<Task<Result<StateChange, RpcError>>>;
     let mut pulse_save_restore_interval: Option<Duration> = None;
-    let mut pending_shutdown = None;
 
     enum StateChange {
         Pause(bool),
         Resume(bool),
         Reset(Result<(), RemoteError>),
         PulseSaveRestore(Result<(), PulseSaveRestoreError>),
+    }
+
+    enum ShutdownStatus {
+        Running,
+        PendingSend {
+            rpc: PendingRpc<(
+                mesh_channel::MpscSender<Rpc<shutdown::ShutdownParams, shutdown::ShutdownResult>>,
+                mesh::OneshotReceiver<()>,
+            )>,
+            params: shutdown::ShutdownParams,
+        },
+        PendingResult(PendingRpc<shutdown::ShutdownResult>),
+        Result(Result<shutdown::ShutdownResult, RpcError>),
     }
 
     enum Event {
@@ -2154,8 +2168,10 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         Worker(WorkerEvent),
         VncWorker(WorkerEvent),
         StateChange(Result<StateChange, RpcError>),
-        ShutdownResult(Result<hyperv_ic_resources::shutdown::ShutdownResult, RpcError>),
+        ShutdownResult(ShutdownStatus),
     }
+
+    let mut pending_shutdown = ShutdownStatus::Running;
 
     let mut console_command_recv = console_command_recv
         .map(Event::Command)
@@ -2187,10 +2203,15 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 .flatten()
                 .map(Event::StateChange);
             let shutdown = pin!(async {
-                if let Some(s) = &mut pending_shutdown {
-                    Event::ShutdownResult(s.await)
-                } else {
-                    pending().await
+                match &mut pending_shutdown {
+                    ShutdownStatus::PendingSend { rpc, params } => rpc.await.map_or_else(
+                        |e| ShutdownStatus::Result(Err(e)),
+                        |(notify, _)| {
+                            ShutdownStatus::PendingResult(notify.call(|x| x, params.clone()))
+                        },
+                    ),
+                    ShutdownStatus::PendingResult(rpc) => ShutdownStatus::Result(rpc.await),
+                    _ => pending().await,
                 }
             });
 
@@ -2202,7 +2223,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 vm,
                 vnc,
                 change,
-                shutdown.into_stream(),
+                shutdown.into_stream().map(Event::ShutdownResult),
             )
                 .merge()
                 .next()
@@ -2347,19 +2368,19 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 state_change_task = None;
                 continue;
             }
-            Event::ShutdownResult(r) => {
+            Event::ShutdownResult(ShutdownStatus::Result(r)) => {
                 match r {
                     Ok(r) => match r {
-                        hyperv_ic_resources::shutdown::ShutdownResult::Ok => {
+                        shutdown::ShutdownResult::Ok => {
                             tracing::info!("shutdown initiated");
                         }
-                        hyperv_ic_resources::shutdown::ShutdownResult::NotReady => {
+                        shutdown::ShutdownResult::NotReady => {
                             tracing::error!("shutdown ic not ready");
                         }
-                        hyperv_ic_resources::shutdown::ShutdownResult::AlreadyInProgress => {
+                        shutdown::ShutdownResult::AlreadyInProgress => {
                             tracing::error!("shutdown already in progress");
                         }
-                        hyperv_ic_resources::shutdown::ShutdownResult::Failed(hr) => {
+                        shutdown::ShutdownResult::Failed(hr) => {
                             tracing::error!("shutdown failed with error code {hr:#x}");
                         }
                     },
@@ -2370,7 +2391,11 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         );
                     }
                 }
-                pending_shutdown = None;
+                pending_shutdown = ShutdownStatus::Running;
+                continue;
+            }
+            Event::ShutdownResult(shutdown_status) => {
+                pending_shutdown = shutdown_status;
                 continue;
             }
         };
@@ -2473,21 +2498,23 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 hibernate,
                 force,
             } => {
-                if pending_shutdown.is_some() {
+                if !matches!(pending_shutdown, ShutdownStatus::Running) {
                     println!("shutdown already in progress");
                 } else if let Some(ic) = &resources.shutdown_ic {
-                    let params = hyperv_ic_resources::shutdown::ShutdownParams {
+                    let params = shutdown::ShutdownParams {
                         shutdown_type: if hibernate {
-                            hyperv_ic_resources::shutdown::ShutdownType::Hibernate
+                            shutdown::ShutdownType::Hibernate
                         } else if reboot {
-                            hyperv_ic_resources::shutdown::ShutdownType::Reboot
+                            shutdown::ShutdownType::Reboot
                         } else {
-                            hyperv_ic_resources::shutdown::ShutdownType::PowerOff
+                            shutdown::ShutdownType::PowerOff
                         },
                         force,
                     };
-                    pending_shutdown =
-                        Some(ic.call(hyperv_ic_resources::shutdown::ShutdownRpc::Shutdown, params));
+                    pending_shutdown = ShutdownStatus::PendingSend {
+                        rpc: ic.call(shutdown::ShutdownRpc::WaitReady, ()),
+                        params,
+                    };
                 } else {
                     println!("no shutdown ic configured");
                 }

@@ -24,18 +24,25 @@ impl ResourceId<VmbusDeviceHandleKind> for ShutdownIcHandle {
 pub enum ShutdownRpc {
     /// Wait for the shutdown IC to be ready.
     ///
+    /// Returns a sender to notify the guest of a shutdown request.
     /// Returns a receiver that closes when the IC is no longer ready.
     ///
     /// FUTURE: this should instead be a `Sender` that is used to send the
     /// shutdown request. Do this once `Sender` has a mechanism to wait on the
     /// receiver to be closed.
-    WaitReady(Rpc<(), mesh::OneshotReceiver<()>>),
-    /// Send a shutdown request to the guest.
-    Shutdown(Rpc<ShutdownParams, ShutdownResult>),
+    WaitReady(
+        Rpc<
+            (),
+            (
+                mesh_channel::MpscSender<Rpc<ShutdownParams, ShutdownResult>>,
+                mesh::OneshotReceiver<()>,
+            ),
+        >,
+    ),
 }
 
 /// Guest shutdown parameters.
-#[derive(Debug, MeshPayload)]
+#[derive(Clone, Debug, MeshPayload)]
 pub struct ShutdownParams {
     /// The type of power state change.
     pub shutdown_type: ShutdownType,
@@ -44,7 +51,7 @@ pub struct ShutdownParams {
 }
 
 /// The shutdown type.
-#[derive(Debug, MeshPayload)]
+#[derive(Copy, Clone, Debug, MeshPayload)]
 pub enum ShutdownType {
     /// Power off the VM.
     PowerOff,
