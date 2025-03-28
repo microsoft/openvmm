@@ -17,12 +17,26 @@ use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
 use run::CommonState;
 use std::path::PathBuf;
+use tracing::level_filters::LevelFilter;
 use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .fmt_fields(tracing_helpers::formatter::FieldFormatter)
-        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .pretty()
+                .map_event_format(|e| e.with_source_location(false))
+                .fmt_fields(tracing_helpers::formatter::FieldFormatter)
+                .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE),
+        )
+        .with(
+            tracing_subscriber::EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .with_env_var("TMK_LOG")
+                .from_env_lossy(),
+        )
         .init();
 
     DefaultPool::run_with(do_main)

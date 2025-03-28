@@ -165,10 +165,6 @@ pub enum Error {
     FailedToSetL2Ctls(TdCallResult),
     #[error("debugging is configured but the binary does not have the gdb feature")]
     InvalidDebugConfiguration,
-    #[error("missing shared memory for an isolated partition")]
-    MissingSharedMemory,
-    #[error("missing private memory for an isolated partition")]
-    MissingPrivateMemory,
     #[error("failed to allocate TLB flush page")]
     AllocateTlbFlushPage(#[source] anyhow::Error),
 }
@@ -218,16 +214,6 @@ struct UhPartitionInner {
     #[inspect(skip)]
     vmtime: VmTimeSource,
     isolation: IsolationType,
-    hide_isolation: bool,
-    /// The synic state used for untrusted SINTs, that is, the SINTs for which
-    /// the guest thinks it is interacting directly with the untrusted
-    /// hypervisor via an architecture-specific interface.
-    ///
-    /// This is only set for TDX VMs. For SNP VMs, this is implemented by the
-    /// hypervisor. For non-isolated VMs, this isn't a concept.
-    untrusted_synic: Option<GlobalSynic>,
-    shared_dma_client: Option<Arc<dyn DmaClient>>,
-    private_dma_client: Option<Arc<dyn DmaClient>>,
     #[inspect(with = "inspect::AtomicMut")]
     no_sidecar_hotplug: AtomicBool,
     use_mmio_hypercalls: bool,
@@ -252,17 +238,27 @@ enum BackingShared {
 impl BackingShared {
     fn new(
         isolation: IsolationType,
+        partition_params: &UhPartitionNewParams<'_>,
         backing_shared_params: BackingSharedParams,
     ) -> Result<BackingShared, Error> {
         Ok(match isolation {
             IsolationType::None | IsolationType::Vbs => {
                 assert!(backing_shared_params.cvm_state.is_none());
-                BackingShared::Hypervisor(HypervisorBackedShared::new(backing_shared_params)?)
+                BackingShared::Hypervisor(HypervisorBackedShared::new(
+                    partition_params,
+                    backing_shared_params,
+                )?)
             }
             #[cfg(guest_arch = "x86_64")]
-            IsolationType::Snp => BackingShared::Snp(SnpBackedShared::new(backing_shared_params)?),
+            IsolationType::Snp => BackingShared::Snp(SnpBackedShared::new(
+                partition_params,
+                backing_shared_params,
+            )?),
             #[cfg(guest_arch = "x86_64")]
-            IsolationType::Tdx => BackingShared::Tdx(TdxBackedShared::new(backing_shared_params)?),
+            IsolationType::Tdx => BackingShared::Tdx(TdxBackedShared::new(
+                partition_params,
+                backing_shared_params,
+            )?),
             #[cfg(not(guest_arch = "x86_64"))]
             _ => unreachable!(),
         })
@@ -288,6 +284,16 @@ impl BackingShared {
             | BackingShared::Tdx(TdxBackedShared { cvm, .. }) => {
                 matches!(*cvm.guest_vsm.read(), GuestVsmState::NotPlatformSupported)
             }
+        }
+    }
+
+    fn untrusted_synic(&self) -> Option<&GlobalSynic> {
+        match self {
+            BackingShared::Hypervisor(_) => None,
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Snp(_) => None,
+            #[cfg(guest_arch = "x86_64")]
+            BackingShared::Tdx(s) => s.untrusted_synic.as_ref(),
         }
     }
 }
@@ -360,10 +366,8 @@ impl UhCvmVpState {
         vp_info: &TargetVpInfo,
         overlay_pages_required: usize,
     ) -> Result<Self, Error> {
-        let direct_overlay_handle = inner
+        let direct_overlay_handle = cvm_partition
             .shared_dma_client
-            .as_ref()
-            .ok_or(Error::MissingSharedMemory)?
             .allocate_dma_buffer(overlay_pages_required * HV_PAGE_SIZE as usize)
             .map_err(Error::AllocateSharedVisOverlay)?;
 
@@ -421,6 +425,11 @@ struct UhCvmPartitionState {
     hv: GlobalHv,
     /// Guest VSM state.
     guest_vsm: RwLock<GuestVsmState<CvmVtl1State>>,
+    /// Dma client for shared visibility pages.
+    shared_dma_client: Arc<dyn DmaClient>,
+    /// Dma client for private visibility pages.
+    private_dma_client: Arc<dyn DmaClient>,
+    hide_isolation: bool,
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -451,6 +460,9 @@ struct UhCvmVpInner {
     vtl1_enable_called: Mutex<bool>,
     /// Whether the VP has been started via the StartVp hypercall.
     started: AtomicBool,
+    /// Start context for StartVp and EnableVpVtl calls.
+    #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
+    hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<VpStartEnableVtl>>>, 2>,
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -628,8 +640,6 @@ struct UhVpInner {
     /// The Linux kernel's CPU index for this VP. This should be used instead of VpIndex
     /// when interacting with non-MSHV kernel interfaces.
     cpu_index: u32,
-    #[inspect(with = "|arr| inspect::iter_by_index(arr.iter().map(|v| v.lock().is_some()))")]
-    hv_start_enable_vtl_vp: VtlArray<Mutex<Option<Box<VpStartEnableVtl>>>, 2>,
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
 }
 
@@ -1054,7 +1064,7 @@ impl vmcore::synic::GuestEventPort for UhEventPort {
                             flag,
                             "forwarding event to untrusted synic"
                         );
-                        if let Some(synic) = &partition.untrusted_synic {
+                        if let Some(synic) = partition.backing_shared.untrusted_synic() {
                             synic
                                 .signal_event(
                                     &partition.gm[vtl],
@@ -1267,10 +1277,6 @@ pub struct UhLateParams<'a> {
     pub crash_notification_send: mesh::Sender<VtlCrash>,
     /// The VM time source.
     pub vmtime: &'a VmTimeSource,
-    /// Dma client for shared visibility pages.
-    pub shared_dma_client: Option<Arc<dyn DmaClient>>,
-    /// Allocator for private visibility pages.
-    pub private_dma_client: Option<Arc<dyn DmaClient>>,
     /// Parameters for CVMs only.
     pub cvm_params: Option<CvmLateParams>,
 }
@@ -1281,6 +1287,10 @@ pub struct CvmLateParams {
     pub shared_gm: GuestMemory,
     /// An object to call to change host visibility on guest memory.
     pub isolated_memory_protector: Arc<dyn ProtectIsolatedMemory>,
+    /// Dma client for shared visibility pages.
+    pub shared_dma_client: Arc<dyn DmaClient>,
+    /// Allocator for private visibility pages.
+    pub private_dma_client: Arc<dyn DmaClient>,
 }
 
 /// Trait for CVM-related protections on guest memory.
@@ -1550,7 +1560,10 @@ impl<'a> UhProtoPartition<'a> {
         // Do per-VP HCL initialization.
         hcl.add_vps(
             params.topology.vp_count(),
-            late_params.private_dma_client.as_ref(),
+            late_params
+                .cvm_params
+                .as_ref()
+                .map(|x| &x.private_dma_client),
         )
         .map_err(Error::Hcl)?;
 
@@ -1623,35 +1636,21 @@ impl<'a> UhProtoPartition<'a> {
             params.hide_isolation,
         );
 
-        let untrusted_synic = if params.handle_synic {
-            if matches!(isolation, IsolationType::Tdx) {
-                // Create a second synic to fully manage the untrusted SINTs
-                // here. At time of writing, the hypervisor does not support
-                // sharing the untrusted SINTs with the TDX L1. Even if it did,
-                // performance would be poor for cases where the L1 implements
-                // high-performance devices.
-                if !params.hide_isolation {
-                    Some(GlobalSynic::new(params.topology.vp_count()))
-                } else {
-                    None
-                }
-            } else {
-                // The hypervisor will manage the untrusted SINTs (or the whole
-                // synic for non-hardware-isolated VMs), but some event ports
-                // and message ports are implemented here. Register an intercept
-                // to handle HvSignalEvent and HvPostMessage hypercalls when the
-                // hypervisor doesn't recognize the connection ID.
-                hcl.register_intercept(
-                    HvInterceptType::HvInterceptTypeUnknownSynicConnection,
-                    HV_INTERCEPT_ACCESS_MASK_EXECUTE,
-                    HvInterceptParameters::new_zeroed(),
-                )
-                .expect("registering synic intercept cannot fail");
-                None
-            }
-        } else {
-            None
-        };
+        if params.handle_synic && !matches!(isolation, IsolationType::Tdx) {
+            // The hypervisor will manage the untrusted SINTs (or the whole
+            // synic for non-hardware-isolated VMs), but some event ports
+            // and message ports are implemented here. Register an intercept
+            // to handle HvSignalEvent and HvPostMessage hypercalls when the
+            // hypervisor doesn't recognize the connection ID.
+            //
+            // TDX manages this locally instead of through the hypervisor.
+            hcl.register_intercept(
+                HvInterceptType::HvInterceptTypeUnknownSynicConnection,
+                HV_INTERCEPT_ACCESS_MASK_EXECUTE,
+                HvInterceptParameters::new_zeroed(),
+            )
+            .expect("registering synic intercept cannot fail");
+        }
 
         #[cfg(guest_arch = "x86_64")]
         let cvm_state = if is_hardware_isolated {
@@ -1686,17 +1685,13 @@ impl<'a> UhProtoPartition<'a> {
             lower_vtl_memory_layout: params.lower_vtl_memory_layout.clone(),
             vmtime: late_params.vmtime.clone(),
             isolation,
-            hide_isolation: params.hide_isolation,
-            untrusted_synic,
-            shared_dma_client: late_params.shared_dma_client,
-            private_dma_client: late_params.private_dma_client,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
             backing_shared: BackingShared::new(
                 isolation,
+                &params,
                 BackingSharedParams {
                     cvm_state,
-                    vp_count: params.topology.vp_count(),
                     guest_vsm_available,
                 },
             )?,
@@ -1859,6 +1854,7 @@ impl UhProtoPartition<'_> {
                 tlb_lock_info: VtlArray::from_fn(|_| TlbLockInfo::new(vp_count)),
                 vtl1_enable_called: Mutex::new(false),
                 started: AtomicBool::new(vp_index == 0),
+                hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
             })
             .collect();
         let tlb_locked_vps =
@@ -1902,6 +1898,9 @@ impl UhProtoPartition<'_> {
             lapic,
             hv,
             guest_vsm: RwLock::new(GuestVsmState::from_availability(guest_vsm_available)),
+            shared_dma_client: late_params.shared_dma_client,
+            private_dma_client: late_params.private_dma_client,
+            hide_isolation: params.hide_isolation,
         })
     }
 }

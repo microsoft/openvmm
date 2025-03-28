@@ -3,12 +3,7 @@
 
 //! Structures and definitions used between the underhill kernel and HvLite.
 
-#![allow(
-    non_upper_case_globals,
-    clippy::upper_case_acronyms,
-    non_camel_case_types,
-    missing_docs
-)]
+#![expect(non_camel_case_types, missing_docs)]
 
 use bitfield_struct::bitfield;
 use hvdef::HV_MESSAGE_SIZE;

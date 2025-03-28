@@ -11,9 +11,10 @@ anyhow.workspace = true
 chipset_device.workspace = true
 guestmem.workspace = true
 inspect.workspace = true
+memory_range.workspace = true
+page_pool_alloc.workspace = true
 parking_lot.workspace = true
 pci_core.workspace = true
-safeatomic.workspace = true
 tracing.workspace = true
 user_driver.workspace = true
 

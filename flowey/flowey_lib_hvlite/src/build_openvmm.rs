@@ -120,7 +120,7 @@ impl FlowNode for Node {
                 output: v,
             });
 
-            ctx.emit_rust_step("report built openvmm", |ctx| {
+            ctx.emit_minor_rust_step("report built openvmm", |ctx| {
                 let openvmm_bin = openvmm_bin.claim(ctx);
                 let output = output.claim(ctx);
                 move |rt| {
@@ -138,8 +138,6 @@ impl FlowNode for Node {
                     };
 
                     rt.write(openvmm_bin, &output);
-
-                    Ok(())
                 }
             });
         }

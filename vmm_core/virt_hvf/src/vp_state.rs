@@ -117,7 +117,7 @@ impl AccessVpState for HvfVpStateAccess<'_, '_> {
     }
 
     fn commit(&mut self) -> Result<(), Self::Error> {
-        todo!()
+        Ok(())
     }
 
     fn registers(&mut self) -> Result<virt::aarch64::vp::Registers, Self::Error> {

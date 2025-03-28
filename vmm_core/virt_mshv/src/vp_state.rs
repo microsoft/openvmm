@@ -83,7 +83,6 @@ fn hvdef_to_mshv_mut(regs: &mut [HvRegisterAssoc]) -> &mut [hv_register_assoc] {
     unsafe { std::mem::transmute(regs) }
 }
 
-#[allow(unused_variables)]
 impl AccessVpState for &'_ mut MshvProcessor<'_> {
     type Error = Error;
 
@@ -115,7 +114,7 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         todo!()
     }
 
-    fn set_xsave(&mut self, value: &vp::Xsave) -> Result<(), Self::Error> {
+    fn set_xsave(&mut self, _value: &vp::Xsave) -> Result<(), Self::Error> {
         todo!()
     }
 
@@ -123,7 +122,7 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         todo!()
     }
 
-    fn set_apic(&mut self, value: &vp::Apic) -> Result<(), Self::Error> {
+    fn set_apic(&mut self, _value: &vp::Apic) -> Result<(), Self::Error> {
         todo!()
     }
 
@@ -219,7 +218,7 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         todo!()
     }
 
-    fn set_synic_timers(&mut self, value: &vp::SynicTimers) -> Result<(), Self::Error> {
+    fn set_synic_timers(&mut self, _value: &vp::SynicTimers) -> Result<(), Self::Error> {
         todo!()
     }
 
@@ -229,7 +228,7 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
 
     fn set_synic_message_queues(
         &mut self,
-        value: &vp::SynicMessageQueues,
+        _value: &vp::SynicMessageQueues,
     ) -> Result<(), Self::Error> {
         todo!()
     }
@@ -238,7 +237,7 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
         todo!()
     }
 
-    fn set_synic_message_page(&mut self, value: &vp::SynicMessagePage) -> Result<(), Self::Error> {
+    fn set_synic_message_page(&mut self, _value: &vp::SynicMessagePage) -> Result<(), Self::Error> {
         todo!()
     }
 
@@ -248,7 +247,7 @@ impl AccessVpState for &'_ mut MshvProcessor<'_> {
 
     fn set_synic_event_flags_page(
         &mut self,
-        value: &vp::SynicEventFlagsPage,
+        _value: &vp::SynicEventFlagsPage,
     ) -> Result<(), Self::Error> {
         todo!()
     }

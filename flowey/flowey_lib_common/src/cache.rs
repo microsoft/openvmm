@@ -526,7 +526,7 @@ impl FlowNode for Node {
                     step.finish(ctx);
 
                     if let Some(hitvar_str_reader) = hitvar_str_reader {
-                        ctx.emit_rust_step("map Github cache-hit to flowey", |ctx| {
+                        ctx.emit_minor_rust_step("map Github cache-hit to flowey", |ctx| {
                             let CacheResult::HitVar(hitvar) = hitvar else {
                                 unreachable!()
                             };
@@ -544,7 +544,6 @@ impl FlowNode for Node {
                                 };
 
                                 rt.write(hitvar, &var);
-                                Ok(())
                             }
                         });
                     }

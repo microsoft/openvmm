@@ -513,7 +513,7 @@ impl NodeDefinition {
         let context = hvdef::hypercall::InitialVpContextX64 {
             rip: ap_init as usize as u64,
             rsp: addr_space::stack().end() - 8, // start unaligned to match calling convention
-            rflags: x86defs::RFlags::default().into(),
+            rflags: x86defs::RFlags::at_reset().into(),
             cs,
             ds,
             es: ds,

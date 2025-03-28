@@ -55,7 +55,6 @@ use pal_async::driver::Driver;
 use pal_async::driver::PollImpl;
 use pal_async::timer::PollTimer;
 use pal_uring::IdleControl;
-use parking_lot::Mutex;
 use private::BackingPrivate;
 use std::convert::Infallible;
 use std::future::poll_fn;
@@ -267,8 +266,6 @@ impl<T: BackingPrivate> Backing for T {}
 
 pub(crate) struct BackingSharedParams {
     pub cvm_state: Option<crate::UhCvmPartitionState>,
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    pub vp_count: u32,
     pub guest_vsm_available: bool,
 }
 
@@ -354,7 +351,6 @@ impl UhVpInner {
             waker: Default::default(),
             cpu_index,
             vp_info,
-            hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
             sidecar_exit_reason: Default::default(),
         }
     }
@@ -423,6 +419,8 @@ pub enum UhRunVpError {
     InvalidVmcb,
     #[error("unknown exit {0:#x?}")]
     UnknownVmxExit(x86defs::vmx::VmxExit),
+    #[error("bad guest state on VP.ENTER")]
+    VmxBadGuestState,
     #[error("failed to access VP assist page")]
     VpAssistPage(#[source] guestmem::GuestMemoryError),
     #[error("failed to read hypercall parameters")]
@@ -751,7 +749,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 }
             }
         }
-        self.runner.flush_deferred_actions();
+        self.runner.flush_deferred_state();
         Ok(())
     }
 

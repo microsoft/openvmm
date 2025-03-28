@@ -441,6 +441,9 @@ impl IoInitiator {
         (result, io_mem)
     }
 
+    /// # Safety
+    ///
+    /// The caller must guarantee that the given io_mem is compatible with the given sqe.
     unsafe fn submit_io(&self, sqe: squeue::Entry, io_mem: IoMemory, waker: Waker) -> usize {
         // Only submit if the worker is not currently running on this thread--if it is, the
         // IO will be submitted soon.
@@ -531,7 +534,9 @@ impl<T: 'static + Send + Sync + Unpin, Init: Borrow<IoInitiator> + Unpin> Io<T, 
         }
     }
 
-    /// # Safety: caller must ensure that `f` produces a safe sqe entry.
+    /// # Safety
+    ///
+    /// Caller must ensure that `f` produces a safe sqe entry.
     unsafe fn cancel_inner(&self, f: impl FnOnce(u64) -> squeue::Entry) {
         let sqe = f(self.user_data().unwrap());
         // SAFETY: guaranteed by caller

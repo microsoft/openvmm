@@ -6,25 +6,25 @@
 //! Everything in this crate is meant for TESTING PURPOSES ONLY and it should only ever be added as a dev-dependency (Few expceptions like using this for fuzzing)
 #![deny(missing_docs)]
 
-mod dma_buffer;
-pub mod guest_memory_access_wrapper;
+mod guest_memory_access_wrapper;
 
-use crate::dma_buffer::DmaBuffer;
 use crate::guest_memory_access_wrapper::GuestMemoryAccessWrapper;
 
 use anyhow::Context;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
-use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
+use memory_range::MemoryRange;
+use page_pool_alloc::PagePool;
+use page_pool_alloc::PagePoolAllocator;
+use page_pool_alloc::TestMapper;
 use parking_lot::Mutex;
 use pci_core::chipset_device_ext::PciChipsetDeviceExt;
 use pci_core::msi::MsiControl;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
-use safeatomic::AtomicSliceOps;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 use user_driver::DeviceBacking;
@@ -32,8 +32,8 @@ use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::interrupt::DeviceInterruptSource;
-use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
+use user_driver::memory::PAGE_SIZE64;
 
 /// A wrapper around any user_driver device T. It provides device emulation by providing access to the memory shared with the device and thus
 /// allowing the user to control device behaviour to a certain extent. Can be used with devices such as the `NvmeController`
@@ -138,110 +138,6 @@ impl Default for Page {
     }
 }
 
-/// Some synthetic (test) memory that can be shared with an [`EmulatedDevice`]. It provides both shared and dma-able memory to the device
-/// and uses [`GuestMemory`] backed by [`AlignedHeapMemory`].
-#[derive(Clone)]
-pub struct DeviceSharedMemory {
-    mem: GuestMemory,
-    dma: GuestMemory,
-    len: usize,
-    state: Arc<Mutex<Vec<u64>>>,
-}
-
-impl DeviceSharedMemory {
-    /// Creates a new [`DeviceSharedMemory`] object. First "size" pages are alloacted as regular
-    /// memory and the "extra" is strictly for dma testing. Both inputs are in bytes and required
-    /// to be page aligned.
-    pub fn new(size: usize, extra: usize) -> Self {
-        assert_eq!(size % PAGE_SIZE, 0);
-        assert_eq!(extra % PAGE_SIZE, 0);
-        let mem_backing =
-            GuestMemoryAccessWrapper::new(Arc::new(AlignedHeapMemory::new(size + extra)), false);
-        let dma_backing = GuestMemoryAccessWrapper::new(mem_backing.mem().clone(), true);
-        let mem = GuestMemory::new("emulated_shared_mem", mem_backing);
-        let dma = GuestMemory::new("emulated_shared_dma", dma_backing);
-        let len = size / PAGE_SIZE;
-        Self {
-            mem,
-            dma,
-            len,
-            state: Arc::new(Mutex::new(vec![0; (len + 63) / 64])),
-        }
-    }
-
-    /// Gets regular [`GuestMemory`]
-    pub fn guest_memory(&self) -> &GuestMemory {
-        &self.mem
-    }
-
-    /// Gets dma-able [`GuestMemory`]
-    pub fn guest_memory_for_driver_dma(&self) -> &GuestMemory {
-        &self.dma
-    }
-
-    /// Allocates `len` number of contiguous bytes in `mem`. Input must be page aligned
-    pub fn alloc(&self, len: usize) -> Option<DmaBuffer> {
-        assert!(len % PAGE_SIZE == 0);
-        let count = len / PAGE_SIZE;
-
-        // Find a contiguous free range by scanning the state bitmap.
-        let start_page = {
-            let mut state = self.state.lock();
-            let mut i = 0;
-            let mut contig = 0;
-            while contig < count && i < self.len {
-                if state[i / 64] & 1 << (i % 64) != 0 {
-                    contig = 0;
-                } else {
-                    contig += 1;
-                }
-                i += 1;
-            }
-            if contig < count {
-                return None;
-            }
-            let start = i - contig;
-            for j in start..i {
-                state[j / 64] |= 1 << (j % 64);
-            }
-            start
-        };
-
-        let pages = (start_page..start_page + count).map(|p| p as u64).collect();
-        Some(DmaBuffer::new(self.mem.clone(), pages, self.state.clone()))
-    }
-}
-
-/// Implements a [`DmaClient`] backed by [`DeviceSharedMemory`]
-#[derive(Inspect)]
-pub struct EmulatedDmaAllocator {
-    #[inspect(skip)]
-    shared_mem: DeviceSharedMemory,
-}
-
-impl EmulatedDmaAllocator {
-    /// Returns a new EmulatedDmaAllocator struct wrapping the provided [`DeviceSharedMemory`]
-    pub fn new(shared_mem: DeviceSharedMemory) -> Self {
-        Self { shared_mem }
-    }
-}
-
-impl DmaClient for EmulatedDmaAllocator {
-    fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<MemoryBlock> {
-        let memory = MemoryBlock::new(self.shared_mem.alloc(len).context("out of memory")?);
-        memory.as_slice().atomic_fill(0);
-        Ok(memory)
-    }
-
-    fn attach_dma_buffer(&self, _len: usize, _base_pfn: u64) -> anyhow::Result<MemoryBlock> {
-        anyhow::bail!("restore is not supported for emulated DMA")
-    }
-
-    fn get_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock> {
-        anyhow::bail!("get is not supported for emulated DMA")
-    }
-}
-
 impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + Send + DmaClient> DeviceBacking
     for EmulatedDevice<T, U>
 {
@@ -315,5 +211,57 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for Mapping<T> {
             .lock()
             .mmio_write(self.addr + offset as u64, &data.to_ne_bytes())
             .unwrap();
+    }
+}
+
+/// A wrapper around the [`TestMapper`] that generates both [`GuestMemory`] and [`PagePoolAllocator`] backed
+/// by the same underlying memory. Meant to provide shared memory for testing devices.
+pub struct DeviceTestMemory {
+    guest_mem: GuestMemory,
+    payload_mem: GuestMemory,
+    _pool: PagePool,
+    allocator: Arc<PagePoolAllocator>,
+}
+
+impl DeviceTestMemory {
+    /// Creates test memory that leverages the [`TestMapper`] as the backing. It creates 3 accessors for the underlying memory:
+    /// guest_memory [`GuestMemory`] - Has access to the entire range.
+    /// payload_memory [`GuestMemory`] - Has access to the second half of the range.
+    /// dma_client [`PagePoolAllocator`] - Has access to the first half of the range.
+    /// If the `allow_dma` switch is enabled, both guest_memory and payload_memory will report a base_iova of 0.
+    pub fn new(num_pages: u64, allow_dma: bool, pool_name: &str) -> Self {
+        let test_mapper = TestMapper::new(num_pages).unwrap();
+        let sparse_mmap = test_mapper.sparse_mapping();
+        let guest_mem = GuestMemoryAccessWrapper::create_test_guest_memory(sparse_mmap, allow_dma);
+        let pool = PagePool::new(
+            &[MemoryRange::from_4k_gpn_range(0..num_pages / 2)],
+            test_mapper,
+        )
+        .unwrap();
+
+        // Save page pool so that it is not dropped.
+        let allocator = pool.allocator(pool_name.into()).unwrap();
+        let range_half = num_pages / 2 * PAGE_SIZE64;
+        Self {
+            guest_mem: guest_mem.clone(),
+            payload_mem: guest_mem.subrange(range_half, range_half, false).unwrap(),
+            _pool: pool,
+            allocator: Arc::new(allocator),
+        }
+    }
+
+    /// Returns [`GuestMemory`] accessor to the underlying memory. Reports base_iova as 0 if `allow_dma` switch is enabled.
+    pub fn guest_memory(&self) -> GuestMemory {
+        self.guest_mem.clone()
+    }
+
+    /// Returns [`GuestMemory`] accessor to the second half of underlying memory. Reports base_iova as 0 if `allow_dma` switch is enabled.
+    pub fn payload_mem(&self) -> GuestMemory {
+        self.payload_mem.clone()
+    }
+
+    /// Returns [`PagePoolAllocator`] with access to the first half of the underlying memory.
+    pub fn dma_client(&self) -> Arc<PagePoolAllocator> {
+        self.allocator.clone()
     }
 }

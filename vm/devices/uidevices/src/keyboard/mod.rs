@@ -294,7 +294,7 @@ impl<T: RingMem + Unpin> KeyboardChannel<T> {
                                 _ => return Err(Error::UnexpectedPacketOrder),
                             }
                         }
-                        #[allow(unreachable_code)]
+                        #[expect(unreachable_code)]
                         Ok(())
                     });
 

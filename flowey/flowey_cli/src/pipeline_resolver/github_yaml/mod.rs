@@ -3,6 +3,7 @@
 
 //! Code for emitting a pipeline as a single self-contained GitHub Actions yaml file
 
+use super::common_yaml::BashCommands;
 use super::common_yaml::check_generated_yaml_and_json;
 use super::common_yaml::write_generated_yaml_and_json;
 use super::generic::ResolvedJobArtifact;
@@ -234,6 +235,7 @@ pub fn github_yaml(
                 true,
                 None,
                 is_raw_string,
+                None,
                 None,
             )
         };
@@ -736,6 +738,8 @@ fn resolve_flow_as_github_yaml_steps(
         anyhow::bail!("detected unreachable nodes")
     }
 
+    let mut bash_commands = BashCommands::new_github();
+
     let output_order = petgraph::algo::toposort(&output_graph, None)
         .expect("runtime variables cannot introduce a DAG cycle");
 
@@ -749,27 +753,23 @@ fn resolve_flow_as_github_yaml_steps(
             Step::Rust {
                 idx,
                 label,
+                can_merge,
                 code: _,
             } => {
-                let cmd = crate::cli::exec_snippet::construct_exec_snippet_cli(
-                    flowey_bin,
-                    node_modpath,
-                    idx,
-                    job_idx,
-                );
-
-                let mut map = serde_yaml::Mapping::new();
-                map.insert("name".into(), serde_yaml::Value::String(label));
-                map.insert("run".into(), serde_yaml::Value::String(cmd));
-                map.insert("shell".into(), "bash".into());
-                output_steps.push(map.into());
+                output_steps.extend(bash_commands.push(
+                    Some(label),
+                    can_merge,
+                    crate::cli::exec_snippet::construct_exec_snippet_cli(
+                        flowey_bin,
+                        node_modpath,
+                        idx,
+                        job_idx,
+                    ),
+                ));
             }
-            Step::AdoYaml {
-                ado_to_rust: _,
-                rust_to_ado: _,
-                label,
-                ..
-            } => anyhow::bail!("ADO YAML not supported in GitHub. In step '{}'", label),
+            Step::AdoYaml { label, .. } => {
+                anyhow::bail!("ADO YAML not supported in GitHub. In step '{}'", label)
+            }
             Step::GitHubYaml {
                 gh_to_rust,
                 rust_to_gh,
@@ -780,19 +780,24 @@ fn resolve_flow_as_github_yaml_steps(
                 condvar,
                 permissions,
             } => {
-                let var_db_cmd =
-                    |var: &str, is_secret, update_from_file, is_raw_string, write_to_gh_env| {
-                        crate::cli::var_db::construct_var_db_cli(
-                            flowey_bin,
-                            job_idx,
-                            var,
-                            is_secret,
-                            false,
-                            update_from_file,
-                            is_raw_string,
-                            write_to_gh_env,
-                        )
-                    };
+                let var_db_cmd = |var: &str,
+                                  is_secret,
+                                  update_from_stdin,
+                                  is_raw_string,
+                                  write_to_gh_env: Option<String>,
+                                  condvar: Option<String>| {
+                    crate::cli::var_db::construct_var_db_cli(
+                        flowey_bin,
+                        job_idx,
+                        var,
+                        is_secret,
+                        update_from_stdin,
+                        None,
+                        is_raw_string,
+                        write_to_gh_env.as_deref(),
+                        condvar.as_deref(),
+                    )
+                };
 
                 for permission in permissions {
                     if let Some(permission_map) = gh_permissions.get(&node_handle) {
@@ -815,62 +820,41 @@ fn resolve_flow_as_github_yaml_steps(
                     }
                 }
 
-                if let Some(condvar) = &condvar {
-                    let mut cmd = String::new();
-
-                    // guaranteed to be a bare bool `true`/`false`, hence
-                    // is_raw_string = false
-                    let set_condvar = var_db_cmd(
-                        condvar,
-                        false,
-                        None,
-                        false,
-                        Some("FLOWEY_CONDITION".to_string()),
-                    );
-                    writeln!(cmd, r#"{set_condvar}"#)?;
-
-                    let mut map = serde_yaml::Mapping::new();
-                    map.insert("run".into(), serde_yaml::Value::String(cmd));
-                    map.insert("shell".into(), "bash".into());
-                    map.insert(
-                        "name".into(),
-                        serde_yaml::Value::String("🌼❓ Write to 'FLOWEY_CONDITION'".into()),
-                    );
-                    output_steps.push(map.into());
-                }
-
                 for gh_var_state in rust_to_gh {
                     let mut cmd = String::new();
 
                     let set_gh_env_var = var_db_cmd(
                         &gh_var_state.backing_var,
                         gh_var_state.is_secret,
-                        None,
+                        false,
                         !gh_var_state.is_object,
-                        gh_var_state.raw_name.clone(),
+                        gh_var_state.raw_name,
+                        condvar.clone(),
                     );
                     writeln!(cmd, r#"{set_gh_env_var}"#)?;
 
-                    let mut map = serde_yaml::Mapping::new();
-                    map.insert("run".into(), serde_yaml::Value::String(cmd));
-                    map.insert("shell".into(), "bash".into());
-                    map.insert(
-                        "name".into(),
-                        serde_yaml::Value::String(format!(
-                            "🌼 Write to '{}'",
-                            gh_var_state
-                                .raw_name
-                                .expect("couldn't get raw_name for variable")
-                        )),
-                    );
-
-                    if condvar.is_some() {
-                        map.insert("if".into(), "${{ fromJSON(env.FLOWEY_CONDITION) }}".into());
-                    }
-                    output_steps.push(map.into());
+                    bash_commands.push_minor(cmd);
                 }
 
                 if !uses.is_empty() {
+                    if let Some(condvar) = &condvar {
+                        let mut cmd = String::new();
+
+                        // guaranteed to be a bare bool `true`/`false`, hence
+                        // is_raw_string = false
+                        let set_condvar = var_db_cmd(
+                            condvar,
+                            false,
+                            false,
+                            false,
+                            Some("FLOWEY_CONDITION".to_string()),
+                            None,
+                        );
+                        writeln!(cmd, r#"{set_condvar}"#)?;
+
+                        bash_commands.push_minor(cmd);
+                    }
+
                     let mut map = serde_yaml::Mapping::new();
                     map.insert("id".into(), serde_yaml::Value::String(step_id.clone()));
                     map.insert("uses".into(), serde_yaml::Value::String(uses));
@@ -887,44 +871,38 @@ fn resolve_flow_as_github_yaml_steps(
                     }
 
                     let step: serde_yaml::Value = map.into();
+                    output_steps.extend(bash_commands.flush());
                     output_steps.push(step);
                 }
 
                 for gh_var_state in gh_to_rust {
-                    let write_rust_var = var_db_cmd(
-                        &gh_var_state.backing_var,
-                        gh_var_state.is_secret,
-                        Some("{0}"),
-                        !gh_var_state.is_object,
-                        None,
-                    );
-
                     let raw_name = gh_var_state
                         .raw_name
                         .expect("couldn't get raw name for variable");
 
-                    let cmd = if gh_var_state.is_object {
+                    let value = if gh_var_state.is_object {
                         format!(r#"${{{{ toJSON({}) }}}}"#, raw_name)
                     } else {
                         format!(r#"${{{{ {} }}}}"#, raw_name)
                     };
 
-                    let mut map = serde_yaml::Mapping::new();
-                    map.insert("run".into(), serde_yaml::Value::String(cmd));
-                    map.insert("shell".into(), write_rust_var.into());
-                    map.insert(
-                        "name".into(),
-                        serde_yaml::Value::String(format!("🌼 Read from '{}'", raw_name)),
+                    let write_var = var_db_cmd(
+                        &gh_var_state.backing_var,
+                        gh_var_state.is_secret,
+                        true,
+                        !gh_var_state.is_object,
+                        None,
+                        condvar.clone(),
                     );
-                    if condvar.is_some() {
-                        map.insert("if".into(), "${{ fromJSON(env.FLOWEY_CONDITION) }}".into());
-                    }
 
-                    output_steps.push(map.into());
+                    let cmd = format!("{write_var} <<EOF\n{value}\nEOF",);
+                    bash_commands.push_minor(cmd);
                 }
             }
         }
     }
+
+    output_steps.extend(bash_commands.flush());
 
     let request_db = request_db
         .into_iter()

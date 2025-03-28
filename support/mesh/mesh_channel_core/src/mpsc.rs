@@ -494,10 +494,11 @@ impl ReceiverCore {
         }
     }
 
-    // Polls for a message.
-    //
-    // # Safety
-    // The queue must have element type `T`.
+    /// Polls for a message.
+    ///
+    /// # Safety
+    ///
+    /// The queue must have element type `T`.
     unsafe fn try_poll_recv<T>(
         &mut self,
         cx: Option<&mut Context<'_>>,

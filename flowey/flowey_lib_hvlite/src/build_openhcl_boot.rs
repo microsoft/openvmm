@@ -96,7 +96,7 @@ impl FlowNode for Node {
                 output: v,
             });
 
-            ctx.emit_rust_step("report built openhcl_boot", |ctx| {
+            ctx.emit_minor_rust_step("report built openhcl_boot", |ctx| {
                 let openhcl_boot = openhcl_boot.claim(ctx);
                 let output = output.claim(ctx);
                 move |rt| {
@@ -113,8 +113,6 @@ impl FlowNode for Node {
                     for var in openhcl_boot {
                         rt.write(var, &output);
                     }
-
-                    Ok(())
                 }
             });
         }

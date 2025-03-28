@@ -105,6 +105,17 @@ pub fn start_sidecar<'a>(
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
+    if !x86defs::cpuid::VersionAndFeaturesEcx::from(
+        safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx,
+    )
+    .x2_apic()
+    {
+        // Currently, sidecar needs x2apic to communicate with the kernel
+        log!("sidecar: x2apic not available; not using sidecar");
+        return None;
+    }
+
     // Split the CPUs by NUMA node, and then into chunks of no more than
     // MAX_SIDECAR_NODE_SIZE processors.
     let cpus_by_node = || {

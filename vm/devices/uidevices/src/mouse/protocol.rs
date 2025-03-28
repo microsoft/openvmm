@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 #![expect(dead_code)]
-#![allow(unused_macros)]
 
 use guid::Guid;
 use static_assertions::const_assert_eq;

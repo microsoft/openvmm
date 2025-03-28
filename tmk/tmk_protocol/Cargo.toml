@@ -7,6 +7,7 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
+zerocopy.workspace = true
 
 [lints]
 workspace = true

@@ -11,7 +11,6 @@ pub mod tdx;
 pub mod x64;
 
 use self::deferred::DeferredActionSlots;
-use self::deferred::DeferredActions;
 use self::ioctls::*;
 use crate::GuestVtl;
 use crate::ioctl::deferred::DeferredAction;
@@ -24,6 +23,9 @@ use crate::protocol::HCL_VMSA_PAGE_OFFSET;
 use crate::protocol::MSHV_APIC_PAGE_OFFSET;
 use crate::protocol::hcl_intr_offload_flags;
 use crate::protocol::hcl_run;
+use deferred::RegisteredDeferredActions;
+use deferred::push_deferred_action;
+use deferred::register_deferred_actions;
 use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
 use hvdef::HV_PAGE_SIZE;
@@ -62,7 +64,6 @@ use sidecar_client::NewSidecarClientError;
 use sidecar_client::SidecarClient;
 use sidecar_client::SidecarRun;
 use sidecar_client::SidecarVp;
-use std::cell::RefCell;
 use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::fs::File;
@@ -1571,11 +1572,17 @@ impl HclVp {
         let fd = &hcl.mshv_vtl.file;
         let run: MappedPage<hcl_run> =
             MappedPage::new(fd, vp as i64).map_err(|e| Error::MmapVp(e, None))?;
-        // SAFETY: `proxy_irr_blocked` is not accessed by any other VPs/kernel at this point (`HclVp` creation)
-        // so we know we have exclusive access.
-        let proxy_irr_blocked = unsafe { &mut (*run.as_ptr()).proxy_irr_blocked };
-        // Initializing to block all vectors by default.
-        proxy_irr_blocked.fill(0xFFFFFFFF);
+        // Block proxied interrupts on all vectors by default. The mask will be
+        // relaxed as the guest runs.
+        //
+        // This is only used on CVMs. Skip it otherwise, since run page accesses
+        // will fault on VPs that are still in the sidecar kernel.
+        if isolation_type.is_hardware_isolated() {
+            // SAFETY: `proxy_irr_blocked` is not accessed by any other VPs/kernel at this point (`HclVp` creation)
+            // so we know we have exclusive access.
+            let proxy_irr_blocked = unsafe { &mut (*run.as_ptr()).proxy_irr_blocked };
+            proxy_irr_blocked.fill(!0);
+        }
 
         let backing = match isolation_type {
             IsolationType::None | IsolationType::Vbs => BackingState::Mshv {
@@ -1616,10 +1623,11 @@ impl HclVp {
 }
 
 /// Object used to run and to access state for a specific VP.
-pub struct ProcessorRunner<'a, T> {
+pub struct ProcessorRunner<'a, T: Backing<'a>> {
     hcl: &'a Hcl,
     vp: &'a HclVp,
     sidecar: Option<SidecarVp<'a>>,
+    deferred_actions: Option<RegisteredDeferredActions<'a>>,
     run: &'a UnsafeCell<hcl_run>,
     intercept_message: &'a UnsafeCell<HvMessage>,
     state: T,
@@ -1661,42 +1669,40 @@ mod private {
         -> Result<Self, NoRunner>;
 
         fn try_set_reg(
-            runner: &mut ProcessorRunner<'_, Self>,
+            runner: &mut ProcessorRunner<'a, Self>,
             vtl: GuestVtl,
             name: HvRegisterName,
             value: HvRegisterValue,
         ) -> Result<bool, Error>;
 
-        fn must_flush_regs_on(runner: &ProcessorRunner<'_, Self>, name: HvRegisterName) -> bool;
+        fn must_flush_regs_on(runner: &ProcessorRunner<'a, Self>, name: HvRegisterName) -> bool;
 
         fn try_get_reg(
-            runner: &ProcessorRunner<'_, Self>,
+            runner: &ProcessorRunner<'a, Self>,
             vtl: GuestVtl,
             name: HvRegisterName,
         ) -> Result<Option<HvRegisterValue>, Error>;
+
+        fn flush_register_page(runner: &mut ProcessorRunner<'a, Self>);
     }
 }
 
-impl<T> Drop for ProcessorRunner<'_, T> {
+impl<'a, T: Backing<'a>> Drop for ProcessorRunner<'a, T> {
     fn drop(&mut self) {
-        self.flush_deferred_actions();
-        let actions = DEFERRED_ACTIONS.with(|actions| actions.take());
-        assert!(actions.is_none_or(|a| a.is_empty()));
+        self.flush_deferred_state();
+        drop(self.deferred_actions.take());
         let old_state = std::mem::replace(&mut *self.vp.state.lock(), VpState::NotRunning);
         assert!(matches!(old_state, VpState::Running(thread) if thread == Pthread::current()));
     }
 }
 
-impl<T> ProcessorRunner<'_, T> {
-    /// Flushes any pending deferred actions. Must be called if preparing the
-    /// partition for save/restore (servicing), since otherwise the deferred
-    /// actions will be lost.
-    pub fn flush_deferred_actions(&mut self) {
-        if self.sidecar.is_none() {
-            DEFERRED_ACTIONS.with(|actions| {
-                let mut actions = actions.borrow_mut();
-                actions.as_mut().unwrap().run_actions(self.hcl);
-            })
+impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
+    /// Flushes any deferred state. Must be called if preparing the partition
+    /// for save/restore (servicing).
+    pub fn flush_deferred_state(&mut self) {
+        T::flush_register_page(self);
+        if let Some(actions) = &mut self.deferred_actions {
+            actions.flush();
         }
     }
 }
@@ -1899,18 +1905,13 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     pub fn run(&mut self) -> Result<bool, Error> {
         assert!(self.sidecar.is_none());
         // Apply any deferred actions to the run page.
-        DEFERRED_ACTIONS.with(|actions| {
-            let mut actions = actions.borrow_mut();
-            let actions = actions.as_mut().unwrap();
-            if self.hcl.supports_vtl_ret_action {
-                // SAFETY: there are no concurrent accesses to the deferred action
-                // slots.
-                let mut slots = unsafe { DeferredActionSlots::new(self.run) };
-                actions.copy_to_slots(&mut slots, self.hcl);
-            } else {
-                actions.run_actions(self.hcl);
-            }
-        });
+        if let Some(actions) = &mut self.deferred_actions {
+            debug_assert!(self.hcl.supports_vtl_ret_action);
+            // SAFETY: there are no concurrent accesses to the deferred action
+            // slots.
+            let mut slots = unsafe { DeferredActionSlots::new(self.run) };
+            actions.move_to_slots(&mut slots);
+        };
 
         // N.B. cpu_context and exit_context are mutated by this call.
         //
@@ -2126,10 +2127,6 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     }
 }
 
-thread_local! {
-    static DEFERRED_ACTIONS: RefCell<Option<DeferredActions>> = const { RefCell::new(None) };
-}
-
 impl Hcl {
     /// Returns a new HCL instance.
     pub fn new(isolation: IsolationType, sidecar: Option<SidecarClient>) -> Result<Hcl, Error> {
@@ -2310,11 +2307,11 @@ impl Hcl {
             panic!("another runner already exists")
         };
 
-        if sidecar.is_none() {
-            DEFERRED_ACTIONS.with(|actions| {
-                assert!(actions.replace(Some(Default::default())).is_none());
-            });
-        }
+        let actions = if sidecar.is_none() && self.supports_vtl_ret_action {
+            Some(register_deferred_actions(self))
+        } else {
+            None
+        };
 
         // SAFETY: The run page is guaranteed to be mapped and valid.
         // While the exit message might not be filled in yet we're only computing its address.
@@ -2328,6 +2325,7 @@ impl Hcl {
         Ok(ProcessorRunner {
             hcl: self,
             vp,
+            deferred_actions: actions,
             run: vp.run.as_ref(),
             intercept_message,
             state,
@@ -2381,24 +2379,7 @@ impl Hcl {
     /// hypervisor is returning to a lower VTL.
     pub fn signal_event_direct(&self, vp: u32, sint: u8, flag: u16) {
         tracing::trace!(vp, sint, flag, "signaling event");
-
-        DEFERRED_ACTIONS.with(|actions| {
-            // Push a deferred action if we are running on a VP thread.
-            if let Some(actions) = actions.borrow_mut().as_mut() {
-                actions.push(self, DeferredAction::SignalEvent { vp, sint, flag });
-            } else {
-                // Signal the event directly.
-                if let Err(err) = self.hvcall_signal_event_direct(vp, sint, flag) {
-                    tracelimit::warn_ratelimited!(
-                        error = &err as &dyn std::error::Error,
-                        vp,
-                        sint,
-                        flag,
-                        "failed to signal event"
-                    );
-                }
-            }
-        })
+        push_deferred_action(self, DeferredAction::SignalEvent { vp, sint, flag });
     }
 
     fn hvcall_signal_event_direct(&self, vp: u32, sint: u8, flag: u16) -> Result<bool, Error> {

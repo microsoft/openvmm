@@ -14,6 +14,7 @@ mod emuplat;
 mod get_tracing;
 mod inspect_internal;
 mod inspect_proc;
+mod livedump;
 mod loader;
 mod nvme_manager;
 mod options;
@@ -351,7 +352,7 @@ async fn launch_workers(
 
     #[cfg(feature = "gdb")]
     let mut gdbstub_worker = None;
-    #[cfg_attr(not(feature = "gdb"), allow(unused_mut))]
+    #[cfg_attr(not(feature = "gdb"), expect(unused_mut))]
     let mut debugger_rpc = None;
     #[cfg(feature = "gdb")]
     if opt.gdbstub {

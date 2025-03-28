@@ -73,7 +73,7 @@ impl SimpleFlowNode for Node {
             output: v,
         });
 
-        ctx.emit_rust_step("report built vmgstool", |ctx| {
+        ctx.emit_minor_rust_step("report built vmgstool", |ctx| {
             let vmgstool = vmgstool.claim(ctx);
             let output = output.claim(ctx);
             move |rt| {
@@ -91,8 +91,6 @@ impl SimpleFlowNode for Node {
                 };
 
                 rt.write(vmgstool, &output);
-
-                Ok(())
             }
         });
 

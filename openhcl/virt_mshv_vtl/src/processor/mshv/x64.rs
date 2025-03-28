@@ -19,6 +19,7 @@ use crate::BackingShared;
 use crate::Error;
 use crate::GuestVsmState;
 use crate::GuestVtl;
+use crate::UhPartitionNewParams;
 use crate::processor::BackingSharedParams;
 use crate::processor::SidecarExitReason;
 use crate::processor::SidecarRemoveExit;
@@ -98,7 +99,10 @@ pub struct HypervisorBackedX86Shared {
 
 impl HypervisorBackedX86Shared {
     /// Creates a new partition-shared data structure for hypervisor backed VMs.
-    pub(crate) fn new(params: BackingSharedParams) -> Result<Self, Error> {
+    pub(crate) fn new(
+        _partition_params: &UhPartitionNewParams<'_>,
+        params: BackingSharedParams,
+    ) -> Result<Self, Error> {
         Ok(Self {
             guest_vsm: RwLock::new(GuestVsmState::from_availability(params.guest_vsm_available)),
         })
@@ -2004,7 +2008,6 @@ mod save_restore {
                         // Topology information
                         vp_info: _,
                         cpu_index: _,
-                        hv_start_enable_vtl_vp: _,
                     },
                 // Saved
                 crash_reg,

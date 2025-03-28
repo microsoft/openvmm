@@ -1053,7 +1053,7 @@ impl Processor for KvmProcessor<'_> {
             // the register state is up-to-date for save.
             let mut pending_exit = false;
             loop {
-                let exit = if self.inner.eval.load(Ordering::Relaxed) {
+                let exit = if self.inner.eval.load(Ordering::Relaxed) || stop.check().is_err() {
                     // Break out of the loop as soon as there is no pending exit.
                     if !pending_exit {
                         self.inner.eval.store(false, Ordering::Relaxed);

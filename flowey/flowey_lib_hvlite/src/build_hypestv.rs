@@ -50,7 +50,7 @@ impl SimpleFlowNode for Node {
             output: v,
         });
 
-        ctx.emit_rust_step("report built hypestv", |ctx| {
+        ctx.emit_minor_rust_step("report built hypestv", |ctx| {
             let hypestv = hypestv.claim(ctx);
             let output = output.claim(ctx);
             move |rt| {
@@ -62,8 +62,6 @@ impl SimpleFlowNode for Node {
                 };
 
                 rt.write(hypestv, &output);
-
-                Ok(())
             }
         });
 

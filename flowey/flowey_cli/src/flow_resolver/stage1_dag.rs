@@ -566,6 +566,7 @@ pub(crate) enum Step {
     Rust {
         idx: usize,
         label: String,
+        can_merge: bool,
         // FIXME: this absolutely cursed type is only here due to that Clone
         // bound, which is itself only required due to the really shoddy code in
         // the petgraph viz backend.
@@ -714,6 +715,7 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
     fn on_emit_rust_step(
         &mut self,
         label: &str,
+        can_merge: bool,
         code: Box<
             dyn for<'a> FnOnce(&'a mut RustRuntimeServices<'_>) -> anyhow::Result<()> + 'static,
         >,
@@ -722,6 +724,7 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
             step: Step::Rust {
                 idx: self.step_idx_tracker,
                 label: label.into(),
+                can_merge,
                 #[expect(clippy::arc_with_non_send_sync)]
                 code: Arc::new(Mutex::new(Some(code))),
             },

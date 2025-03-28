@@ -489,6 +489,9 @@ struct DynMessageVtable {
 
 impl DynMessageVtable {
     const fn stack<T, E: MessageEncode<T, Resource>>() -> &'static Self {
+        /// # Safety
+        ///
+        /// The caller must ensure that `ptr` points to a valid owned `T`.
         unsafe fn compute_message_size<T, E: MessageEncode<T, Resource>>(
             ptr: *mut (),
             sizer: MessageSizer<'_>,
@@ -498,6 +501,9 @@ impl DynMessageVtable {
             E::compute_message_size(v, sizer);
         }
 
+        /// # Safety
+        ///
+        /// The caller must ensure that `ptr` points to a valid owned `T`.
         unsafe fn write_message<T, E: MessageEncode<T, Resource>>(
             ptr: *mut (),
             writer: MessageWriter<'_, '_, Resource>,
@@ -507,6 +513,9 @@ impl DynMessageVtable {
             E::write_message(v, writer);
         }
 
+        /// # Safety
+        ///
+        /// The caller must ensure that `ptr` points to a valid owned `T`.
         unsafe fn drop<T>(ptr: *mut ()) {
             // SAFETY: The value is owned and the vtable type matches.
             unsafe { ptr.cast::<T>().drop_in_place() };

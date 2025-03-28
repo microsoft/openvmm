@@ -5,6 +5,7 @@ use super::exec_snippet::FloweyPipelineStaticDb;
 use super::exec_snippet::VarDbBackendKind;
 use anyhow::Context;
 use flowey_core::node::RuntimeVarDb;
+use std::fmt::Write as _;
 use std::io::Read;
 use std::io::Write;
 use std::path::PathBuf;
@@ -17,7 +18,8 @@ pub fn construct_var_db_cli(
     update_from_stdin: bool,
     update_from_file: Option<&str>,
     is_raw_string: bool,
-    write_to_gh_env: Option<String>,
+    write_to_gh_env: Option<&str>,
+    condvar: Option<&str>,
 ) -> String {
     let mut base = format!(r#"{flowey_bin} v {job_idx} '{var}'"#);
 
@@ -32,17 +34,21 @@ pub fn construct_var_db_cli(
             base += " --is-secret"
         }
 
-        base = format!("{base} --update-from-file {file}");
+        write!(base, " --update-from-file {file}").unwrap();
     } else if let Some(gh_var) = write_to_gh_env {
         if is_secret {
             base += " --is-secret"
         }
 
-        base = format!("{base} --write-to-gh-env {gh_var}");
+        write!(base, " --write-to-gh-env {gh_var}").unwrap();
     }
 
     if is_raw_string {
         base += " --is-raw-string"
+    }
+
+    if let Some(condvar) = condvar {
+        write!(base, " --condvar {condvar}").unwrap();
     }
 
     base
@@ -77,6 +83,10 @@ pub struct VarDb {
     /// rather than printing to stdout.
     #[clap(long, requires = "var_name", group = "update")]
     write_to_gh_env: Option<String>,
+
+    /// Only run if the given variable is true.
+    #[clap(long)]
+    condvar: Option<String>,
 }
 
 impl VarDb {
@@ -89,9 +99,18 @@ impl VarDb {
             is_secret,
             is_raw_string,
             write_to_gh_env,
+            condvar,
         } = self;
 
         let mut runtime_var_db = open_var_db(job_idx)?;
+
+        if let Some(condvar) = condvar {
+            let condvar_data = runtime_var_db.get_var(&condvar);
+            let set: bool = serde_json::from_slice(&condvar_data).unwrap();
+            if !set {
+                return Ok(());
+            }
+        }
 
         if update_from_stdin {
             let mut data = Vec::new();

@@ -36,6 +36,8 @@ use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::emuplat::non_volatile_store::VmbsBrokerNonVolatileStore;
 use crate::emuplat::tpm::resources::GetTpmRequestAkCertHelperHandle;
 use crate::emuplat::vga_proxy::UhRegisterHostIoFastPath;
+use crate::emuplat::watchdog::UnderhillWatchdog;
+use crate::emuplat::watchdog::WatchdogTimeout;
 use crate::loader::LoadKind;
 use crate::loader::vtl0_config::MeasuredVtl0Info;
 use crate::loader::vtl2_config::RuntimeParameters;
@@ -1758,6 +1760,28 @@ async fn new_underhill_vm(
         })
         .unwrap();
 
+    let cvm_params = if isolation.is_hardware_isolated() {
+        let cvm_mem = gm.cvm_memory().unwrap();
+        Some(virt_mshv_vtl::CvmLateParams {
+            shared_gm: cvm_mem.shared_gm.clone(),
+            isolated_memory_protector: cvm_mem.protector.clone(),
+            shared_dma_client: dma_manager.new_client(DmaClientParameters {
+                device_name: "partition-shared".into(),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                allocation_visibility: AllocationVisibility::Shared,
+                persistent_allocations: false,
+            })?,
+            private_dma_client: dma_manager.new_client(DmaClientParameters {
+                device_name: "partition-private".into(),
+                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
+                allocation_visibility: AllocationVisibility::Private,
+                persistent_allocations: false,
+            })?,
+        })
+    } else {
+        None
+    };
+
     let late_params = virt_mshv_vtl::UhLateParams {
         gm: [
             gm.vtl0().clone(),
@@ -1768,28 +1792,7 @@ async fn new_underhill_vm(
         cpuid,
         crash_notification_send,
         vmtime: &vmtime_source,
-        cvm_params: gm.cvm_memory().map(|cvm_mem| virt_mshv_vtl::CvmLateParams {
-            shared_gm: cvm_mem.shared_gm.clone(),
-            isolated_memory_protector: cvm_mem.protector.clone(),
-        }),
-        shared_dma_client: dma_manager
-            .new_client(DmaClientParameters {
-                device_name: "partition-shared".into(),
-                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
-                allocation_visibility: AllocationVisibility::Shared,
-                persistent_allocations: false,
-            })
-            .ok()
-            .map(|client| client as _),
-        private_dma_client: dma_manager
-            .new_client(DmaClientParameters {
-                device_name: "partition-private".into(),
-                lower_vtl_policy: LowerVtlPermissionPolicy::Any,
-                allocation_visibility: AllocationVisibility::Private,
-                persistent_allocations: false,
-            })
-            .ok()
-            .map(|client| client as _),
+        cvm_params,
     };
 
     let (partition, vps) = proto_partition
@@ -1859,10 +1862,9 @@ async fn new_underhill_vm(
     // ARM64 always bounces, as the OpenHCL kernel does not have access to VTL0
     // pages. Necessary until #273 is resolved.
     //
-    // Similarly, when hiding isolation from the guest, we must bounce because
-    // the guest buffers are in private memory, which the kernel does not have
-    // access to.
-    let always_bounce = cfg!(guest_arch = "aarch64") || hide_isolation;
+    // Currently we always bounce for CVM as well, due to underhill_mem not
+    // supporting registering shared or private memory with the kernel.
+    let always_bounce = cfg!(guest_arch = "aarch64") || isolation.is_hardware_isolated();
     resolver.add_async_resolver::<DiskHandleKind, _, OpenBlockDeviceConfig, _>(
         BlockDeviceResolver::new(
             Arc::new(tp.clone()),
@@ -2089,36 +2091,21 @@ async fn new_underhill_vm(
                     .await
                     .expect("first time taking chan"),
                 watchdog_platform: {
-                    use crate::emuplat::watchdog::UnderhillWatchdog;
-
                     // UEFI watchdog doesn't persist to VMGS at this time
                     let store = EphemeralNonVolatileStore::new_boxed();
 
                     #[cfg(guest_arch = "x86_64")]
-                    let watchdog_reset = {
-                        let partition = partition.clone();
-                        Box::new(move || {
-                            // Unlike Hyper-V, we only send the NMI to the BSP.
-                            partition.request_msi(
-                                Vtl::Vtl0,
-                                MsiRequest::new_x86(
-                                    virt::irqcon::DeliveryMode::NMI,
-                                    0,
-                                    false,
-                                    0,
-                                    false,
-                                ),
-                            );
-                        })
+                    let watchdog_reset = WatchdogTimeoutNmi {
+                        partition: partition.clone(),
                     };
                     #[cfg(guest_arch = "aarch64")]
-                    let watchdog_reset = {
-                        let halt = halt_vps.clone();
-                        Box::new(move || halt.halt(HaltReason::Reset))
+                    let watchdog_reset = WatchdogTimeoutHalt {
+                        halt_vps: halt_vps.clone(),
                     };
 
                     Box::new(
-                        UnderhillWatchdog::new(store, get_client.clone(), watchdog_reset).await?,
+                        UnderhillWatchdog::new(store, get_client.clone(), Box::new(watchdog_reset))
+                            .await?,
                     )
                 },
                 vsm_config: Some(Box::new(UnderhillVsmConfig {
@@ -2432,17 +2419,17 @@ async fn new_underhill_vm(
         Some(dev::HyperVGuestWatchdogDeps {
             port_base: WDAT_PORT,
             watchdog_platform: {
-                use crate::emuplat::watchdog::UnderhillWatchdog;
-
                 let store = vmgs_client
                     .as_non_volatile_store(vmgs::FileId::GUEST_WATCHDOG, false)
                     .context("failed to instantiate guest watchdog store")?;
-                let trigger_reset = {
-                    let halt = halt_vps.clone();
-                    Box::new(move || halt.halt(HaltReason::Reset))
+                let trigger_reset = WatchdogTimeoutHalt {
+                    halt_vps: halt_vps.clone(),
                 };
 
-                Box::new(UnderhillWatchdog::new(store, get_client.clone(), trigger_reset).await?)
+                Box::new(
+                    UnderhillWatchdog::new(store, get_client.clone(), Box::new(trigger_reset))
+                        .await?,
+                )
             },
         })
     } else {
@@ -2576,7 +2563,6 @@ async fn new_underhill_vm(
         })) as Arc<CloseableMutex<dyn ChipsetDevice>>
     });
 
-    #[cfg_attr(not(feature = "vpci"), allow(unused_mut))]
     let BaseChipsetBuilderOutput {
         mut chipset_builder,
         device_interfaces: _,
@@ -3437,5 +3423,37 @@ impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
 impl ChipsetDevice for FallbackMmioDevice {
     fn supports_mmio(&mut self) -> Option<&mut dyn chipset_device::mmio::MmioIntercept> {
         Some(self)
+    }
+}
+
+#[cfg(guest_arch = "x86_64")]
+struct WatchdogTimeoutNmi {
+    partition: Arc<UhPartition>,
+}
+
+#[cfg(guest_arch = "x86_64")]
+#[async_trait::async_trait]
+impl WatchdogTimeout for WatchdogTimeoutNmi {
+    async fn on_timeout(&self) {
+        crate::livedump::livedump().await;
+
+        // Unlike Hyper-V, we only send the NMI to the BSP.
+        self.partition.request_msi(
+            Vtl::Vtl0,
+            MsiRequest::new_x86(virt::irqcon::DeliveryMode::NMI, 0, false, 0, false),
+        );
+    }
+}
+
+struct WatchdogTimeoutHalt {
+    halt_vps: Arc<Halt>,
+}
+
+#[async_trait::async_trait]
+impl WatchdogTimeout for WatchdogTimeoutHalt {
+    async fn on_timeout(&self) {
+        crate::livedump::livedump().await;
+
+        self.halt_vps.halt(HaltReason::Reset)
     }
 }

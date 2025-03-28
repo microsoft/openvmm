@@ -1003,7 +1003,7 @@ impl InitializedVm {
 
         let mapper = memory_manager.device_memory_mapper();
 
-        #[cfg_attr(not(guest_arch = "x86_64"), allow(unused_mut))]
+        #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
         let mut deps_hyperv_firmware_uefi = None;
         match &cfg.load_mode {
@@ -2278,7 +2278,7 @@ impl LoadedVmInner {
             assert!(matches!(self.load_mode, LoadMode::Igvm { .. }));
         }
 
-        #[cfg_attr(not(guest_arch = "x86_64"), allow(unused_mut))]
+        #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let (mut regs, initial_page_vis) = match &self.load_mode {
             LoadMode::None => return Ok(()),
             #[cfg(guest_arch = "x86_64")]

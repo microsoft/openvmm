@@ -1081,7 +1081,7 @@ impl Vmgs {
     }
 
     /// Encrypts the plaintext data and writes the encrypted data to the storage.
-    #[cfg_attr(not(with_encryption), allow(unused_variables))]
+    #[cfg_attr(not(with_encryption), expect(unused_variables))]
     async fn write_encrypted_data(
         &mut self,
         block_offset: u32,
@@ -1112,7 +1112,7 @@ impl Vmgs {
     }
 
     /// Decrypts the encrypted data and reads it to the buffer.
-    #[cfg_attr(not(with_encryption), allow(unused_variables))]
+    #[cfg_attr(not(with_encryption), expect(unused_variables))]
     async fn read_decrypted_data(
         &mut self,
         block_offset: u32,
@@ -1572,7 +1572,7 @@ fn is_empty_key(encryption_key: &[u8]) -> bool {
 }
 
 /// Encrypts MetadataKey. Returns encrypted_metadata_key.
-#[cfg_attr(not(with_encryption), allow(unused_variables))]
+#[cfg_attr(not(with_encryption), expect(unused_variables))]
 fn encrypt_metadata_key(
     encryption_key: &[u8],
     nonce: &[u8],
@@ -1597,7 +1597,7 @@ fn encrypt_metadata_key(
 }
 
 /// Decrypts metadata_key. Returns decrypted_metadata_key.
-#[cfg_attr(not(with_encryption), allow(unused_variables), expect(dead_code))]
+#[cfg_attr(not(with_encryption), expect(unused_variables), expect(dead_code))]
 fn decrypt_metadata_key(
     datastore_key: &[u8],
     nonce: &[u8],

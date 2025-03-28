@@ -1527,6 +1527,7 @@ thread_local! {
 ///
 /// This can be used when the kvm_run is aliased by the kernel or by other
 /// threads that might call this function.
+#[expect(clippy::missing_safety_doc)]
 unsafe fn set_immediate_exit(rdata: *mut kvm_run) {
     // SAFETY: rdata may be aliased by the kernel right now, so it's
     // not safe to construct a mutable reference to it. Use an

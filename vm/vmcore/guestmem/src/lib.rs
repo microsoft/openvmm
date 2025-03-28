@@ -904,11 +904,11 @@ impl MemoryRegion {
         }
     }
 
-    // # Safety
-    //
-    // The caller must ensure that `offset + len` fits in this region, and that
-    // the object bitmap is currently valid for atomic read access from this
-    // thread.
+    /// # Safety
+    ///
+    /// The caller must ensure that `offset + len` fits in this region, and that
+    /// the object bitmap is currently valid for atomic read access from this
+    /// thread.
     unsafe fn check_access(
         &self,
         access_type: AccessType,
@@ -1317,6 +1317,9 @@ impl GuestMemory {
         }
     }
 
+    /// # Safety
+    ///
+    /// The caller must ensure that `src`..`src + len` is a valid buffer for reads.
     unsafe fn write_ptr(
         &self,
         gpa: u64,

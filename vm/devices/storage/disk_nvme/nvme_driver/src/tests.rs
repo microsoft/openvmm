@@ -5,17 +5,12 @@ use crate::NvmeDriver;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
-use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
-use memory_range::MemoryRange;
 use nvme::NvmeControllerCaps;
 use nvme_spec::Cap;
 use nvme_spec::nvm::DsmRange;
-use page_pool_alloc::PagePool;
-use page_pool_alloc::PagePoolAllocator;
-use page_pool_alloc::TestMapper;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use parking_lot::Mutex;
@@ -27,10 +22,9 @@ use user_driver::DeviceBacking;
 use user_driver::DeviceRegisterIo;
 use user_driver::DmaClient;
 use user_driver::interrupt::DeviceInterrupt;
-use user_driver::memory::PAGE_SIZE64;
+use user_driver_emulated_mock::DeviceTestMemory;
 use user_driver_emulated_mock::EmulatedDevice;
 use user_driver_emulated_mock::Mapping;
-use user_driver_emulated_mock::guest_memory_access_wrapper::GuestMemoryAccessWrapper;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::IntoBytes;
@@ -58,7 +52,9 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
 
     // Memory setup
     let pages = 1000;
-    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages, false);
+    let device_test_memory = DeviceTestMemory::new(pages, false, "test_nvme_ioqueue_max_mqes");
+    let guest_mem = device_test_memory.guest_memory();
+    let dma_client = device_test_memory.dma_client();
 
     // Controller Driver Setup
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -94,7 +90,9 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
 
     // Memory setup
     let pages = 1000;
-    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages, false);
+    let device_test_memory = DeviceTestMemory::new(pages, false, "test_nvme_ioqueue_invalid_mqes");
+    let guest_mem = device_test_memory.guest_memory();
+    let dma_client = device_test_memory.dma_client();
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
@@ -125,19 +123,14 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     const IO_QUEUE_COUNT: u16 = 64;
     const CPU_COUNT: u32 = 64;
 
-    // Memory setup
-    let pages = 1000;
-    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages, allow_dma);
+    // Arrange: Create 8MB of space. First 4MB for the device and second 4MB for the payload.
+    let pages = 1024; // 4MB
+    let device_test_memory = DeviceTestMemory::new(pages * 2, allow_dma, "test_nvme_driver");
+    let guest_mem = device_test_memory.guest_memory(); // Access to 0-8MB
+    let dma_client = device_test_memory.dma_client(); // Access 0-4MB
+    let payload_mem = device_test_memory.payload_mem(); // Access 4-8MB. This will allow dma if the `allow_dma` flag is set.
 
-    let driver_dma_mem = if allow_dma {
-        let range_half = (pages / 2) * PAGE_SIZE64;
-        guest_mem.subrange(0_u64, range_half, false).unwrap()
-    } else {
-        guest_mem.clone()
-    };
-
-    let buf_range = OwnedRequestBuffers::linear(0, 16384, true);
-
+    // Arrange: Create the NVMe controller and driver.
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
     let mut msi_set = MsiInterruptSet::new();
     let nvme = nvme::NvmeController::new(
@@ -151,44 +144,47 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
             subsystem_id: Guid::new_random(),
         },
     );
-    nvme.client()
+
+    nvme.client() // 2MB namespace
         .add_namespace(1, disklayer_ram::ram_disk(2 << 20, false).unwrap())
         .await
         .unwrap();
-
     let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
-
     let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
         .await
         .unwrap();
-
     let namespace = driver.namespace(1).await.unwrap();
 
-    guest_mem.write_at(0, &[0xcc; 8192]).unwrap();
+    // Act: Write 1024 bytes of data to disk starting at LBA 1.
+    let buf_range = OwnedRequestBuffers::linear(0, 16384, true); // 32 blocks
+    payload_mem.write_at(0, &[0xcc; 4096]).unwrap();
     namespace
         .write(
             0,
             1,
             2,
             false,
-            &driver_dma_mem,
-            buf_range.buffer(&guest_mem).range(),
+            &payload_mem,
+            buf_range.buffer(&payload_mem).range(),
         )
         .await
         .unwrap();
 
+    // Act: Read 16384 bytes of data from disk starting at LBA 0.
     namespace
         .read(
             1,
             0,
             32,
-            &driver_dma_mem,
-            buf_range.buffer(&guest_mem).range(),
+            &payload_mem,
+            buf_range.buffer(&payload_mem).range(),
         )
         .await
         .unwrap();
     let mut v = [0; 4096];
-    guest_mem.read_at(0, &mut v).unwrap();
+    payload_mem.read_at(0, &mut v).unwrap();
+
+    // Assert: First block should be 0x00 since we never wrote to it. Followed by 1024 bytes of 0xcc.
     assert_eq!(&v[..512], &[0; 512]);
     assert_eq!(&v[512..1536], &[0xcc; 1024]);
     assert!(v[1536..].iter().all(|&x| x == 0));
@@ -220,7 +216,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
             63,
             0,
             32,
-            &driver_dma_mem,
+            &payload_mem,
             buf_range.buffer(&guest_mem).range(),
         )
         .await
@@ -229,7 +225,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
     assert_eq!(driver.fallback_cpu_count(), 1);
 
     let mut v = [0; 4096];
-    guest_mem.read_at(0, &mut v).unwrap();
+    payload_mem.read_at(0, &mut v).unwrap();
     assert_eq!(&v[..512], &[0; 512]);
     assert_eq!(&v[512..1024], &[0xcc; 512]);
     assert!(v[1024..].iter().all(|&x| x == 0));
@@ -244,7 +240,9 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 
     // Memory setup
     let pages = 1000;
-    let (guest_mem, _page_pool, dma_client) = create_test_memory(pages, false);
+    let device_test_memory = DeviceTestMemory::new(pages, false, "test_nvme_save_restore_inner");
+    let guest_mem = device_test_memory.guest_memory();
+    let dma_client = device_test_memory.dma_client();
 
     let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone()));
     let mut msi_x = MsiInterruptSet::new();
@@ -312,8 +310,8 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
 }
 
 #[derive(Inspect)]
-pub struct NvmeTestEmulatedDevice<T: InspectMut> {
-    device: EmulatedDevice<T, PagePoolAllocator>,
+pub struct NvmeTestEmulatedDevice<T: InspectMut, U: DmaClient> {
+    device: EmulatedDevice<T, U>,
     #[inspect(debug)]
     mocked_response_u32: Arc<Mutex<Option<(usize, u32)>>>,
     #[inspect(debug)]
@@ -329,9 +327,9 @@ pub struct NvmeTestMapping<T> {
     mocked_response_u64: Arc<Mutex<Option<(usize, u64)>>>,
 }
 
-impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
+impl<T: PciConfigSpace + MmioIntercept + InspectMut, U: DmaClient> NvmeTestEmulatedDevice<T, U> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-    pub fn new(device: T, msi_set: MsiInterruptSet, dma_client: Arc<PagePoolAllocator>) -> Self {
+    pub fn new(device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
         Self {
             device: EmulatedDevice::new(device, msi_set, dma_client.clone()),
             mocked_response_u32: Arc::new(Mutex::new(None)),
@@ -347,7 +345,9 @@ impl<T: PciConfigSpace + MmioIntercept + InspectMut> NvmeTestEmulatedDevice<T> {
 }
 
 /// Implementation of DeviceBacking trait for NvmeTestEmulatedDevice
-impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for NvmeTestEmulatedDevice<T> {
+impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + DmaClient> DeviceBacking
+    for NvmeTestEmulatedDevice<T, U>
+{
     type Registers = NvmeTestMapping<T>;
 
     fn id(&self) -> &str {
@@ -413,24 +413,4 @@ impl<T: MmioIntercept + Send> DeviceRegisterIo for NvmeTestMapping<T> {
     fn write_u64(&self, offset: usize, data: u64) {
         self.mapping.write_u64(offset, data);
     }
-}
-
-/// Creates test memory that leverages the [`TestMapper`]. Returned [`GuestMemory`] references the entire range
-/// and the returned [`PagePoolAllocator`] references only the second half of the range.
-fn create_test_memory(
-    num_pages: u64,
-    allow_dma: bool,
-) -> (GuestMemory, PagePool, Arc<PagePoolAllocator>) {
-    let test_mapper = TestMapper::new(num_pages).unwrap();
-    let sparse_mmap = test_mapper.sparse_mapping();
-    let guest_mem = GuestMemoryAccessWrapper::create_test_guest_memory(sparse_mmap, allow_dma);
-    let pool = PagePool::new(
-        &[MemoryRange::from_4k_gpn_range(num_pages / 2..num_pages)],
-        test_mapper,
-    )
-    .unwrap();
-
-    // Return page pool so that it is not dropped.
-    let allocator = pool.allocator("nvme_test_page_pool".into()).unwrap();
-    (guest_mem, pool, Arc::new(allocator))
 }

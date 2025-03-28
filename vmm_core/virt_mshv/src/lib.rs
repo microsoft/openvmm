@@ -1357,8 +1357,6 @@ impl virt::Processor for MshvProcessor<'_> {
         stop: StopVp<'_>,
         dev: &impl CpuIo,
     ) -> Result<Infallible, VpHaltReason<MshvError>> {
-        #![allow(non_upper_case_globals)]
-
         let vpinner = self.inner;
         let _cleaner = MshvVpInnerCleaner { vpinner };
         let vcpufd = &vpinner.vcpufd;

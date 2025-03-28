@@ -19,6 +19,7 @@ use crate::TlbFlushLockAccess;
 use crate::UhCvmPartitionState;
 use crate::UhCvmVpState;
 use crate::UhPartitionInner;
+use crate::UhPartitionNewParams;
 use crate::WakeReason;
 use crate::devmsr;
 use crate::processor::UhHypercallHandler;
@@ -244,7 +245,10 @@ pub struct SnpBackedShared {
 }
 
 impl SnpBackedShared {
-    pub(crate) fn new(params: BackingSharedParams) -> Result<Self, Error> {
+    pub(crate) fn new(
+        _partition_params: &UhPartitionNewParams<'_>,
+        params: BackingSharedParams,
+    ) -> Result<Self, Error> {
         let cvm = params.cvm_state.unwrap();
         let invlpgb_count_max = x86defs::cpuid::ExtendedAddressSpaceSizesEdx::from(
             cvm.cpuid
@@ -424,13 +428,6 @@ impl BackingPrivate for SnpBacked {
                 return true;
             }
 
-            if (check_rflags && !RFlags::from_bits(vmsa.rflags()).interrupt_enable())
-                || vmsa.v_intr_cntrl().intr_shadow()
-                || !vmsa.v_intr_cntrl().irq()
-            {
-                return false;
-            }
-
             let vmsa_priority = vmsa.v_intr_cntrl().priority() as u32;
             let lapic = &mut this.backing.cvm.lapics[vtl].lapic;
             let ppr = lapic
@@ -443,7 +440,19 @@ impl BackingPrivate for SnpBacked {
                 })
                 .get_ppr();
             let ppr_priority = ppr >> 4;
-            vmsa_priority > ppr_priority
+            if vmsa_priority <= ppr_priority {
+                return false;
+            }
+
+            let vmsa = this.runner.vmsa_mut(vtl);
+            if (check_rflags && !RFlags::from_bits(vmsa.rflags()).interrupt_enable())
+                || vmsa.v_intr_cntrl().intr_shadow()
+                || !vmsa.v_intr_cntrl().irq()
+            {
+                return false;
+            }
+
+            true
         })
     }
 
@@ -1139,7 +1148,7 @@ impl UhProcessor<'_, SnpBacked> {
                 let is_64bit = self.long_mode(entered_from_vtl);
                 let guest_memory = &self.partition.gm[entered_from_vtl];
                 let handler = UhHypercallHandler {
-                    trusted: !self.partition.hide_isolation,
+                    trusted: !self.cvm_partition().hide_isolation,
                     vp: &mut *self,
                     bus: dev,
                     intercepted_vtl: entered_from_vtl,
@@ -1634,7 +1643,6 @@ impl<T> hv1_hypercall::X64RegisterState for UhHypercallHandler<'_, '_, T, SnpBac
     }
 }
 
-#[allow(unused)]
 impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
     type Error = vp_state::Error;
 
@@ -1794,7 +1802,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         Err(vp_state::Error::Unimplemented("xsave"))
     }
 
-    fn set_xsave(&mut self, value: &vp::Xsave) -> Result<(), Self::Error> {
+    fn set_xsave(&mut self, _value: &vp::Xsave) -> Result<(), Self::Error> {
         Err(vp_state::Error::Unimplemented("xsave"))
     }
 
@@ -1929,7 +1937,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         Err(vp_state::Error::Unimplemented("tsc"))
     }
 
-    fn set_tsc(&mut self, value: &vp::Tsc) -> Result<(), Self::Error> {
+    fn set_tsc(&mut self, _value: &vp::Tsc) -> Result<(), Self::Error> {
         Err(vp_state::Error::Unimplemented("tsc"))
     }
 
@@ -1980,7 +1988,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         Err(vp_state::Error::Unimplemented("synic_msrs"))
     }
 
-    fn set_synic_msrs(&mut self, value: &vp::SyntheticMsrs) -> Result<(), Self::Error> {
+    fn set_synic_msrs(&mut self, _value: &vp::SyntheticMsrs) -> Result<(), Self::Error> {
         Err(vp_state::Error::Unimplemented("synic_msrs"))
     }
 
@@ -1988,7 +1996,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         Err(vp_state::Error::Unimplemented("synic_message_page"))
     }
 
-    fn set_synic_message_page(&mut self, value: &vp::SynicMessagePage) -> Result<(), Self::Error> {
+    fn set_synic_message_page(&mut self, _value: &vp::SynicMessagePage) -> Result<(), Self::Error> {
         Err(vp_state::Error::Unimplemented("synic_message_page"))
     }
 
@@ -1998,7 +2006,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
 
     fn set_synic_event_flags_page(
         &mut self,
-        value: &vp::SynicEventFlagsPage,
+        _value: &vp::SynicEventFlagsPage,
     ) -> Result<(), Self::Error> {
         Err(vp_state::Error::Unimplemented("synic_event_flags_page"))
     }
@@ -2009,7 +2017,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
 
     fn set_synic_message_queues(
         &mut self,
-        value: &vp::SynicMessageQueues,
+        _value: &vp::SynicMessageQueues,
     ) -> Result<(), Self::Error> {
         Err(vp_state::Error::Unimplemented("synic_message_queues"))
     }
@@ -2018,7 +2026,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         Err(vp_state::Error::Unimplemented("synic_timers"))
     }
 
-    fn set_synic_timers(&mut self, value: &vp::SynicTimers) -> Result<(), Self::Error> {
+    fn set_synic_timers(&mut self, _value: &vp::SynicTimers) -> Result<(), Self::Error> {
         Err(vp_state::Error::Unimplemented("synic_timers"))
     }
 }

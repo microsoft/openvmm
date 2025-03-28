@@ -444,7 +444,7 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
     }
 
     fn try_set_reg(
-        _runner: &mut ProcessorRunner<'_, Self>,
+        _runner: &mut ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         _name: HvRegisterName,
         _value: HvRegisterValue,
@@ -452,17 +452,19 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
         Ok(false)
     }
 
-    fn must_flush_regs_on(_runner: &ProcessorRunner<'_, Self>, _name: HvRegisterName) -> bool {
+    fn must_flush_regs_on(_runner: &ProcessorRunner<'a, Self>, _name: HvRegisterName) -> bool {
         false
     }
 
     fn try_get_reg(
-        _runner: &ProcessorRunner<'_, Self>,
+        _runner: &ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         _name: HvRegisterName,
     ) -> Result<Option<HvRegisterValue>, super::Error> {
         Ok(None)
     }
+
+    fn flush_register_page(_runner: &mut ProcessorRunner<'a, Self>) {}
 }
 
 /// Private registers that are copied to/from the kernel's shared run page.
@@ -490,10 +492,10 @@ pub struct TdxPrivateRegs {
 impl TdxPrivateRegs {
     /// Creates a new register set with the given values.
     /// Other values are initialized to zero.
-    pub fn new(rflags: u64, rip: u64, vtl: GuestVtl) -> Self {
+    pub fn new(vtl: GuestVtl) -> Self {
         Self {
-            rflags,
-            rip,
+            rflags: x86defs::RFlags::at_reset().into(),
+            rip: 0,
             ssp: 0,
             rvi: 0,
             svi: 0,

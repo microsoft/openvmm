@@ -261,15 +261,15 @@ macro_rules! declare_artifacts {
         $(
             $crate::paste::paste! {
                 $(#[$doc])*
-                #[allow(non_camel_case_types)]
+                #[expect(non_camel_case_types)]
                 pub const $name: $crate::ArtifactHandle<$name> = $crate::ArtifactHandle::new();
 
                 #[doc = concat!("Type-tag for [`",  stringify!($name), "`]")]
-                #[allow(non_camel_case_types)]
+                #[expect(non_camel_case_types)]
                 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
                 pub enum $name {}
 
-                #[allow(non_snake_case)]
+                #[expect(non_snake_case)]
                 mod [< $name __ty >] {
                     impl $crate::ArtifactId for super::$name {
                         const GLOBAL_UNIQUE_ID: &'static str = module_path!();

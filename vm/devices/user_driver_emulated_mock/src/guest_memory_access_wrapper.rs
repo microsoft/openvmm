@@ -18,19 +18,6 @@ pub struct GuestMemoryAccessWrapper<T> {
     allow_dma: bool,
 }
 
-impl<T> GuestMemoryAccessWrapper<T> {
-    /// Creates and returns a new [`GuestMemoryAccessWrapper`] with given memory and the allow_dma switch.
-    /// `mem` must implement the [`GuestMemoryAccess`] trait.
-    pub fn new(mem: T, allow_dma: bool) -> Self {
-        Self { mem, allow_dma }
-    }
-
-    /// Returns a ref to underlying `mem`
-    pub fn mem(&self) -> &T {
-        &self.mem
-    }
-}
-
 /// SAFETY: Defer to [`GuestMemoryAccess`] implementation of T
 /// Only intercept the base_iova fn with a naive response of 0 if allow_dma is enabled.
 unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for GuestMemoryAccessWrapper<T> {

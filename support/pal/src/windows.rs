@@ -5,7 +5,7 @@
 // UNSAFETY: Calls to Win32 functions to handle delay loading, interacting
 // with low level primitives, and memory management.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 pub mod afd;
 pub mod alpc;
@@ -1026,14 +1026,14 @@ macro_rules! delayload {
     };
 
     (@func pub fn $name:ident($($params:ident : $types:ty),* $(,)?) -> $result:ty) => {
-        #[allow(non_snake_case, clippy::too_many_arguments, clippy::diverging_sub_expression)]
+        #[expect(non_snake_case, clippy::too_many_arguments, clippy::diverging_sub_expression)]
         pub unsafe fn $name($($params: $types,)*) -> $result {
             $crate::delayload!(@body $name($($params : $types),*) -> $result)
         }
     };
 
     (@func fn $name:ident($($params:ident : $types:ty),* $(,)?) -> $result:ty) => {
-        #[allow(non_snake_case, clippy::diverging_sub_expression)]
+        #[expect(non_snake_case, clippy::diverging_sub_expression)]
         unsafe fn $name($($params: $types,)*) -> $result {
             $crate::delayload!(@body $name($($params : $types),*) -> $result)
         }

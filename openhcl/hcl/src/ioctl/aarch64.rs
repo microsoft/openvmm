@@ -44,7 +44,7 @@ impl ProcessorRunner<'_, MshvArm64> {
     }
 }
 
-impl super::BackingPrivate<'_> for MshvArm64 {
+impl<'a> super::BackingPrivate<'a> for MshvArm64 {
     fn new(vp: &HclVp, sidecar: Option<&SidecarVp<'_>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
         let super::BackingState::Mshv { reg_page: _ } = &vp.backing else {
@@ -54,7 +54,7 @@ impl super::BackingPrivate<'_> for MshvArm64 {
     }
 
     fn try_set_reg(
-        runner: &mut ProcessorRunner<'_, Self>,
+        runner: &mut ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         name: HvRegisterName,
         value: HvRegisterValue,
@@ -110,12 +110,12 @@ impl super::BackingPrivate<'_> for MshvArm64 {
         Ok(set)
     }
 
-    fn must_flush_regs_on(_runner: &ProcessorRunner<'_, Self>, _name: HvRegisterName) -> bool {
+    fn must_flush_regs_on(_runner: &ProcessorRunner<'a, Self>, _name: HvRegisterName) -> bool {
         false
     }
 
     fn try_get_reg(
-        runner: &ProcessorRunner<'_, Self>,
+        runner: &ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         name: HvRegisterName,
     ) -> Result<Option<HvRegisterValue>, super::Error> {
@@ -158,4 +158,6 @@ impl super::BackingPrivate<'_> for MshvArm64 {
         };
         Ok(value)
     }
+
+    fn flush_register_page(_runner: &mut ProcessorRunner<'a, Self>) {}
 }

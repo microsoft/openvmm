@@ -186,7 +186,7 @@ impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
     }
 
     fn try_set_reg(
-        _runner: &mut ProcessorRunner<'_, Self>,
+        _runner: &mut ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         _name: HvRegisterName,
         _value: HvRegisterValue,
@@ -194,20 +194,22 @@ impl<'a> super::private::BackingPrivate<'a> for Snp<'a> {
         Ok(false)
     }
 
-    fn must_flush_regs_on(_runner: &ProcessorRunner<'_, Self>, _name: HvRegisterName) -> bool {
+    fn must_flush_regs_on(_runner: &ProcessorRunner<'a, Self>, _name: HvRegisterName) -> bool {
         false
     }
 
     fn try_get_reg(
-        _runner: &ProcessorRunner<'_, Self>,
+        _runner: &ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         _name: HvRegisterName,
     ) -> Result<Option<HvRegisterValue>, super::Error> {
         Ok(None)
     }
+
+    fn flush_register_page(_runner: &mut ProcessorRunner<'a, Self>) {}
 }
 
-impl ProcessorRunner<'_, Snp<'_>> {
+impl<'a> ProcessorRunner<'a, Snp<'a>> {
     /// Gets a reference to the VMSA and backing state of a VTL
     pub fn vmsa(&self, vtl: GuestVtl) -> VmsaWrapper<'_, &SevVmsa> {
         // SAFETY: the VMSA will not be concurrently accessed by the processor

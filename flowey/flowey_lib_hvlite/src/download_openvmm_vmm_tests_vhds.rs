@@ -340,7 +340,7 @@ Otherwise, press `ctrl-c` to cancel the run.
     }
 }
 
-#[allow(unused)]
+#[expect(dead_code)]
 enum AzCopyAuthMethod {
     /// Pull credentials from the Azure CLI instance running the command.
     AzureCli,

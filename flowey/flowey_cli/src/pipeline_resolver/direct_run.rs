@@ -196,7 +196,12 @@ fn direct_run_do_work(
                 let mut steps = Vec::new();
                 let (label, code, idx) = match step {
                     Step::Anchor { .. } => continue,
-                    Step::Rust { label, code, idx } => (label, code, idx),
+                    Step::Rust {
+                        label,
+                        code,
+                        idx,
+                        can_merge: _,
+                    } => (label, code, idx),
                     Step::AdoYaml { .. } => {
                         anyhow::bail!(
                             "{} emitted ADO YAML. Fix the node by checking `ctx.backend()` appropriately",

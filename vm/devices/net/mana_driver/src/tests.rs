@@ -21,19 +21,18 @@ use std::sync::Arc;
 use test_with_tracing::test;
 use user_driver::DeviceBacking;
 use user_driver::memory::PAGE_SIZE;
-use user_driver_emulated_mock::DeviceSharedMemory;
+use user_driver_emulated_mock::DeviceTestMemory;
 use user_driver_emulated_mock::EmulatedDevice;
-use user_driver_emulated_mock::EmulatedDmaAllocator;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 
 #[async_test]
 async fn test_gdma(driver: DefaultDriver) {
-    let mem = DeviceSharedMemory::new(256 * 1024, 0);
+    let mem = DeviceTestMemory::new(128, false, "test_gdma");
     let mut msi_set = MsiInterruptSet::new();
     let device = gdma::GdmaDevice::new(
         &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
-        mem.guest_memory().clone(),
+        mem.guest_memory(),
         &mut msi_set,
         vec![VportConfig {
             mac_address: [1, 2, 3, 4, 5, 6].into(),
@@ -41,8 +40,8 @@ async fn test_gdma(driver: DefaultDriver) {
         }],
         &mut ExternallyManagedMmioIntercepts,
     );
-    let allocator = EmulatedDmaAllocator::new(mem.clone());
-    let device = EmulatedDevice::new(device, msi_set, allocator.into());
+    let dma_client = mem.dma_client();
+    let device = EmulatedDevice::new(device, msi_set, dma_client);
 
     let mut gdma = GdmaDriver::new(&driver, device, 1, false).await.unwrap();
     gdma.test_eq().await.unwrap();

@@ -7,7 +7,7 @@
 #![expect(missing_docs)]
 // UNSAFETY: Calling WHP APIs and manually managing memory.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 mod apic;
 pub mod device;
@@ -606,10 +606,6 @@ impl virt::BindProcessor for WhpProcessorBinder {
     type Processor<'a> = WhpProcessor<'a>;
     type Error = Error;
 
-    #[cfg_attr(
-        not(all(guest_arch = "aarch64", feature = "unstable_whp")),
-        allow(unused_variables)
-    )]
     fn bind(&mut self) -> Result<Self::Processor<'_>, Self::Error> {
         let vp = WhpProcessor {
             vp: WhpVpRef {
@@ -640,6 +636,13 @@ impl virt::BindProcessor for WhpProcessorBinder {
                         .set_register(whp::Register64::InitialApicId, vp_info.apic_id.into())
                         .for_op("set initial apic id")?;
                 }
+            }
+
+            #[cfg(all(guest_arch = "aarch64", not(feature = "unstable_whp")))]
+            {
+                let _ = vp_info;
+                let _ = vtlp;
+                let _ = vtl;
             }
 
             #[cfg(all(guest_arch = "aarch64", feature = "unstable_whp"))]

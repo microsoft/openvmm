@@ -3,6 +3,8 @@
 
 //! Table-based encoding.
 
+#![expect(clippy::missing_safety_doc)]
+
 use super::StructMetadata;
 use super::TableEncoder;
 use crate::FieldEncode;

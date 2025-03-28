@@ -1898,7 +1898,7 @@ impl InternalNode {
     any(feature = "defer", feature = "initiate"),
     derive(mesh::MeshPayload)
 )]
-#[allow(unused)] // some invariants are unused in some configurations, but order matters in their mesh derive, so keep them
+#[cfg_attr(not(any(feature = "defer", feature = "initiate")), expect(dead_code))]
 enum InternalError {
     Immutable,
     Update(String),
