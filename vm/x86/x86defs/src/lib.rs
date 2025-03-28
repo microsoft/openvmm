@@ -399,63 +399,6 @@ open_enum! {
     }
 }
 
-impl Exception {
-    /// Whether the exception type is considered contributory toward a double
-    /// fault.
-    pub fn contributory(&self) -> bool {
-        matches!(
-            *self,
-            Self::DIVIDE_ERROR
-                | Self::INVALID_TSS
-                | Self::SEGMENT_NOT_PRESENT
-                | Self::STACK_SEGMENT_FAULT
-                | Self::GENERAL_PROTECTION_FAULT
-                | Self::CONTROL_PROTECTION_EXCEPTION
-        )
-    }
-
-    /// If the vector is an architectural exception
-    pub fn architectural(vector: u16) -> bool {
-        (vector < Self::CONTROL_PROTECTION_EXCEPTION.0 as u16)
-            && matches!(
-                Self(vector as u8),
-                Self::DIVIDE_ERROR
-                    | Self::DEBUG
-                    | Self::BREAKPOINT
-                    | Self::OVERFLOW
-                    | Self::BOUND_RANGE_EXCEEDED
-                    | Self::INVALID_OPCODE
-                    | Self::DEVICE_NOT_AVAILABLE
-                    | Self::DOUBLE_FAULT
-                    | Self::INVALID_TSS
-                    | Self::SEGMENT_NOT_PRESENT
-                    | Self::STACK_SEGMENT_FAULT
-                    | Self::GENERAL_PROTECTION_FAULT
-                    | Self::PAGE_FAULT
-                    | Self::FLOATING_POINT_EXCEPTION
-                    | Self::ALIGNMENT_CHECK
-                    | Self::MACHINE_CHECK
-                    | Self::SIMD_FLOATING_POINT_EXCEPTION
-                    | Self::CONTROL_PROTECTION_EXCEPTION
-            )
-    }
-
-    /// If the vector is an architectural exception that has an error code.
-    pub fn architecturally_has_error_code(vector: u8) -> bool {
-        matches!(
-            Self(vector),
-            Self::DOUBLE_FAULT
-                | Self::INVALID_TSS
-                | Self::SEGMENT_NOT_PRESENT
-                | Self::STACK_SEGMENT_FAULT
-                | Self::GENERAL_PROTECTION_FAULT
-                | Self::PAGE_FAULT
-                | Self::ALIGNMENT_CHECK
-                | Self::CONTROL_PROTECTION_EXCEPTION
-        )
-    }
-}
-
 #[bitfield(u32)]
 pub struct PageFaultErrorCode {
     pub present: bool,

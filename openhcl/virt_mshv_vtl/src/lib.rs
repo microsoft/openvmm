@@ -345,7 +345,7 @@ impl From<EnterMode> for hcl::protocol::EnterMode {
 struct GuestVsmVpState {
     /// The pending event that VTL 1 wants to inject into VTL 0. Injected on
     /// next exit to VTL 0.
-    #[inspect(debug)]
+    #[inspect(with = "|x| x.as_ref().map(inspect::AsDebug)")]
     vtl0_exit_pending_event: Option<hvdef::HvX64PendingExceptionEvent>,
 }
 
@@ -364,6 +364,8 @@ struct UhCvmVpState {
     lapics: VtlArray<LapicState, 2>,
     /// Guest VSM state for this vp. Some when VTL 1 is enabled.
     vtl1: Option<GuestVsmVpState>,
+    /// 32 bits per VTL: top bits are VTL 1, bottom bits are VTL 0.
+    exit_activities: u64,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -407,7 +409,13 @@ impl UhCvmVpState {
             hv,
             lapics,
             vtl1: None,
+            exit_activities: Default::default(),
         })
+    }
+
+    pub fn set_exit_activity(&mut self, vtl: GuestVtl, activity: ExitActivity) {
+        let activity = u64::from(activity.0) << (vtl as u8 * 32);
+        self.exit_activities = activity;
     }
 }
 
@@ -650,6 +658,7 @@ struct UhVpInner {
     /// when interacting with non-MSHV kernel interfaces.
     cpu_index: u32,
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
+    exit_activities: AtomicU32,
 }
 
 impl UhVpInner {
@@ -729,6 +738,20 @@ impl WakeReason {
     const INTCON: Self = Self::new().with_intcon(true);
     #[cfg(guest_arch = "x86_64")]
     const UPDATE_PROXY_IRR_FILTER: Self = Self::new().with_update_proxy_irr_filter(true);
+}
+
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+struct ExitActivity {
+    pending_event: bool,
+    #[bits(31)]
+    _reserved: u32,
+}
+
+impl ExitActivity {
+    // Convenient constants.
+    #[cfg(guest_arch = "x86_64")]
+    const PENDING_EVENT: Self = Self::new().with_pending_event(true);
 }
 
 /// Immutable access to useful bits of Partition state.

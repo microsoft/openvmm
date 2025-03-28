@@ -35,6 +35,7 @@ cfg_if::cfg_if! {
 use super::Error;
 use super::UhPartitionInner;
 use super::UhVpInner;
+use crate::ExitActivity;
 use crate::GuestVtl;
 use crate::WakeReason;
 use hcl::ioctl::ProcessorRunner;
@@ -363,6 +364,7 @@ impl UhVpInner {
             cpu_index,
             vp_info,
             sidecar_exit_reason: Default::default(),
+            exit_activities: Default::default(),
         }
     }
 
@@ -696,7 +698,10 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                         [false, false].into()
                     };
 
-                    T::deliver_exit_pending_event(self);
+                    if self.inner.exit_activities.load(Ordering::Relaxed) != 0 {
+                        self.handle_exit_activities()
+                            .map_err(VpHaltReason::Hypervisor)?
+                    }
 
                     if self.backing.untrusted_synic().is_some() {
                         self.update_synic(GuestVtl::Vtl0, true);
@@ -893,6 +898,17 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         }
 
         Ok(wake_reasons_vtl.map(|w| w.intcon()).into())
+    }
+
+    fn handle_exit_activities(&mut self) -> Result<(), UhRunVpError> {
+        let exit_activities =
+            ExitActivity::from(self.inner.exit_activities.swap(0, Ordering::SeqCst));
+
+        if exit_activities.pending_event() {
+            T::deliver_exit_pending_event(self);
+        }
+
+        Ok(())
     }
 
     fn request_sint_notifications(&mut self, vtl: GuestVtl, sints: u16) {

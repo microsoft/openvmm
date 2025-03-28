@@ -201,7 +201,7 @@ impl HardwareIsolatedBacking for SnpBacked {
             target_vmsa.set_ymm_registers(i, current_vmsa.ymm_registers(i));
         }
 
-        this.backing.cvm_state_mut().exit_vtl = target_vtl;
+        this.cvm_switch_vtl(target_vtl);
     }
 
     fn translation_registers(
@@ -249,13 +249,11 @@ impl HardwareIsolatedBacking for SnpBacked {
         vtl: GuestVtl,
         event: HvX64PendingExceptionEvent,
     ) {
-        assert!(event.vector() < (u8::MAX as u16));
-
         let inject_info = SevEventInjectInfo::new()
             .with_valid(true)
             .with_deliver_error_code(event.deliver_error_code())
             .with_error_code(event.error_code())
-            .with_vector(event.vector() as u8)
+            .with_vector(event.vector().try_into().unwrap())
             .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT);
 
         this.runner.vmsa_mut(vtl).set_event_inject(inject_info);
@@ -1150,7 +1148,10 @@ impl UhProcessor<'_, SnpBacked> {
             SevExitCode::IOIO => {
                 let io_info = x86defs::snp::SevIoAccessInfo::from(vmsa.exit_info1() as u32);
                 if io_info.string_access() || io_info.rep_access() {
-                    self.emulate(dev, false, entered_from_vtl, ()).await?;
+                    let interruption_pending = vmsa.event_inject().valid()
+                        || SevEventInjectInfo::from(vmsa.exit_int_info()).valid();
+                    self.emulate(dev, interruption_pending, entered_from_vtl, ())
+                        .await?;
                 } else {
                     let len = if io_info.access_size32() {
                         4
@@ -1219,6 +1220,8 @@ impl UhProcessor<'_, SnpBacked> {
                 // unmapped memory. This means that accesses to unmapped memory for lower VTLs will be
                 // forwarded to underhill as a #VC exception.
                 let exit_info2 = vmsa.exit_info2();
+                let interruption_pending = vmsa.event_inject().valid()
+                    || SevEventInjectInfo::from(vmsa.exit_int_info()).valid();
                 let exit_message = self.runner.exit_message();
                 let emulate = match exit_message.header.typ {
                     HvMessageType::HvMessageTypeExceptionIntercept => {
@@ -1246,7 +1249,8 @@ impl UhProcessor<'_, SnpBacked> {
 
                 if emulate {
                     has_intercept = false;
-                    self.emulate(dev, false, entered_from_vtl, ()).await?;
+                    self.emulate(dev, interruption_pending, entered_from_vtl, ())
+                        .await?;
                     &mut self.backing.exit_stats[entered_from_vtl].npf
                 } else {
                     &mut self.backing.exit_stats[entered_from_vtl].npf_spurious
@@ -1578,8 +1582,11 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         );
 
         let exception = HvX64PendingExceptionEvent::from(u128::from(event_info.reg_0));
+        assert!(!self.interruption_pending);
 
-        self.vp.cvm_inject_pending_exception(self.vtl, exception);
+        // There's no interruption pending, so just inject the exception
+        // directly without checking for double fault.
+        SnpBacked::set_pending_exception(self.vp, self.vtl, exception);
     }
 
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {

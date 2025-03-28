@@ -2010,6 +2010,7 @@ mod save_restore {
                         // Topology information
                         vp_info: _,
                         cpu_index: _,
+                        exit_activities: _,
                     },
                 // Saved
                 crash_reg,
