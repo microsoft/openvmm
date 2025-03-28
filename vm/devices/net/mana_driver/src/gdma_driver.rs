@@ -1323,6 +1323,11 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         interrupt
     }
 
+    pub fn get_interrupt_for_eq(&self, eq_id: u32) -> Option<DeviceInterrupt> {
+        let msix = self.eq_id_msix.get(&eq_id)?;
+        self.interrupts[*msix as usize].clone()
+    }
+
     fn stop_listening(&mut self, eq_id: u32) {
         self.eq_id_msix.remove(&eq_id);
     }

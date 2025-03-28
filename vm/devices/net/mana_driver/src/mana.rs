@@ -418,6 +418,7 @@ impl<T: DeviceBacking> Vport<T> {
             .device()
             .dma_client()
             .get_dma_buffer(saved_queue.mem.len, saved_queue.mem.base)?;
+
         Ok(BnicEq {
             doorbell: DoorbellPage::new(self.inner.doorbell.clone(), self.inner.dev_data.db_id)?,
             mem,
@@ -536,6 +537,11 @@ impl<T: DeviceBacking> Vport<T> {
             "switch data path for mac",
         );
         Ok(())
+    }
+
+    pub async fn get_interrupt(&self, eq_id: u32) -> Option<DeviceInterrupt> {
+        let gdma = self.inner.gdma.lock().await;
+        gdma.get_interrupt_for_eq(eq_id)
     }
 
     /// Get current filter state.

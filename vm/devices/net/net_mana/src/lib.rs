@@ -401,6 +401,14 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
         Ok((queue, resources))
     }
 
+    async fn restore_queue(
+        &mut self,
+        pool: Box<dyn BufferAccess>,
+        arena: &mut ResourceArena,
+    ) -> anyhow::Result<(ManaQueue<T>, QueueResources)> {
+        todo!()
+    }
+
     async fn get_queues_inner(
         &mut self,
         arena: &mut ResourceArena,
@@ -613,6 +621,11 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
                     let dma_client = self.vport.dma_client().await;
                     let doorbell = self.vport.doorbell().await;
                     let doorbell_page = DoorbellPage::new(doorbell, self.vport.db_id())?;
+                    let interrupt = self.vport.get_interrupt(mana_queue.eq.id).await;
+
+                    if interrupt.is_none() {
+                        anyhow::bail!("no interrupt for eq");
+                    }
 
                     let eq =
                         dma_client.get_dma_buffer(mana_queue.eq.mem.len, mana_queue.eq.mem.base)?;
@@ -660,7 +673,9 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
                             tx_bounce_buffer,
                         },
                         self.queue_tracker.clone(),
+                        interrupt.unwrap(),
                     )?;
+
                     queues.push(Box::new(queue));
                 }
                 _ => {
@@ -1401,8 +1416,11 @@ impl<T: DeviceBacking> ManaQueue<T> {
         saved_state: ManaQueueSavedState,
         mem: ManaQueueRestoredMemory,
         queue_tracker: Arc<(AtomicUsize, SlimEvent)>,
+        interrupt: DeviceInterrupt,
     ) -> anyhow::Result<Self> {
-        Ok(ManaQueue {
+        let eq = Eq::restore(mem.eq, saved_state.eq, doorbell_page.clone())?;
+
+        let mut queue = ManaQueue {
             guest_memory: queue_config.pool.guest_memory().clone(),
             pool: queue_config.pool,
             rx_bounce_buffer: saved_state.rx_bounce_buffer.map(|state| {
@@ -1414,17 +1432,17 @@ impl<T: DeviceBacking> ManaQueue<T> {
             ),
             vport,
             queue_tracker,
-            eq: Eq::restore(mem.eq, saved_state.eq, doorbell_page)?,
+            eq,
             eq_armed: saved_state.eq_armed,
-            interrupt: todo!(),
+            interrupt,
             tx_cq_armed: saved_state.tx_cq_armed,
             rx_cq_armed: saved_state.rx_cq_armed,
             vp_offset: saved_state.vp_offset,
             mem_key: saved_state.mem_key,
-            tx_wq: Wq::restore_sq(mem.tx_wq, saved_state.tx_wq, doorbell_page)?,
-            tx_cq: Cq::restore(mem.tx_cq, saved_state.tx_cq, doorbell_page)?,
-            rx_wq: Wq::restore_rq(mem.rx_wq, saved_state.rx_wq, doorbell_page)?,
-            rx_cq: Cq::restore(mem.rx_cq, saved_state.rx_cq, doorbell_page)?,
+            tx_wq: Wq::restore_sq(mem.tx_wq, saved_state.tx_wq, doorbell_page.clone())?,
+            tx_cq: Cq::restore(mem.tx_cq, saved_state.tx_cq, doorbell_page.clone())?,
+            rx_wq: Wq::restore_rq(mem.rx_wq, saved_state.rx_wq, doorbell_page.clone())?,
+            rx_cq: Cq::restore(mem.rx_cq, saved_state.rx_cq, doorbell_page.clone())?,
             avail_rx: VecDeque::new(),
             posted_rx: VecDeque::new(),
             rx_max: saved_state.rx_max,
@@ -1433,7 +1451,12 @@ impl<T: DeviceBacking> ManaQueue<T> {
             tx_max: saved_state.tx_max,
             force_tx_header_bounce: saved_state.force_tx_header_bounce,
             stats: QueueStats::default(),
-        })
+        };
+
+        queue.rx_avail(queue_config.initial_rx);
+        queue.rx_wq.commit();
+
+        Ok(queue)
     }
 }
 
