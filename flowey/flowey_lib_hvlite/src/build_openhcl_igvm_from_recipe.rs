@@ -435,7 +435,7 @@ impl SimpleFlowNode for Node {
                     sidecar: v,
                 })
             };
-            sidecar_bin.write_into(ctx, built_sidecar, |x| Some(x));
+            sidecar_bin.write_into(ctx, built_sidecar, Some);
             Some(sidecar_bin)
         } else {
             built_sidecar.write_static(ctx, None);
