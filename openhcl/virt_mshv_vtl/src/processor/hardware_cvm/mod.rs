@@ -48,7 +48,6 @@ use virt_support_x86emu::translate::TranslationRegisters;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
 use zerocopy::FromZeros;
-use zerocopy::IntoBytes;
 
 impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
     fn validate_register_access(
@@ -605,7 +604,11 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     .with_msr_sysenter_eip_write(true)
                     .with_msr_sysenter_esp_write(true)
                     .with_msr_sfmask_write(true)
-                    .with_msr_tsc_aux_write(true);
+                    .with_msr_tsc_aux_write(true)
+                    .with_msr_xss_write(true)
+                    .with_msr_scet_write(true)
+                    .with_msr_pls_ssp_write(true)
+                    .with_msr_interrupt_ssp_table_addr_write(true);
 
                 if reg.value.as_u64() & !u64::from(supported_controls) != 0 {
                     return Err(HvError::InvalidRegisterValue);
@@ -615,20 +618,21 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     hvdef::HvRegisterCrInterceptControl::from(reg.value.as_u64());
 
                 if let virt::IsolationType::Snp = self.vp.partition.isolation {
-                    // TODO: panic if this fails?
-                    self.vp.runner.set_vp_registers_hvcall(
-                        Vtl::Vtl1,
-                        [(
-                            HvX64RegisterName::CrInterceptControl,
-                            u64::from(intercept_control),
-                        )],
-                    )?;
+                    // Intercept control is always managed by the hypervisor, so any request
+                    // here is only opportunistic. Make the request directly with the
+                    // hypervisor. Since intercept control always applies to VTL 1 control of
+                    // VTL 0 state, the VTL 1 intercept control register is set here.
+                    self.vp
+                        .runner
+                        .set_vp_registers_hvcall(
+                            Vtl::Vtl1,
+                            [(
+                                HvX64RegisterName::CrInterceptControl,
+                                u64::from(intercept_control),
+                            )],
+                        )
+                        .expect("setting intercept control succeeds");
                 }
-
-                tracing::info!(
-                    "setting intecept control for vp {}",
-                    self.vp.vp_index().index()
-                );
 
                 self.vp
                     .backing
@@ -652,7 +656,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                         vtl1.reg_intercept.cr4_mask = reg.value.as_u64();
                     }
                     HvX64RegisterName::CrInterceptIa32MiscEnableMask => {
-                        vtl1.reg_intercept.ia32_misc_enable_mask = reg.value.as_u64(); // TODO is this ever used?
+                        vtl1.reg_intercept.ia32_misc_enable_mask = reg.value.as_u64();
                     }
                     _ => unreachable!(),
                 }
@@ -1023,7 +1027,7 @@ impl<T, B: HardwareIsolatedBacking>
         target_vtl: Vtl,
         vp_context: &hvdef::hypercall::InitialVpContextX64,
     ) -> HvResult<()> {
-        tracing::info!(
+        tracing::debug!(
             vp_index = self.vp.vp_index().index(),
             target_vp,
             ?target_vtl,
@@ -1769,10 +1773,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             if vtl == GuestVtl::Vtl1 {
                 assert!(*self.cvm_vp_inner().vtl1_enable_called.lock());
                 if let InitialVpContextOperation::EnableVpVtl = start_enable_vtl_state.operation {
-                    self.backing.cvm_state_mut().vtl1 = Some(crate::GuestVsmVpState {
-                        vtl0_exit_pending_event: None,
-                        reg_intercept: Default::default(),
-                    });
+                    self.backing.cvm_state_mut().vtl1 = Some(crate::GuestVsmVpState::new());
                 }
             }
 
@@ -1808,15 +1809,9 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 for (reg, value) in protected_registers {
                     if self.cvm_is_protected_register_write(vtl, reg, value) {
                         // In this case, it doesn't matter what VTL the calling
-                        // VP was in, fail the startup. No need to send an
+                        // VP was in, just fail the startup. No need to send an
                         // intercept message.
-                        //
-                        // TODO: figure out the correct return error type
-                        return Err(UhRunVpError::State(
-                            crate::processor::vp_state::Error::SetRegisters(
-                                hcl::ioctl::Error::SetRegisters(HvError::AccessDenied),
-                            ),
-                        ));
+                        return Err(UhRunVpError::StateAccessDenied);
                     }
                 }
             }
@@ -1963,6 +1958,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         self.backing.cvm_state().vtl1.is_some()
     }
 
+    /// Returns whether a higher VTL has registered for write intercepts on the
+    /// register.
     pub(crate) fn cvm_is_protected_register_write(
         &self,
         vtl: GuestVtl,
@@ -2004,20 +2001,21 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         false
     }
 
-    pub(crate) fn cvm_handle_secure_register_write(
+    /// Checks if a higher VTL registered for write intercepts on the register,
+    /// and sends the intercept as required.
+    pub(crate) fn cvm_protect_secure_register_write(
         &mut self,
         vtl: GuestVtl,
         reg: HvX64RegisterName,
         value: u64,
-    ) {
-        if self.cvm_is_protected_register_write(vtl, reg, value) {
-            let intercept_message =
-                B::generate_register_intercept_message(self, vtl, self.vp_index(), reg, value);
-
-            let hv_message = hvdef::HvMessage::new(
-                hvdef::HvMessageType::HvMessageTypeRegisterIntercept,
-                0,
-                intercept_message.as_bytes(),
+    ) -> bool {
+        let send_intercept = self.cvm_is_protected_register_write(vtl, reg, value);
+        if send_intercept {
+            let intercept_message = B::generate_intercept_message(
+                self,
+                vtl,
+                self.vp_index(),
+                crate::processor::InterceptMessageType::Register { reg, value },
             );
 
             tracing::debug!(
@@ -2029,42 +2027,16 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             self.inner.post_message(
                 GuestVtl::Vtl1,
                 hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX,
-                &hv_message,
+                &intercept_message,
             );
-
-            // Once the intercept message has been posted, no further
-            // processing is required.  Do not advance the instruction
-            // pointer here, since the instruction pointer must continue to
-            // point to the instruction that generated the intercept.
-
-            return;
         }
 
-        match reg {
-            HvX64RegisterName::Cr0 => {
-                B::set_cr0(self, vtl, value);
-            }
-            HvX64RegisterName::Cr4 => {
-                B::set_cr4(self, vtl, value);
-            }
-            HvX64RegisterName::Xfem => self
-                .access_state(vtl.into())
-                .set_xcr(&virt::vp::Xcr0 { value })
-                .unwrap(),
-            _ => {
-                // If an unexpected intercept has been received, then the host
-                // must have enabled an intercept that was not desired. Since
-                // the intercept cannot correctly be emulated, this must be
-                // treated as a fatal error.
-                panic!("unexpected secure register")
-            }
-        }
-
-        B::advance_to_next_instruction(self, vtl);
+        send_intercept
     }
 
-    // TODO: maybe rename this, since it does sent the intercept message.
-    pub(crate) fn cvm_is_protected_msr_write(&self, vtl: GuestVtl, msr: u32) -> bool {
+    /// Checks if a higher VTL registered for write intercepts on the MSR, and
+    /// sends the intercept as required.
+    pub(crate) fn cvm_protect_msr_write(&self, vtl: GuestVtl, msr: u32) -> bool {
         if vtl == GuestVtl::Vtl0 && self.backing.cvm_state().vtl1.is_some() {
             let configured_intercepts = self
                 .backing
@@ -2101,21 +2073,19 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             };
 
             if generate_intercept {
-                let intercept_message =
-                    B::generate_msr_intercept_message(self, vtl, self.vp_index(), msr);
-
-                let hv_message = hvdef::HvMessage::new(
-                    hvdef::HvMessageType::HvMessageTypeMsrIntercept,
-                    0,
-                    intercept_message.as_bytes(),
+                let intercept_message = B::generate_intercept_message(
+                    self,
+                    vtl,
+                    self.vp_index(),
+                    crate::processor::InterceptMessageType::Msr { msr },
                 );
 
-                tracing::info!(?msr, "sending intercept to vtl 1 for secure msr write");
+                tracing::debug!(?msr, "sending intercept to vtl 1 for secure msr write");
 
                 self.inner.post_message(
                     GuestVtl::Vtl1,
                     hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX,
-                    &hv_message,
+                    &intercept_message,
                 );
 
                 return true;

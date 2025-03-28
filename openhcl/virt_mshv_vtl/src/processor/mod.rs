@@ -281,6 +281,12 @@ pub(crate) struct BackingSharedParams<'a> {
     pub _phantom: PhantomData<&'a ()>,
 }
 
+#[cfg(guest_arch = "x86_64")]
+enum InterceptMessageType {
+    Register { reg: HvX64RegisterName, value: u64 },
+    Msr { msr: u32 },
+}
+
 /// Trait for processor backings that have hardware isolation support.
 #[cfg(guest_arch = "x86_64")]
 trait HardwareIsolatedBacking: Backing {
@@ -324,23 +330,16 @@ trait HardwareIsolatedBacking: Backing {
     fn cr4_for_cpuid(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
 =======
 
-    fn generate_register_intercept_message(
+    fn generate_intercept_message(
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
         vp_index: VpIndex,
-        reg: HvX64RegisterName,
-        value: u64,
-    ) -> hvdef::HvX64RegisterInterceptMessage;
-
-    fn generate_msr_intercept_message(
-        this: &UhProcessor<'_, Self>,
-        vtl: GuestVtl,
-        vp_index: VpIndex,
-        msr: u32,
-    ) -> hvdef::HvX64MsrInterceptMessage;
+        message_type: InterceptMessageType,
+    ) -> HvMessage;
 
     fn cr0(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
     fn cr4(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
+<<<<<<< HEAD
 
 <<<<<<< HEAD
 pub enum ControlRegisterMask {
@@ -353,6 +352,8 @@ pub enum ControlRegisterMask {
     fn set_cr4(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, cr4: u64);
     fn advance_to_next_instruction(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl);
 >>>>>>> bda761df... cleanup
+=======
+>>>>>>> af56d641... cleanup
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -489,6 +490,8 @@ pub enum UhRunVpError {
     /// Handling an intercept on behalf of an invalid Lower VTL
     #[error("invalid intercepted vtl {0:?}")]
     InvalidInterceptedVtl(u8),
+    #[error("access to state blocked by another vtl")]
+    StateAccessDenied,
 }
 
 /// Underhill processor run error
