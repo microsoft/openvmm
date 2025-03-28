@@ -577,34 +577,12 @@ impl HardwareIsolatedBacking for TdxBacked {
         todo!()
     }
 
-    fn set_cr0(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl, _cr0: u64) {
-        todo!()
-    }
-
-    fn set_cr4(_this: &mut UhProcessor<'_, Self>, _vtl: GuestVtl, _cr4: u64) {
-        todo!()
-    }
-
-    fn advance_to_next_instruction(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) {
-        this.advance_to_next_instruction(vtl);
-    }
-
-    fn generate_register_intercept_message(
+    fn generate_intercept_message(
         _this: &UhProcessor<'_, Self>,
         _vtl: GuestVtl,
         _vp_index: VpIndex,
-        _reg: HvX64RegisterName,
-        _value: u64,
-    ) -> hvdef::HvX64RegisterInterceptMessage {
-        todo!()
-    }
-
-    fn generate_msr_intercept_message(
-        _this: &UhProcessor<'_, Self>,
-        _vtl: GuestVtl,
-        _vp_index: VpIndex,
-        _msr: u32,
-    ) -> hvdef::HvX64MsrInterceptMessage {
+        _message_type: super::InterceptMessageType,
+    ) -> hvdef::HvMessage {
         todo!()
     }
 }
