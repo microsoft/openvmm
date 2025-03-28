@@ -26,6 +26,7 @@ use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
 pub enum KnownVhd {
     Gen1WindowsDataCenterCore2022,
     Gen2WindowsDataCenterCore2022,
+    Gen2WindowsDataCenterCore2025,
     FreeBsd13_2,
     Ubuntu2204Server,
     Ubuntu2404ServerAarch64,
@@ -58,6 +59,11 @@ const KNOWN_VHD_METADATA: &[KnownVhdMeta] = &[
         KnownVhd::Gen2WindowsDataCenterCore2022,
         petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::FILENAME,
         petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::SIZE,
+    ),
+    KnownVhdMeta::new(
+        KnownVhd::Gen2WindowsDataCenterCore2025,
+        petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::FILENAME,
+        petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::SIZE,
     ),
     KnownVhdMeta::new(
         KnownVhd::FreeBsd13_2,

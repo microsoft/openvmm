@@ -900,6 +900,12 @@ impl IntoPipeline for CheckinGatesCli {
             .map_err(|missing| {
                 anyhow::anyhow!("missing required windows-intel vmm_tests artifact: {missing}")
             })?;
+        let vmm_tests_artifacts_windows_intel_tdx_x86 = vmm_tests_artifacts_windows_x86
+            .clone()
+            .finish()
+            .map_err(|missing| {
+                anyhow::anyhow!("missing required windows-tdx vmm_tests artifact: {missing}")
+            })?;
         let vmm_tests_artifacts_windows_amd_x86 = vmm_tests_artifacts_windows_x86
             .finish()
             .map_err(|missing| {
@@ -944,6 +950,14 @@ impl IntoPipeline for CheckinGatesCli {
             VmmTestJobParams {
                 platform: FlowPlatform::Windows,
                 arch: FlowArch::X86_64,
+                gh_pool: crate::pipelines_shared::gh_pools::windows_tdx_self_hosted_baremetal(),
+                label: "x64-windows-intel-tdx",
+                target: CommonTriple::X86_64_WINDOWS_MSVC,
+                resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_intel_tdx_x86,
+            },
+            VmmTestJobParams {
+                platform: FlowPlatform::Windows,
+                arch: FlowArch::X86_64,
                 gh_pool: crate::pipelines_shared::gh_pools::windows_amd_self_hosted_largedisk(),
                 label: "x64-windows-amd",
                 target: CommonTriple::X86_64_WINDOWS_MSVC,
@@ -975,8 +989,14 @@ impl IntoPipeline for CheckinGatesCli {
             };
 
             let nextest_filter_expr = {
-                // start with `all()` to allow easy `and`-based refinements
-                let mut expr = "all()".to_string();
+                // Run TDX and VBS tests only when using a TDX test runner
+                let mut expr = if matches!(&gh_pool, GhRunner::SelfHosted(labels) if labels.iter().any(|s| s.as_str() == "TDX"))
+                {
+                    "test(tdx) + test(vbs)".to_string()
+                } else {
+                    // start with `all()` to allow easy `and`-based refinements
+                    "all() and not test(tdx) and not test(vbs)".to_string()
+                };
 
                 if matches!(
                     target.as_triple().operating_system,

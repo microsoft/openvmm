@@ -3,6 +3,7 @@
 
 //! Wrappers for Hyper-V Powershell Cmdlets
 
+use super::CommandError;
 use anyhow::Context;
 use core::str;
 use guid::Guid;
@@ -334,7 +335,7 @@ pub fn run_set_vm_com_port(vmid: &Guid, port: u8, path: &Path) -> anyhow::Result
 }
 
 /// Windows event log as retrieved by `run_get_winevent`
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 pub struct WinEvent {
     /// Time of event
@@ -344,51 +345,127 @@ pub struct WinEvent {
     /// Event level (see winmeta.h)
     pub level: u8,
     /// Event ID
-    pub id: u64,
+    pub id: u32,
     /// Message content
     pub message: String,
 }
 
 /// Get event logs
 pub fn run_get_winevent(
-    log_name: &str,
-    start_time: &Timestamp,
-    find: &str,
+    log_name: &[&str],
+    start_time: Option<&Timestamp>,
+    find: Option<&str>,
+    ids: &[u32],
 ) -> anyhow::Result<Vec<WinEvent>> {
-    let logs = PowerShellBuilder::new()
-        .cmdlet("Get-WinEvent")
-        .flag("Oldest")
-        .arg("FilterHashtable",
-            format!(
-                "@{{ LogName=\"{log_name}\"; StartTime=\"{start_time}\" }}"
-            ),
-        )
-        .pipeline()
-        .cmdlet("where")
-        .positional("message")
-        .arg("Match", find)
-        .pipeline()
-        .cmdlet("Select-Object")
-        .positional(r#"@{label="TimeCreated";expression={Get-Date $_.TimeCreated -Format o}}, ProviderName, Level, Id, Message"#)
-        .pipeline()
-        .cmdlet("ConvertTo-Json")
-        .finish()
-        .output(false).context("run_get_winevent")?;
+    let mut filter = Vec::new();
+    if !log_name.is_empty() {
+        filter.push(format!(
+            "LogName={}",
+            log_name
+                .iter()
+                .map(|x| format!("'{x}'"))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+    if let Some(start_time) = start_time {
+        filter.push(format!("StartTime=\"{start_time}\""));
+    }
+    if !ids.is_empty() {
+        filter.push(format!(
+            "Id={}",
+            ids.iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+    let filter = filter.join("; ");
 
-    serde_json::from_str(&logs).context("parsing winevents")
+    const OUTPUT_VARNAME: &str = "events";
+
+    let mut builder = PowerShellBuilder::new()
+        .cmdlet_to_var("Get-WinEvent", OUTPUT_VARNAME)
+        .flag("Oldest")
+        .arg("FilterHashtable", format!("@{{ {filter} }}"))
+        .pipeline();
+
+    if let Some(find) = find {
+        builder = builder
+            .cmdlet("where")
+            .positional("message")
+            .arg("Match", find)
+            .pipeline();
+    }
+
+    let output = builder.cmdlet("Select-Object")
+        .positional(r#"@{label="TimeCreated";expression={Get-Date $_.TimeCreated -Format o}}, ProviderName, Level, Id, Message"#)
+        .next()
+        .cmdlet("ConvertTo-Json")
+        .arg_var("InputObject", OUTPUT_VARNAME, true)
+        .finish()
+        .output(false);
+
+    match output {
+        Ok(logs) => serde_json::from_str(&logs).context("parsing winevents"),
+        Err(e) => match e {
+            CommandError::Command(_, err_output)
+                if err_output.contains(
+                    "No events were found that match the specified selection criteria.",
+                ) =>
+            {
+                Ok(Vec::new())
+            }
+            e => Err(e).context("run_get_winevent"),
+        },
+    }
 }
+
+const HYPERV_WORKER_TABLE: &str = "Microsoft-Windows-Hyper-V-Worker-Admin";
+const HYPERV_VMMS_TABLE: &str = "Microsoft-Windows-Hyper-V-VMMS-Admin";
 
 /// Get Hyper-V event logs for a VM
 pub fn hyperv_event_logs(vmid: &Guid, start_time: &Timestamp) -> anyhow::Result<Vec<WinEvent>> {
     let vmid = vmid.to_string();
-    let mut logs = Vec::new();
-    for log_name in [
-        "Microsoft-Windows-Hyper-V-Worker-Admin",
-        "Microsoft-Windows-Hyper-V-VMMS-Admin",
-    ] {
-        logs.append(&mut run_get_winevent(log_name, start_time, &vmid)?);
-    }
-    Ok(logs)
+    run_get_winevent(
+        &[HYPERV_WORKER_TABLE, HYPERV_VMMS_TABLE],
+        Some(start_time),
+        Some(&vmid),
+        &[],
+    )
+}
+
+/// boot succeeded
+pub const EVENT_ID_BOOT_SUCCESS: u32 = 18601;
+/// boot succeeded, secure boot failed
+pub const EVENT_ID_BOOT_SUCCESS_SECURE_BOOT_FAILED: u32 = 18602;
+/// boot failed
+pub const EVENT_ID_BOOT_FAILURE: u32 = 18603;
+/// boot failed due to secure boot failure
+pub const EVENT_ID_BOOT_FAILURE_SECURE_BOOT_FAILED: u32 = 18604;
+/// boot failed because there was no boot device
+pub const EVENT_ID_NO_BOOT_DEVICE: u32 = 18605;
+/// boot attempted (pcat only)
+pub const EVENT_ID_BOOT_ATTEMPT: u32 = 18606;
+
+const BOOT_EVENT_IDS: [u32; 6] = [
+    EVENT_ID_BOOT_SUCCESS,
+    EVENT_ID_BOOT_SUCCESS_SECURE_BOOT_FAILED,
+    EVENT_ID_BOOT_FAILURE,
+    EVENT_ID_BOOT_FAILURE_SECURE_BOOT_FAILED,
+    EVENT_ID_NO_BOOT_DEVICE,
+    EVENT_ID_BOOT_ATTEMPT,
+];
+
+/// Get Hyper-V event logs for a VM
+pub fn hyperv_boot_events(vmid: &Guid, start_time: &Timestamp) -> anyhow::Result<Vec<WinEvent>> {
+    let vmid = vmid.to_string();
+    run_get_winevent(
+        &[HYPERV_WORKER_TABLE],
+        Some(start_time),
+        Some(&vmid),
+        &BOOT_EVENT_IDS,
+    )
 }
 
 /// Get the IDs of the VM(s) with the specified name
@@ -412,40 +489,93 @@ pub fn vm_id_from_name(name: &str) -> anyhow::Result<Vec<Guid>> {
     Ok(vmids)
 }
 
+/// Hyper-V VM Shutdown Integration Component Status
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum VmShutdownIcStatus {
+    /// The VM is off
+    Off,
+    /// The component is operating normally.
+    Ok,
+    /// The component is operating normally but the guest component negotiated
+    /// a compatiable communications protocol version.
+    Degraded,
+    /// The guest does not support a compatible protocol version.
+    NonRecoverableError,
+    /// The guest component is not installed or has not yet been contacted.
+    NoContact,
+    /// The guest component is no longer responding normally.
+    LostCommunication,
+}
+
+/// Get the VM's shutdown IC status
+pub fn vm_shutdown_ic_status(vmid: &Guid) -> anyhow::Result<VmShutdownIcStatus> {
+    let status = PowerShellBuilder::new()
+        .cmdlet("Get-VM")
+        .arg_string("Id", vmid)
+        .pipeline()
+        .cmdlet("Get-VMIntegrationService")
+        .arg("Name", "Shutdown")
+        .pipeline()
+        .cmdlet("Select-Object")
+        .arg("ExpandProperty", "PrimaryStatusDescription")
+        .finish()
+        .output(true)
+        .context("vm_shutdown_ic_status")?;
+
+    Ok(match status.as_str() {
+        "" => VmShutdownIcStatus::Off,
+        "OK" => VmShutdownIcStatus::Ok,
+        "Degraded" => VmShutdownIcStatus::Degraded,
+        "Non-Recoverable Error" => VmShutdownIcStatus::NonRecoverableError,
+        "No Contact" => VmShutdownIcStatus::NoContact,
+        "Lost Communication" => VmShutdownIcStatus::LostCommunication,
+        s => anyhow::bail!("Unknown VM shutdown status: {s}"),
+    })
+}
+
 /// A PowerShell script builder
 pub struct PowerShellBuilder(Command);
 
 impl PowerShellBuilder {
     /// Create a new PowerShell command
     pub fn new() -> Self {
-        let mut cmd = Command::new("powershell.exe");
-        cmd.arg("-NoProfile");
-        Self(cmd)
+        PowerShellCmdletBuilder(Command::new("powershell.exe"))
+            .flag("NoProfile")
+            .finish()
     }
 
     /// Start a new Cmdlet
-    pub fn cmdlet<S: AsRef<OsStr>>(mut self, cmdlet: S) -> PowerShellCmdletBuilder {
-        self.0.arg(cmdlet);
+    pub fn cmdlet<S: AsRef<OsStr>>(self, cmdlet: S) -> PowerShellCmdletBuilder {
+        PowerShellCmdletBuilder(self.0).positional(cmdlet)
+    }
+
+    /// Assign the output of the cmdlet to a variable
+    pub fn cmdlet_to_var<S: AsRef<OsStr>, T: AsRef<OsStr>>(
+        self,
+        cmdlet: S,
+        varname: T,
+    ) -> PowerShellCmdletBuilder {
         PowerShellCmdletBuilder(self.0)
+            .positional_var(varname, false)
+            .positional("=")
+            .finish()
+            .cmdlet(cmdlet)
     }
 
     /// Run the PowerShell script and return the output
-    pub fn output(mut self, log_stdout: bool) -> anyhow::Result<String> {
+    pub fn output(mut self, log_stdout: bool) -> Result<String, CommandError> {
         self.0.stderr(Stdio::piped()).stdin(Stdio::null());
-        let output = self.0.output().context("failed to launch powershell")?;
+        let output = self.0.output()?;
 
         let ps_stdout = (log_stdout || !output.status.success())
             .then(|| String::from_utf8_lossy(&output.stdout).to_string());
         let ps_stderr = String::from_utf8_lossy(&output.stderr).to_string();
         tracing::debug!(ps_cmd = self.cmd(), ps_stdout, ps_stderr);
         if !output.status.success() {
-            anyhow::bail!("powershell script failed with exit code: {}", output.status);
+            return Err(CommandError::Command(output.status, ps_stderr));
         }
 
-        Ok(String::from_utf8(output.stdout)
-            .context("powershell output is not utf-8")?
-            .trim()
-            .to_owned())
+        Ok(String::from_utf8(output.stdout)?.trim().to_owned())
     }
 
     /// Get the command to be run
@@ -508,17 +638,31 @@ impl PowerShellCmdletBuilder {
         self.positional_opt(positional.map(|x| x.to_string()))
     }
 
-    /// Add an argument to the cmdlet
+    /// Add a PowerShell variable as a positional argument to the cmdlet
+    pub fn positional_var<S: AsRef<OsStr>>(self, varname: S, as_array: bool) -> Self {
+        let mut ps_var = OsString::new();
+        if as_array {
+            ps_var.push("@(");
+        }
+        ps_var.push("$");
+        ps_var.push(varname);
+        if as_array {
+            ps_var.push(")");
+        }
+        self.positional(ps_var)
+    }
+
+    /// Add a named argument to the cmdlet
     pub fn arg<S: AsRef<OsStr>, T: AsRef<OsStr>>(self, name: S, value: T) -> Self {
         self.flag(name).positional(value)
     }
 
-    /// Add an argument to the cmdlet
+    /// Add a named argument to the cmdlet
     pub fn arg_string<S: AsRef<OsStr>, T: ToString>(self, name: S, value: T) -> Self {
         self.arg(name, value.to_string())
     }
 
-    /// Optionally add an argument to the cmdlet
+    /// Optionally add a named argument to the cmdlet
     pub fn arg_opt<S: AsRef<OsStr>, T: AsRef<OsStr>>(self, name: S, value: Option<T>) -> Self {
         if let Some(value) = value {
             self.arg(name, value)
@@ -527,9 +671,19 @@ impl PowerShellCmdletBuilder {
         }
     }
 
-    /// Optionally add an argument to the cmdlet
+    /// Optionally add a named argument to the cmdlet
     pub fn arg_opt_string<S: AsRef<OsStr>, T: ToString>(self, name: S, value: Option<T>) -> Self {
         self.arg_opt(name, value.map(|x| x.to_string()))
+    }
+
+    /// Add a PowerShell variable as a named argument to the cmdlet
+    pub fn arg_var<S: AsRef<OsStr>, T: AsRef<OsStr>>(
+        self,
+        name: S,
+        varname: T,
+        as_array: bool,
+    ) -> Self {
+        self.flag(name).positional_var(varname, as_array)
     }
 
     /// Finish the cmdlet

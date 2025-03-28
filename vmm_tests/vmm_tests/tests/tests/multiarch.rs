@@ -18,26 +18,25 @@ async fn frontpage(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     Ok(())
 }
 
-// TODO: reorganize tests based on VMM
 /// Basic boot test.
 #[vmm_test(
     openvmm_linux_direct_x64,
     openvmm_openhcl_linux_direct_x64,
-    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
-    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
-    hyperv_uefi_x64(vhd(ubuntu_2204_server_x64)),
     openvmm_pcat_x64(vhd(ubuntu_2204_server_x64)),
-    hyperv_pcat_x64(vhd(ubuntu_2204_server_x64)),
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_pcat_x64(vhd(ubuntu_2204_server_x64)),
     hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))
+    hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))
 )]
 async fn boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     let (vm, agent) = config.run().await?;

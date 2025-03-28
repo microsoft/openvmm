@@ -8,6 +8,7 @@ mod openhcl_servicing;
 mod openhcl_uefi;
 
 use anyhow::Context;
+use petri::PetriVmConfig;
 use petri::SIZE_1_GB;
 use petri::ShutdownKind;
 use petri::openvmm::PetriVmConfigOpenVmm;
@@ -15,10 +16,19 @@ use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
+use vmm_test_macros::vmm_test;
 
-/// Basic boot test with no agent for unsupported guests.
-#[openvmm_test(pcat_x64(vhd(freebsd_13_2_x64)), pcat_x64(iso(freebsd_13_2_x64)))]
-async fn boot_no_agent(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+/// Basic boot test without agent
+#[vmm_test(
+    openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
+    openvmm_pcat_x64(iso(freebsd_13_2_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+)]
+async fn boot_no_agent(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
     vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
@@ -90,19 +100,6 @@ async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     };
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
-    Ok(())
-}
-
-/// Basic VBS boot test.
-#[openvmm_test(
-    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
-)]
-async fn vbs_boot(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
-    let mut vm = config.run_without_agent().await?;
-    vm.wait_for_successful_boot_event().await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
 }
