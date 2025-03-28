@@ -351,6 +351,16 @@ struct GuestVsmVpState {
 }
 
 #[cfg(guest_arch = "x86_64")]
+impl GuestVsmVpState {
+    fn new() -> Self {
+        GuestVsmVpState {
+            vtl0_exit_pending_event: None,
+            reg_intercept: Default::default(),
+        }
+    }
+}
+
+#[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
 /// VP state for CVMs.
 struct UhCvmVpState {
@@ -365,7 +375,6 @@ struct UhCvmVpState {
     lapics: VtlArray<LapicState, 2>,
     /// Guest VSM state for this vp. Some when VTL 1 is enabled.
     vtl1: Option<GuestVsmVpState>,
-    vtl1_reg_intercept: SecureRegisterInterceptState, // TODO: move into vtl 1 state
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -413,13 +422,13 @@ impl UhCvmVpState {
             hv,
             lapics,
             vtl1: None,
-            vtl1_reg_intercept: Default::default(),
         })
     }
 }
 
 #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect, Default)]
+/// Configuration of VTL 1 registration for intercepts on certain registers
 pub struct SecureRegisterInterceptState {
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
     intercept_control: hvdef::HvRegisterCrInterceptControl,
@@ -428,7 +437,6 @@ pub struct SecureRegisterInterceptState {
     ia32_misc_enable_mask: u64,
 }
 
-#[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
 /// Partition-wide state for CVMs.
 struct UhCvmPartitionState {
