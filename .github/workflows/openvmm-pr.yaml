@@ -32,9 +32,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -66,25 +63,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite "$OutDirNormal/flowey"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -206,9 +191,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -240,25 +222,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe "$OutDirNormal/flowey.exe"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -391,9 +361,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -425,25 +392,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite "$OutDirNormal/flowey"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -751,9 +706,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -785,25 +737,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite "$OutDirNormal/flowey"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -1066,9 +1006,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -1100,25 +1037,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite "$OutDirNormal/flowey"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -1486,9 +1411,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -1520,25 +1442,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite "$OutDirNormal/flowey"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -1728,9 +1638,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -1762,25 +1669,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe "$OutDirNormal/flowey.exe"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -1995,9 +1890,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -2029,25 +1921,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite "$OutDirNormal/flowey"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -2301,9 +2181,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -2335,25 +2212,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite "$OutDirNormal/flowey"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -2611,9 +2476,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -2645,25 +2507,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target aarch64-pc-windows-msvc --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/aarch64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target aarch64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/aarch64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe "$OutDirNormal/flowey.exe"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -3399,9 +3249,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -3433,25 +3280,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite "$OutDirNormal/flowey"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -3871,9 +3706,6 @@ jobs:
     - job6
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -3905,25 +3737,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target aarch64-pc-windows-msvc --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/aarch64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target aarch64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/aarch64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe "$OutDirNormal/flowey.exe"
       working-directory: flowey_bootstrap
       shell: bash
     - name: 🌼📦 Download aarch64-guest_test_uefi
@@ -4200,9 +4020,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -4234,25 +4051,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite "$OutDirNormal/flowey"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -4384,9 +4189,6 @@ jobs:
     - job4
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -4418,25 +4220,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe "$OutDirNormal/flowey.exe"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -4555,9 +4345,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -4589,25 +4376,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite "$OutDirNormal/flowey"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -4736,9 +4511,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -4770,25 +4542,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe "$OutDirNormal/flowey.exe"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -4989,9 +4749,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -5023,25 +4780,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe "$OutDirNormal/flowey.exe"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -5238,9 +4983,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -5272,25 +5014,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe "$OutDirNormal/flowey.exe"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -5495,9 +5225,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -5529,25 +5256,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe ./flowey_bootstrap_temp/flowey.exe
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-pc-windows-msvc --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe "$OutDirNormal/flowey.exe"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
@@ -5753,9 +5468,6 @@ jobs:
       id-token: write
     if: github.event.pull_request.draft == false
     steps:
-    - run: echo "injected!"
-      name: 🌼🥾 Bootstrap flowey
-      shell: bash
     - run: |
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
@@ -5787,25 +5499,13 @@ jobs:
       with:
         path: flowey_bootstrap
     - name: Build flowey
-      run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Stage flowey artifact
       run: |
-        mkdir ./flowey_bootstrap_temp
-        mv ./.github/workflows/openvmm-pr.yaml ./flowey_bootstrap_temp/pipeline.yaml
-        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite ./flowey_bootstrap_temp/flowey
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Copy flowey artifact
-      run: |
+        set -x
+        CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p flowey_hvlite --target x86_64-unknown-linux-gnu --profile flowey-ci
         OutDirNormal=$(echo "${{ runner.temp }}/bootstrapped-flowey" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-        mkdir -p $OutDirNormal
-        cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-      working-directory: flowey_bootstrap
-      shell: bash
-    - name: Cleanup staged flowey artifact
-      run: rm -rf ./flowey_bootstrap_temp
+        mkdir -p "$OutDirNormal"
+        mv ./.github/workflows/openvmm-pr.yaml "$OutDirNormal/pipeline.yaml"
+        mv target/x86_64-unknown-linux-gnu/flowey-ci/flowey_hvlite "$OutDirNormal/flowey"
       working-directory: flowey_bootstrap
       shell: bash
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
