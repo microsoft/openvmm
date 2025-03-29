@@ -359,9 +359,7 @@ jobs:
       run: |-
         flowey.exe e 1 flowey_lib_common::install_rust 1
         flowey.exe e 1 flowey_lib_common::cfg_cargo_common_flags 0
-      shell: bash
-    - name: construct cargo doc command
-      run: flowey.exe e 1 flowey_lib_common::run_cargo_doc 0
+        flowey.exe e 1 flowey_lib_common::run_cargo_doc 0
       shell: bash
     - name: document repo for target x86_64-pc-windows-msvc
       run: flowey.exe e 1 flowey_lib_hvlite::build_rustdoc 0
@@ -603,9 +601,7 @@ jobs:
       run: |-
         flowey e 10 flowey_lib_common::run_cargo_build 4
         flowey e 10 flowey_lib_hvlite::run_cargo_build 7
-      shell: bash
-    - name: check built vmgs_lib
-      run: flowey e 10 flowey_lib_hvlite::build_and_test_vmgs_lib 0
+        flowey e 10 flowey_lib_hvlite::build_and_test_vmgs_lib 0
       shell: bash
     - name: test vmgs_lib
       run: |-
@@ -1959,10 +1955,8 @@ jobs:
         flowey.exe e 14 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
     - name: run 'unit-tests' nextest tests
-      run: flowey.exe e 14 flowey_lib_common::run_cargo_nextest_run 0
-      shell: bash
-    - name: write results
       run: |-
+        flowey.exe e 14 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 14 flowey_lib_common::run_cargo_nextest_run 1
         flowey.exe e 14 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
         flowey.exe e 14 flowey_lib_common::publish_test_results 0
@@ -2267,10 +2261,8 @@ jobs:
         flowey e 15 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
     - name: run 'unit-tests' nextest tests
-      run: flowey e 15 flowey_lib_common::run_cargo_nextest_run 0
-      shell: bash
-    - name: write results
       run: |-
+        flowey e 15 flowey_lib_common::run_cargo_nextest_run 0
         flowey e 15 flowey_lib_common::run_cargo_nextest_run 1
         flowey e 15 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
         flowey e 15 flowey_lib_common::publish_test_results 0
@@ -2578,10 +2570,8 @@ jobs:
         flowey e 16 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
     - name: run 'unit-tests' nextest tests
-      run: flowey e 16 flowey_lib_common::run_cargo_nextest_run 0
-      shell: bash
-    - name: write results
       run: |-
+        flowey e 16 flowey_lib_common::run_cargo_nextest_run 0
         flowey e 16 flowey_lib_common::run_cargo_nextest_run 1
         flowey e 16 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
         flowey e 16 flowey_lib_common::publish_test_results 0
@@ -2815,10 +2805,8 @@ jobs:
         flowey.exe e 17 flowey_lib_hvlite::run_cargo_nextest_run 0
       shell: bash
     - name: run 'unit-tests' nextest tests
-      run: flowey.exe e 17 flowey_lib_common::run_cargo_nextest_run 0
-      shell: bash
-    - name: write results
       run: |-
+        flowey.exe e 17 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 17 flowey_lib_common::run_cargo_nextest_run 1
         flowey.exe e 17 flowey_lib_hvlite::_jobs::build_and_run_nextest_unit_tests 0
         flowey.exe e 17 flowey_lib_common::publish_test_results 0
@@ -3048,10 +3036,9 @@ jobs:
       run: flowey.exe e 18 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 0
       shell: bash
     - name: downloading VMM test disk images
-      run: flowey.exe e 18 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 1
-      shell: bash
-    - name: report downloaded VMM test disk images
-      run: flowey.exe e 18 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 2
+      run: |-
+        flowey.exe e 18 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 1
+        flowey.exe e 18 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 2
       shell: bash
     - name: unpack openvmm-deps archive
       run: flowey.exe e 18 flowey_lib_hvlite::download_openvmm_deps 0
@@ -3067,10 +3054,8 @@ jobs:
         flowey.exe e 18 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
-      run: flowey.exe e 18 flowey_lib_common::run_cargo_nextest_run 0
-      shell: bash
-    - name: write results
       run: |-
+        flowey.exe e 18 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 18 flowey_lib_common::run_cargo_nextest_run 1
         flowey.exe e 18 flowey_lib_common::publish_test_results 4
         flowey.exe e 18 flowey_lib_common::publish_test_results 5
@@ -3328,10 +3313,9 @@ jobs:
       run: flowey.exe e 19 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 0
       shell: bash
     - name: downloading VMM test disk images
-      run: flowey.exe e 19 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 1
-      shell: bash
-    - name: report downloaded VMM test disk images
-      run: flowey.exe e 19 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 2
+      run: |-
+        flowey.exe e 19 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 1
+        flowey.exe e 19 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 2
       shell: bash
     - name: unpack openvmm-deps archive
       run: flowey.exe e 19 flowey_lib_hvlite::download_openvmm_deps 0
@@ -3347,10 +3331,8 @@ jobs:
         flowey.exe e 19 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
-      run: flowey.exe e 19 flowey_lib_common::run_cargo_nextest_run 0
-      shell: bash
-    - name: write results
       run: |-
+        flowey.exe e 19 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 19 flowey_lib_common::run_cargo_nextest_run 1
         flowey.exe e 19 flowey_lib_common::publish_test_results 4
         flowey.exe e 19 flowey_lib_common::publish_test_results 5
@@ -3576,9 +3558,7 @@ jobs:
       run: |-
         flowey e 2 flowey_lib_common::install_rust 1
         flowey e 2 flowey_lib_common::cfg_cargo_common_flags 0
-      shell: bash
-    - name: construct cargo doc command
-      run: flowey e 2 flowey_lib_common::run_cargo_doc 0
+        flowey e 2 flowey_lib_common::run_cargo_doc 0
       shell: bash
     - name: document repo for target x86_64-unknown-linux-gnu
       run: flowey e 2 flowey_lib_hvlite::build_rustdoc 0
@@ -3797,10 +3777,9 @@ jobs:
       run: flowey e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 0
       shell: bash
     - name: downloading VMM test disk images
-      run: flowey e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 1
-      shell: bash
-    - name: report downloaded VMM test disk images
-      run: flowey e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 2
+      run: |-
+        flowey e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 1
+        flowey e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 2
       shell: bash
     - name: unpack openvmm-deps archive
       run: flowey e 20 flowey_lib_hvlite::download_openvmm_deps 0
@@ -3816,10 +3795,8 @@ jobs:
         flowey e 20 flowey_lib_hvlite::test_nextest_vmm_tests_archive 1
       shell: bash
     - name: run 'vmm_tests' nextest tests
-      run: flowey e 20 flowey_lib_common::run_cargo_nextest_run 0
-      shell: bash
-    - name: write results
       run: |-
+        flowey e 20 flowey_lib_common::run_cargo_nextest_run 0
         flowey e 20 flowey_lib_common::run_cargo_nextest_run 1
         flowey e 20 flowey_lib_common::publish_test_results 4
         flowey e 20 flowey_lib_common::publish_test_results 5
@@ -4137,10 +4114,9 @@ jobs:
       run: flowey.exe e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 0
       shell: bash
     - name: downloading VMM test disk images
-      run: flowey.exe e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 1
-      shell: bash
-    - name: report downloaded VMM test disk images
-      run: flowey.exe e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 2
+      run: |-
+        flowey.exe e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 1
+        flowey.exe e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 2
       shell: bash
     - name: unpack openvmm-deps archive
       run: flowey.exe e 21 flowey_lib_hvlite::download_openvmm_deps 0
@@ -4156,10 +4132,8 @@ jobs:
         flowey.exe e 21 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
-      run: flowey.exe e 21 flowey_lib_common::run_cargo_nextest_run 0
-      shell: bash
-    - name: write results
       run: |-
+        flowey.exe e 21 flowey_lib_common::run_cargo_nextest_run 0
         flowey.exe e 21 flowey_lib_common::run_cargo_nextest_run 1
         flowey.exe e 21 flowey_lib_common::publish_test_results 4
         flowey.exe e 21 flowey_lib_common::publish_test_results 5
@@ -4960,9 +4934,6 @@ jobs:
       run: |-
         flowey.exe e 5 flowey_lib_common::run_cargo_build 3
         flowey.exe e 5 flowey_lib_hvlite::run_cargo_build 3
-      shell: bash
-    - name: check built vmgs_lib
-      run: |-
         flowey.exe e 5 flowey_lib_hvlite::build_and_test_vmgs_lib 0
         flowey.exe e 5 flowey_lib_hvlite::build_and_test_vmgs_lib 1
         flowey.exe e 5 flowey_lib_hvlite::artifact_vmgs_lib::publish 0
@@ -5453,9 +5424,7 @@ jobs:
       run: |-
         flowey.exe e 7 flowey_lib_common::run_cargo_build 3
         flowey.exe e 7 flowey_lib_hvlite::run_cargo_build 3
-      shell: bash
-    - name: check built vmgs_lib
-      run: flowey.exe e 7 flowey_lib_hvlite::build_and_test_vmgs_lib 0
+        flowey.exe e 7 flowey_lib_hvlite::build_and_test_vmgs_lib 0
       shell: bash
     - name: test vmgs_lib
       run: |-
@@ -5992,9 +5961,6 @@ jobs:
       run: |-
         flowey e 9 flowey_lib_common::run_cargo_build 4
         flowey e 9 flowey_lib_hvlite::run_cargo_build 7
-      shell: bash
-    - name: check built vmgs_lib
-      run: |-
         flowey e 9 flowey_lib_hvlite::build_and_test_vmgs_lib 0
         flowey e 9 flowey_lib_hvlite::build_and_test_vmgs_lib 1
         flowey e 9 flowey_lib_hvlite::artifact_vmgs_lib::publish 0

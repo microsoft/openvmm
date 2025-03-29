@@ -156,7 +156,7 @@ impl FlowNode for Node {
 
             let doc_targets = targets;
 
-            ctx.emit_rust_step("construct cargo doc command", |ctx| {
+            ctx.emit_minor_rust_step("construct cargo doc command", |ctx| {
                 let rust_toolchain = rust_toolchain.clone().claim(ctx);
                 let flags = flags.clone().claim(ctx);
                 let in_folder = in_folder.claim(ctx);
@@ -272,8 +272,6 @@ impl FlowNode for Node {
                     };
 
                     rt.write(write_doc_cmd, &cmd);
-
-                    Ok(())
                 }
             });
         }

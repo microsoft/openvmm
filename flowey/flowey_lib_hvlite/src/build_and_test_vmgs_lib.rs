@@ -71,18 +71,14 @@ impl SimpleFlowNode for Node {
             output: v,
         });
 
-        let built_vmgs_lib = ctx.emit_rust_stepv("check built vmgs_lib", |ctx| {
+        let built_vmgs_lib = ctx.emit_minor_rust_stepv("check built vmgs_lib", |ctx| {
             let output = output.claim(ctx);
-            move |rt| {
-                Ok(match rt.read(output) {
-                    CargoBuildOutput::LinuxDynamicLib { so } => {
-                        VmgsLibOutput::LinuxDynamicLib { so }
-                    }
-                    CargoBuildOutput::WindowsDynamicLib { dll, dll_lib, pdb } => {
-                        VmgsLibOutput::WindowsDynamicLib { dll, dll_lib, pdb }
-                    }
-                    _ => unreachable!(),
-                })
+            move |rt| match rt.read(output) {
+                CargoBuildOutput::LinuxDynamicLib { so } => VmgsLibOutput::LinuxDynamicLib { so },
+                CargoBuildOutput::WindowsDynamicLib { dll, dll_lib, pdb } => {
+                    VmgsLibOutput::WindowsDynamicLib { dll, dll_lib, pdb }
+                }
+                _ => unreachable!(),
             }
         });
 
