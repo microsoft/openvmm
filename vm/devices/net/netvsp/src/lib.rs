@@ -24,6 +24,7 @@ use crate::rndisprot::NDIS_RSS_PARAM_FLAG_DISABLE_RSS;
 use async_trait::async_trait;
 pub use buffers::BufferPool;
 use buffers::sub_allocation_size_for_mtu;
+use chrono::{DateTime, Local, Timelike};
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::channel::mpsc;
@@ -812,11 +813,23 @@ impl PrimaryChannelState {
             .collect();
 
         let rss_state = rss_state
-            .map(|rss| {
+            .map(|mut rss| {
+                tracing::error!(
+                    "ERIK restore rss_state: {:?} adapter: {:?}",
+                    rss.indirection_table.len(),
+                    indirection_table_size
+                );
                 if rss.indirection_table.len() != indirection_table_size as usize {
-                    return Err(NetRestoreError::MismatchedIndirectionTableSize);
+                    tracing::warn!(
+                        "ERIK MissmatchedIndirectionTableSize rss_state: {:?} adapter: {:?} RESIZING",
+                        rss.indirection_table.len(),
+                        indirection_table_size
+                    );
+                    rss.indirection_table
+                        .resize(indirection_table_size as usize, 0);
+                    //return Err(NetRestoreError::MismatchedIndirectionTableSize);
                 }
-                Ok(RssState {
+                Ok::<RssState, NetRestoreError>(RssState {
                     key: rss
                         .key
                         .try_into()
@@ -1042,11 +1055,27 @@ impl NicBuilder {
         };
 
         let driver = driver_source.simple();
+
+        //let mut rng = rand::rng(); // ERIKERIK
+        //let count: u8 = rng.random();
+        let dt: DateTime<Local> = Local::now();
+        let even = dt.minute() % 2 == 0;
+        let table_size = if even {
+            multiqueue.indirection_table_size
+        } else {
+            4
+        };
+        tracing::error!(
+            multiqueue.indirection_table_size,
+            even,
+            table_size,
+            "ERIK Arc::new Adapter"
+        );
         let adapter = Arc::new(Adapter {
             driver,
             mac_address,
             max_queues,
-            indirection_table_size: multiqueue.indirection_table_size,
+            indirection_table_size: table_size,
             offload_support,
             free_tx_packet_threshold,
             ring_size_limit: ring_size_limit.into(),
@@ -3230,6 +3259,10 @@ impl Adapter {
                 )?;
             }
             rndisprot::Oid::OID_GEN_RECEIVE_SCALE_CAPABILITIES => {
+                tracing::error!(
+                    self.indirection_table_size,
+                    "ERIK handle_oid_query OID_GEN_RECEIVE_SCALE_CAPABILITIES",
+                );
                 writer.write(
                     &rndisprot::NdisReceiveScaleCapabilities {
                         header: rndisprot::NdisObjectHeader {
@@ -3329,6 +3362,12 @@ impl Adapter {
         }
         let indirection_table_size =
             (params.indirection_table_size / 4).min(self.indirection_table_size) as usize;
+        tracing::error!(
+            params.indirection_table_size,
+            self.indirection_table_size,
+            indirection_table_size,
+            "ERIK handle_oid_set oid_set_rss_parameters OID_GEN_RECEIVE_SCALE_PARAMETERS",
+        );
         let mut key = [0; 40];
         let mut indirection_table = vec![0u32; self.indirection_table_size as usize];
         reader
@@ -4077,6 +4116,8 @@ impl Coordinator {
     }
 
     async fn restart_queues(&mut self, c_state: &mut CoordinatorState) -> Result<(), WorkerError> {
+        tracing::error!("ERIK Coordinator::restart_queues enter");
+
         // Drop all the queues and stop the endpoint. Collect the worker drivers to pass to the queues.
         let drivers = self
             .workers
@@ -4244,6 +4285,15 @@ impl Coordinator {
                     indirection_table: &rss.indirection_table,
                     flags: 0,
                 });
+
+            if let Some(rss) = rss.as_ref() {
+                tracing::error!(
+                    "ERIK Coordinator::restart_queues DONE RSS State Some {:?}",
+                    rss.indirection_table.len(),
+                );
+            } else {
+                tracing::error!("ERIK Coordinator::restart_queues DONE RSS State None");
+            }
 
             c_state
                 .endpoint
