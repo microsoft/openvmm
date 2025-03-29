@@ -1692,6 +1692,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             let info = channel.info.expect("assigned");
             if channel.restore_state == RestoreState::Unmatched {
                 tracing::debug!(
+                    vtl = self.inner.assigned_channels.vtl as u8,
                     offer_id = offer_id.0,
                     key = %channel.offer.key(),
                     "matched channel"
@@ -1718,7 +1719,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 // reference to it. Save the offer for reoffering immediately
                 // after the child releases it.
                 channel.state = ChannelState::Reoffered;
-                tracing::info!(?offer_id, key = %channel.offer.key(), "channel marked for reoffer");
+                tracing::info!(
+                    vtl = self.inner.assigned_channels.vtl as u8,
+                    offer_id = offer_id.0,
+                    key = %channel.offer.key(),
+                    "channel marked for reoffer"
+                );
             }
 
             channel.offer = offer;
@@ -1773,7 +1779,14 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 .send_offer(channel, version);
         }
 
-        tracing::info!(?offer_id, %key, confidential_ring_buffer, confidential_external_memory, "new channel");
+        tracing::info!(
+            vtl = self.inner.assigned_channels.vtl as u8,
+            offer_id = offer_id.0,
+            %key,
+            confidential_ring_buffer,
+            confidential_external_memory,
+            "new channel"
+        );
         Ok(offer_id)
     }
 
@@ -1797,7 +1810,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
     /// Completes an open operation with `result`.
     pub fn open_complete(&mut self, offer_id: OfferId, result: i32) {
-        tracing::debug!(offer_id = offer_id.0, result, "open complete");
+        tracing::debug!(
+            vtl = self.inner.assigned_channels.vtl as u8,
+            offer_id = offer_id.0,
+            result,
+            "open complete"
+        );
 
         let channel = &mut self.inner.channels[offer_id];
         match channel.state {
@@ -1808,6 +1826,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 let channel_id = channel.info.expect("assigned").channel_id;
                 if result >= 0 {
                     tracelimit::info_ratelimited!(
+                        vtl = self.inner.assigned_channels.vtl as u8,
                         offer_id = offer_id.0,
                         channel_id = channel_id.0,
                         result,
@@ -1816,6 +1835,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 } else {
                     // Log channel open failures at error level for visibility.
                     tracelimit::error_ratelimited!(
+                        vtl = self.inner.assigned_channels.vtl as u8,
                         offer_id = offer_id.0,
                         channel_id = channel_id.0,
                         result,
@@ -1844,6 +1864,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             }
             ChannelState::OpeningClientRelease => {
                 tracing::info!(
+                    vtl = self.inner.assigned_channels.vtl as u8,
                     offer_id = offer_id.0,
                     result,
                     "opened channel (client released)"
@@ -1866,7 +1887,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | ChannelState::Revoked
             | ChannelState::Reoffered
             | ChannelState::ClosingClientRelease => {
-                tracing::error!(?offer_id, state = ?channel.state, "invalid open complete")
+                tracing::error!(
+                    vtl = self.inner.assigned_channels.vtl as u8,
+                    offer_id = offer_id.0,
+                    state = ?channel.state,
+                    "invalid open complete"
+                );
             }
         }
     }
@@ -1933,8 +1959,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
     /// Completes a channel close operation.
     pub fn close_complete(&mut self, offer_id: OfferId) {
+        tracing::info!(
+            vtl = self.inner.assigned_channels.vtl as u8,
+            offer_id = offer_id.0,
+            "closed channel"
+        );
+
         let channel = &mut self.inner.channels[offer_id];
-        tracing::info!(offer_id = offer_id.0, "closed channel");
         match channel.state {
             ChannelState::Closing {
                 reserved_state: Some(reserved_state),
@@ -1985,7 +2016,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | ChannelState::Revoked
             | ChannelState::Reoffered
             | ChannelState::OpeningClientRelease => {
-                tracing::error!(?offer_id, state = ?channel.state, "invalid close complete")
+                tracing::error!(
+                    vtl = self.inner.assigned_channels.vtl as u8,
+                    offer_id = offer_id.0,
+                    state = ?channel.state,
+                    "invalid close complete"
+                );
             }
         }
     }
@@ -2649,6 +2685,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         input: &protocol::GpadlTeardown,
     ) -> Result<(), ChannelError> {
         tracing::debug!(
+            vtl = self.inner.assigned_channels.vtl as u8,
             channel_id = input.channel_id.0,
             gpadl_id = input.gpadl_id.0,
             "Received GPADL teardown request"
@@ -2686,6 +2723,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
                 if channel.state.is_revoked() {
                     tracing::trace!(
+                        vtl = self.inner.assigned_channels.vtl as u8,
                         channel_id = input.channel_id.0,
                         gpadl_id = input.gpadl_id.0,
                         "Gpadl teardown for revoked channel"
@@ -3255,14 +3293,21 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         info.modifying = true;
         info.monitor_page = monitor_page;
-        tracing::debug!("modifying connection parameters.");
+        tracing::debug!(
+            vtl = self.inner.assigned_channels.vtl as u8,
+            "modifying connection parameters."
+        );
         self.notifier.modify_connection(request.into())?;
 
         Ok(())
     }
 
     pub fn complete_modify_connection(&mut self, response: ModifyConnectionResponse) {
-        tracing::debug!(?response, "modifying connection parameters complete");
+        tracing::debug!(
+            vtl = self.inner.assigned_channels.vtl as u8,
+            ?response,
+            "modifying connection parameters complete"
+        );
 
         // InitiateContact, Unload, and actual ModifyConnection messages are all sent to the relay
         // as ModifyConnection requests, so use the server state to determine how to handle the
@@ -3314,7 +3359,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         let version = self.inner.state.get_version();
         let msg = Message::parse(&message.data, version)?;
-        tracing::trace!(?msg, message.trusted, "received vmbus message");
+        tracing::trace!(
+            vtl = self.inner.assigned_channels.vtl as u8,
+            ?msg,
+            message.trusted,
+            "received vmbus message"
+        );
         // Do not allow untrusted messages if the connection was established
         // using a trusted message.
         //
@@ -3465,6 +3515,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     /// Releases a GPADL that is being torn down.
     pub fn gpadl_teardown_complete(&mut self, offer_id: OfferId, gpadl_id: GpadlId) {
         tracing::debug!(
+            vtl = self.inner.assigned_channels.vtl as u8,
             offer_id = offer_id.0,
             gpadl_id = gpadl_id.0,
             "Gpadl teardown complete"
@@ -4155,7 +4206,7 @@ mod tests {
 
     impl Notifier for TestNotifier {
         fn notify(&mut self, offer_id: OfferId, action: Action) {
-            tracing::debug!(?offer_id, ?action, "notify");
+            tracing::debug!(offer_id = offer_id.0, ?action, "notify");
             self.send.send((offer_id, action)).unwrap()
         }
 
