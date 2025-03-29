@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::MnfUsage;
 use super::OfferError;
 use super::OfferParamsInternal;
 use super::OfferedInfo;
@@ -79,13 +80,13 @@ impl super::Server {
 
             // The channel's monitor ID can be already set if it was set by the device, which is
             // the case with relay channels. In that case, it must match the saved ID.
-            if channel.offer.monitor_id.is_some()
-                && channel.offer.monitor_id != saved_channel.monitor_id
-            {
-                return Err(RestoreError::MismatchedMonitorId(
-                    channel.offer.monitor_id.unwrap(),
-                    saved_channel.monitor_id,
-                ));
+            if let MnfUsage::Relayed { monitor_id } = channel.offer.use_mnf {
+                if info.monitor_id != Some(MonitorId(monitor_id)) {
+                    return Err(RestoreError::MismatchedMonitorId(
+                        monitor_id,
+                        saved_channel.monitor_id,
+                    ));
+                }
             }
 
             self.assigned_channels
