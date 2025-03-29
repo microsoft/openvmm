@@ -18,6 +18,7 @@ pub mod cpuid;
 pub mod hv;
 pub mod hypercall;
 pub mod message_queues;
+mod overlay;
 pub mod synic;
 pub mod x86;
 
