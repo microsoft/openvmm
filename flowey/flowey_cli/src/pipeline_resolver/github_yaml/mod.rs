@@ -161,13 +161,6 @@ pub fn github_yaml(
                 serde_yaml::from_str(&gh_bootstrap_template)
                     .context("malformed flowey bootstrap template")?;
 
-            gh_steps.push({
-                let mut map = serde_yaml::Mapping::new();
-                map.insert("run".into(), "echo \"injected!\"".into());
-                map.insert("name".into(), "🌼🥾 Bootstrap flowey".into());
-                map.insert("shell".into(), "bash".into());
-                map.into()
-            });
             gh_steps.extend(bootstrap_steps);
         }
 
