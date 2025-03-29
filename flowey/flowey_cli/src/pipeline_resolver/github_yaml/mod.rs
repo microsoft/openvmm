@@ -268,7 +268,7 @@ pub fn github_yaml(
                     }
                 };
 
-                current_invocation.insert(i, current_yaml.into());
+                current_invocation.insert(i, current_yaml);
                 current_invocation.insert(i, "--runtime".into());
             }
 
