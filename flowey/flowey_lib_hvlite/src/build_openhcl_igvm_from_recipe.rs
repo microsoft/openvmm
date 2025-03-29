@@ -579,7 +579,7 @@ impl SimpleFlowNode for Node {
                 }
             };
 
-        let resources = ctx.emit_rust_stepv("enumerate igvm resources", |ctx| {
+        let resources = ctx.emit_minor_rust_stepv("enumerate igvm resources", |ctx| {
             let initrd = initrd.claim(ctx);
             let kernel = kernel.claim(ctx);
             let openhcl_boot_bin = openhcl_boot_bin.claim(ctx);
@@ -600,7 +600,7 @@ impl SimpleFlowNode for Node {
                 if let Some(vtl0_kernel_resource) = vtl0_kernel_resource {
                     vtl0_kernel_resource.add_to_resources(&mut resources, rt);
                 }
-                Ok(resources)
+                resources
             }
         });
 

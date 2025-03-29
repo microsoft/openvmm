@@ -96,7 +96,7 @@ impl FlowNode for Node {
         match ctx.backend() {
             FlowBackend::Local => {
                 if !ctx.supports_persistent_dir() {
-                    ctx.emit_rust_step("Reporting cache misses", |ctx| {
+                    ctx.emit_minor_rust_step("Reporting cache misses", |ctx| {
                         let hitvars = requests
                             .into_iter()
                             .map(|v| match v.hitvar {
@@ -117,7 +117,6 @@ impl FlowNode for Node {
                                     }
                                 }
                             }
-                            Ok(())
                         }
                     });
 

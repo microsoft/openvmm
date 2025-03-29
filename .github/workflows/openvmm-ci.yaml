@@ -114,8 +114,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 0 flowey_lib_common::cache 0
-        flowey v 0 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar2 --is-raw-string
-        flowey v 0 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar3 --is-raw-string
+        flowey v 0 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey v 0 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -125,7 +125,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 0 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey v 0 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey e 0 flowey_lib_common::cache 2
@@ -313,8 +313,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 1 flowey_lib_common::cache 0
-        flowey.exe v 1 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar1 --is-raw-string
-        flowey.exe v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey.exe v 1 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar1 --is-raw-string
+        flowey.exe v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar2 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -324,7 +324,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 1 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 1 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey.exe e 1 flowey_lib_common::cache 2
@@ -499,8 +499,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 10 flowey_lib_common::cache 0
-        flowey v 10 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar1 --is-raw-string
-        flowey v 10 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey v 10 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar1 --is-raw-string
+        flowey v 10 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar2 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -510,7 +510,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 10 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey v 10 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey e 10 flowey_lib_common::cache 2
@@ -562,10 +562,8 @@ jobs:
         flowey e 10 flowey_lib_hvlite::run_cargo_build 5
       shell: bash
     - name: split debug symbols
-      run: flowey e 10 flowey_lib_hvlite::run_split_debug_info 1
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 10 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 10 flowey_lib_hvlite::run_cargo_build 6
         flowey e 10 flowey_lib_hvlite::build_openvmm 0
       shell: bash
@@ -580,10 +578,8 @@ jobs:
         flowey e 10 flowey_lib_hvlite::run_cargo_build 8
       shell: bash
     - name: split debug symbols
-      run: flowey e 10 flowey_lib_hvlite::run_split_debug_info 2
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 10 flowey_lib_hvlite::run_split_debug_info 2
         flowey e 10 flowey_lib_hvlite::run_cargo_build 9
         flowey e 10 flowey_lib_hvlite::build_vmgstool 0
         flowey e 10 flowey_lib_hvlite::artifact_vmgstool::publish 0
@@ -615,10 +611,8 @@ jobs:
         flowey e 10 flowey_lib_hvlite::run_cargo_build 1
       shell: bash
     - name: split debug symbols
-      run: flowey e 10 flowey_lib_hvlite::run_split_debug_info 3
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 10 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 10 flowey_lib_hvlite::run_cargo_build 2
         flowey e 10 flowey_lib_hvlite::build_igvmfilegen 0
         flowey e 10 flowey_lib_hvlite::artifact_igvmfilegen::publish 0
@@ -634,10 +628,8 @@ jobs:
         flowey e 10 flowey_lib_hvlite::run_cargo_build 3
       shell: bash
     - name: split debug symbols
-      run: flowey e 10 flowey_lib_hvlite::run_split_debug_info 0
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 10 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 10 flowey_lib_hvlite::run_cargo_build 4
         flowey e 10 flowey_lib_hvlite::build_ohcldiag_dev 0
         flowey e 10 flowey_lib_hvlite::artifact_ohcldiag_dev::publish 0
@@ -820,8 +812,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 11 flowey_lib_common::cache 4
-        flowey v 11 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar3 --is-raw-string
-        flowey v 11 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar4 --is-raw-string
+        flowey v 11 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar3 --is-raw-string
+        flowey v 11 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar4 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v4
@@ -831,7 +823,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 11 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey v 11 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
         EOF
         flowey e 11 flowey_lib_common::cache 6
@@ -883,10 +875,8 @@ jobs:
         flowey e 11 flowey_lib_hvlite::run_cargo_build 5
       shell: bash
     - name: split debug symbols
-      run: flowey e 11 flowey_lib_hvlite::run_split_debug_info 1
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 11 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 11 flowey_lib_hvlite::run_cargo_build 6
         flowey e 11 flowey_lib_hvlite::build_openvmm 0
       shell: bash
@@ -901,10 +891,8 @@ jobs:
         flowey e 11 flowey_lib_hvlite::run_cargo_build 8
       shell: bash
     - name: split debug symbols
-      run: flowey e 11 flowey_lib_hvlite::run_split_debug_info 2
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 11 flowey_lib_hvlite::run_split_debug_info 2
         flowey e 11 flowey_lib_hvlite::run_cargo_build 9
         flowey e 11 flowey_lib_hvlite::build_vmgstool 0
         flowey e 11 flowey_lib_hvlite::artifact_vmgstool::publish 0
@@ -939,10 +927,8 @@ jobs:
         flowey e 11 flowey_lib_hvlite::run_cargo_build 1
       shell: bash
     - name: split debug symbols
-      run: flowey e 11 flowey_lib_hvlite::run_split_debug_info 3
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 11 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 11 flowey_lib_hvlite::run_cargo_build 2
         flowey e 11 flowey_lib_hvlite::build_igvmfilegen 0
         flowey e 11 flowey_lib_hvlite::artifact_igvmfilegen::publish 0
@@ -958,10 +944,8 @@ jobs:
         flowey e 11 flowey_lib_hvlite::run_cargo_build 3
       shell: bash
     - name: split debug symbols
-      run: flowey e 11 flowey_lib_hvlite::run_split_debug_info 0
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 11 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 11 flowey_lib_hvlite::run_cargo_build 4
         flowey e 11 flowey_lib_hvlite::build_ohcldiag_dev 0
         flowey e 11 flowey_lib_hvlite::artifact_ohcldiag_dev::publish 0
@@ -990,8 +974,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 11 flowey_lib_common::cache 0
-        flowey v 11 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar1 --is-raw-string
-        flowey v 11 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey v 11 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar1 --is-raw-string
+        flowey v 11 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar2 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -1001,7 +985,7 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: report $CARGO_HOME
       run: |-
-        flowey v 11 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey v 11 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey e 11 flowey_lib_common::cache 2
@@ -1176,8 +1160,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 12 flowey_lib_common::cache 0
-        flowey v 12 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar1 --is-raw-string
-        flowey v 12 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey v 12 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar1 --is-raw-string
+        flowey v 12 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar2 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -1187,7 +1171,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 12 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey v 12 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey e 12 flowey_lib_common::cache 2
@@ -1253,10 +1237,8 @@ jobs:
         flowey e 12 flowey_lib_hvlite::run_cargo_build 4
       shell: bash
     - name: split debug symbols
-      run: flowey e 12 flowey_lib_hvlite::run_split_debug_info 2
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 2
         flowey e 12 flowey_lib_hvlite::run_cargo_build 5
         flowey e 12 flowey_lib_hvlite::build_openhcl_boot 0
       shell: bash
@@ -1284,9 +1266,6 @@ jobs:
       run: |-
         flowey e 12 flowey_lib_hvlite::build_openhcl_initrd 1
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 20
-      shell: bash
-    - name: enumerate igvm resources
-      run: |-
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 21
         flowey e 12 flowey_lib_hvlite::init_cross_build 3
       shell: bash
@@ -1296,10 +1275,8 @@ jobs:
         flowey e 12 flowey_lib_hvlite::run_cargo_build 0
       shell: bash
     - name: split debug symbols
-      run: flowey e 12 flowey_lib_hvlite::run_split_debug_info 5
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 5
         flowey e 12 flowey_lib_hvlite::run_cargo_build 1
         flowey e 12 flowey_lib_hvlite::build_igvmfilegen 0
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22
@@ -1326,9 +1303,6 @@ jobs:
       run: |-
         flowey e 12 flowey_lib_hvlite::build_openhcl_initrd 0
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 8
-      shell: bash
-    - name: enumerate igvm resources
-      run: |-
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 9
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11
@@ -1345,16 +1319,10 @@ jobs:
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 12
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 17
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 13
-      shell: bash
-    - name: collect openhcl component paths
-      run: |-
         flowey e 12 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 3
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 5
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 1
         flowey e 12 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 0
-      shell: bash
-    - name: collect openhcl component paths
-      run: |-
         flowey e 12 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 1
         flowey e 12 flowey_lib_hvlite::artifact_openhcl_igvm_from_recipe_extras::publish 0
       shell: bash
@@ -1372,10 +1340,8 @@ jobs:
         flowey e 12 flowey_lib_hvlite::run_cargo_build 7
       shell: bash
     - name: split debug symbols
-      run: flowey e 12 flowey_lib_hvlite::run_split_debug_info 4
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 4
         flowey e 12 flowey_lib_hvlite::run_cargo_build 8
         flowey e 12 flowey_lib_hvlite::build_openvmm_hcl 1
       shell: bash
@@ -1390,10 +1356,8 @@ jobs:
         flowey e 12 flowey_lib_hvlite::run_cargo_build 9
       shell: bash
     - name: split debug symbols
-      run: flowey e 12 flowey_lib_hvlite::run_split_debug_info 3
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 12 flowey_lib_hvlite::run_cargo_build 10
         flowey e 12 flowey_lib_hvlite::build_pipette 0
         flowey e 12 flowey_lib_hvlite::artifact_pipette::publish 0
@@ -1537,8 +1501,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 13 flowey_lib_common::cache 0
-        flowey v 13 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar1 --is-raw-string
-        flowey v 13 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey v 13 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar1 --is-raw-string
+        flowey v 13 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar2 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -1548,7 +1512,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 13 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey v 13 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey e 13 flowey_lib_common::cache 2
@@ -1608,10 +1572,8 @@ jobs:
         flowey e 13 flowey_lib_hvlite::run_cargo_build 13
       shell: bash
     - name: split debug symbols
-      run: flowey e 13 flowey_lib_hvlite::run_split_debug_info 8
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 13 flowey_lib_hvlite::run_split_debug_info 8
         flowey e 13 flowey_lib_hvlite::run_cargo_build 14
         flowey e 13 flowey_lib_hvlite::build_sidecar 0
         flowey e 13 flowey_lib_hvlite::init_cross_build 5
@@ -1624,10 +1586,8 @@ jobs:
         flowey e 13 flowey_lib_hvlite::run_cargo_build 4
       shell: bash
     - name: split debug symbols
-      run: flowey e 13 flowey_lib_hvlite::run_split_debug_info 5
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 13 flowey_lib_hvlite::run_split_debug_info 5
         flowey e 13 flowey_lib_hvlite::run_cargo_build 5
         flowey e 13 flowey_lib_hvlite::build_openhcl_boot 0
       shell: bash
@@ -1662,9 +1622,6 @@ jobs:
       run: |-
         flowey e 13 flowey_lib_hvlite::build_openhcl_initrd 4
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 32
-      shell: bash
-    - name: enumerate igvm resources
-      run: |-
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 33
         flowey e 13 flowey_lib_hvlite::init_cross_build 0
       shell: bash
@@ -1674,10 +1631,8 @@ jobs:
         flowey e 13 flowey_lib_hvlite::run_cargo_build 0
       shell: bash
     - name: split debug symbols
-      run: flowey e 13 flowey_lib_hvlite::run_split_debug_info 9
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 13 flowey_lib_hvlite::run_split_debug_info 9
         flowey e 13 flowey_lib_hvlite::run_cargo_build 1
         flowey e 13 flowey_lib_hvlite::build_igvmfilegen 0
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 34
@@ -1704,9 +1659,6 @@ jobs:
       run: |-
         flowey e 13 flowey_lib_hvlite::build_openhcl_initrd 0
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 44
-      shell: bash
-    - name: enumerate igvm resources
-      run: |-
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 45
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 46
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 47
@@ -1729,9 +1681,6 @@ jobs:
       run: |-
         flowey e 13 flowey_lib_hvlite::build_openhcl_initrd 1
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 56
-      shell: bash
-    - name: enumerate igvm resources
-      run: |-
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 57
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 58
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 59
@@ -1758,9 +1707,6 @@ jobs:
       run: |-
         flowey e 13 flowey_lib_hvlite::build_openhcl_initrd 3
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 20
-      shell: bash
-    - name: enumerate igvm resources
-      run: |-
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 21
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 22
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 23
@@ -1783,9 +1729,6 @@ jobs:
       run: |-
         flowey e 13 flowey_lib_hvlite::build_openhcl_initrd 2
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 8
-      shell: bash
-    - name: enumerate igvm resources
-      run: |-
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 9
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 10
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 11
@@ -1802,37 +1745,22 @@ jobs:
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 24
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 29
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 25
-      shell: bash
-    - name: collect openhcl component paths
-      run: |-
         flowey e 13 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 3
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 41
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 37
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 36
-      shell: bash
-    - name: collect openhcl component paths
-      run: |-
         flowey e 13 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 5
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 53
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 49
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 48
-      shell: bash
-    - name: collect openhcl component paths
-      run: |-
         flowey e 13 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 7
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 17
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 13
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 12
-      shell: bash
-    - name: collect openhcl component paths
-      run: |-
         flowey e 13 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 9
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 5
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 1
         flowey e 13 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 0
-      shell: bash
-    - name: collect openhcl component paths
-      run: |-
         flowey e 13 flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe 1
         flowey e 13 flowey_lib_hvlite::artifact_openhcl_igvm_from_recipe_extras::publish 0
       shell: bash
@@ -1847,10 +1775,8 @@ jobs:
         flowey e 13 flowey_lib_hvlite::run_cargo_build 6
       shell: bash
     - name: split debug symbols
-      run: flowey e 13 flowey_lib_hvlite::run_split_debug_info 6
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 13 flowey_lib_hvlite::run_split_debug_info 6
         flowey e 13 flowey_lib_hvlite::run_cargo_build 7
         flowey e 13 flowey_lib_hvlite::build_openvmm_hcl 0
       shell: bash
@@ -1865,10 +1791,8 @@ jobs:
         flowey e 13 flowey_lib_hvlite::run_cargo_build 9
       shell: bash
     - name: split debug symbols
-      run: flowey e 13 flowey_lib_hvlite::run_split_debug_info 7
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 13 flowey_lib_hvlite::run_split_debug_info 7
         flowey e 13 flowey_lib_hvlite::run_cargo_build 10
         flowey e 13 flowey_lib_hvlite::build_pipette 0
         flowey e 13 flowey_lib_hvlite::artifact_pipette::publish 0
@@ -2038,8 +1962,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 14 flowey_lib_common::cache 4
-        flowey.exe v 14 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar4 --is-raw-string
-        flowey.exe v 14 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey.exe v 14 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar4 --is-raw-string
+        flowey.exe v 14 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar5 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v4
@@ -2049,7 +1973,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 14 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 14 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
         EOF
         flowey.exe e 14 flowey_lib_common::cache 6
@@ -2108,8 +2032,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 14 flowey_lib_common::cache 0
-        flowey.exe v 14 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar2 --is-raw-string
-        flowey.exe v 14 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar3 --is-raw-string
+        flowey.exe v 14 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey.exe v 14 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -2119,7 +2043,7 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: report $CARGO_HOME
       run: |-
-        flowey.exe v 14 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 14 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey.exe e 14 flowey_lib_common::cache 2
@@ -2288,8 +2212,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 15 flowey_lib_common::cache 4
-        flowey v 15 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar4 --is-raw-string
-        flowey v 15 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey v 15 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar4 --is-raw-string
+        flowey v 15 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar5 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v4
@@ -2299,7 +2223,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 15 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey v 15 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
         EOF
         flowey e 15 flowey_lib_common::cache 6
@@ -2355,10 +2279,8 @@ jobs:
         flowey e 15 flowey_lib_hvlite::run_cargo_build 2
       shell: bash
     - name: split debug symbols
-      run: flowey e 15 flowey_lib_hvlite::run_split_debug_info 0
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 15 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 15 flowey_lib_hvlite::run_cargo_build 3
         flowey e 15 flowey_lib_hvlite::build_xtask 1
       shell: bash
@@ -2377,10 +2299,8 @@ jobs:
         flowey e 15 flowey_lib_hvlite::run_cargo_build 0
       shell: bash
     - name: split debug symbols
-      run: flowey e 15 flowey_lib_hvlite::run_split_debug_info 3
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 15 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 15 flowey_lib_hvlite::run_cargo_build 1
         flowey e 15 flowey_lib_hvlite::build_xtask 0
       shell: bash
@@ -2398,10 +2318,8 @@ jobs:
         flowey e 15 flowey_lib_hvlite::run_cargo_build 4
       shell: bash
     - name: split debug symbols
-      run: flowey e 15 flowey_lib_hvlite::run_split_debug_info 1
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 15 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 15 flowey_lib_hvlite::run_cargo_build 5
         flowey e 15 flowey_lib_hvlite::build_xtask 2
       shell: bash
@@ -2417,8 +2335,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 15 flowey_lib_common::cache 0
-        flowey v 15 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar2 --is-raw-string
-        flowey v 15 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar3 --is-raw-string
+        flowey v 15 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey v 15 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -2428,7 +2346,7 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: report $CARGO_HOME
       run: |-
-        flowey v 15 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey v 15 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey e 15 flowey_lib_common::cache 2
@@ -2446,10 +2364,8 @@ jobs:
         flowey e 15 flowey_lib_hvlite::run_cargo_build 6
       shell: bash
     - name: split debug symbols
-      run: flowey e 15 flowey_lib_hvlite::run_split_debug_info 2
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 15 flowey_lib_hvlite::run_split_debug_info 2
         flowey e 15 flowey_lib_hvlite::run_cargo_build 7
         flowey e 15 flowey_lib_hvlite::build_xtask 3
       shell: bash
@@ -2627,8 +2543,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 16 flowey_lib_common::cache 4
-        flowey v 16 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar4 --is-raw-string
-        flowey v 16 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey v 16 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar4 --is-raw-string
+        flowey v 16 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar5 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v4
@@ -2638,7 +2554,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 16 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey v 16 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
         EOF
         flowey e 16 flowey_lib_common::cache 6
@@ -2677,10 +2593,8 @@ jobs:
         flowey e 16 flowey_lib_hvlite::run_cargo_build 0
       shell: bash
     - name: split debug symbols
-      run: flowey e 16 flowey_lib_hvlite::run_split_debug_info 2
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 16 flowey_lib_hvlite::run_split_debug_info 2
         flowey e 16 flowey_lib_hvlite::run_cargo_build 1
         flowey e 16 flowey_lib_hvlite::build_xtask 0
       shell: bash
@@ -2712,10 +2626,8 @@ jobs:
         flowey e 16 flowey_lib_hvlite::run_cargo_build 2
       shell: bash
     - name: split debug symbols
-      run: flowey e 16 flowey_lib_hvlite::run_split_debug_info 0
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 16 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 16 flowey_lib_hvlite::run_cargo_build 3
         flowey e 16 flowey_lib_hvlite::build_xtask 1
       shell: bash
@@ -2734,8 +2646,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 16 flowey_lib_common::cache 0
-        flowey v 16 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar2 --is-raw-string
-        flowey v 16 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar3 --is-raw-string
+        flowey v 16 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey v 16 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -2745,7 +2657,7 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: report $CARGO_HOME
       run: |-
-        flowey v 16 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey v 16 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey e 16 flowey_lib_common::cache 2
@@ -2763,10 +2675,8 @@ jobs:
         flowey e 16 flowey_lib_hvlite::run_cargo_build 4
       shell: bash
     - name: split debug symbols
-      run: flowey e 16 flowey_lib_hvlite::run_split_debug_info 1
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 16 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 16 flowey_lib_hvlite::run_cargo_build 5
         flowey e 16 flowey_lib_hvlite::build_xtask 2
       shell: bash
@@ -2910,8 +2820,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 17 flowey_lib_common::cache 0
-        flowey.exe v 17 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar2 --is-raw-string
-        flowey.exe v 17 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar3 --is-raw-string
+        flowey.exe v 17 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey.exe v 17 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -2921,7 +2831,7 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: install Rust
       run: |-
-        flowey.exe v 17 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 17 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey.exe e 17 flowey_lib_common::cache 2
@@ -2968,8 +2878,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 17 flowey_lib_common::cache 4
-        flowey.exe v 17 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar4 --is-raw-string
-        flowey.exe v 17 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey.exe v 17 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar4 --is-raw-string
+        flowey.exe v 17 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar5 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v4
@@ -2979,7 +2889,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 17 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 17 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
         EOF
         flowey.exe e 17 flowey_lib_common::cache 6
@@ -3128,8 +3038,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 18 flowey_lib_common::cache 4
-        flowey.exe v 18 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar7 --is-raw-string
-        flowey.exe v 18 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar8 --is-raw-string
+        flowey.exe v 18 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar7 --is-raw-string
+        flowey.exe v 18 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar8 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v4
@@ -3139,7 +3049,7 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: installing cargo-nextest
       run: |-
-        flowey.exe v 18 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 18 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
         EOF
         flowey.exe e 18 flowey_lib_common::cache 6
@@ -3151,8 +3061,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 18 flowey_lib_common::cache 8
-        flowey.exe v 18 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar9 --is-raw-string
-        flowey.exe v 18 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar10 --is-raw-string
+        flowey.exe v 18 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar9 --is-raw-string
+        flowey.exe v 18 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar10 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__9
       uses: actions/cache@v4
@@ -3162,7 +3072,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 18 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 18 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
         EOF
         flowey.exe e 18 flowey_lib_common::cache 10
@@ -3226,8 +3136,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 18 flowey_lib_common::cache 0
-        flowey.exe v 18 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar5 --is-raw-string
-        flowey.exe v 18 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar6 --is-raw-string
+        flowey.exe v 18 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey.exe v 18 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar6 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -3237,7 +3147,7 @@ jobs:
       name: 'Restore cache: azcopy'
     - name: installing azcopy
       run: |-
-        flowey.exe v 18 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 18 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey.exe e 18 flowey_lib_common::cache 2
@@ -3408,8 +3318,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 19 flowey_lib_common::cache 4
-        flowey.exe v 19 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar7 --is-raw-string
-        flowey.exe v 19 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar8 --is-raw-string
+        flowey.exe v 19 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar7 --is-raw-string
+        flowey.exe v 19 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar8 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v4
@@ -3419,7 +3329,7 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: installing cargo-nextest
       run: |-
-        flowey.exe v 19 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 19 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
         EOF
         flowey.exe e 19 flowey_lib_common::cache 6
@@ -3431,8 +3341,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 19 flowey_lib_common::cache 8
-        flowey.exe v 19 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar9 --is-raw-string
-        flowey.exe v 19 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar10 --is-raw-string
+        flowey.exe v 19 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar9 --is-raw-string
+        flowey.exe v 19 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar10 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__9
       uses: actions/cache@v4
@@ -3442,7 +3352,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 19 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 19 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
         EOF
         flowey.exe e 19 flowey_lib_common::cache 10
@@ -3506,8 +3416,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 19 flowey_lib_common::cache 0
-        flowey.exe v 19 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar5 --is-raw-string
-        flowey.exe v 19 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar6 --is-raw-string
+        flowey.exe v 19 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey.exe v 19 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar6 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -3517,7 +3427,7 @@ jobs:
       name: 'Restore cache: azcopy'
     - name: installing azcopy
       run: |-
-        flowey.exe v 19 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 19 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey.exe e 19 flowey_lib_common::cache 2
@@ -3731,8 +3641,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 2 flowey_lib_common::cache 0
-        flowey v 2 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar1 --is-raw-string
-        flowey v 2 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey v 2 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar1 --is-raw-string
+        flowey v 2 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar2 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -3742,7 +3652,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 2 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey v 2 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey e 2 flowey_lib_common::cache 2
@@ -3885,8 +3795,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 20 flowey_lib_common::cache 4
-        flowey v 20 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar7 --is-raw-string
-        flowey v 20 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar8 --is-raw-string
+        flowey v 20 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar7 --is-raw-string
+        flowey v 20 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar8 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v4
@@ -3896,7 +3806,7 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: installing cargo-nextest
       run: |-
-        flowey v 20 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey v 20 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
         EOF
         flowey e 20 flowey_lib_common::cache 6
@@ -3914,8 +3824,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 20 flowey_lib_common::cache 8
-        flowey v 20 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar9 --is-raw-string
-        flowey v 20 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar10 --is-raw-string
+        flowey v 20 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar9 --is-raw-string
+        flowey v 20 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar10 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__9
       uses: actions/cache@v4
@@ -3925,7 +3835,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 20 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey v 20 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
         EOF
         flowey e 20 flowey_lib_common::cache 10
@@ -3983,8 +3893,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 20 flowey_lib_common::cache 0
-        flowey v 20 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar5 --is-raw-string
-        flowey v 20 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar6 --is-raw-string
+        flowey v 20 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey v 20 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar6 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -3994,7 +3904,7 @@ jobs:
       name: 'Restore cache: azcopy'
     - name: installing azcopy
       run: |-
-        flowey v 20 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey v 20 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey e 20 flowey_lib_common::cache 2
@@ -4225,8 +4135,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 21 flowey_lib_common::cache 4
-        flowey.exe v 21 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar7 --is-raw-string
-        flowey.exe v 21 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar8 --is-raw-string
+        flowey.exe v 21 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar7 --is-raw-string
+        flowey.exe v 21 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar8 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v4
@@ -4236,7 +4146,7 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: installing cargo-nextest
       run: |-
-        flowey.exe v 21 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 21 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
         EOF
         flowey.exe e 21 flowey_lib_common::cache 6
@@ -4248,8 +4158,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 21 flowey_lib_common::cache 8
-        flowey.exe v 21 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar9 --is-raw-string
-        flowey.exe v 21 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar10 --is-raw-string
+        flowey.exe v 21 'flowey_lib_common::cache:18:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar9 --is-raw-string
+        flowey.exe v 21 'flowey_lib_common::cache:17:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar10 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__9
       uses: actions/cache@v4
@@ -4259,7 +4169,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 21 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 21 'flowey_lib_common::cache:20:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__9.outputs.cache-hit }}
         EOF
         flowey.exe e 21 flowey_lib_common::cache 10
@@ -4323,8 +4233,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 21 flowey_lib_common::cache 0
-        flowey.exe v 21 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar5 --is-raw-string
-        flowey.exe v 21 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar6 --is-raw-string
+        flowey.exe v 21 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey.exe v 21 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar6 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -4334,7 +4244,7 @@ jobs:
       name: 'Restore cache: azcopy'
     - name: installing azcopy
       run: |-
-        flowey.exe v 21 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 21 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey.exe e 21 flowey_lib_common::cache 2
@@ -4755,8 +4665,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 4 flowey_lib_common::cache 0
-        flowey.exe v 4 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar2 --is-raw-string
-        flowey.exe v 4 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar3 --is-raw-string
+        flowey.exe v 4 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey.exe v 4 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -4766,7 +4676,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 4 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 4 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey.exe e 4 flowey_lib_common::cache 2
@@ -4926,8 +4836,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 5 flowey_lib_common::cache 0
-        flowey v 5 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar2 --is-raw-string
-        flowey v 5 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar3 --is-raw-string
+        flowey v 5 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey v 5 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -4937,7 +4847,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 5 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey v 5 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey e 5 flowey_lib_common::cache 2
@@ -4965,10 +4875,8 @@ jobs:
         flowey e 5 flowey_lib_hvlite::run_cargo_build 0
       shell: bash
     - name: split debug symbols
-      run: flowey e 5 flowey_lib_hvlite::run_split_debug_info 0
-      shell: bash
-    - name: reporting split debug info
       run: |-
+        flowey e 5 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 5 flowey_lib_hvlite::run_cargo_build 1
         flowey e 5 flowey_lib_hvlite::build_xtask 0
       shell: bash
@@ -5119,8 +5027,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 6 flowey_lib_common::cache 0
-        flowey.exe v 6 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar1 --is-raw-string
-        flowey.exe v 6 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey.exe v 6 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar1 --is-raw-string
+        flowey.exe v 6 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar2 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -5130,7 +5038,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 6 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 6 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey.exe e 6 flowey_lib_common::cache 2
@@ -5346,8 +5254,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 7 flowey_lib_common::cache 4
-        flowey.exe v 7 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar4 --is-raw-string
-        flowey.exe v 7 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey.exe v 7 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar4 --is-raw-string
+        flowey.exe v 7 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar5 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v4
@@ -5357,7 +5265,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 7 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 7 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
         EOF
         flowey.exe e 7 flowey_lib_common::cache 6
@@ -5430,8 +5338,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 7 flowey_lib_common::cache 0
-        flowey.exe v 7 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar2 --is-raw-string
-        flowey.exe v 7 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar3 --is-raw-string
+        flowey.exe v 7 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey.exe v 7 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -5441,7 +5349,7 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: report $CARGO_HOME
       run: |-
-        flowey.exe v 7 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 7 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey.exe e 7 flowey_lib_common::cache 2
@@ -5624,8 +5532,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 8 flowey_lib_common::cache 0
-        flowey.exe v 8 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar1 --is-raw-string
-        flowey.exe v 8 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey.exe v 8 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar1 --is-raw-string
+        flowey.exe v 8 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar2 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -5635,7 +5543,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 8 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 8 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey.exe e 8 flowey_lib_common::cache 2
@@ -5854,8 +5762,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 9 flowey_lib_common::cache 4
-        flowey.exe v 9 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar4 --is-raw-string
-        flowey.exe v 9 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar5 --is-raw-string
+        flowey.exe v 9 'flowey_lib_common::cache:10:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar4 --is-raw-string
+        flowey.exe v 9 'flowey_lib_common::cache:9:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar5 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__5
       uses: actions/cache@v4
@@ -5865,7 +5773,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 9 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 9 'flowey_lib_common::cache:12:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__5.outputs.cache-hit }}
         EOF
         flowey.exe e 9 flowey_lib_common::cache 6
@@ -5938,8 +5846,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 9 flowey_lib_common::cache 0
-        flowey.exe v 9 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:458:72' --write-to-gh-env floweyvar2 --is-raw-string
-        flowey.exe v 9 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar3 --is-raw-string
+        flowey.exe v 9 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:457:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey.exe v 9 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:456:72' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -5949,7 +5857,7 @@ jobs:
       name: 'Restore cache: cargo-nextest'
     - name: report $CARGO_HOME
       run: |-
-        flowey.exe v 9 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:510:46' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 9 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:509:46' --update-from-stdin --is-raw-string <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey.exe e 9 flowey_lib_common::cache 2

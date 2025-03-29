@@ -83,24 +83,23 @@ impl SimpleFlowNode for Node {
                 move |x| (recipe, x)
             }));
 
-            built_extras.push(
-                ctx.emit_rust_stepv("collect openhcl component paths", |ctx| {
+            built_extras.push(ctx.emit_minor_rust_stepv(
+                "collect openhcl component paths",
+                |ctx| {
                     let recipe = recipe.clone();
                     let read_built_openvmm_hcl = read_built_openvmm_hcl.claim(ctx);
                     let read_built_openhcl_boot = read_built_openhcl_boot.claim(ctx);
                     let read_built_openhcl_igvm = read_built_openhcl_igvm.claim(ctx);
                     let read_built_sidecar = read_built_sidecar.claim(ctx);
-                    |rt| {
-                        Ok(OpenhclIgvmExtras {
-                            recipe,
-                            openvmm_hcl_bin: rt.read(read_built_openvmm_hcl),
-                            openhcl_map: rt.read(read_built_openhcl_igvm).igvm_map,
-                            openhcl_boot: rt.read(read_built_openhcl_boot),
-                            sidecar: rt.read(read_built_sidecar),
-                        })
+                    |rt| OpenhclIgvmExtras {
+                        recipe,
+                        openvmm_hcl_bin: rt.read(read_built_openvmm_hcl),
+                        openhcl_map: rt.read(read_built_openhcl_igvm).igvm_map,
+                        openhcl_boot: rt.read(read_built_openhcl_boot),
+                        sidecar: rt.read(read_built_sidecar),
                     }
-                }),
-            );
+                },
+            ));
         }
 
         let mut did_publish = Vec::new();
