@@ -125,82 +125,74 @@ pub fn github_yaml(
 
         let flowey_source = job_flowey_source.remove(&job_idx).unwrap();
 
-        // actual artifact publish happens at the end of the job
-        if let FloweySource::Bootstrap(_artifact, _publish) = &flowey_source {
-            if gh_bootstrap_template.is_empty() {
-                anyhow::bail!(
-                    "Did not specify flowey bootstrap template. Please provide one using `Pipeline::gh_set_flowey_bootstrap_template`"
-                )
+        let mut artifact_names = Vec::new();
+
+        let flowey_path = match &flowey_source {
+            FloweySource::Bootstrap { .. } => {
+                let flowey_path = "bootstrapped-flowey".to_string();
+
+                // actual artifact publish happens at the end of the job
+                if gh_bootstrap_template.is_empty() {
+                    anyhow::bail!(
+                        "Did not specify flowey bootstrap template. Please provide one using `Pipeline::gh_set_flowey_bootstrap_template`"
+                    )
+                }
+
+                let gh_bootstrap_template = gh_bootstrap_template
+                    .replace("{{FLOWEY_BIN_EXTENSION}}", platform.exe_suffix())
+                    .replace("{{FLOWEY_CRATE}}", flowey_crate)
+                    .replace(
+                        "{{FLOWEY_PIPELINE_PATH}}",
+                        &pipeline_file.with_extension("").display().to_string(),
+                    )
+                    .replace(
+                        "{{FLOWEY_TARGET}}",
+                        match (platform, arch) {
+                            (FlowPlatform::Windows, FlowArch::X86_64) => "x86_64-pc-windows-msvc",
+                            (FlowPlatform::Windows, FlowArch::Aarch64) => "aarch64-pc-windows-msvc",
+                            (FlowPlatform::Linux(_), FlowArch::X86_64) => {
+                                "x86_64-unknown-linux-gnu"
+                            }
+                            (FlowPlatform::Linux(_), FlowArch::Aarch64) => {
+                                "aarch64-unknown-linux-gnu"
+                            }
+                            (platform, arch) => {
+                                anyhow::bail!("unsupported platform {platform} / arch {arch}")
+                            }
+                        },
+                    )
+                    .replace("{{FLOWEY_OUTDIR}}", &format!("{RUNNER_TEMP}/{flowey_path}"));
+
+                let bootstrap_steps: serde_yaml::Sequence =
+                    serde_yaml::from_str(&gh_bootstrap_template)
+                        .context("malformed flowey bootstrap template")?;
+
+                gh_steps.extend(bootstrap_steps);
+                flowey_path
             }
+            FloweySource::Consume(artifact) => {
+                // download previously bootstrapped flowey
+                artifact_names.push(artifact.as_str());
+                format!("used_artifacts/{artifact}")
+            }
+        };
 
-            let gh_bootstrap_template = gh_bootstrap_template
-                .replace("{{FLOWEY_BIN_EXTENSION}}", platform.exe_suffix())
-                .replace("{{FLOWEY_CRATE}}", flowey_crate)
-                .replace(
-                    "{{FLOWEY_PIPELINE_PATH}}",
-                    &pipeline_file.with_extension("").display().to_string(),
-                )
-                .replace(
-                    "{{FLOWEY_TARGET}}",
-                    match (platform, arch) {
-                        (FlowPlatform::Windows, FlowArch::X86_64) => "x86_64-pc-windows-msvc",
-                        (FlowPlatform::Windows, FlowArch::Aarch64) => "aarch64-pc-windows-msvc",
-                        (FlowPlatform::Linux(_), FlowArch::X86_64) => "x86_64-unknown-linux-gnu",
-                        (FlowPlatform::Linux(_), FlowArch::Aarch64) => "aarch64-unknown-linux-gnu",
-                        (platform, arch) => {
-                            anyhow::bail!("unsupported platform {platform} / arch {arch}")
-                        }
-                    },
-                )
-                .replace(
-                    "{{FLOWEY_OUTDIR}}",
-                    &format!("{RUNNER_TEMP}/bootstrapped-flowey"),
-                );
-
-            let bootstrap_steps: serde_yaml::Sequence =
-                serde_yaml::from_str(&gh_bootstrap_template)
-                    .context("malformed flowey bootstrap template")?;
-
-            gh_steps.extend(bootstrap_steps);
-        }
-
-        // the first few steps in any job are some "artisan" code, which
-        // downloads the previously bootstrapped flowey artifact and set up
-        // various vars that flowey will then rely on throughout the rest
-        // of the job
-
-        // download previously bootstrapped flowey
-        if let FloweySource::Consume(artifact) = &flowey_source {
+        // download any artifacts that'll be used
+        artifact_names.extend(artifacts_used.iter().map(|a| a.name.as_str()));
+        if !artifact_names.is_empty() {
+            let pattern = if let &[name] = artifact_names.as_slice() {
+                name.to_string()
+            } else {
+                format!("{{{}}}", artifact_names.join(","))
+            };
             gh_steps.push({
                 let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
-                        name: 🌼🥾 Download bootstrapped flowey
+                        name: '🌼📦 Download artifacts'
                         uses: actions/download-artifact@v4
                         with:
-                          name: {artifact}
-                          path: {RUNNER_TEMP}/bootstrapped-flowey
-                    "#
-                ))?;
-                map.into()
-            });
-        }
-
-        // also download any artifacts that'll be used
-        // TODO: Use a single download job to download all artifacts at once
-        // https://github.com/actions/download-artifact?tab=readme-ov-file#download-multiple-filtered-artifacts-to-the-same-directory
-        for ResolvedJobArtifact {
-            flowey_var: _,
-            name,
-        } in artifacts_used
-        {
-            gh_steps.push({
-                let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
-                    r#"
-                        name: '🌼📦 Download {name}'
-                        uses: actions/download-artifact@v4
-                        with:
-                          name: {name}
-                          path: {RUNNER_TEMP}/used_artifacts/{name}/
+                          pattern: '{pattern}'
+                          path: {RUNNER_TEMP}/used_artifacts/
                     "#
                 ))
                 .unwrap();
@@ -212,7 +204,7 @@ pub fn github_yaml(
             let mut map = serde_yaml::Mapping::new();
             map.insert(
                 "run".into(),
-                format!(r#"echo "{RUNNER_TEMP}/bootstrapped-flowey" >> $GITHUB_PATH"#).into(),
+                format!(r#"echo "{RUNNER_TEMP}/{flowey_path}" >> $GITHUB_PATH"#).into(),
             );
             map.insert("shell".into(), "bash".into());
             map.insert("name".into(), "🌼📦 Add flowey to PATH".into());
@@ -268,10 +260,11 @@ pub fn github_yaml(
 
                 let current_yaml = match platform.kind() {
                     FlowPlatformKind::Windows => {
-                        r#"$ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml"#
+                        let win_path = flowey_path.replace('/', "\\");
+                        format!(r#"$ESCAPED_AGENT_TEMPDIR\\{win_path}\\pipeline.yaml"#)
                     }
                     FlowPlatformKind::Unix => {
-                        r#"$ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml"#
+                        format!(r#"$ESCAPED_AGENT_TEMPDIR/{flowey_path}/pipeline.yaml"#)
                     }
                 };
 
@@ -327,7 +320,7 @@ AgentTempDirNormal="{RUNNER_TEMP}"
 AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
 echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-chmod +x $AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}
+chmod +x $AgentTempDirNormal/{flowey_path}/{flowey_bin}
 
 echo '"{runtime_debug_level}"' | {var_db_insert_runtime_debug_level}
 echo "{RUNNER_TEMP}/work" | {var_db_insert_working_dir}
@@ -468,7 +461,7 @@ EOF
                 map.insert(
                     "run".into(),
                     serde_yaml::Value::String(format!(
-                        "rm $AgentTempDirNormal/bootstrapped-flowey/job{}.json",
+                        "rm $AgentTempDirNormal/{flowey_path}/job{}.json",
                         job_idx.index()
                     )),
                 );
@@ -483,7 +476,7 @@ EOF
                     uses: actions/upload-artifact@v4
                     with:
                         name: {artifact}
-                        path: {RUNNER_TEMP}/bootstrapped-flowey
+                        path: {RUNNER_TEMP}/{flowey_path}
                 "#
                 ))
                 .unwrap();

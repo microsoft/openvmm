@@ -2808,42 +2808,12 @@ jobs:
     - job9
     if: github.event.pull_request.draft == false
     steps:
-    - name: 🌼🥾 Download bootstrapped flowey
+    - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
       with:
-        name: _internal-flowey-bootstrap-x86_64-windows-uid-10
-        path: ${{ runner.temp }}/bootstrapped-flowey
-    - name: 🌼📦 Download x64-guest_test_uefi
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-guest_test_uefi
-        path: ${{ runner.temp }}/used_artifacts/x64-guest_test_uefi/
-    - name: 🌼📦 Download x64-linux-musl-pipette
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-linux-musl-pipette
-        path: ${{ runner.temp }}/used_artifacts/x64-linux-musl-pipette/
-    - name: 🌼📦 Download x64-openhcl-igvm
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-openhcl-igvm
-        path: ${{ runner.temp }}/used_artifacts/x64-openhcl-igvm/
-    - name: 🌼📦 Download x64-windows-openvmm
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-windows-openvmm
-        path: ${{ runner.temp }}/used_artifacts/x64-windows-openvmm/
-    - name: 🌼📦 Download x64-windows-pipette
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-windows-pipette
-        path: ${{ runner.temp }}/used_artifacts/x64-windows-pipette/
-    - name: 🌼📦 Download x64-windows-vmm-tests-archive
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-windows-vmm-tests-archive
-        path: ${{ runner.temp }}/used_artifacts/x64-windows-vmm-tests-archive/
-    - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
+        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-10,x64-guest_test_uefi,x64-linux-musl-pipette,x64-openhcl-igvm,x64-windows-openvmm,x64-windows-pipette,x64-windows-vmm-tests-archive}'
+        path: ${{ runner.temp }}/used_artifacts/
+    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-10" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
     - name: 🌼🛫 Initialize job
@@ -2852,7 +2822,7 @@ jobs:
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey.exe
+        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-10/flowey.exe
 
         echo '"debug"' | flowey.exe v 18 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey.exe v 18 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
@@ -3085,42 +3055,12 @@ jobs:
     - job9
     if: github.event.pull_request.draft == false
     steps:
-    - name: 🌼🥾 Download bootstrapped flowey
+    - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
       with:
-        name: _internal-flowey-bootstrap-x86_64-windows-uid-10
-        path: ${{ runner.temp }}/bootstrapped-flowey
-    - name: 🌼📦 Download x64-guest_test_uefi
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-guest_test_uefi
-        path: ${{ runner.temp }}/used_artifacts/x64-guest_test_uefi/
-    - name: 🌼📦 Download x64-linux-musl-pipette
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-linux-musl-pipette
-        path: ${{ runner.temp }}/used_artifacts/x64-linux-musl-pipette/
-    - name: 🌼📦 Download x64-openhcl-igvm
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-openhcl-igvm
-        path: ${{ runner.temp }}/used_artifacts/x64-openhcl-igvm/
-    - name: 🌼📦 Download x64-windows-openvmm
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-windows-openvmm
-        path: ${{ runner.temp }}/used_artifacts/x64-windows-openvmm/
-    - name: 🌼📦 Download x64-windows-pipette
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-windows-pipette
-        path: ${{ runner.temp }}/used_artifacts/x64-windows-pipette/
-    - name: 🌼📦 Download x64-windows-vmm-tests-archive
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-windows-vmm-tests-archive
-        path: ${{ runner.temp }}/used_artifacts/x64-windows-vmm-tests-archive/
-    - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
+        pattern: '{_internal-flowey-bootstrap-x86_64-windows-uid-10,x64-guest_test_uefi,x64-linux-musl-pipette,x64-openhcl-igvm,x64-windows-openvmm,x64-windows-pipette,x64-windows-vmm-tests-archive}'
+        path: ${{ runner.temp }}/used_artifacts/
+    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-10" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
     - name: 🌼🛫 Initialize job
@@ -3129,7 +3069,7 @@ jobs:
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey.exe
+        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-windows-uid-10/flowey.exe
 
         echo '"debug"' | flowey.exe v 19 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey.exe v 19 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
@@ -3545,37 +3485,12 @@ jobs:
     - job11
     if: github.event.pull_request.draft == false
     steps:
-    - name: 🌼🥾 Download bootstrapped flowey
+    - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
       with:
-        name: _internal-flowey-bootstrap-x86_64-linux-uid-6
-        path: ${{ runner.temp }}/bootstrapped-flowey
-    - name: 🌼📦 Download x64-guest_test_uefi
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-guest_test_uefi
-        path: ${{ runner.temp }}/used_artifacts/x64-guest_test_uefi/
-    - name: 🌼📦 Download x64-linux-musl-pipette
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-linux-musl-pipette
-        path: ${{ runner.temp }}/used_artifacts/x64-linux-musl-pipette/
-    - name: 🌼📦 Download x64-linux-openvmm
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-linux-openvmm
-        path: ${{ runner.temp }}/used_artifacts/x64-linux-openvmm/
-    - name: 🌼📦 Download x64-linux-vmm-tests-archive
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-linux-vmm-tests-archive
-        path: ${{ runner.temp }}/used_artifacts/x64-linux-vmm-tests-archive/
-    - name: 🌼📦 Download x64-windows-pipette
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-windows-pipette
-        path: ${{ runner.temp }}/used_artifacts/x64-windows-pipette/
-    - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
+        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-6,x64-guest_test_uefi,x64-linux-musl-pipette,x64-linux-openvmm,x64-linux-vmm-tests-archive,x64-windows-pipette}'
+        path: ${{ runner.temp }}/used_artifacts/
+    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-6" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
     - name: 🌼🛫 Initialize job
@@ -3584,7 +3499,7 @@ jobs:
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey
+        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-6/flowey
 
         echo '"debug"' | flowey v 20 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey v 20 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
@@ -3860,36 +3775,11 @@ jobs:
         mv target/aarch64-pc-windows-msvc/flowey-ci/flowey_hvlite.exe "$OutDirNormal/flowey.exe"
       working-directory: flowey_bootstrap
       shell: bash
-    - name: 🌼📦 Download aarch64-guest_test_uefi
+    - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
       with:
-        name: aarch64-guest_test_uefi
-        path: ${{ runner.temp }}/used_artifacts/aarch64-guest_test_uefi/
-    - name: 🌼📦 Download aarch64-linux-musl-pipette
-      uses: actions/download-artifact@v4
-      with:
-        name: aarch64-linux-musl-pipette
-        path: ${{ runner.temp }}/used_artifacts/aarch64-linux-musl-pipette/
-    - name: 🌼📦 Download aarch64-openhcl-igvm
-      uses: actions/download-artifact@v4
-      with:
-        name: aarch64-openhcl-igvm
-        path: ${{ runner.temp }}/used_artifacts/aarch64-openhcl-igvm/
-    - name: 🌼📦 Download aarch64-windows-openvmm
-      uses: actions/download-artifact@v4
-      with:
-        name: aarch64-windows-openvmm
-        path: ${{ runner.temp }}/used_artifacts/aarch64-windows-openvmm/
-    - name: 🌼📦 Download aarch64-windows-pipette
-      uses: actions/download-artifact@v4
-      with:
-        name: aarch64-windows-pipette
-        path: ${{ runner.temp }}/used_artifacts/aarch64-windows-pipette/
-    - name: 🌼📦 Download aarch64-windows-vmm-tests-archive
-      uses: actions/download-artifact@v4
-      with:
-        name: aarch64-windows-vmm-tests-archive
-        path: ${{ runner.temp }}/used_artifacts/aarch64-windows-vmm-tests-archive/
+        pattern: '{aarch64-guest_test_uefi,aarch64-linux-musl-pipette,aarch64-openhcl-igvm,aarch64-windows-openvmm,aarch64-windows-pipette,aarch64-windows-vmm-tests-archive}'
+        path: ${{ runner.temp }}/used_artifacts/
     - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
@@ -4246,27 +4136,12 @@ jobs:
     - job0
     if: github.event.pull_request.draft == false
     steps:
-    - name: 🌼🥾 Download bootstrapped flowey
+    - name: 🌼📦 Download artifacts
       uses: actions/download-artifact@v4
       with:
-        name: _internal-flowey-bootstrap-x86_64-linux-uid-17
-        path: ${{ runner.temp }}/bootstrapped-flowey
-    - name: 🌼📦 Download guide
-      uses: actions/download-artifact@v4
-      with:
-        name: guide
-        path: ${{ runner.temp }}/used_artifacts/guide/
-    - name: 🌼📦 Download x64-linux-rustdoc
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-linux-rustdoc
-        path: ${{ runner.temp }}/used_artifacts/x64-linux-rustdoc/
-    - name: 🌼📦 Download x64-windows-rustdoc
-      uses: actions/download-artifact@v4
-      with:
-        name: x64-windows-rustdoc
-        path: ${{ runner.temp }}/used_artifacts/x64-windows-rustdoc/
-    - run: echo "${{ runner.temp }}/bootstrapped-flowey" >> $GITHUB_PATH
+        pattern: '{_internal-flowey-bootstrap-x86_64-linux-uid-17,guide,x64-linux-rustdoc,x64-windows-rustdoc}'
+        path: ${{ runner.temp }}/used_artifacts/
+    - run: echo "${{ runner.temp }}/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-17" >> $GITHUB_PATH
       shell: bash
       name: 🌼📦 Add flowey to PATH
     - name: 🌼🛫 Initialize job
@@ -4275,7 +4150,7 @@ jobs:
         AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
         echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-        chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey
+        chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-17/flowey
 
         echo '"debug"' | flowey v 3 'FLOWEY_LOG' --update-from-stdin
         echo "${{ runner.temp }}/work" | flowey v 3 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
