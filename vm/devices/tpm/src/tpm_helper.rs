@@ -435,7 +435,7 @@ impl TpmEngineHelper {
     ///
     /// # Arguments
     /// * `auth_value`: The password used during the NV indices allocation.
-    /// * `preserve_ak_cert`: Whether to preserve the previous AK cert and into newly-create NV index.
+    /// * `preserve_ak_cert`: Whether to preserve the previous AK cert into newly-create NV index.
     /// * `support_attestation_report`: Whether to allocate NV index for attestation report.
     ///
     pub fn allocate_guest_attestation_nv_indices(
@@ -447,8 +447,9 @@ impl TpmEngineHelper {
         let previous_ak_cert = {
             let mut output = [0u8; MAX_NV_INDEX_SIZE as usize];
             if self.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut output)? {
-                // Remove previous `TPM_NV_INDEX_AIK_CERT` allocation, which ensures that we will recreate
-                // the nv index with newly-created auth_value (which does not persist across boots) for each boot.
+                // Remove previous `TPM_NV_INDEX_AIK_CERT` regardless its pre-provisioned (non-platform-created) or
+                // platform-created. Doing so ensures that we always recreate the nv index with newly-created auth_value
+                // (which does not persist across boots) and consistent index size for each boot.
                 self.nv_undefine_space(TPM20_RH_PLATFORM, TPM_NV_INDEX_AIK_CERT)
                     .map_err(|error| TpmHelperError::TpmCommandError {
                         command_debug_info: CommandDebugInfo {
@@ -1976,7 +1977,7 @@ mod tests {
             assert!(result.is_ok());
             assert!(result.unwrap().is_none());
 
-            // Expect read to fail given that the nv index is re-created and no data has been written
+            // Expect read to fail given that the nv index is re-created and data is not preserved
             let mut output = [0u8; MAX_NV_INDEX_SIZE as usize];
             let result = tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut output);
             assert!(result.is_err());
@@ -2017,7 +2018,7 @@ mod tests {
             assert!(result.is_ok());
             assert!(result.unwrap().is_some());
 
-            // Expect read to fail given that the nv index is re-created and no data has been written
+            // Expect read to fail given that the nv index is re-created and data is not preserved
             let mut ak_cert_output = [0u8; MAX_NV_INDEX_SIZE as usize];
             let result =
                 tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut ak_cert_output);
@@ -2085,7 +2086,7 @@ mod tests {
             assert!(result.is_ok());
             assert!(result.unwrap().is_some());
 
-            // Expect read to fail given that the nv index is re-created and no data has been written
+            // Expect read to fail given that the nv index is re-created and data is not preserved
             let mut ak_cert_output = [0u8; MAX_NV_INDEX_SIZE as usize];
             let result =
                 tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut ak_cert_output);
