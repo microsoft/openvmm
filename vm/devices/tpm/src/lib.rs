@@ -512,7 +512,7 @@ impl Tpm {
             self.tpm_engine_helper
                 .allocate_guest_attestation_nv_indices(
                     auth_value,
-                    !self.refresh_tpm_seeds, // Do not preserve the AK cert if TPM seeds are refreshed
+                    !self.refresh_tpm_seeds, // Preserve AK cert if TPM seeds are not refreshed
                     matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_)),
                 )
                 .map_err(TpmErrorKind::AllocateGuestAttestationNvIndices)?;
