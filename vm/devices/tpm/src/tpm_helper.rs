@@ -435,65 +435,66 @@ impl TpmEngineHelper {
     ///
     /// # Arguments
     /// * `auth_value`: The password used during the NV indices allocation.
-    /// * `force_create_ak_cert`: Whether to remove the existing AK and re-create one.
+    /// * `preserve_ak_cert`: Whether to preserve the previous AK cert and into newly-create NV index.
     /// * `support_attestation_report`: Whether to allocate NV index for attestation report.
     ///
     pub fn allocate_guest_attestation_nv_indices(
         &mut self,
         auth_value: u64,
-        force_create_ak_cert: bool,
+        preserve_ak_cert: bool,
         support_attestation_report: bool,
     ) -> Result<(), TpmHelperError> {
-        let ak_cert_nv_index_present =
-            if let Some(res) = self.find_nv_index(TPM_NV_INDEX_AIK_CERT)? {
-                let nv_bits = TpmaNvBits::from(res.nv_public.nv_public.attributes.0.get());
-                let platform_created = nv_bits.nv_platformcreate();
+        let previous_ak_cert = {
+            let mut output = [0u8; MAX_NV_INDEX_SIZE as usize];
+            if self.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut output)? {
+                // Remove previous `TPM_NV_INDEX_AIK_CERT` allocation, which ensures that we will recreate
+                // the nv index with newly-created auth_value (which does not persist across boots) for each boot.
+                self.nv_undefine_space(TPM20_RH_PLATFORM, TPM_NV_INDEX_AIK_CERT)
+                    .map_err(|error| TpmHelperError::TpmCommandError {
+                        command_debug_info: CommandDebugInfo {
+                            command_code: CommandCodeEnum::NV_UndefineSpace,
+                            auth_handle: Some(TPM20_RH_PLATFORM),
+                            nv_index: Some(TPM_NV_INDEX_AIK_CERT),
+                        },
+                        error,
+                    })?;
 
-                // Remove previous `TPM_NV_INDEX_AIK_CERT` allocation if `force_create_ak_cert`
-                // is true or the nv index is platform created. The latter condition means that
-                // the nv index is created by previous boot (not pre-provisioned). Clearing the
-                // nv index ensures that we will recreate the nv index with newly-created auth_value
-                // (which does not persist across boots) for each boot.
-                if force_create_ak_cert || platform_created {
-                    self.nv_undefine_space(TPM20_RH_PLATFORM, TPM_NV_INDEX_AIK_CERT)
-                        .map_err(|error| TpmHelperError::TpmCommandError {
-                            command_debug_info: CommandDebugInfo {
-                                command_code: CommandCodeEnum::NV_UndefineSpace,
-                                auth_handle: Some(TPM20_RH_PLATFORM),
-                                nv_index: Some(TPM_NV_INDEX_AIK_CERT),
-                            },
-                            error,
-                        })?;
-
-                    // NV index has been undefined
-                    false
-                } else {
-                    // NV index already exists
-                    true
-                }
+                Some(output)
             } else {
-                // NV index does not exist
-                false
-            };
+                tracing::info!("AK cert nv index does not exist");
+                None
+            }
+        };
 
-        // Only allocate the `TPM_NV_INDEX_AIK_CERT` if the nv index is not present
-        if !ak_cert_nv_index_present {
-            tracing::info!("Allocate nv index {:x} for AK cert", TPM_NV_INDEX_AIK_CERT);
+        tracing::info!(
+            nv_index = format!("{:x}", TPM_NV_INDEX_AIK_CERT),
+            size = MAX_NV_INDEX_SIZE,
+            "Allocate nv index for AK cert"
+        );
 
-            self.nv_define_space(
-                TPM20_RH_PLATFORM,
-                auth_value,
-                TPM_NV_INDEX_AIK_CERT,
-                MAX_NV_INDEX_SIZE,
-            )
-            .map_err(|error| TpmHelperError::TpmCommandError {
-                command_debug_info: CommandDebugInfo {
-                    command_code: CommandCodeEnum::NV_DefineSpace,
-                    auth_handle: Some(TPM20_RH_PLATFORM),
-                    nv_index: Some(TPM_NV_INDEX_AIK_CERT),
-                },
-                error,
-            })?;
+        self.nv_define_space(
+            TPM20_RH_PLATFORM,
+            auth_value,
+            TPM_NV_INDEX_AIK_CERT,
+            MAX_NV_INDEX_SIZE,
+        )
+        .map_err(|error| TpmHelperError::TpmCommandError {
+            command_debug_info: CommandDebugInfo {
+                command_code: CommandCodeEnum::NV_DefineSpace,
+                auth_handle: Some(TPM20_RH_PLATFORM),
+                nv_index: Some(TPM_NV_INDEX_AIK_CERT),
+            },
+            error,
+        })?;
+
+        if preserve_ak_cert {
+            if let Some(data) = previous_ak_cert {
+                // For resiliency, write the previous AK cert to the newly created nv index
+                // in case the boot-time AK cert request fails.
+                tracing::info!("Preserve previous AK cert across boot");
+
+                self.write_to_nv_index(auth_value, TPM_NV_INDEX_AIK_CERT, &data)?;
+            }
         }
 
         // Allocate `TPM_NV_INDEX_ATTESTATION_REPORT` if `support_attestation_report` is true
@@ -515,8 +516,9 @@ impl TpmEngineHelper {
             }
 
             tracing::info!(
-                "Allocate nv index {:x} for attestation report",
-                TPM_NV_INDEX_ATTESTATION_REPORT
+                nv_index = format!("{:x}", TPM_NV_INDEX_ATTESTATION_REPORT),
+                size = MAX_ATTESTATION_INDEX_SIZE,
+                "Allocate nv index for attestation report",
             );
 
             self.nv_define_space(
@@ -1853,14 +1855,15 @@ mod tests {
 
     #[test]
     fn test_allocate_guest_attestation_nv_indices() {
-        const AK_CERT_INPUT: [u8; 512] = [7u8; 512];
+        const AK_CERT_INPUT_512: [u8; 512] = [7u8; 512];
+        const AK_CERT_INPUT_1024: [u8; 1024] = [8u8; 1024];
         const ATTESTATION_REPORT_INPUT: [u8; 256] = [6u8; 256];
 
         let mut tpm_engine_helper = create_tpm_engine_helper();
         restart_tpm_engine(&mut tpm_engine_helper, false, true);
 
-        // Test allocation without initial states and with with force_create_ak = true, support_attestation_report = false
-        // Expect only the ak cert nv index to be created
+        // Test allocation without initial states and with with preserve_ak_cert = true, support_attestation_report = false
+        // Expect only the ak cert nv index to be created but with no data
         {
             // Ensure both nv indices are not present
             let result = tpm_engine_helper.find_nv_index(TPM_NV_INDEX_AIK_CERT);
@@ -1894,7 +1897,7 @@ mod tests {
             let result = tpm_engine_helper.write_to_nv_index(
                 AUTH_VALUE,
                 TPM_NV_INDEX_AIK_CERT,
-                &AK_CERT_INPUT,
+                &AK_CERT_INPUT_512,
             );
             assert!(result.is_ok());
 
@@ -1902,15 +1905,62 @@ mod tests {
             let result = tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut output);
             assert!(result.is_ok());
             let input_with_padding = {
-                let mut input = AK_CERT_INPUT.to_vec();
+                let mut input = AK_CERT_INPUT_512.to_vec();
                 input.resize(MAX_NV_INDEX_SIZE.into(), 0);
                 input
             };
             assert_eq!(&output, input_with_padding.as_slice());
         }
 
-        // Test allocation after a restart with force_create_ak = false, support_attestation_report = false
-        // Expect the content of ak cert nv index to be re-created given that it's platform-created
+        // Test allocation after a restart with preserve_ak_cert = true, support_attestation_report = false
+        // Expect the content of ak cert nv index to be re-created and the ak cert is preserved
+        {
+            restart_tpm_engine(&mut tpm_engine_helper, true, true);
+
+            let result =
+                tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, true, false);
+            assert!(result.is_ok());
+
+            let result = tpm_engine_helper.find_nv_index(TPM_NV_INDEX_AIK_CERT);
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_some());
+
+            let result = tpm_engine_helper.find_nv_index(TPM_NV_INDEX_ATTESTATION_REPORT);
+            assert!(result.is_ok());
+            assert!(result.unwrap().is_none());
+
+            // Read the data and ensure it is zero-padded
+            let mut output = [0u8; MAX_NV_INDEX_SIZE as usize];
+            let result = tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut output);
+            assert!(result.is_ok());
+            let input_with_padding = {
+                let mut input = AK_CERT_INPUT_512.to_vec();
+                input.resize(MAX_NV_INDEX_SIZE.into(), 0);
+                input
+            };
+            assert_eq!(&output, input_with_padding.as_slice());
+
+            // Write to ak cert nv
+            let result = tpm_engine_helper.write_to_nv_index(
+                AUTH_VALUE,
+                TPM_NV_INDEX_AIK_CERT,
+                &AK_CERT_INPUT_1024,
+            );
+            assert!(result.is_ok());
+
+            // Read the data and ensure it is zero-padded
+            let result = tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut output);
+            assert!(result.is_ok());
+            let input_with_padding = {
+                let mut input = AK_CERT_INPUT_1024.to_vec();
+                input.resize(MAX_NV_INDEX_SIZE.into(), 0);
+                input
+            };
+            assert_eq!(&output, input_with_padding.as_slice());
+        }
+
+        // Test allocation after a restart with preserve_ak_cert = false, support_attestation_report = false
+        // Expect ak cert nv index to be re-created and the ak cert is not preserved
         {
             restart_tpm_engine(&mut tpm_engine_helper, true, true);
 
@@ -1935,7 +1985,7 @@ mod tests {
             let result = tpm_engine_helper.write_to_nv_index(
                 AUTH_VALUE,
                 TPM_NV_INDEX_AIK_CERT,
-                &AK_CERT_INPUT,
+                &AK_CERT_INPUT_512,
             );
             assert!(result.is_ok());
 
@@ -1943,61 +1993,20 @@ mod tests {
             let result = tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut output);
             assert!(result.is_ok());
             let input_with_padding = {
-                let mut input = AK_CERT_INPUT.to_vec();
+                let mut input = AK_CERT_INPUT_512.to_vec();
                 input.resize(MAX_NV_INDEX_SIZE.into(), 0);
                 input
             };
             assert_eq!(&output, input_with_padding.as_slice());
         }
 
-        // Test allocation after a restart with force_create_ak = true, support_attestation_report = false
-        // Expect ak cert nv index to be re-created
-        {
-            restart_tpm_engine(&mut tpm_engine_helper, true, true);
-
-            let result =
-                tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, true, false);
-            assert!(result.is_ok());
-
-            let result = tpm_engine_helper.find_nv_index(TPM_NV_INDEX_AIK_CERT);
-            assert!(result.is_ok());
-            assert!(result.unwrap().is_some());
-
-            let result = tpm_engine_helper.find_nv_index(TPM_NV_INDEX_ATTESTATION_REPORT);
-            assert!(result.is_ok());
-            assert!(result.unwrap().is_none());
-
-            // Expect read to fail given that the nv index is re-created and no data has been written
-            let mut output = [0u8; MAX_NV_INDEX_SIZE as usize];
-            let result = tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut output);
-            assert!(result.is_err());
-
-            // Write to ak cert nv
-            let result = tpm_engine_helper.write_to_nv_index(
-                AUTH_VALUE,
-                TPM_NV_INDEX_AIK_CERT,
-                &AK_CERT_INPUT,
-            );
-            assert!(result.is_ok());
-
-            // Read the data and ensure it is zero-padded
-            let result = tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut output);
-            assert!(result.is_ok());
-            let input_with_padding = {
-                let mut input = AK_CERT_INPUT.to_vec();
-                input.resize(MAX_NV_INDEX_SIZE.into(), 0);
-                input
-            };
-            assert_eq!(&output, input_with_padding.as_slice());
-        }
-
-        // Test allocation after a restart force_create_ak = true, support_attestation_report = true
+        // Test allocation after a restart preserve_ak_cert = false, support_attestation_report = true
         // Expect ak cert nv index to be re-created and attestation report nv index to be created
         {
             restart_tpm_engine(&mut tpm_engine_helper, true, true);
 
             let result =
-                tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, true, true);
+                tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, false, true);
             assert!(result.is_ok());
 
             let result = tpm_engine_helper.find_nv_index(TPM_NV_INDEX_AIK_CERT);
@@ -2018,7 +2027,7 @@ mod tests {
             let result = tpm_engine_helper.write_to_nv_index(
                 AUTH_VALUE,
                 TPM_NV_INDEX_AIK_CERT,
-                &AK_CERT_INPUT,
+                &AK_CERT_INPUT_512,
             );
             assert!(result.is_ok());
 
@@ -2027,7 +2036,7 @@ mod tests {
                 tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut ak_cert_output);
             assert!(result.is_ok());
             let input_with_padding = {
-                let mut input = AK_CERT_INPUT.to_vec();
+                let mut input = AK_CERT_INPUT_512.to_vec();
                 input.resize(MAX_NV_INDEX_SIZE.into(), 0);
                 input
             };
@@ -2059,13 +2068,13 @@ mod tests {
             assert_eq!(&report_output, input_with_padding.as_slice());
         }
 
-        // Test allocation after a restart force_create_ak = true, support_attestation_report = true
+        // Test allocation after a restart preserve_ak_cert = false, support_attestation_report = true
         // Expect both ak cert and attestation report nv indices to be re-created
         {
             restart_tpm_engine(&mut tpm_engine_helper, true, true);
 
             let result =
-                tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, true, true);
+                tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, false, true);
             assert!(result.is_ok());
 
             let result = tpm_engine_helper.find_nv_index(TPM_NV_INDEX_AIK_CERT);
@@ -2327,11 +2336,16 @@ mod tests {
             tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut provisioned_ak_cert);
         assert!(result.is_ok());
 
-        // Ensure allocate_guest_attestation_nv_indices with force_create_ak_cert = false does not re-create
-        // the nv index.
+        // Ensure allocate_guest_attestation_nv_indices with preserve_ak_cert = true preserves the ak cert data
         let result =
-            tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, false, false);
+            tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, true, false);
         assert!(result.is_ok());
+
+        // Ensure nv index is re-created with new size
+        let result = tpm_engine_helper.nv_read_public(TPM_NV_INDEX_AIK_CERT);
+        assert!(result.is_ok());
+        let nv_read_public_reply = result.unwrap();
+        assert!(nv_read_public_reply.nv_public.nv_public.data_size.get() == MAX_NV_INDEX_SIZE);
 
         let mut provisioned_ak_cert_after_call = [0u8; MAX_NV_INDEX_SIZE as usize];
         let result = tpm_engine_helper
