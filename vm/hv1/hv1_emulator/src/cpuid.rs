@@ -74,7 +74,8 @@ pub fn hv_cpuid_leaves(
                 .with_privileges(privileges)
                 .with_frequency_regs_available(true)
                 .with_direct_synthetic_timers(true)
-                .with_extended_gva_ranges_for_flush_virtual_address_list_available(true);
+                .with_extended_gva_ranges_for_flush_virtual_address_list_available(true)
+                .with_register_pat_available(true);
 
             // TODO SNP
             //    .with_fast_hypercall_output_available(true);
