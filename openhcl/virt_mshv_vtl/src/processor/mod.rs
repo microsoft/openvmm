@@ -267,6 +267,7 @@ impl<T: BackingPrivate> Backing for T {}
 
 pub(crate) struct BackingSharedParams {
     pub cvm_state: Option<crate::UhCvmPartitionState>,
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     pub guest_memory: VtlArray<GuestMemory, 2>,
     pub guest_vsm_available: bool,
 }
