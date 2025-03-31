@@ -1611,7 +1611,6 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.exit_stats.xsetbv
             }
             VmxExitBasic::WBINVD_INSTRUCTION => {
-                self.trace_processor_state(intercepted_vtl);
                 // Ask the kernel to flush the cache before issuing VP.ENTER.
                 let no_invalidate = exit_info.qualification() != 0;
                 if no_invalidate {
