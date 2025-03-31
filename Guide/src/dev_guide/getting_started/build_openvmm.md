@@ -91,4 +91,4 @@ error: could not compile `flowey` (lib) due to previous error
 
 **Solution:**
 
-Install Rust using the official instructions for [Linux](https://openvmm.dev/dev_guide/getting_started/linux.html#installing-rust) or [Windows](https://openvmm.dev/dev_guide/getting_started/windows.html#installing-rust).
+Install Rust using the official instructions for [Linux](https://openvmm.dev/guide/dev_guide/getting_started/linux.html#installing-rust) or [Windows](https://openvmm.dev/guide/dev_guide/getting_started/windows.html#installing-rust).
