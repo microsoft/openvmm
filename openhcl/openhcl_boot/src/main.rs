@@ -148,12 +148,6 @@ fn build_kernel_command_line(
         "tsc=reliable",
         // RELIABILITY: Panic on receiving an NMI.
         "unknown_nmi_panic=1",
-        // Even with iommu=off, the SWIOTLB is still allocated on AARCH64
-        // (iommu=off ignored entirely), and CVMs (memory encryption forces it on).
-        // Set it to a single area in 8MB. The first parameter controls the
-        // area size in slabs (2KB per slab), the second controls the number of
-        // areas (default is # of CPUs).
-        "swiotlb=4096,1",
         // Use vfio for MANA devices.
         "vfio_pci.ids=1414:00ba",
         // WORKAROUND: Enable no-IOMMU mode. This mode provides no device isolation,
@@ -204,6 +198,37 @@ fn build_kernel_command_line(
     };
     for p in arch_parameters {
         write!(cmdline, "{p} ")?;
+    }
+
+    const HARDWARE_ISOLATED_KERNEL_PARAMETERS: &[&str] = &[
+        // Even with iommu=off, the SWIOTLB is still allocated on AARCH64
+        // (iommu=off ignored entirely), and CVMs (memory encryption forces it
+        // on). Set it to a single area in 8MB. The first parameter controls the
+        // area size in slabs (2KB per slab), the second controls the number of
+        // areas (default is # of CPUs).
+        //
+        // This is set to 8MB on hardware isolated VMs since there are some
+        // scenarios, such as provisioning over DVD, which require a larger size
+        // since the buffer is being used.
+        "swiotlb=4096,1",
+    ];
+
+    const NON_HARDWARE_ISOLATED_KERNEL_PARAMETERS: &[&str] = &[
+        // Even with iommu=off, the SWIOTLB is still allocated on AARCH64
+        // (iommu=off ignored entirely). Set it to the minimum, saving ~63 MiB.
+        // The first parameter controls the area size, the second controls the
+        // number of areas (default is # of CPUs). Set them both to the minimum.
+        "swiotlb=1,1",
+    ];
+
+    if params.isolation_type.is_hardware_isolated() {
+        for p in HARDWARE_ISOLATED_KERNEL_PARAMETERS {
+            write!(cmdline, "{p} ")?;
+        }
+    } else {
+        for p in NON_HARDWARE_ISOLATED_KERNEL_PARAMETERS {
+            write!(cmdline, "{p} ")?;
+        }
     }
 
     // Enable the com3 console by default if it's available and we're not
