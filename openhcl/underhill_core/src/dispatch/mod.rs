@@ -107,7 +107,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
         threadpool: &AffinitizedThreadpool,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        servicing_mana_state: &Option<Vec<ManaSavedState>>,
+        servicing_mana_state: &Option<ManaSavedState>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,

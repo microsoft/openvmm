@@ -715,6 +715,7 @@ impl HclNetworkVFManagerWorker {
                         tracing::info!("saved endpoints: {:?}", saved_endpoints);
 
                         ManaSavedState {
+                            pci_id: self.vtl2_pci_id.clone(),
                             mana_device: self.mana_device.as_ref().unwrap().save().await.unwrap(),
                             endpoints: Vec::new(), // Filled in by VMBus level save/restore
                             queues: Vec::new(),    // Filled in by VMBus level save/restore
@@ -921,7 +922,7 @@ impl HclNetworkVFManager {
         vp_count: u32,
         max_sub_channels: u16,
         netvsp_state: &Option<Vec<SavedState>>,
-        mana_state: &Option<Vec<ManaSavedState>>,
+        mana_state: &Option<ManaSavedState>,
         dma_mode: GuestDmaMode,
         dma_client: Arc<dyn DmaClient>,
         mana_keepalive: bool,
@@ -931,8 +932,6 @@ impl HclNetworkVFManager {
         RuntimeSavedState,
     )> {
         tracing::info!("creating mana device. mana_state: {:?}", mana_state);
-
-        let mana_state = mana_state.as_ref().map(|mana_state| mana_state[0].clone());
 
         let device = create_mana_device(
             driver_source,
@@ -946,18 +945,6 @@ impl HclNetworkVFManager {
         .await?;
 
         tracing::info!("device vport count: {:?}", device.num_vports());
-
-        let mana_endpoints = if let Some(mana_state) = mana_state {
-            assert_eq!(
-                mana_state.endpoints.len() as u32,
-                device.num_vports(),
-                "Number of endpoints in saved state does not match number of vports"
-            );
-
-            Some(mana_state.endpoints)
-        } else {
-            None
-        };
 
         let (mut endpoints, endpoint_controls): (Vec<_>, Vec<_>) = (0..device.num_vports())
             .map(|_| {

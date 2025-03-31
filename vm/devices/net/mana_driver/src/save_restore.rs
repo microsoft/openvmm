@@ -26,6 +26,9 @@ pub struct ManaSavedState {
     /// Saved queue state
     #[mesh(3)]
     pub queues: Vec<QueueSavedState>,
+
+    #[mesh(4)]
+    pub pci_id: String,
 }
 
 /// Mana device saved state

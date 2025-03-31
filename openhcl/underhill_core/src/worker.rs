@@ -757,7 +757,7 @@ impl UhVmNetworkSettings {
         driver_source: &VmTaskDriverSource,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        servicing_mana_state: &Option<Vec<ManaSavedState>>,
+        servicing_mana_state: Option<&ManaSavedState>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         tp: &AffinitizedThreadpool,
@@ -793,7 +793,7 @@ impl UhVmNetworkSettings {
             vps_count as u32,
             nic_max_sub_channels,
             servicing_netvsp_state,
-            servicing_mana_state,
+            &servicing_mana_state.cloned(),
             self.dma_mode,
             dma_client,
             mana_keepalive,
@@ -864,9 +864,9 @@ impl UhVmNetworkSettings {
                 adapter_index,
                 servicing_mana_state
                     .as_ref()
-                    .map(|s| &s[0].endpoints[0])
+                    .map(|s| &s.endpoints[0])
                     .cloned(),
-                servicing_mana_state.as_ref().map(|s| &s[0].queues).cloned(),
+                servicing_mana_state.as_ref().map(|s| &s.queues).cloned(),
             );
 
             let channel = offer_channel_unit(
@@ -912,7 +912,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         threadpool: &AffinitizedThreadpool,
         uevent_listener: &UeventListener,
         servicing_netvsp_state: &Option<Vec<crate::emuplat::netvsp::SavedState>>,
-        servicing_mana_state: &Option<Vec<ManaSavedState>>,
+        servicing_mana_state: &Option<ManaSavedState>,
         partition: Arc<UhPartition>,
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
@@ -946,7 +946,7 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
                 &driver_source,
                 uevent_listener,
                 servicing_netvsp_state,
-                servicing_mana_state,
+                servicing_mana_state.as_ref(),
                 partition,
                 state_units,
                 threadpool,
@@ -2838,6 +2838,16 @@ async fn new_underhill_vm(
         servicing_state.mana_state
     );
 
+    // Map the mana saved states by PCI ID
+    let servicing_mana_state = if let Some(ref mana_states) = servicing_state.mana_state {
+        mana_states
+            .iter()
+            .map(|state| (&state.pci_id, state.to_owned()))
+            .collect::<HashMap<_, _>>()
+    } else {
+        HashMap::new()
+    };
+
     let mut netvsp_state = Vec::with_capacity(controllers.mana.len());
     if !controllers.mana.is_empty() {
         let _span = tracing::info_span!("network_settings").entered();
@@ -2846,6 +2856,8 @@ async fn new_underhill_vm(
         let save_restore_supported = env_cfg.mana_keep_alive && private_pool_available;
 
         for nic_config in controllers.mana.into_iter() {
+            let saved_network = servicing_mana_state.get(&nic_config.pci_id).cloned();
+
             let save_state = uh_network_settings
                 .add_network(
                     nic_config.instance_id,
@@ -2854,7 +2866,7 @@ async fn new_underhill_vm(
                     tp,
                     &uevent_listener,
                     &servicing_state.emuplat.netvsp_state,
-                    &servicing_state.mana_state,
+                    &saved_network,
                     partition.clone(),
                     &state_units,
                     &vmbus_server,
