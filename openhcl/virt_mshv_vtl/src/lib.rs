@@ -386,11 +386,7 @@ impl UhCvmVpState {
             LapicState::new(lapic, activity)
         });
 
-        let hv = VtlArray::from_fn(|vtl| {
-            cvm_partition
-                .hv
-                .add_vp(inner.gm[vtl].clone(), vp_info.base.vp_index, vtl)
-        });
+        let hv = VtlArray::from_fn(|vtl| cvm_partition.hv.add_vp(vp_info.base.vp_index, vtl));
 
         Ok(Self {
             direct_overlay_handle,
@@ -1050,7 +1046,6 @@ impl vmcore::synic::GuestEventPort for UhEventPort {
             tracing::trace!(vp = vp.index(), sint, flag, "signal_event");
             if let Some(hv) = partition.hv() {
                 match hv.synic[vtl].signal_event(
-                    &partition.gm[vtl],
                     vp,
                     sint,
                     flag,
@@ -1067,7 +1062,6 @@ impl vmcore::synic::GuestEventPort for UhEventPort {
                         if let Some(synic) = partition.backing_shared.untrusted_synic() {
                             synic
                                 .signal_event(
-                                    &partition.gm[vtl],
                                     vp,
                                     sint,
                                     flag,
@@ -1659,6 +1653,7 @@ impl<'a> UhProtoPartition<'a> {
                 late_params.cvm_params.unwrap(),
                 &caps,
                 cvm_cpuid.unwrap(),
+                late_params.gm.clone(),
                 guest_vsm_available,
             )?)
         } else {
@@ -1677,6 +1672,15 @@ impl<'a> UhProtoPartition<'a> {
             caps,
             enter_modes: Mutex::new(enter_modes),
             enter_modes_atomic: u8::from(hcl::protocol::EnterModes::from(enter_modes)).into(),
+            backing_shared: BackingShared::new(
+                isolation,
+                &params,
+                BackingSharedParams {
+                    cvm_state,
+                    guest_memory: late_params.gm.clone(),
+                    guest_vsm_available,
+                },
+            )?,
             gm: late_params.gm,
             cpuid,
             crash_notification_send: late_params.crash_notification_send,
@@ -1687,14 +1691,6 @@ impl<'a> UhProtoPartition<'a> {
             isolation,
             no_sidecar_hotplug: params.no_sidecar_hotplug.into(),
             use_mmio_hypercalls: params.use_mmio_hypercalls,
-            backing_shared: BackingShared::new(
-                isolation,
-                &params,
-                BackingSharedParams {
-                    cvm_state,
-                    guest_vsm_available,
-                },
-            )?,
             #[cfg(guest_arch = "x86_64")]
             device_vector_table: RwLock::new(IrrBitmap::new(Default::default())),
             intercept_debug_exceptions: params.intercept_debug_exceptions,
@@ -1846,6 +1842,7 @@ impl UhProtoPartition<'_> {
         late_params: CvmLateParams,
         caps: &PartitionCapabilities,
         cpuid: cvm_cpuid::CpuidResults,
+        guest_memory: VtlArray<GuestMemory, 2>,
         guest_vsm_available: bool,
     ) -> Result<UhCvmPartitionState, Error> {
         let vp_count = params.topology.vp_count() as usize;
@@ -1881,6 +1878,7 @@ impl UhProtoPartition<'_> {
             vendor: caps.vendor,
             tsc_frequency,
             ref_time,
+            guest_memory,
         });
 
         if guest_vsm_available {

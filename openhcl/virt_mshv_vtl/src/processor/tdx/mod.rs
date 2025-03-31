@@ -567,7 +567,12 @@ impl TdxBackedShared {
         // performance would be poor for cases where the L1 implements
         // high-performance devices.
         let untrusted_synic = (partition_params.handle_synic && !partition_params.hide_isolation)
-            .then(|| GlobalSynic::new(partition_params.topology.vp_count()));
+            .then(|| {
+                GlobalSynic::new(
+                    params.guest_memory[GuestVtl::Vtl0].clone(),
+                    partition_params.topology.vp_count(),
+                )
+            });
         Ok(Self {
             untrusted_synic,
             flush_state: VtlArray::from_fn(|_| RwLock::new(TdxPartitionFlushState::new())),
@@ -803,14 +808,8 @@ impl BackingPrivate for TdxBacked {
         ];
 
         let reg_count = if let Some(synic) = &mut this.backing.untrusted_synic {
-            synic.set_simp(
-                &this.partition.gm[GuestVtl::Vtl0],
-                reg(pfns[UhDirectOverlay::Sipp as usize]),
-            );
-            synic.set_siefp(
-                &this.partition.gm[GuestVtl::Vtl0],
-                reg(pfns[UhDirectOverlay::Sifp as usize]),
-            );
+            synic.set_simp(reg(pfns[UhDirectOverlay::Sipp as usize]));
+            synic.set_siefp(reg(pfns[UhDirectOverlay::Sifp as usize]));
             // Set the SIEFP in the hypervisor so that the hypervisor can
             // directly signal synic events. Don't set the SIMP, since the
             // message page is owned by the paravisor.
@@ -2159,7 +2158,7 @@ impl UhProcessor<'_, TdxBacked> {
                     .untrusted_synic
                     .as_mut()
                     .unwrap()
-                    .write_nontimer_msr(&self.partition.gm[intercepted_vtl], msr, value)?;
+                    .write_nontimer_msr(msr, value)?;
                 // Propagate sint MSR writes to the hypervisor as well
                 // so that the hypervisor can directly inject events.
                 if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {

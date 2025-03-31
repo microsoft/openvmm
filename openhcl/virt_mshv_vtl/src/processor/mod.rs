@@ -37,6 +37,7 @@ use super::UhPartitionInner;
 use super::UhVpInner;
 use crate::GuestVtl;
 use crate::WakeReason;
+use guestmem::GuestMemory;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_hypercall::HvRepResult;
@@ -266,6 +267,7 @@ impl<T: BackingPrivate> Backing for T {}
 
 pub(crate) struct BackingSharedParams {
     pub cvm_state: Option<crate::UhCvmPartitionState>,
+    pub guest_memory: VtlArray<GuestMemory, 2>,
     pub guest_vsm_available: bool,
 }
 
@@ -495,7 +497,6 @@ impl<T: Backing> UhProcessor<'_, T> {
             };
             let (ready_sints, next_ref_time) = synic.scan(
                 ref_time_now,
-                &self.partition.gm[vtl],
                 &mut self
                     .partition
                     .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
@@ -1020,7 +1021,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 if proxied_sints & (1 << sint) != 0 {
                     if let Some(synic) = self.backing.untrusted_synic_mut().as_mut() {
                         synic.post_message(
-                            &self.partition.gm[vtl],
                             sint,
                             message,
                             &mut self
@@ -1041,7 +1041,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                         .unwrap()
                         .synic
                         .post_message(
-                            &self.partition.gm[vtl],
                             sint,
                             message,
                             &mut self

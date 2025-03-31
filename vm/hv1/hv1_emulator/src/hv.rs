@@ -36,6 +36,8 @@ pub struct GlobalHv {
     vtl_mutable_state: VtlArray<Arc<Mutex<MutableHvState>>, 2>,
     /// The per-vtl synic state.
     pub synic: VtlArray<GlobalSynic, 2>,
+    /// The guest memory accessor for each VTL.
+    guest_memory: VtlArray<GuestMemory, 2>,
 }
 
 #[derive(Inspect)]
@@ -90,6 +92,8 @@ pub struct GlobalHvParams {
     pub tsc_frequency: u64,
     /// The reference time system to use.
     pub ref_time: Box<dyn ReferenceTimeSource>,
+    /// The guest memory accessor for each VTL.
+    pub guest_memory: VtlArray<GuestMemory, 2>,
 }
 
 impl GlobalHv {
@@ -103,19 +107,22 @@ impl GlobalHv {
                 ref_time: params.ref_time,
             }),
             vtl_mutable_state: VtlArray::from_fn(|_| Arc::new(Mutex::new(MutableHvState::new()))),
-            synic: VtlArray::from_fn(|_| GlobalSynic::new(params.max_vp_count)),
+            synic: VtlArray::from_fn(|vtl| {
+                GlobalSynic::new(params.guest_memory[vtl].clone(), params.max_vp_count)
+            }),
+            guest_memory: params.guest_memory,
         }
     }
 
     /// Adds a virtual processor to the vtl.
-    pub fn add_vp(&self, guest_memory: GuestMemory, vp_index: VpIndex, vtl: Vtl) -> ProcessorVtlHv {
+    pub fn add_vp(&self, vp_index: VpIndex, vtl: Vtl) -> ProcessorVtlHv {
         ProcessorVtlHv {
             vp_index,
             partition_state: self.partition_state.clone(),
             vtl_state: self.vtl_mutable_state[vtl].clone(),
             synic: self.synic[vtl].add_vp(vp_index),
             vp_assist_page: 0.into(),
-            guest_memory,
+            guest_memory: self.guest_memory[vtl].clone(),
         }
     }
 
@@ -300,7 +307,7 @@ impl ProcessorVtlHv {
             hvdef::HV_X64_MSR_TSC_FREQUENCY => return Err(MsrError::InvalidAccess),
             hvdef::HV_X64_MSR_VP_ASSIST_PAGE => self.msr_write_vp_assist_page(v)?,
             msr @ hvdef::HV_X64_MSR_SCONTROL..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
-                self.synic.write_msr(&self.guest_memory, msr, v)?
+                self.synic.write_msr(msr, v)?
             }
             _ => return Err(MsrError::Unknown),
         }
