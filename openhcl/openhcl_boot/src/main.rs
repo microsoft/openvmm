@@ -150,9 +150,9 @@ fn build_kernel_command_line(
         "unknown_nmi_panic=1",
         // Even with iommu=off, the SWIOTLB is still allocated on AARCH64
         // (iommu=off ignored entirely), and CVMs (memory encryption forces it on).
-        // Set it to the minimum, saving ~63 MiB. The first parameter controls the
+        // Set it to a single area in 8MB. The first parameter controls the
         // area size in slabs (2KB per slab), the second controls the number of
-        // areas (default is # of CPUs). Set a single area in 8MB.
+        // areas (default is # of CPUs).
         "swiotlb=4096,1",
         // Use vfio for MANA devices.
         "vfio_pci.ids=1414:00ba",
