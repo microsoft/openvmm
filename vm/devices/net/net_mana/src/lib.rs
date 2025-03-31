@@ -502,8 +502,7 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
     }
 
     async fn stop(&mut self) {
-        if (!self.mana_keepalive) {
-            tracing::info!("stopping endpoint");
+        if !self.mana_keepalive {
             if let Err(err) = self
                 .vport
                 .config_rx(&RxConfig {
@@ -521,7 +520,6 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
                 );
             }
 
-            tracing::info!("clearing mana queues. length was {}", self.queues.len());
             self.queues.clear();
             self.vport.destroy(std::mem::take(&mut self.arena)).await;
             // Wait for all outstanding queues. There can be a delay switching out
@@ -530,8 +528,6 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
             if self.queue_tracker.0.load(Ordering::Acquire) > 0 {
                 self.queue_tracker.1.wait().await;
             }
-        } else {
-            tracing::info!("not stopping endpoint, keepalive specified");
         }
     }
 
@@ -590,7 +586,6 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
     }
 
     fn save(&self) -> anyhow::Result<Option<EndpointSavedState>> {
-        tracing::info!("saving endpoint with queue count: {}", self.queues.len());
         Ok(Some(EndpointSavedState::ManaEndpoint(
             ManaEndpointSavedState {
                 vport: self.vport.save(),
@@ -613,8 +608,6 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
         saved_state: Vec<QueueSavedState>,
         queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
-        tracing::info!("restoring endpoint using saved_state: {:?}", saved_state);
-
         for (i, saved_queue) in saved_state.iter().enumerate() {
             match saved_queue {
                 QueueSavedState::ManaQueue(mana_queue) => {
@@ -677,9 +670,6 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
                     )?;
 
                     queues.push(Box::new(queue));
-                }
-                _ => {
-                    anyhow::bail!("mana endpoints should only restore mana queues");
                 }
             }
         }
@@ -1586,7 +1576,6 @@ impl ContiguousBufferManager {
     pub fn new(dma_client: Arc<dyn DmaClient>, page_limit: u32) -> anyhow::Result<Self> {
         let len = PAGE_SIZE32 * page_limit;
         let mem = dma_client.allocate_dma_buffer(len as usize)?;
-        tracing::info!("allocated bounce buffer at pfn {:#x}", mem.pfns()[0]);
         Ok(Self {
             len,
             head: 0,

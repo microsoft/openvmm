@@ -11,7 +11,6 @@ pub mod null;
 pub mod resolve;
 pub mod tests;
 
-use anyhow::Error;
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures::StreamExt;

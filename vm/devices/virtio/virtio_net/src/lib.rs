@@ -25,7 +25,6 @@ use net_backend::TxId;
 use net_backend::TxMetadata;
 use net_backend::TxSegment;
 use net_backend::TxSegmentType;
-use net_backend::save_restore::EndpointSavedState;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::wait::PolledWait;
 use std::future::pending;

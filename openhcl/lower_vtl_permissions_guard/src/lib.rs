@@ -109,7 +109,7 @@ impl<T: DmaClient> DmaClient for LowerVtlMemorySpawner<T> {
         anyhow::bail!("restore is not supported for LowerVtlMemorySpawner")
     }
 
-    fn get_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock> {
+    fn get_dma_buffer(&self, _len: usize, _base_pfn: u64) -> Result<MemoryBlock> {
         anyhow::bail!("get is not supported for LowerVtlMemorySpawner")
     }
 }

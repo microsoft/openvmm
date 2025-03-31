@@ -29,7 +29,6 @@ use gdma_defs::bnic::STATISTICS_FLAGS_ALL;
 use inspect::Inspect;
 use mana_save_restore::save_restore::BnicEqSavedState;
 use mana_save_restore::save_restore::BnicWqSavedState;
-use mana_save_restore::save_restore::CqEqSavedState;
 use mana_save_restore::save_restore::DoorbellSavedState;
 use mana_save_restore::save_restore::SavedMemoryState;
 use mana_save_restore::save_restore::VportSavedState;
@@ -91,10 +90,8 @@ impl<T: DeviceBacking> ManaDevice<T> {
         mana_keepalive: bool,
     ) -> anyhow::Result<Self> {
         let mut gdma = if let Some(ref mana_state) = mana_state {
-            tracing::info!("Restoring gdma driver from saved state");
             GdmaDriver::restore(mana_state.mana_device.gdma.clone(), device).await?
         } else {
-            tracing::info!("Creating a new gdma driver");
             GdmaDriver::new(driver, device, num_vps, mana_keepalive).await?
         };
 
@@ -111,7 +108,6 @@ impl<T: DeviceBacking> ManaDevice<T> {
             .context("no mana device found")?;
 
         let dev_data = if let Some(mana_state) = mana_state {
-            tracing::info!("restoring device data from saved state");
             GdmaRegisterDeviceResp {
                 pdid: mana_state.mana_device.gdma.pdid,
                 gpa_mkey: mana_state.mana_device.gdma.gpa_mkey,
@@ -177,8 +173,6 @@ impl<T: DeviceBacking> ManaDevice<T> {
         let saved_state = ManaDeviceSavedState {
             gdma: gdma.save().await?,
         };
-
-        tracing::info!("Saved gdma driver state: {:?}", saved_state);
 
         Ok(saved_state)
     }
@@ -376,8 +370,6 @@ impl<T: DeviceBacking> Vport<T> {
     ) -> anyhow::Result<BnicEq> {
         let mut gdma = self.inner.gdma.lock().await;
         let dma_client = gdma.device().dma_client();
-        tracing::info!("allocating eq memory");
-
         let mem = dma_client
             .allocate_dma_buffer(size as usize)
             .context("Failed to allocate DMA buffer")?;
@@ -406,27 +398,6 @@ impl<T: DeviceBacking> Vport<T> {
         })
     }
 
-    /// Restore an eq after servicing
-    pub async fn restore_eq(
-        &self,
-        arena: &mut ResourceArena,
-        cpu: u32,
-        saved_queue: CqEqSavedState,
-    ) -> anyhow::Result<BnicEq> {
-        let gdma = self.inner.gdma.lock().await;
-        let mem = gdma
-            .device()
-            .dma_client()
-            .get_dma_buffer(saved_queue.mem.len, saved_queue.mem.base)?;
-
-        Ok(BnicEq {
-            doorbell: DoorbellPage::new(self.inner.doorbell.clone(), self.inner.dev_data.db_id)?,
-            mem,
-            id: todo!(),
-            interrupt: todo!(),
-        })
-    }
-
     /// Creates a new work queue (transmit or receive).
     pub async fn new_wq(
         &self,
@@ -441,8 +412,6 @@ impl<T: DeviceBacking> Vport<T> {
         let mut gdma = self.inner.gdma.lock().await;
 
         let dma_client = gdma.device().dma_client();
-
-        tracing::info!("allocating wq memory");
 
         let mem = dma_client
             .allocate_dma_buffer((wq_size + cq_size) as usize)
@@ -661,8 +630,6 @@ impl BnicEq {
 
     /// Save the state of the event queue for restoration after servicing.
     pub fn save(&self) -> BnicEqSavedState {
-        tracing::info!("base pfn of eq: {:#x}", self.mem.pfns()[0]);
-
         BnicEqSavedState {
             queue: self.queue().save(),
             memory: SavedMemoryState {
@@ -710,8 +677,6 @@ impl BnicWq {
 
     /// Saves the state of the work queue for restoration after servicing.
     pub fn save(&self) -> BnicWqSavedState {
-        tracing::info!("base pfn of wq: {:#x}", self.wq_mem.pfns()[0]);
-
         BnicWqSavedState {
             memory: SavedMemoryState {
                 base_pfn: self.wq_mem.pfns()[0],

@@ -744,14 +744,6 @@ impl PagePoolAllocator {
                 None
             };
 
-            tracing::warn!(
-                base_pfn = allocation_slot.base_pfn,
-                pfn_bias = allocation_slot.size_pages,
-                size_pages = allocation_slot.size_pages,
-                tag = tag.as_str(),
-                "allocation"
-            );
-
             (allocation_slot, free_slot)
         };
 
@@ -790,12 +782,6 @@ impl PagePoolAllocator {
         base_pfn: u64,
         size_pages: NonZeroU64,
     ) -> Result<PagePoolHandle, Error> {
-        tracing::warn!(
-            base_pfn = base_pfn,
-            size_pages = size_pages,
-            "restoring allocation"
-        );
-
         let size_pages = size_pages.get();
         let mut inner = self.inner.state.lock();
         let inner = &mut *inner;
@@ -808,12 +794,6 @@ impl PagePoolAllocator {
                         && slot.base_pfn == base_pfn
                         && slot.size_pages == size_pages
                 } else {
-                    tracing::warn!(
-                        base_pfn = slot.base_pfn,
-                        size_pages = slot.size_pages,
-                        "skipping slot {:?}",
-                        slot.state
-                    );
                     false
                 }
             })
@@ -879,8 +859,6 @@ impl user_driver::DmaClient for PagePoolAllocator {
         let alloc = self
             .restore_alloc(base_pfn, size_pages)
             .context("failed to restore allocation")?;
-
-        tracing::info!("restored allocation: {:x}", base_pfn);
 
         // Preserve the existing contents of memory and do not zero the restored
         // allocation.

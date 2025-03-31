@@ -670,7 +670,6 @@ impl UhVmNetworkSettings {
         mana_keepalive: bool,
     ) {
         if mana_keepalive {
-            tracing::info!("skipping shutdown vf devices");
             return;
         }
 
@@ -2832,11 +2831,6 @@ async fn new_underhill_vm(
             net_mana::GuestDmaMode::DirectDma
         },
     };
-
-    tracing::info!(
-        "mana servicing state on create: {:?}",
-        servicing_state.mana_state
-    );
 
     // Map the mana saved states by PCI ID
     let servicing_mana_state = if let Some(ref mana_states) = servicing_state.mana_state {

@@ -451,11 +451,6 @@ impl LoadedVm {
             std::future::pending::<()>().await;
         }
 
-        tracing::info!(
-            "handle_servicing_request mana: {:?}",
-            capabilities_flags.enable_mana_keepalive()
-        );
-
         let running = self.state_units.is_running();
         let success = match self
             .handle_servicing_inner(correlation_id, deadline, capabilities_flags)
@@ -506,22 +501,10 @@ impl LoadedVm {
             anyhow::bail!("Servicing is not yet supported for isolated VMs");
         }
 
-        tracing::info!("self.nvme_keepalive: {:?}", self.nvme_keep_alive);
-        tracing::info!("self.mana_keepalive: {:?}", self.mana_keep_alive);
-
         // NOTE: This is set via the corresponding env arg, as this feature is
         // experimental.
         let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
         let mana_keepalive = self.mana_keep_alive && capabilities_flags.enable_mana_keepalive();
-
-        tracing::info!(
-            "handle_servicing_inner nvme_keepalive: {:?}",
-            nvme_keepalive
-        );
-        tracing::info!(
-            "handle_servicing_inner mana_keepalive: {:?}",
-            mana_keepalive
-        );
 
         // Do everything before the log flush under a span.
         let r = async {
@@ -694,12 +677,6 @@ impl LoadedVm {
     ) -> anyhow::Result<ServicingState> {
         assert!(!self.state_units.is_running());
 
-        tracing::info!(
-            "keepalive flags - nvme: {:?}, mana: {:?}",
-            nvme_keepalive_flag,
-            mana_keepalive_flag
-        );
-
         let emuplat = (self.emuplat_servicing.save()).context("emuplat save failed")?;
 
         // Only save NVMe state when there are NVMe controllers and keep alive
@@ -714,7 +691,6 @@ impl LoadedVm {
         };
 
         let mana_state = if let Some(network_settings) = &mut self.network_settings {
-            tracing::info!("saving mana state: {:?}", mana_keepalive_flag);
             let results = network_settings.save(mana_keepalive_flag).await;
             let mut saved_states = Vec::new();
 
@@ -727,7 +703,7 @@ impl LoadedVm {
                 }
             }
 
-            if saved_states.len() > 0 {
+            if !saved_states.is_empty() {
                 Some(saved_states)
             } else {
                 None
@@ -735,8 +711,6 @@ impl LoadedVm {
         } else {
             None
         };
-
-        tracing::info!("saved mana_state: {:?}", mana_state);
 
         let units = self.save_units().await.context("state unit save failed")?;
         let vmgs = self

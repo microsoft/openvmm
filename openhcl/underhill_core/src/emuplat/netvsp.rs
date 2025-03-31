@@ -73,11 +73,6 @@ async fn create_mana_device(
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
     // Don't do anything to the device in servicing mode
     if let Some(mana_state) = mana_state {
-        tracing::info!(
-            "Restoring mana device and skipping reset with pci_id {:?}",
-            pci_id
-        );
-
         return try_create_mana_device(
             driver_source,
             pci_id,
@@ -148,18 +143,14 @@ async fn try_create_mana_device(
     mana_keepalive: bool,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
     let device = if mana_state.is_some() {
-        tracing::info!("restoring mana vfio device with pci_id {:?}", pci_id);
         VfioDevice::restore(driver_source, pci_id, true, dma_client)
             .await
             .context("failed to restore device")?
     } else {
-        tracing::info!("creating mana vfio device with pci_id {:?}", pci_id);
         VfioDevice::new(driver_source, pci_id, dma_client)
             .await
             .context("failed to open device")?
     };
-
-    tracing::info!("successfully got mana vfio device");
 
     ManaDevice::new(
         &driver_source.simple(),
@@ -712,8 +703,6 @@ impl HclNetworkVFManagerWorker {
                         )
                         .await;
 
-                        tracing::info!("saved endpoints: {:?}", saved_endpoints);
-
                         ManaSavedState {
                             pci_id: self.vtl2_pci_id.clone(),
                             mana_device: self.mana_device.as_ref().unwrap().save().await.unwrap(),
@@ -931,8 +920,6 @@ impl HclNetworkVFManager {
         Vec<HclNetworkVFManagerEndpointInfo>,
         RuntimeSavedState,
     )> {
-        tracing::info!("creating mana device. mana_state: {:?}", mana_state);
-
         let device = create_mana_device(
             driver_source,
             &vtl2_pci_id,
@@ -943,9 +930,6 @@ impl HclNetworkVFManager {
             mana_keepalive,
         )
         .await?;
-
-        tracing::info!("device vport count: {:?}", device.num_vports());
-
         let (mut endpoints, endpoint_controls): (Vec<_>, Vec<_>) = (0..device.num_vports())
             .map(|_| {
                 let (endpoint, endpoint_control) = DisconnectableEndpoint::new();
@@ -1050,8 +1034,6 @@ impl HclNetworkVFManager {
             .call(HclNetworkVfManagerMessage::SaveState, ())
             .await
             .map_err(anyhow::Error::from)?;
-
-        tracing::info!("Returned save_state {:?}", save_state);
 
         Ok(save_state)
     }

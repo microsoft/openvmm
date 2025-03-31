@@ -312,12 +312,6 @@ struct QueueState {
     target_vp_set: bool,
 }
 
-impl Drop for QueueState {
-    fn drop(&mut self) {
-        tracing::info!("dropping queue state");
-    }
-}
-
 struct RxBufferRange {
     id_range: Range<u32>,
     remote_buffer_id_recv: Option<mpsc::UnboundedReceiver<u32>>,
@@ -1321,7 +1315,6 @@ impl VmbusDevice for Nic {
                 worker.task_mut().queue_state = None;
             }
 
-            tracing::info!("stopping endpoint for vmbus channel");
             // Note that this await is not restartable.
             self.coordinator.task_mut().endpoint.stop().await;
 
@@ -1374,7 +1367,6 @@ impl VmbusDevice for Nic {
     }
 
     async fn stop(&mut self) {
-        tracing::info!("stopping nic and dropping queues");
         self.coordinator.stop().await;
         if let Some(coordinator) = self.coordinator.state_mut() {
             coordinator.stop_workers().await;
@@ -1390,9 +1382,6 @@ impl VmbusDevice for Nic {
 impl SaveRestoreVmbusDevice for Nic {
     async fn save(&mut self) -> Result<SavedStateBlob, SaveError> {
         let state = self.saved_state();
-
-        tracing::info!("returning saved state: {:?}", state);
-
         Ok(SavedStateBlob::new(state))
     }
 
@@ -1922,8 +1911,6 @@ impl Nic {
                     .and_then(|q| q.queue.save().ok())
             })
             .collect();
-
-        tracing::info!("queue saved state: {:?}", queues);
 
         saved_state::SavedState {
             open,
@@ -3814,7 +3801,6 @@ impl Coordinator {
         let mut sleep_duration: Option<Instant> = None;
         loop {
             if self.restart {
-                tracing::info!("stopping workers and restarting endpoint in netvsp coordinator");
                 stop.until_stopped(self.stop_workers()).await?;
                 // The queue restart operation is not restartable, so do not
                 // poll on `stop` here.
@@ -4209,11 +4195,6 @@ impl Coordinator {
     }
 
     async fn restart_queues(&mut self, c_state: &mut CoordinatorState) -> Result<(), WorkerError> {
-        tracing::info!(
-            "coordinator saved queues state on restart: {:?}",
-            c_state.saved_queues
-        );
-
         // Drop all the queues and stop the endpoint. Collect the worker drivers to pass to the queues.
         let drivers = self
             .workers
@@ -4381,11 +4362,6 @@ impl Coordinator {
                     indirection_table: &rss.indirection_table,
                     flags: 0,
                 });
-
-            tracing::info!(
-                "getting queues with saved state: {:?}",
-                c_state.saved_endpoint
-            );
 
             if let Some(saved_queues) = &c_state.saved_queues {
                 c_state

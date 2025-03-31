@@ -181,7 +181,6 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
         }
 
         if !self.keepalive {
-            tracing::info!("gdma keepalive not specified, dropping device");
             let data = self
                 .bar0
                 .mem
@@ -229,8 +228,6 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
             if header.status() != 0 {
                 tracing::error!("DESTROY_HWC failed: {}", header.status());
             }
-        } else {
-            tracing::info!("not dropping gdma driver");
         }
     }
 }
@@ -526,18 +523,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
     }
 
     pub async fn save(&mut self) -> anyhow::Result<GdmaDriverSavedState> {
-        tracing::info!(
-            "saving GDMA driver state. base_pfn: {}, len: {}",
-            self.dma_buffer.pfns()[0],
-            self.dma_buffer.len()
-        );
-
-        tracing::info!(
-            "saving gdma interrupts state. count: {}, active: {}",
-            self.interrupts.len(),
-            self.interrupts.iter().filter(|i| i.is_some()).count()
-        );
-
         let doorbell = self.bar0.save(Some(self.db_id as u64));
 
         let mut interrupt_config = Vec::new();
@@ -574,8 +559,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
     }
 
     pub async fn restore(saved_state: GdmaDriverSavedState, mut device: T) -> anyhow::Result<Self> {
-        tracing::info!("restoring gdma driver from saved state");
-
         let bar0_mapping = device.map_bar(0)?;
         let bar0_len = bar0_mapping.len();
         if bar0_len < size_of::<RegMap>() {
@@ -594,21 +577,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         }
 
         tracing::debug!(?map, "register map on restore");
-
-        // Verify HWC channel is still active by reading shared memory region
-        let shmem_data = bar0_mapping.read_u32(map.vf_gdma_sriov_shared_reg_start as usize + 28);
-        if shmem_data == u32::MAX {
-            anyhow::bail!("Device no longer present");
-        }
-
-        let header = SmcProtoHdr::from(shmem_data);
-        if header.owner_is_pf() {
-            tracing::warn!("HWC channel appears inactive, device owns shared memory");
-            // Consider re-establishing HWC here if needed
-            anyhow::bail!("HWC channel not active");
-        } else {
-            tracing::info!("HWC channel appears active");
-        }
 
         // Log on unknown major version numbers. This is not necessarily an
         // error, so continue.
@@ -639,12 +607,8 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         }
 
         let dma_client = device.dma_client();
-        tracing::info!("restoring gdma DMA buffer: {:?}", saved_state.mem);
         let dma_buffer =
             dma_client.attach_dma_buffer(saved_state.mem.len, saved_state.mem.base_pfn)?;
-
-        let pages = dma_buffer.pfns();
-        tracing::info!("restored pages: {:?}", pages);
 
         let doorbell_shift = map.vf_db_page_sz.trailing_zeros();
         let bar0 = Arc::new(Bar0 {
@@ -652,8 +616,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             map,
             doorbell_shift,
         });
-
-        tracing::info!("Restoring doorbell state with db_id: {}", saved_state.db_id);
 
         let eq = Eq::restore(
             dma_buffer.subblock(0, PAGE_SIZE),
@@ -682,11 +644,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
         let mut interrupts = vec![None; saved_state.num_msix as usize];
         for int_state in &saved_state.interrupt_config {
-            tracing::info!(
-                "Restoring interrupt at index {:?} and on cpu {:?}",
-                int_state.msix_index,
-                int_state.cpu
-            );
             let interrupt = device.map_interrupt(int_state.msix_index, int_state.cpu)?;
 
             interrupts[int_state.msix_index as usize] = Some(interrupt);
