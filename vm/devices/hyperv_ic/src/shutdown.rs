@@ -17,6 +17,7 @@ use hyperv_ic_resources::shutdown::ShutdownType;
 use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::rpc::Rpc;
+use mesh_channel::mpsc_channel;
 use std::io::IoSlice;
 use std::pin::pin;
 use task_control::Cancelled;
@@ -42,7 +43,15 @@ pub struct ShutdownIc {
     #[inspect(skip)]
     recv: mesh::Receiver<ShutdownRpc>,
     #[inspect(skip)]
-    wait_ready: Vec<Rpc<(), mesh::OneshotReceiver<()>>>,
+    wait_ready: Vec<
+        Rpc<
+            (),
+            (
+                mesh_channel::MpscSender<Rpc<ShutdownParams, ShutdownResult>>,
+                mesh_channel::OneshotReceiver<()>,
+            ),
+        >,
+    >,
 }
 
 #[doc(hidden)]
@@ -66,7 +75,12 @@ enum ChannelState {
         #[inspect(display)]
         message_version: hyperv_ic_protocol::Version,
         state: ReadyState,
-        #[inspect(with = "|x| x.len()")]
+        #[inspect(skip)]
+        shutdown_notification: (
+            mesh_channel::MpscSender<Rpc<ShutdownParams, ShutdownResult>>,
+            mesh_channel::MpscReceiver<Rpc<ShutdownParams, ShutdownResult>>,
+        ),
+        #[inspect(skip)]
         clients: Vec<mesh::OneshotSender<()>>,
     },
 }
@@ -108,6 +122,8 @@ impl ShutdownIc {
         let pipe = MessagePipe::new(channel)?;
         Ok(ShutdownChannel::new(pipe, restore_state))
     }
+
+    async fn close_channel(&mut self) {}
 }
 
 impl ShutdownChannel {
@@ -121,7 +137,7 @@ impl ShutdownChannel {
 
     async fn process(&mut self, ic: &mut ShutdownIc) -> Result<(), Error> {
         enum Event {
-            StateMachine(Result<(), Error>),
+            StateMachine(Result<Option<Rpc<ShutdownParams, ShutdownResult>>, Error>),
             Request(ShutdownRpc),
         }
 
@@ -140,36 +156,39 @@ impl ShutdownChannel {
             .await
             .unwrap();
             match event {
+                Event::StateMachine(Ok(Some(rpc))) => {
+                    let ChannelState::Ready { state, .. } = &mut self.state else {
+                        panic!("Shutdown request received while not in ready state");
+                    };
+                    if self.pending_shutdown.is_some() {
+                        panic!(
+                            "Shutdown request received while processing previous shutdown request"
+                        );
+                    }
+                    let (params, rpc) = rpc.split();
+                    self.pending_shutdown = Some(rpc);
+                    *state = ReadyState::SendShutdown(params);
+                }
                 Event::StateMachine(r) => {
                     r?;
                 }
-                Event::Request(req) => match req {
-                    ShutdownRpc::WaitReady(rpc) => match &mut self.state {
-                        ChannelState::SendVersion | ChannelState::WaitVersion => {
-                            ic.wait_ready.push(rpc)
-                        }
-                        ChannelState::Ready { clients, .. } => {
-                            let (send, recv) = mesh::oneshot();
-                            clients.retain(|c| !c.is_closed());
-                            clients.push(send);
-                            rpc.complete(recv);
-                        }
-                    },
-                    ShutdownRpc::Shutdown(rpc) => match self.state {
-                        ChannelState::SendVersion | ChannelState::WaitVersion => {
-                            rpc.complete(ShutdownResult::NotReady)
-                        }
-                        ChannelState::Ready { ref mut state, .. } => match state {
-                            ReadyState::Ready => {
-                                let (input, rpc) = rpc.split();
-                                self.pending_shutdown = Some(rpc);
-                                *state = ReadyState::SendShutdown(input);
-                            }
-                            ReadyState::SendShutdown { .. } | ReadyState::WaitShutdown => {
-                                rpc.complete(ShutdownResult::AlreadyInProgress)
-                            }
-                        },
-                    },
+                Event::Request(ShutdownRpc::WaitReady(rpc)) => match &mut self.state {
+                    ChannelState::SendVersion | ChannelState::WaitVersion => {
+                        ic.wait_ready.push(rpc)
+                    }
+                    &mut ChannelState::Ready {
+                        ref mut clients,
+                        ref mut shutdown_notification,
+                        ..
+                    } => {
+                        // Discard any closed connections.
+                        clients.retain(|send| !send.is_closed());
+                        // Add a new client.
+                        let send_shutdown_notification = &shutdown_notification.0;
+                        let (send, recv) = mesh::oneshot();
+                        clients.push(send);
+                        rpc.complete((send_shutdown_notification.clone(), recv));
+                    }
                 },
             }
         }
@@ -177,8 +196,16 @@ impl ShutdownChannel {
 
     async fn process_state_machine(
         &mut self,
-        wait_ready: &mut Vec<Rpc<(), mesh::OneshotReceiver<()>>>,
-    ) -> Result<(), Error> {
+        wait_ready: &mut Vec<
+            Rpc<
+                (),
+                (
+                    mesh_channel::MpscSender<Rpc<ShutdownParams, ShutdownResult>>,
+                    mesh::OneshotReceiver<()>,
+                ),
+            >,
+        >,
+    ) -> Result<Option<Rpc<ShutdownParams, ShutdownResult>>, Error> {
         match self.state {
             ChannelState::SendVersion => {
                 let message_versions = SHUTDOWN_VERSIONS;
@@ -227,19 +254,21 @@ impl ShutdownChannel {
                         .map_err(|_| Error::TruncatedMessage)?
                         .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
+                let shutdown_notification = mpsc_channel();
+                let send_shutdown_notification = &shutdown_notification.0;
                 let clients = wait_ready
                     .drain(..)
-                    .map(|rpc| {
+                    .filter_map(|rpc| {
                         let (send, recv) = mesh::oneshot();
-                        rpc.complete(recv);
-                        send
+                        rpc.complete((send_shutdown_notification.clone(), recv));
+                        if !send.is_closed() { Some(send) } else { None }
                     })
-                    .collect();
-
+                    .collect::<Vec<_>>();
                 self.state = ChannelState::Ready {
                     framework_version,
                     message_version,
                     state: ReadyState::Ready,
+                    shutdown_notification,
                     clients,
                 };
             }
@@ -247,62 +276,83 @@ impl ShutdownChannel {
                 ref mut state,
                 framework_version,
                 message_version,
-                clients: _,
-            } => match state {
-                ReadyState::Ready => std::future::pending().await,
-                ReadyState::SendShutdown(params) => {
-                    let mut flags =
-                        hyperv_ic_protocol::shutdown::ShutdownFlags::new().with_force(params.force);
-                    match params.shutdown_type {
-                        ShutdownType::PowerOff => {}
-                        ShutdownType::Reboot => flags.set_restart(true),
-                        ShutdownType::Hibernate => flags.set_hibernate(true),
+                ref mut shutdown_notification,
+                ..
+            } => {
+                let shutdown_in_progress = !matches!(state, ReadyState::Ready);
+                let process_shutdown = pin!(async {
+                    match state {
+                        ReadyState::Ready => std::future::pending().await,
+                        ReadyState::SendShutdown(params) => {
+                            let mut flags = hyperv_ic_protocol::shutdown::ShutdownFlags::new()
+                                .with_force(params.force);
+                            match params.shutdown_type {
+                                ShutdownType::PowerOff => {}
+                                ShutdownType::Reboot => flags.set_restart(true),
+                                ShutdownType::Hibernate => flags.set_hibernate(true),
+                            }
+
+                            let message = Box::new(hyperv_ic_protocol::shutdown::ShutdownMessage {
+                                reason_code:
+                                    hyperv_ic_protocol::shutdown::SHTDN_REASON_FLAG_PLANNED,
+                                timeout_secs: 0,
+                                flags,
+                                message: [0; 2048],
+                            });
+                            let header = hyperv_ic_protocol::Header {
+                                framework_version,
+                                message_type: hyperv_ic_protocol::MessageType::SHUTDOWN,
+                                message_size: size_of_val(message.as_ref()) as u16,
+                                message_version,
+                                status: 0,
+                                transaction_id: 0,
+                                flags: hyperv_ic_protocol::HeaderFlags::new()
+                                    .with_transaction(true)
+                                    .with_request(true),
+                                ..FromZeros::new_zeroed()
+                            };
+
+                            self.pipe
+                                .send_vectored(&[
+                                    IoSlice::new(header.as_bytes()),
+                                    IoSlice::new(message.as_bytes()),
+                                ])
+                                .await
+                                .map_err(Error::Ring)?;
+
+                            *state = ReadyState::WaitShutdown;
+                        }
+                        ReadyState::WaitShutdown => {
+                            let (status, _) = read_response(&mut self.pipe).await?;
+                            let result = if status == 0 {
+                                ShutdownResult::Ok
+                            } else {
+                                ShutdownResult::Failed(status)
+                            };
+                            if let Some(rpc) = self.pending_shutdown.take() {
+                                rpc.complete(result);
+                            }
+                            *state = ReadyState::Ready;
+                        }
                     }
-
-                    let message = Box::new(hyperv_ic_protocol::shutdown::ShutdownMessage {
-                        reason_code: hyperv_ic_protocol::shutdown::SHTDN_REASON_FLAG_PLANNED,
-                        timeout_secs: 0,
-                        flags,
-                        message: [0; 2048],
-                    });
-                    let header = hyperv_ic_protocol::Header {
-                        framework_version,
-                        message_type: hyperv_ic_protocol::MessageType::SHUTDOWN,
-                        message_size: size_of_val(message.as_ref()) as u16,
-                        message_version,
-                        status: 0,
-                        transaction_id: 0,
-                        flags: hyperv_ic_protocol::HeaderFlags::new()
-                            .with_transaction(true)
-                            .with_request(true),
-                        ..FromZeros::new_zeroed()
+                    Ok(None)
+                });
+                let mut process_shutdown = process_shutdown.fuse();
+                loop {
+                    let result = futures::select! {
+                        message = process_shutdown => message,
+                        rpc = shutdown_notification.1.select_next_some() => Ok(Some(rpc)),
                     };
-
-                    self.pipe
-                        .send_vectored(&[
-                            IoSlice::new(header.as_bytes()),
-                            IoSlice::new(message.as_bytes()),
-                        ])
-                        .await
-                        .map_err(Error::Ring)?;
-
-                    *state = ReadyState::WaitShutdown;
-                }
-                ReadyState::WaitShutdown => {
-                    let (status, _) = read_response(&mut self.pipe).await?;
-                    let result = if status == 0 {
-                        ShutdownResult::Ok
+                    if matches!(result, Ok(Some(_))) && shutdown_in_progress {
+                        let rpc = result.unwrap().unwrap();
+                        rpc.complete(ShutdownResult::AlreadyInProgress);
                     } else {
-                        ShutdownResult::Failed(status)
-                    };
-                    if let Some(send) = self.pending_shutdown.take() {
-                        send.complete(result);
+                        return result;
                     }
-                    *state = ReadyState::Ready;
                 }
-            },
+            }
         }
-        Ok(())
+        Ok(None)
     }
 }
 
@@ -349,6 +399,10 @@ impl SimpleVmbusDevice for ShutdownIc {
         _guest_memory: guestmem::GuestMemory,
     ) -> Result<Self::Runner, ChannelOpenError> {
         self.open_channel(channel, None)
+    }
+
+    async fn close(&mut self) {
+        self.close_channel().await;
     }
 
     async fn run(
@@ -490,7 +544,7 @@ mod save_restore {
                     framework_version,
                     message_version,
                     state,
-                    clients: _,
+                    ..
                 } = &runner.state
                 {
                     let request = if let ReadyState::SendShutdown(request) = state {
@@ -533,6 +587,7 @@ mod save_restore {
                     framework_version: framework.into(),
                     message_version: message.into(),
                     state,
+                    shutdown_notification: mpsc_channel(),
                     clients: Vec::new(),
                 }
             } else {
