@@ -525,12 +525,14 @@ impl UnderhillVmWorker {
                     tracing::info!("servicing netvsp state: {:?}", netvsp_state.endpoint);
                     if let Some(init_state) = servicing_init_state.as_mut() {
                         if let Some(mana_state) = init_state.mana_state.as_mut() {
-                            if let Some(endpoint) = netvsp_state.endpoint {
-                                mana_state[0].endpoints.push(endpoint);
-                            }
+                            if (mana_state.len() > 0) {
+                                if let Some(endpoint) = netvsp_state.endpoint {
+                                    mana_state[0].endpoints.push(endpoint);
+                                }
 
-                            if let Some(queues) = netvsp_state.saved_queues {
-                                mana_state[0].queues = queues;
+                                if let Some(queues) = netvsp_state.saved_queues {
+                                    mana_state[0].queues = queues;
+                                }
                             }
                         }
                     }

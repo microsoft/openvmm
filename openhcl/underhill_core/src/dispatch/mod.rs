@@ -727,7 +727,11 @@ impl LoadedVm {
                 }
             }
 
-            Some(saved_states)
+            if saved_states.len() > 0 {
+                Some(saved_states)
+            } else {
+                None
+            }
         } else {
             None
         };
