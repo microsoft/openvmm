@@ -223,7 +223,6 @@ impl<'a> WhpProcessor<'a> {
     ) -> Result<(), HvError> {
         if let Some(hv) = &mut self.state.vtls[vtl].hv {
             hv.synic.post_message(
-                &self.vp.partition.gm,
                 sint,
                 message,
                 &mut self.vp.partition.synic_interrupt(self.vp.index, vtl),
@@ -288,7 +287,7 @@ impl<'a> WhpProcessor<'a> {
                     self.set_vtl_runnable(Vtl::Vtl2, HvVtlEntryReason::INTERRUPT);
                     // VTL2 "owns" startup suspend now, so clear the suspension state of VTL0.
                     #[cfg(guest_arch = "x86_64")]
-                    if !matches!(self.current_vtlp().hvstate, super::Hv1State::Disabled) {
+                    if !matches!(self.vp.partition.hvstate, super::Hv1State::Disabled) {
                         if let Some(lapic) = self.state.vtls.lapic(self.state.active_vtl) {
                             lapic.startup_suspend = false;
                         } else {
@@ -342,8 +341,7 @@ impl<'a> WhpProcessor<'a> {
                             let hv = self.state.vtls[vtl].hv.as_mut().unwrap();
                             let ref_time_now = hv.ref_time_now();
                             let (ready_sints, next_ref_time) =
-                                hv.synic
-                                    .scan(ref_time_now, &self.vp.partition.gm, &mut interrupt);
+                                hv.synic.scan(ref_time_now, &mut interrupt);
                             if let Some(next_ref_time) = next_ref_time {
                                 // Convert from reference timer basis to vmtime basis via
                                 // difference of programmed timer and current reference time.
@@ -1163,7 +1161,7 @@ mod x86 {
                     0x4000_0080..=0x4fff_ffff => true,
                     // Hyper-V with emulation in VTL2.
                     0x4000_0000..=0x4fff_ffff
-                        if matches!(self.current_vtlp().hvstate, Hv1State::Disabled) =>
+                        if matches!(self.vp.partition.hvstate, Hv1State::Disabled) =>
                     {
                         true
                     }

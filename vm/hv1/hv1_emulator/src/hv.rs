@@ -29,15 +29,15 @@ use zerocopy::FromZeros;
 
 /// The partition-wide hypervisor state.
 #[derive(Inspect)]
-pub struct GlobalHv {
+pub struct GlobalHv<const VTL_COUNT: usize> {
     #[inspect(flatten)]
     partition_state: Arc<GlobalHvState>,
     /// Mutable state, per VTL
-    vtl_mutable_state: VtlArray<Arc<Mutex<MutableHvState>>, 2>,
+    vtl_mutable_state: VtlArray<Arc<Mutex<MutableHvState>>, VTL_COUNT>,
     /// The per-vtl synic state.
-    pub synic: VtlArray<GlobalSynic, 2>,
+    pub synic: VtlArray<GlobalSynic, VTL_COUNT>,
     /// The guest memory accessor for each VTL.
-    guest_memory: VtlArray<GuestMemory, 2>,
+    guest_memory: VtlArray<GuestMemory, VTL_COUNT>,
 }
 
 #[derive(Inspect)]
@@ -83,7 +83,7 @@ impl MutableHvState {
 }
 
 /// Parameters used when constructing a [`GlobalHv`].
-pub struct GlobalHvParams {
+pub struct GlobalHvParams<const VTL_COUNT: usize> {
     /// The maximum VP count for the VM.
     pub max_vp_count: u32,
     /// The vendor of the virtual processor.
@@ -93,12 +93,12 @@ pub struct GlobalHvParams {
     /// The reference time system to use.
     pub ref_time: Box<dyn ReferenceTimeSource>,
     /// The guest memory accessor for each VTL.
-    pub guest_memory: VtlArray<GuestMemory, 2>,
+    pub guest_memory: VtlArray<GuestMemory, VTL_COUNT>,
 }
 
-impl GlobalHv {
+impl<const VTL_COUNT: usize> GlobalHv<VTL_COUNT> {
     /// Returns a new hypervisor emulator instance.
-    pub fn new(params: GlobalHvParams) -> Self {
+    pub fn new(params: GlobalHvParams<VTL_COUNT>) -> Self {
         Self {
             partition_state: Arc::new(GlobalHvState {
                 vendor: params.vendor,

@@ -418,7 +418,7 @@ struct UhCvmPartitionState {
     /// The emulated local APIC set.
     lapic: VtlArray<LocalApicSet, 2>,
     /// The emulated hypervisor state.
-    hv: GlobalHv,
+    hv: GlobalHv<2>,
     /// Guest VSM state.
     guest_vsm: RwLock<GuestVsmState<CvmVtl1State>>,
     /// Dma client for shared visibility pages.
@@ -810,7 +810,7 @@ impl UhPartitionInner {
         self.backing_shared.cvm_state().map(|x| &x.lapic[vtl])
     }
 
-    fn hv(&self) -> Option<&GlobalHv> {
+    fn hv(&self) -> Option<&GlobalHv<2>> {
         self.backing_shared.cvm_state().map(|x| &x.hv)
     }
 
