@@ -295,7 +295,7 @@ unsafe impl GuestMemoryAccess for VaMapper {
             self.inner
                 .request_mapping(MemoryRange::bounding(address..address + len as u64), write),
         ) {
-            return PageFaultAction::Fail(err.into());
+            return PageFaultAction::Fail(guestmem::GuestMemoryErrorKind::Other(err.into()));
         }
         PageFaultAction::Retry
     }

@@ -328,9 +328,12 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
 
     fn expose_va(&self, address: u64, len: u64) -> Result<(), GuestMemoryBackingError> {
         if let Some(registrar) = &self.registrar {
-            registrar
-                .register(address, len)
-                .map_err(|start| GuestMemoryBackingError::new(start, RegistrationError))
+            registrar.register(address, len).map_err(|start| {
+                GuestMemoryBackingError::new(
+                    start,
+                    guestmem::GuestMemoryErrorKind::Other(RegistrationError.into()),
+                )
+            })
         } else {
             // TODO: fail this call once we have a way to avoid calling this for
             // user-mode-only accesses to locked memory (e.g., for vmbus ring
