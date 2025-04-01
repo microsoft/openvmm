@@ -14,6 +14,7 @@ use super::ParsedCpuidEntry;
 use super::TopologyError;
 use super::ZERO_CPUID_RESULT;
 use core::arch::x86_64::CpuidResult;
+use inspect::Inspect;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::snp::HvPspCpuidPage;
@@ -491,6 +492,12 @@ impl CpuidArchSupport for SnpCpuidSupport {
             }
             _ => (),
         }
+    }
+}
+
+impl Inspect for SnpCpuidSupport {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        req.respond().field("type", "snp-cpuid");
     }
 }
 
