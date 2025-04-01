@@ -201,7 +201,7 @@ impl HardwareIsolatedBacking for SnpBacked {
             target_vmsa.set_ymm_registers(i, current_vmsa.ymm_registers(i));
         }
 
-        this.cvm_switch_vtl(target_vtl);
+        this.backing.cvm_state_mut().exit_vtl = target_vtl;
     }
 
     fn translation_registers(
@@ -480,8 +480,8 @@ impl BackingPrivate for SnpBacked {
         })
     }
 
-    fn deliver_exit_pending_event(this: &mut UhProcessor<'_, Self>) {
-        this.cvm_deliver_exit_pending_event();
+    fn handle_exit_activity(this: &mut UhProcessor<'_, Self>) {
+        this.cvm_handle_exit_activity();
     }
 
     fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>) {

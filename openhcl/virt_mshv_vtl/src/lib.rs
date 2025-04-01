@@ -364,8 +364,6 @@ struct UhCvmVpState {
     lapics: VtlArray<LapicState, 2>,
     /// Guest VSM state for this vp. Some when VTL 1 is enabled.
     vtl1: Option<GuestVsmVpState>,
-    /// 32 bits per VTL: top bits are VTL 1, bottom bits are VTL 0.
-    exit_activities: u64,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -409,13 +407,7 @@ impl UhCvmVpState {
             hv,
             lapics,
             vtl1: None,
-            exit_activities: Default::default(),
         })
-    }
-
-    pub fn set_exit_activity(&mut self, vtl: GuestVtl, activity: ExitActivity) {
-        let activity = u64::from(activity.0) << (vtl as u8 * 32);
-        self.exit_activities = activity;
     }
 }
 
@@ -658,7 +650,6 @@ struct UhVpInner {
     /// when interacting with non-MSHV kernel interfaces.
     cpu_index: u32,
     sidecar_exit_reason: Mutex<Option<SidecarExitReason>>,
-    exit_activities: AtomicU32,
 }
 
 impl UhVpInner {
@@ -746,12 +737,6 @@ struct ExitActivity {
     pending_event: bool,
     #[bits(31)]
     _reserved: u32,
-}
-
-impl ExitActivity {
-    // Convenient constants.
-    #[cfg(guest_arch = "x86_64")]
-    const PENDING_EVENT: Self = Self::new().with_pending_event(true);
 }
 
 /// Immutable access to useful bits of Partition state.

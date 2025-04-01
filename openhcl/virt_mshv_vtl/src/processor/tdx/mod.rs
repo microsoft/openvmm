@@ -501,7 +501,7 @@ impl HardwareIsolatedBacking for TdxBacked {
         // The GPs, Fxsave, and CR2 are saved in the shared kernel state. No copying needed.
         // Debug registers and XFEM are shared architecturally. No copying needed.
 
-        this.cvm_switch_vtl(target_vtl);
+        this.backing.cvm_state_mut().exit_vtl = target_vtl;
     }
 
     fn translation_registers(
@@ -990,9 +990,9 @@ impl BackingPrivate for TdxBacked {
         this.hcvm_vtl1_inspectable()
     }
 
-    fn deliver_exit_pending_event(_this: &mut UhProcessor<'_, Self>) {
-        // TODO TDX GUEST VSM: uncomment when fully implemented
-        // this.cvm_deliver_exit_pending_event();
+    fn handle_exit_activity(_this: &mut UhProcessor<'_, Self>) {
+        // TODO TDX GUEST VSM: uncomment when pending event is fully implemented
+        // this.cvm_handle_exit_activity();
     }
 }
 

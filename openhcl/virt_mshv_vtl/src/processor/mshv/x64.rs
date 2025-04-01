@@ -373,7 +373,7 @@ impl BackingPrivate for HypervisorBackedX86 {
         false
     }
 
-    fn deliver_exit_pending_event(_this: &mut UhProcessor<'_, Self>) {}
+    fn handle_exit_activity(_this: &mut UhProcessor<'_, Self>) {}
 }
 
 fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {
@@ -2010,7 +2010,6 @@ mod save_restore {
                         // Topology information
                         vp_info: _,
                         cpu_index: _,
-                        exit_activities: _,
                     },
                 // Saved
                 crash_reg,
@@ -2032,6 +2031,8 @@ mod save_restore {
                 runner: _,
                 // TODO CVM Servicing: The hypervisor backing doesn't need to save anything, but CVMs will.
                 backing: _,
+                // Currently only meaningful for CVMs
+                exit_activities: _,
             } = self;
 
             let per_vtl = [GuestVtl::Vtl0, GuestVtl::Vtl1]

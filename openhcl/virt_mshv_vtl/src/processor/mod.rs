@@ -104,6 +104,8 @@ pub struct UhProcessor<'a, T: Backing> {
     vtls_tlb_locked: VtlsTlbLocked,
     #[inspect(skip)]
     shared: &'a T::Shared,
+    #[inspect(with = "|x| inspect::iter_by_index(x.iter()).map_value(|a| inspect::AsHex(a.0))")]
+    exit_activities: VtlArray<ExitActivity, 2>,
 
     // Put the runner and backing at the end so that monomorphisms of functions
     // that don't access backing-specific state are more likely to be folded
@@ -243,7 +245,7 @@ mod private {
             dev: &impl CpuIo,
         ) -> Result<bool, UhRunVpError>;
 
-        fn deliver_exit_pending_event(this: &mut UhProcessor<'_, Self>);
+        fn handle_exit_activity(this: &mut UhProcessor<'_, Self>);
 
         fn handle_vp_start_enable_vtl_wake(
             _this: &mut UhProcessor<'_, Self>,
@@ -364,7 +366,6 @@ impl UhVpInner {
             cpu_index,
             vp_info,
             sidecar_exit_reason: Default::default(),
-            exit_activities: Default::default(),
         }
     }
 
@@ -698,10 +699,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                         [false, false].into()
                     };
 
-                    if self.inner.exit_activities.load(Ordering::Relaxed) != 0 {
-                        self.handle_exit_activities()
-                            .map_err(VpHaltReason::Hypervisor)?
-                    }
+                    T::handle_exit_activity(self);
 
                     if self.backing.untrusted_synic().is_some() {
                         self.update_synic(GuestVtl::Vtl0, true);
@@ -830,6 +828,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 vtl1: VtlArray::new(false),
                 vtl2: VtlArray::new(false),
             },
+            exit_activities: Default::default(),
         };
 
         T::init(&mut vp);
@@ -898,17 +897,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         }
 
         Ok(wake_reasons_vtl.map(|w| w.intcon()).into())
-    }
-
-    fn handle_exit_activities(&mut self) -> Result<(), UhRunVpError> {
-        let exit_activities =
-            ExitActivity::from(self.inner.exit_activities.swap(0, Ordering::SeqCst));
-
-        if exit_activities.pending_event() {
-            T::deliver_exit_pending_event(self);
-        }
-
-        Ok(())
     }
 
     fn request_sint_notifications(&mut self, vtl: GuestVtl, sints: u16) {

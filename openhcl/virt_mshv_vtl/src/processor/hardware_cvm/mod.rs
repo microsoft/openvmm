@@ -10,7 +10,6 @@ use super::UhEmulationState;
 use super::UhProcessor;
 use super::UhRunVpError;
 use crate::CvmVtl1State;
-use crate::ExitActivity;
 use crate::GuestVsmState;
 use crate::GuestVtl;
 use crate::InitialVpContextOperation;
@@ -634,10 +633,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             .unwrap()
             .vtl0_exit_pending_event = set_event;
 
-        self.vp
-            .backing
-            .cvm_state_mut()
-            .set_exit_activity(GuestVtl::Vtl0, ExitActivity::PENDING_EVENT);
+        self.vp.exit_activities[GuestVtl::Vtl0].set_pending_event(true);
 
         Ok(())
     }
@@ -1635,6 +1631,15 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         Ok(())
     }
 
+    pub(crate) fn cvm_handle_exit_activity(&mut self) {
+        let exit_vtl = self.backing.cvm_state().exit_vtl;
+        if self.exit_activities[exit_vtl].pending_event() {
+            self.cvm_deliver_exit_pending_event();
+        }
+
+        self.exit_activities[exit_vtl] = Default::default();
+    }
+
     pub(crate) fn cvm_deliver_exit_pending_event(&mut self) {
         let next_vtl = self.backing.cvm_state().exit_vtl;
 
@@ -1723,22 +1728,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     .vtl0_exit_pending_event = None;
             }
         }
-    }
-
-    pub(crate) fn cvm_switch_vtl(&mut self, target_vtl: GuestVtl) {
-        let exit_activities =
-            (self.backing.cvm_state().exit_activities >> (target_vtl as u8 * 32)) as u32;
-
-        self.backing.cvm_state_mut().exit_activities &=
-            !((u32::MAX as u64) << (target_vtl as u8 * 32));
-
-        if exit_activities != 0 {
-            self.inner
-                .exit_activities
-                .swap(exit_activities, std::sync::atomic::Ordering::SeqCst);
-        }
-
-        self.backing.cvm_state_mut().exit_vtl = target_vtl;
     }
 
     pub(crate) fn hcvm_vtl1_inspectable(&self) -> bool {
