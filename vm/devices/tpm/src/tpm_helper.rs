@@ -615,12 +615,12 @@ impl TpmEngineHelper {
         }
     }
 
-    /// Write data to a NV index that can be either owner- or platform-created.
+    /// Write data to a NV index that is password-based and platform-created.
     /// If the data size is less than the size of the index, the function applies
     /// zero padding and ensure the entire NV space is filled.
     ///
     /// # Arguments
-    /// * `auth_value` - The authorization value for the platform-created index.
+    /// * `auth_value` - The authorization value for the password-based index.
     /// * `nv_index` - The target NV index.
     /// * `data` - The data to write.
     ///
@@ -660,39 +660,26 @@ impl TpmEngineHelper {
             std::cmp::Ordering::Equal => data.to_vec(),
         };
 
-        // Determine the authorization type based on the nv bits.
-        // ownerwrite and authwrite might both be set, let ownerwrite take precedence.
-        if nv_bits.nv_ownerwrite() {
-            // Owner write (the NV index was pre-provisioned)
-            self.nv_write(TPM20_RH_OWNER, None, nv_index, &data)
-                .map_err(|error| TpmHelperError::TpmCommandError {
-                    command_debug_info: CommandDebugInfo {
-                        command_code: CommandCodeEnum::NV_Write,
-                        auth_handle: Some(TPM20_RH_OWNER),
-                        nv_index: Some(nv_index),
-                    },
-                    error,
-                })?;
-        } else if nv_bits.nv_authwrite() {
-            // Password-based authorization (the NV index was created at boot-time)
-            self.nv_write(
-                ReservedHandle(nv_index.into()),
-                Some(auth_value),
-                nv_index,
-                &data,
-            )
-            .map_err(|error| TpmHelperError::TpmCommandError {
-                command_debug_info: CommandDebugInfo {
-                    command_code: CommandCodeEnum::NV_Write,
-                    auth_handle: Some(ReservedHandle(nv_index.into())),
-                    nv_index: Some(nv_index),
-                },
-                error,
-            })?;
-        } else {
-            // Unexpected scenario
-            Err(TpmHelperError::InvalidWritePermission(nv_index))?
-        };
+        // Always expect nv index to be password-based and platform-created given that
+        // the index is always created or re-created at boot-time.
+        if !nv_bits.nv_authwrite() || !nv_bits.nv_platformcreate() {
+            return Err(TpmHelperError::InvalidWritePermission(nv_index));
+        }
+
+        self.nv_write(
+            ReservedHandle(nv_index.into()),
+            Some(auth_value),
+            nv_index,
+            &data,
+        )
+        .map_err(|error| TpmHelperError::TpmCommandError {
+            command_debug_info: CommandDebugInfo {
+                command_code: CommandCodeEnum::NV_Write,
+                auth_handle: Some(ReservedHandle(nv_index.into())),
+                nv_index: Some(nv_index),
+            },
+            error,
+        })?;
 
         Ok(())
     }

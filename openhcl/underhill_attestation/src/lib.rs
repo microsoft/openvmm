@@ -619,6 +619,15 @@ async fn get_derived_keys(
 
         let response = get_gsp_data(get, key_protector).await;
 
+        tracing::info!(
+            CVM_ALLOWED,
+            request_data_length_in_vmgs = key_protector.gsp[ingress_idx].gsp_length,
+            no_rpc_server = response.extended_status_flags.no_rpc_server(),
+            requires_rpc_server = response.extended_status_flags.requires_rpc_server(),
+            encrypted_gsp_length = response.encrypted_gsp.length,
+            "GSP response"
+        );
+
         let no_gsp =
             response.extended_status_flags.no_rpc_server() || response.encrypted_gsp.length == 0;
 

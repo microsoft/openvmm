@@ -214,6 +214,7 @@ pub struct GuestEmulationDevice {
     save_restore_buf: Option<Vec<u8>>,
     last_save_restore_buf_len: usize,
 
+    /// State machine for `handle_igvm_attest`
     #[inspect(skip)]
     igvm_attest_state: IgvmAttestState,
 }
