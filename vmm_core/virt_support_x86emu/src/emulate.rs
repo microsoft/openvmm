@@ -8,6 +8,7 @@ use crate::translate::TranslatePrivilegeCheck;
 use crate::translate::translate_gva_to_gpa;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
+use guestmem::GuestMemoryErrorKind;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvInterceptAccessType;
 use hvdef::HvMapGpaFlags;
@@ -946,11 +947,31 @@ fn inject_memory_access_fault<T: EmulatorSupport>(
                 "Vtl permissions checking failed"
             );
 
-            let event = vtl_access_event(gva, *gpa, *intercepting_vtl, *denied_flags);
-            support.inject_pending_event(event);
+            support.inject_pending_event(vtl_access_event(
+                gva,
+                *gpa,
+                *intercepting_vtl,
+                *denied_flags,
+            ));
             true
         }
-        Error::Hypervisor(_) | Error::Memory(_) => false,
+        Error::Memory(e) => match e.kind() {
+            GuestMemoryErrorKind::BitmapFailure => {
+                tracing::trace!(
+                    error = e as &dyn std::error::Error,
+                    ?gva,
+                    "bitmap checking failed"
+                );
+                support.inject_pending_event(make_exception_event(
+                    Exception::MACHINE_CHECK,
+                    None,
+                    None,
+                ));
+                true
+            }
+            _ => false,
+        },
+        Error::Hypervisor(_) => false,
     }
 }
 
