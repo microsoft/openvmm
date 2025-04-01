@@ -750,7 +750,7 @@ impl Tpm {
     fn create_ak_cert_request(&mut self) -> Result<Vec<u8>, TpmError> {
         let mut guest_attestation_input = [0u8; ATTESTATION_REPORT_DATA_SIZE];
         // No need to check the result as long as it's Ok(..) because the output data will
-        // remain unchanged (all 0's) if the NV index is unallocated or initialized.
+        // remain unchanged (all 0's) if the NV index is unallocated or uninitialized.
         self.tpm_engine_helper
             .read_from_nv_index(
                 TPM_NV_INDEX_GUEST_ATTESTATION_INPUT,
