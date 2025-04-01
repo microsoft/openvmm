@@ -1974,7 +1974,6 @@ mod tests {
 
             let result =
                 tpm_engine_helper.allocate_guest_attestation_nv_indices(AUTH_VALUE, true, false);
-            println!("{:?}", result);
             assert!(result.is_ok());
 
             // Ensure only ak cert index remains present but uninitialized
@@ -2045,7 +2044,7 @@ mod tests {
             // Read the data and ensure it is zero-padded
             let result =
                 tpm_engine_helper.read_from_nv_index(TPM_NV_INDEX_AIK_CERT, &mut ak_cert_output);
-            assert!(result.is_ok());
+            assert!(matches!(result.unwrap(), NvIndexState::Available));
             let input_with_padding = {
                 let mut input = AK_CERT_INPUT_512.to_vec();
                 input.resize(MAX_NV_INDEX_SIZE.into(), 0);
