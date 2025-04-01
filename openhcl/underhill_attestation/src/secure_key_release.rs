@@ -292,8 +292,8 @@ async fn make_igvm_attest_requests(
         }
         Err(igvm_attest::wrapped_key::WrappedKeyError::ResponseSizeTooSmall) => {
             // The request does not succeed.
-            // Empty `agent_data` from VMGS implies that the data required by KeyRelesae request needs to
-            // be from the WrappedKey response. Return an error for this case, otherwise ignore and
+            // Empty `agent_data` from VMGS implies that the data required by the KeyRelease request needs
+            // to come from the WrappedKey response. Return an error for this case, otherwise ignore and
             // set the `wrapped_des_key` to None.
             if agent_data.iter().all(|&x| x == 0) {
                 return Err(
