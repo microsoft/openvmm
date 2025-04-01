@@ -94,8 +94,14 @@ pub enum TpmHelperError {
     ExportRsaPublicFromPrimaryObject(#[source] TpmHelperUtilityError),
     #[error("nv index {0:#x} without owner read flag")]
     NoOwnerReadFlag(u32),
-    #[error("nv index {0:#x} with invalid write permission")]
-    InvalidWritePermission(u32),
+    #[error(
+        "nv index {nv_index:#x} without auth write ({auth_write}) or platform created ({platform_created}) flag"
+    )]
+    InvalidPermission {
+        nv_index: u32,
+        auth_write: bool,
+        platform_created: bool,
+    },
     #[error(
         "input size {input_size} to nv write exceeds the allocated size {allocated_size} of nv index {nv_index:#x}"
     )]
@@ -458,7 +464,7 @@ impl TpmEngineHelper {
         let previous_ak_cert = {
             let mut output = [0u8; MAX_NV_INDEX_SIZE as usize];
 
-            // Attempt to remove previous `TPM_NV_INDEX_AIK_CERT` regardless its pre-provisioned
+            // Attempt to remove previous `TPM_NV_INDEX_AIK_CERT` regardless it is pre-provisioned
             // (non-platform-created) or platform-created. Doing so ensures that we always recreate
             // the nv index with newly-created auth_value (which does not persist across boots) and
             // consistent index size for each boot.
@@ -524,7 +530,7 @@ impl TpmEngineHelper {
         if preserve_ak_cert {
             if let Some(data) = previous_ak_cert {
                 // For resiliency, write the previous AK cert to the newly created nv index
-                // in case the boot-time AK cert request fails.
+                // in case the following boot-time AK cert request fails.
                 tracing::info!("Preserve previous AK cert across boot");
 
                 self.write_to_nv_index(auth_value, TPM_NV_INDEX_AIK_CERT, &data)?;
@@ -663,7 +669,11 @@ impl TpmEngineHelper {
         // Always expect nv index to be password-based and platform-created given that
         // the index is always created or re-created at boot-time.
         if !nv_bits.nv_authwrite() || !nv_bits.nv_platformcreate() {
-            return Err(TpmHelperError::InvalidWritePermission(nv_index));
+            return Err(TpmHelperError::InvalidPermission {
+                nv_index,
+                auth_write: nv_bits.nv_authwrite(),
+                platform_created: nv_bits.nv_platformcreate(),
+            });
         }
 
         self.nv_write(
