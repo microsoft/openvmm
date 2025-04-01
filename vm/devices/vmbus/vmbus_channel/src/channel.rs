@@ -441,7 +441,16 @@ impl From<ChannelRestoreError> for RestoreError {
     }
 }
 
+enum DeviceState {
+    Running,
+    // Track updates while the channel is stopped. If it is restarted, need to
+    // process outstanding requests. If the channel goes through save/restore,
+    // vmbus_server will resend the requests.
+    Stopped(Option<Vec<(usize, ChannelRequest)>>),
+}
+
 struct Device {
+    state: DeviceState,
     server_requests: Vec<mesh::Sender<ChannelServerRequest>>,
     open: Vec<bool>,
     subchannel_gpadls: Vec<BTreeSet<GpadlId>>,
@@ -465,6 +474,7 @@ impl Device {
             SelectAll::new();
         requests.push(TaggedStream::new(0, request_recv));
         Self {
+            state: DeviceState::Running,
             server_requests: vec![server_request_send],
             open,
             subchannel_gpadls,
@@ -550,6 +560,25 @@ impl Device {
         request: ChannelRequest,
         channel: &mut dyn VmbusDevice,
     ) {
+        // When the device is stopped, the wrapped channel should not receive
+        // any new vmbus requests. The GPADL requests are handled without a
+        // callback, so allow those to complete even while stopped.
+        if !matches!(
+            request,
+            ChannelRequest::Gpadl(_) | ChannelRequest::TeardownGpadl(_)
+        ) {
+            if let DeviceState::Stopped(pending_messages) = &mut self.state {
+                if pending_messages.is_none() {
+                    *pending_messages = Some(Vec::new());
+                }
+                pending_messages
+                    .as_mut()
+                    .unwrap()
+                    .push((channel_idx, request));
+                return;
+            }
+        }
+
         match request {
             ChannelRequest::Open(rpc) => {
                 rpc.handle(async |open_request| {
@@ -681,14 +710,30 @@ impl Device {
         match request {
             StateRequest::Start => {
                 channel.start();
+                if let DeviceState::Stopped(Some(pending_messages)) =
+                    std::mem::replace(&mut self.state, DeviceState::Running)
+                {
+                    for (channel_idx, request) in pending_messages.into_iter() {
+                        self.handle_channel_request(channel_idx, request, channel)
+                            .await;
+                    }
+                }
             }
             StateRequest::Stop(rpc) => {
-                rpc.handle(async |()| {
-                    channel.stop().await;
-                })
-                .await;
+                if matches!(self.state, DeviceState::Running) {
+                    self.state = DeviceState::Stopped(None);
+                    rpc.handle(async |()| {
+                        channel.stop().await;
+                    })
+                    .await;
+                } else {
+                    rpc.complete(());
+                }
             }
             StateRequest::Reset(rpc) => {
+                if let DeviceState::Stopped(pending_messages) = &mut self.state {
+                    *pending_messages = None;
+                }
                 rpc.complete(());
             }
             StateRequest::Save(rpc) => {
