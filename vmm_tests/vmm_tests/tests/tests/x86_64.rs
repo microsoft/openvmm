@@ -33,7 +33,7 @@ async fn boot_no_agent(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
 #[openvmm_test(
     openhcl_linux_direct_x64,
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))
 )]
 async fn boot_alias_map(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     let (vm, agent) = config.with_vtl0_alias_map().run().await?;
@@ -45,7 +45,7 @@ async fn boot_alias_map(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
 /// Basic boot tests with TPM enabled.
 #[openvmm_test(
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))
 )]
 async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
@@ -151,9 +151,9 @@ async fn vbs_boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     // openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     // uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     // pcat_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
-    // uefi_x64(vhd(ubuntu_2204_server_x64)),
-    // pcat_x64(vhd(ubuntu_2204_server_x64))
+    // openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
+    // uefi_x64(vhd(ubuntu_2404_server_x64)),
+    // pcat_x64(vhd(ubuntu_2404_server_x64))
 )]
 async fn reboot(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     let (mut vm, agent) = config.run().await?;
@@ -267,8 +267,8 @@ async fn five_gb(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     openhcl_linux_direct_x64,
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
-    uefi_x64(vhd(ubuntu_2204_server_x64))
+    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
+    uefi_x64(vhd(ubuntu_2404_server_x64))
 )]
 async fn file_transfer_test(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     const TEST_CONTENT: &str = "hello world!";
@@ -332,7 +332,7 @@ async fn mtrrs(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
 /// Boot with vmbus redirection and shut down.
 #[openvmm_test(
     openhcl_linux_direct_x64,
-    openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64))
 )]
 async fn vmbus_redirect(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     let (mut vm, agent) = config.with_vmbus_redirect().run().await?;
@@ -344,9 +344,9 @@ async fn vmbus_redirect(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Erro
 
 /// Boot with a battery and check the OS-reported capacity.
 #[openvmm_test(
-    openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openhcl_uefi_x64(vhd(ubuntu_2404_server_x64)),
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    uefi_x64(vhd(ubuntu_2204_server_x64)),
+    uefi_x64(vhd(ubuntu_2404_server_x64)),
     uefi_x64(vhd(windows_datacenter_core_2022_x64))
 )]
 async fn battery_capacity(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
