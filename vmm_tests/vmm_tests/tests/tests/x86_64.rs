@@ -49,13 +49,7 @@ async fn boot_alias_map(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
 )]
 async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    let config = config
-        // "OPENHCL_ENABLE_VTL2_GPA_POOL=1" is currently required to make test
-        // pass as the page pool is not enabled by default.
-        //
-        // TODO: Remove this once the page pool is always on.
-        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=1")
-        .with_tpm();
+    let config = config.with_tpm().with_tpm_state_persistence();
 
     let (vm, agent) = match os_flavor {
         OsFlavor::Windows => {

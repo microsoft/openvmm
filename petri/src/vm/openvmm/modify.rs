@@ -136,6 +136,19 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Enable TPM state persistence
+    pub fn with_tpm_state_persistence(mut self) -> Self {
+        let Some(ged) = &mut self.ged else {
+            panic!("TPM state persistence is only supported for OpenHCL.")
+        };
+
+        // Disable no_persistent_secrets implies preserving TPM states
+        // across boots
+        ged.no_persistent_secrets = false;
+
+        self
+    }
+
     /// Enable an emulated mana device for the VM.
     pub fn with_nic(mut self) -> Self {
         self.config.vpci_devices.push(VpciDeviceConfig {

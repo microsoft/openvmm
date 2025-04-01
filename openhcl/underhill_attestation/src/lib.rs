@@ -653,9 +653,9 @@ async fn get_derived_keys(
 
     // If sources of encryption used last are missing, attempt to unseal VMGS key with hardware key
     if (no_kek && found_dek) || (no_gsp && requires_gsp) || (no_gsp_by_id && requires_gsp_by_id) {
-        tracing::info!("Unseal VMGS key-encryption key with hardware key");
         // If possible, get ingressKey from hardware sealed data
         let (hardware_key_protector, hardware_derived_keys) = if let Some(tee_call) = tee_call {
+            tracing::info!("Unseal VMGS key-encryption key with hardware key");
             let hardware_key_protector = match vmgs::read_hardware_key_protector(vmgs).await {
                 Ok(hardware_key_protector) => Some(hardware_key_protector),
                 Err(e) => {
@@ -726,6 +726,14 @@ async fn get_derived_keys(
             }
         }
     }
+
+    tracing::info!(
+        CVM_ALLOWED,
+        kek = !no_kek,
+        gsp = !no_gsp,
+        gsp_by_id = !no_gsp_by_id,
+        "Encryption sources"
+    );
 
     // Check if sources of encryption are available
     if no_kek && no_gsp && no_gsp_by_id {
