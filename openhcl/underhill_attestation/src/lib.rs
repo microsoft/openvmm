@@ -624,6 +624,15 @@ async fn get_derived_keys(
 
         let response = get_gsp_data(get, key_protector).await;
 
+        tracing::info!(
+            CVM_ALLOWED,
+            request_data_length_in_vmgs = key_protector.gsp[ingress_idx].gsp_length,
+            no_rpc_server = response.extended_status_flags.no_rpc_server(),
+            requires_rpc_server = response.extended_status_flags.requires_rpc_server(),
+            encrypted_gsp_length = response.encrypted_gsp.length,
+            "GSP response"
+        );
+
         let no_gsp =
             response.extended_status_flags.no_rpc_server() || response.encrypted_gsp.length == 0;
 
@@ -731,6 +740,14 @@ async fn get_derived_keys(
             }
         }
     }
+
+    tracing::info!(
+        CVM_ALLOWED,
+        kek = !no_kek,
+        gsp = !no_gsp,
+        gsp_by_id = !no_gsp_by_id,
+        "Encryption sources"
+    );
 
     // Check if sources of encryption are available
     if no_kek && no_gsp && no_gsp_by_id {

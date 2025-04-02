@@ -539,7 +539,7 @@ impl Tpm {
             self.tpm_engine_helper
                 .allocate_guest_attestation_nv_indices(
                     auth_value,
-                    self.refresh_tpm_seeds,
+                    !self.refresh_tpm_seeds, // Preserve AK cert if TPM seeds are not refreshed
                     matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_)),
                 )
                 .map_err(TpmErrorKind::AllocateGuestAttestationNvIndices)?;
@@ -779,6 +779,8 @@ impl Tpm {
     /// This function can only be called when `ak_cert_type` is `Trusted` or `HwAttested`.
     fn create_ak_cert_request(&mut self) -> Result<Vec<u8>, TpmError> {
         let mut guest_attestation_input = [0u8; ATTESTATION_REPORT_DATA_SIZE];
+        // No need to check the result as long as it's Ok(..) because the output data will
+        // remain unchanged (all 0's) if the NV index is unallocated or uninitialized.
         self.tpm_engine_helper
             .read_from_nv_index(
                 TPM_NV_INDEX_GUEST_ATTESTATION_INPUT,

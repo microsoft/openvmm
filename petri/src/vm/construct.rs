@@ -930,6 +930,7 @@ impl PetriVmConfigSetupCore<'_> {
             secure_boot_enabled: false,
             secure_boot_template: get_resources::ged::GuestSecureBootTemplateType::None,
             enable_battery: false,
+            no_persistent_secrets: true,
         };
 
         Ok((ged, guest_request_send))

@@ -82,6 +82,8 @@ pub mod ged {
         pub secure_boot_template: GuestSecureBootTemplateType,
         /// Enable battery.
         pub enable_battery: bool,
+        /// Suppress attestation and disable TPM state persistence.
+        pub no_persistent_secrets: bool,
     }
 
     /// The firmware and chipset configuration for the guest.
