@@ -2648,27 +2648,13 @@ mod tests {
             2
         );
 
-        // Stop the channel and send a close request.
+        // Stop the channel and send a close request. Close is currently
+        // allowed through in order to support reset of the vmbus
+        // server, so try that.
         channel.stop().await;
-        env.synic.send_message_core(
-            OutgoingMessage::new(&protocol::CloseChannel {
-                channel_id: ChannelId(1),
-            }),
-            false,
-        );
-        PolledTimer::new(&spawner)
-            .sleep(Duration::from_millis(150))
-            .await;
-        assert!(TestDeviceState::open_request(&test_device_state, 0).is_some());
-
-        // Restart the channel and verify the close was relayed to the inner device.
-        channel.start();
-        PolledTimer::new(&spawner)
-            .sleep(Duration::from_millis(150))
-            .await;
+        env.vmbus.reset().await;
         assert!(TestDeviceState::open_request(&test_device_state, 0).is_none());
 
-        env.vmbus.reset().await;
         env.vmbus.stop().await;
     }
 

@@ -561,12 +561,11 @@ impl Device {
         channel: &mut dyn VmbusDevice,
     ) {
         // When the device is stopped, the wrapped channel should not receive
-        // any new vmbus requests. The GPADL requests are handled without a
-        // callback, so allow those to complete even while stopped.
-        if !matches!(
-            request,
-            ChannelRequest::Gpadl(_) | ChannelRequest::TeardownGpadl(_)
-        ) {
+        // any new vmbus requests. The 'close' callback is special-cased to
+        // handle vmbus_server reset, and the GPADL requests are handled without a
+        // callback. This leaves 'open' and 'modify' which will be pended until
+        // restart.
+        if matches!(request, ChannelRequest::Open(_) | ChannelRequest::Modify(_)) {
             if let DeviceState::Stopped(pending_messages) = &mut self.state {
                 pending_messages.push((channel_idx, request));
                 return;
