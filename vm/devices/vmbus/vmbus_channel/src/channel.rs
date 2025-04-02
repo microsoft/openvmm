@@ -446,7 +446,7 @@ enum DeviceState {
     // Track updates while the channel is stopped. If it is restarted, need to
     // process outstanding requests. If the channel goes through save/restore,
     // vmbus_server will resend the requests.
-    Stopped(Option<Vec<(usize, ChannelRequest)>>),
+    Stopped(Vec<(usize, ChannelRequest)>),
 }
 
 struct Device {
@@ -568,13 +568,7 @@ impl Device {
             ChannelRequest::Gpadl(_) | ChannelRequest::TeardownGpadl(_)
         ) {
             if let DeviceState::Stopped(pending_messages) = &mut self.state {
-                if pending_messages.is_none() {
-                    *pending_messages = Some(Vec::new());
-                }
-                pending_messages
-                    .as_mut()
-                    .unwrap()
-                    .push((channel_idx, request));
+                pending_messages.push((channel_idx, request));
                 return;
             }
         }
@@ -710,7 +704,7 @@ impl Device {
         match request {
             StateRequest::Start => {
                 channel.start();
-                if let DeviceState::Stopped(Some(pending_messages)) =
+                if let DeviceState::Stopped(pending_messages) =
                     std::mem::replace(&mut self.state, DeviceState::Running)
                 {
                     for (channel_idx, request) in pending_messages.into_iter() {
@@ -721,7 +715,7 @@ impl Device {
             }
             StateRequest::Stop(rpc) => {
                 if matches!(self.state, DeviceState::Running) {
-                    self.state = DeviceState::Stopped(None);
+                    self.state = DeviceState::Stopped(Vec::new());
                     rpc.handle(async |()| {
                         channel.stop().await;
                     })
@@ -732,7 +726,7 @@ impl Device {
             }
             StateRequest::Reset(rpc) => {
                 if let DeviceState::Stopped(pending_messages) = &mut self.state {
-                    *pending_messages = None;
+                    pending_messages.clear();
                 }
                 rpc.complete(());
             }
