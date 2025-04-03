@@ -1420,6 +1420,27 @@ async fn new_underhill_vm(
         "vtom must be present if and only if hardware isolation is enabled"
     );
 
+    // Determine if posted interrupt redirection is supported. This allows posted interrupt delivery
+    // of VTL0 device interrupts to VTL2 when it cannot be posted directly to VTL0.
+    //
+    // This improves performance for VTL0 owned devices by avoiding  exits to VMM for device
+    // interrupt delivery. 
+    let use_posted_redirection = match isolation {
+        #[cfg(guest_arch = "x86_64")]
+        virt::IsolationType::Tdx => {
+            let result =
+                safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION, 0);
+            hvdef::HvEnlightenmentInformation::from(
+                result.eax as u128
+                    | (result.ebx as u128) << 32
+                    | (result.ecx as u128) << 64
+                    | (result.edx as u128) << 96,
+            )
+            .posted_interrupt_redirection_support()
+        }
+        _ => false,
+    };
+
     // Construct the underhill partition instance. This contains much of the configuration of the guest deposited by
     // the host, along with additional device configuration and transports.
     let params = UhPartitionNewParams {
@@ -1435,6 +1456,7 @@ async fn new_underhill_vm(
         use_mmio_hypercalls,
         intercept_debug_exceptions: env_cfg.gdbstub,
         hide_isolation,
+        use_posted_redirection,
     };
 
     let proto_partition = UhProtoPartition::new(params, |cpu| tp.driver(cpu).clone())
