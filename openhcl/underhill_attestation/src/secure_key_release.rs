@@ -18,7 +18,6 @@ use openssl::rsa::Rsa;
 use pal_async::local::LocalDriver;
 use tee_call::TeeCall;
 use thiserror::Error;
-use vmgs::EncryptionAlgorithm;
 use vmgs::Vmgs;
 
 #[derive(Debug, Error)]
