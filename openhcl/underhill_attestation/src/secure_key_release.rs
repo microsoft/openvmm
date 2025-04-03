@@ -109,7 +109,7 @@ pub async fn request_vmgs_encryption_keys(
     // Retry attestation call-out if necessary (if VMGS encrypted).
     // The IGVm Agent could be down for servicing, or the TDX service VM might not be ready, or a dynamic firmware
     // update could mean that the report was not verifiable.
-    let vmgs_encrypted = vmgs.get_encryption_algorithm() != EncryptionAlgorithm::NONE;
+    let vmgs_encrypted = vmgs.is_encrypted();
     let max_retry = if vmgs_encrypted {
         MAXIMUM_RETRY_COUNT
     } else {
