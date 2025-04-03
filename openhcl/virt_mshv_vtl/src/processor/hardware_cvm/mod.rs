@@ -809,17 +809,13 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
         if !fast {
             let [rax, rcx] = self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
                 .return_registers()
-                .expect("getting return registers shouldn't fail");
+                .unwrap();
             let mut vp_state = self.vp.access_state(Vtl::Vtl0);
-            let mut registers = vp_state
-                .registers()
-                .expect("getting registers shouldn't fail");
+            let mut registers = vp_state.registers().unwrap();
             registers.rax = rax;
             registers.rcx = rcx;
 
-            vp_state
-                .set_registers(&registers)
-                .expect("setting registers shouldn't fail");
+            vp_state.set_registers(&registers).unwrap();
         }
     }
 }
@@ -1313,9 +1309,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             }
         }
 
-        // Perform this delay dance with the TLB flush to avoid a double borrow.
-        // We need the whole UhProcessor to perform a flush, but the hv emulator
-        // is inside the UhProcessor.
         let mut access = HypercallOverlayAccess {
             vtl,
             protector: B::cvm_partition_state(self.shared)
@@ -1460,7 +1453,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         if self.backing.cvm_state().exit_vtl == GuestVtl::Vtl1
             && is_interrupt_pending(self, GuestVtl::Vtl0, true)
         {
-            let hv = &self.backing.cvm_state().hv[GuestVtl::Vtl1];
+            let hv = &mut self.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
             let vina = hv.synic.vina();
 
             if vina.enabled() && !hv.vina_asserted().map_err(UhRunVpError::VpAssistPage)? {

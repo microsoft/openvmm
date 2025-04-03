@@ -3611,7 +3611,7 @@ impl MessagePayload for HvX64VmgexitInterceptMessage {}
 pub struct HvRegisterVpAssistPage {
     pub enabled: bool,
     #[bits(11)]
-    _reserved: u64,
+    pub reserved: u64,
     #[bits(52)]
     pub gpa_page_number: u64,
 }
