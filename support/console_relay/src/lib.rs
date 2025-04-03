@@ -15,7 +15,6 @@ use futures::io::AllowStdIo;
 use futures::io::AsyncReadExt;
 use pal_async::driver::Driver;
 use pal_async::local::block_with_io;
-use term::set_console_title;
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::Path;
@@ -24,6 +23,7 @@ use std::pin::Pin;
 use std::process::Command;
 use std::task::Context;
 use term::raw_stdout;
+use term::set_console_title;
 use term::set_raw_console;
 
 #[derive(Default)]
@@ -134,7 +134,11 @@ fn choose_terminal_apps(app: Option<&Path>) -> Vec<App<'_>> {
 /// Launches the terminal application `app` (or the system default), and launch
 /// hvlite as a child of that to relay the data in the pipe/socket referred to
 /// by `path`. Additional launch options can be specified with `launch_options`.
-pub fn launch_console(app: Option<&Path>, path: &Path, launch_options: ConsoleLaunchOptions) -> anyhow::Result<()> {
+pub fn launch_console(
+    app: Option<&Path>,
+    path: &Path,
+    launch_options: ConsoleLaunchOptions,
+) -> anyhow::Result<()> {
     let apps = choose_terminal_apps(app);
 
     for app in &apps {
@@ -148,9 +152,7 @@ pub fn launch_console(app: Option<&Path>, path: &Path, launch_options: ConsoleLa
 
         // If a title was specified, pass it to the terminal spawn.
         if let Some(title) = &launch_options.window_title {
-            child_builder = child_builder
-            .arg("--relay-console-title")
-            .arg(title);
+            child_builder = child_builder.arg("--relay-console-title").arg(title);
         }
 
         let child = child_builder
@@ -228,7 +230,8 @@ impl Console {
     pub fn new(driver: impl Driver, app: Option<&Path>) -> anyhow::Result<Self> {
         let path = random_console_path();
         let this = Self::new_from_path(driver, &path)?;
-        launch_console(app, &path, ConsoleLaunchOptions::default()).context("failed to launch console")?;
+        launch_console(app, &path, ConsoleLaunchOptions::default())
+            .context("failed to launch console")?;
         Ok(this)
     }
 

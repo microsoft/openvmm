@@ -27,7 +27,6 @@ use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::PcatBootDevice;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use hvlite_defs::config::X2ApicConfig;
-use hvlite_ttrpc_vmservice::SerialConfig;
 use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
