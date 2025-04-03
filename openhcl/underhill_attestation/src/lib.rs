@@ -341,7 +341,7 @@ pub async fn initialize_platform_security(
         false
     };
 
-    let vmgs_encrypted: bool = vmgs.get_encryption_algorithm() != EncryptionAlgorithm::NONE;
+    let vmgs_encrypted: bool = vmgs.is_encrypted();
 
     tracing::info!(tcb_version=?tcb_version, vmgs_encrypted = vmgs_encrypted, "Deriving keys");
     let derived_keys_result = get_derived_keys(
