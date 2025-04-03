@@ -797,8 +797,8 @@ impl TpmEngineHelper {
     ///
     /// # Arguments
     /// * `guest_secret_key`: The guest secret key data blob.
-    ///    The format of the data blob is expected to be:
-    ///    (TPM2B_PUBLIC || TPM2B_PRIVATE || TPM2B_ENCRYPTED_SECRET)
+    ///   The format of the data blob is expected to be:
+    ///   (TPM2B_PUBLIC || TPM2B_PRIVATE || TPM2B_ENCRYPTED_SECRET)
     ///
     pub fn initialize_guest_secret_key(
         &mut self,
