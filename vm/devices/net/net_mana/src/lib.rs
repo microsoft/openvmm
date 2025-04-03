@@ -35,7 +35,6 @@ use mana_driver::queues::Wq;
 use mana_save_restore::save_restore::ContiguousBufferManagerSavedState;
 use mana_save_restore::save_restore::ManaQueueSavedState;
 use mana_save_restore::save_restore::MemoryBlockSavedState;
-use mana_save_restore::save_restore::QueueResourcesSavedState;
 use mana_save_restore::save_restore::QueueSavedState;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
@@ -53,8 +52,6 @@ use net_backend::TxId;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
 use net_backend::TxSegmentType;
-use net_backend::save_restore::EndpointSavedState;
-use net_backend::save_restore::ManaEndpointSavedState;
 use pal_async::task::Spawn;
 use safeatomic::AtomicSliceOps;
 use std::collections::VecDeque;
@@ -129,29 +126,6 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
                 GuestDmaMode::BounceBuffer => true,
             },
             mana_keepalive,
-        }
-    }
-
-    pub async fn restore(
-        spawner: impl 'static + Spawn,
-        vport: Vport<T>,
-        dma_mode: GuestDmaMode,
-        endpoint_saved_state: &EndpointSavedState,
-    ) -> Self {
-        let (endpoint_tx, endpoint_rx) = mesh::channel();
-        vport.register_link_status_notifier(endpoint_tx).await;
-        Self {
-            spawner: Box::new(spawner),
-            vport: Arc::new(vport),
-            queues: Vec::new(),
-            arena: ResourceArena::new(),
-            receive_update: endpoint_rx,
-            queue_tracker: Arc::new((AtomicUsize::new(0), SlimEvent::new())),
-            bounce_buffer: match dma_mode {
-                GuestDmaMode::DirectDma => false,
-                GuestDmaMode::BounceBuffer => true,
-            },
-            mana_keepalive: true,
         }
     }
 }
@@ -401,14 +375,6 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
         Ok((queue, resources))
     }
 
-    async fn restore_queue(
-        &mut self,
-        pool: Box<dyn BufferAccess>,
-        arena: &mut ResourceArena,
-    ) -> anyhow::Result<(ManaQueue<T>, QueueResources)> {
-        todo!()
-    }
-
     async fn get_queues_inner(
         &mut self,
         arena: &mut ResourceArena,
@@ -583,23 +549,6 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
     fn link_speed(&self) -> u64 {
         // Hard code to 200Gbps until MANA supports querying this.
         200 * 1000 * 1000 * 1000
-    }
-
-    fn save(&self) -> anyhow::Result<Option<EndpointSavedState>> {
-        Ok(Some(EndpointSavedState::ManaEndpoint(
-            ManaEndpointSavedState {
-                vport: self.vport.save(),
-                queue_resources: self
-                    .queues
-                    .iter()
-                    .map(|q| QueueResourcesSavedState {
-                        _eq: q._eq.save(),
-                        rxq: q.rxq.save(),
-                        _txq: q._txq.save(),
-                    })
-                    .collect(),
-            },
-        )))
     }
 
     async fn restore_queues(

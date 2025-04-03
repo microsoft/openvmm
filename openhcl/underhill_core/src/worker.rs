@@ -522,14 +522,9 @@ impl UnderhillVmWorker {
         if let Some(state) = servicing_unit_state.as_ref() {
             if let Some(s) = state.iter().find(|s| s.name.contains("net:")) {
                 if let Ok(netvsp_state) = s.state.parse::<netvsp::saved_state::SavedState>() {
-                    tracing::info!("servicing netvsp state: {:?}", netvsp_state.endpoint);
                     if let Some(init_state) = servicing_init_state.as_mut() {
                         if let Some(mana_state) = init_state.mana_state.as_mut() {
-                            if (mana_state.len() > 0) {
-                                if let Some(endpoint) = netvsp_state.endpoint {
-                                    mana_state[0].endpoints.push(endpoint);
-                                }
-
+                            if !mana_state.is_empty() {
                                 if let Some(queues) = netvsp_state.saved_queues {
                                     mana_state[0].queues = queues;
                                 }
@@ -861,10 +856,6 @@ impl UhVmNetworkSettings {
                 endpoint,
                 mac_address,
                 adapter_index,
-                servicing_mana_state
-                    .as_ref()
-                    .map(|s| &s.endpoints[0])
-                    .cloned(),
                 servicing_mana_state.as_ref().map(|s| &s.queues).cloned(),
             );
 

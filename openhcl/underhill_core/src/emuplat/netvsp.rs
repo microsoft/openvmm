@@ -696,18 +696,10 @@ impl HclNetworkVFManagerWorker {
                     drop(self.messages.take().unwrap());
 
                     rpc.handle(|_| async move {
-                        let saved_endpoints = futures::future::join_all(
-                            self.endpoint_controls
-                                .iter_mut()
-                                .map(|control| control.save()),
-                        )
-                        .await;
-
                         ManaSavedState {
                             pci_id: self.vtl2_pci_id.clone(),
                             mana_device: self.mana_device.as_ref().unwrap().save().await.unwrap(),
-                            endpoints: Vec::new(), // Filled in by VMBus level save/restore
-                            queues: Vec::new(),    // Filled in by VMBus level save/restore
+                            queues: Vec::new(), // Filled in by VMBus level save/restore
                         }
                     })
                     .await;

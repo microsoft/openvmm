@@ -8,7 +8,6 @@ use mana_save_restore::save_restore::QueueSavedState;
 use mana_save_restore::save_restore::SavedMemoryState;
 use mana_save_restore::save_restore::WqSavedState;
 use mesh::payload::Protobuf;
-use net_backend::save_restore::EndpointSavedState;
 use std::collections::HashMap;
 
 /// Mana saved state
@@ -19,15 +18,11 @@ pub struct ManaSavedState {
     #[mesh(1)]
     pub mana_device: ManaDeviceSavedState,
 
-    /// The saved state of the MANA endpoints
-    #[mesh(2)]
-    pub endpoints: Vec<EndpointSavedState>,
-
     /// Saved queue state
-    #[mesh(3)]
+    #[mesh(2)]
     pub queues: Vec<QueueSavedState>,
 
-    #[mesh(4)]
+    #[mesh(3)]
     pub pci_id: String,
 }
 

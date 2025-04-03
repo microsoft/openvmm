@@ -55,7 +55,6 @@ use net_backend::QueueConfig;
 use net_backend::RxId;
 use net_backend::TxId;
 use net_backend::TxSegment;
-use net_backend::save_restore::EndpointSavedState;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::timer::Instant;
 use pal_async::timer::PolledTimer;
@@ -994,7 +993,6 @@ impl NicBuilder {
         endpoint: Box<dyn Endpoint>,
         mac_address: MacAddress,
         adapter_index: u32,
-        endpoint_saved_state: Option<EndpointSavedState>,
         queue_saved_state: Option<Vec<QueueSavedState>>,
     ) -> Nic {
         let multiqueue = endpoint.multiqueue_support();
@@ -1066,7 +1064,6 @@ impl NicBuilder {
             adapter: adapter.clone(),
             virtual_function: self.virtual_function,
             pending_vf_state: CoordinatorStatePendingVfState::Ready,
-            saved_endpoint: endpoint_saved_state,
             saved_queues: queue_saved_state,
         });
 
@@ -1158,7 +1155,6 @@ impl NicBuilder {
             adapter: adapter.clone(),
             virtual_function: self.virtual_function,
             pending_vf_state: CoordinatorStatePendingVfState::Ready,
-            saved_endpoint: None,
             saved_queues: None,
         });
 
@@ -1914,7 +1910,6 @@ impl Nic {
 
         saved_state::SavedState {
             open,
-            endpoint: self.coordinator.task().endpoint.save().unwrap(),
             saved_queues: Some(queues),
         }
     }
@@ -3710,7 +3705,6 @@ struct CoordinatorState {
     adapter: Arc<Adapter>,
     virtual_function: Option<Box<dyn VirtualFunction>>,
     pending_vf_state: CoordinatorStatePendingVfState,
-    saved_endpoint: Option<EndpointSavedState>,
     saved_queues: Option<Vec<QueueSavedState>>,
 }
 

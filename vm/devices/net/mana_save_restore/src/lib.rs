@@ -105,22 +105,6 @@ pub mod save_restore {
         pub mask: u32,
     }
 
-    /// Saved state for a MANA vport
-    #[derive(Debug, Protobuf, Clone)]
-    #[mesh(package = "mana_driver")]
-    pub struct VportSavedState {
-        // The vport configuration from the device
-        // #[mesh(1)]
-        // pub config: ManaQueryVportCfgResp,
-        /// The vport's ID
-        #[mesh(2)]
-        pub id: u32,
-
-        /// The current filter direction state (if any)
-        #[mesh(3)]
-        pub direction_to_vtl0: Option<bool>,
-    }
-
     /// Saved state for queue resources
     #[derive(Debug, Protobuf, Clone)]
     #[mesh(package = "mana_driver")]

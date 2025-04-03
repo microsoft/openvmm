@@ -31,7 +31,6 @@ use mana_save_restore::save_restore::BnicEqSavedState;
 use mana_save_restore::save_restore::BnicWqSavedState;
 use mana_save_restore::save_restore::DoorbellSavedState;
 use mana_save_restore::save_restore::SavedMemoryState;
-use mana_save_restore::save_restore::VportSavedState;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
@@ -583,14 +582,6 @@ impl<T: DeviceBacking> Vport<T> {
     /// Returns an object that can allocate dma memory to be shared with the device.
     pub async fn dma_client(&self) -> Arc<dyn DmaClient> {
         self.inner.gdma.lock().await.device().dma_client()
-    }
-
-    /// Save the state of the vport for restoration after servicing.
-    pub fn save(&self) -> VportSavedState {
-        VportSavedState {
-            id: self.id,
-            direction_to_vtl0: self.vport_state.get_direction_to_vtl0(),
-        }
     }
 
     pub async fn doorbell(&self) -> Arc<dyn Doorbell> {

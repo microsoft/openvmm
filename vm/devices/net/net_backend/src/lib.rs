@@ -25,7 +25,6 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use null::NullEndpoint;
 use pal_async::driver::Driver;
-use save_restore::EndpointSavedState;
 use std::future::pending;
 use std::sync::Arc;
 use std::task::Context;
@@ -105,10 +104,6 @@ pub trait Endpoint: Send + Sync + InspectMut {
         // Reporting a reasonable default value (10Gbps) here that the individual endpoints
         // can overwrite.
         10 * 1000 * 1000 * 1000
-    }
-
-    fn save(&self) -> anyhow::Result<Option<EndpointSavedState>> {
-        Ok(None)
     }
 
     /// Restore the endpoint state from saved state.
@@ -445,10 +440,6 @@ impl DisconnectableEndpointControl {
             .map_err(anyhow::Error::from)
             .await
     }
-
-    pub async fn save(&mut self) -> anyhow::Result<Option<EndpointSavedState>> {
-        Ok(None)
-    }
 }
 
 pub struct DisconnectableEndpointCachedState {
@@ -615,10 +606,6 @@ impl Endpoint for DisconnectableEndpoint {
             .link_speed
     }
 
-    fn save(&self) -> anyhow::Result<Option<EndpointSavedState>> {
-        self.current().save()
-    }
-
     async fn restore_queues(
         &mut self,
         queue_configs: Vec<QueueConfig<'_>>,
@@ -628,30 +615,5 @@ impl Endpoint for DisconnectableEndpoint {
         self.current_mut()
             .restore_queues(queue_configs, saved_state, queues)
             .await
-    }
-}
-
-pub mod save_restore {
-    use mana_save_restore::save_restore::QueueResourcesSavedState;
-    use mana_save_restore::save_restore::VportSavedState;
-    use mesh::payload::Protobuf;
-
-    /// The saved state of the endpoint.
-    #[derive(Debug, Protobuf, Clone)]
-    #[mesh(package = "net_backend")]
-    pub enum EndpointSavedState {
-        /// The saved state of a MANA endpoint.
-        #[mesh(1)]
-        ManaEndpoint(ManaEndpointSavedState),
-    }
-
-    /// Saved state of a MANA endpoint for restoration during servicing
-    #[derive(Protobuf, Clone, Debug)]
-    #[mesh(package = "net_backend")]
-    pub struct ManaEndpointSavedState {
-        #[mesh(1)]
-        pub vport: VportSavedState,
-        #[mesh(2)]
-        pub queue_resources: Vec<QueueResourcesSavedState>,
     }
 }

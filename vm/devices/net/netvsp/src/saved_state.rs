@@ -5,7 +5,6 @@
 
 use mana_save_restore::save_restore::QueueSavedState;
 use mesh::payload::Protobuf;
-use net_backend::save_restore::EndpointSavedState;
 use vmbus_channel::gpadl::GpadlId;
 use vmcore::save_restore::SavedStateRoot;
 
@@ -15,8 +14,6 @@ pub struct SavedState {
     #[mesh(1)]
     pub open: Option<OpenState>,
     #[mesh(2)]
-    pub endpoint: Option<EndpointSavedState>,
-    #[mesh(3)]
     pub saved_queues: Option<Vec<QueueSavedState>>,
 }
 
