@@ -17,6 +17,7 @@ mod ttrpc;
 // `pub` so that the missing_docs warning fires for options without
 // documentation.
 pub use cli_args::Options;
+use console_relay::ConsoleLaunchOptions;
 
 use crate::cli_args::SecureBootTemplateCli;
 use anyhow::Context;
@@ -248,12 +249,21 @@ fn vm_config_from_command_line(
             SerialConfigCli::Tcp(addr) => {
                 Some(serial_io::bind_tcp_serial(&addr).context("failed to bind serial")?)
             }
-            SerialConfigCli::NewConsole(app) => {
+            SerialConfigCli::NewConsole(app, window_title) => {
                 let path = console_relay::random_console_path();
                 let config =
                     serial_io::bind_serial(&path).context("failed to bind console serial")?;
-                console_relay::launch_console(app.or_else(openvmm_terminal_app).as_deref(), &path)
-                    .context("failed to launch console")?;
+                let window_title =
+                    window_title.unwrap_or_else(|| name.to_uppercase() + " [OpenVMM]");
+
+                console_relay::launch_console(
+                    app.or_else(openvmm_terminal_app).as_deref(),
+                    &path,
+                    ConsoleLaunchOptions {
+                        window_title: Some(window_title),
+                    },
+                )
+                .context("failed to launch console")?;
 
                 Some(config)
             }
@@ -292,7 +302,7 @@ fn vm_config_from_command_line(
                 Some(io.config)
             }
             SerialConfigCli::Tcp(_addr) => anyhow::bail!("TCP virtio serial not supported"),
-            SerialConfigCli::NewConsole(app) => {
+            SerialConfigCli::NewConsole(app, window_title) => {
                 let path = console_relay::random_console_path();
 
                 let mut io = SerialIo::new().context("creating serial IO")?;
@@ -300,8 +310,17 @@ fn vm_config_from_command_line(
                     .with_context(|| format!("listening on pipe {}", path.display()))?
                     .detach();
 
-                console_relay::launch_console(app.or_else(openvmm_terminal_app).as_deref(), &path)
-                    .context("failed to launch console")?;
+                let window_title =
+                    window_title.unwrap_or_else(|| name.to_uppercase() + " [OpenVMM]");
+
+                console_relay::launch_console(
+                    app.or_else(openvmm_terminal_app).as_deref(),
+                    &path,
+                    ConsoleLaunchOptions {
+                        window_title: Some(window_title),
+                    },
+                )
+                .context("failed to launch console")?;
                 Some(io.config)
             }
         })
@@ -1620,7 +1639,8 @@ fn do_main() -> anyhow::Result<()> {
     }
 
     if let Some(path) = opt.relay_console_path {
-        return console_relay::relay_console(&path);
+        let console_title = opt.relay_console_title.unwrap_or_default();
+        return console_relay::relay_console(&path, console_title.as_str());
     }
 
     if let Some(path) = opt.ttrpc.as_ref().or(opt.grpc.as_ref()) {

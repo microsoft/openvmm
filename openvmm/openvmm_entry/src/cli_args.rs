@@ -27,6 +27,7 @@ use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::PcatBootDevice;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use hvlite_defs::config::X2ApicConfig;
+use hvlite_ttrpc_vmservice::SerialConfig;
 use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -418,6 +419,12 @@ flags:
     /// This is a hidden argument used internally.
     #[clap(long, hide(true))]
     pub relay_console_path: Option<PathBuf>,
+
+    /// the title of the console window spawned from the relay console.
+    ///
+    /// This is a hidden argument used internally.
+    #[clap(long, hide(true))]
+    pub relay_console_title: Option<String>,
 
     /// enable in-hypervisor gdb debugger
     #[clap(long, value_name = "PORT")]
@@ -939,7 +946,7 @@ impl FromStr for DebugconSerialConfigCli {
 pub enum SerialConfigCli {
     None,
     Console,
-    NewConsole(Option<PathBuf>),
+    NewConsole(Option<PathBuf>, Option<String>),
     Stderr,
     Pipe(PathBuf),
     Tcp(SocketAddr),
@@ -949,28 +956,79 @@ impl FromStr for SerialConfigCli {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let ret = match s {
+        let keyvalues = SerialConfigCli::parse_keyvalues(s)?;
+
+        let first_key = match keyvalues.first() {
+            Some(first_pair) => first_pair.0.as_str(),
+            None => Err("invalid serial configuration: no values supplied")?,
+        };
+        let first_value = keyvalues.first().unwrap().1.as_ref();
+
+        let ret = match first_key {
             "none" => SerialConfigCli::None,
             "console" => SerialConfigCli::Console,
             "stderr" => SerialConfigCli::Stderr,
-            "term" => SerialConfigCli::NewConsole(None),
-            s if s.starts_with("term=") => {
-                SerialConfigCli::NewConsole(Some(PathBuf::from(s.strip_prefix("term=").unwrap())))
-            }
-            s if s.starts_with("listen=") => {
-                let s = s.strip_prefix("listen=").unwrap();
-                if let Some(tcp) = s.strip_prefix("tcp:") {
-                    let addr = tcp
-                        .parse()
-                        .map_err(|err| format!("invalid tcp address: {err}"))?;
-                    SerialConfigCli::Tcp(addr)
-                } else {
-                    SerialConfigCli::Pipe(s.into())
+            "term" => match first_value {
+                Some(path) => {
+                    // If user supplies a name key, use it to title the window
+                    let window_name = keyvalues.iter().find(|(key, _)| key == "name");
+                    let window_name = match window_name {
+                        Some((_, Some(name))) => Some(name.clone()),
+                        _ => None,
+                    };
+
+                    SerialConfigCli::NewConsole(Some(path.into()), window_name)
                 }
+                None => SerialConfigCli::NewConsole(None, None),
+            },
+            "listen" => match first_value {
+                Some(path) => {
+                    if let Some(tcp) = path.strip_prefix("tcp:") {
+                        let addr = tcp
+                            .parse()
+                            .map_err(|err| format!("invalid tcp address: {err}"))?;
+                        SerialConfigCli::Tcp(addr)
+                    } else {
+                        SerialConfigCli::Pipe(s.into())
+                    }
+                }
+                None => Err(
+                    "invalid serial configuration: listen requires a value of tcp:addr or pipe",
+                )?,
+            },
+            _ => {
+                return Err(format!(
+                    "invalid serial configuration: '{}' is not a known option",
+                    first_key
+                ));
             }
-            _ => return Err("invalid serial configuration".into()),
         };
 
+        Ok(ret)
+    }
+}
+
+impl SerialConfigCli {
+    /// Parse a comma separated list of key=value options into a vector of
+    /// key/value pairs.
+    fn parse_keyvalues(s: &str) -> Result<Vec<(String, Option<String>)>, String> {
+        let mut ret = Vec::new();
+
+        // For each comma separated item in the supplied list
+        for item in s.split(',') {
+            // Split on the = for key and value
+            // If no = is found, treat key as key and value as None
+            let mut eqsplit = item.split('=');
+            let key = eqsplit.next();
+            let value = eqsplit.next();
+
+            if let Some(key) = key {
+                ret.push((key.to_owned(), value.map(|x| x.to_owned())));
+            } else {
+                // An empty key is invalid
+                return Err("invalid key=value pair in serial config".into());
+            }
+        }
         Ok(ret)
     }
 }

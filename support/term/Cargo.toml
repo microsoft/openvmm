@@ -27,5 +27,8 @@ workspace = true
 crossterm.workspace = true
 libc.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+crossterm.workspace = true
+
 [lints]
 workspace = true

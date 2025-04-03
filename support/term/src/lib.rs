@@ -90,6 +90,12 @@ pub fn set_raw_console(enable: bool) {
     }
 }
 
+/// Sets the name of the console window.
+pub fn set_console_title(title: &str) {
+    crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(title)).unwrap();
+}
+
+
 /// Clones `file` into a `File`.
 ///
 /// # Safety
