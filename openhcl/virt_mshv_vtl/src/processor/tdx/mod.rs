@@ -1359,12 +1359,19 @@ impl UhProcessor<'_, TdxBacked> {
         self.runner
             .set_halted(activity != MpState::Running || tlb_halt);
 
-        // Turn on kernel interrupt handling if possible
+        // Turn on kernel interrupt handling if possible. This will cause the
+        // kernel to handle some exits internally, without returning to user
+        // mode, to improve performance.
+        //
+        // Do not do this if there is a pending interruption, since we need to
+        // run code on the next exit to clear it. If we miss this opportunity,
+        // we will probably double-inject the interruption, wreaking havoc.
         let offload_enabled = next_vtl == GuestVtl::Vtl0
             && self.backing.vtls[next_vtl]
                 .secondary_processor_controls
                 .virtual_interrupt_delivery()
-            && self.backing.cvm.lapics[next_vtl].lapic.can_offload_irr();
+            && self.backing.cvm.lapics[next_vtl].lapic.can_offload_irr()
+            && !self.backing.vtls[next_vtl].interruption_information.valid();
         let x2apic_enabled = self.backing.cvm.lapics[next_vtl].lapic.x2apic_enabled();
 
         let offload_flags = hcl_intr_offload_flags::new()
@@ -1474,6 +1481,13 @@ impl UhProcessor<'_, TdxBacked> {
         intercepted_vtl: GuestVtl,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
         let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
+
+        // First, check that the VM entry was even successful.
+        let vmx_exit = exit_info.code().vmx_exit();
+        if vmx_exit.vm_enter_failed() {
+            return Err(self.handle_vm_enter_failed(intercepted_vtl, vmx_exit));
+        }
+
         let next_interruption = exit_info.idt_vectoring_info();
 
         // Acknowledge the APIC interrupt/NMI if it was delivered.
@@ -1567,12 +1581,6 @@ impl UhProcessor<'_, TdxBacked> {
             } else {
                 self.backing.vtls[intercepted_vtl].interruption_information = Default::default();
             }
-        }
-
-        // First, check that the VM entry was even successful.
-        let vmx_exit = exit_info.code().vmx_exit();
-        if vmx_exit.vm_enter_failed() {
-            return Err(self.handle_vm_enter_failed(intercepted_vtl, vmx_exit));
         }
 
         let mut breakpoint_debug_exception = false;
