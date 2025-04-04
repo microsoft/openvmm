@@ -42,7 +42,7 @@ fn main() -> anyhow::Result<()> {
     match args.command {
         Command::CloudInit { output, arch } => {
             let image = build_with_artifacts(|resolver: ArtifactResolver<'_>| {
-                let image = petri::disk_image::AgentImage::new(
+                petri::disk_image::AgentImage::new(
                     &resolver,
                     match arch {
                         MachineArch::X86_64 => petri_artifacts_common::tags::MachineArch::X86_64,
@@ -50,7 +50,6 @@ fn main() -> anyhow::Result<()> {
                     },
                     petri_artifacts_common::tags::OsFlavor::Linux,
                 );
-                image
             })?;
 
             let disk = image.build().context("failed to build disk image")?;
