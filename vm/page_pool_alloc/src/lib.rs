@@ -809,6 +809,39 @@ impl PagePoolAllocator {
             mapping_offset: slot.mapping_offset,
         })
     }
+
+    /// Restore all pending allocs
+    pub fn restore_pending_allocs(&self) -> Vec<PagePoolHandle> {
+        let mut inner = self.inner.state.lock();
+        let inner = &mut *inner;
+        let mut slots: Vec<&mut Slot> = inner
+            .slots
+            .iter_mut()
+            .filter(|slot| {
+                if let SlotState::AllocatedPendingRestore {
+                    device_id: slot_device_id,
+                    tag: _,
+                } = &slot.state
+                {
+                    return inner.device_ids[self.device_id].name() == *slot_device_id;
+                }
+                false
+            })
+            .collect();
+
+        slots
+            .iter_mut()
+            .map(|slot| {
+                slot.state.restore_allocated(self.device_id);
+                PagePoolHandle {
+                    inner: self.inner.clone(),
+                    base_pfn: slot.base_pfn,
+                    size_pages: slot.size_pages,
+                    mapping_offset: slot.mapping_offset,
+                }
+            })
+            .collect()
+    }
 }
 
 impl Drop for PagePoolAllocator {
@@ -863,6 +896,15 @@ impl user_driver::DmaClient for PagePoolAllocator {
         // Preserve the existing contents of memory and do not zero the restored
         // allocation.
         alloc.into_memory_block()
+    }
+
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
+        let allocs = self.restore_pending_allocs();
+
+        allocs
+            .into_iter()
+            .map(|alloc| alloc.into_memory_block())
+            .collect()
     }
 }
 

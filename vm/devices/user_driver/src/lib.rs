@@ -69,4 +69,7 @@ pub trait DmaClient: Send + Sync + Inspect {
 
     /// Attach to a previously allocated memory block.
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
+
+    /// Attach all pending buffers
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<MemoryBlock>>;
 }

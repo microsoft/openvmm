@@ -138,4 +138,8 @@ impl crate::DmaClient for LockedMemorySpawner {
     ) -> anyhow::Result<crate::memory::MemoryBlock> {
         anyhow::bail!("restore not supported for lockmem")
     }
+
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<crate::memory::MemoryBlock>> {
+        anyhow::bail!("restore not supported for lockmem")
+    }
 }

@@ -437,6 +437,16 @@ impl DmaClientBacking {
             }
         }
     }
+
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
+        match self {
+            DmaClientBacking::SharedPool(allocator) => allocator.attach_pending_buffers(),
+            DmaClientBacking::PrivatePool(allocator) => allocator.attach_pending_buffers(),
+            DmaClientBacking::LockedMemory(spawner) => spawner.attach_pending_buffers(),
+            DmaClientBacking::PrivatePoolLowerVtl(spawner) => spawner.attach_pending_buffers(),
+            DmaClientBacking::LockedMemoryLowerVtl(spawner) => spawner.attach_pending_buffers(),
+        }
+    }
 }
 
 /// An OpenHCL dma client. This client implements inspect to allow seeing what
@@ -461,5 +471,9 @@ impl DmaClient for OpenhclDmaClient {
         base_pfn: u64,
     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
         self.backing.attach_dma_buffer(len, base_pfn)
+    }
+
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
+        self.backing.attach_pending_buffers()
     }
 }
