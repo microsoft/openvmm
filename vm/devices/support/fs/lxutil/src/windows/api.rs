@@ -123,15 +123,11 @@ pal::delayload!("lxutil.dll" {
         size: &mut ntdef::USHORT,
     ) -> ntioapi::PREPARSE_DATA_BUFFER;
 
-    pub fn LxUtilFsGetFileSystemBlockSize(handle: RawHandle) -> ntdef::ULONG;
-
     pub fn LxUtilFsGetLxFileSystemAttributes(
         handle: RawHandle,
         fs_type: usize,
         stat_fs: &mut lx::StatFs,
     ) -> i32;
-
-    pub fn LxUtilFsIsAppExecLink(attributes: ntdef::ULONG, reparse_tag: ntdef::ULONG) -> ntdef::BOOLEAN;
 
     pub fn LxUtilFsReadAppExecLink(offset:u64, buffer: ntdef::PVOID, buffer_size: basetsd::SIZE_T) -> basetsd::SIZE_T;
 

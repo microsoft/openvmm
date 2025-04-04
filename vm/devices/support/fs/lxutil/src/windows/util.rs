@@ -325,27 +325,24 @@ pub fn get_attributes_by_handle(
     state: &super::VolumeState,
     handle: &OwnedHandle,
 ) -> lx::Result<LxStatInformation> {
-    unsafe {
-        let stat = fs::query_stat_lx_information(handle, fs_context)?;
+    let stat = fs::query_stat_lx_information(handle, fs_context)?;
 
-        // For NT symlinks and V2 LX symlinks, the size of the file is not correct, and must be
-        // determined based on the reparse data.
-        let symlink_len = if is_symlink(stat.FileAttributes, stat.ReparseTag) && stat.EndOfFile == 0
-        {
-            // Return 0 here on failure to duplicate LxUtil behavior
-            Some(fs::read_link_length(handle, state).unwrap_or(0))
-        } else {
-            None
-        };
-        let is_app_execution_alias = stat.EndOfFile.eq(&0)
-            && api::LxUtilFsIsAppExecLink(stat.FileAttributes, stat.ReparseTag) != 0;
+    // For NT symlinks and V2 LX symlinks, the size of the file is not correct, and must be
+    // determined based on the reparse data.
+    let symlink_len = if is_symlink(stat.FileAttributes, stat.ReparseTag) && stat.EndOfFile == 0 {
+        // Return 0 here on failure to duplicate LxUtil behavior
+        Some(fs::read_link_length(handle, state).unwrap_or(0))
+    } else {
+        None
+    };
+    let is_app_execution_alias =
+        stat.EndOfFile.eq(&0) && fs::is_app_exec_link(stat.FileAttributes, stat.ReparseTag);
 
-        Ok(LxStatInformation {
-            stat,
-            symlink_len,
-            is_app_execution_alias,
-        })
-    }
+    Ok(LxStatInformation {
+        stat,
+        symlink_len,
+        is_app_execution_alias,
+    })
 }
 
 // Get file attributes from a file name.
@@ -365,40 +362,38 @@ pub fn get_attributes(
     if fs_context.compatibility_flags.supports_query_by_name() {
         let pathu = dos_to_nt_path(root_handle, path)?;
 
-        unsafe {
-            let stat = fs::query_stat_lx_information_by_name(fs_context, root_handle, &pathu)?;
+        let stat = fs::query_stat_lx_information_by_name(fs_context, root_handle, &pathu)?;
 
-            // For NT symlinks and V2 LX symlinks, the size of the file is not correct, and must be
-            // determined based on the reparse data, which requires opening the file.
-            let symlink_len =
-                if is_symlink(stat.FileAttributes, stat.ReparseTag) && stat.EndOfFile == 0 {
-                    let symlink_len = if let Ok((handle, _)) = open_relative_file(
-                        root_handle,
-                        path,
-                        MINIMUM_PERMISSIONS,
-                        ntioapi::FILE_OPEN,
-                        0,
-                        ntioapi::FILE_OPEN_REPARSE_POINT,
-                        None,
-                    ) {
-                        // Return 0 here on failure to duplicate LxUtil behavior
-                        fs::read_link_length(&handle, state).unwrap_or(0)
-                    } else {
-                        0
-                    };
-                    Some(symlink_len)
-                } else {
-                    None
-                };
-            let is_app_execution_alias = stat.EndOfFile.eq(&0)
-                && api::LxUtilFsIsAppExecLink(stat.FileAttributes, stat.ReparseTag) != 0;
+        // For NT symlinks and V2 LX symlinks, the size of the file is not correct, and must be
+        // determined based on the reparse data, which requires opening the file.
+        let symlink_len = if is_symlink(stat.FileAttributes, stat.ReparseTag) && stat.EndOfFile == 0
+        {
+            let symlink_len = if let Ok((handle, _)) = open_relative_file(
+                root_handle,
+                path,
+                MINIMUM_PERMISSIONS,
+                ntioapi::FILE_OPEN,
+                0,
+                ntioapi::FILE_OPEN_REPARSE_POINT,
+                None,
+            ) {
+                // Return 0 here on failure to duplicate LxUtil behavior
+                fs::read_link_length(&handle, state).unwrap_or(0)
+            } else {
+                0
+            };
+            Some(symlink_len)
+        } else {
+            None
+        };
+        let is_app_execution_alias =
+            stat.EndOfFile.eq(&0) && fs::is_app_exec_link(stat.FileAttributes, stat.ReparseTag);
 
-            Ok(LxStatInformation {
-                stat,
-                symlink_len,
-                is_app_execution_alias,
-            })
-        }
+        Ok(LxStatInformation {
+            stat,
+            symlink_len,
+            is_app_execution_alias,
+        })
     } else {
         // If NtQueryInformationByName is not supported, open the file to query attributes.
         let (handle, _) = open_relative_file(
@@ -603,14 +598,7 @@ pub fn file_info_to_stat(
 pub fn create_link_reparse_buffer(target: &lx::LxStr) -> lx::Result<windows::RtlHeapBuffer> {
     let link_target = create_ansi_string(target)?;
 
-    let mut size = 0;
-    unsafe {
-        let data = api::LxUtilFsCreateLinkReparseBuffer(link_target.as_ref(), &mut size);
-        Ok(windows::RtlHeapBuffer::from_raw(
-            data.cast::<u8>(),
-            size as usize,
-        ))
-    }
+    fs::create_link_reparse_buffer(link_target)
 }
 
 // Create the reparse buffer for an NT symlink.
@@ -1007,12 +995,7 @@ pub fn set_attr_core(
             let atime = set_time_to_timespec(&attr.atime);
             let mtime = set_time_to_timespec(&attr.mtime);
             let ctime = set_time_to_timespec(&attr.ctime);
-            check_lx_error(api::LxUtilFsSetTimes(
-                handle.as_raw_handle(),
-                &atime,
-                &mtime,
-                &ctime,
-            ))?;
+            fs::set_file_times(handle, &atime, &mtime, &ctime)?;
         }
 
         Ok(())
@@ -1278,6 +1261,36 @@ pub fn nt_time_to_timespec(nt_time: i64, absolute_time: bool) -> lx::Timespec {
     lx::Timespec {
         seconds: (nt_time / LX_UTIL_NT_UNIT_PER_SEC) as usize,
         nanoseconds: ((nt_time % LX_UTIL_NT_UNIT_PER_SEC) * LX_UTIL_NANO_SEC_PER_NT_UNIT) as usize,
+    }
+}
+
+/// Returns the NT equivalent (100ns units) to time in nanoseconds.
+pub fn nanoseconds_to_nt_time(nanoseconds: i64) -> i64 {
+    (nanoseconds + LX_UTIL_NANO_SEC_PER_NT_UNIT - 1) / LX_UTIL_NANO_SEC_PER_NT_UNIT
+}
+
+/// Return the supplied timespec in equivalent 100ns units. If the unit conversion causes an overflow,
+/// the returned value will be the maximum allowed timeout value.
+pub fn timespec_to_nt_time(timespec: &lx::Timespec, absolute_time: bool) -> i64 {
+    let nt_units = (timespec.seconds as i64)
+        .saturating_mul(LX_UTIL_NT_UNIT_PER_SEC)
+        .saturating_add(nanoseconds_to_nt_time(timespec.nanoseconds as i64));
+
+    if absolute_time {
+        nt_units.saturating_add(LX_POSIX_EPOCH_OFFSET)
+    } else {
+        nt_units
+    }
+}
+
+/// Convert a timespec that can optionally use the `UTIME_OMIT` or `UTIME_NOW` values.
+pub fn timespec_utime_to_nt_time(timespec: &lx::Timespec, current_time: i64) -> Option<i64> {
+    if timespec.nanoseconds == lx::UTIME_NOW {
+        Some(current_time)
+    } else if timespec.nanoseconds != lx::UTIME_OMIT {
+        Some(timespec_to_nt_time(timespec, true))
+    } else {
+        None
     }
 }
 

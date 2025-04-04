@@ -96,41 +96,39 @@ impl LxVolume {
     pub fn new(root_path: &Path, options: &super::LxVolumeOptions) -> lx::Result<Self> {
         api::delay_load_lxutil()?;
 
-        unsafe {
-            // Open a handle to the root.
-            let (root, _) = util::open_relative_file(
-                None,
-                root_path,
-                util::MINIMUM_PERMISSIONS,
-                ntioapi::FILE_OPEN,
-                winnt::FILE_ATTRIBUTE_DIRECTORY,
-                ntioapi::FILE_DIRECTORY_FILE,
-                None,
-            )?;
+        // Open a handle to the root.
+        let (root, _) = util::open_relative_file(
+            None,
+            root_path,
+            util::MINIMUM_PERMISSIONS,
+            ntioapi::FILE_OPEN,
+            winnt::FILE_ATTRIBUTE_DIRECTORY,
+            ntioapi::FILE_DIRECTORY_FILE,
+            None,
+        )?;
 
-            // Determine the capabilities of the file system.
-            let fs_context = fs::FsContext::new(&root, fs::LX_DRVFS_DISABLE_NONE, false)?;
+        // Determine the capabilities of the file system.
+        let fs_context = fs::FsContext::new(&root, fs::LX_DRVFS_DISABLE_NONE, false)?;
 
-            let mut options = options.clone();
-            if !fs_context.compatibility_flags.supports_metadata() {
-                options.metadata = false;
-            }
-
-            if !fs_context.compatibility_flags.supports_case_sensitive_dir() {
-                options.create_case_sensitive_dirs = false;
-            }
-
-            // Determine the block size for use in stat calls.
-            // N.B. If this volume contains more than one file system, this value could be wrong for
-            //      some queries. However, this is not the intended use of this class.
-            let block_size = api::LxUtilFsGetFileSystemBlockSize(root.as_raw_handle());
-            Ok(Self {
-                root,
-                #[expect(clippy::disallowed_methods, reason = "need actual canonical path here")]
-                root_path: root_path.canonicalize()?,
-                state: VolumeState::new(fs_context, options, block_size),
-            })
+        let mut options = options.clone();
+        if !fs_context.compatibility_flags.supports_metadata() {
+            options.metadata = false;
         }
+
+        if !fs_context.compatibility_flags.supports_case_sensitive_dir() {
+            options.create_case_sensitive_dirs = false;
+        }
+
+        // Determine the block size for use in stat calls.
+        // N.B. If this volume contains more than one file system, this value could be wrong for
+        //      some queries. However, this is not the intended use of this class.
+        let block_size = fs::get_fs_block_size(&root);
+        Ok(Self {
+            root,
+            #[expect(clippy::disallowed_methods, reason = "need actual canonical path here")]
+            root_path: root_path.canonicalize()?,
+            state: VolumeState::new(fs_context, options, block_size),
+        })
     }
 
     pub fn supports_stable_file_id(&self) -> bool {
@@ -1231,18 +1229,14 @@ impl LxFile {
         if offset < 0 {
             return Err(lx::Error::EINVAL);
         }
-        unsafe {
-            let mut iosb = mem::zeroed();
-            let buffer_ptr = buffer.as_mut_ptr().cast::<ffi::c_void>();
-            let buffer_len: u32 = buffer.len().try_into().map_err(|_| lx::Error::EINVAL)?;
+        let mut iosb = Default::default();
+        let buffer_ptr = buffer.as_mut_ptr().cast::<ffi::c_void>();
+        let buffer_len: u32 = buffer.len().try_into().map_err(|_| lx::Error::EINVAL)?;
 
-            if *self.is_app_exec_alias.lock() {
-                Ok(api::LxUtilFsReadAppExecLink(
-                    offset.try_into().expect("Invalid offset"),
-                    buffer_ptr,
-                    buffer_len as usize,
-                ))
-            } else {
+        if *self.is_app_exec_alias.lock() {
+            Ok(fs::read_app_exec_link(offset, buffer))
+        } else {
+            unsafe {
                 let mut nt_offset: ntdef::LARGE_INTEGER = mem::zeroed();
                 *nt_offset.QuadPart_mut() = offset;
                 // TODO: Async I/O.
