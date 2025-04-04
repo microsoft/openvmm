@@ -139,13 +139,15 @@ impl virt::Synic for WhpPartition {
 }
 
 impl SynicMonitor for WhpPartition {
-    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send> {
+    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Sync + Send> {
         self.inner
             .monitor_page
             .register_monitor(monitor_id, connection_id)
     }
 
-    fn set_monitor_page(&self, gpa: Option<u64>) -> anyhow::Result<()> {
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
+        // Monitor pages are not supported at all when VTL2 is enabled.
+        assert!(vtl == Vtl::Vtl0);
         let mut overlays = crate::memory::OverlayMapper::new(&self.inner.vtl0);
         let old_gpa = self.inner.monitor_page.set_gpa(gpa);
         if let Some(old_gpa) = old_gpa {
