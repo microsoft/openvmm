@@ -9,9 +9,11 @@ use ::windows::Wdk::System::SystemServices;
 use ::windows::Win32::Foundation;
 use ::windows::Win32::Storage::FileSystem as W32Fs;
 use ::windows::Win32::System::Ioctl;
+use ::windows::Win32::System::SystemInformation;
 use ::windows::Win32::System::SystemServices as W32Ss;
 use bitfield_struct::bitfield;
 use headervec::HeaderVec;
+use pal::windows::AnsiStringRef;
 use pal::windows::UnicodeString;
 use std::marker::PhantomData;
 use std::mem::offset_of;
@@ -19,6 +21,7 @@ use std::os::windows::io::AsRawHandle;
 use std::os::windows::io::OwnedHandle;
 use std::path::Path;
 use windows::Win32::System;
+use windows::Win32::System::Memory;
 
 const LX_UTIL_DEFAULT_PERMISSIONS: u32 = 0o777;
 
@@ -44,6 +47,8 @@ const LX_UTIL_SYMLINK_DATA_VERSION_2: u32 = 2;
 const LX_UTIL_SYMLINK_TARGET_OFFSET: u32 = offset_of!(SymlinkData, target) as u32;
 const LX_UTIL_SYMLINK_REPARSE_BASE_SIZE: u32 =
     REPARSE_DATA_BUFFER_HEADER_SIZE as u32 + LX_UTIL_SYMLINK_TARGET_OFFSET;
+
+const LX_UTIL_PE_HEADER_SIZE: usize = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -916,5 +921,115 @@ fn determine_fallback_mode(
             flags.set_supports_query_by_name(true);
             flags.set_supports_stat_info(true);
         };
+    }
+}
+
+/// Get the block size for atomicity from a file system.
+pub fn get_fs_block_size(file_handle: &OwnedHandle) -> u32 {
+    // SAFETY: Calling Win32 API as documented
+    let mut iosb = Default::default();
+    let mut fs_info: FileSystem::FILE_FS_SECTOR_SIZE_INFORMATION = Default::default();
+    let result = unsafe {
+        util::check_status(FileSystem::NtQueryVolumeInformationFile(
+            Foundation::HANDLE(file_handle.as_raw_handle()),
+            &mut iosb,
+            std::ptr::from_mut(&mut fs_info).cast(),
+            size_of::<FileSystem::FILE_FS_SECTOR_SIZE_INFORMATION>() as _,
+            FileSystem::FileFsSectorSizeInformation,
+        ))
+    };
+
+    match result {
+        Ok(_) => fs_info.FileSystemEffectivePhysicalBytesPerSectorForAtomicity,
+        Err(_) => LX_UTIL_FS_ALLOCATION_BLOCK_SIZE as u32,
+    }
+}
+
+/// Check whether a file is an app execution alias reparse point.
+pub fn is_app_exec_link(attributes: u32, reparse_tag: u32) -> bool {
+    (attributes & W32Fs::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0)
+        && (reparse_tag == W32Ss::IO_REPARSE_TAG_APPEXECLINK)
+}
+
+/// Read the fake PE header generated for app execution aliases into a slice.
+pub fn read_app_exec_link(offset: lx::off_t, buf: &mut [u8]) -> usize {
+    const PE_HEADER: [char; LX_UTIL_PE_HEADER_SIZE] = ['M', 'Z'];
+
+    if offset >= LX_UTIL_PE_HEADER_SIZE as _ {
+        return 0;
+    }
+
+    // Copy PE_HEADER until either the end of PE_HEADER of buf
+    PE_HEADER
+        .iter()
+        .zip(buf.iter_mut())
+        .map(|(c, b)| *b = *c as u8)
+        .count()
+}
+
+/// Set the file times on a file. Any of the timespecs may have a nanoseconds field of
+/// `UTIME_OMIT`, indicating it should not be updated.
+pub fn set_file_times(
+    file_handle: &OwnedHandle,
+    accessed_time: &lx::Timespec,
+    modified_time: &lx::Timespec,
+    changed_time: &lx::Timespec,
+) -> lx::Result<()> {
+    // SAFETY: Calling Win32 API as documented.
+    let current_time = unsafe { SystemInformation::GetSystemTimePreciseAsFileTime() };
+
+    let current_time: i64 =
+        (current_time.dwHighDateTime as i64) << 32 | (current_time.dwLowDateTime as i64);
+
+    let mut info: FileSystem::FILE_BASIC_INFORMATION = Default::default();
+    info.LastAccessTime =
+        util::timespec_utime_to_nt_time(accessed_time, current_time).unwrap_or_default();
+    info.LastWriteTime =
+        util::timespec_utime_to_nt_time(modified_time, current_time).unwrap_or_default();
+    info.ChangeTime =
+        util::timespec_utime_to_nt_time(changed_time, current_time).unwrap_or_default();
+
+    util::set_information_file(file_handle, &info)
+}
+
+/// Create the reparse buffer for an LX symlink. The size of the buffer is returned in `size`.
+pub fn create_link_reparse_buffer(
+    target: AnsiStringRef<'_>,
+) -> lx::Result<pal::windows::RtlHeapBuffer> {
+    let target_length = target.as_slice().len();
+    let reparse_size =
+        REPARSE_DATA_BUFFER_HEADER_SIZE + LX_UTIL_SYMLINK_TARGET_OFFSET as usize + target_length;
+
+    // This should not happen since Linux paths are max 4096 characters.
+    if reparse_size > u16::MAX as usize {
+        return Err(lx::Error::ENAMETOOLONG);
+    }
+
+    // SAFETY: Calling Win32 API to allocate heap memory, writing to the buffer,
+    // accessing union fields, and constructing an RtlHeapBuffer. The buffer is guaranteed
+    // large enough to write to all members.
+    unsafe {
+        let buf = FileSystem::RtlAllocateHeap(
+            Memory::GetProcessHeap().map_err(|_| lx::Error::ENOMEM)?.0,
+            Some(Memory::HEAP_ZERO_MEMORY.0),
+            reparse_size,
+        );
+        assert!(!buf.is_null(), "out of memory");
+
+        let reparse: *mut SymlinkReparse = buf.cast();
+        (*reparse).header.ReparseTag = FileSystem::IO_REPARSE_TAG_LX_SYMLINK as u32;
+        (*reparse).header.ReparseDataLength =
+            LX_UTIL_SYMLINK_TARGET_OFFSET as u16 + target_length as u16;
+        (*reparse).data.symlink.version = LX_UTIL_SYMLINK_DATA_VERSION_2;
+        std::ptr::copy_nonoverlapping(
+            target.as_slice().as_ptr(),
+            (*reparse).data.symlink.target.as_mut_ptr(),
+            target_length,
+        );
+
+        Ok(pal::windows::RtlHeapBuffer::from_raw(
+            buf.cast(),
+            reparse_size,
+        ))
     }
 }
