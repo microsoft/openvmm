@@ -343,9 +343,8 @@ impl FixedNumber for f64 {
     }
 }
 
-#[cfg(feature = "std")]
 // Note that this is encoded in host network order (native endian).
-impl FixedNumber for std::net::Ipv4Addr {
+impl FixedNumber for core::net::Ipv4Addr {
     type Type = u32;
 
     fn to_fixed(self) -> u32 {
@@ -1714,10 +1713,8 @@ default_encodings! {
 
     Infallible: ImpossibleField,
 
-    #[cfg(feature = "std")]
-    std::net::Ipv4Addr: Fixed32Field,
-    #[cfg(feature = "std")]
-    std::net::Ipv6Addr: U128BigEndianField,
+    core::net::Ipv4Addr: Fixed32Field,
+    core::net::Ipv6Addr: U128BigEndianField,
 }
 
 impl DefaultEncoding for &str {
