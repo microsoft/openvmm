@@ -1581,7 +1581,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
             hvdef::HV_X64_PENDING_EVENT_EXCEPTION
         );
 
-        let exception = HvX64PendingExceptionEvent::from(u128::from(event_info.reg_0));
+        let exception = HvX64PendingExceptionEvent::from(event_info.reg_0.into_bits());
         assert!(!self.interruption_pending);
 
         // There's no interruption pending, so just inject the exception

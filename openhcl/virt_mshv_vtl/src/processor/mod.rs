@@ -303,6 +303,9 @@ trait HardwareIsolatedBacking: Backing {
     /// valid.
     fn pending_event_vector(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> Option<u8>;
     /// Sets the pending exception for the guest state.
+    ///
+    /// Note that this will overwrite any existing pending exception. It will
+    /// not handle merging any existing pending exception with the new one.
     fn set_pending_exception(
         this: &mut UhProcessor<'_, Self>,
         vtl: GuestVtl,
