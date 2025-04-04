@@ -106,6 +106,9 @@ pub(crate) enum FatalError {
     NoPendingSecondaryHostRequest(HostRequests),
 }
 
+type HostRequestQueue = VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>;
+type ExclusiveHostRequestResponseReceiverAccess = Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>;
+
 /// Validates the response packet received from the host. This function is only
 /// called on HOST_REQUEST/HOST_RESPONSE messages.
 fn validate_response(header: get_protocol::HeaderHostResponse) -> Result<(), FatalError> {
@@ -484,7 +487,7 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     #[inspect(skip)]
     vtl2_settings_buf: Option<Vec<u8>>,
     #[inspect(skip)]
-    primary_host_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
+    primary_host_requests: HostRequestQueue,
     #[inspect(skip)]
     pipe_channels: PipeChannels,
     #[inspect(skip)]
@@ -492,7 +495,7 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     #[inspect(skip)]
     write_recv: mesh::Receiver<WriteRequest>,
     #[inspect(skip)]
-    secondary_host_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
+    secondary_host_requests: HostRequestQueue,
     #[inspect(skip)]
     secondary_host_requests_read_send: mesh::Sender<Vec<u8>>,
     gpa_allocator: Option<Arc<dyn DmaClient>>,
@@ -559,7 +562,7 @@ mod inspect_helpers {
 }
 
 struct HostRequestPipeAccess {
-    response_message_recv_mutex: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
+    response_message_recv_mutex: ExclusiveHostRequestResponseReceiverAccess,
     response_message_recv: Option<mesh::Receiver<Vec<u8>>>,
     request_message_send: mesh::Sender<WriteRequest>,
 }
@@ -573,10 +576,10 @@ impl Drop for HostRequestPipeAccess {
 struct PipeChannels {
     // This is None when a `HostRequestPipeAccess` has ownership for a host
     // request in the primary queue.
-    response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
+    primary_host_request_response_message_recv: ExclusiveHostRequestResponseReceiverAccess,
     // This is None when a `HostRequestPipeAccess` has ownership for a host
     // request in the secondary queue.
-    secondary_host_request_response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
+    secondary_host_request_response_message_recv: ExclusiveHostRequestResponseReceiverAccess,
     message_send: mesh::Sender<WriteRequest>,
 }
 
@@ -683,7 +686,7 @@ impl<T: RingMem> ProcessLoop<T> {
             primary_host_requests: Default::default(),
             secondary_host_requests: Default::default(),
             pipe_channels: PipeChannels {
-                response_message_recv: Arc::new(Mutex::new(Some(read_recv))),
+                primary_host_request_response_message_recv: Arc::new(Mutex::new(Some(read_recv))),
                 secondary_host_request_response_message_recv: Arc::new(Mutex::new(Some(
                     secondary_host_requests_read_recv,
                 ))),
@@ -838,21 +841,17 @@ impl<T: RingMem> ProcessLoop<T> {
                 }
                 .map(Event::Failure);
 
-                // Run the next host request in the primary queue. These host
-                // requests are expected to be generally fast and independent
-                // of one another.
-                let run_next = async {
-                    while let Some(request) = self.primary_host_requests.front_mut() {
+                // Closure to share code between the primary and secondary host request queue.
+                let run_host_request_queue = async | request_queue: &mut HostRequestQueue, response_recv: &ExclusiveHostRequestResponseReceiverAccess | {
+                    while let Some(request) = request_queue.front_mut() {
                         if let Err(e) = request.as_mut().await {
                             return e;
                         }
 
-                        self.primary_host_requests.pop_front();
+                        request_queue.pop_front();
 
                         // Ensure there are no extra response messages that this request failed to pick up.
-                        if self
-                            .pipe_channels
-                            .response_message_recv
+                        if response_recv
                             .lock()
                             .as_mut()
                             .unwrap()
@@ -863,36 +862,29 @@ impl<T: RingMem> ProcessLoop<T> {
                         }
                     }
                     pending().await
-                }
+                };
+
+                // Run the next host request in the primary queue. These host
+                // requests are expected to be generally fast and independent
+                // of one another.
+                let run_next_primary_host_request = run_host_request_queue(
+                    &mut self.primary_host_requests,
+                    &self
+                        .pipe_channels
+                        .primary_host_request_response_message_recv,
+                )
                 .map(Event::Failure);
 
                 // Run the next host request in the secondary queue. These
                 // host requests may need to interleave with requests in the
                 // primary queue, or may be generally slow and shouldn't
                 // disrupt forward progress in the primary queue.
-                let run_next_secondary_host_request = async {
-                    while let Some(request) = self.secondary_host_requests.front_mut() {
-                        if let Err(e) = request.as_mut().await {
-                            return e;
-                        }
-
-                        self.secondary_host_requests.pop_front();
-
-                        // Ensure there are no extra response messages that this request failed to pick up.
-                        if self
-                            .pipe_channels
-                            .secondary_host_request_response_message_recv
-                            .lock()
-                            .as_mut()
-                            .unwrap()
-                            .try_recv()
-                            .is_ok()
-                        {
-                            return FatalError::NoPendingRequest;
-                        }
-                    }
-                    pending().await
-                }
+                let run_next_secondary_host_request = run_host_request_queue(
+                    &mut self.secondary_host_requests,
+                    &self
+                        .pipe_channels
+                        .secondary_host_request_response_message_recv,
+                )
                 .map(Event::Failure);
 
                 let recv_response = async {
@@ -909,7 +901,7 @@ impl<T: RingMem> ProcessLoop<T> {
                     read_fd,
                     recv_msg,
                     send_next,
-                    run_next,
+                    run_next_primary_host_request,
                     run_next_secondary_host_request,
                     recv_response,
                 )
@@ -979,7 +971,10 @@ impl<T: RingMem> ProcessLoop<T> {
         F: 'static + Send + FnOnce(HostRequestPipeAccess) -> Fut,
         Fut: 'static + Future<Output = Result<(), FatalError>> + Send,
     {
-        let message_recv_mutex = self.pipe_channels.response_message_recv.clone();
+        let message_recv_mutex = self
+            .pipe_channels
+            .primary_host_request_response_message_recv
+            .clone();
         let message_send = self.pipe_channels.message_send.clone();
         let fut = async { f(HostRequestPipeAccess::new(message_recv_mutex, message_send)).await };
         self.primary_host_requests.push_back(Box::pin(fut));
