@@ -100,7 +100,9 @@ pub(crate) enum FatalError {
         response_size: usize,
         maximum_size: usize,
     },
-    #[error("received a secondary host request response {0:?} with no pending secondary host request")]
+    #[error(
+        "received a secondary host request response {0:?} with no pending secondary host request"
+    )]
     NoPendingSecondaryHostRequest(HostRequests),
 }
 
@@ -151,7 +153,7 @@ fn read_guest_notification<T: FromBytes + Immutable + KnownLayout>(
 /// just be generally slow and shouldn't disrupt the primary queue making
 /// forward progress.
 fn is_secondary_host_request(request: HostRequests) -> bool {
-   request == HostRequests::IGVM_ATTEST || request == HostRequests::VPCI_DEVICE_CONTROL
+    request == HostRequests::IGVM_ATTEST || request == HostRequests::VPCI_DEVICE_CONTROL
 }
 
 pub(crate) mod msg {
@@ -669,7 +671,8 @@ impl HostRequestPipeAccess {
 impl<T: RingMem> ProcessLoop<T> {
     pub(crate) fn new(pipe: MessagePipe<T>) -> Self {
         let (read_send, read_recv) = mesh::channel();
-        let (secondary_host_requests_read_send, secondary_host_requests_read_recv) = mesh::channel();
+        let (secondary_host_requests_read_send, secondary_host_requests_read_recv) =
+            mesh::channel();
         let (write_send, write_recv) = mesh::channel();
 
         Self {
@@ -993,7 +996,10 @@ impl<T: RingMem> ProcessLoop<T> {
         F: 'static + Send + FnOnce(HostRequestPipeAccess) -> Fut,
         Fut: 'static + Future<Output = Result<(), FatalError>> + Send,
     {
-        let message_recv_mutex = self.pipe_channels.secondary_host_request_response_message_recv.clone();
+        let message_recv_mutex = self
+            .pipe_channels
+            .secondary_host_request_response_message_recv
+            .clone();
         let message_send = self.pipe_channels.message_send.clone();
         let fut = async { f(HostRequestPipeAccess::new(message_recv_mutex, message_send)).await };
         self.secondary_host_requests.push_back(Box::pin(fut));
@@ -1098,9 +1104,11 @@ impl<T: RingMem> ProcessLoop<T> {
                     get_protocol::VmgsGetDeviceInfoRequest::new()
                 });
             }
-            Msg::GetVtl2SavedStateFromHost(req) => self.push_primary_host_request_handler(|access| {
-                req.handle_must_succeed(async |()| request_saved_state(access).await)
-            }),
+            Msg::GetVtl2SavedStateFromHost(req) => {
+                self.push_primary_host_request_handler(|access| {
+                    req.handle_must_succeed(async |()| request_saved_state(access).await)
+                })
+            }
             Msg::GuestStateProtection(req) => {
                 self.push_basic_host_request_handler(req, |request| *request);
             }
@@ -1133,7 +1141,9 @@ impl<T: RingMem> ProcessLoop<T> {
             }
             Msg::VpciDeviceControl(req) => {
                 self.push_secondary_host_request_handler(|access| {
-                    req.handle_must_succeed(async |input| request_vpci_device_control(access, input).await)
+                    req.handle_must_succeed(async |input| {
+                        request_vpci_device_control(access, input).await
+                    })
                 });
             }
             Msg::VpciDeviceBindingChange(req) => {
@@ -1837,10 +1847,12 @@ async fn request_vpci_device_control(
     mut access: HostRequestPipeAccess,
     input: msg::VpciDeviceControlInput,
 ) -> Result<get_protocol::VpciDeviceControlResponse, FatalError> {
-    let response: get_protocol::VpciDeviceControlResponse =
-        access.send_request_fixed_size(
-            &get_protocol::VpciDeviceControlRequest::new(input.code, input.bus_instance_id)
-        ).await?;
+    let response: get_protocol::VpciDeviceControlResponse = access
+        .send_request_fixed_size(&get_protocol::VpciDeviceControlRequest::new(
+            input.code,
+            input.bus_instance_id,
+        ))
+        .await?;
 
     Ok(response)
 }
