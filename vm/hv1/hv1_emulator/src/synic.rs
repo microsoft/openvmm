@@ -40,6 +40,7 @@ pub struct ProcessorSynic {
     shared: Arc<RwLock<SharedProcessorState>>,
     #[inspect(debug)]
     vina: HvRegisterVsmVina,
+    guest_memory: GuestMemory,
 }
 
 #[derive(Inspect)]
@@ -100,6 +101,7 @@ impl SharedProcessorState {
 pub struct GlobalSynic {
     #[inspect(iter_by_index)]
     vps: Vec<Arc<RwLock<SharedProcessorState>>>,
+    guest_memory: GuestMemory,
 }
 
 fn sint_interrupt(request: &mut dyn RequestInterrupt, sint: hvdef::HvSynicSint) {
@@ -190,9 +192,10 @@ pub struct SintProxied;
 
 impl GlobalSynic {
     /// Returns a new instance of the synthetic interrupt controller.
-    pub fn new(max_vp_count: u32) -> Self {
+    pub fn new(guest_memory: GuestMemory, max_vp_count: u32) -> Self {
         Self {
             vps: (0..max_vp_count).map(|_| Default::default()).collect(),
+            guest_memory,
         }
     }
 
@@ -204,7 +207,6 @@ impl GlobalSynic {
     /// Returns `true` if the event flag is newly signaled.
     pub fn signal_event(
         &self,
-        guest_memory: &GuestMemory,
         vp: VpIndex,
         sint_index: u8,
         flag: u16,
@@ -232,7 +234,10 @@ impl GlobalSynic {
         // in the common case.
         let mut byte: u8 = 0;
         loop {
-            match guest_memory.compare_exchange(byte_gpa, byte, byte | mask) {
+            match self
+                .guest_memory
+                .compare_exchange(byte_gpa, byte, byte | mask)
+            {
                 Ok(Ok(_)) => break,
                 Ok(Err(b)) => byte = b,
                 Err(err) => {
@@ -264,6 +269,7 @@ impl GlobalSynic {
             timers: array::from_fn(|_| Timer::default()),
             shared,
             vina: HvRegisterVsmVina::new(),
+            guest_memory: self.guest_memory.clone(),
         }
     }
 }
@@ -276,6 +282,7 @@ impl ProcessorSynic {
             timers,
             shared,
             vina,
+            guest_memory: _,
         } = self;
         *sints = SintState::AT_RESET;
         *timers = array::from_fn(|_| Timer::default());
@@ -338,7 +345,7 @@ impl ProcessorSynic {
     }
 
     /// Sets the event flags page register.
-    pub fn set_siefp(&mut self, guest_memory: &GuestMemory, v: u64) {
+    pub fn set_siefp(&mut self, v: u64) {
         let siefp = HvSynicSimpSiefp::from(v);
         tracing::debug!(?siefp, "setting siefp");
         if siefp.enabled()
@@ -346,7 +353,8 @@ impl ProcessorSynic {
         {
             // As with the SIMP, clear the bits when the base GPN changes.
             if let Err(err) =
-                guest_memory.fill_at(siefp.base_gpn() * HV_PAGE_SIZE, 0, HV_PAGE_SIZE_USIZE)
+                self.guest_memory
+                    .fill_at(siefp.base_gpn() * HV_PAGE_SIZE, 0, HV_PAGE_SIZE_USIZE)
             {
                 tracing::warn!(
                     error = &err as &dyn std::error::Error,
@@ -360,7 +368,7 @@ impl ProcessorSynic {
     }
 
     /// Sets the message page register.
-    pub fn set_simp(&mut self, guest_memory: &GuestMemory, v: u64) {
+    pub fn set_simp(&mut self, v: u64) {
         let simp = HvSynicSimpSiefp::from(v);
         tracing::debug!(?simp, "setting simp");
         if simp.enabled()
@@ -372,7 +380,8 @@ impl ProcessorSynic {
             // preserving the original page contents or SIMP contents when they
             // are moved, so don't bother.
             if let Err(err) =
-                guest_memory.fill_at(simp.base_gpn() * HV_PAGE_SIZE, 0, HV_PAGE_SIZE_USIZE)
+                self.guest_memory
+                    .fill_at(simp.base_gpn() * HV_PAGE_SIZE, 0, HV_PAGE_SIZE_USIZE)
             {
                 tracing::warn!(
                     error = &err as &dyn std::error::Error,
@@ -431,7 +440,6 @@ impl ProcessorSynic {
     /// Returns `Err(HvError::ObjectInUse)` if the message slot is full.
     pub fn post_message(
         &mut self,
-        guest_memory: &GuestMemory,
         sint_index: u8,
         message: &HvMessage,
         interrupt: &mut dyn RequestInterrupt,
@@ -445,7 +453,7 @@ impl ProcessorSynic {
         }
 
         self.sints
-            .post_message(guest_memory, sint_index, message, interrupt);
+            .post_message(&self.guest_memory, sint_index, message, interrupt);
 
         Ok(())
     }
@@ -500,12 +508,7 @@ impl ProcessorSynic {
     }
 
     /// Writes a synthetic interrupt controller register.
-    pub fn write_reg(
-        &mut self,
-        guest_memory: &GuestMemory,
-        reg: HvRegisterName,
-        v: HvRegisterValue,
-    ) -> HvResult<()> {
+    pub fn write_reg(&mut self, reg: HvRegisterName, v: HvRegisterValue) -> HvResult<()> {
         match HvAllArchRegisterName(reg.0) {
             HvAllArchRegisterName::VsmVina => {
                 let v = HvRegisterVsmVina::from(v.as_u64());
@@ -515,19 +518,14 @@ impl ProcessorSynic {
                 self.vina = v;
             }
             _ => self
-                .write_msr(guest_memory, Self::reg_to_msr(reg)?, v.as_u64())
+                .write_msr(Self::reg_to_msr(reg)?, v.as_u64())
                 .map_err(Self::msrerr_to_hverr)?,
         }
         Ok(())
     }
 
     /// Writes an x64 MSR.
-    pub fn write_msr(
-        &mut self,
-        guest_memory: &GuestMemory,
-        msr: u32,
-        v: u64,
-    ) -> Result<(), MsrError> {
+    pub fn write_msr(&mut self, msr: u32, v: u64) -> Result<(), MsrError> {
         match msr {
             msr @ hvdef::HV_X64_MSR_STIMER0_CONFIG..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
                 let offset = msr - hvdef::HV_X64_MSR_STIMER0_CONFIG;
@@ -539,23 +537,18 @@ impl ProcessorSynic {
                     self.set_stimer_config(timer, v);
                 }
             }
-            _ => self.write_nontimer_msr(guest_memory, msr, v)?,
+            _ => self.write_nontimer_msr(msr, v)?,
         }
         Ok(())
     }
 
     /// Writes a non-synthetic-timer x64 MSR.
-    pub fn write_nontimer_msr(
-        &mut self,
-        guest_memory: &GuestMemory,
-        msr: u32,
-        v: u64,
-    ) -> Result<(), MsrError> {
+    pub fn write_nontimer_msr(&mut self, msr: u32, v: u64) -> Result<(), MsrError> {
         match msr {
             hvdef::HV_X64_MSR_SCONTROL => self.set_scontrol(v),
             hvdef::HV_X64_MSR_SVERSION => return Err(MsrError::InvalidAccess),
-            hvdef::HV_X64_MSR_SIEFP => self.set_siefp(guest_memory, v),
-            hvdef::HV_X64_MSR_SIMP => self.set_simp(guest_memory, v),
+            hvdef::HV_X64_MSR_SIEFP => self.set_siefp(v),
+            hvdef::HV_X64_MSR_SIMP => self.set_simp(v),
             hvdef::HV_X64_MSR_EOM => self.set_eom(v),
             msr @ hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15 => {
                 self.set_sint((msr - hvdef::HV_X64_MSR_SINT0) as usize, v)
@@ -621,14 +614,13 @@ impl ProcessorSynic {
     pub fn scan(
         &mut self,
         ref_time_now: u64,
-        guest_memory: &GuestMemory,
         interrupt: &mut dyn RequestInterrupt,
     ) -> (u16, Option<u64>) {
         // Evaluate `ready_sints` for each pending SINT.
         if self.sints.pending_sints != 0 {
             for sint in 0..NUM_SINTS as u8 {
                 if self.sints.pending_sints & (1 << sint) != 0 {
-                    self.sints.check_sint_ready(guest_memory, sint);
+                    self.sints.check_sint_ready(&self.guest_memory, sint);
                 }
             }
         }
@@ -645,7 +637,7 @@ impl ProcessorSynic {
                     timer_index as u32,
                     &mut self.sints,
                     ref_time_now,
-                    guest_memory,
+                    &self.guest_memory,
                     interrupt,
                 ) {
                     match next_ref_time.as_mut() {

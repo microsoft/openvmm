@@ -86,7 +86,7 @@ impl virt::Synic for WhpPartition {
     }
 
     fn new_guest_event_port(&self) -> Box<dyn GuestEventPort> {
-        match &self.inner.vtl0.hvstate {
+        match &self.inner.hvstate {
             Hv1State::Offloaded | Hv1State::Disabled => {
                 if self.inner.vtl2.is_none() {
                     let (trigger, event) = self
@@ -346,11 +346,10 @@ impl GuestEventPort for EmulatedGuestEventPort {
             }) = *this.params.lock()
             {
                 if let Some(partition) = this.partition.upgrade() {
-                    let Hv1State::Emulated(hv) = &partition.vtlp(vtl).hvstate else {
+                    let Hv1State::Emulated(hv) = &partition.hvstate else {
                         unreachable!()
                     };
                     let _ = hv.synic[vtl].signal_event(
-                        &partition.gm,
                         vp,
                         sint,
                         flag,

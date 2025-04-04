@@ -173,7 +173,7 @@ impl<T: CpuIo> hv1_hypercall::SignalEventDirect for WhpHypercallExit<'_, '_, T> 
 
         let target_vp = self.vp.vp.partition.vp(vp).ok_or(HvError::InvalidVpIndex)?;
 
-        let newly_signaled = match &self.vp.vp.partition.vtlp(vtl).hvstate {
+        let newly_signaled = match &self.vp.vp.partition.hvstate {
             Hv1State::Disabled => {
                 tracelimit::warn_ratelimited!(
                     ?vtl,
@@ -187,7 +187,6 @@ impl<T: CpuIo> hv1_hypercall::SignalEventDirect for WhpHypercallExit<'_, '_, T> 
             }
             Hv1State::Emulated(hv) => hv.synic[vtl]
                 .signal_event(
-                    &self.vp.vp.partition.gm,
                     vp,
                     sint,
                     flag,

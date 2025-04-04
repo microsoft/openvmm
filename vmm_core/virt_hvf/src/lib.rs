@@ -120,7 +120,10 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
         // SAFETY: no safety requirements.
         unsafe { abi::hv_vm_create(null_mut()) }.chk()?;
 
-        let hv1 = HvfHv1State::new(self.config.processor_topology.vp_count());
+        let hv1 = HvfHv1State::new(
+            config.guest_memory.clone(),
+            self.config.processor_topology.vp_count(),
+        );
         let hv1_vps = self
             .config
             .processor_topology
@@ -309,7 +312,6 @@ impl GuestEventPort for HvfEventPort {
                 let params = params.read();
                 if let Some((vp, sint, flag)) = *params {
                     let _ = partition.hv1.synic.signal_event(
-                        &partition.guest_memory,
                         vp,
                         sint,
                         flag,
@@ -438,10 +440,10 @@ struct HvfHv1State {
 }
 
 impl HvfHv1State {
-    fn new(max_vp_count: u32) -> Self {
+    fn new(guest_memory: GuestMemory, max_vp_count: u32) -> Self {
         Self {
             guest_os_id: 0.into(),
-            synic: GlobalSynic::new(max_vp_count),
+            synic: GlobalSynic::new(guest_memory, max_vp_count),
         }
     }
 }
@@ -676,12 +678,10 @@ impl HvfProcessor<'_> {
         self.inner
             .message_queues
             .post_pending_messages(sints, |sint, message| {
-                self.hv1.post_message(
-                    &self.partition.guest_memory,
-                    sint,
-                    message,
-                    &mut |vector, _auto_eoi| self.gicr.raise(vector),
-                )
+                self.hv1
+                    .post_message(sint, message, &mut |vector, _auto_eoi| {
+                        self.gicr.raise(vector)
+                    })
             });
     }
 
@@ -806,14 +806,11 @@ impl<'p> Processor for HvfProcessor<'p> {
                         .request_sint_readiness(self.inner.message_queues.pending_sints());
 
                     let ref_time_now = self.vmtime.now().as_100ns();
-                    let (ready_sints, next_ref_time) = self.hv1.scan(
-                        ref_time_now,
-                        &self.partition.guest_memory,
-                        &mut |ppi, _auto_eoi| {
+                    let (ready_sints, next_ref_time) =
+                        self.hv1.scan(ref_time_now, &mut |ppi, _auto_eoi| {
                             tracing::debug!(ppi, "ppi from message");
                             self.gicr.raise(ppi);
-                        },
-                    );
+                        });
 
                     if let Some(next_ref_time) = next_ref_time {
                         // Convert from reference timer basis to vmtime basis via

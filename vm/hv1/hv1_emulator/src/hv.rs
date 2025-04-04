@@ -29,13 +29,15 @@ use zerocopy::FromZeros;
 
 /// The partition-wide hypervisor state.
 #[derive(Inspect)]
-pub struct GlobalHv {
+pub struct GlobalHv<const VTL_COUNT: usize> {
     #[inspect(flatten)]
     partition_state: Arc<GlobalHvState>,
     /// Mutable state, per VTL
-    vtl_mutable_state: VtlArray<Arc<Mutex<MutableHvState>>, 2>,
+    vtl_mutable_state: VtlArray<Arc<Mutex<MutableHvState>>, VTL_COUNT>,
     /// The per-vtl synic state.
-    pub synic: VtlArray<GlobalSynic, 2>,
+    pub synic: VtlArray<GlobalSynic, VTL_COUNT>,
+    /// The guest memory accessor for each VTL.
+    guest_memory: VtlArray<GuestMemory, VTL_COUNT>,
 }
 
 #[derive(Inspect)]
@@ -81,7 +83,7 @@ impl MutableHvState {
 }
 
 /// Parameters used when constructing a [`GlobalHv`].
-pub struct GlobalHvParams {
+pub struct GlobalHvParams<const VTL_COUNT: usize> {
     /// The maximum VP count for the VM.
     pub max_vp_count: u32,
     /// The vendor of the virtual processor.
@@ -90,11 +92,13 @@ pub struct GlobalHvParams {
     pub tsc_frequency: u64,
     /// The reference time system to use.
     pub ref_time: Box<dyn ReferenceTimeSource>,
+    /// The guest memory accessor for each VTL.
+    pub guest_memory: VtlArray<GuestMemory, VTL_COUNT>,
 }
 
-impl GlobalHv {
+impl<const VTL_COUNT: usize> GlobalHv<VTL_COUNT> {
     /// Returns a new hypervisor emulator instance.
-    pub fn new(params: GlobalHvParams) -> Self {
+    pub fn new(params: GlobalHvParams<VTL_COUNT>) -> Self {
         Self {
             partition_state: Arc::new(GlobalHvState {
                 vendor: params.vendor,
@@ -103,19 +107,22 @@ impl GlobalHv {
                 ref_time: params.ref_time,
             }),
             vtl_mutable_state: VtlArray::from_fn(|_| Arc::new(Mutex::new(MutableHvState::new()))),
-            synic: VtlArray::from_fn(|_| GlobalSynic::new(params.max_vp_count)),
+            synic: VtlArray::from_fn(|vtl| {
+                GlobalSynic::new(params.guest_memory[vtl].clone(), params.max_vp_count)
+            }),
+            guest_memory: params.guest_memory,
         }
     }
 
     /// Adds a virtual processor to the vtl.
-    pub fn add_vp(&self, guest_memory: GuestMemory, vp_index: VpIndex, vtl: Vtl) -> ProcessorVtlHv {
+    pub fn add_vp(&self, vp_index: VpIndex, vtl: Vtl) -> ProcessorVtlHv {
         ProcessorVtlHv {
             vp_index,
             partition_state: self.partition_state.clone(),
             vtl_state: self.vtl_mutable_state[vtl].clone(),
             synic: self.synic[vtl].add_vp(vp_index),
             vp_assist_page: 0.into(),
-            guest_memory,
+            guest_memory: self.guest_memory[vtl].clone(),
         }
     }
 
@@ -300,7 +307,7 @@ impl ProcessorVtlHv {
             hvdef::HV_X64_MSR_TSC_FREQUENCY => return Err(MsrError::InvalidAccess),
             hvdef::HV_X64_MSR_VP_ASSIST_PAGE => self.msr_write_vp_assist_page(v)?,
             msr @ hvdef::HV_X64_MSR_SCONTROL..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
-                self.synic.write_msr(&self.guest_memory, msr, v)?
+                self.synic.write_msr(msr, v)?
             }
             _ => return Err(MsrError::Unknown),
         }
