@@ -875,29 +875,6 @@ impl user_driver::DmaClient for PagePoolAllocator {
         alloc.into_memory_block()
     }
 
-    /// Restore a dma buffer in the predefined location with the given `len` in
-    /// bytes.
-    fn attach_dma_buffer(
-        &self,
-        len: usize,
-        base_pfn: u64,
-    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        if len as u64 % PAGE_SIZE != 0 {
-            anyhow::bail!("not a page-size multiple");
-        }
-
-        let size_pages = NonZeroU64::new(len as u64 / PAGE_SIZE)
-            .context("allocation of size 0 not supported")?;
-
-        let alloc = self
-            .restore_alloc(base_pfn, size_pages)
-            .context("failed to restore allocation")?;
-
-        // Preserve the existing contents of memory and do not zero the restored
-        // allocation.
-        alloc.into_memory_block()
-    }
-
     fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
         let allocs = self.restore_pending_allocs();
 
