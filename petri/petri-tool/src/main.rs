@@ -49,7 +49,7 @@ fn main() -> anyhow::Result<()> {
                         MachineArch::Aarch64 => petri_artifacts_common::tags::MachineArch::Aarch64,
                     },
                     petri_artifacts_common::tags::OsFlavor::Linux,
-                );
+                )
             })?;
 
             let disk = image.build().context("failed to build disk image")?;
