@@ -100,8 +100,8 @@ pub(crate) enum FatalError {
         response_size: usize,
         maximum_size: usize,
     },
-    #[error("received an async host request response {0:?} with no pending async host request")]
-    NoPendingAsyncHostRequest(HostRequests),
+    #[error("received a secondary host request response {0:?} with no pending secondary host request")]
+    NoPendingSecondaryHostRequest(HostRequests),
 }
 
 /// Validates the response packet received from the host. This function is only
@@ -145,8 +145,12 @@ fn read_guest_notification<T: FromBytes + Immutable + KnownLayout>(
     })
 }
 
-/// Defines which host requests should be sent through the async queue.
-fn is_async_host_request(request: HostRequests) -> bool {
+/// Defines which host requests should be sent through the secondary host
+/// request queue, meaning that their handling on the host may reasonably
+/// require interleaving with host requests in the primary queue, or might
+/// just be generally slow and shouldn't disrupt the primary queue making
+/// forward progress.
+fn is_secondary_host_request(request: HostRequests) -> bool {
    request == HostRequests::IGVM_ATTEST || request == HostRequests::VPCI_DEVICE_CONTROL
 }
 
@@ -478,7 +482,7 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     #[inspect(skip)]
     vtl2_settings_buf: Option<Vec<u8>>,
     #[inspect(skip)]
-    host_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
+    primary_host_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
     #[inspect(skip)]
     pipe_channels: PipeChannels,
     #[inspect(skip)]
@@ -486,9 +490,9 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     #[inspect(skip)]
     write_recv: mesh::Receiver<WriteRequest>,
     #[inspect(skip)]
-    async_host_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
+    secondary_host_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
     #[inspect(skip)]
-    async_host_requests_read_send: mesh::Sender<Vec<u8>>,
+    secondary_host_requests_read_send: mesh::Sender<Vec<u8>>,
     gpa_allocator: Option<Arc<dyn DmaClient>>,
     stats: Stats,
 
@@ -565,10 +569,12 @@ impl Drop for HostRequestPipeAccess {
 }
 
 struct PipeChannels {
-    // This is None when a `HostRequestPipeAccess` has ownership for a serial host request.
+    // This is None when a `HostRequestPipeAccess` has ownership for a host
+    // request in the primary queue.
     response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
-    // This is None when a `HostRequestPipeAccess` has ownership for an async host request.
-    async_host_request_response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
+    // This is None when a `HostRequestPipeAccess` has ownership for a host
+    // request in the secondary queue.
+    secondary_host_request_response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
     message_send: mesh::Sender<WriteRequest>,
 }
 
@@ -663,7 +669,7 @@ impl HostRequestPipeAccess {
 impl<T: RingMem> ProcessLoop<T> {
     pub(crate) fn new(pipe: MessagePipe<T>) -> Self {
         let (read_send, read_recv) = mesh::channel();
-        let (async_host_requests_read_send, async_host_requests_read_recv) = mesh::channel();
+        let (secondary_host_requests_read_send, secondary_host_requests_read_recv) = mesh::channel();
         let (write_send, write_recv) = mesh::channel();
 
         Self {
@@ -671,18 +677,18 @@ impl<T: RingMem> ProcessLoop<T> {
             stats: Default::default(),
             guest_notification_responses: Default::default(),
             vtl2_settings_buf: None,
-            host_requests: Default::default(),
-            async_host_requests: Default::default(),
+            primary_host_requests: Default::default(),
+            secondary_host_requests: Default::default(),
             pipe_channels: PipeChannels {
                 response_message_recv: Arc::new(Mutex::new(Some(read_recv))),
-                async_host_request_response_message_recv: Arc::new(Mutex::new(Some(
-                    async_host_requests_read_recv,
+                secondary_host_request_response_message_recv: Arc::new(Mutex::new(Some(
+                    secondary_host_requests_read_recv,
                 ))),
                 message_send: write_send,
             },
             read_send,
             write_recv,
-            async_host_requests_read_send,
+            secondary_host_requests_read_send,
             guest_notification_listeners: GuestNotificationListeners {
                 generation_id: GuestNotificationSender::new(),
                 vtl2_settings: GuestNotificationSender::new(),
@@ -829,14 +835,16 @@ impl<T: RingMem> ProcessLoop<T> {
                 }
                 .map(Event::Failure);
 
-                // Run the next serial host request.
+                // Run the next host request in the primary queue. These host
+                // requests are expected to be generally fast and independent
+                // of one another.
                 let run_next = async {
-                    while let Some(request) = self.host_requests.front_mut() {
+                    while let Some(request) = self.primary_host_requests.front_mut() {
                         if let Err(e) = request.as_mut().await {
                             return e;
                         }
 
-                        self.host_requests.pop_front();
+                        self.primary_host_requests.pop_front();
 
                         // Ensure there are no extra response messages that this request failed to pick up.
                         if self
@@ -855,24 +863,22 @@ impl<T: RingMem> ProcessLoop<T> {
                 }
                 .map(Event::Failure);
 
-                // Run the next async host request.
-                //
-                // DEVNOTE: There may only be one outstanding async host request at a time, which means
-                // that these aren't entirely async. They can interleave with host requests sent serially,
-                // but a host request sent asynchronously will block other host requests sent asynchronously.
-                // This is a limitation of the GET protocol but may be relaxed in future revisions.
-                let run_next_async_host_request = async {
-                    while let Some(request) = self.async_host_requests.front_mut() {
+                // Run the next host request in the secondary queue. These
+                // host requests may need to interleave with requests in the
+                // primary queue, or may be generally slow and shouldn't
+                // disrupt forward progress in the primary queue.
+                let run_next_secondary_host_request = async {
+                    while let Some(request) = self.secondary_host_requests.front_mut() {
                         if let Err(e) = request.as_mut().await {
                             return e;
                         }
 
-                        self.async_host_requests.pop_front();
+                        self.secondary_host_requests.pop_front();
 
                         // Ensure there are no extra response messages that this request failed to pick up.
                         if self
                             .pipe_channels
-                            .async_host_request_response_message_recv
+                            .secondary_host_request_response_message_recv
                             .lock()
                             .as_mut()
                             .unwrap()
@@ -901,7 +907,7 @@ impl<T: RingMem> ProcessLoop<T> {
                     recv_msg,
                     send_next,
                     run_next,
-                    run_next_async_host_request,
+                    run_next_secondary_host_request,
                     recv_response,
                 )
                     .race()
@@ -959,13 +965,13 @@ impl<T: RingMem> ProcessLoop<T> {
         }
     }
 
-    /// Spawn a host request.
+    /// Spawn a host request in the primary queue.
     ///
     /// `f` will receive a [`PipeAccess`] to send messages to the host and
     /// receive host responses.
     ///
     /// The result of `f().await` will be sent as a response to the RPC in `req`.
-    fn push_host_request_handler<F, Fut>(&mut self, f: F)
+    fn push_primary_host_request_handler<F, Fut>(&mut self, f: F)
     where
         F: 'static + Send + FnOnce(HostRequestPipeAccess) -> Fut,
         Fut: 'static + Future<Output = Result<(), FatalError>> + Send,
@@ -973,28 +979,28 @@ impl<T: RingMem> ProcessLoop<T> {
         let message_recv_mutex = self.pipe_channels.response_message_recv.clone();
         let message_send = self.pipe_channels.message_send.clone();
         let fut = async { f(HostRequestPipeAccess::new(message_recv_mutex, message_send)).await };
-        self.host_requests.push_back(Box::pin(fut));
+        self.primary_host_requests.push_back(Box::pin(fut));
     }
 
-    /// Spawn an async host request.
+    /// Spawn host request on the secondary queue.
     ///
     /// `f` will receive a [`PipeAccess`] to send messages to the host and
     /// receive host responses.
     ///
     /// The result of `f().await` will be sent as a response to the RPC in `req`.
-    fn push_async_host_request_handler<F, Fut>(&mut self, f: F)
+    fn push_secondary_host_request_handler<F, Fut>(&mut self, f: F)
     where
         F: 'static + Send + FnOnce(HostRequestPipeAccess) -> Fut,
         Fut: 'static + Future<Output = Result<(), FatalError>> + Send,
     {
-        let message_recv_mutex = self.pipe_channels.async_host_request_response_message_recv.clone();
+        let message_recv_mutex = self.pipe_channels.secondary_host_request_response_message_recv.clone();
         let message_send = self.pipe_channels.message_send.clone();
         let fut = async { f(HostRequestPipeAccess::new(message_recv_mutex, message_send)).await };
-        self.async_host_requests.push_back(Box::pin(fut));
+        self.secondary_host_requests.push_back(Box::pin(fut));
     }
 
-    /// Pushes a host request handler that sends a single host request and waits
-    /// for its response.
+    /// Pushes a host request handler that sends a single host request on the
+    /// primary queue and waits for its response.
     fn push_basic_host_request_handler<Req, I, Resp>(
         &mut self,
         req: Rpc<I, Resp>,
@@ -1004,7 +1010,7 @@ impl<T: RingMem> ProcessLoop<T> {
         I: 'static + Send,
         Resp: 'static + IntoBytes + FromBytes + Send + Immutable + KnownLayout,
     {
-        self.push_host_request_handler(async move |mut access| {
+        self.push_primary_host_request_handler(async move |mut access| {
             req.handle_must_succeed(async |input| access.send_request_fixed_size(&f(input)).await)
                 .await
         });
@@ -1076,7 +1082,7 @@ impl<T: RingMem> ProcessLoop<T> {
 
             // Host Requests
             Msg::DevicePlatformSettingsV2(req) => {
-                self.push_host_request_handler(|access| {
+                self.push_primary_host_request_handler(|access| {
                     req.handle_must_succeed(async |()| {
                         request_device_platform_settings_v2(access).await
                     })
@@ -1092,7 +1098,7 @@ impl<T: RingMem> ProcessLoop<T> {
                     get_protocol::VmgsGetDeviceInfoRequest::new()
                 });
             }
-            Msg::GetVtl2SavedStateFromHost(req) => self.push_host_request_handler(|access| {
+            Msg::GetVtl2SavedStateFromHost(req) => self.push_primary_host_request_handler(|access| {
                 req.handle_must_succeed(async |()| request_saved_state(access).await)
             }),
             Msg::GuestStateProtection(req) => {
@@ -1109,25 +1115,25 @@ impl<T: RingMem> ProcessLoop<T> {
             Msg::IgvmAttest(req) => {
                 let shared_pool_allocator = self.gpa_allocator.clone();
 
-                self.push_async_host_request_handler(|access| {
+                self.push_secondary_host_request_handler(|access| {
                     req.handle_must_succeed(async |request| {
                         request_igvm_attest(access, *request, shared_pool_allocator).await
                     })
                 });
             }
             Msg::VmgsRead(req) => {
-                self.push_host_request_handler(|access| {
+                self.push_primary_host_request_handler(|access| {
                     req.handle_must_succeed(async |input| request_vmgs_read(access, input).await)
                 });
             }
             Msg::VmgsWrite(req) => {
-                self.push_host_request_handler(|access| {
+                self.push_primary_host_request_handler(|access| {
                     req.handle_must_succeed(async |input| request_vmgs_write(access, input).await)
                 });
             }
             Msg::VpciDeviceControl(req) => {
-                self.push_async_host_request_handler(|access| {
-                    req.handle_must_succeed(async |input| request_vpci_device_control(access, input))
+                self.push_secondary_host_request_handler(|access| {
+                    req.handle_must_succeed(async |input| request_vpci_device_control(access, input).await)
                 });
             }
             Msg::VpciDeviceBindingChange(req) => {
@@ -1174,7 +1180,7 @@ impl<T: RingMem> ProcessLoop<T> {
                     get_protocol::ResetRamGpaRangeRequest::new(input)
                 });
             }
-            Msg::SendServicingState(req) => self.push_host_request_handler(move |access| {
+            Msg::SendServicingState(req) => self.push_primary_host_request_handler(move |access| {
                 req.handle_must_succeed(async |data| {
                     request_send_servicing_state(access, data).await
                 })
@@ -1189,7 +1195,7 @@ impl<T: RingMem> ProcessLoop<T> {
             Msg::PowerState(state) => {
                 // Queue behind any pending requests to avoid terminating while
                 // something important is in flight.
-                self.push_host_request_handler(async move |mut access| {
+                self.push_primary_host_request_handler(async move |mut access| {
                     let message = match state {
                         msg::PowerState::PowerOff => get_protocol::PowerOffNotification::new(false)
                             .as_bytes()
@@ -1301,17 +1307,17 @@ impl<T: RingMem> ProcessLoop<T> {
         header: get_protocol::HeaderHostResponse,
         buf: &[u8],
     ) -> Result<(), FatalError> {
-        if self.host_requests.is_empty() && self.async_host_requests.is_empty() {
+        if self.primary_host_requests.is_empty() && self.secondary_host_requests.is_empty() {
             return Err(FatalError::NoPendingRequest);
         }
         validate_response(header)?;
 
-        if is_async_host_request(header.message_id) {
-            if !self.async_host_requests.is_empty() {
-                self.async_host_requests_read_send.send(buf.to_vec());
+        if is_secondary_host_request(header.message_id) {
+            if !self.secondary_host_requests.is_empty() {
+                self.secondary_host_requests_read_send.send(buf.to_vec());
                 return Ok(());
             }
-            return Err(FatalError::NoPendingAsyncHostRequest(header.message_id));
+            return Err(FatalError::NoPendingSecondaryHostRequest(header.message_id));
         }
 
         self.read_send.send(buf.to_vec());
