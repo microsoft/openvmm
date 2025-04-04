@@ -1051,6 +1051,90 @@ mod test {
     }
 
     #[test]
+    fn test_save_restore_all_pending() {
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+
+        let a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
+        let a1_pfn = a1.base_pfn();
+        let a1_size = a1.size_pages;
+
+        let a2 = alloc
+            .alloc(15.try_into().unwrap(), "alloc2".into())
+            .unwrap();
+        let a2_pfn = a2.base_pfn();
+        let a2_size = a2.size_pages;
+
+        let state = pool.save().unwrap();
+
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
+        pool.restore(state).unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+
+        let restored = alloc.restore_pending_allocs();
+        assert!(
+            restored
+                .iter()
+                .any(|a| a.base_pfn == a1_pfn && a.size_pages == a1_size),
+            "matching allocation not found for a1"
+        );
+
+        assert!(
+            restored
+                .iter()
+                .any(|a| a.base_pfn == a2_pfn && a.size_pages == a2_size),
+            "matching allocation not found for a2"
+        );
+
+        pool.validate_restore(false).unwrap();
+    }
+
+    #[test]
+    fn test_save_restore_all_pending_other_allocator() {
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+
+        let a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
+        let a1_pfn = a1.base_pfn();
+        let a1_size = a1.size_pages;
+
+        let a2 = alloc
+            .alloc(15.try_into().unwrap(), "alloc2".into())
+            .unwrap();
+        let a2_pfn = a2.base_pfn();
+        let a2_size = a2.size_pages;
+
+        let state = pool.save().unwrap();
+
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
+        pool.restore(state).unwrap();
+        let alloc = pool.allocator("test2".into()).unwrap();
+
+        let restored = alloc.restore_pending_allocs();
+        assert_eq!(
+            restored
+                .iter()
+                .any(|a| a.base_pfn == a1_pfn && a.size_pages == a1_size),
+            false,
+            "matching allocation found for a1 for wrong allocator"
+        );
+
+        assert_eq!(
+            restored
+                .iter()
+                .any(|a| a.base_pfn == a2_pfn && a.size_pages == a2_size),
+            false,
+            "matching allocation found for a2 for wrong allocator"
+        );
+
+        assert!(pool.validate_restore(false).is_err());
+    }
+
+    #[test]
     fn test_save_restore_unmatched_allocations() {
         let mut pool =
             PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
