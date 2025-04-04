@@ -104,13 +104,17 @@ def find_midlrt(sdk):
     midlrt = f"{sdk['bin']}/midlrt.exe"
     return os.path.normpath(midlrt)
 
-
-def get_config(arch, required_tool, ignore_cache):    
+def get_cache_path(arch):
     cache_dir = os.environ.get(
         'XDG_CACHE_HOME', os.path.expanduser('~/.cache'))
     cache_dir = f'{cache_dir}/windows-cross'
-    os.makedirs(cache_dir, exist_ok=True)
     cache_file = f'{cache_dir}/cross-{arch}.json'
+
+    return cache_dir, cache_file
+
+def get_config(arch, required_tool, ignore_cache):    
+    cache_dir, cache_file = get_cache_path(arch)
+    os.makedirs(cache_dir, exist_ok=True)
 
     config = None
     if not ignore_cache:
@@ -202,6 +206,12 @@ if action == "run":
     tool_path = config['tools'][tool]
     if not tool_path:
         print(f"tool {tool} not found, try installing it")
+
+        _, cache_file = get_cache_path(arch)
+        if os.path.exists(cache_file):
+            os.remove(cache_file)
+        print(f"reset cache at {cache_file}")
+
         exit(1)
 
     separator = ':' if tool == "midlrt.exe" else ';'
