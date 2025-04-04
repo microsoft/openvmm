@@ -18,6 +18,7 @@ use sparse_mmap::Mappable;
 use sparse_mmap::MappableRef;
 use sparse_mmap::SparseMapping;
 use sparse_mmap::alloc_shared_memory;
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -898,12 +899,19 @@ impl user_driver::DmaClient for PagePoolAllocator {
         alloc.into_memory_block()
     }
 
-    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
+    fn attach_pending_buffers(
+        &self,
+    ) -> anyhow::Result<HashMap<(u64, usize), user_driver::memory::MemoryBlock>> {
         let allocs = self.restore_pending_allocs();
 
         allocs
             .into_iter()
-            .map(|alloc| alloc.into_memory_block())
+            .map(|alloc| {
+                let base_pfn = alloc.base_pfn;
+                let block = alloc.into_memory_block()?;
+                let key = (base_pfn, block.len());
+                Ok((key, block))
+            })
             .collect()
     }
 }
