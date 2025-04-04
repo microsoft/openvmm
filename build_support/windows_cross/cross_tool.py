@@ -141,7 +141,7 @@ def get_config(arch, required_tool, ignore_cache):
             else:
                 p = find_llvm_tool(tool)
             if p:
-                tool_paths[tool] = os.path.normpath(p)
+                tool_paths[tool] = p
 
         if required_tool and required_tool not in tool_paths:
             raise Exception(
