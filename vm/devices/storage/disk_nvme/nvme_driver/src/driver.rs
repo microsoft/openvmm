@@ -606,10 +606,10 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .map(|a| {
                 // Restore memory block for admin queue pair.
                 let mem_block = restored_memory
-                    .get(&(a.base_pfn, a.mem_len))
+                    .iter()
+                    .find(|mem| mem.len() == a.mem_len && a.base_pfn == mem.pfns()[0])
                     .expect("unable to find restored mem block")
                     .to_owned();
-
                 QueuePair::restore(driver.clone(), interrupt0, registers.clone(), mem_block, a)
                     .unwrap()
             })
@@ -650,12 +650,13 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     .device
                     .map_interrupt(q.iv, q.cpu)
                     .context("failed to map interrupt")?;
-
                 let mem_block = restored_memory
-                    .get(&(q.queue_data.base_pfn, q.queue_data.mem_len))
+                    .iter()
+                    .find(|mem| {
+                        mem.len() == q.queue_data.mem_len && q.queue_data.base_pfn == mem.pfns()[0]
+                    })
                     .expect("unable to find restored mem block")
                     .to_owned();
-
                 let q =
                     IoQueue::restore(driver.clone(), interrupt, registers.clone(), mem_block, q)?;
                 let issuer = IoIssuer {

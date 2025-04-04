@@ -6,7 +6,6 @@
 use crate::memory::MappedDmaTarget;
 use anyhow::Context;
 use inspect::Inspect;
-use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::Read;
@@ -140,9 +139,7 @@ impl crate::DmaClient for LockedMemorySpawner {
         anyhow::bail!("restore not supported for lockmem")
     }
 
-    fn attach_pending_buffers(
-        &self,
-    ) -> anyhow::Result<HashMap<(u64, usize), crate::memory::MemoryBlock>> {
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<crate::memory::MemoryBlock>> {
         anyhow::bail!("restore not supported for lockmem")
     }
 }

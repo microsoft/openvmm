@@ -13,7 +13,6 @@ pub use device_dma::LowerVtlDmaBuffer;
 use anyhow::Context;
 use anyhow::Result;
 use inspect::Inspect;
-use std::collections::HashMap;
 use std::sync::Arc;
 use user_driver::DmaClient;
 use user_driver::memory::MemoryBlock;
@@ -110,7 +109,7 @@ impl<T: DmaClient> DmaClient for LowerVtlMemorySpawner<T> {
         anyhow::bail!("restore is not supported for LowerVtlMemorySpawner")
     }
 
-    fn attach_pending_buffers(&self) -> Result<HashMap<(u64, usize), MemoryBlock>> {
+    fn attach_pending_buffers(&self) -> Result<Vec<MemoryBlock>> {
         anyhow::bail!("restore is not supported for LowerVtlMemorySpawner")
     }
 }

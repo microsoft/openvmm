@@ -10,7 +10,6 @@
 use inspect::Inspect;
 use interrupt::DeviceInterrupt;
 use memory::MemoryBlock;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 pub mod backoff;
@@ -71,6 +70,6 @@ pub trait DmaClient: Send + Sync + Inspect {
     /// Attach to a previously allocated memory block.
     fn attach_dma_buffer(&self, len: usize, base_pfn: u64) -> anyhow::Result<MemoryBlock>;
 
-    /// Attach all previously allocated buffers. Returns a [`HashMap`] keyed on `(base_pfn, len)`.
-    fn attach_pending_buffers(&self) -> anyhow::Result<HashMap<(u64, usize), MemoryBlock>>;
+    /// Attach all pending buffers
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<MemoryBlock>>;
 }

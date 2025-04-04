@@ -16,7 +16,6 @@ use memory_range::MemoryRange;
 use page_pool_alloc::PagePool;
 use page_pool_alloc::PagePoolAllocator;
 use page_pool_alloc::PagePoolAllocatorSpawner;
-use std::collections::HashMap;
 use std::sync::Arc;
 use user_driver::DmaClient;
 use user_driver::lockmem::LockedMemorySpawner;
@@ -439,9 +438,7 @@ impl DmaClientBacking {
         }
     }
 
-    fn attach_pending_buffers(
-        &self,
-    ) -> anyhow::Result<HashMap<(u64, usize), user_driver::memory::MemoryBlock>> {
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
         match self {
             DmaClientBacking::SharedPool(allocator) => allocator.attach_pending_buffers(),
             DmaClientBacking::PrivatePool(allocator) => allocator.attach_pending_buffers(),
@@ -476,9 +473,7 @@ impl DmaClient for OpenhclDmaClient {
         self.backing.attach_dma_buffer(len, base_pfn)
     }
 
-    fn attach_pending_buffers(
-        &self,
-    ) -> anyhow::Result<HashMap<(u64, usize), user_driver::memory::MemoryBlock>> {
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
         self.backing.attach_pending_buffers()
     }
 }
