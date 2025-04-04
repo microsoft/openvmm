@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(any(windows, target_os = "linux"))]
 
 mod file;
@@ -21,8 +22,8 @@ use fuse::*;
 use inode::VirtioFsInode;
 pub use lxutil::LxVolumeOptions;
 use parking_lot::RwLock;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -451,7 +452,7 @@ impl<T> HandleMap<T> {
     }
 
     /// Retrieves a value from the map.
-    #[allow(dead_code)]
+    #[cfg_attr(not(windows), expect(dead_code))]
     pub fn get_mut(&mut self, handle: u64) -> Option<&mut T> {
         self.values.get_mut(&handle)
     }

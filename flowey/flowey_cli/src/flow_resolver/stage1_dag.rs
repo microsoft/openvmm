@@ -2,16 +2,16 @@
 // Licensed under the MIT License.
 
 use anyhow::Context;
-use flowey_core::node::read_var_internals;
-use flowey_core::node::steps::rust::RustRuntimeServices;
-use flowey_core::node::user_facing::ClaimedGhParam;
-use flowey_core::node::user_facing::GhPermission;
-use flowey_core::node::user_facing::GhPermissionValue;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
 use flowey_core::node::GhVarState;
 use flowey_core::node::NodeHandle;
+use flowey_core::node::read_var_internals;
+use flowey_core::node::steps::rust::RustRuntimeServices;
+use flowey_core::node::user_facing::ClaimedGhParam;
+use flowey_core::node::user_facing::GhPermission;
+use flowey_core::node::user_facing::GhPermissionValue;
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -534,7 +534,9 @@ pub(crate) fn stage1_dag(
                     output_graph[idx].1.as_ref().unwrap().step.label()
                 );
             }
-            log::error!("found buggy node that emitted unreachable steps! use `--viz-mode flow-dot` to debug");
+            log::error!(
+                "found buggy node that emitted unreachable steps! use `--viz-mode flow-dot` to debug"
+            );
             Some(FoundUnreachableNodes)
         } else {
             None
@@ -564,6 +566,7 @@ pub(crate) enum Step {
     Rust {
         idx: usize,
         label: String,
+        can_merge: bool,
         // FIXME: this absolutely cursed type is only here due to that Clone
         // bound, which is itself only required due to the really shoddy code in
         // the petgraph viz backend.
@@ -712,6 +715,7 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
     fn on_emit_rust_step(
         &mut self,
         label: &str,
+        can_merge: bool,
         code: Box<
             dyn for<'a> FnOnce(&'a mut RustRuntimeServices<'_>) -> anyhow::Result<()> + 'static,
         >,
@@ -720,7 +724,8 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
             step: Step::Rust {
                 idx: self.step_idx_tracker,
                 label: label.into(),
-                #[allow(clippy::arc_with_non_send_sync)]
+                can_merge,
+                #[expect(clippy::arc_with_non_send_sync)]
                 code: Arc::new(Mutex::new(Some(code))),
             },
         });
@@ -764,7 +769,7 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
                 label: label.into(),
                 raw_yaml,
                 code_idx: self.step_idx_tracker,
-                #[allow(clippy::arc_with_non_send_sync)]
+                #[expect(clippy::arc_with_non_send_sync)]
                 code: Arc::new(Mutex::new(code)),
                 ado_to_rust,
                 rust_to_ado,

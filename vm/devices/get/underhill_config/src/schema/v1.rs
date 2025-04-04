@@ -8,13 +8,13 @@
 //! definitions in MARS files.
 
 use super::ParseSchemaExt;
+use crate::Vtl2SettingsErrorCode;
+use crate::Vtl2SettingsErrorInfo;
 use crate::errors::ErrorContext;
 use crate::errors::ParseErrors;
 use crate::schema::ParseResultExt;
 use crate::schema::ParseSchema;
 use crate::schema::ParsingStopped;
-use crate::Vtl2SettingsErrorCode;
-use crate::Vtl2SettingsErrorInfo;
 use guid::Guid;
 use physical_device::DeviceType;
 use std::error::Error as _;
@@ -235,7 +235,7 @@ impl ParseSchema<crate::PhysicalDevices> for Lun {
         &self,
         errors: &mut ParseErrors<'_>,
     ) -> Result<crate::PhysicalDevices, ParsingStopped> {
-        #[allow(deprecated)]
+        #[expect(deprecated)]
         if (self.is_dvd || self.physical_devices.is_some())
             && (self.device_type.is_some()
                 || self.device_path.is_some()
@@ -286,7 +286,7 @@ impl ParseSchema<crate::PhysicalDevices> for Lun {
             crate::PhysicalDevices::EmptyDrive
         } else {
             // Legacy compat path.
-            #[allow(deprecated)]
+            #[expect(deprecated)]
             let (device_path, sub_device_path) =
                 self.device_path.as_ref().zip(self.sub_device_path).ok_or(
                     Error::StorageSchemaVersionMismatch("could not find any physical devices"),

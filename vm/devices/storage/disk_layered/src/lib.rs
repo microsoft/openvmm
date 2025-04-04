@@ -22,7 +22,6 @@
 //! best implemented in a separate disk implementation.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 mod bitmap;
 pub mod resolve;
@@ -923,8 +922,8 @@ mod tests {
     use pal_async::async_test;
     use parking_lot::Mutex;
     use scsi_buffers::OwnedRequestBuffers;
-    use std::collections::btree_map::Entry;
     use std::collections::BTreeMap;
+    use std::collections::btree_map::Entry;
     use std::sync::Arc;
 
     #[derive(Inspect)]

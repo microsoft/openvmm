@@ -1,12 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg(target_os = "linux")]
-
 //! Implements a VtlMemoryProtection guard that can be used to temporarily allow
 //! access to pages that were previously protected.
 
-#![warn(missing_docs)]
+#![cfg(target_os = "linux")]
 
 mod device_dma;
 
@@ -16,8 +14,8 @@ use anyhow::Context;
 use anyhow::Result;
 use inspect::Inspect;
 use std::sync::Arc;
-use user_driver::memory::MemoryBlock;
 use user_driver::DmaClient;
+use user_driver::memory::MemoryBlock;
 use virt::VtlMemoryProtection;
 
 /// A guard that will restore [`hvdef::HV_MAP_GPA_PERMISSIONS_NONE`] permissions
@@ -75,8 +73,11 @@ impl Drop for PagesAccessibleToLowerVtl {
 
 /// A [`DmaClient`] wrapper that will lower the VTL permissions of the page
 /// on the allocated memory block.
+#[derive(Inspect)]
 pub struct LowerVtlMemorySpawner<T: DmaClient> {
+    #[inspect(skip)]
     spawner: T,
+    #[inspect(skip)]
     vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
 }
 

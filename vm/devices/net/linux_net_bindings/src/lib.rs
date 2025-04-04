@@ -4,6 +4,7 @@
 // C API bingings based on /usr/include/linux/if.h and
 // /usr/include/linux/if_tun.h.
 
+#![expect(missing_docs)]
 #![cfg(unix)]
 // UNSAFETY: bindgen generated code.
 #![expect(unsafe_code)]
@@ -16,24 +17,22 @@ use std::os::raw::c_int;
 //
 // bindgen --no-layout-tests --with-derive-default --wrap-unsafe-ops --no-doc-comments /usr/include/linux/if.h
 #[allow(non_camel_case_types)]
-#[allow(dead_code)]
 #[allow(non_upper_case_globals)]
-#[allow(clippy::missing_safety_doc)]
-#[allow(clippy::undocumented_unsafe_blocks)]
-#[allow(clippy::ref_as_ptr)]
-#[allow(clippy::ptr_as_ptr)]
+#[expect(clippy::missing_safety_doc)]
+#[expect(clippy::undocumented_unsafe_blocks)]
+#[expect(clippy::ref_as_ptr)]
+#[expect(clippy::ptr_as_ptr)]
 pub mod gen_if;
 
 // Generated using:
 //
 // bindgen --no-layout-tests --with-derive-default --wrap-unsafe-ops --no-doc-comments /usr/include/linux/if_tun.h
 #[allow(non_camel_case_types)]
-#[allow(dead_code)]
 #[allow(non_upper_case_globals)]
-#[allow(clippy::missing_safety_doc)]
-#[allow(clippy::undocumented_unsafe_blocks)]
-#[allow(clippy::ref_as_ptr)]
-#[allow(clippy::ptr_as_ptr)]
+#[expect(clippy::missing_safety_doc)]
+#[expect(clippy::undocumented_unsafe_blocks)]
+#[expect(clippy::ref_as_ptr)]
+#[expect(clippy::ptr_as_ptr)]
 pub mod gen_if_tun;
 
 // #define TUNSETIFF     _IOW('T', 202, int)

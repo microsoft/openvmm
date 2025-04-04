@@ -7,8 +7,8 @@ use firmware_pcat::PcatEvent;
 use firmware_pcat::PcatLogger;
 use firmware_uefi::platform::logger::UefiEvent;
 use firmware_uefi::platform::logger::UefiLogger;
-use guest_emulation_transport::api::EventLogId;
 use guest_emulation_transport::GuestEmulationTransportClient;
+use guest_emulation_transport::api::EventLogId;
 use std::sync::Weak;
 use virt_mshv_vtl::UhPartition;
 

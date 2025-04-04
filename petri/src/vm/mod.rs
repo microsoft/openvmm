@@ -7,7 +7,9 @@ pub mod hyperv;
 /// OpenVMM VM management
 pub mod openvmm;
 
+use crate::ShutdownKind;
 use async_trait::async_trait;
+use get_resources::ged::FirmwareEvent;
 use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
@@ -52,6 +54,15 @@ pub trait PetriVm: Send {
     /// This should only be necessary if you're doing something manual. All
     /// Petri-provided methods will wait for VTL 2 to be ready automatically.
     async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()>;
+    /// Waits for an event emitted by the firmware about its boot status, and
+    /// verifies that it is the expected success value.
+    ///
+    /// * Linux Direct guests do not emit a boot event, so this method immediately returns Ok.
+    /// * PCAT guests may not emit an event depending on the PCAT version, this
+    /// method is best effort for them.
+    async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()>;
+    /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
+    async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()>;
 }
 
 /// Firmware to load into the test VM.
@@ -253,6 +264,27 @@ impl Firmware {
                 ..
             } => cfg.quirks,
             _ => Default::default(),
+        }
+    }
+
+    fn expected_boot_event(&self) -> Option<FirmwareEvent> {
+        match self {
+            Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => None,
+            Firmware::Pcat { .. } => {
+                // TODO: Handle older PCAT versions that don't fire the event
+                Some(FirmwareEvent::BootAttempt)
+            }
+            Firmware::Uefi {
+                guest: UefiGuest::None,
+                ..
+            }
+            | Firmware::OpenhclUefi {
+                guest: UefiGuest::None,
+                ..
+            } => Some(FirmwareEvent::NoBootDevice),
+            Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => {
+                Some(FirmwareEvent::BootSuccess)
+            }
         }
     }
 }

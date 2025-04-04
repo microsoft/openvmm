@@ -100,6 +100,9 @@ vmbus_messages! {
         24 MODIFY_CHANNEL_RESPONSE { ModifyChannelResponse Iron },
         25 MODIFY_CONNECTION { ModifyConnection Copper features:modify_connection },
         26 MODIFY_CONNECTION_RESPONSE { ModifyConnectionResponse Copper features:modify_connection },
+        27 PAUSE { Pause Copper features:pause_resume },
+        28 PAUSE_RESPONSE { PauseResponse Copper features:pause_resume },
+        29 RESUME { Resume Copper features:pause_resume },
     }
 }
 
@@ -170,22 +173,17 @@ pub struct FeatureFlags {
     /// supported.
     pub confidential_channels: bool,
 
-    #[bits(27)]
+    /// The server supports messages to pause and resume additional control messages.
+    pub pause_resume: bool,
+
+    #[bits(26)]
     _reserved: u32,
 }
 
 impl FeatureFlags {
-    pub const fn all() -> Self {
-        Self::new()
-            .with_guest_specified_signal_parameters(true)
-            .with_channel_interrupt_redirection(true)
-            .with_modify_connection(true)
-            .with_client_id(true)
-            .with_confidential_channels(true)
-    }
-
-    pub fn contains_unsupported_bits(&self) -> bool {
-        u32::from(*self) & !u32::from(Self::all()) != 0
+    /// Returns true if `other` contains only flags that are also set in `self`.
+    pub fn contains(&self, other: FeatureFlags) -> bool {
+        self.into_bits() & other.into_bits() == other.into_bits()
     }
 }
 
@@ -646,7 +644,7 @@ pub struct OpenChannel2 {
     pub event_flag: u16,
 
     // Only valid with FeatureFlags::CHANNEL_INTERRUPT_REDIRECTION
-    pub flags: u16,
+    pub flags: OpenChannelFlags,
 }
 
 impl From<OpenChannel> for OpenChannel2 {
@@ -791,3 +789,15 @@ pub struct UnloadComplete {}
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct AllOffersDelivered {}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct Pause;
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct PauseResponse;
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct Resume;

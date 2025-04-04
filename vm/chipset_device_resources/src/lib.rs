@@ -3,7 +3,6 @@
 
 //! Resource definitions for chipset devices.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use async_trait::async_trait;
@@ -11,8 +10,8 @@ use chipset_device::ChipsetDevice;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
 use std::ops::RangeInclusive;
-use vm_resource::kind::ChipsetDeviceHandleKind;
 use vm_resource::CanResolveTo;
+use vm_resource::kind::ChipsetDeviceHandleKind;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::line_interrupt::LineInterrupt;
 use vmcore::save_restore::ProtobufSaveRestore;

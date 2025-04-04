@@ -3,6 +3,7 @@
 
 //! Client definitions for functionality in the `vmm_core` crate.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod debug_rpc;

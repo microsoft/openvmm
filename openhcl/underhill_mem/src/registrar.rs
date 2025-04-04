@@ -20,8 +20,8 @@
 //! been registered via a small bitmap.
 
 use inspect::Inspect;
-use memory_range::overlapping_ranges;
 use memory_range::MemoryRange;
+use memory_range::overlapping_ranges;
 use parking_lot::Mutex;
 use std::ops::Range;
 use std::sync::atomic::AtomicU64;
@@ -197,7 +197,6 @@ mod tests {
     #[test]
     fn test_registrar() {
         let layout = MemoryLayout::new(
-            42,
             1 << 40,
             &[
                 MemoryRange::new(0x10000..0x20000),

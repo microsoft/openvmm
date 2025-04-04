@@ -6,13 +6,14 @@
 // UNSAFETY: Exporting no_mangle extern C functions and dealing with the raw
 // pointers necessary to do so.
 #![expect(unsafe_code)]
+#![expect(missing_docs)]
 
 use core::slice;
 use disk_backend::Disk;
 use disk_vhd1::Vhd1Disk;
 use futures::executor::block_on;
-use std::ffi::c_char;
 use std::ffi::CStr;
+use std::ffi::c_char;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -207,7 +208,7 @@ async fn do_write(
 
     // manually allow, since we want to differentiate between the file not being
     // accessible, and a read operation failing
-    #[allow(clippy::verbose_file_reads)]
+    #[expect(clippy::verbose_file_reads)]
     file.read_to_end(&mut buf)
         .map_err(|_| VmgsError::CantReadFile)?;
 

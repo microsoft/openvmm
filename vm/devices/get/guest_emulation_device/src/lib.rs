@@ -8,6 +8,7 @@
 //! better integration testing within the OpenVMM CI, and is not at
 //! feature-parity with the implementation in Hyper-V.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod resolver;
@@ -20,21 +21,23 @@ use core::mem::size_of;
 use disk_backend::Disk;
 use futures::FutureExt;
 use futures::StreamExt;
-use get_protocol::dps_json::HclSecureBootTemplateId;
-use get_protocol::dps_json::PcatBootDevice;
 use get_protocol::BatteryStatusFlags;
 use get_protocol::BatteryStatusNotification;
+use get_protocol::GspCleartextContent;
+use get_protocol::GspExtendedStatusFlags;
 use get_protocol::HeaderGeneric;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
 use get_protocol::IgvmAttestRequest;
+use get_protocol::MAX_PAYLOAD_SIZE;
 use get_protocol::RegisterState;
 use get_protocol::SaveGuestVtl2StateFlags;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::StartVtl0Status;
 use get_protocol::UefiConsoleMode;
 use get_protocol::VmgsIoStatus;
-use get_protocol::MAX_PAYLOAD_SIZE;
+use get_protocol::dps_json::HclSecureBootTemplateId;
+use get_protocol::dps_json::PcatBootDevice;
 use get_resources::ged::FirmwareEvent;
 use get_resources::ged::GuestEmulationRequest;
 use get_resources::ged::GuestServicingFlags;
@@ -45,12 +48,16 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use jiff::Zoned;
+use jiff::civil::DateTime;
+use jiff::civil::date;
+use jiff::tz::TimeZone;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
+use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
-use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
 use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
@@ -60,12 +67,12 @@ use thiserror::Error;
 use video_core::FramebufferControl;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::pipe::MessagePipe;
+use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SimpleVmbusDevice;
-use vmbus_channel::RawAsyncChannel;
 use vmbus_ring::RingMem;
 use vmcore::save_restore::SavedStateNotSupported;
 use zerocopy::FromBytes;
@@ -134,6 +141,8 @@ pub struct GuestConfig {
     pub secure_boot_template: SecureBootTemplateType,
     /// Enable battery.
     pub enable_battery: bool,
+    /// Suppress attestation.
+    pub no_persistent_secrets: bool,
 }
 
 #[derive(Debug, Clone, Inspect)]
@@ -175,6 +184,14 @@ pub enum GuestEvent {
     BootAttempt,
 }
 
+/// Simple state machine to support AK cert preserving test.
+// TODO: add more states to cover other test scenarios.
+#[derive(Debug)]
+enum IgvmAttestState {
+    Init,
+    SendingAkCert,
+}
+
 /// VMBUS device that implements the host side of the Guest Emulation Transport protocol.
 #[derive(InspectMut)]
 pub struct GuestEmulationDevice {
@@ -196,6 +213,10 @@ pub struct GuestEmulationDevice {
     #[inspect(with = "Option::is_some")]
     save_restore_buf: Option<Vec<u8>>,
     last_save_restore_buf_len: usize,
+
+    /// State machine for `handle_igvm_attest`
+    #[inspect(skip)]
+    igvm_attest_state: IgvmAttestState,
 }
 
 #[derive(Inspect)]
@@ -229,6 +250,7 @@ impl GuestEmulationDevice {
             save_restore_buf: None,
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
+            igvm_attest_state: IgvmAttestState::Init,
         }
     }
 
@@ -308,10 +330,7 @@ pub struct GedChannel<T: RingMem = GpadlRingMem> {
     vtl0_start_report: Option<Result<(), Vtl0StartError>>,
     #[inspect(with = "Option::is_some")]
     modify: Option<Rpc<(), Result<(), ModifyVtl2SettingsError>>>,
-    // TODO: allow unused temporarily as a follow up change will use it to
-    // implement AK cert renewal.
     #[inspect(skip)]
-    #[allow(dead_code)]
     gm: GuestMemory,
 }
 
@@ -580,7 +599,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostRequests::GUEST_STATE_PROTECTION_BY_ID => {
                 self.handle_guest_state_protection_by_id()?;
             }
-            HostRequests::IGVM_ATTEST => self.handle_igvm_attest(message_buf)?,
+            HostRequests::IGVM_ATTEST => self.handle_igvm_attest(message_buf, state)?,
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2 => {
                 self.handle_device_platform_settings_v2(state)?
             }
@@ -617,20 +636,23 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     }
 
     fn handle_time(&mut self) -> Result<(), Error> {
-        const WINDOWS_EPOCH: time::OffsetDateTime = time::macros::datetime!(1601-01-01 0:00 UTC);
+        const WINDOWS_EPOCH: DateTime = date(1601, 1, 1).at(0, 0, 0, 0);
+
+        let now = Zoned::now();
 
         // utc in TimeResponse is in units of 100ns since the windows epoch
-        let now_utc = time::OffsetDateTime::now_utc();
-        let since_win_epoch = now_utc - WINDOWS_EPOCH;
-        let since_win_epoch: i64 = (since_win_epoch.whole_nanoseconds() / 100)
-            .try_into()
-            .unwrap();
+        let since_win_epoch = (WINDOWS_EPOCH
+            .to_zoned(TimeZone::UTC)
+            .expect("windows epoch value to be valid")
+            .timestamp()
+            .duration_until(now.timestamp())
+            .as_nanos()
+            / 100) as i64;
 
-        // time_zone is in minutes between UTC and local time (as stored
+        // tz_offset is in minutes between UTC and local time (as stored
         // in a windows TIME_ZONE_INFORMATION struct)
-        let local_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
-        let time_zone = local_offset.whole_minutes();
-        let response = get_protocol::TimeResponse::new(0, since_win_epoch, time_zone, false);
+        let tz_offset = (now.offset().seconds() / 60) as i16;
+        let response = get_protocol::TimeResponse::new(0, since_win_epoch, tz_offset, false);
 
         self.channel
             .try_send(response.as_bytes())
@@ -806,7 +828,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     fn handle_guest_state_protection_by_id(&mut self) -> Result<(), Error> {
         let response = get_protocol::GuestStateProtectionByIdResponse {
             message_header: HeaderGeneric::new(HostRequests::GUEST_STATE_PROTECTION_BY_ID),
-            ..get_protocol::GuestStateProtectionByIdResponse::new_zeroed()
+            seed: GspCleartextContent::new_zeroed(),
+            extended_status_flags: GspExtendedStatusFlags::new().with_no_registry_file(true),
         };
         self.channel
             .try_send(response.as_bytes())
@@ -816,7 +839,13 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
     /// Stub implementation that simulates the behavior of GED and the host agent.
     /// Used only for test scenarios such as VMM tests.
-    fn handle_igvm_attest(&mut self, message_buf: &[u8]) -> Result<(), Error> {
+    fn handle_igvm_attest(
+        &mut self,
+        message_buf: &[u8],
+        state: &mut GuestEmulationDevice,
+    ) -> Result<(), Error> {
+        tracing::info!(state = ?state.igvm_attest_state, "Handle IGVM Attest request");
+
         let request = IgvmAttestRequest::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
@@ -834,7 +863,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
         let response = match request_payload.request_type {
-            IgvmAttestRequestType::AK_CERT_REQUEST => {
+            IgvmAttestRequestType::AK_CERT_REQUEST
+                if matches!(state.igvm_attest_state, IgvmAttestState::Init) =>
+            {
                 let data = vec![0xab; 2500];
                 let header = IgvmAttestAkCertResponseHeader {
                     data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>()) as u32,
@@ -846,10 +877,20 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     .write_at(request.shared_gpa[0], &payload)
                     .map_err(Error::SharedMemoryWriteFailed)?;
 
+                state.igvm_attest_state = IgvmAttestState::SendingAkCert;
+
+                tracing::info!("Sending AK_CERT_REQEUST");
+
                 get_protocol::IgvmAttestResponse {
                     message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
                     length: payload.len() as u32,
                 }
+            }
+            IgvmAttestRequestType::AK_CERT_REQUEST => {
+                // Skip if the state is not Init to support sending-response-once behavior
+                // allows for testing AK cert preserving behavior
+                tracing::info!("Skip AK_CERT_REQEUST");
+                return Ok(());
             }
             ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
         };
@@ -933,7 +974,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 framebuffer_control.map(gpa).await;
                 get_protocol::MapFramebufferStatus::SUCCESS
             } else {
-                tracing::warn!("Guest requested framebuffer mapping but no framebuffer control was provided to the GET");
+                tracing::warn!(
+                    "Guest requested framebuffer mapping but no framebuffer control was provided to the GET"
+                );
                 get_protocol::MapFramebufferStatus::FAILURE
             },
         );
@@ -953,7 +996,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 framebuffer_control.unmap().await;
                 get_protocol::UnmapFramebufferStatus::SUCCESS
             } else {
-                tracing::warn!("Guest requested framebuffer mapping but no framebuffer control was provided to the GET");
+                tracing::warn!(
+                    "Guest requested framebuffer mapping but no framebuffer control was provided to the GET"
+                );
                 get_protocol::UnmapFramebufferStatus::FAILURE
             },
         );
@@ -1259,8 +1304,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     vmbus_redirection_enabled: state.config.vmbus_redirection,
                     vtl2_settings: state.config.vtl2_settings.clone(),
                     firmware_mode_is_pcat,
-                    // no_persist_secrets must be set to True in order to skip attestation.
-                    no_persistent_secrets: true,
+                    no_persistent_secrets: state.config.no_persistent_secrets,
                     legacy_memory_map: false,
                     pause_after_boot_failure: false,
                     pxe_ip_v6: false,

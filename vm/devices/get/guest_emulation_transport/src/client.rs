@@ -3,8 +3,8 @@
 
 use super::process_loop::msg;
 use super::process_loop::msg::IgvmAttestRequestData;
-use crate::api::platform_settings;
 use crate::api::GuestSaveRequest;
+use crate::api::platform_settings;
 use chipset_resources::battery::HostBatteryUpdate;
 use get_protocol::RegisterState;
 use get_protocol::TripleFaultType;
@@ -267,7 +267,7 @@ impl GuestEmulationTransportClient {
                         o => {
                             return Err(
                                 crate::error::DevicePlatformSettingsError::InvalidConsoleMode(o),
-                            )
+                            );
                         }
                     }
                 },
@@ -347,7 +347,7 @@ impl GuestEmulationTransportClient {
         gsp_extended_status: crate::api::GspExtendedStatusFlags,
     ) -> crate::api::GuestStateProtection {
         let mut buffer = [0; get_protocol::GSP_CLEARTEXT_MAX as usize * 2];
-        getrandom::getrandom(&mut buffer).expect("rng failure");
+        getrandom::fill(&mut buffer).expect("rng failure");
 
         let gsp_request = get_protocol::GuestStateProtectionRequest::new(
             buffer,
@@ -512,7 +512,9 @@ impl GuestEmulationTransportClient {
                     .until_cancelled(std::future::pending::<()>())
                     .await
                     .unwrap_or_else(|_| {
-                        panic!("should have been terminated after reporting start failure: {error_msg}")
+                        panic!(
+                            "should have been terminated after reporting start failure: {error_msg}"
+                        )
                     });
             }
         }

@@ -4,16 +4,18 @@
 //! This module defines a trait and implementations thereof for network
 //! backends.
 
+#![expect(missing_docs)]
+
 pub mod loopback;
 pub mod null;
 pub mod resolve;
 pub mod tests;
 
 use async_trait::async_trait;
-use futures::lock::Mutex;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::TryFutureExt;
+use futures::lock::Mutex;
 use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
@@ -574,7 +576,7 @@ impl Endpoint for DisconnectableEndpoint {
             ) => {
                 let old_endpoint = self.endpoint.take();
                 self.endpoint = None;
-                rpc.handle(|_| async { old_endpoint }).await;
+                rpc.handle(async |_| old_endpoint).await;
                 EndpointAction::RestartRequired
             }
             Message::UpdateFromEndpoint(update) => update,

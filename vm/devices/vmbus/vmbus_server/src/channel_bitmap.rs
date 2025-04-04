@@ -4,9 +4,9 @@
 use guestmem::LockedPages;
 use parking_lot::RwLock;
 use safeatomic::AtomicSliceOps;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use vmcore::interrupt::Interrupt;
 
 pub(crate) struct ChannelBitmap {

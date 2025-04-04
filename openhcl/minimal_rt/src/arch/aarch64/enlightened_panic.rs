@@ -15,7 +15,9 @@ const REGS: [HvArm64RegisterName; 6] = [
     HvArm64RegisterName::GuestCrashCtl,
 ];
 
-// SAFETY: Caller must ensure that the Hyper-V TLFS contract is followed.
+/// # Safety
+///
+/// Caller must ensure that the Hyper-V TLFS contract is followed.
 pub unsafe fn write_crash_reg(index: usize, value: u64) {
     let _ = set_register_fast(REGS[index].into(), value.into());
 }

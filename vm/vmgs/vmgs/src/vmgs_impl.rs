@@ -4,9 +4,9 @@
 use crate::error::Error;
 use crate::storage::VmgsStorage;
 #[cfg(with_encryption)]
-use anyhow::anyhow;
-#[cfg(with_encryption)]
 use anyhow::Context;
+#[cfg(with_encryption)]
+use anyhow::anyhow;
 use disk_backend::Disk;
 #[cfg(feature = "inspect")]
 use inspect::Inspect;
@@ -17,6 +17,12 @@ use std::num::NonZeroU32;
 use vmgs_format::EncryptionAlgorithm;
 use vmgs_format::FileAttribute;
 use vmgs_format::FileId;
+use vmgs_format::VMGS_BYTES_PER_BLOCK;
+use vmgs_format::VMGS_EXTENDED_FILE_TABLE_BLOCK_SIZE;
+use vmgs_format::VMGS_FILE_TABLE_BLOCK_SIZE;
+use vmgs_format::VMGS_MIN_FILE_BLOCK_OFFSET;
+use vmgs_format::VMGS_SIGNATURE;
+use vmgs_format::VMGS_VERSION_3_0;
 use vmgs_format::VmgsAuthTag;
 use vmgs_format::VmgsDatastoreKey;
 use vmgs_format::VmgsEncryptionKey;
@@ -24,12 +30,6 @@ use vmgs_format::VmgsExtendedFileTable;
 use vmgs_format::VmgsFileTable;
 use vmgs_format::VmgsHeader;
 use vmgs_format::VmgsNonce;
-use vmgs_format::VMGS_BYTES_PER_BLOCK;
-use vmgs_format::VMGS_EXTENDED_FILE_TABLE_BLOCK_SIZE;
-use vmgs_format::VMGS_FILE_TABLE_BLOCK_SIZE;
-use vmgs_format::VMGS_MIN_FILE_BLOCK_OFFSET;
-use vmgs_format::VMGS_SIGNATURE;
-use vmgs_format::VMGS_VERSION_3_0;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -66,7 +66,6 @@ struct ResolvedFileControlBlock {
 
 /// Implementation of the VMGS file format, backed by a generic [`Disk`]
 /// device.
-#[cfg_attr(not(with_encryption), allow(dead_code))]
 #[cfg_attr(feature = "inspect", derive(Inspect))]
 pub struct Vmgs {
     storage: VmgsStorage,
@@ -80,6 +79,7 @@ pub struct Vmgs {
     #[cfg_attr(feature = "inspect", inspect(with = "vmgs_inspect::fcbs"))]
     fcbs: HashMap<FileId, ResolvedFileControlBlock>,
     encryption_algorithm: EncryptionAlgorithm,
+    #[allow(dead_code)]
     datastore_key_count: u8,
     active_datastore_key_index: Option<usize>,
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
@@ -462,7 +462,7 @@ impl Vmgs {
         let data_nonce_auth_tag = if should_encrypt {
             let data_encryption_key = {
                 let mut encryption_key = VmgsDatastoreKey::new_zeroed();
-                getrandom::getrandom(&mut encryption_key).expect("rng failure");
+                getrandom::fill(&mut encryption_key).expect("rng failure");
                 encryption_key
             };
             let data_nonce = generate_nonce();
@@ -1081,7 +1081,7 @@ impl Vmgs {
     }
 
     /// Encrypts the plaintext data and writes the encrypted data to the storage.
-    #[cfg_attr(not(with_encryption), allow(unused_variables))]
+    #[cfg_attr(not(with_encryption), expect(unused_variables))]
     async fn write_encrypted_data(
         &mut self,
         block_offset: u32,
@@ -1112,7 +1112,7 @@ impl Vmgs {
     }
 
     /// Decrypts the encrypted data and reads it to the buffer.
-    #[cfg_attr(not(with_encryption), allow(unused_variables))]
+    #[cfg_attr(not(with_encryption), expect(unused_variables))]
     async fn read_decrypted_data(
         &mut self,
         block_offset: u32,
@@ -1188,7 +1188,9 @@ impl Vmgs {
         if self.encryption_algorithm != EncryptionAlgorithm::NONE
             && encryption_algorithm != self.encryption_algorithm
         {
-            return Err(Error::Other(anyhow!("Encryption algorithm provided to add_new_encryption_key does not match VMGS's encryption algorithm.")));
+            return Err(Error::Other(anyhow!(
+                "Encryption algorithm provided to add_new_encryption_key does not match VMGS's encryption algorithm."
+            )));
         }
 
         let mut new_key_index = 0;
@@ -1543,15 +1545,14 @@ fn round_up_count(count: usize, pow2: u32) -> u64 {
 fn generate_nonce() -> VmgsNonce {
     let mut nonce = VmgsNonce::new_zeroed();
     // Generate a 4-byte random seed for nonce
-    getrandom::getrandom(&mut nonce[..4]).expect("rng failure");
+    getrandom::fill(&mut nonce[..4]).expect("rng failure");
     nonce
 }
 
 /// Increment Nonce by one.
 fn increment_nonce(nonce: &mut VmgsNonce) -> Result<(), Error> {
     // Update the random seed of nonce
-    getrandom::getrandom(&mut nonce[..vmgs_format::VMGS_NONCE_RANDOM_SEED_SIZE])
-        .expect("rng failure");
+    getrandom::fill(&mut nonce[..vmgs_format::VMGS_NONCE_RANDOM_SEED_SIZE]).expect("rng failure");
 
     // Increment the counter of nonce by 1.
     for i in &mut nonce[vmgs_format::VMGS_NONCE_RANDOM_SEED_SIZE..] {
@@ -1571,7 +1572,7 @@ fn is_empty_key(encryption_key: &[u8]) -> bool {
 }
 
 /// Encrypts MetadataKey. Returns encrypted_metadata_key.
-#[cfg_attr(not(with_encryption), allow(unused_variables))]
+#[cfg_attr(not(with_encryption), expect(unused_variables))]
 fn encrypt_metadata_key(
     encryption_key: &[u8],
     nonce: &[u8],
@@ -1596,7 +1597,7 @@ fn encrypt_metadata_key(
 }
 
 /// Decrypts metadata_key. Returns decrypted_metadata_key.
-#[cfg_attr(not(with_encryption), allow(unused_variables), allow(dead_code))]
+#[cfg_attr(not(with_encryption), expect(unused_variables), expect(dead_code))]
 fn decrypt_metadata_key(
     datastore_key: &[u8],
     nonce: &[u8],

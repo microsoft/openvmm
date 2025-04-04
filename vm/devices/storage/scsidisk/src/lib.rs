@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod atapi_scsi;
@@ -25,20 +26,20 @@ use guestmem::MemoryWrite;
 use guid::Guid;
 use inspect::Inspect;
 use parking_lot::Mutex;
-use scsi::srb::SrbStatus;
 use scsi::AdditionalSenseCode;
 use scsi::ScsiOp;
 use scsi::ScsiStatus;
 use scsi::SenseKey;
+use scsi::srb::SrbStatus;
 use scsi_buffers::RequestBuffers;
-use scsi_core::save_restore::SavedSenseData;
-use scsi_core::save_restore::ScsiDiskSavedState;
-use scsi_core::save_restore::ScsiSavedState;
+use scsi_core::ASYNC_SCSI_DISK_STACK_SIZE;
 use scsi_core::AsyncScsiDisk;
 use scsi_core::Request;
 use scsi_core::ScsiResult;
 use scsi_core::ScsiSaveRestore;
-use scsi_core::ASYNC_SCSI_DISK_STACK_SIZE;
+use scsi_core::save_restore::SavedSenseData;
+use scsi_core::save_restore::ScsiDiskSavedState;
+use scsi_core::save_restore::ScsiSavedState;
 use scsi_defs as scsi;
 use scsidisk_resources::DiskIdentity;
 use scsidisk_resources::DiskParameters;
@@ -163,11 +164,7 @@ impl SimpleScsiDisk {
             } = disk_parameters;
 
             fn nonzero_id(id: [u8; 16]) -> Option<[u8; 16]> {
-                if id == [0; 16] {
-                    None
-                } else {
-                    Some(id)
-                }
+                if id == [0; 16] { None } else { Some(id) }
             }
 
             // Choose the first non-zero disk ID from the passed in parameters,

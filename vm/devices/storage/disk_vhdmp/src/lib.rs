@@ -1,15 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(windows)]
 // UNSAFETY: Calling Win32 VirtualDisk APIs and accessing the unions they return.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks)]
 
-use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedDisk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
+use disk_backend::resolve::ResolveDiskParameters;
+use disk_backend::resolve::ResolvedDisk;
 use disk_file::FileDisk;
 use guid::Guid;
 use inspect::Inspect;
@@ -19,10 +20,10 @@ use std::fs;
 use std::os::windows::prelude::*;
 use std::path::Path;
 use thiserror::Error;
-use vm_resource::declare_static_resolver;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::ResolveResource;
 use vm_resource::ResourceId;
+use vm_resource::declare_static_resolver;
+use vm_resource::kind::DiskHandleKind;
 
 mod virtdisk {
     #![allow(

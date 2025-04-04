@@ -10,8 +10,8 @@ pub use virt::x86::BreakpointType;
 pub use virt::x86::DebugState;
 pub use virt::x86::HardwareBreakpoint;
 
-use mesh::rpc::FailableRpc;
 use mesh::MeshPayload;
+use mesh::rpc::FailableRpc;
 use virt::x86::SegmentRegister;
 
 #[derive(Debug, MeshPayload)]

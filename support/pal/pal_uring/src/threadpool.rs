@@ -16,7 +16,6 @@
 use super::ioring::IoCompletionRing;
 use super::ioring::IoMemory;
 use super::ioring::IoRing;
-use futures::task::noop_waker;
 use futures::FutureExt;
 use inspect::Inspect;
 use io_uring::opcode;
@@ -32,12 +31,12 @@ use std::borrow::Borrow;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::fmt::Debug;
-use std::future::poll_fn;
 use std::future::Future;
+use std::future::poll_fn;
 use std::io;
 use std::os::unix::prelude::*;
-use std::pin::pin;
 use std::pin::Pin;
+use std::pin::pin;
 use std::process::abort;
 use std::sync::Arc;
 use std::task::Context;
@@ -96,10 +95,9 @@ impl PoolClient {
     /// then by polling on the IO ring while the task blocks.
     //
     // TODO: move this functionality into underhill_threadpool.
-    pub fn set_idle_task<F, Fut>(&self, f: F)
+    pub fn set_idle_task<F>(&self, f: F)
     where
-        F: 'static + Send + FnOnce(IdleControl) -> Fut,
-        Fut: Future<Output = ()>,
+        F: 'static + Send + AsyncFnOnce(IdleControl),
     {
         let f =
             Box::new(|fd| Box::pin(async move { f(fd).await }) as Pin<Box<dyn Future<Output = _>>>)
@@ -443,6 +441,9 @@ impl IoInitiator {
         (result, io_mem)
     }
 
+    /// # Safety
+    ///
+    /// The caller must guarantee that the given io_mem is compatible with the given sqe.
     unsafe fn submit_io(&self, sqe: squeue::Entry, io_mem: IoMemory, waker: Waker) -> usize {
         // Only submit if the worker is not currently running on this thread--if it is, the
         // IO will be submitted soon.
@@ -533,14 +534,16 @@ impl<T: 'static + Send + Sync + Unpin, Init: Borrow<IoInitiator> + Unpin> Io<T, 
         }
     }
 
-    /// # Safety: caller must ensure that `f` produces a safe sqe entry.
+    /// # Safety
+    ///
+    /// Caller must ensure that `f` produces a safe sqe entry.
     unsafe fn cancel_inner(&self, f: impl FnOnce(u64) -> squeue::Entry) {
         let sqe = f(self.user_data().unwrap());
         // SAFETY: guaranteed by caller
         let idx = unsafe {
             self.initiator
                 .borrow()
-                .submit_io(sqe, IoMemory::new(()), noop_waker())
+                .submit_io(sqe, IoMemory::new(()), Waker::noop().clone())
         };
         self.initiator.borrow().drop_io(idx);
     }

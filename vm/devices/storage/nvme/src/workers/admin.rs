@@ -3,10 +3,16 @@
 
 //! Admin queue handler.
 
-use super::io::IoHandler;
-use super::io::IoState;
 use super::IoQueueEntrySizes;
 use super::MAX_DATA_TRANSFER_SIZE;
+use super::io::IoHandler;
+use super::io::IoState;
+use crate::DOORBELL_STRIDE_BITS;
+use crate::MAX_QES;
+use crate::NVME_VERSION;
+use crate::PAGE_MASK;
+use crate::PAGE_SIZE;
+use crate::VENDOR_ID;
 use crate::error::CommandResult;
 use crate::error::NvmeError;
 use crate::namespace::Namespace;
@@ -17,12 +23,6 @@ use crate::queue::QueueError;
 use crate::queue::ShadowDoorbell;
 use crate::queue::SubmissionQueue;
 use crate::spec;
-use crate::DOORBELL_STRIDE_BITS;
-use crate::MAX_QES;
-use crate::NVME_VERSION;
-use crate::PAGE_MASK;
-use crate::PAGE_SIZE;
-use crate::VENDOR_ID;
 use disk_backend::Disk;
 use futures::FutureExt;
 use futures::SinkExt;
@@ -34,8 +34,8 @@ use inspect::Inspect;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
-use std::collections::btree_map;
 use std::collections::BTreeMap;
+use std::collections::btree_map;
 use std::future::pending;
 use std::io::Cursor;
 use std::io::Write;
@@ -141,7 +141,7 @@ impl AdminState {
     pub fn new(handler: &AdminHandler, asq: u64, asqs: u16, acq: u64, acqs: u16) -> Self {
         // Start polling for namespace changes. Use a bounded channel to avoid
         // unbounded memory allocation when the queue is stuck.
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods)] // TODO
         let (send_changed_namespace, recv_changed_namespace) = futures::channel::mpsc::channel(256);
         let poll_namespace_change = handler
             .namespaces

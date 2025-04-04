@@ -4,13 +4,13 @@
 //! Module used to write the device tree used by the OpenHCL kernel and
 //! usermode.
 
-use crate::host_params::shim_params::IsolationType;
-use crate::host_params::PartitionInfo;
+use crate::MAX_RESERVED_MEM_RANGES;
+use crate::ReservedMemoryType;
 use crate::host_params::COMMAND_LINE_SIZE;
+use crate::host_params::PartitionInfo;
+use crate::host_params::shim_params::IsolationType;
 use crate::sidecar::SidecarConfig;
 use crate::single_threaded::off_stack;
-use crate::ReservedMemoryType;
-use crate::MAX_RESERVED_MEM_RANGES;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use core::fmt;
@@ -23,9 +23,9 @@ use host_fdt_parser::VmbusInfo;
 use hvdef::Vtl;
 use igvm_defs::dt::IGVM_DT_IGVM_TYPE_PROPERTY;
 use loader_defs::shim::MemoryVtlType;
-use memory_range::walk_ranges;
 use memory_range::MemoryRange;
 use memory_range::RangeWalkResult;
+use memory_range::walk_ranges;
 
 /// AArch64 defines
 mod aarch64 {
@@ -53,7 +53,7 @@ mod aarch64 {
 #[derive(Debug)]
 pub enum DtError {
     // Field is stored solely for logging via debug, not actually dead.
-    Fdt(#[allow(dead_code)] fdt::builder::Error),
+    Fdt(#[expect(dead_code)] fdt::builder::Error),
 }
 
 impl From<fdt::builder::Error> for DtError {
@@ -243,12 +243,6 @@ pub fn write_dt(
         .start_node("cpus")?
         .add_u32(p_address_cells, address_cells)?
         .add_u32(p_size_cells, 0)?;
-
-    if cfg!(target_arch = "aarch64") {
-        let pa_bits = crate::arch::physical_address_bits(partition_info.isolation);
-        let p_pa_bits = cpu_builder.add_string("pa_bits")?;
-        cpu_builder = cpu_builder.add_u32(p_pa_bits, pa_bits.into())?;
-    }
 
     // Add a CPU node for each cpu.
     for (vp_index, cpu_entry) in partition_info.cpus.iter().enumerate() {

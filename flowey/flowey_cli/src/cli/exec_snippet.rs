@@ -3,27 +3,21 @@
 
 use crate::cli::FlowBackendCli;
 use anyhow::Context;
-use flowey_core::node::steps::rust::RustRuntimeServices;
-use flowey_core::node::user_facing::ClaimedGhParam;
-use flowey_core::node::user_facing::GhPermission;
-use flowey_core::node::user_facing::GhPermissionValue;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
 use flowey_core::node::GhVarState;
 use flowey_core::node::NodeHandle;
+use flowey_core::node::steps::rust::RustRuntimeServices;
+use flowey_core::node::user_facing::ClaimedGhParam;
+use flowey_core::node::user_facing::GhPermission;
+use flowey_core::node::user_facing::GhPermissionValue;
 use flowey_core::pipeline::HostExt;
 use flowey_core::pipeline::PipelineBackendHint;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::fmt::Write as _;
 use std::path::PathBuf;
-
-pub struct StepIdx<'a> {
-    pub node_modpath: &'a str,
-    pub snippet_idx: usize,
-}
 
 pub fn construct_exec_snippet_cli(
     flowey_bin: &str,
@@ -32,22 +26,6 @@ pub fn construct_exec_snippet_cli(
     job_idx: usize,
 ) -> String {
     format!(r#"{flowey_bin} e {job_idx} {node_modpath} {snippet_idx}"#)
-}
-
-pub fn construct_exec_snippet_cli_multi(
-    flowey_bin: &str,
-    job_idx: usize,
-    steps: Vec<StepIdx<'_>>,
-) -> String {
-    let mut s = format!("{flowey_bin} e {job_idx}");
-    for StepIdx {
-        node_modpath,
-        snippet_idx,
-    } in steps
-    {
-        write!(s, " \\\n    {node_modpath} {snippet_idx}").unwrap();
-    }
-    s
 }
 
 /// (internal) execute an inline code snippet from the given node.
@@ -249,6 +227,7 @@ impl flowey_core::node::NodeCtxBackend for ExecSnippetCtx<'_, '_> {
     fn on_emit_rust_step(
         &mut self,
         label: &str,
+        _can_merge: bool,
         code: Box<
             dyn for<'a> FnOnce(&'a mut RustRuntimeServices<'_>) -> anyhow::Result<()> + 'static,
         >,
@@ -371,7 +350,7 @@ pub(crate) mod serialized_request {
     use serde::Deserializer;
     use serde::Serializer;
 
-    #[allow(clippy::borrowed_box)] // required by serde
+    #[expect(clippy::borrowed_box, reason = "required by serde")]
     pub fn serialize<S: Serializer>(v: &Box<[u8]>, ser: S) -> Result<S::Ok, S::Error> {
         ser.serialize_str(
             &serde_json::to_string(&serde_json::from_slice::<serde_json::Value>(v).unwrap())

@@ -116,11 +116,7 @@ impl<T: X64RegisterState> HypercallIo for X64RegisterIo<T> {
     }
 
     fn fast_register_pair_count(&mut self) -> usize {
-        if self.is_64bit {
-            7
-        } else {
-            1
-        }
+        if self.is_64bit { 7 } else { 1 }
     }
 
     fn extended_fast_hypercalls_ok(&mut self) -> bool {

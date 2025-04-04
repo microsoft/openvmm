@@ -4,6 +4,7 @@
 //! A TAP interface based endpoint.
 
 #![cfg(unix)]
+#![expect(missing_docs)]
 
 pub mod resolver;
 mod tap;
@@ -11,7 +12,6 @@ mod tap;
 use async_trait::async_trait;
 use futures::io::AsyncRead;
 use inspect::InspectMut;
-use net_backend::linearize;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
 use net_backend::Queue;
@@ -21,6 +21,7 @@ use net_backend::RxId;
 use net_backend::RxMetadata;
 use net_backend::TxId;
 use net_backend::TxSegment;
+use net_backend::linearize;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
 use std::collections::VecDeque;

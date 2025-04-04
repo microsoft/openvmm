@@ -7,9 +7,9 @@
 use anyhow::Context;
 use hvlite_defs::entrypoint::MeshHostParams;
 use inspect::Inspect;
-use mesh_process::try_run_mesh_host;
 use mesh_process::Mesh;
 use mesh_process::ProcessConfig;
+use mesh_process::try_run_mesh_host;
 use mesh_worker::RegisteredWorkers;
 use mesh_worker::WorkerHost;
 use pal_async::task::Spawn;
@@ -17,7 +17,7 @@ use pal_async::task::Task;
 use std::path::PathBuf;
 
 pub(crate) fn run_vmm_mesh_host() -> anyhow::Result<()> {
-    try_run_mesh_host("openvmm", |params: MeshHostParams| async {
+    try_run_mesh_host("openvmm", async |params: MeshHostParams| {
         params.runner.run(RegisteredWorkers).await;
         Ok(())
     })

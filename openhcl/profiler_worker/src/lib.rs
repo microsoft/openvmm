@@ -4,19 +4,18 @@
 //! A worker for profiling on VTL2.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use anyhow::Context;
 use futures::FutureExt;
-use mesh::error::RemoteError;
 use mesh::MeshPayload;
+use mesh::error::RemoteError;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
+use pal_async::DefaultPool;
 use pal_async::driver::Driver;
 use pal_async::timer::PolledTimer;
-use pal_async::DefaultPool;
 use socket2::Socket;
 use std::io::Read;
 use std::os::fd::AsRawFd;
@@ -74,7 +73,7 @@ impl Worker for ProfilerWorker {
 
     /// Run profiler worker and start a profiling session
     fn run(self, mut recv: mesh::Receiver<WorkerRpc<Self::State>>) -> anyhow::Result<()> {
-        DefaultPool::run_with(|driver| async move {
+        DefaultPool::run_with(async |driver| {
             let mut profiling = pin!(profile(self.profiler_request, &driver).fuse());
             loop {
                 let msg = futures::select! { // merge semantics

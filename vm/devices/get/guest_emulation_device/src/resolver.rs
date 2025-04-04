@@ -12,13 +12,13 @@ use get_resources::ged::PcatBootDevice;
 use get_resources::ged::UefiConsoleMode;
 use power_resources::PowerRequestHandleKind;
 use thiserror::Error;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::IntoResource;
 use vm_resource::PlatformResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_channel::resources::ResolveVmbusDeviceHandleParams;
 use vmbus_channel::resources::ResolvedVmbusDevice;
 use vmbus_channel::simple::SimpleDeviceWrapper;
@@ -142,6 +142,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                     }
                 },
                 enable_battery: resource.enable_battery,
+                no_persistent_secrets: resource.no_persistent_secrets,
             },
             halt,
             resource.firmware_event_send,

@@ -4,11 +4,10 @@
 //! Resources for VMGS files.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use mesh::MeshPayload;
-use vm_resource::kind::NonVolatileStoreKind;
 use vm_resource::ResourceId;
+use vm_resource::kind::NonVolatileStoreKind;
 use vmgs_format::FileId;
 
 /// A handle to an individual file within a VMGS file.

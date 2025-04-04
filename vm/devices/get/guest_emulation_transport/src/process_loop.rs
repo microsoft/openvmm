@@ -19,16 +19,16 @@ use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
+use mesh::RecvError;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::TryRpcSend;
-use mesh::RecvError;
 use parking_lot::Mutex;
 use std::cmp::min;
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::future::pending;
 use std::future::Future;
+use std::future::pending;
 use std::pin::Pin;
 use std::sync::Arc;
 use thiserror::Error;
@@ -93,7 +93,9 @@ pub(crate) enum FatalError {
     GpaMemoryAllocationError(#[source] anyhow::Error),
     #[error("failed to deserialize the asynchronous `IGVM_ATTEST` response")]
     DeserializeIgvmAttestResponse,
-    #[error("malformed `IGVM_ATTEST` response - reported size {response_size} was larger than maximum size {maximum_size}")]
+    #[error(
+        "malformed `IGVM_ATTEST` response - reported size {response_size} was larger than maximum size {maximum_size}"
+    )]
     InvalidIgvmAttestResponseSize {
         response_size: usize,
         maximum_size: usize,
@@ -487,7 +489,6 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     async_host_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
     #[inspect(skip)]
     async_host_requests_read_send: mesh::Sender<Vec<u8>>,
-    #[inspect(skip)]
     gpa_allocator: Option<Arc<dyn DmaClient>>,
     stats: Stats,
 
@@ -1003,10 +1004,9 @@ impl<T: RingMem> ProcessLoop<T> {
         I: 'static + Send,
         Resp: 'static + IntoBytes + FromBytes + Send + Immutable + KnownLayout,
     {
-        self.push_host_request_handler(|mut access| {
-            req.handle_must_succeed(move |input| async move {
-                access.send_request_fixed_size(&f(input)).await
-            })
+        self.push_host_request_handler(async move |mut access| {
+            req.handle_must_succeed(async |input| access.send_request_fixed_size(&f(input)).await)
+                .await
         });
     }
 
@@ -1077,7 +1077,9 @@ impl<T: RingMem> ProcessLoop<T> {
             // Host Requests
             Msg::DevicePlatformSettingsV2(req) => {
                 self.push_host_request_handler(|access| {
-                    req.handle_must_succeed(|()| request_device_platform_settings_v2(access))
+                    req.handle_must_succeed(async |()| {
+                        request_device_platform_settings_v2(access).await
+                    })
                 });
             }
             Msg::VmgsFlush(req) => {
@@ -1091,7 +1093,7 @@ impl<T: RingMem> ProcessLoop<T> {
                 });
             }
             Msg::GetVtl2SavedStateFromHost(req) => self.push_host_request_handler(|access| {
-                req.handle_must_succeed(|()| request_saved_state(access))
+                req.handle_must_succeed(async |()| request_saved_state(access).await)
             }),
             Msg::GuestStateProtection(req) => {
                 self.push_basic_host_request_handler(req, |request| *request);
@@ -1108,24 +1110,24 @@ impl<T: RingMem> ProcessLoop<T> {
                 let shared_pool_allocator = self.gpa_allocator.clone();
 
                 self.push_async_host_request_handler(|access| {
-                    req.handle_must_succeed(|request| {
-                        request_igvm_attest(access, *request, shared_pool_allocator)
+                    req.handle_must_succeed(async |request| {
+                        request_igvm_attest(access, *request, shared_pool_allocator).await
                     })
                 });
             }
             Msg::VmgsRead(req) => {
                 self.push_host_request_handler(|access| {
-                    req.handle_must_succeed(|input| request_vmgs_read(access, input))
+                    req.handle_must_succeed(async |input| request_vmgs_read(access, input).await)
                 });
             }
             Msg::VmgsWrite(req) => {
                 self.push_host_request_handler(|access| {
-                    req.handle_must_succeed(|input| request_vmgs_write(access, input))
+                    req.handle_must_succeed(async |input| request_vmgs_write(access, input).await)
                 });
             }
             Msg::VpciDeviceControl(req) => {
                 self.push_async_host_request_handler(|access| {
-                    req.handle_must_succeed(|input| request_vpci_device_control(access, input))
+                    req.handle_must_succeed(async |input| request_vpci_device_control(access, input))
                 });
             }
             Msg::VpciDeviceBindingChange(req) => {
@@ -1173,7 +1175,9 @@ impl<T: RingMem> ProcessLoop<T> {
                 });
             }
             Msg::SendServicingState(req) => self.push_host_request_handler(move |access| {
-                req.handle_must_succeed(|data| request_send_servicing_state(access, data))
+                req.handle_must_succeed(async |data| {
+                    request_send_servicing_state(access, data).await
+                })
             }),
             Msg::CompleteStartVtl0(rpc) => {
                 let (input, res) = rpc.split();
@@ -1185,7 +1189,7 @@ impl<T: RingMem> ProcessLoop<T> {
             Msg::PowerState(state) => {
                 // Queue behind any pending requests to avoid terminating while
                 // something important is in flight.
-                self.push_host_request_handler(move |mut access| async move {
+                self.push_host_request_handler(async move |mut access| {
                     let message = match state {
                         msg::PowerState::PowerOff => get_protocol::PowerOffNotification::new(false)
                             .as_bytes()
@@ -1627,7 +1631,7 @@ async fn request_device_platform_settings_v2(
                 return Err(FatalError::ResponseHeaderMismatchId(
                     header.message_id,
                     HostRequests::DEVICE_PLATFORM_SETTINGS_V2,
-                ))
+                ));
             }
         }
     }

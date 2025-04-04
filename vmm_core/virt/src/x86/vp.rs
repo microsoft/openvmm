@@ -6,9 +6,10 @@
 use super::SegmentRegister;
 use super::TableRegister;
 use super::X86PartitionCapabilities;
-use crate::state::state_trait;
 use crate::state::HvRegisterState;
 use crate::state::StateElement;
+use crate::state::state_trait;
+use hvdef::HV_MESSAGE_SIZE;
 use hvdef::HvInternalActivityRegister;
 use hvdef::HvRegisterValue;
 use hvdef::HvX64InterruptStateRegister;
@@ -20,17 +21,21 @@ use hvdef::HvX64PendingInterruptionType;
 use hvdef::HvX64RegisterName;
 use hvdef::HvX64SegmentRegister;
 use hvdef::HvX64TableRegister;
-use hvdef::HV_MESSAGE_SIZE;
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
 use std::fmt::Debug;
 use vm_topology::processor::x86::X86VpInfo;
+use x86defs::RFlags;
+use x86defs::X64_CR0_CD;
+use x86defs::X64_CR0_ET;
+use x86defs::X64_CR0_NW;
+use x86defs::X64_EFER_NXE;
+use x86defs::X86X_MSR_DEFAULT_PAT;
+use x86defs::apic::APIC_BASE_PAGE;
 use x86defs::apic::ApicBase;
 use x86defs::apic::ApicVersion;
-use x86defs::apic::APIC_BASE_PAGE;
-use x86defs::xsave::Fxsave;
-use x86defs::xsave::XsaveHeader;
 use x86defs::xsave::DEFAULT_MXCSR;
+use x86defs::xsave::Fxsave;
 use x86defs::xsave::INIT_FCW;
 use x86defs::xsave::XCOMP_COMPRESSED;
 use x86defs::xsave::XFEATURE_SSE;
@@ -38,12 +43,7 @@ use x86defs::xsave::XFEATURE_X87;
 use x86defs::xsave::XFEATURE_YMM;
 use x86defs::xsave::XSAVE_LEGACY_LEN;
 use x86defs::xsave::XSAVE_VARIABLE_OFFSET;
-use x86defs::RFlags;
-use x86defs::X64_CR0_CD;
-use x86defs::X64_CR0_ET;
-use x86defs::X64_CR0_NW;
-use x86defs::X64_EFER_NXE;
-use x86defs::X86X_MSR_DEFAULT_PAT;
+use x86defs::xsave::XsaveHeader;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -337,7 +337,7 @@ impl StateElement<X86PartitionCapabilities, X86VpInfo> for Registers {
             r14: 0,
             r15: 0,
             rip: 0xfff0,
-            rflags: RFlags::default().into(),
+            rflags: RFlags::at_reset().into(),
             cs,
             ds,
             es: ds,

@@ -4,14 +4,13 @@
 //! The pipette protocol used for host-to-guest agent communications. It is
 //! defined as messages over a mesh point-to-point connection.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+use mesh::MeshPayload;
 use mesh::pipe::ReadPipe;
 use mesh::pipe::WritePipe;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
-use mesh::MeshPayload;
 
 /// The port used for the pipette connection over AF_VSOCK.
 pub const PIPETTE_VSOCK_PORT: u32 = 0x1337;

@@ -990,6 +990,23 @@ impl IntoPipeline for CheckinGatesCli {
                 Some(expr)
             };
 
+            let (vhds, isos) = match target.as_triple().architecture {
+                target_lexicon::Architecture::X86_64 => (
+                    vec![
+                        vmm_test_images::KnownVhd::FreeBsd13_2,
+                        vmm_test_images::KnownVhd::Gen1WindowsDataCenterCore2022,
+                        vmm_test_images::KnownVhd::Gen2WindowsDataCenterCore2022,
+                        vmm_test_images::KnownVhd::Ubuntu2204Server,
+                    ],
+                    vec![vmm_test_images::KnownIso::FreeBsd13_2],
+                ),
+                target_lexicon::Architecture::Aarch64(_) => (
+                    vec![vmm_test_images::KnownVhd::Ubuntu2404ServerAarch64],
+                    vec![],
+                ),
+                arch => anyhow::bail!("unsupported arch {arch}"),
+            };
+
             let use_vmm_tests_archive = match target {
                 CommonTriple::X86_64_WINDOWS_MSVC => &use_vmm_tests_archive_windows_x86,
                 CommonTriple::X86_64_LINUX_GNU => &use_vmm_tests_archive_linux_x86,
@@ -1009,6 +1026,8 @@ impl IntoPipeline for CheckinGatesCli {
                             flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
                         nextest_filter_expr: nextest_filter_expr.clone(),
                         dep_artifact_dirs: resolve_vmm_tests_artifacts(ctx),
+                        vhds,
+                        isos,
                         fail_job_on_test_fail: true,
                         artifact_dir: pub_vmm_tests_results.map(|x| ctx.publish_artifact(x)),
                         done: ctx.new_done_handle(),

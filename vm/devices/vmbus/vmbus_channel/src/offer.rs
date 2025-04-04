@@ -3,6 +3,9 @@
 
 //! Vmbus channel offer support.
 
+use crate::ChannelClosed;
+use crate::RawAsyncChannel;
+use crate::SignalVmbusChannel;
 use crate::bus::ChannelRequest;
 use crate::bus::ChannelServerRequest;
 use crate::bus::OfferInput;
@@ -14,20 +17,17 @@ use crate::bus::ParentBus;
 use crate::gpadl::GpadlMap;
 use crate::gpadl::GpadlMapView;
 use crate::gpadl_ring;
-use crate::gpadl_ring::make_rings;
 use crate::gpadl_ring::GpadlRingMem;
-use crate::ChannelClosed;
-use crate::RawAsyncChannel;
-use crate::SignalVmbusChannel;
+use crate::gpadl_ring::make_rings;
 use futures::StreamExt;
 use mesh::rpc::Rpc;
 use pal_async::driver::Driver;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_event::Event;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::interrupt::Interrupt;
 use vmcore::notify::Notify;

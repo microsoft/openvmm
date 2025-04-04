@@ -4,8 +4,6 @@
 //! A disk device wrapper that provides confidentiality (but not authentication)
 //! via encryption.
 
-#![warn(missing_docs)]
-
 pub mod resolver;
 
 use block_crypto::XtsAes256;

@@ -7,7 +7,7 @@
 //! is a start providing assurance that HvLite virtualization model is appropriate for
 //! KVM/aarch64.
 
-#![allow(dead_code)]
+#![expect(dead_code)]
 #![cfg(all(target_os = "linux", guest_is_native, guest_arch = "aarch64"))]
 
 use crate::KvmError;
@@ -20,9 +20,6 @@ use core::panic;
 use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
-use kvm::kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3;
-use kvm::kvm_regs;
-use kvm::user_pt_regs;
 use kvm::KVM_CAP_ARM_VM_IPA_SIZE;
 use kvm::KVM_DEV_ARM_VGIC_CTRL_INIT;
 use kvm::KVM_DEV_ARM_VGIC_GRP_ADDR;
@@ -30,20 +27,23 @@ use kvm::KVM_DEV_ARM_VGIC_GRP_CTRL;
 use kvm::KVM_DEV_ARM_VGIC_GRP_NR_IRQS;
 use kvm::KVM_VGIC_V3_ADDR_TYPE_DIST;
 use kvm::KVM_VGIC_V3_ADDR_TYPE_REDIST;
+use kvm::kvm_device_type_KVM_DEV_TYPE_ARM_VGIC_V3;
+use kvm::kvm_regs;
+use kvm::user_pt_regs;
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use virt::io::CpuIo;
-use virt::vp::Registers;
-use virt::vp::SystemRegisters;
-use virt::x86::DebugState;
 use virt::NeedsYield;
 use virt::PartitionCapabilities;
 use virt::ProtoPartitionConfig;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use virt::io::CpuIo;
+use virt::vp::Registers;
+use virt::vp::SystemRegisters;
+use virt::x86::DebugState;
 use vm_topology::processor::aarch64::Aarch64VpInfo;
 use vmcore::vmtime::VmTimeAccess;
 
@@ -407,7 +407,7 @@ impl virt::Processor for KvmProcessor<'_> {
             // the register state is up-to-date for save.
             let mut pending_exit = false;
             loop {
-                let exit = if self.inner.eval.load(Ordering::Relaxed) {
+                let exit = if self.inner.eval.load(Ordering::Relaxed) || stop.check().is_err() {
                     // Break out of the loop as soon as there is no pending exit.
                     if !pending_exit {
                         self.inner.eval.store(false, Ordering::Relaxed);

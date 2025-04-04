@@ -72,7 +72,7 @@ impl Cmd for CargoLock {
                         continue;
                     };
 
-                    external_packages.push(self::cargo_external_lock::ExternalPackage {
+                    external_packages.push(cargo_external_lock::ExternalPackage {
                         name,
                         version,
                         source,
@@ -83,11 +83,9 @@ impl Cmd for CargoLock {
                 let generated = format!(
                     "{}{}",
                     super::GENERATED_HEADER.trim_start(),
-                    toml_edit::ser::to_string_pretty(
-                        &self::cargo_external_lock::ExternalLockfile {
-                            package: external_packages,
-                        }
-                    )?
+                    toml_edit::ser::to_string_pretty(&cargo_external_lock::ExternalLockfile {
+                        package: external_packages,
+                    })?
                 );
 
                 if ctx.check {
@@ -114,14 +112,14 @@ impl Cmd for CargoLock {
 
                 let mut base = {
                     let data = fs_err::read_to_string(base)?;
-                    let data: self::cargo_external_lock::ExternalLockfile =
+                    let data: cargo_external_lock::ExternalLockfile =
                         toml_edit::de::from_str(&data)?;
                     data
                 };
 
                 let mut overlay = {
                     let data = fs_err::read_to_string(overlay)?;
-                    let data: self::cargo_external_lock::ExternalLockfile =
+                    let data: cargo_external_lock::ExternalLockfile =
                         toml_edit::de::from_str(&data)?;
                     data
                 };
@@ -232,13 +230,20 @@ impl Cmd for CargoLock {
                 )?;
                 let out = std::path::absolute(out)?;
 
-                let cargo_update = |offline: bool| std::process::Command::new("cargo")
-                    .arg("update")
-                    .arg("--workspace")
-                    .arg("--quiet")
-                    .args(offline.then_some("--offline"))
-                    .stderr(if offline { std::process::Stdio::null() } else { std::process::Stdio::inherit() })
-                    .current_dir(&ctx.overlay_workspace).status();
+                let cargo_update = |offline: bool| {
+                    std::process::Command::new("cargo")
+                        .arg("update")
+                        .arg("--workspace")
+                        .arg("--quiet")
+                        .args(offline.then_some("--offline"))
+                        .stderr(if offline {
+                            std::process::Stdio::null()
+                        } else {
+                            std::process::Stdio::inherit()
+                        })
+                        .current_dir(&ctx.overlay_workspace)
+                        .status()
+                };
 
                 if !cargo_update(true)?.success() {
                     // Try again without `--offline` in case the registry index
@@ -265,7 +270,6 @@ impl Cmd for CargoLock {
     }
 }
 
-#[allow(clippy::module_inception)]
 mod cargo_external_lock {
     use serde::Deserialize;
     use serde::Serialize;

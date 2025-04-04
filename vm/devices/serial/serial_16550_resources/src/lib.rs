@@ -3,14 +3,13 @@
 
 //! Resource definitions for the 16550A UART.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use mesh::MeshPayload;
-use vm_resource::kind::ChipsetDeviceHandleKind;
-use vm_resource::kind::SerialBackendHandle;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::ChipsetDeviceHandleKind;
+use vm_resource::kind::SerialBackendHandle;
 
 /// A handle to a 16550A serial device.
 #[derive(MeshPayload)]

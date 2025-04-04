@@ -3,17 +3,11 @@
 
 //! Structures and definitions used between the underhill kernel and HvLite.
 
-#![allow(dead_code)]
-#![allow(
-    non_upper_case_globals,
-    clippy::upper_case_acronyms,
-    non_camel_case_types,
-    missing_docs
-)]
+#![expect(non_camel_case_types, missing_docs)]
 
 use bitfield_struct::bitfield;
-use hvdef::hypercall::HvInputVtl;
 use hvdef::HV_MESSAGE_SIZE;
+use hvdef::hypercall::HvInputVtl;
 use libc::c_void;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;

@@ -3,7 +3,6 @@
 
 //! Type definitions for loading guest firmware, available as no_std if no features are defined.
 
-#![warn(missing_docs)]
 #![no_std]
 
 pub mod linux;

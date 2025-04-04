@@ -3,22 +3,16 @@
 
 //! Derive macro for `mesh::MeshPayload` and `mesh_protobuf::Protobuf`.
 
+#![expect(missing_docs)]
+
 use heck::ToSnakeCase;
 use proc_macro2::Span;
 use proc_macro2::TokenStream;
+use quote::ToTokens;
 use quote::format_ident;
 use quote::quote;
 use quote::quote_spanned;
-use quote::ToTokens;
 use std::collections::BTreeSet;
-use syn::ext::IdentExt;
-use syn::parse::Parse;
-use syn::parse::ParseStream;
-use syn::parse_macro_input;
-use syn::parse_quote;
-use syn::parse_quote_spanned;
-use syn::punctuated::Punctuated;
-use syn::spanned::Spanned;
 use syn::Attribute;
 use syn::DataEnum;
 use syn::DataStruct;
@@ -36,6 +30,14 @@ use syn::Path;
 use syn::Token;
 use syn::TypePath;
 use syn::WherePredicate;
+use syn::ext::IdentExt;
+use syn::parse::Parse;
+use syn::parse::ParseStream;
+use syn::parse_macro_input;
+use syn::parse_quote;
+use syn::parse_quote_spanned;
+use syn::punctuated::Punctuated;
+use syn::spanned::Spanned;
 
 /// The derive macro for `MeshPayload`.
 ///
@@ -917,7 +919,7 @@ fn derive_enum(
             });
 
             sizes.push(quote! {
-                #variant_destructured_ref => {
+                &mut #variant_destructured_ref => {
                     const NUMBERS: &[u32] = &[#(#field_number,)*];
                     let entries = const { &[#(<#field_encoding as #protobuf_mod::FieldEncode<#field_types, #resource_type>>::ENTRY.erase(),)*] };
                     // SAFETY: the fields are in the same object as `self`.

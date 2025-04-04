@@ -4,10 +4,10 @@
 //! Disk layer resources.
 
 use mesh::MeshPayload;
-use vm_resource::kind::DiskHandleKind;
-use vm_resource::kind::DiskLayerHandleKind;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::DiskLayerHandleKind;
 
 /// RAM disk layer handle.
 ///

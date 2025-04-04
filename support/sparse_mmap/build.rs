@@ -3,7 +3,8 @@
 
 // build.rs scripts don't read the clippy config from .cargo/config.toml, hence
 // the manual inline override
-#![allow(clippy::uninlined_format_args)]
+#![expect(missing_docs)]
+#![expect(clippy::uninlined_format_args)]
 
 fn main() {
     if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {

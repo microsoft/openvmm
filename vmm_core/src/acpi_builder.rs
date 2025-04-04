@@ -16,10 +16,10 @@ use chipset::psp;
 use inspect::Inspect;
 use std::collections::BTreeMap;
 use vm_topology::memory::MemoryLayout;
-use vm_topology::processor::aarch64::Aarch64Topology;
-use vm_topology::processor::x86::X86Topology;
 use vm_topology::processor::ArchTopology;
 use vm_topology::processor::ProcessorTopology;
+use vm_topology::processor::aarch64::Aarch64Topology;
+use vm_topology::processor::x86::X86Topology;
 use x86defs::apic::APIC_BASE_ADDRESS;
 use zerocopy::IntoBytes;
 
@@ -567,8 +567,8 @@ mod test {
     use memory_range::MemoryRange;
     use virt::VpIndex;
     use virt::VpInfo;
-    use vm_topology::processor::x86::X86VpInfo;
     use vm_topology::processor::TopologyBuilder;
+    use vm_topology::processor::x86::X86VpInfo;
 
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;
@@ -581,7 +581,7 @@ mod test {
     ];
 
     fn new_mem() -> MemoryLayout {
-        MemoryLayout::new(42, TB, &MMIO, None).unwrap()
+        MemoryLayout::new(TB, &MMIO, None).unwrap()
     }
 
     fn new_builder<'a>(

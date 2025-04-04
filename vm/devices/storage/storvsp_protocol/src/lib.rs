@@ -1,12 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(dead_code)]
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use guid::Guid;
 use open_enum::open_enum;
-use scsi_defs::srb::SrbStatusAndFlags;
 use scsi_defs::ScsiStatus;
+use scsi_defs::srb::SrbStatusAndFlags;
 use std::fmt::Debug;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;

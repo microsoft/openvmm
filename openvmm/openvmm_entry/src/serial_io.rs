@@ -3,8 +3,8 @@
 
 use crate::cleanup_socket;
 use anyhow::Context;
-use futures::stream;
 use futures::StreamExt;
+use futures::stream;
 use futures_concurrency::prelude::*;
 use hvlite_defs::config::SerialPipes;
 use io::ErrorKind;
@@ -21,9 +21,9 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::thread;
 use unix_socket::UnixListener;
-use vm_resource::kind::SerialBackendHandle;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
+use vm_resource::kind::SerialBackendHandle;
 
 pub struct SerialIo {
     pub input: Option<File>,
@@ -49,14 +49,16 @@ impl SerialIo {
         if let Some(mut output) = self.output.take() {
             thread::Builder::new()
                 .name(format!("{} copy out", name))
-                .spawn(move || loop {
-                    let mut buf = [0; 256];
-                    let n = output.read(&mut buf).unwrap_or(0);
-                    if n == 0 {
-                        break;
+                .spawn(move || {
+                    loop {
+                        let mut buf = [0; 256];
+                        let n = output.read(&mut buf).unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        f.write_all(&buf[..n]).expect("BUGBUG");
+                        f.flush().expect("BUGBUG");
                     }
-                    f.write_all(&buf[..n]).expect("BUGBUG");
-                    f.flush().expect("BUGBUG");
                 })
                 .unwrap();
         }

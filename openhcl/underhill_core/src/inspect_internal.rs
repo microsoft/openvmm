@@ -38,8 +38,8 @@ use inspect::Request;
 use inspect::Response;
 use inspect::SensitivityLevel;
 use mesh::Sender;
-use pal_async::task::Spawn;
 use pal_async::DefaultDriver;
+use pal_async::task::Spawn;
 
 pub(crate) fn inspect_internal_diagnostics(
     req: Request<'_>,

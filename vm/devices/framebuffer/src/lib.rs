@@ -19,8 +19,6 @@
 //! This is separate from the synthetic device because its lifetime is separate
 //! from that of the synthetic video VMBus channel.
 
-#![warn(missing_docs)]
-
 use anyhow::Context;
 use chipset_device::ChipsetDevice;
 use guestmem::GuestMemory;
@@ -29,8 +27,8 @@ use guestmem::MemoryMapper;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
-use mesh::payload::Protobuf;
 use mesh::MeshPayload;
+use mesh::payload::Protobuf;
 use parking_lot::Mutex;
 use sparse_mmap::Mappable;
 use sparse_mmap::SparseMapping;
@@ -41,8 +39,8 @@ use video_core::FramebufferControl;
 use video_core::FramebufferFormat;
 use video_core::ResolvedFramebuffer;
 use video_core::SharedFramebufferHandle;
-use vm_resource::kind::FramebufferHandleKind;
 use vm_resource::ResolveResource;
+use vm_resource::kind::FramebufferHandleKind;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;

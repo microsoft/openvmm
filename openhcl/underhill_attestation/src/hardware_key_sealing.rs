@@ -113,7 +113,7 @@ impl HardwareKeyProtectorExt for HardwareKeyProtector {
         );
 
         let mut iv = [0u8; vmgs::AES_CBC_IV_LENGTH];
-        getrandom::getrandom(&mut iv).expect("rng failure");
+        getrandom::fill(&mut iv).expect("rng failure");
 
         let mut encrypted_egress_key = [0u8; vmgs::AES_GCM_KEY_LENGTH];
         let output = crypto::aes_256_cbc_encrypt(&hardware_derived_keys.aes_key, egress_key, &iv)

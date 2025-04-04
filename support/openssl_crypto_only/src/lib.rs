@@ -7,7 +7,6 @@
 // UNSAFETY: needed for exporting unmangled names and importing openssl
 // routines.
 #![expect(unsafe_code)]
-#![warn(missing_docs)]
 #![no_std]
 
 use core::ffi::c_int;

@@ -5,17 +5,6 @@
 
 pub use super::time::DurationEncoding;
 
-use super::inplace_some;
-use super::protobuf::decode_with;
-use super::protobuf::FieldReader;
-use super::protobuf::FieldSizer;
-use super::protobuf::FieldWriter;
-use super::protobuf::MessageReader;
-use super::protobuf::MessageSizer;
-use super::protobuf::MessageWriter;
-use super::protobuf::PackedReader;
-use super::protobuf::PackedSizer;
-use super::protobuf::PackedWriter;
 use super::CopyExtend;
 use super::DecodeError;
 use super::DefaultEncoding;
@@ -31,13 +20,24 @@ use super::Result;
 use super::ResultExt;
 use super::SerializedMessage;
 use super::Wrapping;
+use super::inplace_some;
+use super::protobuf::FieldReader;
+use super::protobuf::FieldSizer;
+use super::protobuf::FieldWriter;
+use super::protobuf::MessageReader;
+use super::protobuf::MessageSizer;
+use super::protobuf::MessageWriter;
+use super::protobuf::PackedReader;
+use super::protobuf::PackedSizer;
+use super::protobuf::PackedWriter;
+use super::protobuf::decode_with;
+use crate::Error;
 use crate::inplace_none;
 use crate::protobuf::WireType;
 use crate::protofile::DescribeField;
 use crate::protofile::DescribeMessage;
 use crate::protofile::FieldType;
 use crate::protofile::MessageDescription;
-use crate::Error;
 use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -46,15 +46,15 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::convert::Infallible;
 use core::marker::PhantomData;
+use core::num::NonZeroI8;
 use core::num::NonZeroI16;
 use core::num::NonZeroI32;
 use core::num::NonZeroI64;
-use core::num::NonZeroI8;
 use core::num::NonZeroIsize;
+use core::num::NonZeroU8;
 use core::num::NonZeroU16;
 use core::num::NonZeroU32;
 use core::num::NonZeroU64;
-use core::num::NonZeroU8;
 use core::num::NonZeroUsize;
 use core::time::Duration;
 use thiserror::Error;
@@ -1701,7 +1701,7 @@ impl<T: DefaultEncoding + Clone> DefaultEncoding for Arc<T> {
 // Derive an encoding for `Result`.
 #[derive(mesh_derive::Protobuf)]
 #[mesh(impl_for = "::core::result::Result")]
-#[allow(dead_code)]
+#[expect(dead_code)]
 enum ResultAsPayload<T, U> {
     #[mesh(transparent)]
     Ok(T),
@@ -1712,7 +1712,7 @@ enum ResultAsPayload<T, U> {
 // Derive an encoding for `Range`.
 #[derive(mesh_derive::Protobuf)]
 #[mesh(impl_for = "::core::ops::Range")]
-#[allow(dead_code)]
+#[expect(dead_code)]
 struct RangeAsPayload<T> {
     start: T,
     end: T,

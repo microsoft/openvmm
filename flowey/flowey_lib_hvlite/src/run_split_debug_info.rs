@@ -35,11 +35,13 @@ impl SimpleFlowNode for Node {
         let installed_objcopy =
             ctx.reqv(
                 |side_effect| flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: vec![match arch {
-                        CommonArch::X86_64 => "binutils-x86-64-linux-gnu",
-                        CommonArch::Aarch64 => "binutils-aarch64-linux-gnu",
-                    }
-                    .into()],
+                    package_names: vec![
+                        match arch {
+                            CommonArch::X86_64 => "binutils-x86-64-linux-gnu",
+                            CommonArch::Aarch64 => "binutils-aarch64-linux-gnu",
+                        }
+                        .into(),
+                    ],
                     done: side_effect,
                 },
             );

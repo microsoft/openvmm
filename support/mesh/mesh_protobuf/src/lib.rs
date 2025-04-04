@@ -17,7 +17,6 @@
 //! values, such as ports, handles, and file descriptors, whose ownership is to
 //! be transferred to the target node.
 
-#![warn(missing_docs)]
 // UNSAFETY: Serialization and deserialization of structs directly.
 #![expect(unsafe_code)]
 #![warn(clippy::std_instead_of_alloc)]
@@ -565,17 +564,17 @@ pub type Result<T> = core::result::Result<T, Error>;
 mod tests {
     extern crate std;
 
-    use super::encode;
     use super::SerializedMessage;
+    use super::encode;
+    use crate::DecodeError;
+    use crate::FieldDecode;
+    use crate::FieldEncode;
+    use crate::NoResources;
     use crate::decode;
     use crate::encoding::BorrowedCowField;
     use crate::encoding::OwningCowField;
     use crate::encoding::VecField;
     use crate::protobuf::read_varint;
-    use crate::DecodeError;
-    use crate::FieldDecode;
-    use crate::FieldEncode;
-    use crate::NoResources;
     use alloc::borrow::Cow;
     use alloc::collections::BTreeMap;
     use alloc::vec;
@@ -584,8 +583,8 @@ mod tests {
     use core::fmt::Write;
     use core::num::NonZeroU32;
     use core::time::Duration;
-    use expect_test::expect;
     use expect_test::Expect;
+    use expect_test::expect;
     use mesh_derive::Protobuf;
     use std::prelude::rust_2021::*;
     use std::println;

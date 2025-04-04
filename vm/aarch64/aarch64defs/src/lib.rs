@@ -3,6 +3,7 @@
 
 //! ARM64 type and constant definitions.
 
+#![expect(missing_docs)]
 #![no_std]
 
 pub mod gic;

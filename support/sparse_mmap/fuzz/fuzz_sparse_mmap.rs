@@ -2,11 +2,12 @@
 // Licensed under the MIT License.
 
 #![cfg_attr(all(target_os = "linux", target_env = "gnu"), no_main)]
+#![expect(missing_docs)]
 
 use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
-use sparse_mmap::alloc_shared_memory;
 use sparse_mmap::SparseMapping;
+use sparse_mmap::alloc_shared_memory;
 use std::fmt;
 use xtask_fuzz::fuzz_eprintln;
 use xtask_fuzz::fuzz_target;

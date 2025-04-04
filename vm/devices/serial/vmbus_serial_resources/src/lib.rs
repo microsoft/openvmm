@@ -4,13 +4,12 @@
 //! Resource definitions for vmbus serial ports.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use mesh::MeshPayload;
-use vm_resource::kind::SerialBackendHandle;
-use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::SerialBackendHandle;
+use vm_resource::kind::VmbusDeviceHandleKind;
 
 /// A handle to a vmbus serial device.
 #[derive(MeshPayload)]

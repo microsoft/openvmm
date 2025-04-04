@@ -3,11 +3,11 @@
 
 //! Coordinator between queues and hot add/remove of namespaces.
 
+use super::IoQueueEntrySizes;
 use super::admin::AdminConfig;
 use super::admin::AdminHandler;
 use super::admin::AdminState;
 use super::admin::NsidConflict;
-use super::IoQueueEntrySizes;
 use crate::queue::DoorbellRegister;
 use disk_backend::Disk;
 use futures::FutureExt;
@@ -276,32 +276,26 @@ impl Coordinator {
                         },
                     ),
                     CoordinatorRequest::AddNamespace(rpc) => {
-                        rpc.handle(|(nsid, disk)| {
-                            let this = &mut self;
-                            async move {
-                                let running = this.admin.stop().await;
-                                let (admin, state) = this.admin.get_mut();
-                                let r = admin.add_namespace(state, nsid, disk).await;
-                                if running {
-                                    this.admin.start();
-                                }
-                                r
+                        rpc.handle(async |(nsid, disk)| {
+                            let running = self.admin.stop().await;
+                            let (admin, state) = self.admin.get_mut();
+                            let r = admin.add_namespace(state, nsid, disk).await;
+                            if running {
+                                self.admin.start();
                             }
+                            r
                         })
                         .await
                     }
                     CoordinatorRequest::RemoveNamespace(rpc) => {
-                        rpc.handle(|nsid| {
-                            let this = &mut self;
-                            async move {
-                                let running = this.admin.stop().await;
-                                let (admin, state) = this.admin.get_mut();
-                                let r = admin.remove_namespace(state, nsid).await;
-                                if running {
-                                    this.admin.start();
-                                }
-                                r
+                        rpc.handle(async |nsid| {
+                            let running = self.admin.stop().await;
+                            let (admin, state) = self.admin.get_mut();
+                            let r = admin.remove_namespace(state, nsid).await;
+                            if running {
+                                self.admin.start();
                             }
+                            r
                         })
                         .await
                     }

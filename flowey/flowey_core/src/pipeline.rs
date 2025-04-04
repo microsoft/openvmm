@@ -4,10 +4,6 @@
 //! Core types and traits used to create and work with flowey pipelines.
 
 use self::internal::*;
-use crate::node::steps::ado::AdoResourcesRepositoryId;
-use crate::node::user_facing::AdoRuntimeVar;
-use crate::node::user_facing::GhPermission;
-use crate::node::user_facing::GhPermissionValue;
 use crate::node::FlowArch;
 use crate::node::FlowNodeBase;
 use crate::node::FlowPlatform;
@@ -17,10 +13,14 @@ use crate::node::IntoRequest;
 use crate::node::NodeHandle;
 use crate::node::ReadVar;
 use crate::node::WriteVar;
+use crate::node::steps::ado::AdoResourcesRepositoryId;
+use crate::node::user_facing::AdoRuntimeVar;
+use crate::node::user_facing::GhPermission;
+use crate::node::user_facing::GhPermissionValue;
 use crate::patch::PatchResolver;
 use crate::patch::ResolvedPatches;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -294,6 +294,13 @@ pub enum GhRunner {
     // See <https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#choosing-github-hosted-runners>
     // for more details.
     RunnerGroup { group: String, labels: Vec<String> },
+}
+
+impl GhRunner {
+    /// Whether this is a self-hosted runner with the provided label
+    pub fn is_self_hosted_with_label(&self, label: &str) -> bool {
+        matches!(self, GhRunner::SelfHosted(labels) if labels.iter().any(|s| s.as_str() == label))
+    }
 }
 
 /// Parameter type (unstable / stable).
@@ -1139,6 +1146,16 @@ impl PipelineJob<'_> {
         PipelineJobHandle {
             job_idx: self.job_idx,
         }
+    }
+
+    /// Return the job's platform.
+    pub fn get_platform(&self) -> FlowPlatform {
+        self.pipeline.jobs[self.job_idx].platform
+    }
+
+    /// Return the job's architecture.
+    pub fn get_arch(&self) -> FlowArch {
+        self.pipeline.jobs[self.job_idx].arch
     }
 }
 

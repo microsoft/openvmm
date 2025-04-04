@@ -5,10 +5,12 @@
 //!
 //! DEVNOTE: this organization isn't great, and should be reconsidered...
 
+#![expect(missing_docs)]
+
 use anyhow::Context;
 use guestmem::GuestMemory;
-use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
+use hvdef::Vtl;
 use loader::importer::BootPageAcceptance;
 use loader::importer::GuestArch;
 use loader::importer::ImageLoad;
@@ -219,7 +221,8 @@ impl<R: Debug + GuestArch> ImageLoad<R> for Loader<'_, R> {
                 // Thus the memory request must live completely within a single
                 // range, since any gaps are mmio.
                 if end_address > range.range.end() {
-                    anyhow::bail!("requested memory at base {:#x} and end {:#x} is not covered fully by the corresponding range {:?}",
+                    anyhow::bail!(
+                        "requested memory at base {:#x} and end {:#x} is not covered fully by the corresponding range {:?}",
                         base_address,
                         end_address,
                         range
@@ -241,7 +244,8 @@ impl<R: Debug + GuestArch> ImageLoad<R> for Loader<'_, R> {
                 if base_address >= range.start() && (page_count * HV_PAGE_SIZE) <= range.len() {
                     memory_found = true;
                 } else {
-                    anyhow::bail!("startup vtl2 memory at base {:#x} and end {:#x} is not covered fully by vtl2 specific ram range {:?}",
+                    anyhow::bail!(
+                        "startup vtl2 memory at base {:#x} and end {:#x} is not covered fully by vtl2 specific ram range {:?}",
                         base_address,
                         end_address,
                         range

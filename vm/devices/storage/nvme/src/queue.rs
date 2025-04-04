@@ -7,9 +7,9 @@ use crate::spec;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use thiserror::Error;
 use vmcore::interrupt::Interrupt;
 
@@ -322,9 +322,5 @@ impl CompletionQueue {
 }
 
 fn advance(n: u32, l: u32) -> u32 {
-    if n + 1 < l {
-        n + 1
-    } else {
-        0
-    }
+    if n + 1 < l { n + 1 } else { 0 }
 }

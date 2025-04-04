@@ -7,10 +7,9 @@ mod pci_shutdown;
 pub mod vtl2_settings_worker;
 
 use self::vtl2_settings_worker::DeviceInterfaces;
-use crate::dma_manager::DmaClientSpawner;
-use crate::dma_manager::GlobalDmaManager;
-use crate::emuplat::netvsp::RuntimeSavedState;
+use crate::ControlRequest;
 use crate::emuplat::EmuplatServicing;
+use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::nvme_manager::NvmeManager;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
@@ -20,7 +19,6 @@ use crate::servicing::ServicingState;
 use crate::vmbus_relay_unit::VmbusRelayHandle;
 use crate::worker::FirmwareType;
 use crate::worker::NetworkSettingsError;
-use crate::ControlRequest;
 use anyhow::Context;
 use async_trait::async_trait;
 use futures::FutureExt;
@@ -35,15 +33,16 @@ use hyperv_ic_resources::shutdown::ShutdownRpc;
 use hyperv_ic_resources::shutdown::ShutdownType;
 use igvm_defs::MemoryMapEntryType;
 use inspect::Inspect;
+use mesh::CancelContext;
+use mesh::MeshPayload;
 use mesh::error::RemoteError;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use mesh::CancelContext;
-use mesh::MeshPayload;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
-use page_pool_alloc::PagePool;
+use openhcl_dma_manager::DmaClientSpawner;
+use openhcl_dma_manager::OpenhclDmaManager;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
@@ -53,8 +52,8 @@ use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::instrument;
 use tracing::Instrument;
+use tracing::instrument;
 use uevent::UeventListener;
 use underhill_threadpool::AffinitizedThreadpool;
 use virt::IsolationType;
@@ -69,9 +68,9 @@ use vmm_core::partition_unit::PartitionUnit;
 use vmm_core::vmbus_unit::ChannelUnit;
 use vmm_core::vmbus_unit::VmbusServerHandle;
 use vmotherboard::ChipsetDevices;
-use vtl2_settings_worker::handle_vtl2_config_rpc;
 use vtl2_settings_worker::Vtl2ConfigNicRpc;
 use vtl2_settings_worker::Vtl2SettingsWorker;
+use vtl2_settings_worker::handle_vtl2_config_rpc;
 
 #[derive(MeshPayload)]
 pub enum UhVmRpc {
@@ -111,6 +110,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
         state_units: &StateUnits,
         vmbus_server: &Option<VmbusServerHandle>,
         dma_client_spawner: DmaClientSpawner,
+        is_isolated: bool,
     ) -> anyhow::Result<RuntimeSavedState>;
 
     /// Callback when network is removed externally.
@@ -143,6 +143,7 @@ pub(crate) struct LoadedVm {
     pub nvme_manager: Option<NvmeManager>,
     pub emuplat_servicing: EmuplatServicing,
     pub device_interfaces: Option<DeviceInterfaces>,
+    pub vmbus_client: Option<vmbus_client::VmbusClient>,
     /// Memory map with IGVM types for each range.
     pub vtl0_memory_map: Vec<(MemoryRangeWithNode, MemoryMapEntryType)>,
 
@@ -179,11 +180,9 @@ pub(crate) struct LoadedVm {
 
     pub _periodic_telemetry_task: Task<()>,
 
-    pub shared_vis_pool: Option<PagePool>,
-    pub private_pool: Option<PagePool>,
     pub nvme_keep_alive: bool,
     pub test_configuration: Option<TestScenarioConfig>,
-    pub dma_manager: GlobalDmaManager,
+    pub dma_manager: OpenhclDmaManager,
 }
 
 pub struct LoadedVmState<T> {
@@ -308,9 +307,8 @@ impl LoadedVm {
                             "vtl0_memory_map",
                             inspect_helpers::vtl0_memory_map(&self.vtl0_memory_map),
                         );
-                        resp.field("shared_vis_pool", &self.shared_vis_pool);
-                        resp.field("private_pool", &self.private_pool);
                         resp.field("memory", &self.memory);
+                        resp.field("dma_manager", &self.dma_manager);
                     }),
                 },
                 Event::Vtl2ConfigNicRpc(message) => {
@@ -318,7 +316,7 @@ impl LoadedVm {
                 }
                 Event::UhVmRpc(msg) => match msg {
                     UhVmRpc::Resume(rpc) => {
-                        rpc.handle(|()| async {
+                        rpc.handle(async |()| {
                             if !self.state_units.is_running() {
                                 self.start(None).await;
                                 true
@@ -328,9 +326,9 @@ impl LoadedVm {
                         })
                         .await
                     }
-                    UhVmRpc::Pause(rpc) => rpc.handle(|()| self.stop()).await,
+                    UhVmRpc::Pause(rpc) => rpc.handle(async |()| self.stop().await).await,
                     UhVmRpc::Save(rpc) => {
-                        rpc.handle_failable(|()| async {
+                        rpc.handle_failable(async |()| {
                             let running = self.stop().await;
                             let r = self.save(None, false).await;
                             if running {
@@ -341,10 +339,11 @@ impl LoadedVm {
                         .await
                     }
                     UhVmRpc::ClearHalt(rpc) => {
-                        rpc.handle(|()| self.partition_unit.clear_halt()).await
+                        rpc.handle(async |()| self.partition_unit.clear_halt().await)
+                            .await
                     }
                     UhVmRpc::PacketCapture(rpc) => {
-                        rpc.handle_failable(|params| async {
+                        rpc.handle_failable(async |params| {
                             let network_settings = self
                                 .network_settings
                                 .as_ref()
@@ -383,7 +382,7 @@ impl LoadedVm {
                     }
                 }
                 Event::ShutdownRequest(rpc) => {
-                    rpc.handle(|msg| async {
+                    rpc.handle(async |msg| {
                         if matches!(msg.shutdown_type, ShutdownType::Hibernate) {
                             self.handle_hibernate_request(false).await;
                         }
@@ -498,7 +497,7 @@ impl LoadedVm {
         let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
 
         // Do everything before the log flush under a span.
-        let mut state = async {
+        let r = async {
             if !self.stop().await {
                 // This should only occur if you tried to initiate a
                 // servicing operation after manually pausing underhill
@@ -547,7 +546,16 @@ impl LoadedVm {
             Ok(state)
         }
         .instrument(tracing::info_span!("servicing_save_vtl2", %correlation_id))
-        .await?;
+        .await;
+
+        let mut state = match r {
+            Ok(state) => state,
+            Err(err) => {
+                self.resume_drivers();
+                return Err(err);
+            }
+        };
+
         // Tell the initial process to flush all logs. Any logs
         // emitted after this point may be lost.
         state.init_state.flush_logs_result = Some({
@@ -636,6 +644,21 @@ impl LoadedVm {
         }
     }
 
+    /// Called after a failed servicing operation.
+    ///
+    /// FUTURE: model the drivers as "driver" state units (as opposed to guest
+    /// VM state units) so that we have a consistent way to model their state
+    /// transitions.
+    fn resume_drivers(&mut self) {
+        if let Some(client) = &mut self.vmbus_client {
+            client.start();
+        }
+
+        // BUGBUG: resume the other drivers. This only becomes a problem once
+        // nvme keepalive is enabled, since otherwise no other drivers have been
+        // stopped.
+    }
+
     async fn save(
         &mut self,
         _deadline: Option<std::time::Instant>,
@@ -662,27 +685,25 @@ impl LoadedVm {
             .save()
             .await
             .context("vmgs save failed")?;
-        let shared_vis_pool = self
-            .shared_vis_pool
-            .as_mut()
-            .map(vmcore::save_restore::SaveRestore::save)
-            .transpose()
-            .context("shared_vis_pool save failed")?;
 
-        // Only save private pool state if we are expected to keep VF devices
+        // Only save dma manager state if we are expected to keep VF devices
         // alive across save. Otherwise, don't persist the state at all, as
         // there should be no live DMA across save.
-        let private_pool = if vf_keepalive_flag {
-            self.private_pool
-                .as_mut()
-                .map(vmcore::save_restore::SaveRestore::save)
-                .transpose()
-                .context("private_pool save failed")?
+        let dma_manager_state = if vf_keepalive_flag {
+            use vmcore::save_restore::SaveRestore;
+            Some(self.dma_manager.save().context("dma_manager save failed")?)
         } else {
             None
         };
 
-        Ok(ServicingState {
+        let vmbus_client = if let Some(vmbus_client) = &mut self.vmbus_client {
+            vmbus_client.stop().await;
+            Some(vmbus_client.save().await)
+        } else {
+            None
+        };
+
+        let mut state = ServicingState {
             init_state: servicing::ServicingInitState {
                 firmware_type: self.firmware_type.into(),
                 vm_stop_reference_time: self.last_state_unit_stop.unwrap().as_100ns(),
@@ -692,11 +713,16 @@ impl LoadedVm {
                 vmgs: (vmgs, self.vmgs_disk_metadata.clone()),
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
                 nvme_state,
-                shared_pool_state: shared_vis_pool,
-                private_pool_state: private_pool,
+                dma_manager_state,
+                vmbus_client,
             },
             units,
-        })
+        };
+
+        state
+            .fix_pre_save()
+            .context("failed to fix up servicing state before save")?;
+        Ok(state)
     }
 
     #[instrument(skip(self))]
@@ -753,7 +779,8 @@ impl LoadedVm {
                 self.partition.clone(),
                 &self.state_units,
                 &self.vmbus_server,
-                self.dma_manager.get_client_spawner().clone(),
+                self.dma_manager.client_spawner(),
+                self.isolation.is_isolated(),
             )
             .await?;
 

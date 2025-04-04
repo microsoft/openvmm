@@ -9,18 +9,18 @@ mod regs;
 mod vm_state;
 mod vp_state;
 
-use crate::gsi;
-use crate::gsi::GsiRouting;
 use crate::KvmError;
 use crate::KvmPartition;
 use crate::KvmPartitionInner;
 use crate::KvmProcessorBinder;
 use crate::KvmRunVpError;
+use crate::gsi;
+use crate::gsi::GsiRouting;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use hv1_emulator::message_queues::MessageQueues;
-use hvdef::hypercall::Control;
+use hvdef::HV_PAGE_SIZE;
 use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvMessageType;
@@ -28,12 +28,12 @@ use hvdef::HvSynicScontrol;
 use hvdef::HvSynicSimpSiefp;
 use hvdef::HypercallCode;
 use hvdef::Vtl;
-use hvdef::HV_PAGE_SIZE;
+use hvdef::hypercall::Control;
 use inspect::Inspect;
 use inspect::InspectMut;
+use kvm::KVM_CPUID_FLAG_SIGNIFCANT_INDEX;
 use kvm::kvm_ioeventfd_flag_nr_datamatch;
 use kvm::kvm_ioeventfd_flag_nr_deassign;
-use kvm::KVM_CPUID_FLAG_SIGNIFCANT_INDEX;
 use pal_event::Event;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
@@ -43,22 +43,13 @@ use std::convert::Infallible;
 use std::future::poll_fn;
 use std::io;
 use std::os::unix::prelude::*;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Weak;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::time::Duration;
 use thiserror::Error;
-use virt::io::CpuIo;
-use virt::irqcon::DeliveryMode;
-use virt::irqcon::IoApicRouting;
-use virt::irqcon::MsiRequest;
-use virt::state::StateElement;
-use virt::vm::AccessVmState;
-use virt::x86::max_physical_address_size_from_cpuid;
-use virt::x86::vp::AccessVpState;
-use virt::x86::HardwareBreakpoint;
 use virt::CpuidLeaf;
 use virt::CpuidLeafSet;
 use virt::Hv1;
@@ -73,6 +64,15 @@ use virt::ResetPartition;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use virt::io::CpuIo;
+use virt::irqcon::DeliveryMode;
+use virt::irqcon::IoApicRouting;
+use virt::irqcon::MsiRequest;
+use virt::state::StateElement;
+use virt::vm::AccessVmState;
+use virt::x86::HardwareBreakpoint;
+use virt::x86::max_physical_address_size_from_cpuid;
+use virt::x86::vp::AccessVpState;
 use vm_topology::processor::x86::ApicMode;
 use vm_topology::processor::x86::X86VpInfo;
 use vmcore::interrupt::Interrupt;
@@ -188,17 +188,15 @@ impl virt::Hypervisor for Kvm {
             };
 
             use hvdef::*;
-            let privileges = u64::from(
-                HvPartitionPrivilege::new()
-                    .with_access_partition_reference_counter(true)
-                    .with_access_hypercall_msrs(true)
-                    .with_access_vp_index(true)
-                    .with_access_frequency_msrs(true)
-                    .with_access_synic_msrs(true)
-                    .with_access_synthetic_timer_msrs(true)
-                    .with_access_vp_runtime_msr(true)
-                    .with_access_apic_msrs(true),
-            );
+            let privileges = HvPartitionPrivilege::new()
+                .with_access_partition_reference_counter(true)
+                .with_access_hypercall_msrs(true)
+                .with_access_vp_index(true)
+                .with_access_frequency_msrs(true)
+                .with_access_synic_msrs(true)
+                .with_access_synthetic_timer_msrs(true)
+                .with_access_vp_runtime_msr(true)
+                .with_access_apic_msrs(true);
 
             let hv_cpuid = &[
                 CpuidLeaf::new(
@@ -1055,7 +1053,7 @@ impl Processor for KvmProcessor<'_> {
             // the register state is up-to-date for save.
             let mut pending_exit = false;
             loop {
-                let exit = if self.inner.eval.load(Ordering::Relaxed) {
+                let exit = if self.inner.eval.load(Ordering::Relaxed) || stop.check().is_err() {
                     // Break out of the loop as soon as there is no pending exit.
                     if !pending_exit {
                         self.inner.eval.store(false, Ordering::Relaxed);

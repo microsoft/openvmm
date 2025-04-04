@@ -18,13 +18,13 @@ use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::async_dgram::AsyncSend;
 use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_async::pipe::MessagePipe;
+use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
-use vmbus_channel::RawAsyncChannel;
 use vmbus_ring::RingMem;
 use vmcore::save_restore::SavedStateRoot;
 use zerocopy::FromBytes;
@@ -355,8 +355,7 @@ impl<T: RingMem + Unpin> MouseChannel<T> {
     }
 }
 
-//transforms MouseData from the vnc server to an HID input report (mouse packet) by scaling coordinates and marking button flags
-#[allow(clippy::field_reassign_with_default)] // performing protocol translation
+// Transforms MouseData from the vnc server to an HID input report (mouse packet) by scaling coordinates and marking button flags
 async fn post_mouse_packet(
     mouse_data: MouseData,
     channel: &mut (impl AsyncSend + Unpin),
@@ -372,7 +371,7 @@ async fn post_mouse_packet(
         protocol::HID_MOUSE_BUTTON_RIGHT,
     ];
 
-    #[allow(clippy::needless_range_loop)] // rare case of a clippy misfire
+    #[expect(clippy::needless_range_loop)] // rare case of a clippy misfire
     for i in 0..protocol::MOUSE_NUMBER_BUTTONS {
         if ((1u8 << i) & mouse_data.button_mask) == (1u8 << i) {
             if i < 3 {
@@ -406,10 +405,10 @@ async fn post_mouse_packet(
 mod tests {
     use super::*;
     use input_core::mesh_input::input_pair;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
     use pal_async::task::Task;
-    use pal_async::DefaultDriver;
     use std::io::ErrorKind;
     use test_with_tracing::test;
     use vmbus_async::pipe::connected_message_pipes;

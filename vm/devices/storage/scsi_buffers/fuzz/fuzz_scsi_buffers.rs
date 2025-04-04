@@ -4,11 +4,12 @@
 #![cfg_attr(all(target_os = "linux", target_env = "gnu"), no_main)]
 // UNSAFETY: Manipulating IoBuffers for the crate to use.
 #![expect(unsafe_code)]
+#![expect(missing_docs)]
 
 use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
-use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use scsi_buffers::BounceBuffer;
 use scsi_buffers::IoBuffer;
 use scsi_buffers::RequestBuffers;

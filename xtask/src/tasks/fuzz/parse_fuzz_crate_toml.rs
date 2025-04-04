@@ -27,7 +27,7 @@ pub(super) struct FuzzCrateMetadata {
 #[derive(Debug)]
 pub(super) struct RepoFuzzTarget {
     pub fuzz_dir: PathBuf,
-    #[allow(dead_code)] // useful in `dump` debug output
+    #[expect(dead_code)] // useful in `dump` debug output
     pub crate_name: String,
     pub allowlist: Vec<PathBuf>,
     pub target_options: Vec<String>,

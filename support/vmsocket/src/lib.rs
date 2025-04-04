@@ -7,7 +7,6 @@
 //! [`VmStream`] and [`VmListener`] types.
 
 #![cfg(any(windows, target_os = "linux"))]
-#![warn(missing_docs)]
 
 cfg_if::cfg_if! {
     if #[cfg(windows)] {

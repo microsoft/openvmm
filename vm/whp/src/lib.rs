@@ -1,10 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(windows)]
 // UNSAFETY: Calling WHP APIs.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 pub mod abi;
 mod api;
@@ -25,9 +26,9 @@ use std::marker::PhantomData;
 use std::num::NonZeroI32;
 use std::num::NonZeroU16;
 use std::os::windows::prelude::*;
+use std::ptr::NonNull;
 use std::ptr::null;
 use std::ptr::null_mut;
-use std::ptr::NonNull;
 use winapi::shared::guiddef::GUID;
 use winapi::shared::ntdef::LUID;
 use winapi::shared::winerror;
@@ -513,7 +514,7 @@ impl Partition {
         }
     }
 
-    #[allow(clippy::missing_safety_doc)]
+    #[expect(clippy::missing_safety_doc)]
     pub unsafe fn map_range(
         &self,
         process: Option<BorrowedHandle<'_>>,
@@ -697,7 +698,7 @@ impl Partition {
         self.get_property(partition_prop::PhysicalAddressWidth)
     }
 
-    #[allow(clippy::missing_safety_doc)]
+    #[expect(clippy::missing_safety_doc)]
     pub unsafe fn register_doorbell(&self, m: &DoorbellMatch, event: RawHandle) -> Result<()> {
         unsafe {
             check_hresult(api::WHvRegisterPartitionDoorbellEvent(
@@ -1737,7 +1738,7 @@ impl<'a> ExitReason<'a> {
         match ctx.ExitReason {
             abi::WHvRunVpExitReasonNone => Self::None,
             abi::WHvRunVpExitReasonCanceled => Self::Canceled,
-            reason => Self::Hypervisor(reason.0, &ctx.u.message),
+            reason => Self::Hypervisor(reason.0, &ctx.u),
         }
     }
 }
@@ -1784,7 +1785,7 @@ pub enum ExitReason<'a> {
 #[derive(Copy, Clone, Debug)]
 pub enum ExitReason<'a> {
     None,
-    Hypervisor(u32, &'a [u8; 256]),
+    Hypervisor(u32, &'a abi::WHV_RUN_VP_EXIT_CONTEXT_u),
     Canceled,
 }
 
@@ -1884,7 +1885,7 @@ macro_rules! get_registers {
             let mut values = [$($crate::get_registers!(@def $name)),+];
             ($vp).get_registers(&names, &mut values).map(|_| {
                 let mut vs = &values[..];
-                #[allow(unused_assignments, clippy::mixed_read_write_in_expression)]
+                #[allow(unused_assignments)]
                 ($({
                     let n = $name;
                     let v = &vs[0];

@@ -3,7 +3,6 @@
 
 //! Helper code for finding PCAT binaries.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use anyhow::Context;

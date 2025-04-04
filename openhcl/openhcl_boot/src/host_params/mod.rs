@@ -11,8 +11,8 @@ use host_fdt_parser::GicInfo;
 use host_fdt_parser::MemoryAllocationMode;
 use host_fdt_parser::MemoryEntry;
 use host_fdt_parser::VmbusInfo;
-use memory_range::subtract_ranges;
 use memory_range::MemoryRange;
+use memory_range::subtract_ranges;
 use shim_params::IsolationType;
 
 mod dt;

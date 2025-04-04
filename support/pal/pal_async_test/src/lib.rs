@@ -4,10 +4,10 @@
 //! Async test attribute macro for `pal_async` crate.
 
 use quote::quote;
-use syn::parse_macro_input;
-use syn::spanned::Spanned;
 use syn::Error;
 use syn::ItemFn;
+use syn::parse_macro_input;
+use syn::spanned::Spanned;
 
 /// Attribute macro on async tests.
 ///
@@ -48,7 +48,7 @@ fn make_async_test(item: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
             return Err(Error::new(
                 item.sig.inputs.span(),
                 "expected 0 arguments or 1 argument (the Driver or Spawn impl)",
-            ))
+            ));
         }
     };
     let attrs = &item.attrs;
@@ -70,7 +70,7 @@ fn make_async_test(item: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
         #(#attrs)*
         fn #name() {
             #item
-            ::pal_async::DefaultPool::run_with(|driver| async move {
+            ::pal_async::DefaultPool::run_with(async |driver| {
                 #name(#args).await
             })
             #unwrap

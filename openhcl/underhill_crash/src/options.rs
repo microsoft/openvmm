@@ -24,12 +24,15 @@ pub struct Options {
 
     /// Be verbose
     pub verbose: bool,
+    /// Don't redirect output
+    pub no_redirect: bool,
+    /// Don't include KMSG
+    pub no_kmsg: bool,
     /// Timeout
     pub timeout: Duration,
 }
 
 impl Options {
-    #[allow(clippy::expect_fun_call)]
     pub(crate) fn parse() -> Self {
         let mut args = std::env::args_os();
 
@@ -38,7 +41,7 @@ impl Options {
 
         let parse_number = |arg: Option<OsString>| {
             arg.and_then(|x| x.to_string_lossy().parse().ok())
-                .expect(Self::usage())
+                .expect(Self::USAGE)
         };
 
         let pid = parse_number(args.next());
@@ -46,20 +49,26 @@ impl Options {
         let sig = parse_number(args.next());
         let comm = args
             .next()
-            .expect(Self::usage())
+            .expect(Self::USAGE)
             .to_string_lossy()
             .into_owned();
 
         if args.next().is_some() {
-            panic!("{}", Self::usage());
+            panic!("{}", Self::USAGE);
         }
 
         let timeout = Duration::from_secs(
             std::env::var("UNDERHILL_CRASH_TIMEOUT")
                 .unwrap_or_else(|_| "15".into())
                 .parse()
-                .expect(Self::usage()),
+                .expect(Self::USAGE),
         );
+
+        let no_redirect_var = std::env::var("UNDERHILL_CRASH_NO_REDIRECT").unwrap_or_default();
+        let no_redirect = no_redirect_var == "1" || no_redirect_var.eq_ignore_ascii_case("true");
+
+        let no_kmsg_var = std::env::var("UNDERHILL_CRASH_NO_KMSG").unwrap_or_default();
+        let no_kmsg = no_kmsg_var == "1" || no_kmsg_var.eq_ignore_ascii_case("true");
 
         let verbose_var = std::env::var("UNDERHILL_CRASH_VERBOSE").unwrap_or_default();
         let verbose = verbose_var == "1" || verbose_var.eq_ignore_ascii_case("true");
@@ -71,14 +80,14 @@ impl Options {
             comm,
 
             verbose,
+            no_redirect,
+            no_kmsg,
             timeout,
         }
     }
 
-    fn usage() -> &'static str {
-        "Usage: {pid} {tid} {signal} {command line}
+    const USAGE: &'static str = "Usage: {pid} {tid} {signal} {command line}
         Environment Variables:
         \tUNDERHILL_CRASH_TIMEOUT - Timeout duration in seconds, default 15
-        \tUNDERHILL_CRASH_VERBOSE - Be verbose, default false"
-    }
+        \tUNDERHILL_CRASH_VERBOSE - Be verbose, default false";
 }

@@ -8,17 +8,28 @@ mod openhcl_servicing;
 mod openhcl_uefi;
 
 use anyhow::Context;
+use petri::PetriVmConfig;
+use petri::ResolvedArtifact;
+use petri::SIZE_1_GB;
+use petri::ShutdownKind;
 use petri::openvmm::PetriVmConfigOpenVmm;
 use petri::pipette::cmd;
-use petri::ShutdownKind;
-use petri::SIZE_1_GB;
 use petri_artifacts_common::tags::OsFlavor;
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
+use vmm_test_macros::vmm_test;
 
-/// Basic boot test with no agent for unsupported guests.
-#[openvmm_test(pcat_x64(vhd(freebsd_13_2_x64)), pcat_x64(iso(freebsd_13_2_x64)))]
-async fn boot_no_agent(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+/// Basic boot test without agent
+#[vmm_test(
+    openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
+    openvmm_pcat_x64(iso(freebsd_13_2_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+)]
+async fn boot_no_agent(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
     vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
@@ -47,13 +58,7 @@ async fn boot_alias_map(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
 )]
 async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    let config = config
-        // "OPENHCL_ENABLE_VTL2_GPA_POOL=1" is currently required to make test
-        // pass as the page pool is not enabled by default.
-        //
-        // TODO: Remove this once the page pool is always on.
-        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=1")
-        .with_tpm();
+    let config = config.with_tpm().with_tpm_state_persistence();
 
     let (vm, agent) = match os_flavor {
         OsFlavor::Windows => {
@@ -63,14 +68,18 @@ async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
             config.run().await?
         }
         OsFlavor::Linux => {
+            // First boot - AK cert request will be served by GED
             let mut vm = config.run_with_lazy_pipette().await?;
             // Workaround to https://github.com/microsoft/openvmm/issues/379
             assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+
+            // Second boot - Ak cert request will be bypassed by GED
             vm.reset().await?;
             let agent = vm.wait_for_agent().await?;
             vm.wait_for_successful_boot_event().await?;
 
             // Use the python script to read AK cert from TPM nv index
+            // and verify that the AK cert preserves across boot.
             // TODO: Replace the script with tpm2-tools
             const TEST_FILE: &str = "tpm.py";
             const TEST_CONTENT: &str = include_str!("../../test_data/tpm.py");
@@ -90,19 +99,6 @@ async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     };
 
     agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
-    Ok(())
-}
-
-/// Basic VBS boot test.
-#[openvmm_test(
-    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
-)]
-async fn vbs_boot(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
-    let mut vm = config.run_without_agent().await?;
-    vm.wait_for_successful_boot_event().await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
 }
@@ -315,10 +311,14 @@ async fn mtrrs(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     // assert!(mtrr_output.contains("default type: uncachable"));
     // assert!(mtrr_output.contains("fixed ranges enabled"));
     // assert!(mtrr_output.contains("variable ranges enabled"));
-    assert!(mtrr_output
-        .contains("reg00: base=0x000000000 (    0MB), size=  128MB, count=1: write-back"));
-    assert!(mtrr_output
-        .contains("reg01: base=0x008000000 (  128MB), size= 4096MB, count=1: write-back"));
+    assert!(
+        mtrr_output
+            .contains("reg00: base=0x000000000 (    0MB), size=  128MB, count=1: write-back")
+    );
+    assert!(
+        mtrr_output
+            .contains("reg01: base=0x008000000 (  128MB), size= 4096MB, count=1: write-back")
+    );
 
     Ok(())
 }
@@ -377,6 +377,76 @@ async fn battery_capacity(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Er
     let guest_capacity: i32 = output.parse().expect("Failed to parse battery capacity");
     assert_eq!(guest_capacity, 95, "Output did not match expected capacity");
 
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+fn configure_for_sidecar(
+    config: PetriVmConfigOpenVmm,
+    igvm: ResolvedArtifact<LATEST_STANDARD_DEV_KERNEL_X64>,
+    proc_count: u32,
+) -> PetriVmConfigOpenVmm {
+    config.with_custom_openhcl(igvm).with_custom_config(|c| {
+        c.processor_topology.proc_count = proc_count;
+        // Sidecar will start one VP per socket. For this test, use just one
+        // socket.
+        c.processor_topology.vps_per_socket = Some(proc_count);
+        c.processor_topology.enable_smt = Some(false);
+        // Sidecar currently requires x2APIC.
+        #[cfg(guest_arch = "x86_64")]
+        {
+            c.processor_topology.arch.x2apic = hvlite_defs::config::X2ApicConfig::Supported;
+        }
+    })
+}
+
+// Sidecar currently requires the dev kernel build.
+//
+// Use UEFI so that the guest doesn't access the other APs, causing hot adds
+// into VTL2 Linux.
+//
+// Sidecar isn't supported on aarch64 yet.
+#[openvmm_test(openhcl_uefi_x64(none) [LATEST_STANDARD_DEV_KERNEL_X64])]
+async fn sidecar_aps_unused(
+    config: PetriVmConfigOpenVmm,
+    (igvm,): (ResolvedArtifact<LATEST_STANDARD_DEV_KERNEL_X64>,),
+) -> Result<(), anyhow::Error> {
+    let proc_count = 4;
+    let mut vm = configure_for_sidecar(config, igvm, proc_count)
+        .with_uefi_frontpage(true)
+        .run_without_agent()
+        .await?;
+    vm.wait_for_successful_boot_event().await?;
+
+    let agent = vm.wait_for_vtl2_agent().await?;
+    let sh = agent.unix_shell();
+
+    // Ensure the APs haven't been started into Linux.
+    //
+    // CPU 0 doesn't usually have an online file on x86_64.
+    for cpu in 1..proc_count {
+        let online = sh
+            .read_file(format!("/sys/bus/cpu/devices/cpu{cpu}/online"))
+            .await?
+            .trim()
+            .parse::<u8>()
+            .context("failed to parse online file")?
+            != 0;
+        assert!(!online, "cpu {cpu} is online");
+    }
+
+    // No way to shut down cleanly, currently.
+    tracing::info!("dropping VM");
+    Ok(())
+}
+
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)) [LATEST_STANDARD_DEV_KERNEL_X64])]
+async fn sidecar_boot(
+    config: PetriVmConfigOpenVmm,
+    (igvm,): (ResolvedArtifact<LATEST_STANDARD_DEV_KERNEL_X64>,),
+) -> Result<(), anyhow::Error> {
+    let (vm, agent) = configure_for_sidecar(config, igvm, 4).run().await?;
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())

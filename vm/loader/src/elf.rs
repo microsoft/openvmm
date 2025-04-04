@@ -14,10 +14,10 @@ use crate::importer::GuestArch;
 use crate::importer::GuestArchKind;
 use crate::importer::ImageLoad;
 use hvdef::HV_PAGE_SIZE;
-use object::elf;
-use object::read::elf::FileHeader;
 use object::ReadCache;
 use object::ReadRef;
+use object::elf;
+use object::read::elf::FileHeader;
 use std::io::Read;
 use std::io::Seek;
 use thiserror::Error;
@@ -35,7 +35,9 @@ pub enum Error {
     TargetMachineMismatch,
     #[error("unsupported ELF file byte order")]
     BigEndianElfOnLittle,
-    #[error("invalid entry address found in ELF header: {e_entry:#x}, start address: {start_address:#x}, load offset: {load_offset:#x}")]
+    #[error(
+        "invalid entry address found in ELF header: {e_entry:#x}, start address: {start_address:#x}, load offset: {load_offset:#x}"
+    )]
     InvalidEntryAddress {
         e_entry: u64,
         start_address: u64,
@@ -47,7 +49,9 @@ pub enum Error {
     LoadOffsetOverflow { load_offset: u64, p_paddr: u64 },
     #[error("invalid ELF program header memory offset {mem_offset}, below start {start_address}")]
     InvalidProgramHeaderMemoryOffset { mem_offset: u64, start_address: u64 },
-    #[error("adding reloc bias {reloc_bias} and load offset {load_offset} to paddr {p_paddr} overflowed")]
+    #[error(
+        "adding reloc bias {reloc_bias} and load offset {load_offset} to paddr {p_paddr} overflowed"
+    )]
     RelocBiasOverflow {
         load_offset: u64,
         reloc_bias: u64,
@@ -162,7 +166,7 @@ where
 
         // Read in each section pointed to by the program headers.
         for phdr in phdrs {
-            if phdr.p_type.get(LE) != elf::PT_LOAD || phdr.p_filesz.get(LE) == 0 {
+            if phdr.p_type.get(LE) != elf::PT_LOAD {
                 continue;
             }
 
@@ -204,7 +208,7 @@ where
     // During the second pass, read in each section pointed to by the program headers,
     // and import into the guest memory.
     for phdr in phdrs {
-        if phdr.p_type.get(LE) != elf::PT_LOAD || phdr.p_filesz.get(LE) == 0 {
+        if phdr.p_type.get(LE) != elf::PT_LOAD {
             continue;
         }
 

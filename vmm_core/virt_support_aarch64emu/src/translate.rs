@@ -20,9 +20,9 @@ use aarch64defs::TranslationControlEl1;
 use aarch64defs::TranslationGranule0;
 use aarch64defs::TranslationGranule1;
 use guestmem::GuestMemory;
+use hvdef::HV_PAGE_SHIFT;
 use hvdef::hypercall::TranslateGvaControlFlagsArm64;
 use hvdef::hypercall::TranslateGvaResultCode;
-use hvdef::HV_PAGE_SHIFT;
 use thiserror::Error;
 
 /// Registers needed to walk the page table.
@@ -537,7 +537,7 @@ pub fn translate_gva_to_gpa(
             &mut is_executable_address,
         )? {
             PageTableWalkResult::BaseGpa(base_address, mask) => {
-                break Ok(base_address + (gva & mask))
+                break Ok(base_address + (gva & mask));
             }
             PageTableWalkResult::Table(next_table) => next_table,
         };

@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::chipset::io_ranges::IoRangeConflict;
 use crate::chipset::PciConflict;
+use crate::chipset::io_ranges::IoRangeConflict;
 use std::fmt::Debug;
 use thiserror::Error;
 
@@ -10,7 +10,7 @@ use thiserror::Error;
 // DEVNOTE: many of these _could_ potentially be lifted to compile time through
 // the use of a `typed_builder`...
 #[derive(Debug, Error)]
-#[allow(clippy::enum_variant_names)] // these are descriptive
+#[expect(clippy::enum_variant_names)] // these are descriptive
 pub enum ChipsetBuilderError {
     /// detected static mmio intercept region conflict
     #[error("static mmio intercept region conflict: {0}")]

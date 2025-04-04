@@ -63,7 +63,7 @@ impl FlowNode for Node {
                 output: v,
             });
 
-            ctx.emit_rust_step("report built igvmfilegen", |ctx| {
+            ctx.emit_minor_rust_step("report built igvmfilegen", |ctx| {
                 let outvars = outvars.claim(ctx);
                 let output = output.claim(ctx);
                 move |rt| {
@@ -83,8 +83,6 @@ impl FlowNode for Node {
                     for var in outvars {
                         rt.write(var, &output);
                     }
-
-                    Ok(())
                 }
             });
         }

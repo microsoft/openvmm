@@ -8,7 +8,6 @@
 //! device.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
@@ -280,15 +279,15 @@ mod tests {
     use super::*;
     use disk_backend::Disk;
     use guest_emulation_transport::api::ProtocolVersion;
-    use guest_emulation_transport::test_utilities::new_transport_pair;
     use guest_emulation_transport::test_utilities::TestGet;
+    use guest_emulation_transport::test_utilities::new_transport_pair;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Task;
-    use pal_async::DefaultDriver;
     use vmgs::FileId;
     use vmgs::Vmgs;
-    use vmgs_broker::spawn_vmgs_broker;
     use vmgs_broker::VmgsClient;
+    use vmgs_broker::spawn_vmgs_broker;
 
     async fn spawn_vmgs(driver: &DefaultDriver) -> (VmgsClient, TestGet, Task<()>) {
         let get = new_transport_pair(driver, None, ProtocolVersion::NICKEL_REV2).await;

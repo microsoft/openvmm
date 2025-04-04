@@ -221,18 +221,19 @@ impl<'a> FieldType<'a> {
     }
 
     /// Returns a field type for an anonymous tuple.
-    #[allow(clippy::redundant_guards)] // https://github.com/rust-lang/rust-clippy/issues/12243
     pub const fn tuple(field_types: &'a [Self]) -> Self {
         // Use well-known types instead of new anonymous ones when possible.
         match field_types {
             [] => {
                 return Self::external("google.protobuf.Empty", "google/protobuf/empty.proto");
             }
-            &[Self {
-                kind: FieldKind::Builtin(ty),
-                sequence_type: None,
-                annotation,
-            }] if annotation.is_empty() => {
+            &[
+                Self {
+                    kind: FieldKind::Builtin(ty),
+                    sequence_type: None,
+                    annotation,
+                },
+            ] if annotation.is_empty() => {
                 let wrapper = match ty.as_bytes() {
                     b"double" => Some("google.protobuf.DoubleValue"),
                     b"float" => Some("google.protobuf.FloatValue"),

@@ -3,13 +3,13 @@
 
 //! Functions for interacting with the BIOS_NVRAM file in a VMGS file
 
-use crate::storage_backend::VmgsStorageBackend;
-use crate::vmgs_file_open;
-use crate::vmgs_json;
 use crate::Error;
 use crate::FilePathArg;
 use crate::KeyPathArg;
 use crate::OpenMode;
+use crate::storage_backend::VmgsStorageBackend;
+use crate::vmgs_file_open;
+use crate::vmgs_json;
 use anyhow::Result;
 use clap::Args;
 use clap::Subcommand;
@@ -22,10 +22,10 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use ucs2::Ucs2LeVec;
+use uefi_nvram_specvars::ParsedNvramEntry;
 use uefi_nvram_specvars::boot_order;
 use uefi_nvram_specvars::parse_nvram_entry;
 use uefi_nvram_specvars::signature_list::SignatureList;
-use uefi_nvram_specvars::ParsedNvramEntry;
 use uefi_nvram_storage::NvramStorage;
 use uefi_specs::uefi::nvram::vars::EFI_GLOBAL_VARIABLE;
 use uefi_specs::uefi::time::EFI_TIME;
@@ -143,7 +143,7 @@ async fn dump_nvram(
     out: &mut impl Write,
     truncate: bool,
 ) -> Result<(), Error> {
-    let mut printed_one = false;
+    let mut count = 0;
     for entry in nvram_storage.iter().await? {
         let meta = NvramEntryMetadata {
             vendor: entry.vendor.to_string(),
@@ -154,11 +154,10 @@ async fn dump_nvram(
         };
         let entry = parse_nvram_entry(&meta.name, entry.data)?;
         print_nvram_entry(out, &meta, &entry, truncate).map_err(Error::DataFile)?;
-        printed_one = true;
+        count += 1;
     }
-    if !printed_one {
-        writeln!(out, "NVRAM empty").map_err(Error::DataFile)?;
-    }
+
+    eprintln!("Retrieved {count} NVRAM entries");
     Ok(())
 }
 
@@ -168,6 +167,7 @@ fn dump_nvram_from_json(
     output_path: Option<impl AsRef<Path>>,
     truncate: bool,
 ) -> Result<(), Error> {
+    eprintln!("Opening JSON file: {}", file_path.as_ref().display());
     let file = File::open(file_path.as_ref()).map_err(Error::VmgsFile)?;
 
     let runtime_state: vmgs_json::RuntimeState = serde_json::from_reader(file)?;
@@ -191,6 +191,7 @@ fn dump_nvram_from_json(
         Box::new(std::io::stdout())
     };
 
+    let mut count = 0;
     for (vendor, val) in vendors.iter() {
         for (name, var) in val.variables.iter() {
             let meta = NvramEntryMetadata {
@@ -202,8 +203,11 @@ fn dump_nvram_from_json(
             };
             let entry = parse_nvram_entry(&meta.name, &var.data)?;
             print_nvram_entry(&mut out, &meta, &entry, truncate).map_err(Error::DataFile)?;
+            count += 1;
         }
     }
+
+    eprintln!("Retrieved {count} NVRAM entries");
     Ok(())
 }
 
@@ -362,9 +366,9 @@ async fn vmgs_file_remove_boot_entries(
     let mut nvram_storage = vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadWrite).await?;
 
     if dry_run {
-        println!("Printing Boot Entries (Dry-run)");
+        eprintln!("Printing Boot Entries (Dry-run)");
     } else {
-        println!("Deleting Boot Entries");
+        eprintln!("Deleting Boot Entries");
     }
 
     let name = Ucs2LeVec::from("BootOrder".to_string());
@@ -416,6 +420,8 @@ async fn vmgs_file_remove_nvram_entry(
     vendor: String,
 ) -> Result<(), Error> {
     let mut nvram_storage = vmgs_file_open_nvram(file_path, key_path, OpenMode::ReadWrite).await?;
+
+    eprintln!("Removing variable with name {name} and vendor {vendor}");
 
     let name = Ucs2LeVec::from(name);
     let vendor = Guid::from_str(&vendor)?;

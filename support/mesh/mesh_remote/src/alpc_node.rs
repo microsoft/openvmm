@@ -9,11 +9,11 @@
 
 use crate::common::InvitationAddress;
 use crate::protocol;
-use futures::channel::mpsc;
-use futures::future::abortable;
-use futures::future::AbortHandle;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::channel::mpsc;
+use futures::future::AbortHandle;
+use futures::future::abortable;
 use mesh_node::common::Address;
 use mesh_node::common::NodeId;
 use mesh_node::common::PortId;
@@ -26,17 +26,17 @@ use mesh_node::local_node::RemoteNodeHandle;
 use mesh_node::local_node::SendEvent;
 use mesh_node::resource::OsResource;
 use mesh_node::resource::Resource;
-use mesh_protobuf::buffer::Buffer;
 use mesh_protobuf::Protobuf;
+use mesh_protobuf::buffer::Buffer;
 use ntapi::ntobapi::DIRECTORY_ALL_ACCESS;
-use pal::windows::alpc;
-use pal::windows::alpc::PortSection;
-use pal::windows::alpc::SendMessage;
-use pal::windows::create_object_directory;
 use pal::windows::BorrowedHandleExt;
 use pal::windows::ObjectAttributes;
 use pal::windows::OwnedSocketExt;
 use pal::windows::UnicodeString;
+use pal::windows::alpc;
+use pal::windows::alpc::PortSection;
+use pal::windows::alpc::SendMessage;
+use pal::windows::create_object_directory;
 use pal_async::driver::Driver;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -179,7 +179,7 @@ impl AlpcNode {
         let port = PolledWait::new(&driver, port)?;
 
         let invitations = Default::default();
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods)] // TODO
         let (connect_send, connect_recv) = mpsc::unbounded();
         let local_node = Arc::new(LocalNode::with_id(
             local_id,
@@ -780,10 +780,10 @@ impl Deref for AlpcPort {
 #[cfg(test)]
 mod tests {
     use super::AlpcNode;
-    use mesh_channel::channel;
     use mesh_channel::RecvError;
-    use pal_async::async_test;
+    use mesh_channel::channel;
     use pal_async::DefaultDriver;
+    use pal_async::async_test;
     use pal_event::Event;
     use std::io::Read;
     use std::io::Write;

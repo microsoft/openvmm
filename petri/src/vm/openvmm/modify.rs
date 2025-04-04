@@ -3,8 +3,8 @@
 
 //! Helpers to modify a [`PetriVmConfigOpenVmm`] from its defaults.
 
-use super::PetriVmConfigOpenVmm;
 use super::MANA_INSTANCE;
+use super::PetriVmConfigOpenVmm;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use fs_err::File;
@@ -136,6 +136,21 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Enable TPM state persistence
+    pub fn with_tpm_state_persistence(mut self) -> Self {
+        if !self.firmware.is_openhcl() {
+            panic!("TPM state persistence is only supported for OpenHCL.")
+        };
+
+        let ged = self.ged.as_mut().expect("No GED to configure TPM");
+
+        // Disable no_persistent_secrets implies preserving TPM states
+        // across boots
+        ged.no_persistent_secrets = false;
+
+        self
+    }
+
     /// Enable an emulated mana device for the VM.
     pub fn with_nic(mut self) -> Self {
         self.config.vpci_devices.push(VpciDeviceConfig {
@@ -164,6 +179,37 @@ impl PetriVmConfigOpenVmm {
                 max_sub_channels: None,
             });
 
+        self
+    }
+
+    /// Specifies whether the UEFI frontpage app is enabled.
+    ///
+    /// If it is disabled, then the VM will shutdown if there are no configured
+    /// boot apps.
+    pub fn with_uefi_frontpage(mut self, enable_frontpage: bool) -> Self {
+        match self.config.load_mode {
+            LoadMode::Uefi {
+                ref mut disable_frontpage,
+                ..
+            } => {
+                *disable_frontpage = !enable_frontpage;
+            }
+            LoadMode::Igvm { .. } => {
+                let ged = self.ged.as_mut().expect("no GED to configure DPS");
+                match ged.firmware {
+                    get_resources::ged::GuestFirmwareConfig::Uefi {
+                        ref mut disable_frontpage,
+                        ..
+                    } => {
+                        *disable_frontpage = !enable_frontpage;
+                    }
+                    _ => {
+                        panic!("not a UEFI boot");
+                    }
+                }
+            }
+            _ => panic!("not a UEFI boot"),
+        }
         self
     }
 

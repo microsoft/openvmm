@@ -7,22 +7,26 @@ pub mod vm;
 use vmsocket::VmAddress;
 use vmsocket::VmSocket;
 
-use crate::disk_image::AgentImage;
-use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::Firmware;
 use crate::IsolationType;
 use crate::PetriLogSource;
 use crate::PetriTestParams;
 use crate::PetriVm;
 use crate::PetriVmConfig;
+use crate::ShutdownKind;
+use crate::disk_image::AgentImage;
+use crate::openhcl_diag::OpenHclDiagHandler;
 use anyhow::Context;
 use async_trait::async_trait;
+use get_resources::ged::FirmwareEvent;
+use jiff::Timestamp;
+use jiff::ToSpan;
+use pal_async::DefaultDriver;
 use pal_async::pipe::PolledPipe;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
-use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
@@ -33,6 +37,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
+use thiserror::Error;
 use vm::HyperVVM;
 use vmm_core_defs::HaltReason;
 
@@ -56,6 +61,7 @@ pub struct PetriVmConfigHyperV {
     agent_image: AgentImage,
 
     os_flavor: OsFlavor,
+    expected_boot_event: Option<FirmwareEvent>,
 
     // Folder to store temporary data for this test
     temp_dir: tempfile::TempDir,
@@ -107,6 +113,14 @@ impl PetriVm for PetriVmHyperV {
 
     async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()> {
         Self::wait_for_vtl2_ready(self).await
+    }
+
+    async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
+        Self::wait_for_successful_boot_event(self).await
+    }
+
+    async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
+        Self::send_enlightened_shutdown(self, kind).await
     }
 }
 
@@ -198,6 +212,7 @@ impl PetriVmConfigHyperV {
             agent_image,
             driver: driver.clone(),
             os_flavor: firmware.os_flavor(),
+            expected_boot_event: firmware.expected_boot_event(),
             temp_dir,
             log_source: params.logger.clone(),
         })
@@ -231,11 +246,22 @@ impl PetriVmConfigHyperV {
             self.guest_state_isolation_type,
             self.memory,
             self.log_source.log_file("hyperv")?,
+            self.expected_boot_event,
+            self.driver.clone(),
         )?;
 
         if let Some(igvm_file) = &self.openhcl_igvm {
             // TODO: only increase VTL2 memory on debug builds
-            vm.set_openhcl_firmware(igvm_file.as_ref(), true)?;
+            vm.set_openhcl_firmware(
+                igvm_file.as_ref(),
+                // don't increase VTL2 memory on CVMs
+                !matches!(
+                    self.guest_state_isolation_type,
+                    powershell::HyperVGuestStateIsolationType::Vbs
+                        | powershell::HyperVGuestStateIsolationType::Snp
+                        | powershell::HyperVGuestStateIsolationType::Tdx
+                ),
+            )?;
         }
 
         if let Some(secure_boot_template) = self.secure_boot_template {
@@ -336,7 +362,7 @@ impl PetriVmConfigHyperV {
             None
         };
 
-        vm.start()?;
+        vm.start().await?;
 
         Ok(PetriVmHyperV {
             config: self,
@@ -350,7 +376,7 @@ impl PetriVmConfigHyperV {
 impl PetriVmHyperV {
     /// Wait for the VM to halt, returning the reason for the halt.
     pub async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
-        self.vm.wait_for_power_off(&self.config.driver).await?;
+        self.vm.wait_for_halt().await?;
         Ok(HaltReason::PowerOff) // TODO: Get actual halt reason
     }
 
@@ -370,17 +396,17 @@ impl PetriVmHyperV {
         self.openhcl_diag()?.test_inspect().await
     }
 
-    /// Wait for a connection from a pipette agent running in the guest.
-    /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
-    pub async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()> {
-        self.openhcl_diag()?.wait_for_vtl2().await
-    }
-
     /// Wait for VTL 2 to report that it is ready to respond to commands.
     /// Will fail if the VM is not running OpenHCL.
     ///
     /// This should only be necessary if you're doing something manual. All
     /// Petri-provided methods will wait for VTL 2 to be ready automatically.
+    pub async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()> {
+        self.openhcl_diag()?.wait_for_vtl2().await
+    }
+
+    /// Wait for a connection from a pipette agent running in the guest.
+    /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
     pub async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient> {
         Self::wait_for_agent_core(
             &self.config.driver,
@@ -389,6 +415,26 @@ impl PetriVmHyperV {
             false,
         )
         .await
+    }
+
+    /// Waits for an event emitted by the firmware about its boot status, and
+    /// verifies that it is the expected success value.
+    ///
+    /// * Linux Direct guests do not emit a boot event, so this method immediately returns Ok.
+    /// * PCAT guests may not emit an event depending on the PCAT version, this
+    ///   method is best effort for them.
+    pub async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
+        self.vm.wait_for_successful_boot_event().await
+    }
+
+    /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
+    pub async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
+        match kind {
+            ShutdownKind::Shutdown => self.vm.stop().await?,
+            ShutdownKind::Reboot => self.vm.restart().await?,
+        }
+
+        Ok(())
     }
 
     async fn wait_for_agent_core(
@@ -411,24 +457,18 @@ impl PetriVmHyperV {
         //
         // Allow for the slowest test (hyperv_pcat_x64_ubuntu_2204_server_x64_boot)
         // but fail before the nextest timeout. (~1 attempt for second)
-        const PIPETTE_CONNECT_ATTEMPTS: u32 = 240;
-        let mut attempts = 0;
+        let connect_timeout = 240.seconds();
+        let start = Timestamp::now();
+
         let mut socket = PolledSocket::new(driver, socket)?.convert();
-        loop {
-            match socket
-                .connect(&VmAddress::hyperv_vsock(vm_id, pipette_client::PIPETTE_VSOCK_PORT).into())
-                .await
-            {
-                Ok(_) => break,
-                Err(_) => {
-                    if attempts >= PIPETTE_CONNECT_ATTEMPTS {
-                        anyhow::bail!("Pipette connection timed out")
-                    }
-                    attempts += 1;
-                    PolledTimer::new(driver).sleep(Duration::from_secs(1)).await;
-                    continue;
-                }
+        while let Err(e) = socket
+            .connect(&VmAddress::hyperv_vsock(vm_id, pipette_client::PIPETTE_VSOCK_PORT).into())
+            .await
+        {
+            if connect_timeout.compare(Timestamp::now() - start)? == std::cmp::Ordering::Less {
+                anyhow::bail!("Pipette connection timed out: {e}")
             }
+            PolledTimer::new(driver).sleep(Duration::from_secs(1)).await;
         }
 
         PipetteClient::new(driver, socket, output_dir)
@@ -443,4 +483,18 @@ impl PetriVmHyperV {
             anyhow::bail!("VM is not configured with OpenHCL")
         }
     }
+}
+
+/// Error running command
+#[derive(Error, Debug)]
+pub enum CommandError {
+    /// failed to launch command
+    #[error("failed to launch command")]
+    Launch(#[from] std::io::Error),
+    /// command exited with non-zero status
+    #[error("command exited with non-zero status ({0}): {1}")]
+    Command(std::process::ExitStatus, String),
+    /// command output is not utf-8
+    #[error("command output is not utf-8")]
+    Utf8(#[from] std::string::FromUtf8Error),
 }

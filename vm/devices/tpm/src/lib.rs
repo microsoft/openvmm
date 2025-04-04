@@ -9,6 +9,7 @@
 //! configuring MMIO request/response regions.
 
 #![cfg(feature = "tpm")]
+#![expect(missing_docs)]
 
 pub mod ak_cert;
 pub mod resolver;
@@ -18,12 +19,12 @@ mod tpm_helper;
 use self::io_port_interface::PpiOperation;
 use self::io_port_interface::TpmIoCommand;
 use crate::ak_cert::TpmAkCertType;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -36,17 +37,17 @@ use std::sync::Arc;
 use std::task::Poll;
 use std::task::Waker;
 use thiserror::Error;
-use tpm20proto::CommandCodeEnum;
-use tpm20proto::ReservedHandle;
-use tpm20proto::NV_INDEX_RANGE_BASE_PLATFORM_MANUFACTURER;
-use tpm20proto::NV_INDEX_RANGE_BASE_TCG_ASSIGNED;
-use tpm20proto::TPM20_HT_PERSISTENT;
-use tpm20proto::TPM20_RH_PLATFORM;
 use tpm_helper::CommandDebugInfo;
 use tpm_helper::TpmCommandError;
 use tpm_helper::TpmEngineHelper;
 use tpm_helper::TpmHelperError;
 use tpm_resources::TpmRegisterLayout;
+use tpm20proto::CommandCodeEnum;
+use tpm20proto::NV_INDEX_RANGE_BASE_PLATFORM_MANUFACTURER;
+use tpm20proto::NV_INDEX_RANGE_BASE_TCG_ASSIGNED;
+use tpm20proto::ReservedHandle;
+use tpm20proto::TPM20_HT_PERSISTENT;
+use tpm20proto::TPM20_RH_PLATFORM;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::non_volatile_store::NonVolatileStore;
 use vmcore::non_volatile_store::NonVolatileStoreError;
@@ -142,7 +143,7 @@ struct ControlArea {
 }
 
 // TODO: switch this over to open_enum!
-#[allow(dead_code)]
+#[expect(dead_code)]
 impl ControlArea {
     const OFFSET_OF_LOC_STATE: usize = 0x00;
     const OFFSET_OF_LOC_CTRL: usize = 0x08;
@@ -306,7 +307,7 @@ impl ms_tpm_20_ref::PlatformCallbacks for TpmPlatformCallbacks {
     }
 
     fn get_crypt_random(&mut self, buf: &mut [u8]) -> ms_tpm_20_ref::DynResult<usize> {
-        getrandom::getrandom(buf).expect("rng failure");
+        getrandom::fill(buf).expect("rng failure");
         Ok(buf.len())
     }
 
@@ -487,7 +488,7 @@ impl Tpm {
             // Create auth value for NV index password authorization.
             // The value needs to be preserved across live servicing.
             let mut auth_value = 0;
-            getrandom::getrandom(auth_value.as_mut_bytes()).expect("rng failure");
+            getrandom::fill(auth_value.as_mut_bytes()).expect("rng failure");
             self.auth_value = Some(auth_value);
 
             // Initialize `TpmKeys`.
@@ -511,7 +512,7 @@ impl Tpm {
             self.tpm_engine_helper
                 .allocate_guest_attestation_nv_indices(
                     auth_value,
-                    self.refresh_tpm_seeds,
+                    !self.refresh_tpm_seeds, // Preserve AK cert if TPM seeds are not refreshed
                     matches!(self.ak_cert_type, TpmAkCertType::HwAttested(_)),
                 )
                 .map_err(TpmErrorKind::AllocateGuestAttestationNvIndices)?;
@@ -647,10 +648,10 @@ impl Tpm {
             };
 
             if update_ppi {
-                let res = pal_async::local::block_with_io(|_| {
+                let res = pal_async::local::block_on(
                     (self.rt.ppi_store)
-                        .persist(persist_restore::serialize_ppi_state(self.ppi_state))
-                });
+                        .persist(persist_restore::serialize_ppi_state(self.ppi_state)),
+                );
                 if let Err(e) = res {
                     tracing::warn!(
                         error = &e as &dyn std::error::Error,
@@ -748,6 +749,8 @@ impl Tpm {
     /// This function can only be called when `ak_cert_type` is `Trusted` or `HwAttested`.
     fn create_ak_cert_request(&mut self) -> Result<Vec<u8>, TpmError> {
         let mut guest_attestation_input = [0u8; ATTESTATION_REPORT_DATA_SIZE];
+        // No need to check the result as long as it's Ok(..) because the output data will
+        // remain unchanged (all 0's) if the NV index is unallocated or uninitialized.
         self.tpm_engine_helper
             .read_from_nv_index(
                 TPM_NV_INDEX_GUEST_ATTESTATION_INPUT,
@@ -984,7 +987,7 @@ impl ChangeDeviceState for Tpm {
         self.tpm_engine_helper
             .initialize_tpm_engine()
             .expect("failed to send TPM startup commands");
-        pal_async::local::block_with_io(|_| self.flush_pending_nvram())
+        pal_async::local::block_on(self.flush_pending_nvram())
             .expect("failed to flush nvram on reset");
     }
 }
@@ -1215,7 +1218,7 @@ impl MmioIntercept for Tpm {
             _ => return IoResult::Err(IoError::InvalidRegister),
         }
 
-        let res = pal_async::local::block_with_io(|_| self.flush_pending_nvram());
+        let res = pal_async::local::block_on(self.flush_pending_nvram());
         if let Err(e) = res {
             tracing::warn!(
                 error = &e as &dyn std::error::Error,
@@ -1270,7 +1273,7 @@ mod io_port_interface {
         }
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     #[repr(u32)]
     #[derive(Debug, Copy, Clone)]
     pub enum TcgProtocol {

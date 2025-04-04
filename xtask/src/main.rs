@@ -8,8 +8,6 @@
 //! Follows the xtask workflow/convention, as described at
 //! <https://github.com/matklad/cargo-xtask>
 
-#![warn(missing_docs)]
-
 use anyhow::Context;
 use clap::Parser;
 use clap::Subcommand;
@@ -34,6 +32,8 @@ pub struct XtaskCtx {
     pub root: PathBuf,
     /// xtask is running within a hook
     pub in_git_hook: bool,
+    /// xtask was invoked as part of a "run on save" operation
+    pub in_run_on_save: bool,
 }
 
 /// Common trait implemented by all Xtask subcommands.
@@ -59,9 +59,22 @@ struct Cli {
     /// repo, and any custom out-of-tree overlay repos.
     #[clap(long)]
     custom_root: Option<PathBuf>,
+
+    /// Signal that this `xtask` is being invoked as part of a "run on save"
+    /// operation.
+    ///
+    /// When set, certain tasks may choose to skip certain expensive checks in
+    /// order to execute as quickly as possible.
+    ///
+    /// e.g: instead of calling `cargo run` in order to execute a project-local
+    /// tool, `xtask` may instead attempt to find and use an existing pre-built
+    /// binary, if one is available. This will be faster, but may run the risk
+    /// of executing a slightly stale binary.
+    #[clap(long)]
+    run_on_save: bool,
 }
 
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Commands {
     #[clap(hide = true)]
@@ -93,25 +106,26 @@ fn main() {
 fn try_main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    let orig_root = Path::new(&env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(1)
+        .unwrap()
+        .to_path_buf();
+
     let root = cli
         .custom_root
         .map(std::path::absolute)
         .transpose()?
-        .unwrap_or_else(|| {
-            Path::new(&env!("CARGO_MANIFEST_DIR"))
-                .ancestors()
-                .nth(1)
-                .unwrap()
-                .to_path_buf()
-        });
+        .unwrap_or(orig_root.clone());
 
     // for consistency, always run xtasks as though they were run from the root
     std::env::set_current_dir(&root)?;
 
     // drop the path to the xtask binary in an easy-to-find place. this gets
-    // used by the pre-commit hook to avoid rebuilding the xtask.
+    // used by the pre-commit hook, as well as the fmt-on-save dev-flow to avoid
+    // rebuilding the xtask.
     if let Ok(path) = std::env::current_exe() {
-        if let Err(e) = fs_err::write(XTASK_PATH_FILE, path.display().to_string()) {
+        if let Err(e) = fs_err::write(orig_root.join(XTASK_PATH_FILE), path.display().to_string()) {
             log::debug!("Unable to create XTASK_PATH_FILE: {:#}", e)
         }
     }
@@ -123,6 +137,7 @@ fn try_main() -> anyhow::Result<()> {
     let ctx = XtaskCtx {
         root,
         in_git_hook: matches!(cli.command, Commands::Hook(..)),
+        in_run_on_save: cli.run_on_save,
     };
 
     match cli.command {

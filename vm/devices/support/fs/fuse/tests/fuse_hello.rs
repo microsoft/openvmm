@@ -1,13 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(target_os = "linux")]
-#![allow(
-    clippy::field_reassign_with_default, // protocol code benefits from imperative field assignment
-)]
 
-use fuse::protocol::*;
 use fuse::Connection;
+use fuse::protocol::*;
 use fuse::*;
 use std::fs;
 use std::os::linux::fs::MetadataExt;
@@ -17,7 +15,7 @@ use zerocopy::FromZeros;
 // Implements a file system similar to libfuse's hello_ll sample.
 // This test is excluded from CI because it requires root.
 #[cfg_attr(not(feature = "ci"), test_with_tracing::test)]
-#[cfg_attr(feature = "ci", allow(dead_code))]
+#[cfg_attr(feature = "ci", expect(dead_code))]
 fn fuse_hello() {
     let mount_point = tempfile::tempdir().unwrap();
 

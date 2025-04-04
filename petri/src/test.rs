@@ -12,14 +12,14 @@ pub mod test_macro_support {
     pub static TESTS: [fn() -> (&'static str, Vec<TestCase>)];
 }
 
-use crate::tracing::try_init_tracing;
 use crate::PetriLogSource;
 use crate::TestArtifactRequirements;
 use crate::TestArtifacts;
+use crate::tracing::try_init_tracing;
 use anyhow::Context as _;
 use petri_artifacts_core::ArtifactResolver;
-use std::panic::catch_unwind;
 use std::panic::AssertUnwindSafe;
+use std::panic::catch_unwind;
 use std::path::Path;
 use test_macro_support::TESTS;
 

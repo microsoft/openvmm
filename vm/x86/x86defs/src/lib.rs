@@ -4,6 +4,7 @@
 //! Definitions relating to the x86 architecture, including the core CPU and
 //! its interrupt controller (APIC).
 
+#![expect(missing_docs)]
 #![no_std]
 #![forbid(unsafe_code)]
 
@@ -261,7 +262,7 @@ pub const DR6_SINGLE_STEP: u64 = 0x4000;
 pub struct RFlags {
     // FLAGS
     pub carry: bool,
-    _reserved0: bool,
+    pub reserved_must_be_1: bool,
     pub parity: bool,
     _reserved1: bool,
     pub adjust: bool,
@@ -292,9 +293,10 @@ pub struct RFlags {
     _reserved5: u32,
 }
 
-impl Default for RFlags {
-    fn default() -> Self {
-        Self(2)
+impl RFlags {
+    /// Returns the reset value of the RFLAGS register.
+    pub fn at_reset() -> Self {
+        Self::new().with_reserved_must_be_1(true)
     }
 }
 
@@ -392,6 +394,7 @@ open_enum! {
         ALIGNMENT_CHECK = 0x11,
         MACHINE_CHECK = 0x12,
         SIMD_FLOATING_POINT_EXCEPTION = 0x13,
+        CONTROL_PROTECTION_EXCEPTION = 0x15,
         SEV_VMM_COMMUNICATION = 0x1D,
     }
 }

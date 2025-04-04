@@ -211,6 +211,7 @@ impl SimpleFlowNode for Node {
 
                         let filename = match recipe {
                             OpenhclIgvmRecipe::X64 => "openhcl-x64.bin",
+                            OpenhclIgvmRecipe::X64Devkern => "openhcl-x64-devkern.bin",
                             OpenhclIgvmRecipe::X64Cvm => "openhcl-x64-cvm.bin",
                             OpenhclIgvmRecipe::X64TestLinuxDirect => {
                                 "openhcl-x64-test-linux-direct.bin"

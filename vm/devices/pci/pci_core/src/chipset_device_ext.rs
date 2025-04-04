@@ -7,8 +7,8 @@ use crate::spec::hwid::ClassCode;
 use crate::spec::hwid::HardwareIds;
 use crate::spec::hwid::ProgrammingInterface;
 use crate::spec::hwid::Subclass;
-use chipset_device::pci::PciConfigSpace;
 use chipset_device::ChipsetDevice;
+use chipset_device::pci::PciConfigSpace;
 
 /// An extension trait to simplify probing PCI [`ChipsetDevice`] devices.
 pub trait PciChipsetDeviceExt: ChipsetDevice + PciConfigSpace {

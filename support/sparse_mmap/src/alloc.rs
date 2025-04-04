@@ -77,12 +77,12 @@ impl Deref for SharedMem {
 #[cfg(windows)]
 mod windows {
     use std::ptr;
-    use windows_sys::Win32::System::Memory::VirtualAlloc;
-    use windows_sys::Win32::System::Memory::VirtualFree;
     use windows_sys::Win32::System::Memory::MEM_COMMIT;
     use windows_sys::Win32::System::Memory::MEM_RELEASE;
     use windows_sys::Win32::System::Memory::MEM_RESERVE;
     use windows_sys::Win32::System::Memory::PAGE_READWRITE;
+    use windows_sys::Win32::System::Memory::VirtualAlloc;
+    use windows_sys::Win32::System::Memory::VirtualFree;
 
     pub fn alloc(size: usize) -> std::io::Result<*mut u8> {
         let ptr = unsafe {

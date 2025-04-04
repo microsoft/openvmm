@@ -5,6 +5,9 @@
 
 use crate::RequestInterrupt;
 use guestmem::GuestMemory;
+use hvdef::HV_MESSAGE_SIZE;
+use hvdef::HV_PAGE_SIZE;
+use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HvAllArchRegisterName;
 use hvdef::HvError;
 use hvdef::HvMessage;
@@ -16,11 +19,8 @@ use hvdef::HvRegisterVsmVina;
 use hvdef::HvResult;
 use hvdef::HvSynicSimpSiefp;
 use hvdef::HvSynicStimerConfig;
-use hvdef::TimerMessagePayload;
-use hvdef::HV_MESSAGE_SIZE;
-use hvdef::HV_PAGE_SIZE;
-use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::NUM_SINTS;
+use hvdef::TimerMessagePayload;
 use inspect::Inspect;
 use parking_lot::RwLock;
 use std::array;

@@ -3,8 +3,8 @@
 
 //! Resolver for SCSI devices.
 
-use crate::scsidvd::SimpleScsiDvd;
 use crate::SimpleScsiDisk;
+use crate::scsidvd::SimpleScsiDvd;
 use anyhow::Context;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
@@ -18,11 +18,11 @@ use scsidisk_resources::SimpleScsiDvdRequest;
 use std::sync::Arc;
 use std::sync::Weak;
 use thiserror::Error;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::ScsiDeviceHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::ScsiDeviceHandleKind;
 
 /// A resolver for [`SimpleScsiDiskHandle`] and [`SimpleScsiDvdHandle`].
 pub struct SimpleScsiResolver;
@@ -120,7 +120,7 @@ async fn handle_dvd_requests(
     while let Some(req) = requests.next().await {
         match req {
             SimpleScsiDvdRequest::ChangeMedia(rpc) => {
-                rpc.handle_failable(|resource| async {
+                rpc.handle_failable(async |resource| {
                     let media = if let Some(resource) = resource {
                         Some(
                             resolver

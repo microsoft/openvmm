@@ -3,7 +3,6 @@
 
 //! Provides the [`Guid`] type with the same layout as the Windows type `GUID`.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use std::str::FromStr;
@@ -77,7 +76,7 @@ impl Guid {
     /// Return a new randomly-generated Version 4 UUID
     pub fn new_random() -> Self {
         let mut guid = Guid::default();
-        getrandom::getrandom(guid.as_mut_bytes()).expect("rng failure");
+        getrandom::fill(guid.as_mut_bytes()).expect("rng failure");
 
         guid.data3 = guid.data3 & 0xfff | 0x4000;
         // Variant 1
@@ -310,8 +309,8 @@ mod windows {
 
 #[cfg(test)]
 mod tests {
-    use super::guid;
     use super::Guid;
+    use super::guid;
 
     #[test]
     fn test_display_guid() {

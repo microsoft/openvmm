@@ -5,12 +5,12 @@
 //! configuration information that is deposited into the guest address space that
 //! is measured as part of the partition's launch.
 
-use super::memory_range_from_page_region;
 use super::LoadKind;
-use super::VpContext;
 use super::PV_CONFIG_BASE_PAGE;
-use guestmem::ranges::PagedRange;
+use super::VpContext;
+use super::memory_range_from_page_region;
 use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use hvdef::HV_PAGE_SIZE;
 use igvm::registers::UnsupportedRegister;
 use loader_defs::paravisor::ParavisorMeasuredVtl0Config;

@@ -15,7 +15,6 @@
 //! `tracing` crate, which is probably not worth it for now.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use parking_lot::Mutex;
 use std::sync::atomic::AtomicBool;

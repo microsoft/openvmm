@@ -16,8 +16,8 @@ use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering::Acquire;
 use hvdef::HvError;
 use hvdef::HypercallCode;
-use minimal_rt::arch::msr::write_msr;
 use minimal_rt::arch::Serial;
+use minimal_rt::arch::msr::write_msr;
 use x86defs::Exception;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
@@ -169,9 +169,9 @@ macro_rules! log {
     };
 }
 use core::mem::size_of;
-use hvdef::hypercall::HvInputVtl;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
+use hvdef::hypercall::HvInputVtl;
 pub(crate) use log;
 use minimal_rt::arch::InstrIoAccess;
 
@@ -189,7 +189,7 @@ fn log_fmt(args: core::fmt::Arguments<'_>) {
 }
 
 #[cfg_attr(minimal_rt, panic_handler)]
-#[cfg_attr(not(minimal_rt), allow(dead_code))]
+#[cfg_attr(not(minimal_rt), expect(dead_code))]
 fn panic(panic: &core::panic::PanicInfo<'_>) -> ! {
     let stack_va_to_pa = |ptr| {
         addr_space::stack()
@@ -298,13 +298,13 @@ fn eoi() {
     }
 }
 
-#[cfg_attr(not(minimal_rt), allow(dead_code))]
+#[cfg_attr(not(minimal_rt), expect(dead_code))]
 extern "C" fn irq_handler() {
     eoi();
     log!("irq");
 }
 
-#[cfg_attr(not(minimal_rt), allow(dead_code))]
+#[cfg_attr(not(minimal_rt), expect(dead_code))]
 extern "C" fn exception_handler(exception: Exception, rsp: u64) -> ! {
     // SAFETY: reading cr2 has no safety requirements.
     let cr2 = unsafe {

@@ -15,7 +15,6 @@
 //! poll implementation to identify exactly which futures are ready to be
 //! polled.
 
-#![warn(missing_docs)]
 // UNSAFETY: Using unchecked raw Arc, Pin, and Waker APIs.
 #![expect(unsafe_code)]
 
@@ -24,11 +23,11 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
-use std::pin::pin;
 use std::pin::Pin;
+use std::pin::pin;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::RawWaker;
@@ -288,6 +287,10 @@ impl State {
     }
 
     /// Gets the pointer and wake index from the data pointer.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that `data` is a valid pointer into an `Arc<State>`.
     unsafe fn from_ptr(data: *const ()) -> (ManuallyDrop<Arc<Self>>, usize) {
         let align_mask = align_of::<Self>() - 1;
         let i = (data as usize) & align_mask;
@@ -297,6 +300,9 @@ impl State {
         (ManuallyDrop::new(this), i)
     }
 
+    /// # Safety
+    ///
+    /// The caller must guarantee that `data` is a valid pointer into an `Arc<State>`.
     unsafe fn clone_fn(data: *const ()) -> RawWaker {
         // SAFETY: caller guarantees this is a valid data pointer.
         let (this, _) = unsafe { Self::from_ptr(data) };
@@ -312,6 +318,9 @@ impl State {
         )
     }
 
+    /// # Safety
+    ///
+    /// The caller must guarantee that `data` is a valid pointer into an `Arc<State>`.
     unsafe fn wake_fn(data: *const ()) {
         // SAFETY: caller guarantees this is a valid data pointer.
         let (this, i) = unsafe { Self::from_ptr(data) };
@@ -319,12 +328,18 @@ impl State {
         this.wake(i);
     }
 
+    /// # Safety
+    ///
+    /// The caller must guarantee that `data` is a valid pointer into an `Arc<State>`.
     unsafe fn wake_by_ref_fn(data: *const ()) {
         // SAFETY: caller guarantees this is a valid data pointer.
         let (this, i) = unsafe { Self::from_ptr(data) };
         this.wake(i);
     }
 
+    /// # Safety
+    ///
+    /// The caller must guarantee that `data` is a valid pointer into an `Arc<State>`.
     unsafe fn drop_fn(data: *const ()) {
         // SAFETY: caller guarantees this is a valid data pointer.
         let (this, _) = unsafe { Self::from_ptr(data) };
@@ -367,9 +382,9 @@ impl Deref for WakerRef<'_> {
 #[cfg(test)]
 mod tests {
     use crate::FastSelect;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::timer::PolledTimer;
-    use pal_async::DefaultDriver;
     use std::future::pending;
     use std::time::Duration;
 

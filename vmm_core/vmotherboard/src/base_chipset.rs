@@ -4,18 +4,18 @@
 //! A flexible chipset builder that pre-populates a [`Chipset`](super::Chipset)
 //! with a customizable configuration of semi-standardized device.
 
-use crate::chipset::backing::arc_mutex::device::AddDeviceError;
-use crate::chipset::backing::arc_mutex::services::ArcMutexChipsetServices;
-use crate::chipset::ChipsetBuilder;
 use crate::ChipsetDeviceHandle;
 use crate::PowerEvent;
+use crate::chipset::ChipsetBuilder;
+use crate::chipset::backing::arc_mutex::device::AddDeviceError;
+use crate::chipset::backing::arc_mutex::services::ArcMutexChipsetServices;
 use chipset::*;
 use chipset_device::interrupt::LineInterruptTarget;
-use chipset_device_resources::ConfigureChipsetDevice;
-use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use chipset_device_resources::BSP_LINT_LINE_SET;
+use chipset_device_resources::ConfigureChipsetDevice;
 use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
+use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use closeable_mutex::CloseableMutex;
 use firmware_uefi::UefiCommandSet;
 use framebuffer::Framebuffer;
@@ -582,19 +582,17 @@ impl<'a> BaseChipsetBuilder<'a> {
         {
             builder
                 .arc_mutex_device("guest-watchdog")
-                .add_async(|services| {
-                    let vmtime = services.register_vmtime().clone();
+                .add_async(async |services| {
+                    let vmtime = services.register_vmtime();
                     let mut register_pio = services.register_pio();
-                    async move {
-                        guest_watchdog::GuestWatchdogServices::new(
-                            vmtime.access("guest-watchdog-time"),
-                            watchdog_platform,
-                            &mut register_pio,
-                            pio_wdat_port,
-                            foundation.is_restoring,
-                        )
-                        .await
-                    }
+                    guest_watchdog::GuestWatchdogServices::new(
+                        vmtime.access("guest-watchdog-time"),
+                        watchdog_platform,
+                        &mut register_pio,
+                        pio_wdat_port,
+                        foundation.is_restoring,
+                    )
+                    .await
                 })
                 .await?;
         }
@@ -611,7 +609,7 @@ impl<'a> BaseChipsetBuilder<'a> {
         {
             builder
                 .arc_mutex_device("uefi")
-                .try_add_async(|services| {
+                .try_add_async(async |services| {
                     let notify_interrupt = match config.command_set {
                         UefiCommandSet::X64 => {
                             services.new_line(GPE0_LINE_SET, "genid", GPE0_LINE_GENERATION_ID)
@@ -620,31 +618,25 @@ impl<'a> BaseChipsetBuilder<'a> {
                             services.new_line(IRQ_LINE_SET, "genid", GENERATION_ID_IRQ)
                         }
                     };
-                    let vmtime = services.register_vmtime().clone();
+                    let vmtime = services.register_vmtime();
                     let gm = foundation.trusted_vtl0_dma_memory.clone();
-                    async move {
-                        let runtime_deps = firmware_uefi::UefiRuntimeDeps {
-                            gm: gm.clone(),
-                            nvram_storage,
-                            logger,
-                            vmtime: &vmtime,
-                            watchdog_platform,
-                            generation_id_deps: generation_id::GenerationIdRuntimeDeps {
-                                generation_id_recv,
-                                gm,
-                                notify_interrupt,
-                            },
-                            vsm_config,
-                            time_source,
-                        };
+                    let runtime_deps = firmware_uefi::UefiRuntimeDeps {
+                        gm: gm.clone(),
+                        nvram_storage,
+                        logger,
+                        vmtime,
+                        watchdog_platform,
+                        generation_id_deps: generation_id::GenerationIdRuntimeDeps {
+                            generation_id_recv,
+                            gm,
+                            notify_interrupt,
+                        },
+                        vsm_config,
+                        time_source,
+                    };
 
-                        firmware_uefi::UefiDevice::new(
-                            runtime_deps,
-                            config,
-                            foundation.is_restoring,
-                        )
+                    firmware_uefi::UefiDevice::new(runtime_deps, config, foundation.is_restoring)
                         .await
-                    }
                 })
                 .await?;
         }
@@ -724,8 +716,7 @@ impl<'a> BaseChipsetBuilder<'a> {
         macro_rules! feature_gate_check {
             ($feature:literal, $dep:ident) => {
                 #[cfg(not(feature = $feature))]
-                let None::<()> = $dep
-                else {
+                let None::<()> = $dep else {
                     return Err(BaseChipsetBuilderError::FeatureGatedDevice($feature));
                 };
             };
@@ -744,25 +735,28 @@ impl<'a> BaseChipsetBuilder<'a> {
         );
 
         for device in device_handles {
-            let mut builder = builder.arc_mutex_device(device.name.as_ref());
-            let services = builder.services();
-            let dev = resolver
-                .resolve(
-                    device.resource,
-                    ResolveChipsetDeviceHandleParams {
-                        device_name: device.name.as_ref(),
-                        guest_memory: &foundation.untrusted_dma_memory,
-                        encrypted_guest_memory: &foundation.trusted_vtl0_dma_memory,
-                        vmtime: foundation.vmtime,
-                        is_restoring: foundation.is_restoring,
-                        task_driver_source: driver_source,
-                        register_mmio: &mut services.register_mmio(),
-                        register_pio: &mut services.register_pio(),
-                        configure: services,
-                    },
-                )
-                .await;
-            builder.try_add(|_| dev.map(|d| d.0))?;
+            builder
+                .arc_mutex_device(device.name.as_ref())
+                .try_add_async(async |services| {
+                    resolver
+                        .resolve(
+                            device.resource,
+                            ResolveChipsetDeviceHandleParams {
+                                device_name: device.name.as_ref(),
+                                guest_memory: &foundation.untrusted_dma_memory,
+                                encrypted_guest_memory: &foundation.trusted_vtl0_dma_memory,
+                                vmtime: foundation.vmtime,
+                                is_restoring: foundation.is_restoring,
+                                task_driver_source: driver_source,
+                                register_mmio: &mut services.register_mmio(),
+                                register_pio: &mut services.register_pio(),
+                                configure: services,
+                            },
+                        )
+                        .await
+                        .map(|dev| dev.0)
+                })
+                .await?;
         }
 
         Ok(BaseChipsetBuilderOutput {
@@ -797,11 +791,11 @@ impl ConfigureChipsetDevice for ArcMutexChipsetServices<'_, '_> {
 }
 
 mod weak_mutex_pci {
-    use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPci;
     use crate::chipset::PciConflict;
     use crate::chipset::PciConflictReason;
-    use chipset_device::io::IoResult;
+    use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPci;
     use chipset_device::ChipsetDevice;
+    use chipset_device::io::IoResult;
     use closeable_mutex::CloseableMutex;
     use pci_bus::GenericPciBusDevice;
     use std::sync::Arc;
@@ -1084,8 +1078,6 @@ pub mod options {
         use crate::BusIdPci;
         use chipset_resources::battery::HostBatteryUpdate;
         use local_clock::InspectableLocalClock;
-        #[allow(unused)]
-        use vmcore::non_volatile_store::NonVolatileStore;
 
         macro_rules! feature_gated {
             (

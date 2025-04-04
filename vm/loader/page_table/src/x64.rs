@@ -610,10 +610,10 @@ fn flatten_page_table(page_table: Vec<PageTable>) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use super::X64_1GB_PAGE_SIZE;
     use super::align_up_to_large_page_size;
     use super::align_up_to_page_size;
     use super::calculate_pde_table_count;
-    use super::X64_1GB_PAGE_SIZE;
 
     #[test]
     fn test_align_up() {

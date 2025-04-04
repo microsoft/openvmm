@@ -7,7 +7,6 @@
 //! Linux: [eventfd](https://man7.org/linux/man-pages/man2/eventfd.2.html)
 //! Other Unix: [fifo](https://man.openbsd.org/mkfifo.2)
 
-#![warn(missing_docs)]
 // UNSAFETY: FFI into platform-specific APIs.
 #![expect(unsafe_code)]
 

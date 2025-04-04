@@ -1,10 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod channel_bitmap;
 mod channels;
+pub mod event;
 pub mod hvsock;
 mod monitor;
 mod proxyintegration;
@@ -15,10 +17,8 @@ pub type Guid = guid::Guid;
 use anyhow::Context;
 use async_trait::async_trait;
 use channel_bitmap::ChannelBitmap;
-use channels::ChannelError;
 use channels::ConnectionTarget;
 pub use channels::InitiateContactRequest;
-use channels::InterruptPageError;
 use channels::MessageTarget;
 use channels::ModifyConnectionRequest;
 pub use channels::ModifyConnectionResponse;
@@ -28,14 +28,13 @@ pub use channels::OfferParamsInternal;
 use channels::OpenParams;
 use channels::RestoreError;
 pub use channels::Update;
-use futures::channel::mpsc;
-use futures::channel::mpsc::SendError;
-use futures::future::poll_fn;
-use futures::future::OptionFuture;
-use futures::stream::SelectAll;
-use futures::task::noop_waker_ref;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::channel::mpsc;
+use futures::channel::mpsc::SendError;
+use futures::future::OptionFuture;
+use futures::future::poll_fn;
+use futures::stream::SelectAll;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
 use inspect::Inspect;
@@ -49,14 +48,16 @@ use pal_async::task::Task;
 use pal_event::Event;
 #[cfg(windows)]
 pub use proxyintegration::ProxyIntegration;
+#[cfg(windows)]
+pub use proxyintegration::ProxyServerInfo;
 use ring::PAGE_SIZE;
 use std::collections::HashMap;
 use std::future;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::ready;
 use std::task::Poll;
+use std::task::ready;
 use unicycle::FuturesUnordered;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
@@ -73,8 +74,6 @@ use vmbus_channel::bus::RestoreResult;
 use vmbus_channel::gpadl::GpadlMap;
 use vmbus_channel::gpadl_ring::AlignedGpadlView;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
-use vmbus_core::protocol;
-pub use vmbus_core::protocol::GpadlId;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
 use vmbus_core::MaxVersionInfo;
@@ -82,6 +81,8 @@ use vmbus_core::MonitorPageGpas;
 use vmbus_core::OutgoingMessage;
 use vmbus_core::TaggedStream;
 use vmbus_core::VersionInfo;
+use vmbus_core::protocol;
+pub use vmbus_core::protocol::GpadlId;
 #[cfg(windows)]
 use vmbus_proxy::ProxyHandle;
 use vmbus_ring as ring;
@@ -126,6 +127,7 @@ pub struct VmbusServerBuilder<'a, T: Spawn> {
     delay_max_version: bool,
     enable_mnf: bool,
     force_confidential_external_memory: bool,
+    send_messages_while_stopped: bool,
 }
 
 /// The server side of the connection between a vmbus server and a relay.
@@ -215,8 +217,9 @@ pub struct OfferInfo {
 }
 
 #[derive(mesh::MeshPayload)]
-pub enum OfferRequest {
+pub(crate) enum OfferRequest {
     Offer(FailableRpc<OfferInfo, ()>),
+    ForceReset(Rpc<(), ()>),
 }
 
 impl Inspect for VmbusServer {
@@ -271,6 +274,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
             delay_max_version: false,
             enable_mnf: false,
             force_confidential_external_memory: false,
+            send_messages_while_stopped: false,
         }
     }
 
@@ -367,12 +371,23 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
         self
     }
 
+    /// Send messages to the partition even while stopped, which can cause
+    /// corrupted synic states across VM reset.
+    ///
+    /// This option is used to prevent messages from getting into the queue, for
+    /// saved state compatibility with release/2411. It can be removed once that
+    /// release is no longer supported.
+    pub fn send_messages_while_stopped(mut self, send: bool) -> Self {
+        self.send_messages_while_stopped = send;
+        self
+    }
+
     /// Creates a new instance of the server.
     ///
     /// When the object is dropped, all channels will be closed and revoked
     /// automatically.
     pub fn build(self) -> anyhow::Result<VmbusServer> {
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods)] // TODO
         let (message_send, message_recv) = mpsc::channel(64);
         let message_sender = Arc::new(MessageSender {
             send: message_send.clone(),
@@ -447,7 +462,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
                     .map(|_| {
                         ModifyConnectionResponse::Supported(
                             protocol::ConnectionState::SUCCESSFUL,
-                            protocol::FeatureFlags::all(),
+                            protocol::FeatureFlags::from_bits(u32::MAX),
                         )
                     })
                     .boxed()
@@ -469,6 +484,8 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
         };
 
         let inner = ServerTaskInner {
+            running: false,
+            send_messages_while_stopped: self.send_messages_while_stopped,
             gm: self.gm,
             private_gm: self.private_gm,
             vtl: self.vtl,
@@ -486,13 +503,12 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
             external_server_send: self.external_server,
             channel_bitmap: None,
             shared_event_port: None,
-            reset_done: None,
+            reset_done: Vec::new(),
             enable_mnf: self.enable_mnf,
         };
 
         let (task_send, task_recv) = mesh::channel();
         let mut server_task = ServerTask {
-            running: false,
             server,
             task_recv,
             offer_recv,
@@ -569,15 +585,6 @@ impl VmbusServer {
         let _ = self.task.await;
     }
 
-    #[cfg(windows)]
-    pub async fn start_kernel_proxy(
-        &self,
-        driver: &(impl pal_async::driver::SpawnDriver + Clone),
-        handle: ProxyHandle,
-    ) -> std::io::Result<ProxyIntegration> {
-        ProxyIntegration::start(driver, handle, self.control(), Some(&self.control.mem)).await
-    }
-
     /// Returns an object that can be used to offer channels.
     pub fn control(&self) -> Arc<VmbusServerControl> {
         self.control.clone()
@@ -608,7 +615,6 @@ pub struct SynicMessage {
 }
 
 struct ServerTask {
-    running: bool,
     server: channels::Server,
     task_recv: mesh::Receiver<VmbusRequest>,
     offer_recv: mesh::Receiver<OfferRequest>,
@@ -622,6 +628,8 @@ struct ServerTask {
 }
 
 struct ServerTaskInner {
+    running: bool,
+    send_messages_while_stopped: bool,
     gm: GuestMemory,
     private_gm: Option<GuestMemory>,
     synic: Arc<dyn SynicPortAccess>,
@@ -639,7 +647,7 @@ struct ServerTaskInner {
     relay_send: mesh::Sender<ModifyRelayRequest>,
     channel_bitmap: Option<Arc<ChannelBitmap>>,
     shared_event_port: Option<Box<dyn Send>>,
-    reset_done: Option<Rpc<(), ()>>,
+    reset_done: Vec<Rpc<(), ()>>,
     enable_mnf: bool,
 }
 
@@ -793,7 +801,10 @@ impl ServerTask {
             protocol::STATUS_UNSUCCESSFUL
         };
         if let Err(err) = self.inner.complete_open(offer_id, result) {
-            tracelimit::error_ratelimited!(?err, "failed to complete open");
+            tracelimit::error_ratelimited!(
+                error = err.as_ref() as &dyn std::error::Error,
+                "failed to complete open"
+            );
             // If complete_open failed, the channel is now in FailedOpen state and the device needs
             // to notified to close it. Calling open_complete is postponed until the device responds
             // to the close request.
@@ -901,16 +912,11 @@ impl ServerTask {
     fn handle_request(&mut self, request: VmbusRequest) {
         tracing::debug!(?request, "handle_request");
         match request {
-            VmbusRequest::Reset(rpc) => {
-                assert!(self.inner.reset_done.is_none());
-                self.inner.reset_done = Some(rpc);
-                self.server.with_notifier(&mut self.inner).reset();
-                // TODO: clear pending messages and other requests.
-            }
+            VmbusRequest::Reset(rpc) => self.handle_reset(rpc),
             VmbusRequest::Inspect(deferred) => {
                 deferred.respond(|resp| {
                     resp.field("message_port", &self.inner.message_port)
-                        .field("running", self.running)
+                        .field("running", self.inner.running)
                         .field("hvsock_requests", self.inner.hvsock_requests)
                         .field_mut_with("unstick_channels", |v| {
                             let v: inspect::Value = if let Some(v) = v {
@@ -945,20 +951,30 @@ impl ServerTask {
                 rpc.handle_sync(|()| self.server.with_notifier(&mut self.inner).post_restore())
             }
             VmbusRequest::Stop(rpc) => rpc.handle_sync(|()| {
-                if self.running {
-                    self.running = false;
+                if self.inner.running {
+                    self.inner.running = false;
                 }
             }),
             VmbusRequest::Start => {
-                if !self.running {
-                    self.running = true;
+                if !self.inner.running {
+                    self.inner.running = true;
                     if self.unstick_on_start {
-                        tracing::info!("lost synic bug fix is not in yet, call unstick_channels to mitigate the issue.");
+                        tracing::info!(
+                            "lost synic bug fix is not in yet, call unstick_channels to mitigate the issue."
+                        );
                         self.unstick_channels(false);
                         self.unstick_on_start = false;
                     }
                 }
             }
+        }
+    }
+
+    fn handle_reset(&mut self, rpc: Rpc<(), ()>) {
+        let needs_reset = self.inner.reset_done.is_empty();
+        self.inner.reset_done.push(rpc);
+        if needs_reset {
+            self.server.with_notifier(&mut self.inner).reset();
         }
     }
 
@@ -1008,7 +1024,7 @@ impl ServerTask {
     async fn run(
         &mut self,
         mut relay_response_recv: impl futures::stream::FusedStream<Item = ModifyConnectionResponse>
-            + Unpin,
+        + Unpin,
         mut hvsock_recv: impl futures::stream::FusedStream<Item = HvsockConnectResult> + Unpin,
     ) {
         loop {
@@ -1016,8 +1032,9 @@ impl ServerTask {
             // while the VM is running. In other cases, leave the events in
             // their respective queues.
 
+            let running_not_resetting = self.inner.running && self.inner.reset_done.is_empty();
             let mut external_requests = OptionFuture::from(
-                self.running
+                running_not_resetting
                     .then(|| {
                         self.external_requests
                             .as_mut()
@@ -1030,7 +1047,7 @@ impl ServerTask {
             let has_pending_messages = self.server.has_pending_messages();
             let message_port = self.inner.message_port.as_mut();
             let mut flush_pending_messages =
-                OptionFuture::from((self.running && has_pending_messages).then(|| {
+                OptionFuture::from((running_not_resetting && has_pending_messages).then(|| {
                     poll_fn(|cx| {
                         self.server.poll_flush_pending_messages(|msg| {
                             message_port.poll_post_message(cx, VMBUS_MESSAGE_TYPE, msg.data())
@@ -1043,7 +1060,7 @@ impl ServerTask {
             // too many hvsock requests outstanding. This puts a bound on the resources used by the
             // guest.
             let mut message_recv = OptionFuture::from(
-                (self.running
+                (running_not_resetting
                     && !has_pending_messages
                     && self.inner.hvsock_requests < MAX_CONCURRENT_HVSOCK_REQUESTS)
                     .then(|| self.message_recv.select_next_some()),
@@ -1051,13 +1068,13 @@ impl ServerTask {
 
             // Accept channel responses until stopped or when resetting.
             let mut channel_response = OptionFuture::from(
-                (self.running || self.inner.reset_done.is_some())
+                (self.inner.running || !self.inner.reset_done.is_empty())
                     .then(|| self.inner.channel_responses.select_next_some()),
             );
 
             // Accept hvsock connect responses while the VM is running.
             let mut hvsock_response =
-                OptionFuture::from(self.running.then(|| hvsock_recv.select_next_some()));
+                OptionFuture::from(running_not_resetting.then(|| hvsock_recv.select_next_some()));
 
             futures::select! { // merge semantics
                 r = self.task_recv.recv().fuse() => {
@@ -1072,6 +1089,9 @@ impl ServerTask {
                         OfferRequest::Offer(rpc) => {
                             rpc.handle_failable_sync(|request| { self.handle_offer(request) })
                         },
+                        OfferRequest::ForceReset(rpc) => {
+                            self.handle_reset(rpc);
+                        }
                     }
                 }
                 r = self.server_request_recv.select_next_some() => {
@@ -1428,6 +1448,25 @@ impl Notifier for ServerTaskInner {
     }
 
     fn send_message(&mut self, message: &OutgoingMessage, target: MessageTarget) -> bool {
+        // If the server is paused, queue all messages, to avoid affecting synic
+        // state during/after it has been saved or reset.
+        //
+        // Note that messages to reserved channels or custom targets will be
+        // dropped. However, such messages should only be sent in response to
+        // guest requests, which should not be processed while the server is
+        // paused.
+        //
+        // FUTURE: it would be better to ensure that no messages are generated
+        // by operations that run while the server is paused. E.g., defer
+        // sending offer or revoke messages for new or revoked offers. This
+        // would prevent the queue from growing without bound.
+        if !self.running && !self.send_messages_while_stopped {
+            if !matches!(target, MessageTarget::Default) {
+                tracelimit::error_ratelimited!(?target, "dropping message while paused");
+            }
+            return false;
+        }
+
         let mut port_storage;
         let port = match target {
             MessageTarget::Default => self.message_port.as_mut(),
@@ -1466,7 +1505,7 @@ impl Notifier for ServerTaskInner {
         // main loop will try to send it again later.
         matches!(
             port.poll_post_message(
-                &mut std::task::Context::from_waker(noop_waker_ref()),
+                &mut std::task::Context::from_waker(std::task::Waker::noop()),
                 VMBUS_MESSAGE_TYPE,
                 message.data()
             ),
@@ -1487,8 +1526,9 @@ impl Notifier for ServerTaskInner {
         }
 
         self.unreserve_channels();
-        let done = self.reset_done.take().expect("must have requested reset");
-        done.complete(());
+        for done in self.reset_done.drain(..) {
+            done.complete(());
+        }
     }
 
     fn unload_complete(&mut self) {
@@ -1593,7 +1633,12 @@ impl ServerTaskInner {
                             self.vtl,
                             guest_to_host_event.clone(),
                         )
-                        .map_err(ChannelError::SynicError)?;
+                        .with_context(|| {
+                            format!(
+                                "failed to create event port for VTL {:?}, connection ID {:#x}",
+                                self.vtl, open_params.connection_id
+                            )
+                        })?;
 
                     ChannelState::Open {
                         open_params,
@@ -1617,10 +1662,7 @@ impl ServerTaskInner {
 
     /// If the client specified an interrupt page, map it into host memory and
     /// set up the shared event port.
-    fn map_interrupt_page(
-        &mut self,
-        interrupt_page: Update<u64>,
-    ) -> Result<(), InterruptPageError> {
+    fn map_interrupt_page(&mut self, interrupt_page: Update<u64>) -> anyhow::Result<()> {
         let interrupt_page = match interrupt_page {
             Update::Unchanged => return Ok(()),
             Update::Reset => {
@@ -1634,12 +1676,16 @@ impl ServerTaskInner {
         assert_ne!(interrupt_page, 0);
 
         if interrupt_page % PAGE_SIZE as u64 != 0 {
-            return Err(InterruptPageError::NotPageAligned(interrupt_page));
+            anyhow::bail!("interrupt page {:#x} is not page aligned", interrupt_page);
         }
 
+        // Use a subrange to access the interrupt page to give GuestMemory's without a full mapping
+        // a chance to create one.
         let interrupt_page = self
             .gm
-            .lock_gpns(false, &[interrupt_page / PAGE_SIZE as u64])?;
+            .lockable_subrange(interrupt_page, PAGE_SIZE as u64)?
+            .lock_gpns(false, &[0])?;
+
         let channel_bitmap = Arc::new(ChannelBitmap::new(interrupt_page));
         self.channel_bitmap = Some(channel_bitmap.clone());
 
@@ -1796,6 +1842,15 @@ impl VmbusServerControl {
         ))
     }
 
+    /// Force reset all channels and protocol state, without requiring the
+    /// server to be paused.
+    pub async fn force_reset(&self) -> anyhow::Result<()> {
+        self.send
+            .call(OfferRequest::ForceReset, ())
+            .await
+            .context("vmbus server is gone")
+    }
+
     async fn offer(&self, request: OfferInput) -> anyhow::Result<OfferResources> {
         let mut offer_info = OfferInfo {
             params: request.params.into(),
@@ -1901,15 +1956,15 @@ impl ParentBus for VmbusServerControl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::task::noop_waker_ref;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::driver::SpawnDriver;
     use pal_async::timer::Instant;
     use pal_async::timer::PolledTimer;
-    use pal_async::DefaultDriver;
     use parking_lot::Mutex;
     use protocol::UserDefinedData;
     use std::time::Duration;
+    use test_with_tracing::test;
     use vmbus_channel::bus::OfferParams;
     use vmbus_core::protocol::ChannelId;
     use vmbus_core::protocol::VmbusMessage;
@@ -1957,7 +2012,7 @@ mod tests {
                     .as_ref()
                     .unwrap()
                     .poll_handle_message(
-                        &mut std::task::Context::from_waker(noop_waker_ref()),
+                        &mut std::task::Context::from_waker(std::task::Waker::noop()),
                         msg.data(),
                         trusted,
                     ),
@@ -2007,7 +2062,7 @@ mod tests {
 
             // Return pending 25% of the time.
             let mut pending_chance = [0; 1];
-            getrandom::getrandom(&mut pending_chance).unwrap();
+            getrandom::fill(&mut pending_chance).unwrap();
             if pending_chance[0] % 4 == 0 {
                 let mut timer = PolledTimer::new(self.spawner.as_ref());
                 let deadline = Instant::now() + Duration::from_millis(10);

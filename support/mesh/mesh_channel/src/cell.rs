@@ -18,8 +18,8 @@ use mesh_node::resource::Resource;
 use mesh_protobuf::EncodeAs;
 use mesh_protobuf::Protobuf;
 use mesh_protobuf::SerializedMessage;
-use std::future::poll_fn;
 use std::future::Future;
+use std::future::poll_fn;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
@@ -160,11 +160,7 @@ impl<T: 'static + Clone + MeshField + Sync + Send> CellUpdater<T> {
                     }
                 }
             }
-            if wait {
-                Poll::Pending
-            } else {
-                Poll::Ready(())
-            }
+            if wait { Poll::Pending } else { Poll::Ready(()) }
         })
     }
 }
@@ -329,9 +325,9 @@ impl<T: 'static + MeshField + Send + Sync + Clone> From<EncodedCell<T>> for Inne
 #[cfg(test)]
 mod tests {
     use super::CellUpdater;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
-    use pal_async::DefaultDriver;
     use std::future::poll_fn;
     use std::task::Poll;
 

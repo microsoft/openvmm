@@ -10,18 +10,18 @@
 use anyhow::Context;
 use base64::Engine;
 use debug_ptr::DebugPtr;
-use futures::executor::block_on;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::executor::block_on;
 use futures_concurrency::future::Race;
 use inspect::Inspect;
 use inspect::SensitivityLevel;
+use mesh::MeshPayload;
+use mesh::OneshotReceiver;
 use mesh::message::MeshField;
 use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use mesh::MeshPayload;
-use mesh::OneshotReceiver;
 use mesh_remote::InvitationAddress;
 #[cfg(unix)]
 use pal::unix::process::Builder as ProcessBuilder;
@@ -29,22 +29,21 @@ use pal::unix::process::Builder as ProcessBuilder;
 use pal::windows::process;
 #[cfg(windows)]
 use pal::windows::process::Builder as ProcessBuilder;
+use pal_async::DefaultPool;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use pal_async::DefaultPool;
 use slab::Slab;
 use std::borrow::Cow;
 use std::ffi::OsString;
 use std::fs::File;
-use std::future::Future;
 #[cfg(unix)]
 use std::os::unix::prelude::*;
 #[cfg(windows)]
 use std::os::windows::prelude::*;
 use std::path::PathBuf;
 use std::thread;
-use tracing::instrument;
 use tracing::Instrument;
+use tracing::instrument;
 use unicycle::FuturesUnordered;
 
 #[cfg(windows)]
@@ -82,11 +81,10 @@ static PROCESS_NAME: DebugPtr<String> = DebugPtr::new();
 /// If a mesh invitation is available, this function joins the mesh and runs the
 /// future returned by `f` until `f` returns or the parent process shuts down
 /// the mesh.
-pub fn try_run_mesh_host<U, Fut, F, T>(base_name: &str, f: F) -> anyhow::Result<()>
+pub fn try_run_mesh_host<U, F, T>(base_name: &str, f: F) -> anyhow::Result<()>
 where
     U: 'static + MeshPayload + Send,
-    F: FnOnce(U) -> Fut,
-    Fut: Future<Output = anyhow::Result<T>>,
+    F: AsyncFnOnce(U) -> anyhow::Result<T>,
 {
     block_on(async {
         if let Some(r) = node_from_environment().await? {
@@ -525,7 +523,8 @@ impl MeshInner {
             match event {
                 Event::Request(request) => match request {
                     MeshRequest::NewHost(rpc) => {
-                        rpc.handle(|params| self.spawn_process(params)).await
+                        rpc.handle(async |params| self.spawn_process(params).await)
+                            .await
                     }
                     MeshRequest::Inspect(deferred) => {
                         deferred.respond(|resp| {

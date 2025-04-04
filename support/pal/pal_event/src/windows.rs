@@ -40,7 +40,7 @@ impl Event {
 
     pub(crate) fn signal_inner(&self) {
         // SAFETY: passing a valid handle.
-        let r = unsafe { Threading::SetEvent(self.0.as_raw_handle() as isize) };
+        let r = unsafe { Threading::SetEvent(self.0.as_raw_handle()) };
         if r == 0 {
             // This can only fail due to an invalid handle, which can only
             // happen due to some bug in unsafe code.
@@ -50,9 +50,8 @@ impl Event {
 
     pub(crate) fn wait_inner(&self) {
         // SAFETY: passing a valid handle.
-        let r = unsafe {
-            Threading::WaitForSingleObject(self.0.as_raw_handle() as isize, Threading::INFINITE)
-        };
+        let r =
+            unsafe { Threading::WaitForSingleObject(self.0.as_raw_handle(), Threading::INFINITE) };
         if r != Foundation::WAIT_OBJECT_0 {
             // This can only fail due to an invalid handle, which can only
             // happen due to some bug in unsafe code.
@@ -62,7 +61,7 @@ impl Event {
 
     pub(crate) fn try_wait_inner(&self) -> bool {
         // SAFETY: passing a valid handle.
-        let r = unsafe { Threading::WaitForSingleObject(self.0.as_raw_handle() as isize, 0) };
+        let r = unsafe { Threading::WaitForSingleObject(self.0.as_raw_handle(), 0) };
         match r {
             Foundation::WAIT_OBJECT_0 => true,
             Foundation::WAIT_TIMEOUT => false,

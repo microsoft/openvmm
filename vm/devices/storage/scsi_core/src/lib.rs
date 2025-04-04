@@ -4,17 +4,16 @@
 //! Core SCSI traits and types.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
-use scsi_defs::srb::SrbStatus;
 use scsi_defs::ScsiOp;
 use scsi_defs::ScsiStatus;
+use scsi_defs::srb::SrbStatus;
 use stackfuture::StackFuture;
 use std::sync::Arc;
-use vm_resource::kind::ScsiDeviceHandleKind;
 use vm_resource::CanResolveTo;
+use vm_resource::kind::ScsiDeviceHandleKind;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -147,7 +146,7 @@ pub mod save_restore {
     }
 
     #[derive(Debug, Default, PartialEq, Eq, Copy, Clone, inspect::Inspect, Protobuf)]
-    #[allow(clippy::enum_variant_names)]
+    #[expect(clippy::enum_variant_names)]
     #[mesh(package = "storage.scsi.dvd")]
     pub enum DriveState {
         #[mesh(1)]

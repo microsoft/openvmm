@@ -4,18 +4,18 @@
 //! Tests common to every executor.
 
 // Uses futures channels, but is only test code.
-#![allow(clippy::disallowed_methods)]
+#![expect(clippy::disallowed_methods)]
 
 use crate::driver::Driver;
 use crate::socket::PolledSocket;
-use crate::task::with_current_task_metadata;
 use crate::task::Spawn;
+use crate::task::with_current_task_metadata;
 use crate::timer::Instant;
-use futures::channel::oneshot;
-use futures::executor::block_on;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
+use futures::channel::oneshot;
+use futures::executor::block_on;
 use pal_event::Event;
 use parking_lot::Mutex;
 use std::future::poll_fn;
@@ -238,7 +238,7 @@ pub mod windows {
         // named pipe
         {
             let mut path = [0; 16];
-            getrandom::getrandom(&mut path).unwrap();
+            getrandom::fill(&mut path).unwrap();
             let path = format!(r#"\\.\pipe\{:0x}"#, u128::from_ne_bytes(path));
             let server = NamedPipeServer::create(&path).unwrap();
             let accept = server.accept(&driver).unwrap();

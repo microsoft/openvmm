@@ -8,6 +8,8 @@
 //! This implementation is used by both the Hyper-V UEFI helper device, and the
 //! Guest Watchdog device.
 
+#![expect(missing_docs)]
+
 pub mod platform;
 use inspect::Inspect;
 use std::task::Context;
@@ -220,7 +222,7 @@ impl WatchdogServices {
             tracing::error!(name = self.debug_id, "Encountered a watchdog timeout");
             self.state.config.set_configured(false);
             self.state.config.set_enabled(false);
-            pal_async::local::block_with_io(|_driver| self.platform.on_timeout());
+            pal_async::local::block_on(self.platform.on_timeout());
         }
     }
 }

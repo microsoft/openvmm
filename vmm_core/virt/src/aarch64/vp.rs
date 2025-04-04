@@ -2,9 +2,9 @@
 // Licensed under the MIT License.
 
 use crate::aarch64::Aarch64PartitionCapabilities;
-use crate::state::state_trait;
 use crate::state::HvRegisterState;
 use crate::state::StateElement;
+use crate::state::state_trait;
 use aarch64defs::Cpsr64;
 use aarch64defs::SctlrEl1;
 use hvdef::HvArm64RegisterName;

@@ -1,14 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::uefi::splash;
 use crate::uefi::Splashes;
+use crate::uefi::splash;
 use core::num::NonZeroU8;
 use uefi::boot;
 use uefi::cstr16;
 use uefi::println;
 use uefi::runtime;
-use uefi::table::runtime::VariableVendor;
+use uefi::runtime::VariableVendor;
 
 // TODO: add runtime config for which tests to run (e.g: skipping watchdog)
 pub fn run_tests() {

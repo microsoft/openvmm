@@ -8,11 +8,11 @@ use super::deadline::DeadlineId;
 use super::deadline::DeadlineSet;
 use mesh_node::local_node::Port;
 use mesh_node::resource::Resource;
-use mesh_protobuf::encoding::IgnoreField;
 use mesh_protobuf::EncodeAs;
 use mesh_protobuf::Protobuf;
 use mesh_protobuf::SerializedMessage;
 use mesh_protobuf::Timestamp;
+use mesh_protobuf::encoding::IgnoreField;
 use parking_lot::Mutex;
 use std::future::Future;
 use std::pin::Pin;
@@ -482,7 +482,7 @@ mod tests {
         assert!(futures::poll!(ctx.cancelled()).is_ready());
     }
 
-    #[allow(clippy::redundant_clone)] // explicitly testing chained clones
+    #[expect(clippy::redundant_clone, reason = "explicitly testing chained clones")]
     async fn chain(use_cancel: bool) {
         let ctx = CancelContext::new();
         let (mut ctx, mut cancel) = ctx.with_cancel();

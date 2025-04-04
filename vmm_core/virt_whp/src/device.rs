@@ -2,10 +2,10 @@
 // Licensed under the MIT License.
 
 use super::WhpPartitionInner;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
-use chipset_device::ChipsetDevice;
 use hv1_hypercall::HvInterruptParameters;
 use hvdef::Vtl;
 use inspect::InspectMut;

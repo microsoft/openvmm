@@ -7,16 +7,16 @@
 // the GET and GED to also import get_protocol.
 pub use get_protocol::CreateRamGpaRangeFlags;
 pub use get_protocol::EventLogId;
+pub use get_protocol::GSP_CIPHERTEXT_MAX;
 pub use get_protocol::GspCiphertextContent;
 pub use get_protocol::GspCleartextContent;
 pub use get_protocol::GspExtendedStatusFlags;
-pub use get_protocol::ProtocolVersion;
-pub use get_protocol::SaveGuestVtl2StateFlags;
-pub use get_protocol::VmgsIoStatus;
-pub use get_protocol::GSP_CIPHERTEXT_MAX;
 pub use get_protocol::IGVM_ATTEST_MSG_REQ_AGENT_DATA_MAX_SIZE;
 pub use get_protocol::MAX_TRANSFER_SIZE;
 pub use get_protocol::NUMBER_GSP;
+pub use get_protocol::ProtocolVersion;
+pub use get_protocol::SaveGuestVtl2StateFlags;
+pub use get_protocol::VmgsIoStatus;
 use zerocopy::FromZeros;
 
 use guid::Guid;

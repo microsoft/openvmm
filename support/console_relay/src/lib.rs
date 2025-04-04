@@ -3,18 +3,16 @@
 
 //! Code to launch a terminal emulator for relaying input/output.
 
-#![warn(missing_docs)]
-
 mod unix;
 mod windows;
 
 use anyhow::Context as _;
-use futures::executor::block_on;
-use futures::io::AllowStdIo;
-use futures::io::AsyncReadExt;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use futures::AsyncWriteExt;
+use futures::executor::block_on;
+use futures::io::AllowStdIo;
+use futures::io::AsyncReadExt;
 use pal_async::driver::Driver;
 use pal_async::local::block_with_io;
 use std::borrow::Cow;
@@ -37,7 +35,7 @@ pub fn relay_console(path: &Path) -> anyhow::Result<()> {
     // But we use sync to read/write to stdio because it's quite challenging to
     // poll for stdio readiness, especially on Windows. So we use a separate
     // thread for input and output.
-    block_with_io(|driver| async move {
+    block_with_io(async |driver| {
         #[cfg(unix)]
         let (read, mut write) = {
             let pipe = pal_async::socket::PolledSocket::connect_unix(&driver, path)
@@ -182,7 +180,7 @@ pub fn random_console_path() -> PathBuf {
     let mut path = std::env::temp_dir();
 
     let mut random = [0; 16];
-    getrandom::getrandom(&mut random).expect("rng failure");
+    getrandom::fill(&mut random).expect("rng failure");
     path.push(u128::from_ne_bytes(random).to_string());
 
     path

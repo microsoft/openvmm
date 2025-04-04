@@ -10,8 +10,8 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod posix_spawn;
 
-use super::while_eintr;
 use super::SyscallResult;
+use super::while_eintr;
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::ffi::OsString;
@@ -500,8 +500,8 @@ mod tests {
 
         #[cfg(target_os = "linux")]
         {
-            use crate::sys::while_eintr;
             use crate::sys::SyscallResult;
+            use crate::sys::while_eintr;
             use std::os::unix::prelude::*;
 
             let mut pollfd = libc::pollfd {
@@ -524,9 +524,14 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn test_landlock_sandbox() {
-        use crate::sys::while_eintr;
         use crate::sys::SyscallResult;
-        use landlock::{AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr};
+        use crate::sys::while_eintr;
+        use landlock::AccessFs;
+        use landlock::PathBeneath;
+        use landlock::PathFd;
+        use landlock::Ruleset;
+        use landlock::RulesetAttr;
+        use landlock::RulesetCreatedAttr;
         use std::os::unix::prelude::*;
 
         let landlock_rules = Ruleset::default()
@@ -561,9 +566,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg(target_arch = "x86_64")] // xtask-fmt allow-target-arch sys-crate
     fn test_seccomp_sandbox() {
-        use crate::sys::while_eintr;
         use crate::sys::SyscallResult;
-        use seccompiler::{SeccompAction, SeccompFilter, TargetArch};
+        use crate::sys::while_eintr;
+        use seccompiler::SeccompAction;
+        use seccompiler::SeccompFilter;
+        use seccompiler::TargetArch;
         use std::os::unix::prelude::*;
 
         // This isn't defined in libc MUSL yet.

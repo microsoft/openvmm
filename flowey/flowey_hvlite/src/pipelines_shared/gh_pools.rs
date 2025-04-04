@@ -3,8 +3,6 @@
 
 //! Centralized list of constants enumerating available GitHub build pools.
 
-#![allow(unused)]
-
 use flowey::node::prelude::FlowPlatformLinuxDistro;
 use flowey::pipeline::prelude::*;
 

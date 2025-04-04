@@ -11,14 +11,14 @@ use super::object_cache::ObjectId;
 use super::va_mapper::VaMapper;
 use super::va_mapper::VaMapperError;
 use crate::RemoteProcess;
-use futures::future::join_all;
 use futures::StreamExt;
+use futures::future::join_all;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
+use mesh::MeshPayload;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use mesh::MeshPayload;
 use pal_async::task::Spawn;
 use slab::Slab;
 use std::sync::Arc;
@@ -238,7 +238,8 @@ impl MappingManagerTask {
                     rpc.handle_sync(|params| self.add_mapping(params))
                 }
                 MappingRequest::RemoveMappings(rpc) => {
-                    rpc.handle(|range| self.remove_mappings(range)).await
+                    rpc.handle(async |range| self.remove_mappings(range).await)
+                        .await
                 }
                 MappingRequest::Inspect(deferred) => deferred.inspect(&mut *self),
             }
@@ -332,7 +333,7 @@ impl MappingManagerTask {
 impl Mappers {
     async fn invalidate(&self, ids: &[MapperId], range: MemoryRange) {
         tracing::debug!(mapper_count = ids.len(), %range, "sending invalidations");
-        join_all(ids.iter().map(|&MapperId(i)| async move {
+        join_all(ids.iter().map(async |&MapperId(i)| {
             if let Err(err) = self.mappers[i]
                 .req_send
                 .call(MapperRequest::Unmap, range)

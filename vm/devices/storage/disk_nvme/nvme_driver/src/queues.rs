@@ -12,8 +12,8 @@ use safeatomic::AtomicSliceOps;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::Acquire;
 use std::sync::atomic::Ordering::Relaxed;
-use user_driver::memory::MemoryBlock;
 use user_driver::DeviceBacking;
+use user_driver::memory::MemoryBlock;
 
 #[derive(Inspect)]
 pub(crate) struct SubmissionQueue {
@@ -204,9 +204,5 @@ impl CompletionQueue {
 }
 
 fn advance(n: u32, l: u32) -> u32 {
-    if n + 1 < l {
-        n + 1
-    } else {
-        0
-    }
+    if n + 1 < l { n + 1 } else { 0 }
 }

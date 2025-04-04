@@ -7,16 +7,16 @@
 #![warn(missing_docs)]
 
 use self::spec::CmosReg;
+use self::spec::ENABLE_OSCILLATOR_CONTROL;
 use self::spec::StatusRegA;
 use self::spec::StatusRegB;
 use self::spec::StatusRegC;
 use self::spec::StatusRegD;
-use self::spec::ENABLE_OSCILLATOR_CONTROL;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use inspect::Inspect;
 use inspect::InspectMut;
 use local_clock::InspectableLocalClock;
@@ -1206,7 +1206,10 @@ mod tests {
                 let elapsed = end - start;
                 let expected = Duration::from_secs(seconds_to_wait as u64);
                 let allowance = Duration::from_secs(1);
-                println!("Expected: {:?} Start: {:?} End: {:?} Elapsed: {:?} Allowance: {:?}, RTC generates update strobe at expected rate.", expected, start, end, elapsed, allowance);
+                println!(
+                    "Expected: {:?} Start: {:?} End: {:?} Elapsed: {:?} Allowance: {:?}, RTC generates update strobe at expected rate.",
+                    expected, start, end, elapsed, allowance
+                );
                 assert!(elapsed <= (expected + allowance) && elapsed >= (expected - allowance));
             } else {
                 panic!("get_cmos_date_time failed");

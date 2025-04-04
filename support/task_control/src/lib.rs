@@ -4,7 +4,6 @@
 //! A simple asynchronous task model for execution that needs to be started,
 //! stopped, mutated, and inspected.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use fast_select::FastSelect;
@@ -13,10 +12,10 @@ use inspect::InspectMut;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
-use std::future::poll_fn;
 use std::future::Future;
-use std::pin::pin;
+use std::future::poll_fn;
 use std::pin::Pin;
+use std::pin::pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -95,9 +94,10 @@ impl StopTask<'_> {
     pub async fn until_stopped<F: Future>(&mut self, fut: F) -> Result<F::Output, Cancelled> {
         // Wrap the cancel task in a FastSelect to avoid taking the channel lock
         // at each wakeup.
-        let mut cancel = pin!(self
-            .fast_select
-            .select((poll_fn(|cx| self.inner.poll_ready(cx)),)));
+        let mut cancel = pin!(
+            self.fast_select
+                .select((poll_fn(|cx| self.inner.poll_ready(cx)),))
+        );
 
         let mut fut = pin!(fut);
 
@@ -575,8 +575,8 @@ mod tests {
     use crate::StopTask;
     use crate::TaskControl;
     use futures::FutureExt;
-    use pal_async::async_test;
     use pal_async::DefaultDriver;
+    use pal_async::async_test;
     use std::task::Poll;
 
     struct Foo(u32);

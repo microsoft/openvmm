@@ -4,15 +4,20 @@
 //! Provides an interface for creating and managing Hyper-V VMs
 
 use super::hvc;
+use super::hvc::VmState;
 use super::powershell;
 use crate::PetriLogFile;
 use anyhow::Context;
+use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use jiff::Timestamp;
+use jiff::ToSpan;
 use pal_async::DefaultDriver;
+use pal_async::timer::PolledTimer;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 use tempfile::TempDir;
 use tracing::Level;
 
@@ -25,6 +30,8 @@ pub struct HyperVVM {
     ps_mod: PathBuf,
     create_time: Timestamp,
     log_file: PetriLogFile,
+    expected_boot_event: Option<FirmwareEvent>,
+    driver: DefaultDriver,
 }
 
 impl HyperVVM {
@@ -35,6 +42,8 @@ impl HyperVVM {
         guest_state_isolation_type: powershell::HyperVGuestStateIsolationType,
         memory: u64,
         log_file: PetriLogFile,
+        expected_boot_event: Option<FirmwareEvent>,
+        driver: DefaultDriver,
     ) -> anyhow::Result<Self> {
         let create_time = Timestamp::now();
         let name = name.to_owned();
@@ -74,6 +83,8 @@ impl HyperVVM {
             ps_mod,
             create_time,
             log_file,
+            expected_boot_event,
+            driver,
         })
     }
 
@@ -104,6 +115,46 @@ impl HyperVVM {
                 ),
             );
         }
+        Ok(())
+    }
+
+    /// Waits for an event emitted by the firmware about its boot status, and
+    /// verifies that it is the expected success value.
+    pub async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
+        if let Some(expected_boot_event) = self.expected_boot_event {
+            let expected_id = match expected_boot_event {
+                FirmwareEvent::BootSuccess => powershell::EVENT_ID_BOOT_SUCCESS,
+                FirmwareEvent::BootFailed => powershell::EVENT_ID_BOOT_FAILURE,
+                FirmwareEvent::NoBootDevice => powershell::EVENT_ID_NO_BOOT_DEVICE,
+                FirmwareEvent::BootAttempt => powershell::EVENT_ID_BOOT_ATTEMPT,
+            };
+            let boot_timeout = 240.seconds();
+            let start = Timestamp::now();
+            loop {
+                let events = powershell::hyperv_boot_events(&self.vmid, &self.create_time)?;
+
+                if events.len() > 1 {
+                    anyhow::bail!("Got more than one boot event");
+                }
+                if let Some(event) = events.first() {
+                    if event.id == expected_id {
+                        break;
+                    } else {
+                        anyhow::bail!("VM boot failed ({}): {}", event.id, event.message)
+                    }
+                }
+
+                if boot_timeout.compare(Timestamp::now() - start)? == std::cmp::Ordering::Less {
+                    anyhow::bail!("VM boot timed out")
+                }
+                PolledTimer::new(&self.driver)
+                    .sleep(Duration::from_secs(1))
+                    .await;
+            }
+        } else {
+            tracing::warn!("Configured firmware does not emit a boot event, skipping");
+        }
+
         Ok(())
     }
 
@@ -157,9 +208,50 @@ impl HyperVVM {
         powershell::run_set_initial_machine_configuration(&self.vmid, &self.ps_mod, imc_hive)
     }
 
+    fn state(&self) -> anyhow::Result<VmState> {
+        hvc::hvc_state(&self.vmid)
+    }
+
+    fn check_state(&self, expected: VmState) -> anyhow::Result<()> {
+        let state = self.state()?;
+        if state != expected {
+            anyhow::bail!("unexpected VM state {state:?}, should be {expected:?}");
+        }
+        Ok(())
+    }
+
     /// Start the VM
-    pub fn start(&self) -> anyhow::Result<()> {
-        hvc::hvc_start(&self.vmid)
+    pub async fn start(&self) -> anyhow::Result<()> {
+        self.check_state(VmState::Off)?;
+        hvc::hvc_start(&self.vmid)?;
+        self.wait_for_state(VmState::Running).await
+    }
+
+    /// Attempt to gracefully shut down the VM
+    pub async fn stop(&self) -> anyhow::Result<()> {
+        self.wait_for_shutdown_ic().await?;
+        self.check_state(VmState::Running)?;
+        hvc::hvc_stop(&self.vmid)?;
+        self.wait_for_state(VmState::Off).await
+    }
+
+    /// Attempt to gracefully restart the VM
+    pub async fn restart(&self) -> anyhow::Result<()> {
+        self.wait_for_shutdown_ic().await?;
+        self.check_state(VmState::Running)?;
+        hvc::hvc_restart(&self.vmid)?;
+        tracing::warn!("end state checking on restart not yet implemented for hyper-v vms");
+        Ok(())
+    }
+
+    /// Kill the VM
+    pub fn kill(&self) -> anyhow::Result<()> {
+        hvc::hvc_kill(&self.vmid).context("hvc_kill")
+    }
+
+    /// Issue a hard reset to the VM
+    pub fn reset(&self) -> anyhow::Result<()> {
+        hvc::hvc_reset(&self.vmid).context("hvc_reset")
     }
 
     /// Enable serial output and return the named pipe path
@@ -169,9 +261,55 @@ impl HyperVVM {
         Ok(pipe_path)
     }
 
-    /// Wait for the VM to turn off
-    pub async fn wait_for_power_off(&self, driver: &DefaultDriver) -> anyhow::Result<()> {
-        hvc::hvc_wait_for_power_off(driver, &self.vmid).await
+    /// Wait for the VM to stop
+    pub async fn wait_for_halt(&self) -> anyhow::Result<()> {
+        self.wait_for_state(VmState::Off).await
+    }
+
+    async fn wait_for_state(&self, target: VmState) -> anyhow::Result<()> {
+        self.wait_for(Self::state, target, 240.seconds())
+            .await
+            .context("wait_for_state")
+    }
+
+    /// Wait for the VM shutdown ic
+    async fn wait_for_shutdown_ic(&self) -> anyhow::Result<()> {
+        self.wait_for(
+            Self::shutdown_ic_status,
+            powershell::VmShutdownIcStatus::Ok,
+            240.seconds(),
+        )
+        .await
+        .context("wait_for_shutdown_ic")
+    }
+
+    fn shutdown_ic_status(&self) -> anyhow::Result<powershell::VmShutdownIcStatus> {
+        powershell::vm_shutdown_ic_status(&self.vmid)
+    }
+
+    // TODO: replace timeouts throughout the hyper-v petri infrastructure
+    // with a watchdog
+    async fn wait_for<T: std::fmt::Debug + PartialEq>(
+        &self,
+        f: fn(&Self) -> anyhow::Result<T>,
+        target: T,
+        timeout: jiff::Span,
+    ) -> anyhow::Result<()> {
+        let start = Timestamp::now();
+        loop {
+            let state = f(self)?;
+            if state == target {
+                break;
+            }
+            if timeout.compare(Timestamp::now() - start)? == std::cmp::Ordering::Less {
+                anyhow::bail!("timed out waiting for {target:?}. current: {state:?}");
+            }
+            PolledTimer::new(&self.driver)
+                .sleep(Duration::from_secs(1))
+                .await;
+        }
+
+        Ok(())
     }
 
     /// Remove the VM
@@ -181,9 +319,13 @@ impl HyperVVM {
 
     fn remove_inner(&mut self) -> anyhow::Result<()> {
         if !self.destroyed {
-            hvc::hvc_ensure_off(&self.vmid)?;
-            powershell::run_remove_vm(&self.vmid)?;
+            let res_off = hvc::hvc_ensure_off(&self.vmid);
+            let res_remove = powershell::run_remove_vm(&self.vmid);
+
             self.flush_logs()?;
+
+            res_off?;
+            res_remove?;
             self.destroyed = true;
         }
 

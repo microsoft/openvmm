@@ -5,9 +5,9 @@
 
 use crate::TdxBacked;
 use crate::UhProcessor;
-use hcl::ioctl::tdx::Tdx;
-use hcl::ioctl::ProcessorRunner;
 use hcl::GuestVtl;
+use hcl::ioctl::ProcessorRunner;
+use hcl::ioctl::tdx::Tdx;
 use hvdef::hypercall::HvGvaRange;
 use inspect::Inspect;
 use safeatomic::AtomicSliceOps;
@@ -122,12 +122,12 @@ impl UhProcessor<'_, TdxBacked> {
 
     /// Performs any TLB flush by list that may be required. Returns true
     /// if successful, false if a flush entire is required instead.
-    fn try_flush_list(
+    fn try_flush_list<'a>(
         target_vtl: GuestVtl,
         partition_flush_state: &TdxPartitionFlushState,
         gva_list_count: &mut Wrapping<usize>,
-        runner: &mut ProcessorRunner<'_, Tdx<'_>>,
-        flush_page: &page_pool_alloc::PagePoolHandle,
+        runner: &mut ProcessorRunner<'a, Tdx<'a>>,
+        flush_page: &user_driver::memory::MemoryBlock,
     ) -> bool {
         // Check quickly to see whether any new addresses are in the list.
         if partition_flush_state.s.gva_list_count == *gva_list_count {
@@ -157,7 +157,7 @@ impl UhProcessor<'_, TdxBacked> {
         } else {
             gla_flags.set_list(true);
 
-            let page_mapping = flush_page.mapping();
+            let page_mapping = flush_page.as_slice();
 
             for (d, s) in page_mapping
                 .chunks(size_of::<HvGvaRange>())
@@ -167,7 +167,7 @@ impl UhProcessor<'_, TdxBacked> {
             }
 
             let gla_list = TdxGlaListInfo::new()
-                .with_list_gpa(flush_page.base_pfn())
+                .with_list_gpa(flush_page.pfns()[0])
                 .with_num_entries(count_diff as u64);
             runner.invgla(gla_flags, gla_list).unwrap();
         };

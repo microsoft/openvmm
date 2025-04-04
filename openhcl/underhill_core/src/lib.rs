@@ -5,15 +5,16 @@
 //! for the underhill environment.
 
 #![cfg(target_os = "linux")]
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod diag;
 mod dispatch;
-mod dma_manager;
 mod emuplat;
 mod get_tracing;
 mod inspect_internal;
 mod inspect_proc;
+mod livedump;
 mod loader;
 mod nvme_manager;
 mod options;
@@ -39,35 +40,35 @@ use crate::worker::UnderhillWorkerParameters;
 use anyhow::Context;
 use bootloader_fdt_parser::BootTimes;
 use cvm_tracing::CVM_ALLOWED;
-use framebuffer::FramebufferAccess;
 use framebuffer::FRAMEBUFFER_SIZE;
+use framebuffer::FramebufferAccess;
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
 use get_tracing::init_tracing;
 use get_tracing::init_tracing_backend;
 use inspect::Inspect;
 use inspect::SensitivityLevel;
-use mesh::error::RemoteError;
-use mesh::rpc::Rpc;
-use mesh::rpc::RpcSend;
 use mesh::CancelContext;
 use mesh::CancelReason;
 use mesh::MeshPayload;
-use mesh_process::try_run_mesh_host;
+use mesh::error::RemoteError;
+use mesh::rpc::Rpc;
+use mesh::rpc::RpcSend;
 use mesh_process::Mesh;
 use mesh_process::ProcessConfig;
+use mesh_process::try_run_mesh_host;
 use mesh_tracing::RemoteTracer;
 use mesh_tracing::TracingBackend;
-use mesh_worker::launch_local_worker;
-use mesh_worker::register_workers;
 use mesh_worker::RegisteredWorkers;
 use mesh_worker::WorkerEvent;
 use mesh_worker::WorkerHandle;
 use mesh_worker::WorkerHost;
 use mesh_worker::WorkerHostRunner;
-use pal_async::task::Spawn;
+use mesh_worker::launch_local_worker;
+use mesh_worker::register_workers;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
+use pal_async::task::Spawn;
 #[cfg(feature = "profiler")]
 use profiler_worker::ProfilerWorker;
 #[cfg(feature = "profiler")]
@@ -155,7 +156,7 @@ pub fn main() -> anyhow::Result<()> {
     // not return). Any worker host setup errors are return and bubbled up.
     try_run_mesh_host("underhill", {
         let tracing_driver = tracing_driver.clone();
-        |params: MeshHostParams| async move {
+        async |params: MeshHostParams| {
             if let Some(remote_tracer) = params.tracer {
                 init_tracing(tracing_driver, remote_tracer).context("failed to init tracing")?;
             }
@@ -350,7 +351,7 @@ async fn launch_workers(
 
     #[cfg(feature = "gdb")]
     let mut gdbstub_worker = None;
-    #[cfg_attr(not(feature = "gdb"), allow(unused_mut))]
+    #[cfg_attr(not(feature = "gdb"), expect(unused_mut))]
     let mut debugger_rpc = None;
     #[cfg(feature = "gdb")]
     if opt.gdbstub {
@@ -486,7 +487,7 @@ async fn run_control(
             Event::Diag(request) => {
                 match request {
                     diag_server::DiagRequest::Start(rpc) => {
-                        rpc.handle_failable(|params| async {
+                        rpc.handle_failable(async |params| {
                             if workers.is_some() {
                                 Err(anyhow::anyhow!("workers have already been started"))?;
                             }
@@ -719,13 +720,10 @@ async fn run_control(
             },
             Event::Control(req) => match req {
                 ControlRequest::FlushLogs(rpc) => {
-                    rpc.handle(|mut ctx| {
-                        let tracing = &mut tracing;
-                        async move {
-                            tracing::info!("flushing logs");
-                            ctx.until_cancelled(tracing.flush()).await?;
-                            Ok(())
-                        }
+                    rpc.handle(async |mut ctx| {
+                        tracing::info!("flushing logs");
+                        ctx.until_cancelled(tracing.flush()).await?;
+                        Ok(())
                     })
                     .await
                 }

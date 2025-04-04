@@ -6,10 +6,10 @@
 use self::device_range::DeviceRangeMapper;
 use super::device::ArcMutexChipsetServicesFinalize;
 use super::state_unit::ArcMutexChipsetDeviceUnit;
-use crate::chipset::line_sets::LineSetTargetDevice;
 use crate::BusIdPci;
 use crate::ChipsetBuilder;
 use crate::VmmChipsetDevice;
+use crate::chipset::line_sets::LineSetTargetDevice;
 use chipset_device::ChipsetDevice;
 use chipset_device_resources::LineSetId;
 use closeable_mutex::CloseableMutex;
@@ -209,11 +209,11 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
 
 mod device_range {
     use crate::chipset::io_ranges::IoRanges;
+    use chipset_device::ChipsetDevice;
     use chipset_device::mmio::ControlMmioIntercept;
     use chipset_device::mmio::RegisterMmioIntercept;
     use chipset_device::pio::ControlPortIoIntercept;
     use chipset_device::pio::RegisterPortIoIntercept;
-    use chipset_device::ChipsetDevice;
     use closeable_mutex::CloseableMutex;
     use std::sync::Arc;
     use std::sync::Weak;

@@ -19,6 +19,7 @@
 //! x86 (assuming someone cares enough to put in the work there + add
 //! appropriate CI coverage!).
 
+#![expect(missing_docs)]
 #[derive(Copy, Clone, PartialEq)]
 enum GuestArch {
     X86_64,

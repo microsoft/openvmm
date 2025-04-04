@@ -3,6 +3,8 @@
 
 //! x86_64 intrinsics.
 
+#![cfg_attr(minimal_rt, expect(clippy::missing_safety_doc))]
+
 /// Hand rolled implementation of memset.
 #[cfg(minimal_rt)]
 // SAFETY: The minimal_rt_build crate ensures that when this code is compiled

@@ -3,7 +3,6 @@
 
 //! The client for `pipette`.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod process;
@@ -14,13 +13,13 @@ pub use pipette_protocol::PIPETTE_VSOCK_PORT;
 
 use crate::send::PipetteSender;
 use anyhow::Context;
-use futures::io::BufReader;
 use futures::AsyncBufReadExt;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use futures::AsyncWriteExt;
 use futures::StreamExt;
 use futures::TryFutureExt;
+use futures::io::BufReader;
 use futures_concurrency::future::TryJoin;
 use mesh::rpc::RpcError;
 use mesh_remote::PointToPointMesh;
@@ -228,8 +227,10 @@ async fn recv_diag_files(output_dir: PathBuf, mut diag_file_recv: mesh::Receiver
             .expect("failed to write diagnostic file");
         tracing::debug!(name, "diagnostic file transfer complete");
 
-        // ATTACHMENT is most reliable when using true canonicalized paths
-        #[allow(clippy::disallowed_methods)]
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ATTACHMENT is most reliable when using true canonicalized paths"
+        )]
         let canonical_path = path
             .canonicalize()
             .expect("failed to canonicalize attachment path");

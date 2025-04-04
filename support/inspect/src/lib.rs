@@ -13,7 +13,6 @@
 //! For most cases, users should use the derive version of [`Inspect`](derive@Inspect)
 //! as this will automatically update the implementation as new fields are added.
 
-#![warn(missing_docs)]
 #![no_std]
 
 extern crate alloc;
@@ -1414,6 +1413,18 @@ impl<T: Into<ValueKind> + Clone> From<&'_ T> for ValueKind {
     }
 }
 
+impl Inspect for () {
+    fn inspect(&self, req: Request<'_>) {
+        req.respond();
+    }
+}
+
+impl InspectMut for () {
+    fn inspect_mut(&mut self, req: Request<'_>) {
+        req.respond();
+    }
+}
+
 macro_rules! inspect_value_immut {
     ($($(#[$attr:meta])* $ty:ty),* $(,)?) => {
         $(
@@ -1615,7 +1626,7 @@ where
     for<'a> AsHex<&'a T>: Inspect,
 {
     fn inspect(&self, req: Request<'_>) {
-        Inspect::inspect(&AsHex(&self.0 .0), req)
+        Inspect::inspect(&AsHex(&self.0.0), req)
     }
 }
 
@@ -1839,7 +1850,7 @@ where
     any(feature = "defer", feature = "initiate"),
     derive(mesh::MeshPayload)
 )]
-#[cfg_attr(not(feature = "initiate"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "defer", feature = "initiate")), expect(dead_code))]
 enum InternalNode {
     Unevaluated,
     Failed(InternalError),
@@ -1860,7 +1871,7 @@ enum InternalNode {
 )]
 // Without the initiate feature we never read fields of the InternalEntry
 // to produce a user-visible Entry, but we still need those fields.
-#[cfg_attr(not(feature = "initiate"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "defer", feature = "initiate")), expect(dead_code))]
 struct InternalEntry {
     name: String,
     node: InternalNode,
@@ -1887,7 +1898,7 @@ impl InternalNode {
     any(feature = "defer", feature = "initiate"),
     derive(mesh::MeshPayload)
 )]
-#[allow(unused)] // some invariants are unused in some configurations, but order matters in their mesh derive, so keep them
+#[cfg_attr(not(any(feature = "defer", feature = "initiate")), expect(dead_code))]
 enum InternalError {
     Immutable,
     Update(String),
@@ -2146,10 +2157,6 @@ where
 
 #[cfg(all(test, feature = "derive", feature = "initiate"))]
 mod tests {
-    use crate::adhoc;
-    use crate::adhoc_mut;
-    use crate::inspect;
-    use crate::update;
     use crate::AsBytes;
     use crate::AtomicMut;
     use crate::Error;
@@ -2160,19 +2167,23 @@ mod tests {
     use crate::Request;
     use crate::SensitivityLevel;
     use crate::ValueKind;
+    use crate::adhoc;
+    use crate::adhoc_mut;
+    use crate::inspect;
+    use crate::update;
     use alloc::boxed::Box;
     use alloc::string::String;
     use alloc::string::ToString;
     use alloc::vec;
     use alloc::vec::Vec;
     use core::time::Duration;
-    use expect_test::expect;
     use expect_test::Expect;
+    use expect_test::expect;
     use futures::FutureExt;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::timer::Instant;
     use pal_async::timer::PolledTimer;
-    use pal_async::DefaultDriver;
 
     fn expected_node(node: Node, expect: Expect) -> Node {
         expect.assert_eq(&node.to_string());
@@ -2677,7 +2688,7 @@ mod tests {
         struct Tr2(#[inspect(debug)] ());
 
         #[derive(Inspect)]
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         enum Enum {
             Foo,
             BarBaz,
@@ -2726,16 +2737,16 @@ mod tests {
 
     #[test]
     fn test_derive_enum() {
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         enum EmptyUnitEmum {}
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(untagged)]
         enum EmptyUntaggedEmum {}
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         enum UnitEnum {
             A,
@@ -2745,7 +2756,7 @@ mod tests {
 
         inspect_sync_expect("", None, &UnitEnum::B, expect!([r#""b""#]));
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(tag = "tag")]
         enum TaggedEnum {
@@ -2760,7 +2771,7 @@ mod tests {
             expect!([r#"{tag: "b", y: true}"#]),
         );
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(external_tag)]
         enum ExternallyTaggedEnum {
@@ -2781,7 +2792,7 @@ mod tests {
 
         inspect_sync_expect("", None, &ExternallyTaggedEnum::C(5), expect!("{c: 5}"));
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(untagged)]
         enum UntaggedEnum {

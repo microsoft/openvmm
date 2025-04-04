@@ -5,8 +5,8 @@
 
 use super::DiskLayer;
 use crate::LayerAttach;
-use vm_resource::kind::DiskLayerHandleKind;
 use vm_resource::CanResolveTo;
+use vm_resource::kind::DiskLayerHandleKind;
 
 impl CanResolveTo<ResolvedDiskLayer> for DiskLayerHandleKind {
     type Input<'a> = ResolveDiskLayerParameters<'a>;

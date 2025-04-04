@@ -9,9 +9,9 @@ use guestmem::GuestMemory;
 use pci_core::msi::MsiInterruptSet;
 use pci_core::msi::MsiInterruptTarget;
 use std::sync::Arc;
-use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
+use vm_resource::kind::PciDeviceHandleKind;
 use vmbus_server::Guid;
 use vmbus_server::VmbusServerControl;
 use vmcore::vm_task::VmTaskDriverSource;
@@ -42,17 +42,16 @@ pub async fn build_vpci_device(
     let mut msi_set = MsiInterruptSet::new();
 
     let device = {
-        let mut builder = chipset_builder.arc_mutex_device(device_name);
-        let mut register_mmio = builder.services().register_mmio();
-        builder
+        chipset_builder
+            .arc_mutex_device(device_name)
             .with_external_pci()
-            .try_add_async(|_services| async {
+            .try_add_async(async |services| {
                 resolver
                     .resolve(
                         resource,
                         pci_resources::ResolvePciDeviceHandleParams {
                             register_msi: &mut msi_set,
-                            register_mmio: &mut register_mmio,
+                            register_mmio: &mut services.register_mmio(),
                             driver_source,
                             guest_memory,
                             doorbell_registration,
@@ -68,10 +67,9 @@ pub async fn build_vpci_device(
     {
         let device_id = (instance_id.data2 as u64) << 16 | (instance_id.data3 as u64 & 0xfff8);
         let vpci_bus_name = format!("vpci:{instance_id}");
-        let mut builder = chipset_builder.arc_mutex_device(vpci_bus_name);
-        let mut register_mmio = builder.services().register_mmio();
-        builder
-            .try_add_async(|_services| async {
+        chipset_builder
+            .arc_mutex_device(vpci_bus_name)
+            .try_add_async(async |services| {
                 let (msi_controller, interrupt_mapper) =
                     new_virtual_device(device_id).context("failed to create virtual device")?;
 
@@ -81,7 +79,7 @@ pub async fn build_vpci_device(
                     driver_source,
                     instance_id,
                     device,
-                    &mut register_mmio,
+                    &mut services.register_mmio(),
                     vmbus,
                     interrupt_mapper,
                 )

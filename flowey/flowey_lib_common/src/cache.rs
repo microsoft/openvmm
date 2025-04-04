@@ -96,7 +96,7 @@ impl FlowNode for Node {
         match ctx.backend() {
             FlowBackend::Local => {
                 if !ctx.supports_persistent_dir() {
-                    ctx.emit_rust_step("Reporting cache misses", |ctx| {
+                    ctx.emit_minor_rust_step("Reporting cache misses", |ctx| {
                         let hitvars = requests
                             .into_iter()
                             .map(|v| match v.hitvar {
@@ -117,7 +117,6 @@ impl FlowNode for Node {
                                     }
                                 }
                             }
-                            Ok(())
                         }
                     });
 
@@ -481,6 +480,7 @@ impl FlowNode for Node {
                                 );
 
                                 let key = rt.read(key);
+                                let key = format!("{key}-{}-{}", rt.arch(), rt.platform());
                                 rt.write(write_processed_key, &key);
 
                                 if let Some(write_processed_keys) = write_processed_keys {
@@ -491,7 +491,11 @@ impl FlowNode for Node {
                                             r#""[{}]""#,
                                             restore_keys
                                                 .into_iter()
-                                                .map(|s| format!("'{s}'"))
+                                                .map(|s| format!(
+                                                    "'{s}-{}-{}'",
+                                                    rt.arch(),
+                                                    rt.platform()
+                                                ))
                                                 .collect::<Vec<_>>()
                                                 .join(", ")
                                         ),
@@ -526,7 +530,7 @@ impl FlowNode for Node {
                     step.finish(ctx);
 
                     if let Some(hitvar_str_reader) = hitvar_str_reader {
-                        ctx.emit_rust_step("map Github cache-hit to flowey", |ctx| {
+                        ctx.emit_minor_rust_step("map Github cache-hit to flowey", |ctx| {
                             let CacheResult::HitVar(hitvar) = hitvar else {
                                 unreachable!()
                             };
@@ -544,7 +548,6 @@ impl FlowNode for Node {
                                 };
 
                                 rt.write(hitvar, &var);
-                                Ok(())
                             }
                         });
                     }

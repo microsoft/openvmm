@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::rflags::update_flags_szp;
 use super::Emulator;
 use super::InternalError;
+use super::rflags::update_flags_szp;
 use crate::Cpu;
 use iced_x86::Instruction;
 use x86defs::RFlags;

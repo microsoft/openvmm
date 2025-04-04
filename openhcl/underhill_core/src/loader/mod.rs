@@ -12,8 +12,8 @@ use guestmem::GuestMemory;
 use hvdef::HV_PAGE_SIZE;
 use igvm_defs::MemoryMapEntryType;
 use loader::importer::Register;
-use loader::uefi::config;
 use loader::uefi::IMAGE_SIZE;
+use loader::uefi::config;
 use loader_defs::paravisor::PageRegionDescriptor;
 use memory_range::MemoryRange;
 #[cfg(guest_arch = "x86_64")]
@@ -76,6 +76,9 @@ pub enum Error {
     InvalidAcpiTableLength,
     #[error("invalid acpi table: unknown header signature {0:?}")]
     InvalidAcpiTableSignature([u8; 4]),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("acpi tables require at least two mmio ranges")]
+    UnsupportedMmio,
 }
 
 pub const PV_CONFIG_BASE_PAGE: u64 = if cfg!(guest_arch = "x86_64") {
@@ -271,6 +274,10 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
     };
 
+    if mem_layout.mmio().len() < 2 {
+        return Err(Error::UnsupportedMmio);
+    }
+
     let acpi_tables = acpi_builder.build_acpi_tables(ACPI_BASE, |mem_layout, dsdt| {
         dsdt.add_apic();
 
@@ -412,7 +419,7 @@ pub fn write_uefi_config(
     // - Data that we generate ourselves
     cfg.add(&config::Entropy({
         let mut entropy = [0; 64];
-        getrandom::getrandom(&mut entropy).expect("rng failure");
+        getrandom::fill(&mut entropy).expect("rng failure");
         entropy
     }));
 
@@ -541,11 +548,9 @@ pub fn write_uefi_config(
         &platform_config.smbios.chassis_asset_tag,
     );
 
-    cfg.add({
-        &config::NvdimmCount {
-            count: platform_config.general.nvdimm_count,
-            padding: [0; 3],
-        }
+    cfg.add(&config::NvdimmCount {
+        count: platform_config.general.nvdimm_count,
+        padding: [0; 3],
     });
 
     if let Some(instance_guid) = platform_config.general.vpci_instance_filter {

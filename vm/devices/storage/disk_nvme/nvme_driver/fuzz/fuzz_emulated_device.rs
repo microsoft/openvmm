@@ -14,30 +14,31 @@ use chipset_device::pci::PciConfigSpace;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pci_core::msi::MsiInterruptSet;
-use user_driver::emulated::DeviceSharedMemory;
-use user_driver::emulated::EmulatedDevice;
-use user_driver::emulated::Mapping;
-use user_driver::interrupt::DeviceInterrupt;
 use user_driver::DeviceBacking;
 use user_driver::DmaClient;
+use user_driver::interrupt::DeviceInterrupt;
+use user_driver_emulated_mock::EmulatedDevice;
+use user_driver_emulated_mock::Mapping;
 
 /// An EmulatedDevice fuzzer that requires a working EmulatedDevice backend.
 #[derive(Inspect)]
-pub struct FuzzEmulatedDevice<T: InspectMut> {
-    device: EmulatedDevice<T>,
+pub struct FuzzEmulatedDevice<T: InspectMut, U> {
+    device: EmulatedDevice<T, U>,
 }
 
-impl<T: PciConfigSpace + MmioIntercept + InspectMut> FuzzEmulatedDevice<T> {
+impl<T: PciConfigSpace + MmioIntercept + InspectMut, U: DmaClient> FuzzEmulatedDevice<T, U> {
     /// Creates a new emulated device, wrapping `device`, using the provided MSI controller.
-    pub fn new(device: T, msi_set: MsiInterruptSet, shared_mem: DeviceSharedMemory) -> Self {
-        Self {
-            device: EmulatedDevice::new(device, msi_set, shared_mem),
-        }
+    pub fn new(device: T, msi_set: MsiInterruptSet, dma_client: Arc<U>) -> Self {
+        let device = EmulatedDevice::new(device, msi_set, dma_client);
+
+        Self { device }
     }
 }
 
 /// Implementation for DeviceBacking trait.
-impl<T: 'static + Send + InspectMut + MmioIntercept> DeviceBacking for FuzzEmulatedDevice<T> {
+impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + DmaClient> DeviceBacking
+    for FuzzEmulatedDevice<T, U>
+{
     type Registers = Mapping<T>;
 
     fn id(&self) -> &str {

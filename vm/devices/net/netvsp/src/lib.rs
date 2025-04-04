@@ -3,6 +3,7 @@
 
 //! The user-mode netvsp VMBus device implementation.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod buffers;
@@ -16,25 +17,25 @@ mod test;
 use crate::buffers::GuestBuffers;
 use crate::protocol::Message1RevokeReceiveBuffer;
 use crate::protocol::Message1RevokeSendBuffer;
-use crate::protocol::Version;
 use crate::protocol::VMS_SWITCH_RSS_MAX_SEND_INDIRECTION_TABLE_ENTRIES;
+use crate::protocol::Version;
 use crate::rndisprot::NDIS_HASH_FUNCTION_MASK;
 use crate::rndisprot::NDIS_RSS_PARAM_FLAG_DISABLE_RSS;
 use async_trait::async_trait;
-use buffers::sub_allocation_size_for_mtu;
 pub use buffers::BufferPool;
-use futures::channel::mpsc;
+use buffers::sub_allocation_size_for_mtu;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::channel::mpsc;
 use futures_concurrency::future::Race;
-use guestmem::ranges::PagedRange;
-use guestmem::ranges::PagedRanges;
-use guestmem::ranges::PagedRangesReader;
 use guestmem::AccessError;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::PagedRange;
+use guestmem::ranges::PagedRanges;
+use guestmem::ranges::PagedRangesReader;
 use guid::Guid;
 use hvdef::hypercall::HvGuestOsId;
 use hvdef::hypercall::HvGuestOsMicrosoft;
@@ -65,9 +66,9 @@ use std::fmt::Debug;
 use std::future::pending;
 use std::mem::offset_of;
 use std::ops::Range;
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 use task_control::AsyncRun;
@@ -92,13 +93,13 @@ use vmbus_channel::gpadl::GpadlId;
 use vmbus_channel::gpadl::GpadlMapView;
 use vmbus_channel::gpadl::GpadlView;
 use vmbus_channel::gpadl::UnknownGpadlId;
-use vmbus_channel::gpadl_ring::gpadl_channel;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
+use vmbus_channel::gpadl_ring::gpadl_channel;
 use vmbus_ring as ring;
-use vmbus_ring::gparange::GpnList;
-use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmbus_ring::OutgoingPacketType;
 use vmbus_ring::RingMem;
+use vmbus_ring::gparange::GpnList;
+use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -219,7 +220,7 @@ impl<T: RingMem + 'static + Sync> InspectTaskMut<Worker<T>> for NetQueue {
     }
 }
 
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant)]
 enum WorkerState {
     Init(Option<InitState>),
     Ready(ReadyState),
@@ -329,12 +330,17 @@ impl RxBufferRange {
     }
 
     fn send_if_remote(&self, id: u32) -> bool {
-        if self.id_range.contains(&id) {
+        // Only queue 0 should get reserved buffer IDs. Otherwise check if the
+        // ID is owned by the current range.
+        if id < RX_RESERVED_CONTROL_BUFFERS || self.id_range.contains(&id) {
             false
         } else {
-            let i = id.saturating_sub(RX_RESERVED_CONTROL_BUFFERS)
-                / self.remote_ranges.buffers_per_queue;
-            let _ = self.remote_ranges.buffer_id_send[i as usize].unbounded_send(id);
+            let i = (id - RX_RESERVED_CONTROL_BUFFERS) / self.remote_ranges.buffers_per_queue;
+            // The total number of receive buffers may not evenly divide among
+            // the active queues. Any extra buffers are given to the last
+            // queue, so redirect any larger values there.
+            let i = (i as usize).min(self.remote_ranges.buffer_id_send.len() - 1);
+            let _ = self.remote_ranges.buffer_id_send[i].unbounded_send(id);
             true
         }
     }
@@ -348,7 +354,7 @@ struct RxBufferRanges {
 impl RxBufferRanges {
     fn new(buffer_count: u32, queue_count: u32) -> (Self, Vec<mpsc::UnboundedReceiver<u32>>) {
         let buffers_per_queue = (buffer_count - RX_RESERVED_CONTROL_BUFFERS) / queue_count;
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods)] // TODO
         let (send, recv): (Vec<_>, Vec<_>) = (0..queue_count).map(|_| mpsc::unbounded()).unzip();
         (
             Self {
@@ -486,24 +492,34 @@ impl std::fmt::Display for PrimaryChannelGuestVfState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PrimaryChannelGuestVfState::Initializing => write!(f, "initializing"),
-            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::NoState) => write!(f, "restoring"),
-            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::AvailableAdvertised) => write!(f, "restoring from guest notified of vfid"),
-            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::Ready) => write!(f, "restoring from vf present"),
-            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::DataPathSwitchPending{to_guest, result, ..}) => {
-                write!(f, "restoring from client requested data path switch: to {} {}",
+            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::NoState) => {
+                write!(f, "restoring")
+            }
+            PrimaryChannelGuestVfState::Restoring(
+                saved_state::GuestVfState::AvailableAdvertised,
+            ) => write!(f, "restoring from guest notified of vfid"),
+            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::Ready) => {
+                write!(f, "restoring from vf present")
+            }
+            PrimaryChannelGuestVfState::Restoring(
+                saved_state::GuestVfState::DataPathSwitchPending {
+                    to_guest, result, ..
+                },
+            ) => {
+                write!(
+                    f,
+                    "restoring from client requested data path switch: to {} {}",
                     if *to_guest { "guest" } else { "synthetic" },
                     if let Some(result) = result {
-                        if *result {
-                            "succeeded\""
-                        } else {
-                            "failed\""
-                        }
+                        if *result { "succeeded\"" } else { "failed\"" }
                     } else {
                         "in progress\""
                     }
                 )
             }
-            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::DataPathSwitched) => write!(f, "restoring from data path in guest"),
+            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::DataPathSwitched) => {
+                write!(f, "restoring from data path in guest")
+            }
             PrimaryChannelGuestVfState::Unavailable => write!(f, "unavailable"),
             PrimaryChannelGuestVfState::UnavailableFromAvailable => {
                 write!(f, "\"unavailable (previously available)\"")
@@ -514,8 +530,10 @@ impl std::fmt::Display for PrimaryChannelGuestVfState {
             PrimaryChannelGuestVfState::UnavailableFromDataPathSwitched => {
                 write!(f, "\"unavailable (previously using guest VF)\"")
             }
-            PrimaryChannelGuestVfState::Available{vfid} => write!(f, "available vfid: {}", vfid),
-            PrimaryChannelGuestVfState::AvailableAdvertised => write!(f, "\"available, guest notified\""),
+            PrimaryChannelGuestVfState::Available { vfid } => write!(f, "available vfid: {}", vfid),
+            PrimaryChannelGuestVfState::AvailableAdvertised => {
+                write!(f, "\"available, guest notified\"")
+            }
             PrimaryChannelGuestVfState::Ready => write!(f, "\"available and present in guest\""),
             PrimaryChannelGuestVfState::DataPathSwitchPending {
                 to_guest, result, ..
@@ -525,11 +543,7 @@ impl std::fmt::Display for PrimaryChannelGuestVfState {
                     "\"switching to {} {}",
                     if *to_guest { "guest" } else { "synthetic" },
                     if let Some(result) = result {
-                        if *result {
-                            "succeeded\""
-                        } else {
-                            "failed\""
-                        }
+                        if *result { "succeeded\"" } else { "failed\"" }
                     } else {
                         "in progress\""
                     }
@@ -1164,12 +1178,12 @@ impl VmbusDevice for Nic {
         {
             let coordinator = &mut self.coordinator.state_mut().unwrap();
             coordinator.workers[0].stop().await;
-            coordinator.workers[0].start();
         }
 
         if r.is_err() && channel_idx == 0 {
             self.coordinator.remove();
         } else {
+            // The coordinator will restart any stopped workers.
             self.coordinator.start();
         }
         r?;
@@ -1227,7 +1241,7 @@ impl VmbusDevice for Nic {
         // Stop the coordinator and worker associated with this channel.
         let coordinator_running = self.coordinator.stop().await;
         let worker = &mut self.coordinator.state_mut().unwrap().workers[channel_idx as usize];
-        let worker_running = worker.stop().await;
+        worker.stop().await;
         let (net_queue, worker_state) = worker.get_mut();
 
         // Update the target VP on the driver.
@@ -1242,10 +1256,7 @@ impl VmbusDevice for Nic {
             }
         }
 
-        if worker_running {
-            worker.start();
-        }
-
+        // The coordinator will restart any stopped workers.
         if coordinator_running {
             self.coordinator.start();
         }
@@ -1253,9 +1264,6 @@ impl VmbusDevice for Nic {
 
     fn start(&mut self) {
         if !self.coordinator.is_running() {
-            if let Some(coordinator) = self.coordinator.state_mut() {
-                coordinator.start_workers();
-            }
             self.coordinator.start();
         }
     }
@@ -1366,7 +1374,7 @@ impl Nic {
         // processor.
         driver_builder.run_on_target(!self.adapter.tx_fast_completions);
 
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods)] // TODO
         let (send, recv) = mpsc::channel(1);
         self.coordinator_send = Some(send);
         self.coordinator.insert(
@@ -2565,7 +2573,9 @@ impl<T: RingMem> NetChannel<T> {
                     primary.guest_vf_state = PrimaryChannelGuestVfState::AvailableAdvertised;
                     return Ok(Some(CoordinatorMessage::UpdateGuestVfState));
                 } else if let Some(true) = primary.is_data_path_switched {
-                    tracing::error!("Data path switched, but current guest negotiation does not support VTL0 VF");
+                    tracing::error!(
+                        "Data path switched, but current guest negotiation does not support VTL0 VF"
+                    );
                 }
             }
             return Ok(None);
@@ -2706,7 +2716,9 @@ impl<T: RingMem> NetChannel<T> {
                             self.restart = Some(CoordinatorMessage::UpdateGuestVfState);
                         }
                     } else if let Some(true) = primary.is_data_path_switched {
-                        tracing::error!("Data path switched, but current guest negotiation does not support VTL0 VF");
+                        tracing::error!(
+                            "Data path switched, but current guest negotiation does not support VTL0 VF"
+                        );
                     }
                 }
             }
@@ -2776,10 +2788,10 @@ impl<T: RingMem> NetChannel<T> {
                 self.send_rndis_control_message(buffers, id, message_length)?;
             }
             rndisprot::MESSAGE_TYPE_RESET_MSG => {
-                return Err(WorkerError::RndisMessageTypeNotImplemented)
+                return Err(WorkerError::RndisMessageTypeNotImplemented);
             }
             rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG => {
-                return Err(WorkerError::RndisMessageTypeNotImplemented)
+                return Err(WorkerError::RndisMessageTypeNotImplemented);
             }
             rndisprot::MESSAGE_TYPE_KEEPALIVE_MSG => {
                 let request: rndisprot::KeepaliveRequest = reader.read_plain()?;
@@ -2801,7 +2813,7 @@ impl<T: RingMem> NetChannel<T> {
                 self.send_rndis_control_message(buffers, id, message_length)?;
             }
             rndisprot::MESSAGE_TYPE_SET_EX_MSG => {
-                return Err(WorkerError::RndisMessageTypeNotImplemented)
+                return Err(WorkerError::RndisMessageTypeNotImplemented);
             }
             _ => return Err(WorkerError::UnknownRndisMessageType(message_type)),
         };
@@ -3326,6 +3338,7 @@ impl Adapter {
         reader
             .skip(params.indirection_table_offset as usize)?
             .read(indirection_table[..indirection_table_size].as_mut_bytes())?;
+        tracelimit::info_ratelimited!(?indirection_table, "OID_GEN_RECEIVE_SCALE_PARAMETERS");
         if indirection_table
             .iter()
             .any(|&x| x >= self.max_queues as u32)
@@ -3690,6 +3703,13 @@ impl Coordinator {
                 self.restore_guest_vf_state(state).await;
                 self.restart = false;
             }
+
+            // Ensure that all workers except the primary are started. The
+            // primary is started below if there are no outstanding messages.
+            for worker in &mut self.workers[1..] {
+                worker.start();
+            }
+
             enum Message {
                 Internal(CoordinatorMessage),
                 ChannelDisconnected,
@@ -3699,7 +3719,6 @@ impl Coordinator {
                 PendingVfStateComplete,
                 TimerExpired,
             }
-            self.start_workers();
             let timer_sleep = async {
                 if let Some(sleep_duration) = sleep_duration {
                     let mut timer = PolledTimer::new(&state.adapter.driver);
@@ -3765,22 +3784,25 @@ impl Coordinator {
                         (internal_msg, endpoint_restart, timer_sleep).race().await
                     }
                 };
-                stop.until_stopped(wait_for_message).await?
+
+                let mut wait_for_message = std::pin::pin!(wait_for_message);
+                match (&mut wait_for_message).now_or_never() {
+                    Some(message) => message,
+                    None => {
+                        self.workers[0].start();
+                        stop.until_stopped(wait_for_message).await?
+                    }
+                }
             };
             match message {
                 Message::UpdateFromVf(rpc) => {
-                    rpc.handle(|_| async {
+                    rpc.handle(async |_| {
                         self.update_guest_vf_state(state).await;
                     })
                     .await;
                 }
                 Message::OfferVfDevice => {
-                    let stopped = if self.workers[0].is_running() {
-                        self.workers[0].stop().await;
-                        true
-                    } else {
-                        false
-                    };
+                    self.workers[0].stop().await;
                     if let Some(primary) = self.primary_mut() {
                         if matches!(
                             primary.guest_vf_state,
@@ -3788,9 +3810,6 @@ impl Coordinator {
                         ) {
                             primary.guest_vf_state = PrimaryChannelGuestVfState::Ready;
                         }
-                    }
-                    if stopped {
-                        self.workers[0].start();
                     }
 
                     state.pending_vf_state = CoordinatorStatePendingVfState::Pending;
@@ -3807,7 +3826,6 @@ impl Coordinator {
                                 primary.pending_link_action = PendingLinkAction::Active(up);
                             }
                         }
-                        self.workers[0].start();
                     }
                     sleep_duration = None;
                 }
@@ -3816,12 +3834,7 @@ impl Coordinator {
                 }
                 Message::UpdateFromEndpoint(EndpointAction::RestartRequired) => self.restart = true,
                 Message::UpdateFromEndpoint(EndpointAction::LinkStatusNotify(connect)) => {
-                    let stopped = if self.workers[0].is_running() {
-                        self.workers[0].stop().await;
-                        true
-                    } else {
-                        false
-                    };
+                    self.workers[0].stop().await;
 
                     // These are the only link state transitions that are tracked.
                     // 1. up -> down or down -> up
@@ -3836,18 +3849,12 @@ impl Coordinator {
 
                     // If there is any existing sleep timer running, cancel it out.
                     sleep_duration = None;
-                    if stopped {
-                        self.workers[0].start();
-                    }
                 }
                 Message::Internal(CoordinatorMessage::Restart) => self.restart = true,
                 Message::Internal(CoordinatorMessage::StartTimer(duration)) => {
                     sleep_duration = Some(duration);
                     // Restart primary task.
-                    if self.workers[0].is_running() {
-                        self.workers[0].stop().await;
-                        self.workers[0].start();
-                    }
+                    self.workers[0].stop().await;
                 }
                 Message::ChannelDisconnected => {
                     break;
@@ -4115,7 +4122,12 @@ impl Coordinator {
                     .into_iter()
                     .filter(|&index| index < num_queues)
                     .collect::<Vec<_>>();
-                active_queues.len() as u16
+                if !active_queues.is_empty() {
+                    active_queues.len() as u16
+                } else {
+                    tracelimit::warn_ratelimited!("Invalid RSS indirection table");
+                    num_queues
+                }
             } else {
                 num_queues
             };
@@ -4162,14 +4174,39 @@ impl Coordinator {
 
                 let mut initial_rx = initial_rx.as_slice();
                 let mut range_start = 0;
-                let mut active_count = 0;
-                for queue_index in 0..num_queues {
-                    let queue_active =
-                        active_queues.is_empty() || active_queues.contains(&queue_index);
+                let primary_queue_excluded = !active_queues.is_empty() && active_queues[0] != 0;
+                let first_queue = if !primary_queue_excluded {
+                    0
+                } else {
+                    // If the primary queue is excluded from the guest supplied
+                    // indirection table, it is assigned just the reserved
+                    // buffers.
+                    queue_config.push(QueueConfig {
+                        pool: Box::new(BufferPool::new(guest_buffers.clone())),
+                        initial_rx: &[],
+                        driver: Box::new(drivers[0].clone()),
+                    });
+                    rx_buffers.push(RxBufferRange::new(
+                        ranges.clone(),
+                        0..RX_RESERVED_CONTROL_BUFFERS,
+                        None,
+                    ));
+                    range_start = RX_RESERVED_CONTROL_BUFFERS;
+                    1
+                };
+                for queue_index in first_queue..num_queues {
+                    let queue_active = active_queues.is_empty()
+                        || active_queues.binary_search(&queue_index).is_ok();
                     let (range_end, end, buffer_id_recv) = if queue_active {
-                        active_count += 1;
-                        let range_end =
-                            RX_RESERVED_CONTROL_BUFFERS + active_count * ranges.buffers_per_queue;
+                        let range_end = if rx_buffers.len() as u16 == active_queue_count - 1 {
+                            // The last queue gets all the remaining buffers.
+                            state.buffers.recv_buffer.count
+                        } else if queue_index == 0 {
+                            // Queue zero always includes the reserved buffers.
+                            RX_RESERVED_CONTROL_BUFFERS + ranges.buffers_per_queue
+                        } else {
+                            range_start + ranges.buffers_per_queue
+                        };
                         (
                             range_end,
                             initial_rx.partition_point(|id| id.0 < range_end),
@@ -4236,12 +4273,6 @@ impl Coordinator {
         Ok(())
     }
 
-    fn start_workers(&mut self) {
-        for worker in &mut self.workers {
-            worker.start();
-        }
-    }
-
     fn primary_mut(&mut self) -> Option<&mut PrimaryChannelState> {
         self.workers[0]
             .state_mut()
@@ -4254,12 +4285,8 @@ impl Coordinator {
     }
 
     async fn update_guest_vf_state(&mut self, c_state: &mut CoordinatorState) {
-        if !self.workers[0].is_running() {
-            return;
-        }
         self.workers[0].stop().await;
         self.restore_guest_vf_state(c_state).await;
-        self.workers[0].start();
     }
 }
 
@@ -4686,7 +4713,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     PendingLinkAction::Delay(_) => {
                         return Ok(CoordinatorMessage::StartTimer(
                             Instant::now() + LINK_DELAY_DURATION,
-                        ))
+                        ));
                     }
                     PendingLinkAction::Active(_) => panic!("State should not be Active"),
                     _ => {}
@@ -5260,8 +5287,7 @@ impl ActiveState {
                     done.push(RxId(id));
                 } else {
                     self.primary
-                        .as_mut()
-                        .unwrap()
+                        .as_mut()?
                         .free_control_buffers
                         .push(ControlMessageId(id));
                 }

@@ -3,17 +3,18 @@
 
 //! Backing for TDX partitions.
 
-use super::hcl_tdcall;
-use super::mshv_tdcall;
+use super::Hcl;
 use super::HclVp;
 use super::MshvVtl;
 use super::NoRunner;
 use super::ProcessorRunner;
+use super::hcl_tdcall;
+use super::mshv_tdcall;
+use crate::GuestVtl;
 use crate::protocol::tdx_tdg_vp_enter_exit_info;
 use crate::protocol::tdx_vp_context;
 use crate::protocol::tdx_vp_state;
 use crate::protocol::tdx_vp_state_flags;
-use crate::GuestVtl;
 use hv1_structs::VtlArray;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
@@ -21,10 +22,10 @@ use memory_range::MemoryRange;
 use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
+use tdcall::Tdcall;
 use tdcall::tdcall_vp_invgla;
 use tdcall::tdcall_vp_rd;
 use tdcall::tdcall_vp_wr;
-use tdcall::Tdcall;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
 use x86defs::tdx::TdGlaVmAndFlags;
@@ -243,28 +244,10 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
         *self.tdx_vp_entry_flags_mut() = *vp_entry_flags;
     }
 
-    fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {
-        let class_code = match vtl {
-            GuestVtl::Vtl0 => TdVpsClassCode::VMCS_1,
-            GuestVtl::Vtl1 => TdVpsClassCode::VMCS_2,
-        };
-        let field_size = match field.field_width() {
-            x86defs::vmx::FieldWidth::Width16 => x86defs::tdx::FieldSize::Size16Bit,
-            x86defs::vmx::FieldWidth::Width32 => x86defs::tdx::FieldSize::Size32Bit,
-            x86defs::vmx::FieldWidth::Width64 => x86defs::tdx::FieldSize::Size64Bit,
-            x86defs::vmx::FieldWidth::WidthNatural => x86defs::tdx::FieldSize::Size64Bit,
-        };
-        TdxExtendedFieldCode::new()
-            .with_context_code(TdxContextCode::TD_VCPU)
-            .with_class_code(class_code.0)
-            .with_field_code(field.into())
-            .with_field_size(field_size)
-    }
-
     fn write_vmcs(&mut self, vtl: GuestVtl, field: VmcsField, mask: u64, value: u64) -> u64 {
         tdcall_vp_wr(
             &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
-            Self::vmcs_field_code(field, vtl),
+            vmcs_field_code(field, vtl),
             value,
             mask,
         )
@@ -274,7 +257,7 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     fn read_vmcs(&self, vtl: GuestVtl, field: VmcsField) -> u64 {
         tdcall_vp_rd(
             &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
-            Self::vmcs_field_code(field, vtl),
+            vmcs_field_code(field, vtl),
         )
         .expect("fatal vmcs access failure")
     }
@@ -411,8 +394,26 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     }
 }
 
+fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {
+    let class_code = match vtl {
+        GuestVtl::Vtl0 => TdVpsClassCode::VMCS_1,
+        GuestVtl::Vtl1 => TdVpsClassCode::VMCS_2,
+    };
+    let field_size = match field.field_width() {
+        x86defs::vmx::FieldWidth::Width16 => x86defs::tdx::FieldSize::Size16Bit,
+        x86defs::vmx::FieldWidth::Width32 => x86defs::tdx::FieldSize::Size32Bit,
+        x86defs::vmx::FieldWidth::Width64 => x86defs::tdx::FieldSize::Size64Bit,
+        x86defs::vmx::FieldWidth::WidthNatural => x86defs::tdx::FieldSize::Size64Bit,
+    };
+    TdxExtendedFieldCode::new()
+        .with_context_code(TdxContextCode::TD_VCPU)
+        .with_class_code(class_code.0)
+        .with_field_code(field.into())
+        .with_field_size(field_size)
+}
+
 impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
-    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
+    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>, hcl: &Hcl) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
         let super::BackingState::Tdx {
             vtl0_apic_page,
@@ -422,9 +423,20 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
             return Err(NoRunner::MismatchedIsolation);
         };
 
+        // Register the VTL 1 APIC page with the TD module.
+        // The VTL 0 APIC page is registered by the kernel.
+        let vtl1_apic_page_addr = vtl1_apic_page.pfns()[0] * user_driver::memory::PAGE_SIZE64;
+        tdcall_vp_wr(
+            &mut MshvVtlTdcall(&hcl.mshv_vtl),
+            vmcs_field_code(VmcsField::VMX_VMCS_VIRTUAL_APIC_PAGE, GuestVtl::Vtl1),
+            vtl1_apic_page_addr,
+            !0,
+        )
+        .expect("failed registering VTL1 APIC page");
+
         // SAFETY: The mapping is held for the appropriate lifetime, and the
         // APIC page is never accessed as any other type, or by any other location.
-        let vtl1_apic_page = unsafe { &*vtl1_apic_page.mapping().as_ptr().cast() };
+        let vtl1_apic_page = unsafe { &*vtl1_apic_page.base().cast() };
 
         Ok(Self {
             apic_pages: [vtl0_apic_page.as_ref(), vtl1_apic_page].into(),
@@ -432,7 +444,7 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
     }
 
     fn try_set_reg(
-        _runner: &mut ProcessorRunner<'_, Self>,
+        _runner: &mut ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         _name: HvRegisterName,
         _value: HvRegisterValue,
@@ -440,17 +452,19 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
         Ok(false)
     }
 
-    fn must_flush_regs_on(_runner: &ProcessorRunner<'_, Self>, _name: HvRegisterName) -> bool {
+    fn must_flush_regs_on(_runner: &ProcessorRunner<'a, Self>, _name: HvRegisterName) -> bool {
         false
     }
 
     fn try_get_reg(
-        _runner: &ProcessorRunner<'_, Self>,
+        _runner: &ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         _name: HvRegisterName,
     ) -> Result<Option<HvRegisterValue>, super::Error> {
         Ok(None)
     }
+
+    fn flush_register_page(_runner: &mut ProcessorRunner<'a, Self>) {}
 }
 
 /// Private registers that are copied to/from the kernel's shared run page.
@@ -478,10 +492,10 @@ pub struct TdxPrivateRegs {
 impl TdxPrivateRegs {
     /// Creates a new register set with the given values.
     /// Other values are initialized to zero.
-    pub fn new(rflags: u64, rip: u64, vtl: GuestVtl) -> Self {
+    pub fn new(vtl: GuestVtl) -> Self {
         Self {
-            rflags,
-            rip,
+            rflags: x86defs::RFlags::at_reset().into(),
+            rip: 0,
             ssp: 0,
             rvi: 0,
             svi: 0,

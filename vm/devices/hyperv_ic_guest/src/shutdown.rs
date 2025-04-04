@@ -6,6 +6,9 @@
 #![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
 
+pub use hyperv_ic_protocol::shutdown::INSTANCE_ID;
+pub use hyperv_ic_protocol::shutdown::INTERFACE_ID;
+
 use guid::Guid;
 use hyperv_ic_resources::shutdown::ShutdownParams;
 use hyperv_ic_resources::shutdown::ShutdownResult;
@@ -22,13 +25,13 @@ use thiserror::Error;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_async::pipe::MessagePipe;
-use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::RawAsyncChannel;
-use vmbus_relay_intercept_device::ring_buffer::MemoryBlockRingBuffer;
+use vmbus_channel::channel::ChannelOpenError;
 use vmbus_relay_intercept_device::OfferResponse;
 use vmbus_relay_intercept_device::SaveRestoreSimpleVmbusClientDevice;
 use vmbus_relay_intercept_device::SimpleVmbusClientDevice;
 use vmbus_relay_intercept_device::SimpleVmbusClientDeviceAsync;
+use vmbus_relay_intercept_device::ring_buffer::MemoryBlockRingBuffer;
 use vmbus_ring::RingMem;
 use vmcore::save_restore::NoSavedState;
 use zerocopy::FromBytes;
@@ -321,7 +324,7 @@ impl SimpleVmbusClientDevice for ShutdownGuestIc {
     type Runner = ShutdownGuestChannel;
 
     fn instance_id(&self) -> Guid {
-        hyperv_ic_protocol::shutdown::INSTANCE_ID
+        INSTANCE_ID
     }
 
     fn offer(&self, _offer: &vmbus_core::protocol::OfferChannel) -> OfferResponse {

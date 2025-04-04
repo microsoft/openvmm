@@ -153,21 +153,31 @@ adding the following line to `keybindings.json`:
 }
 ```
 
-### Running `cargo xtask fmt house-rules` on-save
+### GitHub Pull Request Integration
 
-The OpenVMM project includes a handful of custom "house rule" lints that are
-external to `rustfmt`. These are things like checking for the presence of
-copyright headers, enforcing single-trailing newlines, etc...
+As the repo is hosted on GitHub, you might find convenient to use the
+[GitHub Pull Request](https://marketplace.visualstudio.com/items?itemName=GitHub.vscode-pull-request-github)
+VSCode extension. That allows working through the PR feedback and
+issues without leaving the comfort of VSCode.
 
-These lints are enfoced using `cargo xtask fmt house-rules`, and can be
-automatically fixed by passing the `--fix` flag.
+### (Possibly Useful) Enabling 'house-rules' formatting on-save
 
-We recommend installing the
+Aside from using `rustfmt`, the OpenVMM project also relies on a handful of
+extra formatting "house rules". e.g: enfocing the presence of copyright headers,
+enforcing single-trailing newlines, etc...
+
+CI will fail if files are not formatted with `cargo xtask fmt house-rules`.
+
+In general, there are 3 ways to fix "house rules" related lints:
+
+1. Manually fixing issues in response to automated feedback
+2. Invoking `cargo xtask fmt house-rules --fix` to fix the whole project
+3. Invoking `cargo xtask fmt house-rules --fix [FILE]` to fix a given file
+
+If you would prefer having "house-rules" enfoced whenever you save a file in
+VSCode, you can install the
 [RunOnSave](https://marketplace.visualstudio.com/items?itemName=emeraldwalk.RunOnSave)
-extension, and configuring it to run these lints as part of your regular
-development flow.
-
-Set the following configuration in your `.vscode/settings.json`
+extension, and add the following configuration to `.vscode/settings.json`:
 
 ```json
 {
@@ -180,19 +190,12 @@ Set the following configuration in your `.vscode/settings.json`
             {
                 "match": ".*",
                 "isAsync": true,
-                "cmd": "$(cat ./target/xtask-path) fmt house-rules --fix ${file}"
+                "cmd": "$(cat ./target/xtask-path) --run-on-save fmt house-rules --fix ${file}"
             }
         ]
     },
 }
 ```
-
-### GitHub Pull Request Integration
-
-As the repo is hosted on GitHub, you might find convenient to use the
-[GitHub Pull Request](https://marketplace.visualstudio.com/items?itemName=GitHub.vscode-pull-request-github)
-VSCode extension. That allows working through the PR feedback and
-issues without leaving the comfort of VSCode.
 
 ## Setting up pre-commit and pre-push hooks
 
@@ -233,8 +236,8 @@ Note that this requires some additional dependencies, described below.
 
 ### Windows deps
 
-Visual Studio build tools must be installed, along with the Windows SDK. This is
-the same as what's required to build OpenVMM on windows.
+Visual Studio build tools must be installed, along with the Windows SDK.
+[This is the same as what's required to build OpenVMM on windows.](./windows.md#installing-rust)
 
 ### WSL deps
 
@@ -337,7 +340,7 @@ OpenVMM configures some environment variables that specify the default Linux ker
 initrd, and UEFI firmware. To make those variables available in Windows, run the following:
 
 ```bash
-export WSLENV=$WSLENV:X86_64_OPENVMM_LINUX_DIRECT_KERNEL:X86_64_OPENVMM_LINUX_DIRECT_INITRD:AARCH64_OPENVMM_LINUX_DIRECT_KERNEL:AARCH64_OPENVMM_LINUX_DIRECT_INITRD:X86_64_OPENVMM_UEFI_FIRMWARE:AARCH64_OPENVMM_UEFI_FIRMWARE
+export WSLENV=$WSLENV:X86_64_OPENVMM_LINUX_DIRECT_KERNEL:X86_64_OPENVMM_LINUX_DIRECT_INITRD:AARCH64_OPENVMM_LINUX_DIRECT_KERNEL:AARCH64_OPENVMM_LINUX_DIRECT_INITRD:X86_64_OPENVMM_UEFI_FIRMWARE:AARCH64_OPENVMM_UEFI_FIRMWARE:RUST_BACKTRACE
 ```
 
 ### Speeding up Windows OpenVMM launch

@@ -4,6 +4,8 @@
 //! This module implements the interactive control process and the entry point
 //! for the worker process.
 
+#![expect(missing_docs)]
+
 mod cli_args;
 mod crash_dump;
 mod meshworker;
@@ -17,8 +19,8 @@ mod ttrpc;
 pub use cli_args::Options;
 
 use crate::cli_args::SecureBootTemplateCli;
-use anyhow::bail;
 use anyhow::Context;
+use anyhow::bail;
 use chipset_resources::battery::HostBatteryUpdate;
 use clap::CommandFactory;
 use clap::FromArgMatches;
@@ -30,27 +32,30 @@ use cli_args::SerialConfigCli;
 use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
 use crash_dump::spawn_dump_handler;
+use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use disk_backend_resources::layer::SqliteAutoCacheDiskLayerHandle;
 use disk_backend_resources::layer::SqliteDiskLayerHandle;
-use disk_backend_resources::DiskLayerDescription;
 use floppy_resources::FloppyDiskConfig;
-use framebuffer::FramebufferAccess;
 use framebuffer::FRAMEBUFFER_SIZE;
-use futures::executor::block_on;
-use futures::io::AllowStdIo;
+use framebuffer::FramebufferAccess;
 use futures::AsyncReadExt;
 use futures::AsyncWrite;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::executor::block_on;
+use futures::io::AllowStdIo;
 use futures_concurrency::stream::Merge;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
 use get_resources::ged::GuestServicingFlags;
 use guid::Guid;
 use hvlite_defs::config::Config;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_WITH_VTL2;
+use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LateMapVtl0MemoryPolicy;
@@ -63,35 +68,32 @@ use hvlite_defs::config::VmbusConfig;
 use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use hvlite_defs::config::Vtl2Config;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_WITH_VTL2;
-use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::rpc::PulseSaveRestoreError;
 use hvlite_defs::rpc::VmRpc;
-use hvlite_defs::worker::VmWorkerParameters;
 use hvlite_defs::worker::VM_WORKER;
+use hvlite_defs::worker::VmWorkerParameters;
 use hvlite_helpers::disk::open_disk_type;
 use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
 use inspect::InspectionBuilder;
 use io::Read;
+use mesh::CancelContext;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use mesh::CancelContext;
-use mesh_worker::launch_local_worker;
 use mesh_worker::WorkerEvent;
 use mesh_worker::WorkerHandle;
+use mesh_worker::launch_local_worker;
 use meshworker::VmmMesh;
 use net_backend_resources::mac_address::MacAddress;
+use pal_async::DefaultDriver;
+use pal_async::DefaultPool;
 use pal_async::pipe::PolledPipe;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
-use pal_async::DefaultDriver;
-use pal_async::DefaultPool;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
 use serial_16550_resources::ComPort;
@@ -129,13 +131,13 @@ use vm_manifest_builder::BaseChipsetType;
 use vm_manifest_builder::MachineArch;
 use vm_manifest_builder::VmChipsetResult;
 use vm_manifest_builder::VmManifestBuilder;
+use vm_resource::IntoResource;
+use vm_resource::Resource;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::DiskLayerHandleKind;
 use vm_resource::kind::NetEndpointHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
-use vm_resource::IntoResource;
-use vm_resource::Resource;
 use vmbus_serial_resources::VmbusSerialDeviceHandle;
 use vmbus_serial_resources::VmbusSerialPort;
 use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
@@ -193,6 +195,8 @@ fn vm_config_from_command_line(
     opt: &Options,
 ) -> anyhow::Result<(Config, VmResources)> {
     let (_, serial_driver) = DefaultPool::spawn_on_thread("serial");
+    // Ensure the serial driver stays alive with no tasks.
+    serial_driver.spawn("leak", pending::<()>()).detach();
 
     let openhcl_vtl = if opt.vtl2 {
         DeviceVtl::Vtl2
@@ -437,7 +441,7 @@ fn vm_config_from_command_line(
         );
     }
 
-    let with_get = opt.get || opt.vtl2;
+    let with_get = opt.get || (opt.vtl2 && !opt.no_get);
 
     let mut storage = storage_builder::StorageBuilder::new(with_get.then_some(openhcl_vtl));
     for &cli_args::DiskCli {
@@ -574,7 +578,7 @@ fn vm_config_from_command_line(
     for (index, switch_id) in opt.kernel_vmnic.iter().enumerate() {
         // Pick a random MAC address.
         let mut mac_address = [0x00, 0x15, 0x5D, 0, 0, 0];
-        getrandom::getrandom(&mut mac_address[3..]).expect("rng failure");
+        getrandom::fill(&mut mac_address[3..]).expect("rng failure");
 
         // Pick a fixed instance ID based on the index.
         const BASE_INSTANCE_ID: Guid = guid::guid!("00000000-435d-11ee-9f59-00155d5016fc");
@@ -918,6 +922,7 @@ fn vm_config_from_command_line(
                         },
                     },
                     enable_battery: opt.battery,
+                    no_persistent_secrets: true,
                 }
                 .into_resource(),
             ),
@@ -1074,7 +1079,7 @@ fn vm_config_from_command_line(
         DEFAULT_MMIO_GAPS.into()
     };
 
-    if let Some(path) = &opt.underhill_dump_path {
+    if let Some(path) = &opt.openhcl_dump_path {
         let (resource, task) = spawn_dump_handler(&spawner, path.clone(), None);
         task.detach();
         vmbus_devices.push((openhcl_vtl, resource));
@@ -1398,7 +1403,7 @@ fn parse_endpoint(
 
     // Pick a random MAC address.
     let mut mac_address = [0x00, 0x15, 0x5D, 0, 0, 0];
-    getrandom::getrandom(&mut mac_address[3..]).expect("rng failure");
+    getrandom::fill(&mut mac_address[3..]).expect("rng failure");
 
     // Pick a fixed instance ID based on the index.
     const BASE_INSTANCE_ID: Guid = guid::guid!("00000000-da43-11ed-936a-00155d6db52f");
@@ -1647,7 +1652,7 @@ fn do_main() -> anyhow::Result<()> {
             Ok(())
         })
     } else {
-        DefaultPool::run_with(|driver| async move {
+        DefaultPool::run_with(async |driver| {
             let mesh = VmmMesh::new(&driver, opt.single_process)?;
             let result = run_control(&driver, &mesh, opt).await;
             mesh.shutdown().await;
@@ -2620,7 +2625,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             }
             InteractiveCommand::RestartVnc => {
                 if let Some(vnc) = &mut vnc_worker {
-                    let action = || async move {
+                    let action = async {
                         let vnc_host = mesh
                             .make_host("vnc", None)
                             .await
@@ -2630,7 +2635,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         anyhow::Result::<_>::Ok(())
                     };
 
-                    if let Err(error) = (action)().await {
+                    if let Err(error) = action.await {
                         eprintln!("error: {}", error);
                     }
                 } else {
@@ -2639,7 +2644,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             }
             InteractiveCommand::Hvsock { term, port } => {
                 let vm_rpc = &vm_rpc;
-                let action = || async move {
+                let action = async || {
                     let service_id = new_hvsock_service_id(port);
                     let socket = vm_rpc
                         .call_failable(

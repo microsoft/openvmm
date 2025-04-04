@@ -3,17 +3,17 @@
 
 //! Wrapper around x86emu for emulating single instructions to handle VM exits.
 
-use crate::translate::translate_gva_to_gpa;
 use crate::translate::TranslateFlags;
 use crate::translate::TranslatePrivilegeCheck;
+use crate::translate::translate_gva_to_gpa;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
+use hvdef::HV_PAGE_SIZE;
 use hvdef::HvInterceptAccessType;
 use hvdef::HvMapGpaFlags;
-use hvdef::HV_PAGE_SIZE;
 use thiserror::Error;
-use virt::io::CpuIo;
 use virt::VpHaltReason;
+use virt::io::CpuIo;
 use vm_topology::processor::VpIndex;
 use x86defs::Exception;
 use x86defs::RFlags;
@@ -417,6 +417,22 @@ pub async fn emulate<T: EmulatorSupport>(
                     Exception::INVALID_OPCODE,
                     None,
                     None,
+                ));
+            }
+            err @ x86emu::Error::NonMemoryOrPortInstruction { .. } => {
+                tracelimit::error_ratelimited!(
+                    error = &err as &dyn std::error::Error,
+                    ?instruction_bytes,
+                    physical_address = cpu.support.physical_address(),
+                    "given an instruction that we shouldn't have been asked to emulate - likely a bug in the caller"
+                );
+
+                return Err(VpHaltReason::EmulationFailure(
+                    EmulationError::Emulator {
+                        bytes: instruction_bytes.to_vec(),
+                        error: err,
+                    }
+                    .into(),
                 ));
             }
             x86emu::Error::InstructionException(exception, error_code, cause) => {

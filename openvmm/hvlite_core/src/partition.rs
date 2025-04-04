@@ -21,13 +21,6 @@ use memory_range::MemoryRange;
 use pci_core::msi::MsiInterruptTarget;
 use std::convert::Infallible;
 use std::sync::Arc;
-use virt::io::CpuIo;
-#[cfg(guest_arch = "x86_64")]
-use virt::irqcon::MsiRequest;
-use virt::vm::AccessVmState;
-use virt::vm::VmSavedState;
-use virt::vp::AccessVpState;
-use virt::vp::VpSavedState;
 #[cfg(guest_arch = "aarch64")]
 use virt::Aarch64Partition as ArchPartition;
 use virt::PageVisibility;
@@ -42,6 +35,13 @@ use virt::Synic;
 use virt::VpHaltReason;
 #[cfg(guest_arch = "x86_64")]
 use virt::X86Partition as ArchPartition;
+use virt::io::CpuIo;
+#[cfg(guest_arch = "x86_64")]
+use virt::irqcon::MsiRequest;
+use virt::vm::AccessVmState;
+use virt::vm::VmSavedState;
+use virt::vp::AccessVpState;
+use virt::vp::VpSavedState;
 #[cfg(guest_arch = "x86_64")]
 use vmcore::line_interrupt::LineSetTarget;
 use vmcore::save_restore::RestoreError;
@@ -116,7 +116,7 @@ pub trait BasicPartitionStateAccess: 'static + Send + Sync + Inspect {
     fn reset(&self) -> anyhow::Result<()>;
     fn scrub_vtl(&self, vtl: Vtl) -> anyhow::Result<()>;
     fn accept_initial_pages(&self, pages: Vec<(MemoryRange, PageVisibility)>)
-        -> anyhow::Result<()>;
+    -> anyhow::Result<()>;
 }
 
 impl<T: Partition + PartitionAccessState> BasicPartitionStateAccess for T {

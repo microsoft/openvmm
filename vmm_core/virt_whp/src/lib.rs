@@ -4,9 +4,10 @@
 //! WHP implementation of the virt::generic interfaces.
 
 #![cfg(all(windows, guest_is_native))]
+#![expect(missing_docs)]
 // UNSAFETY: Calling WHP APIs and manually managing memory.
 #![expect(unsafe_code)]
-#![allow(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 mod apic;
 pub mod device;
@@ -43,14 +44,11 @@ use range_map_vec::RangeMap;
 use std::convert::Infallible;
 use std::ops::Index;
 use std::ops::IndexMut;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::task::Waker;
 use thiserror::Error;
-use virt::io::CpuIo;
-use virt::irqcon::MsiRequest;
-use virt::vm::AccessVmState;
 use virt::IsolationType;
 use virt::NeedsYield;
 use virt::PageVisibility;
@@ -61,6 +59,9 @@ use virt::ProtoPartitionConfig;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use virt::io::CpuIo;
+use virt::irqcon::MsiRequest;
+use virt::vm::AccessVmState;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::monitor::MonitorPage;
@@ -158,7 +159,7 @@ struct WhpVp {
     scrub_next: AtomicBool,
     vp_info: TargetVpInfo,
     waker: RwLock<Option<Waker>>,
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     scan_irr: AtomicBool,
 }
 
@@ -605,10 +606,6 @@ impl virt::BindProcessor for WhpProcessorBinder {
     type Processor<'a> = WhpProcessor<'a>;
     type Error = Error;
 
-    #[cfg_attr(
-        not(all(guest_arch = "aarch64", feature = "unstable_whp")),
-        allow(unused_variables)
-    )]
     fn bind(&mut self) -> Result<Self::Processor<'_>, Self::Error> {
         let vp = WhpProcessor {
             vp: WhpVpRef {
@@ -639,6 +636,13 @@ impl virt::BindProcessor for WhpProcessorBinder {
                         .set_register(whp::Register64::InitialApicId, vp_info.apic_id.into())
                         .for_op("set initial apic id")?;
                 }
+            }
+
+            #[cfg(all(guest_arch = "aarch64", not(feature = "unstable_whp")))]
+            {
+                let _ = vp_info;
+                let _ = vtlp;
+                let _ = vtl;
             }
 
             #[cfg(all(guest_arch = "aarch64", feature = "unstable_whp"))]
@@ -938,13 +942,11 @@ impl WhpPartitionInner {
             .as_ref()
             .and_then(|cfg| cfg.vtl2.as_ref())
         {
-            if vtl2_config.vtl0_alias_map {
-                vtl0_alias_map_offset = Some(1 << (config.mem_layout.physical_address_size() - 1));
-            }
+            vtl0_alias_map_offset = config.vtl0_alias_map;
 
             // TODO: Supporting the alias map with isolation requires additional
             // mapper changes that are not implemented yet.
-            if vtl2_config.vtl0_alias_map && proto_config.isolation.is_isolated() {
+            if vtl0_alias_map_offset.is_some() && proto_config.isolation.is_isolated() {
                 todo!("alias map and isolation requires memory mapper changes")
             }
 
@@ -1574,8 +1576,8 @@ mod x86 {
     use crate::WhpPartition;
     use crate::WhpPartitionInner;
     use hvdef::Vtl;
-    use virt::irqcon::MsiRequest;
     use virt::VpIndex;
+    use virt::irqcon::MsiRequest;
 
     impl WhpPartitionInner {
         pub(crate) fn synic_interrupt(
@@ -1633,8 +1635,8 @@ mod aarch64 {
     use crate::WhpPartitionAndVtl;
     use crate::WhpPartitionInner;
     use hvdef::Vtl;
-    use virt::irqcon::MsiRequest;
     use virt::VpIndex;
+    use virt::irqcon::MsiRequest;
 
     impl WhpPartitionInner {
         pub(crate) fn synic_interrupt(

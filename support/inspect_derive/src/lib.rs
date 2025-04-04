@@ -1,13 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 use heck::ToSnakeCase;
 use proc_macro2::Ident;
 use proc_macro2::Span;
 use proc_macro2::TokenStream;
+use quote::ToTokens;
 use quote::quote;
 use quote::quote_spanned;
-use quote::ToTokens;
+use syn::Attribute;
+use syn::DataEnum;
+use syn::DataStruct;
+use syn::DeriveInput;
+use syn::LitStr;
+use syn::Token;
+use syn::Type;
+use syn::WherePredicate;
 use syn::ext::IdentExt;
 use syn::parse::Parse;
 use syn::parse::ParseStream;
@@ -17,14 +27,6 @@ use syn::parse_quote_spanned;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::Comma;
-use syn::Attribute;
-use syn::DataEnum;
-use syn::DataStruct;
-use syn::DeriveInput;
-use syn::LitStr;
-use syn::Token;
-use syn::Type;
-use syn::WherePredicate;
 
 // Documented in the inspect crate.
 #[proc_macro_derive(Inspect, attributes(inspect))]
@@ -579,7 +581,7 @@ fn field_response(
                 return Err(syn::Error::new(
                     field.span(),
                     "type attribute incompatible with `mut` attribute",
-                ))
+                ));
             }
         }
     }

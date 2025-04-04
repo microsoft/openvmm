@@ -4,20 +4,20 @@
 //! Implementation of the device driver core.
 
 use super::spec;
-use crate::driver::save_restore::IoQueueSavedState;
-use crate::queue_pair::admin_cmd;
-use crate::queue_pair::Issuer;
-use crate::queue_pair::QueuePair;
-use crate::registers::Bar0;
-use crate::registers::DeviceRegisters;
+use crate::NVME_PAGE_SHIFT;
 use crate::Namespace;
 use crate::NamespaceError;
 use crate::NvmeDriverSavedState;
 use crate::RequestError;
-use crate::NVME_PAGE_SHIFT;
+use crate::driver::save_restore::IoQueueSavedState;
+use crate::queue_pair::Issuer;
+use crate::queue_pair::QueuePair;
+use crate::queue_pair::admin_cmd;
+use crate::registers::Bar0;
+use crate::registers::DeviceRegisters;
 use anyhow::Context as _;
-use futures::future::join_all;
 use futures::StreamExt;
+use futures::future::join_all;
 use inspect::Inspect;
 use mesh::payload::Protobuf;
 use mesh::rpc::Rpc;
@@ -31,12 +31,12 @@ use task_control::AsyncRun;
 use task_control::InspectTask;
 use task_control::TaskControl;
 use thiserror::Error;
-use tracing::info_span;
 use tracing::Instrument;
+use tracing::info_span;
+use user_driver::DeviceBacking;
 use user_driver::backoff::Backoff;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
-use user_driver::DeviceBacking;
 use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 use zerocopy::FromBytes;
@@ -776,9 +776,12 @@ impl<T: DeviceBacking> AsyncRun<WorkerState> for DriverWorkerTask<T> {
             loop {
                 match self.recv.next().await {
                     Some(NvmeWorkerRequest::CreateIssuer(rpc)) => {
-                        rpc.handle(|cpu| self.create_io_issuer(state, cpu)).await
+                        rpc.handle(async |cpu| self.create_io_issuer(state, cpu).await)
+                            .await
                     }
-                    Some(NvmeWorkerRequest::Save(rpc)) => rpc.handle(|_| self.save(state)).await,
+                    Some(NvmeWorkerRequest::Save(rpc)) => {
+                        rpc.handle(async |_| self.save(state).await).await
+                    }
                     None => break,
                 }
             }
@@ -942,7 +945,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
             None => None,
         };
 
-        let io = join_all(self.io.drain(..).map(|q| async move { q.save().await }))
+        let io = join_all(self.io.drain(..).map(async |q| q.save().await))
             .await
             .into_iter()
             .flatten()

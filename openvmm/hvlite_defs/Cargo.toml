@@ -27,7 +27,7 @@ vmm_core_defs.workspace = true
 guid.workspace = true
 mesh_worker.workspace = true
 mesh.workspace = true
-unix_socket.workspace = true
+unix_socket = { workspace = true, features = ["mesh"] }
 
 anyhow.workspace = true
 thiserror.workspace = true

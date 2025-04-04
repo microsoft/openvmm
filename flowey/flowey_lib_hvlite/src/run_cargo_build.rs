@@ -245,7 +245,7 @@ pub mod common {
                     CommonPlatform::MacOs => target_lexicon::Triple {
                         architecture: arch.as_arch(),
                         vendor: target_lexicon::Vendor::Apple,
-                        operating_system: target_lexicon::OperatingSystem::Darwin,
+                        operating_system: target_lexicon::OperatingSystem::Darwin(None),
                         environment: target_lexicon::Environment::Unknown,
                         binary_format: target_lexicon::BinaryFormat::Macho,
                     },
@@ -423,7 +423,7 @@ impl FlowNode for Node {
                     out_dbg_info: write_out_dbg,
                 });
 
-                ctx.emit_rust_step("reporting split debug info", |ctx| {
+                ctx.emit_minor_rust_step("reporting split debug info", |ctx| {
                     let out_bin = out_bin.claim(ctx);
                     let out_dbg = out_dbg.claim(ctx);
                     let base_output = base_output.claim(ctx);
@@ -439,7 +439,6 @@ impl FlowNode for Node {
                         };
                         *bin = rt.read(out_bin);
                         rt.write(output, &fixed);
-                        Ok(())
                     }
                 });
             } else {

@@ -3,14 +3,16 @@
 
 //! A VNC server implementation.
 
+#![expect(missing_docs)]
+
 mod rfb;
 mod scancode;
-use futures::channel::mpsc;
-use futures::future::OptionFuture;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::channel::mpsc;
+use futures::future::OptionFuture;
 use pal_async::socket::PolledSocket;
 use thiserror::Error;
 use zerocopy::FromZeros;
@@ -75,7 +77,7 @@ impl<F: Framebuffer, I: Input> Server<F, I> {
         fb: F,
         input: I,
     ) -> Server<F, I> {
-        #[allow(clippy::disallowed_methods)] // TODO
+        #[expect(clippy::disallowed_methods)] // TODO
         let (update_send, update_recv) = mpsc::channel(1);
         Self {
             socket,

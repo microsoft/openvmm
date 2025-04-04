@@ -3,17 +3,18 @@
 
 //! `pcapng` compatible packet capture endpoint implementation.
 
+#![expect(missing_docs)]
+
 use async_trait::async_trait;
-use futures::lock::Mutex;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::lock::Mutex;
 use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
 use mesh::error::RemoteError;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
-use net_backend::next_packet;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
@@ -25,18 +26,19 @@ use net_backend::RxId;
 use net_backend::TxId;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
-use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketBlock;
-use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionBlock;
-use pcap_file::pcapng::PcapNgWriter;
+use net_backend::next_packet;
 use pcap_file::DataLink;
 use pcap_file::PcapError;
 use pcap_file::PcapResult;
+use pcap_file::pcapng::PcapNgWriter;
+use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketBlock;
+use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionBlock;
 use std::borrow::Cow;
 use std::io::Write;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;

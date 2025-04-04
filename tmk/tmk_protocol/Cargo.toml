@@ -1,0 +1,13 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "tmk_protocol"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+zerocopy.workspace = true
+
+[lints]
+workspace = true

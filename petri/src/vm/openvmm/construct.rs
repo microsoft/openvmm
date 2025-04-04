@@ -4,35 +4,38 @@
 //! Contains [`PetriVmConfigOpenVmm::new`], which builds a [`PetriVmConfigOpenVmm`] with all
 //! default settings for a given [`Firmware`] and [`MachineArch`].
 
-use super::PetriVmArtifactsOpenVmm;
-use super::PetriVmConfigOpenVmm;
-use super::PetriVmResourcesOpenVmm;
 use super::BOOT_NVME_INSTANCE;
 use super::BOOT_NVME_LUN;
 use super::BOOT_NVME_NSID;
+use super::PetriVmArtifactsOpenVmm;
+use super::PetriVmConfigOpenVmm;
+use super::PetriVmResourcesOpenVmm;
 use super::SCSI_INSTANCE;
-use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
-use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::Firmware;
 use crate::IsolationType;
 use crate::PcatGuest;
 use crate::PetriLogSource;
 use crate::PetriTestParams;
-use crate::UefiGuest;
 use crate::SIZE_1_GB;
+use crate::UefiGuest;
+use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
+use crate::openhcl_diag::OpenHclDiagHandler;
 use anyhow::Context;
+use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
-use disk_backend_resources::LayeredDiskHandle;
+use framebuffer::FRAMEBUFFER_SIZE;
 use framebuffer::Framebuffer;
 use framebuffer::FramebufferAccess;
-use framebuffer::FRAMEBUFFER_SIZE;
 use fs_err::File;
 use futures::StreamExt;
 use get_resources::crash::GuestCrashDeviceHandle;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use hvlite_defs::config::Config;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_WITH_VTL2;
+use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LateMapVtl0MemoryPolicy;
@@ -44,9 +47,6 @@ use hvlite_defs::config::VmbusConfig;
 use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use hvlite_defs::config::Vtl2Config;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_WITH_VTL2;
-use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_helpers::disk::open_disk_type;
 use hvlite_pcat_locator::RomFileLocation;
 use hyperv_ic_resources::shutdown::ShutdownIcHandle;
@@ -54,10 +54,10 @@ use ide_resources::GuestMedia;
 use ide_resources::IdeDeviceConfig;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
+use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::MachineArch;
 use pipette_client::PIPETTE_VSOCK_PORT;
 use scsidisk_resources::SimpleScsiDiskHandle;
@@ -76,10 +76,10 @@ use unix_socket::UnixListener;
 use unix_socket::UnixStream;
 use video_core::SharedFramebufferHandle;
 use vm_manifest_builder::VmManifestBuilder;
-use vm_resource::kind::SerialBackendHandle;
-use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
+use vm_resource::kind::SerialBackendHandle;
+use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_serial_resources::VmbusSerialDeviceHandle;
 use vmbus_serial_resources::VmbusSerialPort;
 use vtl2_settings_proto::Vtl2Settings;
@@ -198,7 +198,7 @@ impl PetriVmConfigOpenVmm {
         };
 
         setup.load_boot_disk(&mut devices, vtl2_settings.as_mut())?;
-        let expected_boot_event = setup.get_expected_boot_event();
+        let expected_boot_event = firmware.expected_boot_event();
 
         // Configure the serial ports now that they have been updated by the
         // OpenHCL configuration.
@@ -825,6 +825,7 @@ impl PetriVmConfigSetupCore<'_> {
             secure_boot_enabled: false,
             secure_boot_template: get_resources::ged::GuestSecureBootTemplateType::None,
             enable_battery: false,
+            no_persistent_secrets: true,
         };
 
         Ok((ged, guest_request_send))
@@ -860,27 +861,6 @@ impl PetriVmConfigSetupCore<'_> {
         } else {
             None
         })
-    }
-
-    fn get_expected_boot_event(&self) -> Option<FirmwareEvent> {
-        match &self.firmware {
-            Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => None,
-            Firmware::Pcat { .. } => {
-                // TODO: Handle older PCAT versions that don't fire the event
-                Some(FirmwareEvent::BootAttempt)
-            }
-            Firmware::Uefi {
-                guest: UefiGuest::None,
-                ..
-            }
-            | Firmware::OpenhclUefi {
-                guest: UefiGuest::None,
-                ..
-            } => Some(FirmwareEvent::NoBootDevice),
-            Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => {
-                Some(FirmwareEvent::BootSuccess)
-            }
-        }
     }
 }
 

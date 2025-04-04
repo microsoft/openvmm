@@ -191,6 +191,7 @@ hypercall_output:
 .popsection
 
 .pushsection .bss
+.align 4096
 stack:
 .fill STACK_PAGES * 0x1000, 1, 0
 .popsection

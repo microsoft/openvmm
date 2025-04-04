@@ -4,17 +4,16 @@
 //! Functionality for referencing locked memory buffers for the lifetime of an
 //! IO.
 
-#![warn(missing_docs)]
 // UNSAFETY: Handling raw pointers and transmuting between types for different use cases.
 #![expect(unsafe_code)]
 
-use guestmem::ranges::PagedRange;
 use guestmem::AccessError;
 use guestmem::GuestMemory;
 use guestmem::LockedRange;
 use guestmem::LockedRangeImpl;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::PagedRange;
 use safeatomic::AsAtomicBytes;
 use smallvec::SmallVec;
 use std::marker::PhantomData;

@@ -3,14 +3,14 @@
 
 //! Core types and traits used to read GitHub context variables.
 
-use crate::node::spec::GhContextVarReaderEventPullRequest;
 use crate::node::ClaimVar;
 use crate::node::GhUserSecretVar;
 use crate::node::NodeCtx;
 use crate::node::ReadVar;
 use crate::node::StepCtx;
-use serde::de::DeserializeOwned;
+use crate::node::spec::GhContextVarReaderEventPullRequest;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 
 pub mod state {

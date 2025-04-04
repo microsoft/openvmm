@@ -6,6 +6,7 @@
 //! Base 2.0c: <https://nvmexpress.org/wp-content/uploads/NVM-Express-Base-Specification-2.0c-2022.10.04-Ratified.pdf>
 //! PCIe transport 1.0c: <https://nvmexpress.org/wp-content/uploads/NVM-Express-PCIe-Transport-Specification-1.0c-2022.10.03-Ratified.pdf>
 
+#![expect(missing_docs)]
 #![no_std]
 
 pub mod nvm;

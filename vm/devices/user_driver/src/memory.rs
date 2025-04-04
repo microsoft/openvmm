@@ -4,8 +4,8 @@
 //! Traits and types for sharing host memory with the device.
 
 use safeatomic::AtomicSliceOps;
-use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -100,6 +100,17 @@ pub struct MemoryBlock {
     base: *const u8,
     len: usize,
     mem: Arc<dyn MappedDmaTarget>,
+}
+
+impl std::fmt::Debug for MemoryBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryBlock")
+            .field("base", &self.base)
+            .field("len", &self.len)
+            .field("pfns", &self.pfns())
+            .field("pfn_bias", &self.pfn_bias())
+            .finish()
+    }
 }
 
 // SAFETY: The inner MappedDmaTarget is Send + Sync, so a view of it is too.

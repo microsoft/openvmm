@@ -15,8 +15,9 @@ sidecar_client.workspace = true
 tdcall = { workspace = true, features = ["tracing"] }
 x86defs.workspace = true
 inspect.workspace = true
-page_pool_alloc.workspace = true
+user_driver.workspace = true
 
+anyhow.workspace = true
 parking_lot.workspace = true
 signal-hook.workspace = true
 thiserror.workspace = true

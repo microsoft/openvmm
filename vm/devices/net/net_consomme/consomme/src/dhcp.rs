@@ -7,6 +7,7 @@ use super::DropReason;
 use crate::ChecksumState;
 use crate::MIN_MTU;
 use smoltcp::phy::ChecksumCapabilities;
+use smoltcp::wire::DHCP_MAX_DNS_SERVER_COUNT;
 use smoltcp::wire::DhcpMessageType;
 use smoltcp::wire::DhcpPacket;
 use smoltcp::wire::DhcpRepr;
@@ -20,7 +21,6 @@ use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv4Repr;
 use smoltcp::wire::UdpPacket;
 use smoltcp::wire::UdpRepr;
-use smoltcp::wire::DHCP_MAX_DNS_SERVER_COUNT;
 
 pub const DHCP_SERVER: u16 = 67;
 pub const DHCP_CLIENT: u16 = 68;

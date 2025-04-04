@@ -4,10 +4,10 @@
 //! Common TDCALL handling for issuing tdcalls and functionality using tdcalls.
 
 #![no_std]
-#![warn(missing_docs)]
 
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
+use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use x86defs::tdx::TdCallLeaf;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
@@ -22,7 +22,6 @@ use x86defs::tdx::TdgMemPageGpaAttr;
 use x86defs::tdx::TdgMemPageLevel;
 use x86defs::tdx::TdxExtendedFieldCode;
 use x86defs::tdx::TdxGlaListInfo;
-use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 
 /// Input to a tdcall. This is not defined in the TDX specification, but a
 /// contract between callers of this module and this module's handling of
@@ -396,11 +395,14 @@ fn set_page_attr(
 /// The error returned by [`accept_pages`].
 #[derive(Debug)]
 pub enum AcceptPagesError {
-    // TODO TDX: better error types
     /// Unknown error type.
     Unknown(TdCallResultCode),
     /// Setting page attributes failed after accepting,
     Attributes(TdCallResultCode),
+    /// Invalid operand
+    Invalid(TdCallResultCode),
+    /// Busy Operand
+    Busy(TdCallResultCode),
 }
 
 /// The page attributes to accept pages with.
@@ -455,11 +457,18 @@ pub fn accept_pages<T: Tdcall>(
                         MemoryRange::new(range.start() + x86defs::X64_LARGE_PAGE_SIZE..range.end());
                     continue;
                 }
-                Err(TdCallResultCode::PAGE_SIZE_MISMATCH) => {
-                    #[cfg(feature = "tracing")]
-                    tracing::trace!("accept pages size mismatch returned");
-                }
-                Err(e) => return Err(AcceptPagesError::Unknown(e)),
+                Err(e) => match e {
+                    TdCallResultCode::OPERAND_BUSY => return Err(AcceptPagesError::Busy(e)),
+                    TdCallResultCode::OPERAND_INVALID => return Err(AcceptPagesError::Invalid(e)),
+                    TdCallResultCode::PAGE_ALREADY_ACCEPTED => {
+                        panic!("page {} already accepted", range.start_4k_gpn());
+                    }
+                    TdCallResultCode::PAGE_SIZE_MISMATCH => {
+                        #[cfg(feature = "tracing")]
+                        tracing::trace!("accept pages size mismatch returned");
+                    }
+                    _ => return Err(AcceptPagesError::Unknown(e)),
+                },
             }
         }
 
@@ -475,7 +484,14 @@ pub fn accept_pages<T: Tdcall>(
 
                 range = MemoryRange::new(range.start() + HV_PAGE_SIZE..range.end());
             }
-            Err(e) => return Err(AcceptPagesError::Unknown(e)),
+            Err(e) => match e {
+                TdCallResultCode::OPERAND_BUSY => return Err(AcceptPagesError::Busy(e)),
+                TdCallResultCode::OPERAND_INVALID => return Err(AcceptPagesError::Invalid(e)),
+                TdCallResultCode::PAGE_ALREADY_ACCEPTED => {
+                    panic!("page {} already accepted", range.start_4k_gpn());
+                }
+                _ => return Err(AcceptPagesError::Unknown(e)),
+            },
         }
     }
 
@@ -578,7 +594,15 @@ pub fn tdcall_map_gpa(
 
         let output = call.tdcall(input);
 
-        // TODO TDX: check rax return code
+        // This assertion failing means something has gone horribly wrong with the
+        // TDX module, as this call should always succeed with hypercall errors
+        // returned in r10.
+        assert_eq!(
+            output.rax.code(),
+            TdCallResultCode::SUCCESS,
+            "unexpected nonzero rax {:x} returned by tdcall vmcall",
+            u64::from(output.rax)
+        );
 
         let result = TdVmCallR10Result(output.r10);
 

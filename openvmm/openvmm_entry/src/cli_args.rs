@@ -21,12 +21,12 @@
 use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
+use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::PcatBootDevice;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use hvlite_defs::config::X2ApicConfig;
-use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -91,6 +91,11 @@ pub struct Options {
     /// highest enabled VTL.
     #[clap(long, requires("hv"))]
     pub get: bool,
+
+    /// Disable GET and related devices for using the OpenHCL paravisor, even
+    /// when --vtl2 is passed.
+    #[clap(long, conflicts_with("get"))]
+    pub no_get: bool,
 
     /// The disk to use for the GET VMGS.
     ///
@@ -376,7 +381,7 @@ flags:
     ///
     /// Used internally for debugging and diagnostics.
     #[clap(long, default_value = "control", hide(true))]
-    #[allow(clippy::option_option)]
+    #[expect(clippy::option_option)]
     pub internal_worker: Option<Option<String>>,
 
     /// redirect the VTL 0 vmbus control plane to a proxy in VTL 2.
@@ -491,9 +496,9 @@ flags:
     #[clap(long)]
     pub guest_watchdog: bool,
 
-    /// enable Underhill's guest crash dump device, targeting the specified path
+    /// enable OpenHCL's guest crash dump device, targeting the specified path
     #[clap(long)]
-    pub underhill_dump_path: Option<PathBuf>,
+    pub openhcl_dump_path: Option<PathBuf>,
 
     /// halt the VM when the guest requests a reset, instead of resetting it
     #[clap(long)]
@@ -1138,7 +1143,7 @@ impl FromStr for SmtConfigCli {
     }
 }
 
-#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn parse_x2apic(s: &str) -> Result<X2ApicConfig, &'static str> {
     let r = match s {
         "auto" => X2ApicConfig::Auto,

@@ -63,6 +63,7 @@ macro_rules! fuzz_eprintln {
 pub use libfuzzer_sys::fuzz_target;
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+/// Fake version of `libfuzzer_sys::fuzz_target` for non-linux-gnu targets.
 #[macro_export]
 macro_rules! fuzz_target {
     ($($tt:tt)*) => {

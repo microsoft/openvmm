@@ -5,11 +5,11 @@
 //!
 //! Extends basic x86 CMOS RTC with a few additional ports + more RAM.
 
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use inspect::Inspect;
 use inspect::InspectMut;
 use local_clock::InspectableLocalClock;
@@ -95,10 +95,10 @@ impl PortIoIntercept for Piix4CmosRtc {
         // (zero-extended to the size of the access).
         data[0] = match Piix4CmosRtcIoPort(io_port) {
             Piix4CmosRtcIoPort::ADDRESS | Piix4CmosRtcIoPort::DATA => {
-                return self.inner.io_read(io_port, data)
+                return self.inner.io_read(io_port, data);
             }
             Piix4CmosRtcIoPort::ADDRESS_SHADOW_2 | Piix4CmosRtcIoPort::DATA_SHADOW_2 => {
-                return self.inner.io_read(io_port - 4, data)
+                return self.inner.io_read(io_port - 4, data);
             }
             Piix4CmosRtcIoPort::EXTENDED_ADDRESS | Piix4CmosRtcIoPort::ADDRESS_SHADOW_3 => {
                 self.state.ext_addr
@@ -118,10 +118,10 @@ impl PortIoIntercept for Piix4CmosRtc {
         // (zero-extended to the size of the access).
         match Piix4CmosRtcIoPort(io_port) {
             Piix4CmosRtcIoPort::ADDRESS | Piix4CmosRtcIoPort::DATA => {
-                return self.inner.io_write(io_port, data)
+                return self.inner.io_write(io_port, data);
             }
             Piix4CmosRtcIoPort::ADDRESS_SHADOW_2 | Piix4CmosRtcIoPort::DATA_SHADOW_2 => {
-                return self.inner.io_write(io_port - 4, data)
+                return self.inner.io_write(io_port - 4, data);
             }
             Piix4CmosRtcIoPort::EXTENDED_ADDRESS | Piix4CmosRtcIoPort::ADDRESS_SHADOW_3 => {
                 self.state.ext_addr = data[0] & 0x7F;

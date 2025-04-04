@@ -3,10 +3,10 @@
 
 //! Mock types for unit-testing various NVMe behaviors.
 
-use crate::prp::PrpRange;
-use crate::spec;
 use crate::PAGE_SIZE;
 use crate::PAGE_SIZE64;
+use crate::prp::PrpRange;
+use crate::spec;
 use chipset_device::mmio::ControlMmioIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
 use guestmem::GuestMemory;
@@ -30,7 +30,7 @@ struct TestPciInterruptControllerInner {
 
 impl TestPciInterruptController {
     /// Return a new test PCI interrupt controller
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub fn new() -> Self {
         Self {
             inner: Arc::new(TestPciInterruptControllerInner {
@@ -40,7 +40,7 @@ impl TestPciInterruptController {
     }
 
     /// Fetch the first (addr, data) MSI-X interrupt in the FIFO interrupt queue
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub fn get_next_interrupt(&self) -> Option<(u64, u32)> {
         self.inner.msi_requests.lock().pop_front()
     }

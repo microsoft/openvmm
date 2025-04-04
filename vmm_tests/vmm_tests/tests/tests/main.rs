@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 //! A collection of end-to-end VMM tests.
 //!
 //! Tests should contain both the name of the firmware and the guest they are

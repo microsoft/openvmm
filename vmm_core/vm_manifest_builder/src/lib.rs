@@ -26,11 +26,11 @@ use serial_debugcon_resources::SerialDebugconDeviceHandle;
 use serial_pl011_resources::SerialPl011DeviceHandle;
 use std::iter::zip;
 use thiserror::Error;
-use vm_resource::kind::SerialBackendHandle;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
-use vmotherboard::options::BaseChipsetManifest;
+use vm_resource::kind::SerialBackendHandle;
 use vmotherboard::ChipsetDeviceHandle;
+use vmotherboard::options::BaseChipsetManifest;
 
 /// Builder for a VM manifest.
 pub struct VmManifestBuilder {

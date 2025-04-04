@@ -20,7 +20,7 @@ impl FlowNode for Node {
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let persistent_dir = ctx.persistent_dir();
-        ctx.emit_rust_step("report cargo install persistent dir", |ctx| {
+        ctx.emit_minor_rust_step("report cargo install persistent dir", |ctx| {
             let persistent_dir = persistent_dir.claim(ctx);
             let requests = requests
                 .into_iter()
@@ -31,7 +31,6 @@ impl FlowNode for Node {
                 for var in requests {
                     rt.write(var, &persistent_dir)
                 }
-                Ok(())
             }
         });
 

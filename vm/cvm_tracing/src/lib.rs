@@ -10,10 +10,9 @@
 // metadata tag on individual events without polluting the output.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
-use tracing::field::Empty;
 use tracing::Subscriber;
+use tracing::field::Empty;
 use tracing_subscriber::filter::FilterFn;
 use tracing_subscriber::layer::Filter;
 
@@ -34,11 +33,11 @@ pub fn confidential_event_filter<S: Subscriber>() -> impl Filter<S> {
 mod test {
     use crate::CVM_ALLOWED;
     use crate::CVM_CONFIDENTIAL;
-    use std::sync::atomic::AtomicU32;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicU32;
     use tracing::Subscriber;
-    use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::SubscriberExt;
 
     struct TestLayer {
         count: Arc<AtomicU32>,

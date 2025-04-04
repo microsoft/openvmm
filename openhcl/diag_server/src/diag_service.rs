@@ -8,9 +8,9 @@ use crate::new_pty;
 use anyhow::Context;
 use azure_profiler_proto::AzureProfiler;
 use azure_profiler_proto::ProfileRequest;
-use diag_proto::network_packet_capture_request::Operation;
 use diag_proto::ExecRequest;
 use diag_proto::ExecResponse;
+use diag_proto::FILE_LINE_MAX;
 use diag_proto::FileRequest;
 use diag_proto::KmsgRequest;
 use diag_proto::NetworkPacketCaptureRequest;
@@ -20,15 +20,15 @@ use diag_proto::StartRequest;
 use diag_proto::UnderhillDiag;
 use diag_proto::WaitRequest;
 use diag_proto::WaitResponse;
-use diag_proto::FILE_LINE_MAX;
-use futures::future::join_all;
-use futures::io::AllowStdIo;
+use diag_proto::network_packet_capture_request::Operation;
 use futures::AsyncRead;
 use futures::AsyncReadExt;
 use futures::AsyncWrite;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::future::join_all;
+use futures::io::AllowStdIo;
 use futures_concurrency::stream::Merge;
 use inspect::InspectionBuilder;
 use inspect_proto::InspectRequest;
@@ -36,9 +36,9 @@ use inspect_proto::InspectResponse2;
 use inspect_proto::InspectService;
 use inspect_proto::UpdateRequest;
 use inspect_proto::UpdateResponse2;
+use mesh::CancelContext;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
-use mesh::CancelContext;
 use mesh_rpc::server::RpcReceiver;
 use net_packet_capture::OperationData;
 use net_packet_capture::PacketCaptureOperation;
@@ -478,7 +478,7 @@ impl DiagServiceHandler {
                 // sockets, but don't block the process exit notification.
                 driver
                     .spawn("socket-wait", async move {
-                        let await_output_relay = |task, raw| async {
+                        let await_output_relay = async |task, raw| {
                             let socket = if let Some(task) = task {
                                 Some(task.await)
                             } else {
@@ -605,7 +605,7 @@ impl DiagServiceHandler {
 
                 match op_data {
                     diag_proto::network_packet_capture_request::OpData::StartData(start_data) => {
-                        let writers = join_all(start_data.conns.iter().map(|c| async move {
+                        let writers = join_all(start_data.conns.iter().map(async |c| {
                             let conn = self.take_connection(*c).await?;
                             Ok(conn.into_inner())
                         }))

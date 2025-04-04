@@ -131,7 +131,7 @@ impl FlowNode for Node {
                 output: v,
             });
 
-            ctx.emit_rust_step("report built openvmm_hcl", |ctx| {
+            ctx.emit_minor_rust_step("report built openvmm_hcl", |ctx| {
                 let outvars = outvars.claim(ctx);
                 let output = output.claim(ctx);
                 move |rt| {
@@ -145,8 +145,6 @@ impl FlowNode for Node {
                     for var in outvars {
                         rt.write(var, &output);
                     }
-
-                    Ok(())
                 }
             });
         }

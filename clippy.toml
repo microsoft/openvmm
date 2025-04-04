@@ -21,6 +21,9 @@ disallowed-methods = [
     # This is used by futures::select! and futures::join!, so leave it out for now.
     # { path = "futures::future::poll_fn", reason = "use std::future::poll_fn" },
 
+    { path = "futures::task::noop_waker", reason = "use std::task::Waker::noop" },
+    { path = "futures::task::noop_waker_ref", reason = "use std::task::Waker::noop" },
+
     { path = "futures::channel::mpsc::channel", reason = "use mesh or async-channel" },
     { path = "futures::channel::mpsc::unbounded", reason = "use mesh or async-channel" },
     { path = "futures::channel::oneshot::channel", reason = "use mesh or async-channel" },
@@ -30,3 +33,4 @@ disallowed-methods = [
 ]
 
 avoid-breaking-exported-api = false
+check-private-items = true

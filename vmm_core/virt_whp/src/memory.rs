@@ -129,7 +129,7 @@ pub(crate) trait MemoryMapper: Inspect + Send + Sync {
     fn add_allowed_range(&self, range: MemoryRange);
 
     /// Returns true if a `gpa` is in a deferred range.
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn in_deferred_range(&self, gpa: u64) -> bool;
 
     /// Map all deferred ranges and put the mapper into a mapped state, where
@@ -155,12 +155,12 @@ pub(crate) trait MemoryMapper: Inspect + Send + Sync {
     fn reset_mappings(&self, partition: &dyn SimpleMemoryMap) -> Result<(), virt::Error>;
 
     /// If page acceptance and visibility is supported by this mapper.
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn page_acceptance_supported(&self) -> bool;
 
     /// The page visibility for a given page. None means this page is not
     /// accepted. Only supported on mappers that support page acceptance.
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn gpa_visibility(&self, gpa: u64) -> Option<PageVisibility>;
 
     /// Accept the given gpa range on behalf of the guest, with the given
@@ -343,7 +343,6 @@ impl MemoryMapper for WhpMemoryMapper {
 
 /// What VTL access to apply to a page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Inspect)]
-#[allow(dead_code)]
 pub enum VtlAccess {
     /// No access
     NoAccess,
@@ -386,9 +385,11 @@ impl VtlPartition {
     ) -> Result<(), virt::Error> {
         let range = MemoryRange::new(addr..addr + size as u64);
         let mut ranges = self.ranges.write();
-        assert!(ranges
-            .iter()
-            .all(|r| range.contains(&r.range) || !range.overlaps(&r.range)));
+        assert!(
+            ranges
+                .iter()
+                .all(|r| range.contains(&r.range) || !range.overlaps(&r.range))
+        );
 
         // SAFETY: Caller must past valid arguments.
         unsafe {
@@ -775,8 +776,8 @@ pub(crate) mod x86 {
     use super::VtlAccess;
     use crate::VtlPartition;
     use crate::WhpPartitionInner;
-    use hvdef::Vtl;
     use hvdef::HV_PAGE_SIZE;
+    use hvdef::Vtl;
 
     /// Different backing types for a given GPA.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

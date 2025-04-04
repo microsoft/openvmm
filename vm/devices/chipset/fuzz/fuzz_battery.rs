@@ -2,11 +2,12 @@
 // Licensed under the MIT License.
 
 #![cfg_attr(all(target_os = "linux", target_env = "gnu"), no_main)]
+#![expect(missing_docs)]
 
 use arbitrary::Unstructured;
+use chipset::battery::BATTERY_MMIO_REGION_BASE_ADDRESS_X64;
 use chipset::battery::BatteryDevice;
 use chipset::battery::BatteryRuntimeDeps;
-use chipset::battery::BATTERY_MMIO_REGION_BASE_ADDRESS_X64;
 use chipset_resources::battery::HostBatteryUpdate;
 use vmcore::line_interrupt::LineInterrupt;
 use xtask_fuzz::fuzz_eprintln;

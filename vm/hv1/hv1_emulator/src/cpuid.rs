@@ -6,8 +6,8 @@
 
 use virt::CpuidLeaf;
 use virt::IsolationType;
-use vm_topology::processor::x86::X86Topology;
 use vm_topology::processor::ProcessorTopology;
+use vm_topology::processor::x86::X86Topology;
 
 const MAX_CPUS: usize = 2048;
 
@@ -47,7 +47,7 @@ pub fn hv_cpuid_leaves(
             //     .with_fast_hypercall_output(true);
         }
 
-        u64::from(privileges)
+        privileges
     };
 
     let mut hv_cpuid = vec![
@@ -115,9 +115,13 @@ pub fn hv_cpuid_leaves(
                 .with_use_apic_msrs(use_apic_msrs);
 
             if hardware_isolated {
-                enlightenments = enlightenments
-                    .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
-                    .with_long_spin_wait_count(!0); // no spin wait notifications;
+                enlightenments = enlightenments.with_long_spin_wait_count(!0); // no spin wait notifications;
+
+                // TODO TDX GUEST VSM
+                if isolation != IsolationType::Tdx {
+                    enlightenments = enlightenments
+                        .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
+                }
 
                 // TODO HCVM:
                 //    .with_use_synthetic_cluster_ipi(true);

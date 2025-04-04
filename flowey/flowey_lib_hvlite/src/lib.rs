@@ -3,6 +3,7 @@
 
 //! flowey nodes specific to the HvLite project.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 // #![warn(missing_docs)] // TODO: lots to do here
 

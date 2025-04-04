@@ -5,6 +5,7 @@
 //!
 //! Currently incomplete (missing defs for non-fixed disks).
 
+#![expect(missing_docs)]
 #![no_std]
 
 use self::packed_nums::*;

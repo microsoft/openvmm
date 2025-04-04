@@ -12,12 +12,6 @@ use super::support::VtlHypercall;
 use crate::support::HvRepResult;
 use crate::support::VariableRepHypercall;
 use hv1_structs::ProcessorSet;
-use hvdef::hypercall as defs;
-use hvdef::hypercall::AcceptPagesAttributes;
-use hvdef::hypercall::HostVisibilityType;
-use hvdef::hypercall::HvRegisterAssoc;
-use hvdef::hypercall::HypercallOutput;
-use hvdef::hypercall::VtlPermissionSet;
 use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvRegisterName;
@@ -25,6 +19,12 @@ use hvdef::HvRegisterValue;
 use hvdef::HvResult;
 use hvdef::HypercallCode;
 use hvdef::Vtl;
+use hvdef::hypercall as defs;
+use hvdef::hypercall::AcceptPagesAttributes;
+use hvdef::hypercall::HostVisibilityType;
+use hvdef::hypercall::HvRegisterAssoc;
+use hvdef::hypercall::HypercallOutput;
+use hvdef::hypercall::VtlPermissionSet;
 use zerocopy::IntoBytes;
 
 /// Implements the `HvPostMessage` hypercall.
@@ -90,7 +90,7 @@ pub type HvPostMessageDirect =
 impl<T: PostMessageDirect> HypercallDispatch<HvPostMessageDirect> for T {
     fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         HvPostMessageDirect::run(params, |input| {
-            let message = input.message;
+            let message = input.message.get();
             self.post_message_direct(
                 input.partition_id,
                 Vtl::try_from(input.vtl)?,

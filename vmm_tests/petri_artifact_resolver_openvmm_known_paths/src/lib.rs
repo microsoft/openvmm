@@ -4,7 +4,6 @@
 //! See [`OpenvmmKnownPathsTestArtifactResolver`].
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ErasedArtifactHandle;
@@ -53,6 +52,7 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == loadable::UEFI_FIRMWARE_AARCH64 => uefi_firmware_path(MachineArch::Aarch64),
 
             _ if id == openhcl_igvm::LATEST_STANDARD_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Standard),
+            _ if id == openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::StandardDevKernel),
             _ if id == openhcl_igvm::LATEST_CVM_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Cvm),
             _ if id == openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::LinuxDirect),
             _ if id == openhcl_igvm::LATEST_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::Standard),
@@ -89,6 +89,7 @@ enum OpenhclVersion {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 enum OpenhclFlavor {
     Standard,
+    StandardDevKernel,
     Cvm,
     LinuxDirect,
 }
@@ -292,6 +293,14 @@ fn openhcl_bin_path(
                 xflowey_args: &["build-igvm", "x64"],
             },
         ),
+        (MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::StandardDevKernel) => (
+            "flowey-out/artifacts/build-igvm/debug/x64-devkern",
+            "openhcl-x64-devkern.bin",
+            MissingCommand::XFlowey {
+                description: "OpenHCL IGVM file",
+                xflowey_args: &["build-igvm", "x64-devkern"],
+            },
+        ),
         (MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Cvm) => (
             "flowey-out/artifacts/build-igvm/debug/x64-cvm",
             "openhcl-x64-cvm.bin",
@@ -488,7 +497,8 @@ impl MissingCommand<'_> {
         match self {
             MissingCommand::Build { package, target } => anyhow::bail!(
                 "Failed to find {package} binary. Run `cargo build {target_args}-p {package}` to build it.",
-                target_args = target.map_or(String::new(), |target| format!("--target {} ", target)),
+                target_args =
+                    target.map_or(String::new(), |target| format!("--target {} ", target)),
             ),
             MissingCommand::Xtask {
                 description,
@@ -500,13 +510,19 @@ impl MissingCommand<'_> {
                     args.join(" ")
                 )
             }
-            MissingCommand::XFlowey { description, xflowey_args: args } => anyhow::bail!(
-                    "Failed to find {}. Run `cargo xflowey {}` to create it.",
-                    description,
-                    args.join(" ")
-                ),
+            MissingCommand::XFlowey {
+                description,
+                xflowey_args: args,
+            } => anyhow::bail!(
+                "Failed to find {}. Run `cargo xflowey {}` to create it.",
+                description,
+                args.join(" ")
+            ),
             MissingCommand::Restore { description } => {
-                anyhow::bail!("Failed to find {}. Run `cargo xflowey restore-packages`.", description)
+                anyhow::bail!(
+                    "Failed to find {}. Run `cargo xflowey restore-packages`.",
+                    description
+                )
             }
             MissingCommand::Custom { description, cmd } => {
                 anyhow::bail!(

@@ -4,13 +4,13 @@
 //! An endpoint built on the vmswitch DirectIO interface.
 
 #![cfg(windows)]
+#![expect(missing_docs)]
 
 pub mod resolver;
 
 use anyhow::Context as _;
 use async_trait::async_trait;
 use inspect::InspectMut;
-use net_backend::next_packet;
 use net_backend::BufferAccess;
 use net_backend::Endpoint;
 use net_backend::Queue;
@@ -20,6 +20,7 @@ use net_backend::RxId;
 use net_backend::RxMetadata;
 use net_backend::TxId;
 use net_backend::TxSegment;
+use net_backend::next_packet;
 use pal_async::driver::Driver;
 use parking_lot::Mutex;
 use std::io::ErrorKind;

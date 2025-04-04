@@ -3,9 +3,9 @@
 
 //! Parse partition info using the IGVM device tree parameter.
 
+use super::PartitionInfo;
 use super::shim_params::IsolationType;
 use super::shim_params::ShimParams;
-use super::PartitionInfo;
 use crate::boot_logger::log;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::MAX_CPU_COUNT;
@@ -13,8 +13,8 @@ use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
 use crate::host_params::MAX_VTL2_USED_RANGES;
-use crate::single_threaded::off_stack;
 use crate::single_threaded::OffStackRef;
+use crate::single_threaded::off_stack;
 use arrayvec::ArrayVec;
 use core::cmp::max;
 use core::fmt::Display;
@@ -25,10 +25,10 @@ use host_fdt_parser::ParsedDeviceTree;
 use hvdef::HV_PAGE_SIZE;
 use igvm_defs::MemoryMapEntryType;
 use loader_defs::paravisor::CommandLinePolicy;
+use memory_range::MemoryRange;
 use memory_range::flatten_ranges;
 use memory_range::subtract_ranges;
 use memory_range::walk_ranges;
-use memory_range::MemoryRange;
 
 /// Errors when reading the host device tree.
 #[derive(Debug)]
@@ -248,7 +248,9 @@ fn allocate_vtl2_ram(
         if required_mem != 0 {
             // TODO: Handle fallback allocations on other numa nodes when a node
             // is exhausted.
-            panic!("failed to allocate {required_mem:#x} for vnode {node:#x}, no memory remaining for vnode");
+            panic!(
+                "failed to allocate {required_mem:#x} for vnode {node:#x}, no memory remaining for vnode"
+            );
         }
     }
 
@@ -348,7 +350,7 @@ impl PartitionInfo {
 
         // Depending on policy, write what the host specified in the chosen node.
         if can_trust_host && command_line.policy == CommandLinePolicy::APPEND_CHOSEN {
-            write!(storage.cmdline, " {}", parsed.command_line.as_ref())
+            write!(storage.cmdline, " {}", &parsed.command_line)
                 .map_err(|_| DtError::CommandLineSize)?;
         }
 
@@ -461,18 +463,7 @@ impl PartitionInfo {
                 crate::cmdline::parse_boot_command_line(storage.cmdline.as_str())
                     .enable_vtl2_gpa_pool;
 
-            let isolation_requirements = match params.isolation_type {
-                #[cfg(target_arch = "x86_64")]
-                // Supporting TLB flush hypercalls on TDX requires 1 page per VP
-                // Supporting guest VSM on TDX requires 1 page per VP for VTL 1's APIC
-                IsolationType::Tdx => parsed.cpus.len() as u64 * 2,
-                _ => 0,
-            };
-
-            max(
-                dt_page_count.unwrap_or(0) + isolation_requirements,
-                cmdline_page_count.unwrap_or(0),
-            )
+            max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0))
         };
         if vtl2_gpa_pool_size != 0 {
             // Reserve the specified number of pages for the pool. Use the used

@@ -3,7 +3,6 @@
 
 //! Functionality to assist with managing the terminal/console/tty.
 
-#![warn(missing_docs)]
 // UNSAFETY: Win32 and libc function calls to manipulate terminal state.
 #![expect(unsafe_code)]
 

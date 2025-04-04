@@ -5,13 +5,12 @@
 
 #![no_std]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
-use core::sync::atomic::AtomicU32;
 use core::sync::atomic::AtomicU8;
-use hvdef::hypercall::HvInputVtl;
+use core::sync::atomic::AtomicU32;
 use hvdef::HvMessage;
 use hvdef::HvStatus;
+use hvdef::hypercall::HvInputVtl;
 use open_enum::open_enum;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;

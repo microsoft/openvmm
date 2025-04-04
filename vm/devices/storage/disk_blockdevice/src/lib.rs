@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(target_os = "linux")]
 
 //! Implements the [`DiskIo`] trait for virtual disks backed by a raw block
@@ -15,15 +16,15 @@ mod nvme;
 use anyhow::Context;
 use async_trait::async_trait;
 use blocking::unblock;
+use disk_backend::DiskError;
+use disk_backend::DiskIo;
+use disk_backend::UnmapBehavior;
 use disk_backend::pr::PersistentReservation;
 use disk_backend::pr::ReservationCapabilities;
 use disk_backend::pr::ReservationReport;
 use disk_backend::pr::ReservationType;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;
-use disk_backend::DiskError;
-use disk_backend::DiskIo;
-use disk_backend::UnmapBehavior;
 use fs_err::PathExt;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
@@ -47,16 +48,16 @@ use std::os::unix::prelude::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use thiserror::Error;
 use uevent::CallbackHandle;
 use uevent::UeventListener;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceId;
 use vm_resource::ResourceResolver;
+use vm_resource::kind::DiskHandleKind;
 
 pub struct BlockDeviceResolver {
     uring: Arc<dyn Initiate>,
@@ -264,8 +265,7 @@ impl BlockDevice {
 
         let devmeta = if metadata.file_type().is_block_device() {
             let rdev = metadata.rdev();
-            // SAFETY: just parsing bits out of a u64.
-            let (major, minor) = unsafe { (libc::major(rdev), libc::minor(rdev)) };
+            let (major, minor) = (libc::major(rdev), libc::minor(rdev));
 
             // Register for resize events.
             if let Some(uevent_listener) = uevent_listener {
@@ -530,11 +530,7 @@ impl DiskIo for BlockDevice {
     }
 
     fn pr(&self) -> Option<&dyn PersistentReservation> {
-        if self.supports_pr {
-            Some(self)
-        } else {
-            None
-        }
+        if self.supports_pr { Some(self) } else { None }
     }
 
     async fn eject(&self) -> Result<(), DiskError> {
@@ -705,7 +701,7 @@ impl DiskIo for BlockDevice {
         match unblock(move || ioctl::discard(&file, file_offset, length)).await {
             Ok(()) => {}
             Err(_) if sector_offset + sector_count > self.sector_count() => {
-                return Err(DiskError::IllegalBlock)
+                return Err(DiskError::IllegalBlock);
             }
             Err(err) => return Err(self.map_io_error(err)),
         }

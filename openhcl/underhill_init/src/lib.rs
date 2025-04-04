@@ -4,6 +4,7 @@
 //! This module implements the the Underhill initial process.
 
 #![cfg(target_os = "linux")]
+#![expect(missing_docs)]
 // UNSAFETY: Calling libc functions to set up global system state.
 #![expect(unsafe_code)]
 
@@ -15,10 +16,10 @@ mod syslog;
 pub use options::Options;
 
 use anyhow::Context;
-use libc::c_void;
 use libc::STDERR_FILENO;
 use libc::STDIN_FILENO;
 use libc::STDOUT_FILENO;
+use libc::c_void;
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::ffi::OsStr;

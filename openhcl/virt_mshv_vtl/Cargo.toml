@@ -13,7 +13,6 @@ gdb = []
 aarch64emu.workspace = true
 aarch64defs.workspace = true
 hcl.workspace = true
-page_pool_alloc.workspace = true
 virt.workspace = true
 virt_support_aarch64emu.workspace = true
 virt_support_apic.workspace = true
@@ -39,6 +38,7 @@ pal_uring.workspace = true
 pal.workspace = true
 safeatomic.workspace = true
 tracelimit.workspace = true
+user_driver.workspace = true
 
 anyhow.workspace = true
 bitfield-struct.workspace = true

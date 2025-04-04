@@ -3,9 +3,9 @@
 
 //! An executor backed by the Windows thread pool.
 
-use super::overlapped::overlapped_io_done;
 use super::overlapped::IoOverlapped;
 use super::overlapped::OverlappedIoDriver;
+use super::overlapped::overlapped_io_done;
 use super::socket::AfdHandle;
 use super::socket::AfdSocketReady;
 use crate::interest::InterestSlot;
@@ -24,6 +24,7 @@ use crate::wait::WaitDriver;
 use crate::waker::WakerList;
 use loan_cell::LoanCell;
 use once_cell::sync::OnceCell;
+use pal::windows::SendSyncRawHandle;
 use pal::windows::afd;
 use pal::windows::disassociate_completion_port;
 use pal::windows::set_file_completion_notification_modes;
@@ -31,7 +32,6 @@ use pal::windows::tp::TpIo;
 use pal::windows::tp::TpTimer;
 use pal::windows::tp::TpWait;
 use pal::windows::tp::TpWork;
-use pal::windows::SendSyncRawHandle;
 use parking_lot::Mutex;
 use std::cell::Cell;
 use std::ffi::c_void;
@@ -434,7 +434,6 @@ impl Timer {
         if !self.tp_timer.set(duration) {
             // Donate the reference to be released in tp_timer_callback() or
             // in drop().
-            #[allow(clippy::let_underscore_lock)] // false positive
             let _ = Arc::into_raw(inner_ref);
         }
     }

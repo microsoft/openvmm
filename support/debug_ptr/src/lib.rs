@@ -5,7 +5,6 @@
 //! prevent it from being optimized out. Intended to be used as a write-
 //! only pointer used to easily find interested variables when debugging.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use std::sync::atomic::AtomicPtr;

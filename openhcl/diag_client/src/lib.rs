@@ -3,16 +3,14 @@
 
 //! The client for connecting to the Underhill diagnostics server.
 
-#![warn(missing_docs)]
-
 pub mod kmsg_stream;
 
 use anyhow::Context;
-use diag_proto::network_packet_capture_request::OpData;
-use diag_proto::network_packet_capture_request::Operation;
 use diag_proto::ExecRequest;
 use diag_proto::WaitRequest;
 use diag_proto::WaitResponse;
+use diag_proto::network_packet_capture_request::OpData;
+use diag_proto::network_packet_capture_request::Operation;
 use futures::AsyncReadExt;
 use futures::AsyncWrite;
 use futures::AsyncWriteExt;

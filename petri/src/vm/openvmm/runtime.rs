@@ -4,27 +4,27 @@
 //! Methods to interact with a running [`PetriVmOpenVmm`].
 
 use super::PetriVmResourcesOpenVmm;
-use crate::openhcl_diag::OpenHclDiagHandler;
-use crate::worker::Worker;
 use crate::OpenHclServicingFlags;
 use crate::PetriVm;
 use crate::ShutdownKind;
+use crate::openhcl_diag::OpenHclDiagHandler;
+use crate::worker::Worker;
 use anyhow::Context;
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use hvlite_defs::rpc::PulseSaveRestoreError;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
-use mesh::rpc::RpcError;
-use mesh::rpc::RpcSend;
 use mesh::CancelContext;
 use mesh::Receiver;
 use mesh::RecvError;
+use mesh::rpc::RpcError;
+use mesh::rpc::RpcSend;
 use mesh_process::Mesh;
+use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
-use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::GuestQuirks;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
@@ -64,6 +64,14 @@ impl PetriVm for PetriVmOpenVmm {
 
     async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()> {
         Self::wait_for_vtl2_ready(self).await
+    }
+
+    async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
+        Self::wait_for_successful_boot_event(self).await
+    }
+
+    async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
+        Self::send_enlightened_shutdown(self, kind).await
     }
 }
 
@@ -167,6 +175,11 @@ impl PetriVmOpenVmm {
         pub async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()>
     );
     petri_vm_fn!(
+        /// Waits for the Hyper-V shutdown IC to be ready, returning a receiver
+        /// that will be closed when it is no longer ready.
+        pub async fn wait_for_enlightened_shutdown_ready(&mut self) -> anyhow::Result<mesh::OneshotReceiver<()>>
+    );
+    petri_vm_fn!(
         /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
         pub async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()>
     );
@@ -246,13 +259,19 @@ impl PetriVmOpenVmm {
         match res {
             Either::Future(Ok(success)) => Ok(success),
             Either::Future(Err(e)) => {
-                tracing::warn!(?e, "Future returned with an error, sleeping for 5 seconds to let outstanding work finish");
+                tracing::warn!(
+                    ?e,
+                    "Future returned with an error, sleeping for 5 seconds to let outstanding work finish"
+                );
                 let mut c = CancelContext::new().with_timeout(Duration::from_secs(5));
                 c.cancelled().await;
                 Err(e)
             }
             Either::Halt(halt_result) => {
-                tracing::warn!(?halt_result, "Halt channel returned while waiting for other future, sleeping for 5 seconds to let outstanding work finish");
+                tracing::warn!(
+                    ?halt_result,
+                    "Halt channel returned while waiting for other future, sleeping for 5 seconds to let outstanding work finish"
+                );
                 let mut c = CancelContext::new().with_timeout(Duration::from_secs(5));
                 let try_again = c.until_cancelled(future).await;
 
@@ -260,7 +279,10 @@ impl PetriVmOpenVmm {
                     Ok(fut_result) => {
                         halt.already_received = Some(halt_result);
                         if let Err(e) = &fut_result {
-                            tracing::warn!(?e, "Future returned with an error, sleeping for 5 seconds to let outstanding work finish");
+                            tracing::warn!(
+                                ?e,
+                                "Future returned with an error, sleeping for 5 seconds to let outstanding work finish"
+                            );
                             let mut c = CancelContext::new().with_timeout(Duration::from_secs(5));
                             c.cancelled().await;
                         }
@@ -305,13 +327,21 @@ impl PetriVmInner {
         Ok(())
     }
 
-    async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
+    async fn wait_for_enlightened_shutdown_ready(
+        &mut self,
+    ) -> anyhow::Result<mesh::OneshotReceiver<()>> {
         tracing::info!("Waiting for shutdown ic ready");
-        self.resources
+        let recv = self
+            .resources
             .shutdown_ic_send
             .call(ShutdownRpc::WaitReady, ())
             .await?;
 
+        Ok(recv)
+    }
+
+    async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
+        self.wait_for_enlightened_shutdown_ready().await?;
         if let Some(duration) = self.quirks.hyperv_shutdown_ic_sleep {
             tracing::info!("QUIRK: Waiting for {:?}", duration);
             PolledTimer::new(&self.resources.driver)

@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![cfg_attr(not(target_os = "linux"), expect(missing_docs))]
 #![cfg(target_os = "linux")]
 
 //! Implementation of [`vmbus_client`] traits to communicate with the synic via
 //! the Linux HCL driver.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use anyhow::Context as _;
@@ -25,8 +25,8 @@ use std::io::IoSliceMut;
 use std::os::fd::AsFd;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::ready;
 use std::task::Poll;
+use std::task::ready;
 use std::time::Duration;
 use vmbus_async::async_dgram::AsyncRecv;
 use vmbus_client::PollPostMessage;

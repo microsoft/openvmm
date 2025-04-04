@@ -14,16 +14,16 @@ use crate::queues::SubmissionQueue;
 use crate::registers::DeviceRegisters;
 use anyhow::Context;
 use futures::StreamExt;
-use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
+use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use inspect_counters::Counter;
+use mesh::Cancel;
+use mesh::CancelContext;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use mesh::Cancel;
-use mesh::CancelContext;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Task;
 use safeatomic::AtomicSliceOps;
@@ -33,13 +33,13 @@ use std::num::Wrapping;
 use std::sync::Arc;
 use std::task::Poll;
 use thiserror::Error;
+use user_driver::DeviceBacking;
 use user_driver::interrupt::DeviceInterrupt;
 use user_driver::memory::MemoryBlock;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
 use user_driver::page_allocator::PageAllocator;
 use user_driver::page_allocator::ScopedPages;
-use user_driver::DeviceBacking;
 use zerocopy::FromZeros;
 
 /// Value for unused PRP entries, to catch/mitigate buffer size mismatches.
@@ -240,7 +240,6 @@ impl QueuePair {
         });
 
         // Page allocator uses remaining part of the buffer for dynamic allocation.
-        #[allow(clippy::assertions_on_constants)]
         const _: () = assert!(
             QueuePair::PER_QUEUE_PAGES * PAGE_SIZE >= 128 * 1024 + PAGE_SIZE,
             "not enough room for an ATAPI IO plus a PRP list"

@@ -59,7 +59,9 @@ fn main() {
         && std::env::var_os("UH_PATCH").is_none()
         && std::env::var_os("UH_REVISION").is_none()
     {
-        println!("cargo::warning=Attempted to build without setting UH_IGVM_PATH - resulting DLL will be empty!");
+        println!(
+            "cargo::warning=Attempted to build without setting UH_IGVM_PATH - resulting DLL will be empty!"
+        );
         return;
     }
 
@@ -122,6 +124,8 @@ fn main() {
         println!("cargo:rustc-link-arg=/NOENTRY"); // resource DLL
         println!("cargo:rerun-if-changed=build.rs");
         println!("cargo:rerun-if-changed=resources.rc");
-        embed_resource::compile("resources.rc", macros.map(|(k, v)| format!("{k}={v}")));
+        embed_resource::compile("resources.rc", macros.map(|(k, v)| format!("{k}={v}")))
+            .manifest_required()
+            .unwrap();
     }
 }

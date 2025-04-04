@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 mod buffers;
 pub mod resolver;
 
@@ -102,7 +104,7 @@ struct NetStatus {
 
 const DEFAULT_MTU: u16 = 1514;
 
-#[allow(dead_code)]
+#[expect(dead_code)]
 const VIRTIO_NET_MAX_QUEUES: u16 = 0x8000;
 
 #[repr(C)]

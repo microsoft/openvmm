@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(target_os = "linux")]
 // UNSAFETY: Calling KVM APIs and IOCTLs and dealing with the raw pointers
 // necessary for doing so.
@@ -15,10 +16,10 @@ use std::fs::File;
 use std::io;
 use std::marker::PhantomData;
 use std::os::unix::prelude::*;
+use std::sync::Once;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::Once;
 use thiserror::Error;
 
 mod ioctl {
@@ -341,6 +342,7 @@ impl Partition {
     }
 
     /// Enable X2APIC IDs in interrupt and LAPIC APIs.
+    #[cfg(target_arch = "x86_64")]
     pub fn enable_x2apic_api(&self) -> Result<()> {
         let flags = KVM_X2APIC_API_USE_32BIT_IDS;
         // SAFETY: Calling IOCTL as documented, with no special requirements.
@@ -465,7 +467,7 @@ impl Partition {
         Ok(())
     }
 
-    #[allow(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
+    #[expect(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
     pub unsafe fn set_user_memory_region(
         &self,
         slot: u32,
@@ -1127,12 +1129,13 @@ impl<'a> Processor<'a> {
     pub fn runner(&self) -> VpRunner<'a> {
         // Ensure this thread is uniquely running the VP, and store the thread
         // ID to support cancellation.
-        assert!(self
-            .get()
-            .thread
-            .write()
-            .replace(Pthread::current())
-            .is_none());
+        assert!(
+            self.get()
+                .thread
+                .write()
+                .replace(Pthread::current())
+                .is_none()
+        );
 
         VpRunner {
             partition: self.0,
@@ -1524,6 +1527,7 @@ thread_local! {
 ///
 /// This can be used when the kvm_run is aliased by the kernel or by other
 /// threads that might call this function.
+#[expect(clippy::missing_safety_doc)]
 unsafe fn set_immediate_exit(rdata: *mut kvm_run) {
     // SAFETY: rdata may be aliased by the kernel right now, so it's
     // not safe to construct a mutable reference to it. Use an

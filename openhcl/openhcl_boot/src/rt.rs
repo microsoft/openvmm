@@ -12,7 +12,6 @@ pub struct Stack([u8; STACK_SIZE]);
 
 pub static mut STACK: Stack = Stack([0; STACK_SIZE]);
 
-#[cfg_attr(test, allow(dead_code))]
 /// Validate the stack cookie is still present. Panics if overwritten.
 pub fn verify_stack_cookie() {
     // SAFETY: It's possible we've overrun the stack at this point if any
@@ -34,7 +33,12 @@ pub fn verify_stack_cookie() {
 ///
 /// ARM64: The relative offset for shim parameters are passed in the x1 register.
 /// x2 contains the base address of where the shim was loaded at.
-#[allow(dead_code)]
+///
+/// # Safety
+///
+/// The caller must ensure that the passed shim_params_offset is the correct offset
+/// from the shim base to the shim parameters.
+#[cfg_attr(not(minimal_rt), expect(dead_code))]
 pub unsafe extern "C" fn start(_: usize, shim_params_offset: isize) -> ! {
     crate::shim_main(shim_params_offset)
 }

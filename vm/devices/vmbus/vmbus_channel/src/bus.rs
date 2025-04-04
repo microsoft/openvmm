@@ -7,10 +7,10 @@ use async_trait::async_trait;
 use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
+use mesh::MeshPayload;
 use mesh::payload::Protobuf;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
-use mesh::MeshPayload;
 use std::fmt::Display;
 use vmbus_core::protocol;
 use vmbus_core::protocol::GpadlId;
@@ -80,6 +80,10 @@ pub enum ChannelRequest {
     /// Open the channel.
     Open(Rpc<OpenRequest, Option<OpenResult>>),
     /// Close the channel.
+    ///
+    /// Although there is no response from the host, this is still modeled as an
+    /// RPC so that the caller can know that the vmbus client's state has been
+    /// updated.
     Close(Rpc<(), ()>),
     /// Create a new GPADL.
     Gpadl(Rpc<GpadlRequest, bool>),

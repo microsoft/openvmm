@@ -2,11 +2,11 @@
 // Licensed under the MIT License.
 
 use crate::boot_logger::log;
-use crate::host_params::shim_params::IsolationType;
-use crate::host_params::shim_params::ShimParams;
-use crate::host_params::PartitionInfo;
 use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_NUMA_NODES;
+use crate::host_params::PartitionInfo;
+use crate::host_params::shim_params::IsolationType;
+use crate::host_params::shim_params::ShimParams;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayVec;
 use memory_range::MemoryRange;
@@ -105,6 +105,17 @@ pub fn start_sidecar<'a>(
         }
     }
 
+    #[cfg(target_arch = "x86_64")]
+    if !x86defs::cpuid::VersionAndFeaturesEcx::from(
+        safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx,
+    )
+    .x2_apic()
+    {
+        // Currently, sidecar needs x2apic to communicate with the kernel
+        log!("sidecar: x2apic not available; not using sidecar");
+        return None;
+    }
+
     // Split the CPUs by NUMA node, and then into chunks of no more than
     // MAX_SIDECAR_NODE_SIZE processors.
     let cpus_by_node = || {
@@ -162,7 +173,9 @@ pub fn start_sidecar<'a>(
                     log!("sidecar: not enough memory for sidecar");
                     return None;
                 };
-                log!("sidecar: not enough memory for sidecar on node {local_vnode}, falling back to node {remote_vnode}");
+                log!(
+                    "sidecar: not enough memory for sidecar on node {local_vnode}, falling back to node {remote_vnode}"
+                );
                 vtl2_ram = &mut free_memory[remote_vnode];
             }
             let (rest, mem) = vtl2_ram.split_at_offset(vtl2_ram.len() - required_ram);

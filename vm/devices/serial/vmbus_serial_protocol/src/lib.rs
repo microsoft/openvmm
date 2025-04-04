@@ -3,8 +3,6 @@
 
 //! Protocol definitions for a VMBUS based serial device. Today this serial device is only offered to VTL2.
 
-#![warn(missing_docs)]
-
 use core::fmt::Debug;
 use guid::Guid;
 use open_enum::open_enum;

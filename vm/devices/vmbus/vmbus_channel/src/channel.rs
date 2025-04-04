@@ -16,15 +16,15 @@ use crate::gpadl::GpadlMap;
 use crate::gpadl::GpadlMapView;
 use anyhow::Context;
 use async_trait::async_trait;
-use futures::stream::select;
-use futures::stream::SelectAll;
 use futures::StreamExt;
+use futures::stream::SelectAll;
+use futures::stream::select;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::RecvError;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use mesh::RecvError;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_event::Event;
@@ -35,8 +35,8 @@ use std::pin::pin;
 use std::sync::Arc;
 use thiserror::Error;
 use tracing::instrument;
-use vmbus_core::protocol::GpadlId;
 use vmbus_core::TaggedStream;
+use vmbus_core::protocol::GpadlId;
 use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::notify::Notify;
 use vmcore::save_restore::RestoreError;
@@ -488,7 +488,7 @@ impl Device {
             StateRequest(Result<StateRequest, RecvError>),
         }
 
-        let mut state_req_recv = pin!(futures::stream::unfold(state_req_recv, |mut recv| async {
+        let mut state_req_recv = pin!(futures::stream::unfold(state_req_recv, async |mut recv| {
             Some((recv.recv().await, recv))
         }));
 
@@ -552,13 +552,13 @@ impl Device {
     ) {
         match request {
             ChannelRequest::Open(rpc) => {
-                rpc.handle(|open_request| async {
+                rpc.handle(async |open_request| {
                     self.handle_open(channel, channel_idx, open_request).await
                 })
                 .await
             }
             ChannelRequest::Close(rpc) => {
-                rpc.handle(|()| async {
+                rpc.handle(async |()| {
                     self.handle_close(channel_idx, channel).await;
                 })
                 .await
@@ -571,7 +571,7 @@ impl Device {
                 self.handle_teardown_gpadl(rpc, channel_idx);
             }
             ChannelRequest::Modify(rpc) => {
-                rpc.handle(|req| async {
+                rpc.handle(async |req| {
                     self.handle_modify(channel, channel_idx, req).await;
                     0
                 })
@@ -683,7 +683,7 @@ impl Device {
                 channel.start();
             }
             StateRequest::Stop(rpc) => {
-                rpc.handle(|()| async {
+                rpc.handle(async |()| {
                     channel.stop().await;
                 })
                 .await;
@@ -692,7 +692,7 @@ impl Device {
                 rpc.complete(());
             }
             StateRequest::Save(rpc) => {
-                rpc.handle_failable(|()| async {
+                rpc.handle_failable(async |()| {
                     if let Some(channel) = channel.supports_save_restore() {
                         channel.save().await.map(Some)
                     } else {
@@ -702,7 +702,7 @@ impl Device {
                 .await;
             }
             StateRequest::Restore(rpc) => {
-                rpc.handle_failable(|buffer| async {
+                rpc.handle_failable(async |buffer| {
                     let channel = channel
                         .supports_save_restore()
                         .context("saved state not supported")?;

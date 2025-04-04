@@ -12,28 +12,29 @@
 //! In practice, ring buffers always come in pairs so that packets can be both
 //! sent and received. However, this module's interfaces operate on them singly.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod gparange;
 
 pub use pipe_protocol::*;
-pub use protocol::TransferPageRange;
 pub use protocol::PAGE_SIZE;
+pub use protocol::TransferPageRange;
 
 use crate::gparange::GpaRange;
-use guestmem::ranges::PagedRange;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use protocol::*;
 use safeatomic::AtomicSliceOps;
 use std::fmt::Debug;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
-use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use thiserror::Error;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -69,8 +70,6 @@ mod pipe_protocol {
 }
 
 mod protocol {
-    #![allow(dead_code)]
-
     use crate::CONTROL_WORD_COUNT;
     use inspect::Inspect;
     use std::fmt::Debug;

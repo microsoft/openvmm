@@ -5,7 +5,6 @@
 //!
 //! TODO: move the resource definitions to separate crates for each endpoint.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod mac_address;
@@ -13,8 +12,8 @@ pub mod mac_address;
 /// Null backend.
 pub mod null {
     use mesh::MeshPayload;
-    use vm_resource::kind::NetEndpointHandleKind;
     use vm_resource::ResourceId;
+    use vm_resource::kind::NetEndpointHandleKind;
 
     /// Handle to a null network endpoint, which drops sent packets and never
     /// receives packets.
@@ -29,8 +28,8 @@ pub mod null {
 /// Consomme backend.
 pub mod consomme {
     use mesh::MeshPayload;
-    use vm_resource::kind::NetEndpointHandleKind;
     use vm_resource::ResourceId;
+    use vm_resource::kind::NetEndpointHandleKind;
 
     /// Handle to a Consomme network endpoint.
     #[derive(MeshPayload)]
@@ -48,8 +47,8 @@ pub mod consomme {
 pub mod dio {
     use guid::Guid;
     use mesh::MeshPayload;
-    use vm_resource::kind::NetEndpointHandleKind;
     use vm_resource::ResourceId;
+    use vm_resource::kind::NetEndpointHandleKind;
 
     /// A Hyper-V networking switch port ID.
     #[derive(Copy, Clone, MeshPayload)]
@@ -75,8 +74,8 @@ pub mod dio {
 /// Linux TAP backend.
 pub mod tap {
     use mesh::MeshPayload;
-    use vm_resource::kind::NetEndpointHandleKind;
     use vm_resource::ResourceId;
+    use vm_resource::kind::NetEndpointHandleKind;
 
     /// A handle to a TAP device.
     #[derive(MeshPayload)]

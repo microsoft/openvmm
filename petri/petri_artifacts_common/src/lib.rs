@@ -5,7 +5,6 @@
 //! what VMM backend is being used.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 /// Artifact declarations
 pub mod artifacts {

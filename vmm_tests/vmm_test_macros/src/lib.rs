@@ -1,23 +1,25 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 use petri_artifacts_common::tags::IsTestIso;
 use petri_artifacts_common::tags::IsTestVhd;
 use petri_artifacts_common::tags::MachineArch;
 use proc_macro2::Ident;
 use proc_macro2::Span;
 use proc_macro2::TokenStream;
-use quote::quote;
 use quote::ToTokens;
+use quote::quote;
 use std::collections::HashSet;
-use syn::parse::Parse;
-use syn::parse::ParseStream;
-use syn::parse_macro_input;
-use syn::spanned::Spanned;
 use syn::Error;
 use syn::ItemFn;
 use syn::Path;
 use syn::Token;
+use syn::parse::Parse;
+use syn::parse::ParseStream;
+use syn::parse_macro_input;
+use syn::spanned::Spanned;
 
 struct Config {
     vmm: Option<Vmm>,
@@ -228,7 +230,7 @@ impl Parse for Args {
             .collect();
 
         for config in &configs {
-            #[allow(clippy::single_match)] // more patterns coming later
+            #[expect(clippy::single_match)] // more patterns coming later
             match config.firmware {
                 Firmware::Uefi(UefiGuest::Vhd(ImageInfo { arch, .. })) => {
                     if config.arch != arch {
@@ -592,16 +594,17 @@ pub fn hyperv_test(
 }
 
 fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Result<TokenStream> {
-    let original_args =
-        match item.sig.inputs.len() {
-            1 => quote! {config},
-            2 => quote! {config, extra_deps},
-            3 => quote! {config, extra_deps, driver },
-            _ => return Err(Error::new(
+    let original_args = match item.sig.inputs.len() {
+        1 => quote! {config},
+        2 => quote! {config, extra_deps},
+        3 => quote! {config, extra_deps, driver },
+        _ => {
+            return Err(Error::new(
                 item.sig.inputs.span(),
                 "expected 1, 2, or 3 arguments (the PetriVmConfig, ArtifactResolver, and Driver)",
-            )),
-        };
+            ));
+        }
+    };
 
     let original_name = &item.sig.ident;
     let mut tests = TokenStream::new();
@@ -667,7 +670,7 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
                     (#artifacts, extra_deps)
                 },
                 |params, (artifacts, extra_deps)| {
-                    ::pal_async::DefaultPool::run_with(|driver| async move {
+                    ::pal_async::DefaultPool::run_with(async |driver| {
                         let config = #petri_vm_config;
                         #original_name(#original_args).await
                     })
@@ -683,7 +686,7 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
     Ok(quote! {
         ::petri::multitest!(vec![#tests]);
         // Allow dead code for tests that are not run on the current architecture.
-        #[cfg_attr(not(any(#(guest_arch = #guest_archs,)*)), allow(dead_code))]
+        #[cfg_attr(not(any(#(guest_arch = #guest_archs,)*)), expect(dead_code))]
         #item
     })
 }

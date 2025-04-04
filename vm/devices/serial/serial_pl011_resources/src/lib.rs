@@ -3,14 +3,13 @@
 
 //! Resource definitions for the ARM PL011 serial port.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use mesh::MeshPayload;
-use vm_resource::kind::ChipsetDeviceHandleKind;
-use vm_resource::kind::SerialBackendHandle;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::ChipsetDeviceHandleKind;
+use vm_resource::kind::SerialBackendHandle;
 
 /// A handle for a PL011 device.
 #[derive(MeshPayload)]

@@ -6,11 +6,11 @@ use crate::GedChannel;
 use crate::GuestConfig;
 use crate::GuestEmulationDevice;
 use crate::GuestFirmwareConfig;
-use get_protocol::test_utilities::TEST_VMGS_CAPACITY;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::UefiConsoleMode;
+use get_protocol::test_utilities::TEST_VMGS_CAPACITY;
 use get_resources::ged::GuestEmulationRequest;
 use get_resources::ged::GuestServicingFlags;
 use guestmem::GuestMemory;
@@ -251,6 +251,7 @@ pub fn create_host_channel(
         secure_boot_enabled: false,
         secure_boot_template: SecureBootTemplateType::SECURE_BOOT_DISABLED,
         enable_battery: false,
+        no_persistent_secrets: true,
     };
 
     let halt_reason = Arc::new(Mutex::new(None));
@@ -333,7 +334,7 @@ pub struct TestGedClient {
     sender: mesh::Sender<GuestEmulationRequest>,
 }
 
-#[allow(dead_code)] // Tasks are spawned and just need to be held.
+#[expect(dead_code)] // Tasks are spawned and just need to be held.
 enum TestTask {
     Test(Task<Result<(), Error>>),
     Prod(TaskControl<GuestEmulationDevice, GedChannel<FlatRingMem>>),

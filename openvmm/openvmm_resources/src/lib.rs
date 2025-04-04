@@ -5,7 +5,6 @@
 //! in OpenVMM.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 // Resources.
 vm_resource::register_static_resolvers! {

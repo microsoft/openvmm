@@ -11,24 +11,31 @@ use crate::timer::TimerDriver;
 use crate::timer::TimerQueue;
 use crate::timer::TimerResult;
 use crate::waker::WakerList;
-use futures::task::waker_ref;
 use futures::task::ArcWake;
+use futures::task::waker_ref;
 use parking_lot::Condvar;
 use parking_lot::MappedMutexGuard;
 use parking_lot::Mutex;
 use parking_lot::MutexGuard;
 use std::future::Future;
-use std::pin::pin;
 use std::pin::Pin;
+use std::pin::pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 
-/// Polls a future that needs to issue IO until it completes.
-pub fn block_with_io<F, Fut, R>(f: F) -> R
+/// Blocks the current thread until the given future completes.
+pub fn block_on<Fut>(fut: Fut) -> Fut::Output
 where
-    F: FnOnce(LocalDriver) -> Fut,
-    Fut: Future<Output = R>,
+    Fut: Future,
+{
+    block_with_io(|_| fut)
+}
+
+/// Polls a future that needs to issue IO until it completes.
+pub fn block_with_io<F, R>(f: F) -> R
+where
+    F: AsyncFnOnce(LocalDriver) -> R,
 {
     let mut executor = LocalExecutor::new();
     let fut = f(executor.driver());

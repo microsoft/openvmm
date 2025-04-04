@@ -16,10 +16,10 @@ use crate::run_cargo_build::common::CommonTriple;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoBuildProfile;
+use flowey_lib_common::run_cargo_nextest_run::TestResults;
 use flowey_lib_common::run_cargo_nextest_run::build_params::FeatureSet;
 use flowey_lib_common::run_cargo_nextest_run::build_params::PanicAbortTests;
 use flowey_lib_common::run_cargo_nextest_run::build_params::TestPackages;
-use flowey_lib_common::run_cargo_nextest_run::TestResults;
 
 /// Type-safe wrapper around a built nextest archive containing unit tests
 #[derive(Serialize, Deserialize)]
@@ -254,13 +254,12 @@ impl FlowNode for Node {
                             archive_file: v,
                         });
 
-                    ctx.emit_rust_step("report built unit tests", |ctx| {
+                    ctx.emit_minor_rust_step("report built unit tests", |ctx| {
                         let archive_file = archive_file.claim(ctx);
                         let unit_tests = unit_tests_archive.claim(ctx);
                         |rt| {
                             let archive_file = rt.read(archive_file);
                             rt.write(unit_tests, &NextestUnitTestArchive(archive_file));
-                            Ok(())
                         }
                     });
                 }

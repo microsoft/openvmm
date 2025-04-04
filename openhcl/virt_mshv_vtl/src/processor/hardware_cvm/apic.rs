@@ -4,12 +4,12 @@
 #![cfg(guest_arch = "x86_64")]
 
 use super::UhRunVpError;
-use crate::processor::HardwareIsolatedBacking;
 use crate::UhProcessor;
+use crate::processor::HardwareIsolatedBacking;
 use hcl::GuestVtl;
+use virt::Processor;
 use virt::vp::MpState;
 use virt::x86::SegmentRegister;
-use virt::Processor;
 use virt_support_apic::ApicWork;
 
 pub(crate) trait ApicBacking<'b, B: HardwareIsolatedBacking> {
@@ -60,20 +60,25 @@ pub(crate) fn poll_apic_core<'b, B: HardwareIsolatedBacking, T: ApicBacking<'b, 
         .lapic
         .scan(&mut vp.vmtime, scan_irr);
 
-    // An INIT/SIPI targeted at a VP with more than one guest VTL enabled is ignored.
-    // Check VTL enablement inside each block to avoid taking a lock on the hot path,
+    // Check VTL permissions inside each block to avoid taking a lock on the hot path,
     // INIT and SIPI are quite cold.
     if init {
-        if !*apic_backing.vp().cvm_vp_inner().vtl1_enabled.lock() {
-            debug_assert_eq!(vtl, GuestVtl::Vtl0);
+        if !apic_backing
+            .vp()
+            .cvm_partition()
+            .is_lower_vtl_startup_denied()
+        {
             apic_backing.handle_init(vtl)?;
         }
     }
 
     if let Some(vector) = sipi {
         if apic_backing.vp().backing.cvm_state_mut().lapics[vtl].activity == MpState::WaitForSipi {
-            if !*apic_backing.vp().cvm_vp_inner().vtl1_enabled.lock() {
-                debug_assert_eq!(vtl, GuestVtl::Vtl0);
+            if !apic_backing
+                .vp()
+                .cvm_partition()
+                .is_lower_vtl_startup_denied()
+            {
                 let base = (vector as u64) << 12;
                 let selector = (vector as u16) << 8;
                 apic_backing.handle_sipi(

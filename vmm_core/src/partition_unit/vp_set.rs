@@ -9,11 +9,11 @@ use super::InternalHaltReason;
 #[cfg(feature = "gdb")]
 use anyhow::Context as _;
 use async_trait::async_trait;
+use futures::FutureExt;
+use futures::StreamExt;
 use futures::future::JoinAll;
 use futures::future::TryJoinAll;
 use futures::stream::select_with_strategy;
-use futures::FutureExt;
-use futures::StreamExt;
 use futures_concurrency::future::Race;
 use futures_concurrency::stream::Merge;
 use guestmem::GuestMemory;
@@ -22,20 +22,17 @@ use inspect::Inspect;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use pal_async::local::block_with_io;
 use parking_lot::Mutex;
 use slab::Slab;
 use std::future::Future;
-use std::pin::pin;
 use std::pin::Pin;
+use std::pin::pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 use thiserror::Error;
 use tracing::instrument;
-use virt::io::CpuIo;
-use virt::vp::AccessVpState;
 use virt::InitialRegs;
 use virt::Processor;
 use virt::StopVp;
@@ -43,6 +40,8 @@ use virt::StopVpSource;
 use virt::VpHaltReason;
 use virt::VpIndex;
 use virt::VpStopped;
+use virt::io::CpuIo;
+use virt::vp::AccessVpState;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::save_restore::ProtobufSaveRestore;
 use vmcore::save_restore::RestoreError;
@@ -687,7 +686,6 @@ impl Drop for Halted<'_> {
 struct Inner {
     #[inspect(flatten)]
     halt: Arc<Halt>,
-    #[cfg_attr(not(feature = "gdb"), allow(dead_code))]
     #[inspect(skip)]
     vtl_guest_memory: [Option<GuestMemory>; NUM_VTLS],
 }
@@ -765,7 +763,7 @@ impl VpSet {
     }
 
     /// Initiates a halt to the VPs.
-    #[cfg_attr(not(feature = "gdb"), allow(dead_code))]
+    #[cfg_attr(not(feature = "gdb"), expect(dead_code))]
     pub fn halt(&mut self, reason: HaltReason) {
         self.inner.halt.halt(reason);
     }
@@ -800,7 +798,7 @@ impl VpSet {
         self.vps
             .iter()
             .enumerate()
-            .map(|(index, vp)| async move {
+            .map(async |(index, vp)| {
                 let data = vp
                     .send
                     .call(|x| VpEvent::State(StateEvent::Save(x)), ())
@@ -1500,11 +1498,9 @@ impl<T: virt::Partition> RequestYield for T {
 /// waker needs to ask the VP to yield).
 pub fn block_on_vp<F: Future>(partition: Arc<dyn RequestYield>, vp: VpIndex, fut: F) -> F::Output {
     let mut fut = pin!(fut);
-    block_with_io(|_| {
-        std::future::poll_fn(|cx| {
-            let waker = Arc::new(VpWaker::new(partition.clone(), vp, cx.waker().clone())).into();
-            let mut cx = Context::from_waker(&waker);
-            fut.poll_unpin(&mut cx)
-        })
-    })
+    pal_async::local::block_on(std::future::poll_fn(|cx| {
+        let waker = Arc::new(VpWaker::new(partition.clone(), vp, cx.waker().clone())).into();
+        let mut cx = Context::from_waker(&waker);
+        fut.poll_unpin(&mut cx)
+    }))
 }

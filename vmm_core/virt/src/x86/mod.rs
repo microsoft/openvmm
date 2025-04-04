@@ -11,10 +11,10 @@ use crate::state::StateElement;
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
 use std::fmt::Debug;
+use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::x86::ApicMode;
 use vm_topology::processor::x86::X86Topology;
 use vm_topology::processor::x86::X86VpInfo;
-use vm_topology::processor::ProcessorTopology;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::cpuid::SgxCpuidSubleafEax;
 use x86defs::cpuid::Vendor;
@@ -75,6 +75,8 @@ pub struct X86PartitionCapabilities {
     /// a power of 2, if present.
     #[inspect(hex)]
     pub vtom: Option<u64>,
+    /// The physical address width of the CPU, as reported by CPUID.
+    pub physical_address_width: u8,
 
     /// The hypervisor can freeze time across state manipulation.
     pub can_freeze_time: bool,
@@ -113,6 +115,7 @@ impl X86PartitionCapabilities {
             sgx: false,
             tsc_aux: false,
             vtom: None,
+            physical_address_width: max_physical_address_size_from_cpuid(&mut *f),
             can_freeze_time: false,
             xsaves_state_bv_broken: false,
             dr6_tsx_broken: false,
@@ -455,7 +458,7 @@ impl TryFrom<usize> for BreakpointSize {
 }
 
 /// Query the max physical address size of the system.
-pub fn max_physical_address_size_from_cpuid(cpuid: &dyn Fn(u32, u32) -> [u32; 4]) -> u8 {
+pub fn max_physical_address_size_from_cpuid(mut cpuid: impl FnMut(u32, u32) -> [u32; 4]) -> u8 {
     const DEFAULT_PHYSICAL_ADDRESS_SIZE: u8 = 32;
 
     let max_extended = {

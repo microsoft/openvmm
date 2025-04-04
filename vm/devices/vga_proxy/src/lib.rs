@@ -3,16 +3,18 @@
 
 //! A fake VGA device that proxies all PCI accesses to the emulated host device.
 
-use chipset_device::io::deferred::defer_read;
-use chipset_device::io::deferred::defer_write;
-use chipset_device::io::deferred::DeferredRead;
-use chipset_device::io::deferred::DeferredWrite;
+#![expect(missing_docs)]
+
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::io::deferred::DeferredRead;
+use chipset_device::io::deferred::DeferredWrite;
+use chipset_device::io::deferred::defer_read;
+use chipset_device::io::deferred::defer_write;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use inspect::InspectMut;
 use std::future::Future;
 use std::ops::RangeInclusive;

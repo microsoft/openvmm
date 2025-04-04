@@ -4,8 +4,8 @@
 //! Mesh-backed [`InputSource`] implementation.
 
 use crate::InputSource;
-use mesh::message::MeshField;
 use mesh::MeshPayload;
+use mesh::message::MeshField;
 use std::pin::Pin;
 
 /// An input source that receives input over a mesh channel.

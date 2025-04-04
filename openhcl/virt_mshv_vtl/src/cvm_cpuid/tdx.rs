@@ -3,6 +3,7 @@
 
 //! CPUID definitions and implementation specific to Underhill in TDX CVMs.
 
+use super::COMMON_REQUIRED_LEAVES;
 use super::CpuidArchInitializer;
 use super::CpuidArchSupport;
 use super::CpuidResultMask;
@@ -11,7 +12,6 @@ use super::CpuidResultsError;
 use super::CpuidSubtable;
 use super::ParsedCpuidEntry;
 use super::TopologyError;
-use super::COMMON_REQUIRED_LEAVES;
 use core::arch::x86_64::CpuidResult;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;

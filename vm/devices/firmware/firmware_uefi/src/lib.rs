@@ -47,6 +47,7 @@
 //! VMM specific infrastructure (via some kind of compile-time feature flag
 //! infrastructure).
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod platform;
@@ -55,18 +56,18 @@ pub mod service;
 #[cfg(not(feature = "fuzzing"))]
 mod service;
 
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use firmware_uefi_custom_vars::CustomVars;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
 use local_clock::InspectableLocalClock;
-use pal_async::local::block_with_io;
+use pal_async::local::block_on;
 use platform::logger::UefiLogger;
 use platform::nvram::VsmConfig;
 use std::convert::TryInto;
@@ -221,7 +222,7 @@ impl UefiDevice {
 
     fn write_data(&mut self, addr: u32, data: u32) {
         match UefiCommand(addr) {
-            UefiCommand::NVRAM => block_with_io(|_| self.nvram_handle_command(data.into())),
+            UefiCommand::NVRAM => block_on(self.nvram_handle_command(data.into())),
             UefiCommand::EVENT_LOG_FLUSH => self.event_log_flush(data),
             UefiCommand::WATCHDOG_RESOLUTION
             | UefiCommand::WATCHDOG_CONFIG
