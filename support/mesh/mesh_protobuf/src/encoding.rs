@@ -343,6 +343,20 @@ impl FixedNumber for f64 {
     }
 }
 
+#[cfg(feature = "std")]
+// Note that this is encoded in host network order (native endian).
+impl FixedNumber for std::net::Ipv4Addr {
+    type Type = u32;
+
+    fn to_fixed(self) -> u32 {
+        self.into()
+    }
+
+    fn from_fixed(v: u32) -> Self {
+        v.into()
+    }
+}
+
 macro_rules! builtin_field_type {
     ($ty:ty, $encoding:ty, $name:expr) => {
         impl DescribeField<$ty> for $encoding {
@@ -745,36 +759,81 @@ pub struct U128LittleEndianField;
 
 builtin_field_type!(u128, U128LittleEndianField, "bytes");
 
-impl<R> FieldEncode<u128, R> for U128LittleEndianField {
-    fn write_field(item: u128, writer: FieldWriter<'_, '_, R>) {
+impl<T: Copy + Into<u128>, R> FieldEncode<T, R> for U128LittleEndianField {
+    fn write_field(item: T, writer: FieldWriter<'_, '_, R>) {
+        let item = item.into();
         if item != 0 || writer.write_empty() {
             writer.bytes(&item.to_le_bytes());
         }
     }
 
-    fn compute_field_size(item: &mut u128, sizer: FieldSizer<'_>) {
-        if *item != 0 || sizer.write_empty() {
+    fn compute_field_size(item: &mut T, sizer: FieldSizer<'_>) {
+        let item = (*item).into();
+        if item != 0 || sizer.write_empty() {
             sizer.bytes(16);
         }
     }
 }
 
-impl<R> FieldDecode<'_, u128, R> for U128LittleEndianField {
-    fn read_field(
-        item: &mut InplaceOption<'_, u128>,
-        reader: FieldReader<'_, '_, R>,
-    ) -> Result<()> {
-        item.set(u128::from_le_bytes(
-            reader
-                .bytes()?
-                .try_into()
-                .map_err(|_| DecodeError::BadU128)?,
-        ));
+impl<T: From<u128>, R> FieldDecode<'_, T, R> for U128LittleEndianField {
+    fn read_field(item: &mut InplaceOption<'_, T>, reader: FieldReader<'_, '_, R>) -> Result<()> {
+        item.set(
+            u128::from_le_bytes(
+                reader
+                    .bytes()?
+                    .try_into()
+                    .map_err(|_| DecodeError::BadU128)?,
+            )
+            .into(),
+        );
         Ok(())
     }
 
-    fn default_field(item: &mut InplaceOption<'_, u128>) -> Result<()> {
-        item.set(0);
+    fn default_field(item: &mut InplaceOption<'_, T>) -> Result<()> {
+        item.set(0.into());
+        Ok(())
+    }
+}
+
+/// A field encoder for u128.
+///
+/// Writes the value as a big-endian-encoded 16-byte byte array.
+pub struct U128BigEndianField;
+
+builtin_field_type!(u128, U128BigEndianField, "bytes");
+
+impl<T: Copy + Into<u128>, R> FieldEncode<T, R> for U128BigEndianField {
+    fn write_field(item: T, writer: FieldWriter<'_, '_, R>) {
+        let item = item.into();
+        if item != 0 || writer.write_empty() {
+            writer.bytes(&item.to_be_bytes());
+        }
+    }
+
+    fn compute_field_size(item: &mut T, sizer: FieldSizer<'_>) {
+        let item = (*item).into();
+        if item != 0 || sizer.write_empty() {
+            sizer.bytes(16);
+        }
+    }
+}
+
+impl<T: From<u128>, R> FieldDecode<'_, T, R> for U128BigEndianField {
+    fn read_field(item: &mut InplaceOption<'_, T>, reader: FieldReader<'_, '_, R>) -> Result<()> {
+        item.set(
+            u128::from_be_bytes(
+                reader
+                    .bytes()?
+                    .try_into()
+                    .map_err(|_| DecodeError::BadU128)?,
+            )
+            .into(),
+        );
+        Ok(())
+    }
+
+    fn default_field(item: &mut InplaceOption<'_, T>) -> Result<()> {
+        item.set(0.into());
         Ok(())
     }
 }
@@ -1605,8 +1664,11 @@ impl<'a, T: Clone, R, E: FieldDecode<'a, T, R>> FieldDecode<'a, Arc<T>, R> for A
 }
 
 macro_rules! default_encodings {
-    ($($ty:ty: $mp:ty),* $(,)?) => {
+    ($($(#[$attr:meta])* $ty:ty: $mp:ty),* $(,)?) => {
         $(
+            $(
+                #[$attr]
+            )*
             impl $crate::DefaultEncoding for $ty {
                 type Encoding = $mp;
             }
@@ -1651,6 +1713,11 @@ default_encodings! {
     Duration: MessageEncoding<DurationEncoding>,
 
     Infallible: ImpossibleField,
+
+    #[cfg(feature = "std")]
+    std::net::Ipv4Addr: Fixed32Field,
+    #[cfg(feature = "std")]
+    std::net::Ipv6Addr: U128BigEndianField,
 }
 
 impl DefaultEncoding for &str {
