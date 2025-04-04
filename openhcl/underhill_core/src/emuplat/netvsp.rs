@@ -14,6 +14,7 @@ use guid::Guid;
 use inspect::Inspect;
 use mana_driver::mana::ManaDevice;
 use mana_driver::mana::VportState;
+use mana_driver::save_restore::ManaSavedState;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
@@ -58,6 +59,7 @@ enum HclNetworkVfManagerMessage {
     HideVtl0VF(Rpc<bool, ()>),
     Inspect(inspect::Deferred),
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
+    SaveState(Rpc<(), ManaSavedState>),
 }
 
 async fn create_mana_device(
@@ -66,7 +68,23 @@ async fn create_mana_device(
     vp_count: u32,
     max_sub_channels: u16,
     dma_client: Arc<dyn DmaClient>,
+    mana_state: Option<ManaSavedState>,
+    mana_keepalive: bool,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
+    // Don't do anything to the device in servicing mode
+    if let Some(mana_state) = mana_state {
+        return try_create_mana_device(
+            driver_source,
+            pci_id,
+            vp_count,
+            max_sub_channels,
+            dma_client.clone(),
+            Some(mana_state.clone()),
+            mana_keepalive,
+        )
+        .await;
+    }
+
     // Disable FLR on vfio attach/detach; this allows faster system
     // startup/shutdown with the caveat that the device needs to be properly
     // sent through the shutdown path during servicing operations, as that is
@@ -90,6 +108,8 @@ async fn create_mana_device(
             vp_count,
             max_sub_channels,
             dma_client.clone(),
+            mana_state.clone(),
+            mana_keepalive,
         )
         .await
         {
@@ -119,16 +139,26 @@ async fn try_create_mana_device(
     vp_count: u32,
     max_sub_channels: u16,
     dma_client: Arc<dyn DmaClient>,
+    mana_state: Option<ManaSavedState>,
+    mana_keepalive: bool,
 ) -> anyhow::Result<ManaDevice<VfioDevice>> {
-    let device = VfioDevice::new(driver_source, pci_id, dma_client)
-        .await
-        .context("failed to open device")?;
+    let device = if mana_state.is_some() {
+        VfioDevice::restore(driver_source, pci_id, true, dma_client)
+            .await
+            .context("failed to restore device")?
+    } else {
+        VfioDevice::new(driver_source, pci_id, dma_client)
+            .await
+            .context("failed to open device")?
+    };
 
     ManaDevice::new(
         &driver_source.simple(),
         device,
         vp_count,
         max_sub_channels + 1,
+        mana_state,
+        mana_keepalive,
     )
     .instrument(tracing::info_span!("new_mana_device"))
     .await
@@ -279,6 +309,7 @@ impl HclNetworkVFManagerWorker {
                                 self.driver_source.simple(),
                                 vport,
                                 self.dma_mode,
+                                device.keepalive,
                             )
                             .await,
                         );
@@ -661,6 +692,19 @@ impl HclNetworkVFManagerWorker {
                     // Exit worker thread.
                     return;
                 }
+                NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::SaveState(rpc)) => {
+                    drop(self.messages.take().unwrap());
+
+                    rpc.handle(|_| async move {
+                        ManaSavedState {
+                            pci_id: self.vtl2_pci_id.clone(),
+                            mana_device: self.mana_device.as_ref().unwrap().save().await.unwrap(),
+                            queues: Vec::new(), // Filled in by VMBus level save/restore
+                        }
+                    })
+                    .await;
+                    return;
+                }
                 NextWorkItem::ManaDeviceArrived => {
                     assert!(!self.is_shutdown_active);
                     let mut ctx =
@@ -683,6 +727,8 @@ impl HclNetworkVFManagerWorker {
                         self.vp_count,
                         self.max_sub_channels,
                         self.dma_client.clone(),
+                        None,
+                        false,
                     )
                     .await
                     {
@@ -857,8 +903,10 @@ impl HclNetworkVFManager {
         vp_count: u32,
         max_sub_channels: u16,
         netvsp_state: &Option<Vec<SavedState>>,
+        mana_state: &Option<ManaSavedState>,
         dma_mode: GuestDmaMode,
         dma_client: Arc<dyn DmaClient>,
+        mana_keepalive: bool,
     ) -> anyhow::Result<(
         Self,
         Vec<HclNetworkVFManagerEndpointInfo>,
@@ -870,6 +918,8 @@ impl HclNetworkVFManager {
             vp_count,
             max_sub_channels,
             dma_client.clone(),
+            mana_state.clone(),
+            mana_keepalive,
         )
         .await?;
         let (mut endpoints, endpoint_controls): (Vec<_>, Vec<_>) = (0..device.num_vports())
@@ -967,6 +1017,17 @@ impl HclNetworkVFManager {
             endpoints,
             runtime_save_state,
         ))
+    }
+
+    pub async fn save(&self) -> anyhow::Result<ManaSavedState> {
+        let save_state = self
+            .shared_state
+            .worker_channel
+            .call(HclNetworkVfManagerMessage::SaveState, ())
+            .await
+            .map_err(anyhow::Error::from)?;
+
+        Ok(save_state)
     }
 
     pub async fn packet_capture(

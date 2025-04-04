@@ -864,6 +864,47 @@ impl user_driver::DmaClient for PagePoolAllocator {
         // allocation.
         alloc.into_memory_block()
     }
+
+    fn get_dma_buffer(
+        &self,
+        len: usize,
+        base_pfn: u64,
+    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+        tracing::info!("looking for slot: {:x}", base_pfn);
+        tracing::info!("slot state: {:?}", self.inner.state.lock().slots);
+
+        let size_pages = NonZeroU64::new(len as u64 / PAGE_SIZE)
+            .context("allocation of size 0 not supported")?
+            .get();
+
+        let mut inner = self.inner.state.lock();
+        let inner = &mut *inner;
+        let slot = inner.slots.iter().find(|slot| {
+            if let SlotState::Leaked {
+                device_id: _,
+                tag: _,
+            } = &slot.state
+            {
+                slot.base_pfn == base_pfn
+            } else {
+                false
+            }
+        });
+
+        if slot.is_none() {
+            anyhow::bail!("allocation doesn't exist");
+        }
+
+        let handle = PagePoolHandle {
+            inner: self.inner.clone(),
+            base_pfn,
+            size_pages,
+            mapping_offset: slot.unwrap().mapping_offset,
+        };
+
+        tracing::info!("successfully got memory block");
+        handle.into_memory_block()
+    }
 }
 
 #[cfg(test)]

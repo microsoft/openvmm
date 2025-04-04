@@ -12,6 +12,8 @@ use crate::gdma_driver::GdmaDriver;
 use crate::queues;
 use crate::queues::Doorbell;
 use crate::queues::DoorbellPage;
+use crate::save_restore::ManaDeviceSavedState;
+use crate::save_restore::ManaSavedState;
 use anyhow::Context;
 use futures::StreamExt;
 use futures::lock::Mutex;
@@ -25,6 +27,10 @@ use gdma_defs::bnic::ManaQueryStatisticsResponse;
 use gdma_defs::bnic::ManaQueryVportCfgResp;
 use gdma_defs::bnic::STATISTICS_FLAGS_ALL;
 use inspect::Inspect;
+use mana_save_restore::save_restore::BnicEqSavedState;
+use mana_save_restore::save_restore::BnicWqSavedState;
+use mana_save_restore::save_restore::DoorbellSavedState;
+use mana_save_restore::save_restore::SavedMemoryState;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
@@ -52,6 +58,9 @@ pub struct ManaDevice<T: DeviceBacking> {
     inspect_task: Task<()>,
     hwc_task: Option<Task<()>>,
     inspect_send: mesh::Sender<inspect::Deferred>,
+
+    /// Whether the device should be left untouched during servicing or not
+    pub keepalive: bool,
 }
 
 impl<T: DeviceBacking> Inspect for ManaDevice<T> {
@@ -76,8 +85,15 @@ impl<T: DeviceBacking> ManaDevice<T> {
         device: T,
         num_vps: u32,
         max_queues_per_vport: u16,
+        mana_state: Option<ManaSavedState>,
+        mana_keepalive: bool,
     ) -> anyhow::Result<Self> {
-        let mut gdma = GdmaDriver::new(driver, device, num_vps).await?;
+        let mut gdma = if let Some(ref mana_state) = mana_state {
+            GdmaDriver::restore(mana_state.mana_device.gdma.clone(), device).await?
+        } else {
+            GdmaDriver::new(driver, device, num_vps, mana_keepalive).await?
+        };
+
         gdma.test_eq().await?;
 
         gdma.verify_vf_driver_version().await?;
@@ -90,7 +106,15 @@ impl<T: DeviceBacking> ManaDevice<T> {
             .find(|dev_id| dev_id.ty == GdmaDevType::GDMA_DEVICE_MANA)
             .context("no mana device found")?;
 
-        let dev_data = gdma.register_device(dev_id).await?;
+        let dev_data = if let Some(mana_state) = mana_state {
+            GdmaRegisterDeviceResp {
+                pdid: mana_state.mana_device.gdma.pdid,
+                gpa_mkey: mana_state.mana_device.gdma.gpa_mkey,
+                db_id: mana_state.mana_device.gdma.db_id as u32,
+            }
+        } else {
+            gdma.register_device(dev_id).await?
+        };
 
         let mut bnic = BnicDriver::new(&mut gdma, dev_id);
         let dev_config = bnic.query_dev_config().await?;
@@ -137,8 +161,19 @@ impl<T: DeviceBacking> ManaDevice<T> {
             inspect_send,
             inspect_task,
             hwc_task: None,
+            keepalive: mana_keepalive,
         };
         Ok(device)
+    }
+
+    /// Saves the device's state for servicing
+    pub async fn save(&self) -> anyhow::Result<ManaDeviceSavedState> {
+        let mut gdma = self.inner.gdma.lock().await;
+        let saved_state = ManaDeviceSavedState {
+            gdma: gdma.save().await?,
+        };
+
+        Ok(saved_state)
     }
 
     /// Returns the number of vports the device supports.
@@ -290,6 +325,11 @@ pub struct Vport<T: DeviceBacking> {
 }
 
 impl<T: DeviceBacking> Vport<T> {
+    /// Returns the doorbell id
+    pub fn db_id(&self) -> u32 {
+        self.inner.dev_data.db_id
+    }
+
     /// Returns the maximum number of transmit queues.
     pub fn max_tx_queues(&self) -> u32 {
         self.config.max_num_sq
@@ -467,6 +507,11 @@ impl<T: DeviceBacking> Vport<T> {
         Ok(())
     }
 
+    pub async fn get_interrupt(&self, eq_id: u32) -> Option<DeviceInterrupt> {
+        let gdma = self.inner.gdma.lock().await;
+        gdma.get_interrupt_for_eq(eq_id)
+    }
+
     /// Get current filter state.
     pub async fn get_direction_to_vtl0(&self) -> Option<bool> {
         self.vport_state.get_direction_to_vtl0()
@@ -538,6 +583,10 @@ impl<T: DeviceBacking> Vport<T> {
     pub async fn dma_client(&self) -> Arc<dyn DmaClient> {
         self.inner.gdma.lock().await.device().dma_client()
     }
+
+    pub async fn doorbell(&self) -> Arc<dyn Doorbell> {
+        self.inner.gdma.lock().await.doorbell()
+    }
 }
 
 /// Transmit configuration.
@@ -568,6 +617,21 @@ impl BnicEq {
     /// Gets an object to access the queue's entries.
     pub fn queue(&self) -> queues::Eq {
         queues::Eq::new_eq(self.mem.clone(), self.doorbell.clone(), self.id)
+    }
+
+    /// Save the state of the event queue for restoration after servicing.
+    pub fn save(&self) -> BnicEqSavedState {
+        BnicEqSavedState {
+            queue: self.queue().save(),
+            memory: SavedMemoryState {
+                base_pfn: self.mem.pfns()[0],
+                len: self.mem.len(),
+            },
+            doorbell: DoorbellSavedState {
+                doorbell_id: self.doorbell.doorbell_id as u64,
+                page_count: self.doorbell.doorbell.page_count(),
+            },
+        }
     }
 }
 
@@ -600,5 +664,16 @@ impl BnicWq {
     /// Gets the work queue object ID.
     pub fn wq_obj(&self) -> u64 {
         self.wq_obj
+    }
+
+    /// Saves the state of the work queue for restoration after servicing.
+    pub fn save(&self) -> BnicWqSavedState {
+        BnicWqSavedState {
+            memory: SavedMemoryState {
+                base_pfn: self.wq_mem.pfns()[0],
+                len: self.wq_mem.len() + self.cq_mem.len(),
+            },
+            queue: self.wq().save(),
+        }
     }
 }

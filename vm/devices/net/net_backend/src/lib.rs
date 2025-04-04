@@ -20,6 +20,7 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::InspectMut;
+use mana_save_restore::save_restore::QueueSavedState;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use null::NullEndpoint;
@@ -104,6 +105,16 @@ pub trait Endpoint: Send + Sync + InspectMut {
         // can overwrite.
         10 * 1000 * 1000 * 1000
     }
+
+    /// Restore the endpoint state from saved state.
+    async fn restore_queues(
+        &mut self,
+        _queue_configs: Vec<QueueConfig<'_>>,
+        _saved_state: Vec<QueueSavedState>,
+        _queues: &mut Vec<Box<dyn Queue>>,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("Endpoint does not support restoring queues")
+    }
 }
 
 /// Multi-queue related support.
@@ -162,6 +173,11 @@ pub trait Queue: Send + InspectMut {
 
     /// Get the buffer access.
     fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess>;
+
+    /// Save the state of the queue for restoration after servicing.
+    fn save(&self) -> anyhow::Result<QueueSavedState> {
+        anyhow::bail!("Saving queue state not supported for this queue type")
+    }
 }
 
 /// A trait for providing access to guest memory buffers.
@@ -588,5 +604,16 @@ impl Endpoint for DisconnectableEndpoint {
             .as_ref()
             .expect("Endpoint needs connected at least once before use")
             .link_speed
+    }
+
+    async fn restore_queues(
+        &mut self,
+        queue_configs: Vec<QueueConfig<'_>>,
+        saved_state: Vec<QueueSavedState>,
+        queues: &mut Vec<Box<dyn Queue>>,
+    ) -> anyhow::Result<()> {
+        self.current_mut()
+            .restore_queues(queue_configs, saved_state, queues)
+            .await
     }
 }

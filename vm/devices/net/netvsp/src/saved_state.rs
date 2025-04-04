@@ -3,6 +3,7 @@
 
 //! Saved state definitions.
 
+use mana_save_restore::save_restore::QueueSavedState;
 use mesh::payload::Protobuf;
 use vmbus_channel::gpadl::GpadlId;
 use vmcore::save_restore::SavedStateRoot;
@@ -12,6 +13,8 @@ use vmcore::save_restore::SavedStateRoot;
 pub struct SavedState {
     #[mesh(1)]
     pub open: Option<OpenState>,
+    #[mesh(2)]
+    pub saved_queues: Option<Vec<QueueSavedState>>,
 }
 
 #[derive(Debug, Protobuf)]

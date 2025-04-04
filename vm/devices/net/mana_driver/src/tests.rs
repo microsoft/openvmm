@@ -43,7 +43,7 @@ async fn test_gdma(driver: DefaultDriver) {
     let dma_client = mem.dma_client();
     let device = EmulatedDevice::new(device, msi_set, dma_client);
 
-    let mut gdma = GdmaDriver::new(&driver, device, 1).await.unwrap();
+    let mut gdma = GdmaDriver::new(&driver, device, 1, false).await.unwrap();
     gdma.test_eq().await.unwrap();
     gdma.verify_vf_driver_version().await.unwrap();
     let dev_id = gdma
