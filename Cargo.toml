@@ -42,6 +42,7 @@ members = [
   "petri/pipette",
   # tools
   "petri/make_imc_hive",
+  "petri/petri-tool",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",

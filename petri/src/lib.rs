@@ -8,7 +8,7 @@
 
 #![forbid(unsafe_code)]
 
-mod disk_image;
+pub mod disk_image;
 mod linux_direct_serial_agent;
 mod openhcl_diag;
 mod test;

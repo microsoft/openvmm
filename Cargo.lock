@@ -5385,6 +5385,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "petri-tool"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "petri",
+ "petri_artifact_resolver_openvmm_known_paths",
+ "petri_artifacts_common",
+]
+
+[[package]]
 name = "petri_artifact_resolver_openvmm_known_paths"
 version = "0.0.0"
 dependencies = [
