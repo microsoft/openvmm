@@ -197,7 +197,7 @@ pub trait RequestReader: io::Read {
     /// Read a NULL-terminated string and ensure it's a valid path name component.
     fn name(&mut self) -> lx::Result<lx::LxString> {
         let name = self.string()?;
-        if name.len() == 0 || name == "." || name == ".." || name.as_bytes().contains(&b'/') {
+        if name.is_empty() || name == "." || name == ".." || name.as_bytes().contains(&b'/') {
             return Err(lx::Error::EINVAL);
         }
 

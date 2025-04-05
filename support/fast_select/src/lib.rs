@@ -346,7 +346,7 @@ impl State {
         drop(ManuallyDrop::into_inner(this));
     }
 
-    fn waker_ref<'a>(self: &'a Arc<Self>, i: usize) -> WakerRef<'a> {
+    fn waker_ref(self: &Arc<Self>, i: usize) -> WakerRef<'_> {
         let data = ((Arc::as_ptr(self) as usize) | i) as *const ();
         let waker = RawWaker::new(
             data,

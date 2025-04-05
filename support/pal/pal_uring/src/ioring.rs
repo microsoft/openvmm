@@ -159,9 +159,9 @@ impl IoRing {
     /// # Arguments
     ///
     /// * `size` - The maximum number of entries in the submission queue. The completion queue is
-    ///            twice the size of the submission queue. Note that this is not strictly a limit on the maximum
-    ///            number of outstanding I/Os, rather it's the maximum number of I/Os that the IoRing client
-    ///            can allow to batch (either in the submission or completion paths).
+    ///   twice the size of the submission queue. Note that this is not strictly a limit on the maximum
+    ///   number of outstanding I/Os, rather it's the maximum number of I/Os that the IoRing client
+    ///   can allow to batch (either in the submission or completion paths).
     pub fn new(size: u32) -> Result<(IoRing, IoCompletionRing), io::Error> {
         let inner = Arc::new(RingInner {
             ring: IoUring::builder().build(size)?,

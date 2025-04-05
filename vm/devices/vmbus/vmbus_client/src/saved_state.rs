@@ -299,9 +299,7 @@ impl ChannelState {
             super::ChannelState::Opening { .. } => {
                 unreachable!("Cannot save channel in opening state.")
             }
-            super::ChannelState::Restored { .. } | super::ChannelState::Opened { .. } => {
-                Self::Opened
-            }
+            super::ChannelState::Restored | super::ChannelState::Opened { .. } => Self::Opened,
         }
     }
 

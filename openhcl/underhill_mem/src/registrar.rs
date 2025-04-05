@@ -65,7 +65,7 @@ struct Bitmap(Vec<AtomicU64>);
 impl Bitmap {
     fn new(address_space_size: u64) -> Self {
         let chunks = address_space_size.div_ceil(GRANULARITY);
-        let words = (chunks + 63) / 64;
+        let words = chunks.div_ceil(64);
         let mut v = Vec::new();
         v.resize_with(words as usize, AtomicU64::default);
         Self(v)

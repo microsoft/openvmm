@@ -720,7 +720,7 @@ impl Xsave {
         // This normalizes behavior between mshv (which always sets SSE in
         // xstate_bv) and KVM (which does not).
         if header.xstate_bv & XFEATURE_SSE != 0 {
-            if fxsave.xmm.iter().eq(std::iter::repeat(&[0; 16]).take(16))
+            if fxsave.xmm.iter().eq(std::iter::repeat_n(&[0; 16], 16))
                 && fxsave.mxcsr == DEFAULT_MXCSR
             {
                 header.xstate_bv &= !XFEATURE_SSE;

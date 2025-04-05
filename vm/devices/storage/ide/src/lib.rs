@@ -1782,7 +1782,7 @@ mod tests {
                 sectors_per_track = 17;
                 cylinders_times_heads = hard_drive_sectors / (sectors_per_track as u64);
 
-                head_count = std::cmp::max((cylinders_times_heads as u32 + 1023) / 1024, 4);
+                head_count = std::cmp::max((cylinders_times_heads as u32).div_ceil(1024), 4);
 
                 if (cylinders_times_heads >= (head_count as u64) * 1024) || head_count > 16 {
                     // Always use 16 heads

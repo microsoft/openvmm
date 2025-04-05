@@ -164,7 +164,7 @@ impl GuestMemoryMappingBuilder {
         tracing::trace!(?mapping, "map_lower_vtl_memory mapping");
 
         let bitmap = if self.bitmap_state.is_some() {
-            let bitmap = SparseMapping::new((address_space_size as usize / PAGE_SIZE + 7) / 8)
+            let bitmap = SparseMapping::new((address_space_size as usize / PAGE_SIZE).div_ceil(8))
                 .map_err(MappingError::BitmapReserve)?;
             bitmap
                 .map_zero(0, bitmap.len())

@@ -1826,7 +1826,7 @@ impl GuestMemory {
     /// # Arguments
     /// * 'paged_range' - The guest memory range to lock.
     /// * 'locked_range' - Receives a list of VA ranges to which each contiguous physical sub-range in `paged_range`
-    ///                    has been mapped. Must be initially empty.
+    ///   has been mapped. Must be initially empty.
     pub fn lock_range<T: LockedRange>(
         &self,
         paged_range: PagedRange<'_>,

@@ -246,7 +246,7 @@ impl MsixEmulator {
             Self {
                 state: state.clone(),
                 pending_bits_offset,
-                pending_bits_dword_count: (count + 31) / 32,
+                pending_bits_dword_count: count.div_ceil(32),
             },
             MsixCapability {
                 count,

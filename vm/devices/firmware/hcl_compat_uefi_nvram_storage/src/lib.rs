@@ -518,16 +518,14 @@ mod test {
         let timestamp = EFI_TIME::default();
 
         let name_ok = Ucs2LeVec::from_vec_with_nul(
-            std::iter::repeat([0, b'a'])
-                .take((EFI_MAX_VARIABLE_NAME_SIZE / 2) - 1)
+            std::iter::repeat_n([0, b'a'], (EFI_MAX_VARIABLE_NAME_SIZE / 2) - 1)
                 .chain(Some([0, 0]))
                 .flat_map(|x| x.into_iter())
                 .collect(),
         )
         .unwrap();
         let name_too_big = Ucs2LeVec::from_vec_with_nul(
-            std::iter::repeat([0, b'a'])
-                .take(EFI_MAX_VARIABLE_NAME_SIZE / 2)
+            std::iter::repeat_n([0, b'a'], EFI_MAX_VARIABLE_NAME_SIZE / 2)
                 .chain(Some([0, 0]))
                 .flat_map(|x| x.into_iter())
                 .collect(),

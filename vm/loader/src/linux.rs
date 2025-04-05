@@ -253,7 +253,7 @@ fn import_initrd<R: GuestArch>(
 /// * `importer` - The importer to use.
 /// * `kernel_image` - Uncompressed ELF image for the kernel.
 /// * `kernel_minimum_start_address` - The minimum address the kernel can load at.
-///     It cannot contain an entrypoint or program headers that refer to memory below this address.
+///   It cannot contain an entrypoint or program headers that refer to memory below this address.
 /// * `initrd` - The initrd config, optional.
 pub fn load_kernel_and_initrd_x64<F>(
     importer: &mut dyn ImageLoad<X86Register>,
@@ -428,7 +428,7 @@ pub fn load_config(
 /// * `importer` - The importer to use.
 /// * `kernel_image` - Uncompressed ELF image for the kernel.
 /// * `kernel_minimum_start_address` - The minimum address the kernel can load at.
-///     It cannot contain an entrypoint or program headers that refer to memory below this address.
+///   It cannot contain an entrypoint or program headers that refer to memory below this address.
 /// * `initrd` - The initrd config, optional.
 /// * `command_line` - The kernel command line.
 /// * `zero_page` - The kernel zero page.
@@ -546,7 +546,7 @@ const AARCH64_MAGIC_NUMBER: &[u8] = b"ARM\x64";
 /// * `importer` - The importer to use.
 /// * `kernel_image` - Uncompressed ELF image for the kernel.
 /// * `kernel_minimum_start_address` - The minimum address the kernel can load at.
-///     It cannot contain an entrypoint or program headers that refer to memory below this address.
+///   It cannot contain an entrypoint or program headers that refer to memory below this address.
 /// * `initrd` - The initrd config, optional.
 /// * `device_tree_blob` - The device tree blob, optional.
 pub fn load_kernel_and_initrd_arm64<F>(
