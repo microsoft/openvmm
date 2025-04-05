@@ -105,7 +105,7 @@ def find_midlrt(sdk):
     return os.path.normpath(midlrt)
 
 
-def get_config(arch, required_tool, ignore_cache):    
+def get_config(arch, required_tool, ignore_cache):
     cache_dir = os.environ.get(
         'XDG_CACHE_HOME', os.path.expanduser('~/.cache'))
     cache_dir = f'{cache_dir}/windows-cross'
@@ -132,15 +132,22 @@ def get_config(arch, required_tool, ignore_cache):
             win_arch = 'arm64'
         else:
             raise Exception("Unknown architecture")
-        vs = vs_paths(win_arch)
         sdk = sdk_paths(win_arch)
         tool_paths = {}
         config = {}
         for tool in tools:
             if tool == 'midlrt.exe':
-                tool_paths[tool] = find_midlrt(sdk)
+                p = find_midlrt(sdk)
             else:
-                tool_paths[tool] = find_llvm_tool(tool)
+                p = find_llvm_tool(tool)
+            if p:
+                tool_paths[tool] = p
+
+        if required_tool and required_tool not in tool_paths:
+            raise Exception(
+                f"tool '{required_tool}' not found, try installing it")
+
+        vs = vs_paths(win_arch)
         config = {'lib': [os.path.normpath(p) for p in vs['lib'] + sdk['lib']],
                   'include': [os.path.normpath(p) for p in vs['include'] + sdk['include']],
                   'tools': tool_paths,
@@ -200,10 +207,6 @@ config = get_config(arch, tool, ignore_cache)
 
 if action == "run":
     tool_path = config['tools'][tool]
-    if not tool_path:
-        print(f"tool {tool} not found, try installing it")
-        exit(1)
-
     separator = ':' if tool == "midlrt.exe" else ';'
     lib = separator.join(config['lib'])
     include = separator.join(config['include'])
@@ -214,7 +217,7 @@ if action == "run":
             wslenv = ""
         wslenv = wslenv + ":INCLUDE/wl:LIB/wl"
         environ['WSLENV'] = wslenv
-    
+
     os.execvpe(tool_path, [tool_path] + tool_args, environ)
 elif action == "dump":
     print(json.dumps(config))
