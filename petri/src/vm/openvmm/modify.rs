@@ -4,6 +4,7 @@
 //! Helpers to modify a [`PetriVmConfigOpenVmm`] from its defaults.
 
 use super::MANA_INSTANCE;
+use super::NIC_MAC_ADDRESS;
 use super::PetriVmConfigOpenVmm;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
@@ -151,33 +152,50 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    /// Enable an emulated mana device for the VM.
+    /// Enable a synthnic for the VM.
+    ///
+    /// Uses a mana emulator and the paravisor if a paravisor is present.
     pub fn with_nic(mut self) -> Self {
-        self.config.vpci_devices.push(VpciDeviceConfig {
-            vtl: DeviceVtl::Vtl2,
-            instance_id: MANA_INSTANCE,
-            resource: GdmaDeviceHandle {
-                vports: vec![VportDefinition {
-                    mac_address: [0x00, 0x15, 0x5D, 0x12, 0x12, 0x12].into(),
-                    endpoint: net_backend_resources::consomme::ConsommeHandle { cidr: None }
-                        .into_resource(),
-                }],
-            }
-            .into_resource(),
-        });
-
-        self.vtl2_settings
-            .as_mut()
-            .unwrap()
-            .dynamic
-            .as_mut()
-            .unwrap()
-            .nic_devices
-            .push(vtl2_settings_proto::NicDeviceLegacy {
-                instance_id: MANA_INSTANCE.to_string(),
-                subordinate_instance_id: None,
-                max_sub_channels: None,
+        let endpoint =
+            net_backend_resources::consomme::ConsommeHandle { cidr: None }.into_resource();
+        if self.vtl2_settings.is_some() {
+            self.config.vpci_devices.push(VpciDeviceConfig {
+                vtl: DeviceVtl::Vtl2,
+                instance_id: MANA_INSTANCE,
+                resource: GdmaDeviceHandle {
+                    vports: vec![VportDefinition {
+                        mac_address: NIC_MAC_ADDRESS,
+                        endpoint,
+                    }],
+                }
+                .into_resource(),
             });
+
+            self.vtl2_settings
+                .as_mut()
+                .unwrap()
+                .dynamic
+                .as_mut()
+                .unwrap()
+                .nic_devices
+                .push(vtl2_settings_proto::NicDeviceLegacy {
+                    instance_id: MANA_INSTANCE.to_string(),
+                    subordinate_instance_id: None,
+                    max_sub_channels: None,
+                });
+        } else {
+            const NETVSP_INSTANCE: guid::Guid = guid::guid!("c6c46cc3-9302-4344-b206-aef65e5bd0a2");
+            self.config.vmbus_devices.push((
+                DeviceVtl::Vtl0,
+                netvsp_resources::NetvspHandle {
+                    instance_id: NETVSP_INSTANCE,
+                    mac_address: NIC_MAC_ADDRESS,
+                    endpoint,
+                    max_queues: None,
+                }
+                .into_resource(),
+            ));
+        }
 
         self
     }

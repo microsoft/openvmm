@@ -22,13 +22,20 @@ pub const MAX_MESSAGE_SIZE: usize = 13312;
 
 /// Protocol version.
 #[repr(C)]
-#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(
+    Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq, PartialOrd, Ord,
+)]
 pub struct Version {
     /// Major version.
     pub major: u16,
     /// Minor version.
     pub minor: u16,
 }
+
+/// Framework version 1.0.
+pub const FRAMEWORK_VERSION_1: Version = Version::new(1, 0);
+/// Framework version 3.0.
+pub const FRAMEWORK_VERSION_3: Version = Version::new(3, 0);
 
 impl Version {
     /// Create a new IC version instance.
@@ -81,13 +88,30 @@ pub struct Header {
     /// Size in bytes of the message.
     pub message_size: u16,
     /// Status code used for message response.
-    pub status: u32,
+    pub status: Status,
     /// Transaction ID; should be matched by response message.
     pub transaction_id: u8,
     /// Message flags.
     pub flags: HeaderFlags,
     /// Reserved -- should be zero.
     pub reserved: [u8; 2],
+}
+
+open_enum! {
+    /// Status code for a message response.
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum Status: u32 {
+        /// Message was processed successfully.
+        SUCCESS = 0,
+        /// There are no more items to process.
+        NO_MORE_ITEMS = 0x80070103,
+        /// Generic failure.
+        FAIL = 0x80004005,
+        /// The operation is not supported.
+        NOT_SUPPORTED = 0x80070032,
+        /// Not found.
+        NOT_FOUND = 0x80041002,
+    }
 }
 
 /// Flags for IC messages.

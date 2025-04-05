@@ -10,6 +10,13 @@ pub use hyperv_ic_protocol::shutdown::INSTANCE_ID;
 pub use hyperv_ic_protocol::shutdown::INTERFACE_ID;
 
 use guid::Guid;
+use hyperv_ic_protocol::FRAMEWORK_VERSION_1;
+use hyperv_ic_protocol::FRAMEWORK_VERSION_3;
+use hyperv_ic_protocol::Status;
+use hyperv_ic_protocol::shutdown::SHUTDOWN_VERSION_1;
+use hyperv_ic_protocol::shutdown::SHUTDOWN_VERSION_3;
+use hyperv_ic_protocol::shutdown::SHUTDOWN_VERSION_3_1;
+use hyperv_ic_protocol::shutdown::SHUTDOWN_VERSION_3_2;
 use hyperv_ic_resources::shutdown::ShutdownParams;
 use hyperv_ic_resources::shutdown::ShutdownResult;
 use hyperv_ic_resources::shutdown::ShutdownType;
@@ -37,8 +44,6 @@ use vmcore::save_restore::NoSavedState;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
-
-const E_FAIL: u32 = 0x80004005;
 
 /// A shutdown IC client device.
 #[derive(InspectMut)]
@@ -198,31 +203,39 @@ impl ShutdownGuestChannel {
         header: &hyperv_ic_protocol::Header,
         msg: &[u8],
     ) -> Result<(), Error> {
+        const FRAMEWORK_VERSIONS: &[hyperv_ic_protocol::Version] =
+            &[FRAMEWORK_VERSION_1, FRAMEWORK_VERSION_3];
+
+        const SHUTDOWN_VERSIONS: &[hyperv_ic_protocol::Version] = &[
+            SHUTDOWN_VERSION_1,
+            SHUTDOWN_VERSION_3,
+            SHUTDOWN_VERSION_3_1,
+            SHUTDOWN_VERSION_3_2,
+        ];
+
         let (prefix, rest) = hyperv_ic_protocol::NegotiateMessage::read_from_prefix(msg)
             .map_err(|_| Error::TruncatedMessage)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         let (latest_framework_version, rest) = Self::find_latest_supported_version(
             rest,
             prefix.framework_version_count as usize,
-            hyperv_ic_protocol::shutdown::FRAMEWORK_VERSIONS,
+            FRAMEWORK_VERSIONS,
         );
         let framework_version = if let Some(version) = latest_framework_version {
             version
         } else {
             tracelimit::error_ratelimited!("Unsupported framework version");
-            hyperv_ic_protocol::shutdown::FRAMEWORK_VERSIONS
-                [hyperv_ic_protocol::shutdown::FRAMEWORK_VERSIONS.len() - 1]
+            FRAMEWORK_VERSIONS[FRAMEWORK_VERSIONS.len() - 1]
         };
         let (latest_message_version, _) = Self::find_latest_supported_version(
             rest,
             prefix.message_version_count as usize,
-            hyperv_ic_protocol::shutdown::SHUTDOWN_VERSIONS,
+            SHUTDOWN_VERSIONS,
         );
         let message_version = if let Some(version) = latest_message_version {
             version
         } else {
             tracelimit::error_ratelimited!("Unsupported message version");
-            hyperv_ic_protocol::shutdown::SHUTDOWN_VERSIONS
-                [hyperv_ic_protocol::shutdown::SHUTDOWN_VERSIONS.len() - 1]
+            SHUTDOWN_VERSIONS[SHUTDOWN_VERSIONS.len() - 1]
         };
 
         let message = hyperv_ic_protocol::NegotiateMessage {
@@ -235,7 +248,7 @@ impl ShutdownGuestChannel {
             message_size: (size_of_val(&message)
                 + size_of_val(&framework_version)
                 + size_of_val(&message_version)) as u16,
-            status: 0,
+            status: Status::SUCCESS,
             transaction_id: header.transaction_id,
             flags: hyperv_ic_protocol::HeaderFlags::new()
                 .with_transaction(header.flags.transaction())
@@ -298,7 +311,11 @@ impl ShutdownGuestChannel {
             message_version: *message_version,
             message_type: hyperv_ic_protocol::MessageType::SHUTDOWN,
             message_size: 0,
-            status: if result.is_ok() { 0 } else { E_FAIL },
+            status: if result.is_ok() {
+                Status::SUCCESS
+            } else {
+                Status::FAIL
+            },
             transaction_id: header.transaction_id,
             flags: hyperv_ic_protocol::HeaderFlags::new()
                 .with_transaction(header.flags.transaction())

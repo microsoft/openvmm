@@ -5,4 +5,5 @@
 
 #![forbid(unsafe_code)]
 
+pub mod kvp;
 pub mod shutdown;

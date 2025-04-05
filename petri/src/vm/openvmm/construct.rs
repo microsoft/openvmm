@@ -243,6 +243,13 @@ impl PetriVmConfigOpenVmm {
             .into_resource(),
         ));
 
+        // Add the Hyper-V KVP IC
+        let (kvp_ic_send, kvp_ic_recv) = mesh::channel();
+        vmbus_devices.push((
+            DeviceVtl::Vtl0,
+            hyperv_ic_resources::kvp::KvpIcHandle { recv: kvp_ic_recv }.into_resource(),
+        ));
+
         // Make a vmbus vsock path for pipette connections
         let (vmbus_vsock_listener, vmbus_vsock_path) = make_vsock_listener()?;
 
@@ -361,6 +368,7 @@ impl PetriVmConfigOpenVmm {
                 log_stream_tasks,
                 firmware_event_recv,
                 shutdown_ic_send,
+                kvp_ic_send,
                 expected_boot_event,
                 ged_send,
                 pipette_listener,

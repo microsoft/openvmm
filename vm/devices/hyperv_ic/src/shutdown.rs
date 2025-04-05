@@ -3,13 +3,19 @@
 
 //! The shutdown IC.
 
+use crate::common::IcPipe;
+use crate::common::NegotiateState;
+use crate::common::Versions;
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream::once;
 use futures_concurrency::stream::Merge;
-use hyperv_ic_protocol::shutdown::FRAMEWORK_VERSIONS;
-use hyperv_ic_protocol::shutdown::SHUTDOWN_VERSIONS;
+use hyperv_ic_protocol::Status;
+use hyperv_ic_protocol::shutdown::SHUTDOWN_VERSION_1;
+use hyperv_ic_protocol::shutdown::SHUTDOWN_VERSION_3;
+use hyperv_ic_protocol::shutdown::SHUTDOWN_VERSION_3_1;
+use hyperv_ic_protocol::shutdown::SHUTDOWN_VERSION_3_2;
 use hyperv_ic_resources::shutdown::ShutdownParams;
 use hyperv_ic_resources::shutdown::ShutdownResult;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
@@ -17,14 +23,9 @@ use hyperv_ic_resources::shutdown::ShutdownType;
 use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::rpc::Rpc;
-use std::io::IoSlice;
 use std::pin::pin;
 use task_control::Cancelled;
 use task_control::StopTask;
-use thiserror::Error;
-use vmbus_async::async_dgram::AsyncRecvExt;
-use vmbus_async::async_dgram::AsyncSendExt;
-use vmbus_async::pipe::MessagePipe;
 use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
@@ -32,9 +33,14 @@ use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SaveRestoreSimpleVmbusDevice;
 use vmbus_channel::simple::SimpleVmbusDevice;
-use zerocopy::FromBytes;
-use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
+
+const SHUTDOWN_VERSIONS: &[hyperv_ic_protocol::Version] = &[
+    SHUTDOWN_VERSION_1,
+    SHUTDOWN_VERSION_3,
+    SHUTDOWN_VERSION_3_1,
+    SHUTDOWN_VERSION_3_2,
+];
 
 /// A shutdown IC device.
 #[derive(InspectMut)]
@@ -49,7 +55,7 @@ pub struct ShutdownIc {
 #[derive(InspectMut)]
 pub struct ShutdownChannel {
     #[inspect(mut)]
-    pipe: MessagePipe<GpadlRingMem>,
+    pipe: IcPipe,
     state: ChannelState,
     #[inspect(with = "Option::is_some")]
     pending_shutdown: Option<Rpc<(), ShutdownResult>>,
@@ -58,13 +64,9 @@ pub struct ShutdownChannel {
 #[derive(Inspect)]
 #[inspect(external_tag)]
 enum ChannelState {
-    SendVersion,
-    WaitVersion,
+    Negotiate(#[inspect(flatten)] NegotiateState),
     Ready {
-        #[inspect(display)]
-        framework_version: hyperv_ic_protocol::Version,
-        #[inspect(display)]
-        message_version: hyperv_ic_protocol::Version,
+        versions: Versions,
         state: ReadyState,
         #[inspect(with = "|x| x.len()")]
         clients: Vec<mesh::OneshotSender<()>>,
@@ -79,18 +81,6 @@ enum ReadyState {
     WaitShutdown,
 }
 
-#[derive(Debug, Error)]
-enum Error {
-    #[error("ring buffer error")]
-    Ring(#[source] std::io::Error),
-    #[error("truncated message")]
-    TruncatedMessage,
-    #[error("invalid version response")]
-    InvalidVersionResponse,
-    #[error("no supported versions")]
-    NoSupportedVersions,
-}
-
 impl ShutdownIc {
     /// Returns a new shutdown IC, using `recv` to receive shutdown requests.
     pub fn new(recv: mesh::Receiver<ShutdownRpc>) -> Self {
@@ -99,29 +89,24 @@ impl ShutdownIc {
             wait_ready: Vec::new(),
         }
     }
-
-    fn open_channel(
-        &mut self,
-        channel: RawAsyncChannel<GpadlRingMem>,
-        restore_state: Option<ChannelState>,
-    ) -> Result<ShutdownChannel, ChannelOpenError> {
-        let pipe = MessagePipe::new(channel)?;
-        Ok(ShutdownChannel::new(pipe, restore_state))
-    }
 }
 
 impl ShutdownChannel {
-    fn new(pipe: MessagePipe<GpadlRingMem>, restore_state: Option<ChannelState>) -> Self {
-        Self {
+    fn new(
+        channel: RawAsyncChannel<GpadlRingMem>,
+        restore_state: Option<ChannelState>,
+    ) -> Result<ShutdownChannel, ChannelOpenError> {
+        let pipe = IcPipe::new(channel)?;
+        Ok(Self {
             pipe,
-            state: restore_state.unwrap_or(ChannelState::SendVersion),
+            state: restore_state.unwrap_or(ChannelState::Negotiate(NegotiateState::default())),
             pending_shutdown: None,
-        }
+        })
     }
 
-    async fn process(&mut self, ic: &mut ShutdownIc) -> Result<(), Error> {
+    async fn process(&mut self, ic: &mut ShutdownIc) -> anyhow::Result<()> {
         enum Event {
-            StateMachine(Result<(), Error>),
+            StateMachine(anyhow::Result<()>),
             Request(ShutdownRpc),
         }
 
@@ -145,9 +130,7 @@ impl ShutdownChannel {
                 }
                 Event::Request(req) => match req {
                     ShutdownRpc::WaitReady(rpc) => match &mut self.state {
-                        ChannelState::SendVersion | ChannelState::WaitVersion => {
-                            ic.wait_ready.push(rpc)
-                        }
+                        ChannelState::Negotiate(_) => ic.wait_ready.push(rpc),
                         ChannelState::Ready { clients, .. } => {
                             let (send, recv) = mesh::oneshot();
                             clients.retain(|c| !c.is_closed());
@@ -156,9 +139,7 @@ impl ShutdownChannel {
                         }
                     },
                     ShutdownRpc::Shutdown(rpc) => match self.state {
-                        ChannelState::SendVersion | ChannelState::WaitVersion => {
-                            rpc.complete(ShutdownResult::NotReady)
-                        }
+                        ChannelState::Negotiate(_) => rpc.complete(ShutdownResult::NotReady),
                         ChannelState::Ready { ref mut state, .. } => match state {
                             ReadyState::Ready => {
                                 let (input, rpc) = rpc.split();
@@ -178,75 +159,29 @@ impl ShutdownChannel {
     async fn process_state_machine(
         &mut self,
         wait_ready: &mut Vec<Rpc<(), mesh::OneshotReceiver<()>>>,
-    ) -> Result<(), Error> {
+    ) -> anyhow::Result<()> {
         match self.state {
-            ChannelState::SendVersion => {
-                let message_versions = SHUTDOWN_VERSIONS;
+            ChannelState::Negotiate(ref mut state) => {
+                if let Some(versions) = self.pipe.negotiate(state, SHUTDOWN_VERSIONS).await? {
+                    let clients = wait_ready
+                        .drain(..)
+                        .map(|rpc| {
+                            let (send, recv) = mesh::oneshot();
+                            rpc.complete(recv);
+                            send
+                        })
+                        .collect();
 
-                let message = hyperv_ic_protocol::NegotiateMessage {
-                    framework_version_count: FRAMEWORK_VERSIONS.len() as u16,
-                    message_version_count: message_versions.len() as u16,
-                    ..FromZeros::new_zeroed()
-                };
-
-                let header = hyperv_ic_protocol::Header {
-                    message_type: hyperv_ic_protocol::MessageType::VERSION_NEGOTIATION,
-                    message_size: (size_of_val(&message)
-                        + size_of_val(FRAMEWORK_VERSIONS)
-                        + size_of_val(message_versions)) as u16,
-                    status: 0,
-                    transaction_id: 0,
-                    flags: hyperv_ic_protocol::HeaderFlags::new()
-                        .with_transaction(true)
-                        .with_request(true),
-                    ..FromZeros::new_zeroed()
-                };
-
-                self.pipe
-                    .send_vectored(&[
-                        IoSlice::new(header.as_bytes()),
-                        IoSlice::new(message.as_bytes()),
-                        IoSlice::new(FRAMEWORK_VERSIONS.as_bytes()),
-                        IoSlice::new(message_versions.as_bytes()),
-                    ])
-                    .await
-                    .map_err(Error::Ring)?;
-
-                self.state = ChannelState::WaitVersion;
-            }
-            ChannelState::WaitVersion => {
-                let (_result, buf) = read_response(&mut self.pipe).await?;
-                let (message, rest) =
-                    hyperv_ic_protocol::NegotiateMessage::read_from_prefix(buf.as_slice())
-                        .map_err(|_| Error::TruncatedMessage)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
-                if message.framework_version_count != 1 || message.message_version_count != 1 {
-                    return Err(Error::NoSupportedVersions);
+                    self.state = ChannelState::Ready {
+                        versions,
+                        state: ReadyState::Ready,
+                        clients,
+                    };
                 }
-                let [framework_version, message_version] =
-                    <[hyperv_ic_protocol::Version; 2]>::read_from_prefix(rest)
-                        .map_err(|_| Error::TruncatedMessage)?
-                        .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
-
-                let clients = wait_ready
-                    .drain(..)
-                    .map(|rpc| {
-                        let (send, recv) = mesh::oneshot();
-                        rpc.complete(recv);
-                        send
-                    })
-                    .collect();
-
-                self.state = ChannelState::Ready {
-                    framework_version,
-                    message_version,
-                    state: ReadyState::Ready,
-                    clients,
-                };
             }
             ChannelState::Ready {
                 ref mut state,
-                framework_version,
-                message_version,
+                ref versions,
                 clients: _,
             } => match state {
                 ReadyState::Ready => std::future::pending().await,
@@ -265,35 +200,26 @@ impl ShutdownChannel {
                         flags,
                         message: [0; 2048],
                     });
-                    let header = hyperv_ic_protocol::Header {
-                        framework_version,
-                        message_type: hyperv_ic_protocol::MessageType::SHUTDOWN,
-                        message_size: size_of_val(message.as_ref()) as u16,
-                        message_version,
-                        status: 0,
-                        transaction_id: 0,
-                        flags: hyperv_ic_protocol::HeaderFlags::new()
-                            .with_transaction(true)
-                            .with_request(true),
-                        ..FromZeros::new_zeroed()
-                    };
 
                     self.pipe
-                        .send_vectored(&[
-                            IoSlice::new(header.as_bytes()),
-                            IoSlice::new(message.as_bytes()),
-                        ])
-                        .await
-                        .map_err(Error::Ring)?;
+                        .write_message(
+                            versions,
+                            hyperv_ic_protocol::MessageType::SHUTDOWN,
+                            hyperv_ic_protocol::HeaderFlags::new()
+                                .with_transaction(true)
+                                .with_request(true),
+                            message.as_bytes(),
+                        )
+                        .await?;
 
                     *state = ReadyState::WaitShutdown;
                 }
                 ReadyState::WaitShutdown => {
-                    let (status, _) = read_response(&mut self.pipe).await?;
-                    let result = if status == 0 {
+                    let (status, _) = self.pipe.read_response().await?;
+                    let result = if status == Status::SUCCESS {
                         ShutdownResult::Ok
                     } else {
-                        ShutdownResult::Failed(status)
+                        ShutdownResult::Failed(status.0)
                     };
                     if let Some(send) = self.pending_shutdown.take() {
                         send.complete(result);
@@ -304,24 +230,6 @@ impl ShutdownChannel {
         }
         Ok(())
     }
-}
-
-async fn read_response(pipe: &mut MessagePipe<GpadlRingMem>) -> Result<(u32, Vec<u8>), Error> {
-    let mut buf = vec![0; hyperv_ic_protocol::MAX_MESSAGE_SIZE];
-    let n = pipe.recv(&mut buf).await.map_err(Error::Ring)?;
-    let buf = &buf[..n];
-    let (header, rest) =
-        hyperv_ic_protocol::Header::read_from_prefix(buf).map_err(|_| Error::TruncatedMessage)?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
-
-    if header.transaction_id != 0 || !header.flags.transaction() || !header.flags.response() {
-        return Err(Error::InvalidVersionResponse);
-    }
-
-    let rest = rest
-        .get(..header.message_size as usize)
-        .ok_or(Error::TruncatedMessage)?;
-
-    Ok((header.status, rest.to_vec()))
 }
 
 #[async_trait]
@@ -348,7 +256,7 @@ impl SimpleVmbusDevice for ShutdownIc {
         channel: RawAsyncChannel<GpadlRingMem>,
         _guest_memory: guestmem::GuestMemory,
     ) -> Result<Self::Runner, ChannelOpenError> {
-        self.open_channel(channel, None)
+        ShutdownChannel::new(channel, None)
     }
 
     async fn run(
@@ -360,7 +268,10 @@ impl SimpleVmbusDevice for ShutdownIc {
             match runner.process(self).await {
                 Ok(()) => {}
                 Err(err) => {
-                    tracing::error!(error = &err as &dyn std::error::Error, "shutdown ic error")
+                    tracing::error!(
+                        error = err.as_ref() as &dyn std::error::Error,
+                        "shutdown ic error"
+                    )
                 }
             }
         })
@@ -485,13 +396,12 @@ mod save_restore {
 
     impl SaveRestoreSimpleVmbusDevice for ShutdownIc {
         fn save_open(&mut self, runner: &Self::Runner) -> state::SavedState {
-            let (version, shutdown_request, waiting_on_shutdown_response) =
+            let (versions, shutdown_request, waiting_on_shutdown_response) =
                 if let ChannelState::Ready {
-                    framework_version,
-                    message_version,
-                    state,
+                    versions,
+                    ref state,
                     clients: _,
-                } = &runner.state
+                } = runner.state
                 {
                     let request = if let ReadyState::SendShutdown(request) = state {
                         Some(request.into())
@@ -499,17 +409,16 @@ mod save_restore {
                         None
                     };
                     let waiting = matches!(state, ReadyState::WaitShutdown);
-                    (
-                        Some(((*framework_version).into(), (*message_version).into())),
-                        request,
-                        waiting,
-                    )
+                    (Some(versions), request, waiting)
                 } else {
                     (None, None, false)
                 };
-            let waiting_on_version = matches!(runner.state, ChannelState::WaitVersion);
+            let waiting_on_version = matches!(
+                runner.state,
+                ChannelState::Negotiate(NegotiateState::WaitVersion)
+            );
             state::SavedState {
-                version,
+                version: versions.map(|v| (v.framework_version.into(), v.message_version.into())),
                 shutdown_request,
                 waiting_on_version,
                 waiting_on_shutdown_response,
@@ -530,19 +439,21 @@ mod save_restore {
                     ReadyState::Ready
                 };
                 ChannelState::Ready {
-                    framework_version: framework.into(),
-                    message_version: message.into(),
+                    versions: Versions {
+                        framework_version: framework.into(),
+                        message_version: message.into(),
+                    },
                     state,
                     clients: Vec::new(),
                 }
             } else {
-                if saved_state.waiting_on_version {
-                    ChannelState::WaitVersion
+                ChannelState::Negotiate(if saved_state.waiting_on_version {
+                    NegotiateState::WaitVersion
                 } else {
-                    ChannelState::SendVersion
-                }
+                    NegotiateState::SendVersion
+                })
             };
-            self.open_channel(channel, Some(state))
+            ShutdownChannel::new(channel, Some(state))
         }
     }
 }

@@ -3132,6 +3132,7 @@ dependencies = [
 name = "hyperv_ic"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "futures",
  "futures-concurrency",
@@ -5346,6 +5347,7 @@ dependencies = [
  "mesh_process",
  "mesh_worker",
  "net_backend_resources",
+ "netvsp_resources",
  "nvme_resources",
  "pal",
  "pal_async",
@@ -8747,6 +8749,7 @@ dependencies = [
  "guid",
  "hvlite_defs",
  "hvlite_ttrpc_vmservice",
+ "hyperv_ic_resources",
  "mesh",
  "mesh_rpc",
  "nvme_resources",

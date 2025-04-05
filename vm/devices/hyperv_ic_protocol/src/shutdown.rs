@@ -16,16 +16,14 @@ pub const INTERFACE_ID: Guid = guid::guid!("0e0b6031-5213-4934-818b-38d90ced39db
 /// The unique vmbus instance ID of the shutdown IC.
 pub const INSTANCE_ID: Guid = guid::guid!("b6650ff7-33bc-4840-8048-e0676786f393");
 
-/// Supported framework versions.
-pub const FRAMEWORK_VERSIONS: &[Version] = &[Version::new(1, 0), Version::new(3, 0)];
-
-/// Supported message versions.
-pub const SHUTDOWN_VERSIONS: &[Version] = &[
-    Version::new(1, 0),
-    Version::new(3, 0),
-    Version::new(3, 1),
-    Version::new(3, 2),
-];
+/// Version 1.0.
+pub const SHUTDOWN_VERSION_1: Version = Version::new(1, 0);
+/// Version 3.0.
+pub const SHUTDOWN_VERSION_3: Version = Version::new(3, 0);
+/// Version 3.1.
+pub const SHUTDOWN_VERSION_3_1: Version = Version::new(3, 1);
+/// Version 3.2.
+pub const SHUTDOWN_VERSION_3_2: Version = Version::new(3, 2);
 
 /// The message for shutdown initiated from the host.
 #[repr(C)]
