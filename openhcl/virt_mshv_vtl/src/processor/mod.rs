@@ -274,6 +274,12 @@ pub(crate) struct BackingSharedParams {
     pub guest_vsm_available: bool,
 }
 
+#[cfg(guest_arch = "x86_64")]
+enum InterceptMessageType {
+    Register { reg: HvX64RegisterName, value: u64 },
+    Msr { msr: u32 },
+}
+
 /// Trait for processor backings that have hardware isolation support.
 #[cfg(guest_arch = "x86_64")]
 trait HardwareIsolatedBacking: Backing {
@@ -311,6 +317,16 @@ trait HardwareIsolatedBacking: Backing {
         vtl: GuestVtl,
         event: hvdef::HvX64PendingExceptionEvent,
     );
+
+    fn generate_intercept_message(
+        this: &UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        vp_index: VpIndex,
+        message_type: InterceptMessageType,
+    ) -> HvMessage;
+
+    fn cr0(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
+    fn cr4(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -449,6 +465,8 @@ pub enum UhRunVpError {
     /// Handling an intercept on behalf of an invalid Lower VTL
     #[error("invalid intercepted vtl {0:?}")]
     InvalidInterceptedVtl(u8),
+    #[error("access to state blocked by another vtl")]
+    StateAccessDenied,
 }
 
 /// Underhill processor run error

@@ -786,3 +786,12 @@ pub struct SevInvlpgbEcx {
     reserved: u64,
     pub large_page: bool,
 }
+
+#[bitfield(u64)]
+pub struct MovCrxDrxInfo {
+    #[bits(4)]
+    pub gpr_number: u64,
+    #[bits(59)]
+    pub reserved: u64,
+    pub mov_crx: bool,
+}

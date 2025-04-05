@@ -226,6 +226,7 @@ struct SharedState {
     )]
     auto_eoi: [AtomicU32; 8],
     work: AtomicU32,
+    software_enabled_on_reset: bool,
 }
 
 #[bitfield(u32)]
@@ -336,13 +337,14 @@ impl LocalApicSet {
     }
 
     /// Adds an APIC for the specified VP to the set.
-    pub fn add_apic(&self, vp: &X86VpInfo) -> LocalApic {
+    pub fn add_apic(&self, vp: &X86VpInfo, software_enabled_on_reset: bool) -> LocalApic {
         let shared = Arc::new(SharedState {
             vp_index: vp.base.vp_index,
             tmr: Default::default(),
             new_irr: Default::default(),
             auto_eoi: Default::default(),
             work: 0.into(),
+            software_enabled_on_reset,
         });
 
         {
@@ -1713,7 +1715,7 @@ impl LocalApic {
 
     fn reset_registers(&mut self) {
         let Self {
-            shared: _,
+            shared,
             global: _,
             apic_base: _,
             base_address: _,
@@ -1748,7 +1750,7 @@ impl LocalApic {
 
         *ldr = 0;
         *cluster_mode = false;
-        *svr = 0xff;
+        *svr = u32::from(Svr::from(0xff).with_enable(shared.software_enabled_on_reset));
         isr.clear();
         *esr = 0;
         *icr = 0;

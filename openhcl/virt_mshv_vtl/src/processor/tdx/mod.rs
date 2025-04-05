@@ -565,6 +565,23 @@ impl HardwareIsolatedBacking for TdxBacked {
         this.backing.vtls[vtl].interruption_information = new_intr;
         this.backing.vtls[vtl].exception_error_code = event.error_code();
     }
+
+    fn cr0(_this: &UhProcessor<'_, Self>, _vtl: GuestVtl) -> u64 {
+        todo!()
+    }
+
+    fn cr4(_this: &UhProcessor<'_, Self>, _vtl: GuestVtl) -> u64 {
+        todo!()
+    }
+
+    fn generate_intercept_message(
+        _this: &UhProcessor<'_, Self>,
+        _vtl: GuestVtl,
+        _vp_index: VpIndex,
+        _message_type: super::InterceptMessageType,
+    ) -> hvdef::HvMessage {
+        todo!()
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.
