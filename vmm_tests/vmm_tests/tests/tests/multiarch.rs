@@ -89,7 +89,7 @@ async fn kvp_ic(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
             KvpRpc::Enumerate,
             hyperv_ic_resources::kvp::EnumerateParams {
                 pool: hyperv_ic_resources::kvp::KvpPool::External,
-                index: 0,
+                index: 1,
             },
         )
         .await?;
