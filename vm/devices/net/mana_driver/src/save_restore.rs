@@ -22,6 +22,7 @@ pub struct ManaSavedState {
     #[mesh(2)]
     pub queues: Vec<QueueSavedState>,
 
+    /// Id of the device
     #[mesh(3)]
     pub pci_id: String,
 }

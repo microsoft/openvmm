@@ -108,38 +108,6 @@ pub mod save_restore {
         pub mask: u32,
     }
 
-    /// Saved state for queue resources
-    #[derive(Debug, Protobuf, Clone)]
-    #[mesh(package = "mana_driver")]
-    pub struct QueueResourcesSavedState {
-        #[mesh(1)]
-        pub _eq: BnicEqSavedState,
-        #[mesh(2)]
-        pub rxq: BnicWqSavedState,
-        #[mesh(3)]
-        pub _txq: BnicWqSavedState,
-    }
-
-    #[derive(Protobuf, Clone, Debug)]
-    #[mesh(package = "mana_driver")]
-    pub struct BnicEqSavedState {
-        #[mesh(1)]
-        pub memory: SavedMemoryState,
-        #[mesh(2)]
-        pub queue: CqEqSavedState,
-        #[mesh(3)]
-        pub doorbell: DoorbellSavedState,
-    }
-
-    #[derive(Protobuf, Clone, Debug)]
-    #[mesh(package = "mana_driver")]
-    pub struct BnicWqSavedState {
-        #[mesh(1)]
-        pub memory: SavedMemoryState,
-        #[mesh(2)]
-        pub queue: WqSavedState,
-    }
-
     /// Saved state for the memory region used by the driver
     /// to be restored by a DMA client during servicing
     #[derive(Debug, Protobuf, Clone)]
@@ -154,76 +122,106 @@ pub mod save_restore {
         pub len: usize,
     }
 
+    /// Saved state of a ContiguousBufferManager to be restored after servicing
     #[derive(Debug, Protobuf, Clone)]
     #[mesh(package = "mana_driver")]
     pub struct ContiguousBufferManagerSavedState {
+        /// Length of the buffer
         #[mesh(1)]
         pub len: u32,
+
+        /// Head of the buffer
         #[mesh(2)]
         pub head: u32,
+
+        /// Tail of the buffer
         #[mesh(3)]
         pub tail: u32,
+
+        /// Memory state to be restored by a [`DmaClient`]
         #[mesh(4)]
         pub mem: MemoryBlockSavedState,
+
+        /// Counter that keeps track of split headers
         #[mesh(5)]
         pub split_headers: u64,
+
+        /// Counter that keeps track of failed allocations
         #[mesh(6)]
         pub failed_allocations: u64,
     }
 
+    /// Saved state of a queue to be restored after servicing
     #[derive(Debug, Protobuf, Clone)]
     #[mesh(package = "mana_driver")]
     pub enum QueueSavedState {
+        /// Variant specific to ManaQueues
         #[mesh(1)]
         ManaQueue(ManaQueueSavedState),
     }
 
+    /// Saved state of a MANA queue to be restored after servicing
     #[derive(Debug, Protobuf, Clone)]
     #[mesh(package = "mana_driver")]
     pub struct ManaQueueSavedState {
+        /// The saved state of the RX bounce buffer, if it exists
         #[mesh(1)]
         pub rx_bounce_buffer: Option<ContiguousBufferManagerSavedState>,
+
+        /// The saved state of the TX bounce buffer
         #[mesh(2)]
         pub tx_bounce_buffer: ContiguousBufferManagerSavedState,
 
-        // vport: Weak<Vport<T>>,
+        /// The saved state of the EQ
         #[mesh(3)]
         pub eq: CqEqSavedState,
+
+        /// Whether or not the EQ was armed when servicing occurred.
         #[mesh(4)]
         pub eq_armed: bool,
-        // interrupt: DeviceInterrupt,
+
+        /// Whether or not the TX CQ was armed when servicing occurred.
         #[mesh(5)]
         pub tx_cq_armed: bool,
+
+        /// Whether or not the RX CQ was armed when servicing occurred.
         #[mesh(6)]
         pub rx_cq_armed: bool,
 
+        /// The VPort offset to be included in TX packets.
         #[mesh(7)]
         pub vp_offset: u16,
+
+        /// The memory key that refers to all GPA space.
         #[mesh(8)]
         pub mem_key: u32,
 
+        /// Saved state of the TX worker queue to be restored after servicing.
         #[mesh(9)]
         pub tx_wq: WqSavedState,
+
+        /// Saved state of the TX completion queue to be restored after servicing.
         #[mesh(10)]
         pub tx_cq: CqEqSavedState,
 
+        /// Saved state of the RX worker queue to be restored after servicing.
         #[mesh(11)]
         pub rx_wq: WqSavedState,
+
+        /// Saved state of the RX completion queue to be restored after servicing.
         #[mesh(12)]
         pub rx_cq: CqEqSavedState,
 
-        // avail_rx: VecDeque<RxId>,
-        // posted_rx: VecDeque<PostedRx>,
+        /// Upper bound on how many packets can be in the RX queue.
         #[mesh(13)]
         pub rx_max: usize,
 
-        // posted_tx: VecDeque<PostedTx>,
-        // dropped_tx: VecDeque<TxId>,
+        /// Upper bound on how many packets can be in the TX queue.
         #[mesh(14)]
         pub tx_max: usize,
 
+        /// Whether or not TX packet headers should be forced to be bounced.
         #[mesh(15)]
         pub force_tx_header_bounce: bool,
-        // stats: QueueStats,
     }
 }

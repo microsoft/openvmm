@@ -27,10 +27,6 @@ use gdma_defs::bnic::ManaQueryStatisticsResponse;
 use gdma_defs::bnic::ManaQueryVportCfgResp;
 use gdma_defs::bnic::STATISTICS_FLAGS_ALL;
 use inspect::Inspect;
-use mana_save_restore::save_restore::BnicEqSavedState;
-use mana_save_restore::save_restore::BnicWqSavedState;
-use mana_save_restore::save_restore::DoorbellSavedState;
-use mana_save_restore::save_restore::SavedMemoryState;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
@@ -507,6 +503,7 @@ impl<T: DeviceBacking> Vport<T> {
         Ok(())
     }
 
+    /// Get the interrupt for the given event queue id.
     pub async fn get_interrupt(&self, eq_id: u32) -> Option<DeviceInterrupt> {
         let gdma = self.inner.gdma.lock().await;
         gdma.get_interrupt_for_eq(eq_id)
@@ -584,6 +581,7 @@ impl<T: DeviceBacking> Vport<T> {
         self.inner.gdma.lock().await.device().dma_client()
     }
 
+    /// Returns the doorbell object for the underlying device.
     pub async fn doorbell(&self) -> Arc<dyn Doorbell> {
         self.inner.gdma.lock().await.doorbell()
     }
@@ -618,21 +616,6 @@ impl BnicEq {
     pub fn queue(&self) -> queues::Eq {
         queues::Eq::new_eq(self.mem.clone(), self.doorbell.clone(), self.id)
     }
-
-    /// Save the state of the event queue for restoration after servicing.
-    pub fn save(&self) -> BnicEqSavedState {
-        BnicEqSavedState {
-            queue: self.queue().save(),
-            memory: SavedMemoryState {
-                base_pfn: self.mem.pfns()[0],
-                len: self.mem.len(),
-            },
-            doorbell: DoorbellSavedState {
-                doorbell_id: self.doorbell.doorbell_id as u64,
-                page_count: self.doorbell.doorbell.page_count(),
-            },
-        }
-    }
 }
 
 /// A work queue (transmit or receive).
@@ -664,16 +647,5 @@ impl BnicWq {
     /// Gets the work queue object ID.
     pub fn wq_obj(&self) -> u64 {
         self.wq_obj
-    }
-
-    /// Saves the state of the work queue for restoration after servicing.
-    pub fn save(&self) -> BnicWqSavedState {
-        BnicWqSavedState {
-            memory: SavedMemoryState {
-                base_pfn: self.wq_mem.pfns()[0],
-                len: self.wq_mem.len() + self.cq_mem.len(),
-            },
-            queue: self.wq().save(),
-        }
     }
 }

@@ -65,8 +65,8 @@ impl Doorbell for NullDoorbell {
 /// A single GDMA doorbell page.
 #[derive(Clone)]
 pub struct DoorbellPage {
-    pub doorbell: Arc<dyn Doorbell>,
-    pub doorbell_id: u32,
+    doorbell: Arc<dyn Doorbell>,
+    doorbell_id: u32,
 }
 
 impl DoorbellPage {
