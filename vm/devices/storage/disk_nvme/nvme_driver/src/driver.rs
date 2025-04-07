@@ -594,6 +594,9 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .context("failed to map interrupt 0")?;
 
         let dma_client = worker.device.dma_client();
+        let restored_memory = dma_client
+            .attach_pending_buffers()
+            .context("failed to restore allocations")?;
 
         // Restore the admin queue pair.
         let admin = saved_state
@@ -602,9 +605,11 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             .as_ref()
             .map(|a| {
                 // Restore memory block for admin queue pair.
-                let mem_block = dma_client
-                    .attach_dma_buffer(a.mem_len, a.base_pfn)
-                    .expect("unable to restore mem block");
+                let mem_block = restored_memory
+                    .iter()
+                    .find(|mem| mem.len() == a.mem_len && a.base_pfn == mem.pfns()[0])
+                    .expect("unable to find restored mem block")
+                    .to_owned();
                 QueuePair::restore(driver.clone(), interrupt0, registers.clone(), mem_block, a)
                     .unwrap()
             })
@@ -645,8 +650,13 @@ impl<T: DeviceBacking> NvmeDriver<T> {
                     .device
                     .map_interrupt(q.iv, q.cpu)
                     .context("failed to map interrupt")?;
-                let mem_block =
-                    dma_client.attach_dma_buffer(q.queue_data.mem_len, q.queue_data.base_pfn)?;
+                let mem_block = restored_memory
+                    .iter()
+                    .find(|mem| {
+                        mem.len() == q.queue_data.mem_len && q.queue_data.base_pfn == mem.pfns()[0]
+                    })
+                    .expect("unable to find restored mem block")
+                    .to_owned();
                 let q =
                     IoQueue::restore(driver.clone(), interrupt, registers.clone(), mem_block, q)?;
                 let issuer = IoIssuer {

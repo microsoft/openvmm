@@ -198,7 +198,7 @@ impl PetriVmConfigOpenVmm {
         };
 
         setup.load_boot_disk(&mut devices, vtl2_settings.as_mut())?;
-        let expected_boot_event = setup.get_expected_boot_event();
+        let expected_boot_event = firmware.expected_boot_event();
 
         // Configure the serial ports now that they have been updated by the
         // OpenHCL configuration.
@@ -825,6 +825,7 @@ impl PetriVmConfigSetupCore<'_> {
             secure_boot_enabled: false,
             secure_boot_template: get_resources::ged::GuestSecureBootTemplateType::None,
             enable_battery: false,
+            no_persistent_secrets: true,
         };
 
         Ok((ged, guest_request_send))
@@ -860,27 +861,6 @@ impl PetriVmConfigSetupCore<'_> {
         } else {
             None
         })
-    }
-
-    fn get_expected_boot_event(&self) -> Option<FirmwareEvent> {
-        match &self.firmware {
-            Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => None,
-            Firmware::Pcat { .. } => {
-                // TODO: Handle older PCAT versions that don't fire the event
-                Some(FirmwareEvent::BootAttempt)
-            }
-            Firmware::Uefi {
-                guest: UefiGuest::None,
-                ..
-            }
-            | Firmware::OpenhclUefi {
-                guest: UefiGuest::None,
-                ..
-            } => Some(FirmwareEvent::NoBootDevice),
-            Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => {
-                Some(FirmwareEvent::BootSuccess)
-            }
-        }
     }
 }
 

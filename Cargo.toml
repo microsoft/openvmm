@@ -42,6 +42,7 @@ members = [
   "petri/pipette",
   # tools
   "petri/make_imc_hive",
+  "petri/petri-tool",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
@@ -275,6 +276,7 @@ scsi_defs = { path = "vm/devices/storage/scsi_defs" }
 scsidisk = { path = "vm/devices/storage/scsidisk" }
 scsidisk_resources = { path = "vm/devices/storage/scsidisk_resources" }
 storvsp = { path = "vm/devices/storage/storvsp" }
+storvsp_protocol = { path = "vm/devices/storage/storvsp_protocol" }
 storvsp_resources = { path = "vm/devices/storage/storvsp_resources" }
 device_emulators = { path = "vm/devices/support/device_emulators" }
 fuse = { path = "vm/devices/support/fs/fuse" }
@@ -627,7 +629,6 @@ linkedlist = "warn"
 lossy_float_literal = "warn"
 macro_use_imports = "warn"
 match_on_vec_items = "warn"
-needless_continue = "warn"
 option_option = "warn"
 ptr_as_ptr = "warn"
 ptr_cast_constness = "warn"

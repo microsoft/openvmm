@@ -409,6 +409,7 @@ impl PagePoolHandle {
 
 impl Drop for PagePoolHandle {
     fn drop(&mut self) {
+        tracing::info!("dropping page pool handle for {:x}", self.base_pfn());
         let mut inner = self.inner.state.lock();
 
         let slot = inner
@@ -809,6 +810,39 @@ impl PagePoolAllocator {
             mapping_offset: slot.mapping_offset,
         })
     }
+
+    /// Restore all pending allocs
+    pub fn restore_pending_allocs(&self) -> Vec<PagePoolHandle> {
+        let mut inner = self.inner.state.lock();
+        let inner = &mut *inner;
+        let mut slots: Vec<&mut Slot> = inner
+            .slots
+            .iter_mut()
+            .filter(|slot| {
+                if let SlotState::AllocatedPendingRestore {
+                    device_id: slot_device_id,
+                    tag: _,
+                } = &slot.state
+                {
+                    return inner.device_ids[self.device_id].name() == *slot_device_id;
+                }
+                false
+            })
+            .collect();
+
+        slots
+            .iter_mut()
+            .map(|slot| {
+                slot.state.restore_allocated(self.device_id);
+                PagePoolHandle {
+                    inner: self.inner.clone(),
+                    base_pfn: slot.base_pfn,
+                    size_pages: slot.size_pages,
+                    mapping_offset: slot.mapping_offset,
+                }
+            })
+            .collect()
+    }
 }
 
 impl Drop for PagePoolAllocator {
@@ -842,27 +876,13 @@ impl user_driver::DmaClient for PagePoolAllocator {
         alloc.into_memory_block()
     }
 
-    /// Restore a dma buffer in the predefined location with the given `len` in
-    /// bytes.
-    fn attach_dma_buffer(
-        &self,
-        len: usize,
-        base_pfn: u64,
-    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        if len as u64 % PAGE_SIZE != 0 {
-            anyhow::bail!("not a page-size multiple");
-        }
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
+        let allocs = self.restore_pending_allocs();
 
-        let size_pages = NonZeroU64::new(len as u64 / PAGE_SIZE)
-            .context("allocation of size 0 not supported")?;
-
-        let alloc = self
-            .restore_alloc(base_pfn, size_pages)
-            .context("failed to restore allocation")?;
-
-        // Preserve the existing contents of memory and do not zero the restored
-        // allocation.
-        alloc.into_memory_block()
+        allocs
+            .into_iter()
+            .map(|alloc| alloc.into_memory_block())
+            .collect()
     }
 
     fn get_dma_buffer(
@@ -870,9 +890,6 @@ impl user_driver::DmaClient for PagePoolAllocator {
         len: usize,
         base_pfn: u64,
     ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        tracing::info!("looking for slot: {:x}", base_pfn);
-        tracing::info!("slot state: {:?}", self.inner.state.lock().slots);
-
         let size_pages = NonZeroU64::new(len as u64 / PAGE_SIZE)
             .context("allocation of size 0 not supported")?
             .get();
@@ -880,11 +897,7 @@ impl user_driver::DmaClient for PagePoolAllocator {
         let mut inner = self.inner.state.lock();
         let inner = &mut *inner;
         let slot = inner.slots.iter().find(|slot| {
-            if let SlotState::Leaked {
-                device_id: _,
-                tag: _,
-            } = &slot.state
-            {
+            if let SlotState::Free = &slot.state {
                 slot.base_pfn == base_pfn
             } else {
                 false
@@ -902,7 +915,6 @@ impl user_driver::DmaClient for PagePoolAllocator {
             mapping_offset: slot.unwrap().mapping_offset,
         };
 
-        tracing::info!("successfully got memory block");
         handle.into_memory_block()
     }
 }
@@ -1047,6 +1059,90 @@ mod test {
         assert_eq!(restored_a2.size_pages, a2_size);
 
         pool.validate_restore(false).unwrap();
+    }
+
+    #[test]
+    fn test_save_restore_all_pending() {
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+
+        let a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
+        let a1_pfn = a1.base_pfn();
+        let a1_size = a1.size_pages;
+
+        let a2 = alloc
+            .alloc(15.try_into().unwrap(), "alloc2".into())
+            .unwrap();
+        let a2_pfn = a2.base_pfn();
+        let a2_size = a2.size_pages;
+
+        let state = pool.save().unwrap();
+
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
+        pool.restore(state).unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+
+        let restored = alloc.restore_pending_allocs();
+        assert!(
+            restored
+                .iter()
+                .any(|a| a.base_pfn == a1_pfn && a.size_pages == a1_size),
+            "matching allocation not found for a1"
+        );
+
+        assert!(
+            restored
+                .iter()
+                .any(|a| a.base_pfn == a2_pfn && a.size_pages == a2_size),
+            "matching allocation not found for a2"
+        );
+
+        pool.validate_restore(false).unwrap();
+    }
+
+    #[test]
+    fn test_save_restore_all_pending_other_allocator() {
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+
+        let a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
+        let a1_pfn = a1.base_pfn();
+        let a1_size = a1.size_pages;
+
+        let a2 = alloc
+            .alloc(15.try_into().unwrap(), "alloc2".into())
+            .unwrap();
+        let a2_pfn = a2.base_pfn();
+        let a2_size = a2.size_pages;
+
+        let state = pool.save().unwrap();
+
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
+        pool.restore(state).unwrap();
+        let alloc = pool.allocator("test2".into()).unwrap();
+
+        let restored = alloc.restore_pending_allocs();
+        assert_eq!(
+            restored
+                .iter()
+                .any(|a| a.base_pfn == a1_pfn && a.size_pages == a1_size),
+            false,
+            "matching allocation found for a1 for wrong allocator"
+        );
+
+        assert_eq!(
+            restored
+                .iter()
+                .any(|a| a.base_pfn == a2_pfn && a.size_pages == a2_size),
+            false,
+            "matching allocation found for a2 for wrong allocator"
+        );
+
+        assert!(pool.validate_restore(false).is_err());
     }
 
     #[test]

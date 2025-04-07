@@ -52,6 +52,7 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == loadable::UEFI_FIRMWARE_AARCH64 => uefi_firmware_path(MachineArch::Aarch64),
 
             _ if id == openhcl_igvm::LATEST_STANDARD_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Standard),
+            _ if id == openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::StandardDevKernel),
             _ if id == openhcl_igvm::LATEST_CVM_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Cvm),
             _ if id == openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64 => openhcl_bin_path(MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::LinuxDirect),
             _ if id == openhcl_igvm::LATEST_STANDARD_AARCH64 => openhcl_bin_path(MachineArch::Aarch64, OpenhclVersion::Latest, OpenhclFlavor::Standard),
@@ -63,6 +64,7 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
             _ if id == test_vhd::GUEST_TEST_UEFI_AARCH64 => guest_test_uefi_disk_path(MachineArch::Aarch64),
             _ if id == test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64 => get_guest_vhd_path(KnownVhd::Gen1WindowsDataCenterCore2022),
             _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64 => get_guest_vhd_path(KnownVhd::Gen2WindowsDataCenterCore2022),
+            _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 => get_guest_vhd_path(KnownVhd::Gen2WindowsDataCenterCore2025),
             _ if id == test_vhd::FREE_BSD_13_2_X64 => get_guest_vhd_path(KnownVhd::FreeBsd13_2),
             _ if id == test_vhd::UBUNTU_2204_SERVER_X64 => get_guest_vhd_path(KnownVhd::Ubuntu2204Server),
             _ if id == test_vhd::UBUNTU_2404_SERVER_AARCH64 => get_guest_vhd_path(KnownVhd::Ubuntu2404ServerAarch64),
@@ -88,6 +90,7 @@ enum OpenhclVersion {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 enum OpenhclFlavor {
     Standard,
+    StandardDevKernel,
     Cvm,
     LinuxDirect,
 }
@@ -289,6 +292,14 @@ fn openhcl_bin_path(
             MissingCommand::XFlowey {
                 description: "OpenHCL IGVM file",
                 xflowey_args: &["build-igvm", "x64"],
+            },
+        ),
+        (MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::StandardDevKernel) => (
+            "flowey-out/artifacts/build-igvm/debug/x64-devkern",
+            "openhcl-x64-devkern.bin",
+            MissingCommand::XFlowey {
+                description: "OpenHCL IGVM file",
+                xflowey_args: &["build-igvm", "x64-devkern"],
             },
         ),
         (MachineArch::X86_64, OpenhclVersion::Latest, OpenhclFlavor::Cvm) => (

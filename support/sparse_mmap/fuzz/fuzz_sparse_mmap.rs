@@ -172,7 +172,7 @@ fn generate_blocks(
             vec![block]
         }
         MemoryLayout::Ends => {
-            let length_pages = u.int_in_range(1..=(max_pages + 1) / 2)?;
+            let length_pages = u.int_in_range(1..=max_pages.div_ceil(2))?;
             let block1 = Block::new(0, safe_mul!(length_pages, page_size))?;
             let block2 = Block::new(
                 safe_mul!((max_pages - length_pages), page_size),

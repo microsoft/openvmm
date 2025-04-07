@@ -607,8 +607,15 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         }
 
         let dma_client = device.dma_client();
-        let dma_buffer =
-            dma_client.attach_dma_buffer(saved_state.mem.len, saved_state.mem.base_pfn)?;
+        let memory = dma_client.attach_pending_buffers()?;
+
+        tracing::info!("number of pending buffers attached: {}", memory.len());
+
+        let dma_buffer = memory
+            .iter()
+            .find(|s| saved_state.mem.len == s.len() && saved_state.mem.base_pfn == s.pfns()[0])
+            .expect("failed to find matching memory block")
+            .to_owned();
 
         let doorbell_shift = map.vf_db_page_sz.trailing_zeros();
         let bar0 = Arc::new(Bar0 {
@@ -688,6 +695,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             this.cq.arm();
         }
 
+        tracing::info!("exiting restore");
         Ok(this)
     }
 

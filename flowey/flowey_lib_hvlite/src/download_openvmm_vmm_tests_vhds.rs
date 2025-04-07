@@ -130,7 +130,7 @@ impl FlowNode for Node {
                     std::env::current_dir()?
                 };
 
-                rt.write(write_output_folder, &output_folder);
+                rt.write(write_output_folder, &output_folder.absolute()?);
 
                 //
                 // Check for VHDs that have already been downloaded, to see if
@@ -310,14 +310,14 @@ Otherwise, press `ctrl-c` to cancel the run.
             }
         });
 
-        ctx.emit_rust_step("report downloaded VMM test disk images", |ctx| {
+        ctx.emit_minor_rust_step("report downloaded VMM test disk images", |ctx| {
             did_download.claim(ctx);
             let vhds = vhds.claim(ctx);
             let isos = isos.claim(ctx);
             let output_folder = output_folder.claim(ctx);
             let get_download_folder = get_download_folder.claim(ctx);
             |rt| {
-                let output_folder = rt.read(output_folder).absolute()?;
+                let output_folder = rt.read(output_folder);
                 for path in get_download_folder {
                     rt.write(path, &output_folder)
                 }
@@ -331,8 +331,6 @@ Otherwise, press `ctrl-c` to cancel the run.
                         rt.write(path, &output_folder.join(iso.filename()))
                     }
                 }
-
-                Ok(())
             }
         });
 

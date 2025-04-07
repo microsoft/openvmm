@@ -18,7 +18,6 @@ use openssl::rsa::Rsa;
 use pal_async::local::LocalDriver;
 use tee_call::TeeCall;
 use thiserror::Error;
-use vmgs::EncryptionAlgorithm;
 use vmgs::Vmgs;
 
 #[derive(Debug, Error)]
@@ -27,28 +26,32 @@ pub(crate) enum RequestVmgsEncryptionKeysError {
     GenerateTransferKey(#[source] openssl::error::ErrorStack),
     #[error("failed to get a TEE attestation report")]
     GetAttestationReport(#[source] tee_call::Error),
-    #[error("failed to create IgvmAttest WRAPPED_KEY request")]
+    #[error("failed to create an IgvmAttest WRAPPED_KEY request")]
     CreateIgvmAttestWrappedKeyRequest(#[source] igvm_attest::Error),
     #[error("failed to make an IgvmAttest WRAPPED_KEY GET request")]
     SendIgvmAttestWrappedKeyRequest(#[source] guest_emulation_transport::error::IgvmAttestError),
-    #[error("failed to parse IgvmAttest WRAPPED_KEY response")]
+    #[error("failed to parse the IgvmAttest WRAPPED_KEY response")]
     ParseIgvmAttestWrappedKeyResponse(#[source] igvm_attest::wrapped_key::WrappedKeyError),
+    #[error(
+        "failed to get a valid IgvmAttest WRAPPED_KEY response that is required because agent data from VMGS is empty"
+    )]
+    RequiredButInvalidIgvmAttestWrappedKeyResponse,
     #[error("wrapped key from WRAPPED_KEY response is empty")]
     EmptyWrappedKey,
     #[error(
-        "key reference size {key_reference_size} from WRAPPED_KEY response was larger than expected {expected_size}"
+        "key reference size {key_reference_size} from the WRAPPED_KEY response was larger than expected {expected_size}"
     )]
     InvalidKeyReferenceSize {
         key_reference_size: usize,
         expected_size: usize,
     },
-    #[error("key reference from WRAPPED_KEY response is empty")]
+    #[error("key reference from the WRAPPED_KEY response is empty")]
     EmptyKeyReference,
-    #[error("failed to create IgvmAttest KEY_RELEASE request")]
+    #[error("failed to create an IgvmAttest KEY_RELEASE request")]
     CreateIgvmAttestKeyReleaseRequest(#[source] igvm_attest::Error),
     #[error("failed to make an IgvmAttest KEY_RELEASE GET request")]
     SendIgvmAttestKeyReleaseRequest(#[source] guest_emulation_transport::error::IgvmAttestError),
-    #[error("failed to parse IgvmAttest KEY_RELEASE response")]
+    #[error("failed to parse the IgvmAttest KEY_RELEASE response")]
     ParseIgvmAttestKeyReleaseResponse(#[source] igvm_attest::key_release::KeyReleaseError),
     #[error("PKCS11 RSA AES key unwrap failed")]
     Pkcs11RsaAesKeyUnwrap(#[source] crypto::Pkcs11RsaAesKeyUnwrapError),
@@ -105,7 +108,8 @@ pub async fn request_vmgs_encryption_keys(
     // Retry attestation call-out if necessary (if VMGS encrypted).
     // The IGVm Agent could be down for servicing, or the TDX service VM might not be ready, or a dynamic firmware
     // update could mean that the report was not verifiable.
-    let max_retry = if vmgs.get_encryption_algorithm() != EncryptionAlgorithm::NONE {
+    let vmgs_encrypted = vmgs.is_encrypted();
+    let max_retry = if vmgs_encrypted {
         MAXIMUM_RETRY_COUNT
     } else {
         NO_RETRY_COUNT
@@ -139,6 +143,7 @@ pub async fn request_vmgs_encryption_keys(
             &mut igvm_attest_request_helper,
             &result.report,
             agent_data,
+            vmgs_encrypted,
         )
         .await
         {
@@ -241,6 +246,7 @@ async fn make_igvm_attest_requests(
     igvm_attest_request_helper: &mut IgvmAttestRequestHelper,
     attestation_report: &[u8],
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
+    vmgs_encrypted: bool,
 ) -> Result<WrappedKeyVmgsEncryptionKeys, RequestVmgsEncryptionKeysError> {
     // Attempt to get wrapped DiskEncryptionSettings key
     igvm_attest_request_helper.set_request_type(
@@ -286,8 +292,19 @@ async fn make_igvm_attest_requests(
 
             Some(parsed_response.wrapped_key)
         }
-        // The request does not succeed. Ignore the wrapped des key.
-        Err(igvm_attest::wrapped_key::WrappedKeyError::ResponseSizeTooSmall) => None,
+        Err(igvm_attest::wrapped_key::WrappedKeyError::ResponseSizeTooSmall) => {
+            // The request does not succeed.
+            // When VMGS is encrypted, empty `agent_data` from VMGS implies that the data required by the
+            // KeyRelease request needs to come from the WrappedKey response. Return an error for this case,
+            // otherwise ignore the error and set the `wrapped_des_key` to None.
+            if vmgs_encrypted && agent_data.iter().all(|&x| x == 0) {
+                return Err(
+                    RequestVmgsEncryptionKeysError::RequiredButInvalidIgvmAttestWrappedKeyResponse,
+                );
+            } else {
+                None
+            }
+        }
         Err(e) => Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(e))?,
     };
 

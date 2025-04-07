@@ -1834,6 +1834,7 @@ dependencies = [
  "log",
  "serde",
  "target-lexicon",
+ "vmm_test_images",
 ]
 
 [[package]]
@@ -2241,6 +2242,7 @@ dependencies = [
  "scsi_defs",
  "scsidisk",
  "storvsp",
+ "storvsp_protocol",
  "storvsp_resources",
  "vmbus_async",
  "vmbus_channel",
@@ -5374,6 +5376,7 @@ dependencies = [
  "sparse_mmap",
  "storvsp_resources",
  "tempfile",
+ "thiserror 2.0.12",
  "tpm_resources",
  "tracing",
  "tracing-subscriber",
@@ -5391,6 +5394,17 @@ dependencies = [
  "vmotherboard",
  "vmsocket",
  "vtl2_settings_proto",
+]
+
+[[package]]
+name = "petri-tool"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "petri",
+ "petri_artifact_resolver_openvmm_known_paths",
+ "petri_artifacts_common",
 ]
 
 [[package]]
@@ -6525,7 +6539,6 @@ name = "storvsp"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "arbitrary",
  "async-trait",
  "criterion",
  "disklayer_ram",
@@ -6537,7 +6550,6 @@ dependencies = [
  "inspect",
  "inspect_counters",
  "mesh",
- "open_enum",
  "oversized_box",
  "pal_async",
  "parking_lot",
@@ -6546,6 +6558,7 @@ dependencies = [
  "scsi_defs",
  "scsidisk",
  "slab",
+ "storvsp_protocol",
  "storvsp_resources",
  "task_control",
  "test_with_tracing",
@@ -6560,6 +6573,17 @@ dependencies = [
  "vmbus_core",
  "vmbus_ring",
  "vmcore",
+ "zerocopy 0.8.23",
+]
+
+[[package]]
+name = "storvsp_protocol"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "guid",
+ "open_enum",
+ "scsi_defs",
  "zerocopy 0.8.23",
 ]
 

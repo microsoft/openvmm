@@ -58,27 +58,12 @@
 # - RUSTC_BOOTSTRAP=1 + RUSTFLAGS="-Z threads=8" - use of the unstable parallel
 #   frontend to go f a s t
 - name: Build flowey
-  run: CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p {{FLOWEY_CRATE}} --target {{FLOWEY_TARGET}} --profile flowey-ci
-  working-directory: flowey_bootstrap
-  shell: bash
-
-- name: Stage flowey artifact
   run: |
-    mkdir ./flowey_bootstrap_temp
-    mv ./{{FLOWEY_PIPELINE_PATH}}.yaml ./flowey_bootstrap_temp/pipeline.yaml
-    mv target/{{FLOWEY_TARGET}}/flowey-ci/{{FLOWEY_CRATE}}{{FLOWEY_BIN_EXTENSION}} ./flowey_bootstrap_temp/flowey{{FLOWEY_BIN_EXTENSION}}
-  working-directory: flowey_bootstrap
-  shell: bash
-
-- name: Copy flowey artifact
-  run: |
+    set -x
+    CARGO_INCREMENTAL=0 RUSTC_BOOTSTRAP=1 RUSTFLAGS="-Z threads=8" cargo build -p {{FLOWEY_CRATE}} --target {{FLOWEY_TARGET}} --profile flowey-ci
     OutDirNormal=$(echo "{{FLOWEY_OUTDIR}}" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
-    mkdir -p $OutDirNormal
-    cp -r ./flowey_bootstrap_temp/* $OutDirNormal
-  working-directory: flowey_bootstrap
-  shell: bash
-
-- name: Cleanup staged flowey artifact
-  run: rm -rf ./flowey_bootstrap_temp
+    mkdir -p "$OutDirNormal"
+    mv ./{{FLOWEY_PIPELINE_PATH}}.yaml "$OutDirNormal/pipeline.yaml"
+    mv target/{{FLOWEY_TARGET}}/flowey-ci/{{FLOWEY_CRATE}}{{FLOWEY_BIN_EXTENSION}} "$OutDirNormal/flowey{{FLOWEY_BIN_EXTENSION}}"
   working-directory: flowey_bootstrap
   shell: bash

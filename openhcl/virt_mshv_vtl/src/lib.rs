@@ -342,6 +342,15 @@ impl From<EnterMode> for hcl::protocol::EnterMode {
 
 #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
+struct GuestVsmVpState {
+    /// The pending event that VTL 1 wants to inject into VTL 0. Injected on
+    /// next exit to VTL 0.
+    #[inspect(with = "|x| x.as_ref().map(inspect::AsDebug)")]
+    vtl0_exit_pending_event: Option<hvdef::HvX64PendingExceptionEvent>,
+}
+
+#[cfg(guest_arch = "x86_64")]
+#[derive(Inspect)]
 /// VP state for CVMs.
 struct UhCvmVpState {
     // Allocation handle for direct overlays
@@ -353,8 +362,8 @@ struct UhCvmVpState {
     hv: VtlArray<ProcessorVtlHv, 2>,
     /// LAPIC state.
     lapics: VtlArray<LapicState, 2>,
-    /// Whether VTL 1 has been enabled on this VP.
-    vtl1_enabled: bool,
+    /// Guest VSM state for this vp. Some when VTL 1 is enabled.
+    vtl1: Option<GuestVsmVpState>,
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -397,7 +406,7 @@ impl UhCvmVpState {
             exit_vtl: GuestVtl::Vtl0,
             hv,
             lapics,
-            vtl1_enabled: false,
+            vtl1: None,
         })
     }
 }
@@ -720,6 +729,14 @@ impl WakeReason {
     const INTCON: Self = Self::new().with_intcon(true);
     #[cfg(guest_arch = "x86_64")]
     const UPDATE_PROXY_IRR_FILTER: Self = Self::new().with_update_proxy_irr_filter(true);
+}
+
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+struct ExitActivity {
+    pending_event: bool,
+    #[bits(31)]
+    _reserved: u32,
 }
 
 /// Immutable access to useful bits of Partition state.

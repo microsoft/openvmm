@@ -246,7 +246,7 @@ pub async fn initialize_platform_security(
 
     // Read Security Profile from VMGS
     // Currently this only includes "Key Reference" data, which is not attested data, is opaque to the
-    // Underhill, and is passed to the IGVMm agent outside of the report contents.
+    // OpenHCL, and is passed to the IGVMm agent outside of the report contents.
     let SecurityProfile { mut agent_data } = vmgs::read_security_profile(vmgs)
         .await
         .map_err(AttestationErrorInner::ReadSecurityProfile)?;
@@ -341,7 +341,7 @@ pub async fn initialize_platform_security(
         false
     };
 
-    let vmgs_encrypted: bool = vmgs.get_encryption_algorithm() != EncryptionAlgorithm::NONE;
+    let vmgs_encrypted: bool = vmgs.is_encrypted();
 
     tracing::info!(tcb_version=?tcb_version, vmgs_encrypted = vmgs_encrypted, "Deriving keys");
     let derived_keys_result = get_derived_keys(
@@ -619,6 +619,15 @@ async fn get_derived_keys(
 
         let response = get_gsp_data(get, key_protector).await;
 
+        tracing::info!(
+            CVM_ALLOWED,
+            request_data_length_in_vmgs = key_protector.gsp[ingress_idx].gsp_length,
+            no_rpc_server = response.extended_status_flags.no_rpc_server(),
+            requires_rpc_server = response.extended_status_flags.requires_rpc_server(),
+            encrypted_gsp_length = response.encrypted_gsp.length,
+            "GSP response"
+        );
+
         let no_gsp =
             response.extended_status_flags.no_rpc_server() || response.encrypted_gsp.length == 0;
 
@@ -653,7 +662,6 @@ async fn get_derived_keys(
 
     // If sources of encryption used last are missing, attempt to unseal VMGS key with hardware key
     if (no_kek && found_dek) || (no_gsp && requires_gsp) || (no_gsp_by_id && requires_gsp_by_id) {
-        tracing::info!("Unseal VMGS key-encryption key with hardware key");
         // If possible, get ingressKey from hardware sealed data
         let (hardware_key_protector, hardware_derived_keys) = if let Some(tee_call) = tee_call {
             let hardware_key_protector = match vmgs::read_hardware_key_protector(vmgs).await {
@@ -708,7 +716,10 @@ async fn get_derived_keys(
             key_protector_settings.should_write_kp = false;
             key_protector_settings.use_hardware_unlock = true;
 
-            tracing::warn!(CVM_ALLOWED, "Using hardware based key derivation");
+            tracing::warn!(
+                CVM_ALLOWED,
+                "Using hardware-derived key to recover VMGS DEK"
+            );
 
             return Ok(DerivedKeyResult {
                 derived_keys: Some(derived_keys),
@@ -726,6 +737,14 @@ async fn get_derived_keys(
             }
         }
     }
+
+    tracing::info!(
+        CVM_ALLOWED,
+        kek = !no_kek,
+        gsp = !no_gsp,
+        gsp_by_id = !no_gsp_by_id,
+        "Encryption sources"
+    );
 
     // Check if sources of encryption are available
     if no_kek && no_gsp && no_gsp_by_id {

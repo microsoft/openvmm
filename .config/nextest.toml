@@ -19,9 +19,8 @@ threads-required = 4
 [profile.ci]
 # Set the default timeout to 1 second, with tests terminated after 5 seconds
 slow-timeout = { period = "1s", terminate-after = 5 }
-# Print out output for failing tests as soon as they fail, and also at the end
-# of the run (for easy scrollability).
-failure-output = "immediate-final"
+# Print out output for failing tests at the end of the run.
+failure-output = "final"
 # Do not cancel the test run on the first failure.
 fail-fast = false
 

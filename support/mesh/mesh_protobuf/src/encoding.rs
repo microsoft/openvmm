@@ -343,6 +343,24 @@ impl FixedNumber for f64 {
     }
 }
 
+// This encodes the address as a u32, with the first octet in the high 8 bits of
+// the u32 and so on.
+//
+// In particular, this is not byte swapped to network byte order on
+// little-endian platforms, as you might naively expect, since this would result
+// in a different wire format across different architectures.
+impl FixedNumber for core::net::Ipv4Addr {
+    type Type = u32;
+
+    fn to_fixed(self) -> u32 {
+        self.into()
+    }
+
+    fn from_fixed(v: u32) -> Self {
+        v.into()
+    }
+}
+
 macro_rules! builtin_field_type {
     ($ty:ty, $encoding:ty, $name:expr) => {
         impl DescribeField<$ty> for $encoding {
@@ -431,6 +449,8 @@ pub struct Fixed32Field;
 builtin_field_type!(u32, Fixed32Field, "fixed32");
 builtin_field_type!(i32, Fixed32Field, "sfixed32");
 builtin_field_type!(f32, Fixed32Field, "float");
+
+builtin_field_type!(core::net::Ipv4Addr, Fixed32Field, "fixed32");
 
 impl<T: FixedNumber<Type = u32>, R> FieldEncode<T, R> for Fixed32Field {
     fn write_field(item: T, writer: FieldWriter<'_, '_, R>) {
@@ -745,36 +765,79 @@ pub struct U128LittleEndianField;
 
 builtin_field_type!(u128, U128LittleEndianField, "bytes");
 
-impl<R> FieldEncode<u128, R> for U128LittleEndianField {
-    fn write_field(item: u128, writer: FieldWriter<'_, '_, R>) {
+impl<T: Copy + Into<u128>, R> FieldEncode<T, R> for U128LittleEndianField {
+    fn write_field(item: T, writer: FieldWriter<'_, '_, R>) {
+        let item = item.into();
         if item != 0 || writer.write_empty() {
             writer.bytes(&item.to_le_bytes());
         }
     }
 
-    fn compute_field_size(item: &mut u128, sizer: FieldSizer<'_>) {
-        if *item != 0 || sizer.write_empty() {
+    fn compute_field_size(item: &mut T, sizer: FieldSizer<'_>) {
+        let item = (*item).into();
+        if item != 0 || sizer.write_empty() {
             sizer.bytes(16);
         }
     }
 }
 
-impl<R> FieldDecode<'_, u128, R> for U128LittleEndianField {
-    fn read_field(
-        item: &mut InplaceOption<'_, u128>,
-        reader: FieldReader<'_, '_, R>,
-    ) -> Result<()> {
-        item.set(u128::from_le_bytes(
-            reader
-                .bytes()?
-                .try_into()
-                .map_err(|_| DecodeError::BadU128)?,
-        ));
+impl<T: From<u128>, R> FieldDecode<'_, T, R> for U128LittleEndianField {
+    fn read_field(item: &mut InplaceOption<'_, T>, reader: FieldReader<'_, '_, R>) -> Result<()> {
+        item.set(
+            u128::from_le_bytes(
+                reader
+                    .bytes()?
+                    .try_into()
+                    .map_err(|_| DecodeError::BadU128)?,
+            )
+            .into(),
+        );
         Ok(())
     }
 
-    fn default_field(item: &mut InplaceOption<'_, u128>) -> Result<()> {
-        item.set(0);
+    fn default_field(item: &mut InplaceOption<'_, T>) -> Result<()> {
+        item.set(0.into());
+        Ok(())
+    }
+}
+
+/// A field encoder for an IPv6 address.
+///
+/// Writes the value in octet order as a 16-byte array.
+pub struct Ipv6AddrField;
+
+builtin_field_type!(core::net::Ipv6Addr, Ipv6AddrField, "bytes");
+
+impl<R> FieldEncode<core::net::Ipv6Addr, R> for Ipv6AddrField {
+    fn write_field(item: core::net::Ipv6Addr, writer: FieldWriter<'_, '_, R>) {
+        if !item.is_unspecified() || writer.write_empty() {
+            writer.bytes(&item.octets());
+        }
+    }
+
+    fn compute_field_size(item: &mut core::net::Ipv6Addr, sizer: FieldSizer<'_>) {
+        if !item.is_unspecified() || sizer.write_empty() {
+            sizer.bytes(16);
+        }
+    }
+}
+
+impl<R> FieldDecode<'_, core::net::Ipv6Addr, R> for Ipv6AddrField {
+    fn read_field(
+        item: &mut InplaceOption<'_, core::net::Ipv6Addr>,
+        reader: FieldReader<'_, '_, R>,
+    ) -> Result<()> {
+        let v: [u8; 16] = reader
+            .bytes()?
+            .try_into()
+            .map_err(|_| DecodeError::BadIpv6)?;
+
+        item.set(v.into());
+        Ok(())
+    }
+
+    fn default_field(item: &mut InplaceOption<'_, core::net::Ipv6Addr>) -> Result<()> {
+        item.set(core::net::Ipv6Addr::UNSPECIFIED);
         Ok(())
     }
 }
@@ -1605,8 +1668,11 @@ impl<'a, T: Clone, R, E: FieldDecode<'a, T, R>> FieldDecode<'a, Arc<T>, R> for A
 }
 
 macro_rules! default_encodings {
-    ($($ty:ty: $mp:ty),* $(,)?) => {
+    ($($(#[$attr:meta])* $ty:ty: $mp:ty),* $(,)?) => {
         $(
+            $(
+                #[$attr]
+            )*
             impl $crate::DefaultEncoding for $ty {
                 type Encoding = $mp;
             }
@@ -1651,6 +1717,9 @@ default_encodings! {
     Duration: MessageEncoding<DurationEncoding>,
 
     Infallible: ImpossibleField,
+
+    core::net::Ipv4Addr: Fixed32Field,
+    core::net::Ipv6Addr: Ipv6AddrField,
 }
 
 impl DefaultEncoding for &str {

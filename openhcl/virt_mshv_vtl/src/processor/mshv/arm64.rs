@@ -258,6 +258,8 @@ impl BackingPrivate for HypervisorBackedArm64 {
         // whether VTL 1 is enabled on the vp (this can be cached).
         false
     }
+
+    fn handle_exit_activity(_this: &mut UhProcessor<'_, Self>) {}
 }
 
 impl UhProcessor<'_, HypervisorBackedArm64> {

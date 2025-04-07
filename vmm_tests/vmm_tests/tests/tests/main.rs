@@ -10,6 +10,9 @@
 //!
 //! If you use the #[vmm_test] macro then all of the above requirements
 //! are handled for you automatically.
+//!
+//! Not all tests are expected to work in all scenarios. For example, Hyper-V
+//! tests do not work in WSL and TDX tests require a TDX-capable CPU.
 
 // Tests that run on more than one architecture.
 mod multiarch;

@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 use guid::Guid;
 use open_enum::open_enum;
 use scsi_defs::ScsiStatus;

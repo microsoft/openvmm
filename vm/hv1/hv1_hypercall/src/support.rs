@@ -225,8 +225,8 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
         let mut output_buffer = HypercallAlignedPage::new_zeroed();
 
         let ret = if control.fast() {
-            let input_regpairs = (input_len + 15) / 16;
-            let output_regpairs = (output_len + 15) / 16;
+            let input_regpairs = input_len.div_ceil(16);
+            let output_regpairs = output_len.div_ceil(16);
             if self.handler.fast_register_pair_count() < input_regpairs
                 || self.handler.fast_register_pair_count() - input_regpairs < output_regpairs
                 || (output_regpairs > 0 && !self.handler.extended_fast_hypercalls_ok())
@@ -278,7 +278,7 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
                 0
             };
 
-            let output_regpairs = (output_end + 15) / 16;
+            let output_regpairs = output_end.div_ceil(16);
 
             // Only need to write back output regpairs that were not previously completely written
             // out, at the new output location.

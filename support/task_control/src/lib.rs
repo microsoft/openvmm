@@ -280,7 +280,7 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
                 ..
             } => false,
             Inner::WithState {
-                activity: Activity::Running { .. },
+                activity: Activity::Running,
                 ..
             } => true,
             Inner::Invalid => unreachable!(),
@@ -331,7 +331,7 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
                 ..
             } => task_and_state,
             Inner::WithState {
-                activity: Activity::Running { .. },
+                activity: Activity::Running,
                 ..
             } => panic!("attempt to access running task"),
             Inner::Invalid => unreachable!(),
@@ -351,7 +351,7 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
                 ..
             } => task_and_state,
             Inner::WithState {
-                activity: Activity::Running { .. },
+                activity: Activity::Running,
                 ..
             } => panic!("attempt to access running task"),
             Inner::Invalid => unreachable!(),
@@ -371,7 +371,7 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
                 ..
             } => task_and_state,
             Inner::WithState {
-                activity: Activity::Running { .. },
+                activity: Activity::Running,
                 ..
             } => panic!("attempt to extract running task"),
             Inner::Invalid => unreachable!(),
@@ -393,7 +393,7 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
                 activity, shared, ..
             } => match activity {
                 Activity::Stopped(task_and_state) => f(task_and_state),
-                Activity::Running { .. } => Shared::push_call(shared, Box::new(f)),
+                Activity::Running => Shared::push_call(shared, Box::new(f)),
             },
             Inner::Invalid => unreachable!(),
         }

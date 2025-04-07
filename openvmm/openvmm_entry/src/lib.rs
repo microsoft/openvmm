@@ -922,6 +922,7 @@ fn vm_config_from_command_line(
                         },
                     },
                     enable_battery: opt.battery,
+                    no_persistent_secrets: true,
                 }
                 .into_resource(),
             ),

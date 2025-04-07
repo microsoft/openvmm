@@ -6,6 +6,8 @@
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
+use vmm_test_images::KnownIso;
+use vmm_test_images::KnownVhd;
 
 #[derive(Serialize, Deserialize)]
 pub struct VmmTestsDepArtifacts {
@@ -30,6 +32,10 @@ flowey_request! {
         pub nextest_filter_expr: Option<String>,
         /// Artifacts corresponding to required test dependencies
         pub dep_artifact_dirs: VmmTestsDepArtifacts,
+        /// VHDs to download
+        pub vhds: Vec<KnownVhd>,
+        /// ISOs to download
+        pub isos: Vec<KnownIso>,
 
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
@@ -67,6 +73,8 @@ impl SimpleFlowNode for Node {
             nextest_profile,
             nextest_filter_expr,
             dep_artifact_dirs,
+            vhds,
+            isos,
             fail_job_on_test_fail,
             artifact_dir,
             done,
@@ -130,37 +138,13 @@ impl SimpleFlowNode for Node {
             )
         });
 
-        // FIXME: share this with build_and_run_nextest_vmm_tests
-        let disk_images_dir = Some({
-            match target.architecture {
-                target_lexicon::Architecture::X86_64 => {
-                    ctx.requests::<crate::download_openvmm_vmm_tests_vhds::Node>([
-                        crate::download_openvmm_vmm_tests_vhds::Request::DownloadVhds(vec![
-                            vmm_test_images::KnownVhd::FreeBsd13_2,
-                            vmm_test_images::KnownVhd::Gen1WindowsDataCenterCore2022,
-                            vmm_test_images::KnownVhd::Gen2WindowsDataCenterCore2022,
-                            vmm_test_images::KnownVhd::Ubuntu2204Server,
-                        ]),
-                    ]);
+        ctx.requests::<crate::download_openvmm_vmm_tests_vhds::Node>([
+            crate::download_openvmm_vmm_tests_vhds::Request::DownloadVhds(vhds),
+            crate::download_openvmm_vmm_tests_vhds::Request::DownloadIsos(isos),
+        ]);
 
-                    ctx.requests::<crate::download_openvmm_vmm_tests_vhds::Node>([
-                        crate::download_openvmm_vmm_tests_vhds::Request::DownloadIsos(vec![
-                            vmm_test_images::KnownIso::FreeBsd13_2,
-                        ]),
-                    ]);
-                }
-                target_lexicon::Architecture::Aarch64(_) => {
-                    ctx.requests::<crate::download_openvmm_vmm_tests_vhds::Node>([
-                        crate::download_openvmm_vmm_tests_vhds::Request::DownloadVhds(vec![
-                            vmm_test_images::KnownVhd::Ubuntu2404ServerAarch64,
-                        ]),
-                    ]);
-                }
-                arch => anyhow::bail!("unsupported arch {arch}"),
-            }
-
-            ctx.reqv(crate::download_openvmm_vmm_tests_vhds::Request::GetDownloadFolder)
-        });
+        let disk_images_dir =
+            ctx.reqv(crate::download_openvmm_vmm_tests_vhds::Request::GetDownloadFolder);
 
         // FUTURE: once we move away from the known_paths resolver, this will no
         // longer be an ambient pre-run dependency.
@@ -190,7 +174,7 @@ impl SimpleFlowNode for Node {
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,
-            disk_images_dir,
+            disk_images_dir: Some(disk_images_dir),
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
             get_env: v,

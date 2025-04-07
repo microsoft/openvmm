@@ -543,7 +543,7 @@ impl FlowNode for Node {
                 }
             });
 
-            ctx.emit_rust_step("write results", |ctx| {
+            ctx.emit_minor_rust_step("write results", |ctx| {
                 let all_tests_passed = all_tests_passed_read.claim(ctx);
                 let junit_xml = junit_xml_read.claim(ctx);
                 let results = results.claim(ctx);
@@ -559,8 +559,6 @@ impl FlowNode for Node {
                             junit_xml,
                         },
                     );
-
-                    Ok(())
                 }
             });
         }
