@@ -104,11 +104,6 @@ pub fn delay_load_lxutil() -> std::io::Result<()> {
 }
 
 pal::delayload!("lxutil.dll" {
-    pub fn LxUtilFsCreateLinkReparseBuffer(
-        link_target: &ntdef::ANSI_STRING,
-        size: &mut ntdef::USHORT,
-    ) -> ntioapi::PREPARSE_DATA_BUFFER;
-
     pub fn LxUtilFsCreateMetadataEaBuffer(
         uid: lx::uid_t,
         gid: lx::gid_t,

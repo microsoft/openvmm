@@ -476,16 +476,7 @@ impl LxVolume {
     pub fn stat_fs(&self, path: &Path) -> lx::Result<lx::StatFs> {
         assert!(path.is_relative());
         let handle = self.open_file(path, winnt::FILE_READ_ATTRIBUTES, 0)?;
-        unsafe {
-            let mut stat_fs = mem::zeroed();
-            util::check_lx_error(api::LxUtilFsGetLxFileSystemAttributes(
-                handle.as_raw_handle(),
-                0,
-                &mut stat_fs,
-            ))?;
-
-            Ok(stat_fs)
-        }
+        fs::get_lx_file_system_attributes(&handle, 0)
     }
 
     pub fn set_xattr(
