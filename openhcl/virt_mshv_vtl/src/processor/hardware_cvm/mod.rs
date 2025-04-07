@@ -382,7 +382,13 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::CrInterceptCr0Mask
             | HvX64RegisterName::CrInterceptCr4Mask
             | HvX64RegisterName::CrInterceptIa32MiscEnableMask) => {
-                let vtl1 = self.vp.backing.cvm_state_mut().vtl1.as_ref().unwrap();
+                let vtl1 = self
+                    .vp
+                    .backing
+                    .cvm_state_mut()
+                    .vtl1
+                    .as_ref()
+                    .ok_or(HvError::InvalidVtlState)?;
                 Ok(match control_reg {
                     HvX64RegisterName::CrInterceptControl => {
                         u64::from(vtl1.reg_intercept.intercept_control)
@@ -439,6 +445,9 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::SysenterEip
             | HvX64RegisterName::SysenterEsp
             | HvX64RegisterName::Sfmask) => {
+                // Checked that the intercepted vtl is strictly higher than the
+                // target VTL, so no need to check for registered intercepts.
+
                 let mut msrs = self
                     .vp
                     .access_state(vtl.into())
@@ -459,13 +468,16 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     .set_virtual_msrs(&msrs)
                     .map_err(Self::reg_access_error_to_hv_err)
             }
-            HvX64RegisterName::TscAux => self
-                .vp
-                .access_state(vtl.into())
-                .set_tsc_aux(&virt::vp::TscAux {
-                    value: reg.value.as_u64(),
-                })
-                .map_err(Self::reg_access_error_to_hv_err),
+            HvX64RegisterName::TscAux => {
+                // Checked that the intercepted vtl is strictly higher than the
+                // target VTL, so no need to check for registered intercepts.
+                self.vp
+                    .access_state(vtl.into())
+                    .set_tsc_aux(&virt::vp::TscAux {
+                        value: reg.value.as_u64(),
+                    })
+                    .map_err(Self::reg_access_error_to_hv_err)
+            }
 
             debug_reg @ (HvX64RegisterName::Dr3 | HvX64RegisterName::Dr7) => {
                 let mut debug_registers = self
@@ -501,6 +513,8 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::Rip
             | HvX64RegisterName::Rflags
             | HvX64RegisterName::Rsp) => {
+                // Checked that the intercepted vtl is strictly higher than the
+                // target VTL, so no need to check for registered intercepts.
                 let mut registers = self
                     .vp
                     .access_state(vtl.into())
@@ -586,68 +600,20 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
                     return Err(HvError::AccessDenied);
                 }
 
-                let supported_controls = hvdef::HvRegisterCrInterceptControl::new()
-                    .with_cr0_write(true)
-                    .with_cr4_write(true)
-                    .with_xcr0_write(true)
-                    .with_ia32_misc_enable_write(true)
-                    .with_msr_lstar_write(true)
-                    .with_msr_star_write(true)
-                    .with_msr_cstar_write(true)
-                    .with_apic_base_msr_write(true)
-                    .with_msr_efer_write(true)
-                    .with_gdtr_write(true)
-                    .with_idtr_write(true)
-                    .with_ldtr_write(true)
-                    .with_tr_write(true)
-                    .with_msr_sysenter_cs_write(true)
-                    .with_msr_sysenter_eip_write(true)
-                    .with_msr_sysenter_esp_write(true)
-                    .with_msr_sfmask_write(true)
-                    .with_msr_tsc_aux_write(true)
-                    .with_msr_xss_write(true)
-                    .with_msr_scet_write(true)
-                    .with_msr_pls_ssp_write(true)
-                    .with_msr_interrupt_ssp_table_addr_write(true);
-
-                if reg.value.as_u64() & !u64::from(supported_controls) != 0 {
-                    return Err(HvError::InvalidRegisterValue);
-                }
-
-                let intercept_control =
-                    hvdef::HvRegisterCrInterceptControl::from(reg.value.as_u64());
-
-                if let virt::IsolationType::Snp = self.vp.partition.isolation {
-                    // Intercept control is always managed by the hypervisor, so any request
-                    // here is only opportunistic. Make the request directly with the
-                    // hypervisor. Since intercept control always applies to VTL 1 control of
-                    // VTL 0 state, the VTL 1 intercept control register is set here.
-                    self.vp
-                        .runner
-                        .set_vp_registers_hvcall(
-                            Vtl::Vtl1,
-                            [(
-                                HvX64RegisterName::CrInterceptControl,
-                                u64::from(intercept_control),
-                            )],
-                        )
-                        .expect("setting intercept control succeeds");
-                }
-
-                self.vp
-                    .backing
-                    .cvm_state_mut()
-                    .vtl1
-                    .as_mut()
-                    .unwrap()
-                    .reg_intercept
-                    .intercept_control = intercept_control;
-                Ok(())
+                self.set_vtl1_cr_intercept_control(hvdef::HvRegisterCrInterceptControl::from(
+                    reg.value.as_u64(),
+                ))
             }
             mask_reg @ (HvX64RegisterName::CrInterceptCr0Mask
             | HvX64RegisterName::CrInterceptCr4Mask
             | HvX64RegisterName::CrInterceptIa32MiscEnableMask) => {
-                let vtl1 = self.vp.backing.cvm_state_mut().vtl1.as_mut().unwrap();
+                let vtl1 = self
+                    .vp
+                    .backing
+                    .cvm_state_mut()
+                    .vtl1
+                    .as_mut()
+                    .ok_or(HvError::InvalidVtlState)?;
                 match mask_reg {
                     HvX64RegisterName::CrInterceptCr0Mask => {
                         vtl1.reg_intercept.cr0_mask = reg.value.as_u64();
@@ -745,6 +711,67 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
 
         self.vp.exit_activities[GuestVtl::Vtl0].set_pending_event(true);
 
+        Ok(())
+    }
+
+    fn set_vtl1_cr_intercept_control(
+        &mut self,
+        intercept_control: hvdef::HvRegisterCrInterceptControl,
+    ) -> HvResult<()> {
+        let supported_controls = hvdef::HvRegisterCrInterceptControl::new()
+            .with_cr0_write(true)
+            .with_cr4_write(true)
+            .with_xcr0_write(true)
+            .with_ia32_misc_enable_write(true)
+            .with_msr_lstar_write(true)
+            .with_msr_star_write(true)
+            .with_msr_cstar_write(true)
+            .with_apic_base_msr_write(true)
+            .with_msr_efer_write(true)
+            .with_gdtr_write(true)
+            .with_idtr_write(true)
+            .with_ldtr_write(true)
+            .with_tr_write(true)
+            .with_msr_sysenter_cs_write(true)
+            .with_msr_sysenter_eip_write(true)
+            .with_msr_sysenter_esp_write(true)
+            .with_msr_sfmask_write(true)
+            .with_msr_tsc_aux_write(true)
+            .with_msr_xss_write(true)
+            .with_msr_scet_write(true)
+            .with_msr_pls_ssp_write(true)
+            .with_msr_interrupt_ssp_table_addr_write(true);
+
+        if u64::from(intercept_control) & !u64::from(supported_controls) != 0 {
+            return Err(HvError::InvalidRegisterValue);
+        }
+
+        // TODO TDX GUEST VSM
+        if let virt::IsolationType::Snp = self.vp.partition.isolation {
+            // Intercept control is always managed by the hypervisor, so any request
+            // here is only opportunistic. Make the request directly with the
+            // hypervisor. Since intercept control always applies to VTL 1 control of
+            // VTL 0 state, the VTL 1 intercept control register is set here.
+            self.vp
+                .runner
+                .set_vp_registers_hvcall(
+                    Vtl::Vtl1,
+                    [(
+                        HvX64RegisterName::CrInterceptControl,
+                        u64::from(intercept_control),
+                    )],
+                )
+                .expect("setting intercept control succeeds");
+        }
+
+        self.vp
+            .backing
+            .cvm_state_mut()
+            .vtl1
+            .as_mut()
+            .unwrap()
+            .reg_intercept
+            .intercept_control = intercept_control;
         Ok(())
     }
 }
@@ -1785,35 +1812,55 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             );
 
             if vtl == GuestVtl::Vtl0 {
-                let protected_registers = [
-                    (HvX64RegisterName::Cr0, start_enable_vtl_state.context.cr0),
-                    (HvX64RegisterName::Cr4, start_enable_vtl_state.context.cr4),
-                    (
-                        HvX64RegisterName::Gdtr,
-                        hvdef::HvRegisterValue::from(start_enable_vtl_state.context.gdtr).as_u64(),
-                    ),
-                    (
-                        HvX64RegisterName::Idtr,
-                        hvdef::HvRegisterValue::from(start_enable_vtl_state.context.idtr).as_u64(),
-                    ),
-                    (
-                        HvX64RegisterName::Ldtr,
-                        hvdef::HvRegisterValue::from(start_enable_vtl_state.context.ldtr).as_u64(),
-                    ),
-                    (
-                        HvX64RegisterName::Tr,
-                        hvdef::HvRegisterValue::from(start_enable_vtl_state.context.tr).as_u64(),
-                    ),
-                ];
-
-                for (reg, value) in protected_registers {
+                let is_protected_register = |reg, value| -> Result<(), UhRunVpError> {
                     if self.cvm_is_protected_register_write(vtl, reg, value) {
                         // In this case, it doesn't matter what VTL the calling
                         // VP was in, just fail the startup. No need to send an
                         // intercept message.
                         return Err(UhRunVpError::StateAccessDenied);
                     }
-                }
+                    Ok(())
+                };
+
+                let hvdef::hypercall::InitialVpContextX64 {
+                    rip: _,
+                    rsp: _,
+                    rflags: _,
+                    cs: _,
+                    ds: _,
+                    es: _,
+                    fs: _,
+                    gs: _,
+                    ss: _,
+                    tr,
+                    ldtr,
+                    idtr,
+                    gdtr,
+                    efer: _,
+                    cr0,
+                    cr3: _,
+                    cr4,
+                    msr_cr_pat: _,
+                } = start_enable_vtl_state.context;
+
+                is_protected_register(HvX64RegisterName::Cr0, cr0)?;
+                is_protected_register(HvX64RegisterName::Cr4, cr4)?;
+                is_protected_register(
+                    HvX64RegisterName::Gdtr,
+                    hvdef::HvRegisterValue::from(gdtr).as_u64(),
+                )?;
+                is_protected_register(
+                    HvX64RegisterName::Idtr,
+                    hvdef::HvRegisterValue::from(idtr).as_u64(),
+                )?;
+                is_protected_register(
+                    HvX64RegisterName::Ldtr,
+                    hvdef::HvRegisterValue::from(ldtr).as_u64(),
+                )?;
+                is_protected_register(
+                    HvX64RegisterName::Tr,
+                    hvdef::HvRegisterValue::from(tr).as_u64(),
+                )?;
             }
 
             hv1_emulator::hypercall::set_x86_vp_context(
@@ -2011,12 +2058,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     ) -> bool {
         let send_intercept = self.cvm_is_protected_register_write(vtl, reg, value);
         if send_intercept {
-            let intercept_message = B::generate_intercept_message(
-                self,
-                vtl,
-                self.vp_index(),
-                crate::processor::InterceptMessageType::Register { reg, value },
-            );
+            let message_type = crate::processor::InterceptMessageType::Register { reg, value };
+
+            let message_state =
+                B::intercept_message_state(self, vtl, self.vp_index(), &message_type);
 
             tracing::debug!(
                 ?reg,
@@ -2027,7 +2072,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             self.inner.post_message(
                 GuestVtl::Vtl1,
                 hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX,
-                &intercept_message,
+                &message_type.generate_hv_message(message_state),
             );
         }
 
@@ -2073,19 +2118,16 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             };
 
             if generate_intercept {
-                let intercept_message = B::generate_intercept_message(
-                    self,
-                    vtl,
-                    self.vp_index(),
-                    crate::processor::InterceptMessageType::Msr { msr },
-                );
+                let message_type = crate::processor::InterceptMessageType::Msr { msr };
+                let message_state =
+                    B::intercept_message_state(self, vtl, self.vp_index(), &message_type);
 
                 tracing::debug!(?msr, "sending intercept to vtl 1 for secure msr write");
 
                 self.inner.post_message(
                     GuestVtl::Vtl1,
                     hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX,
-                    &intercept_message,
+                    &message_type.generate_hv_message(message_state),
                 );
 
                 return true;

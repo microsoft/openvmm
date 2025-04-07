@@ -571,12 +571,12 @@ impl HardwareIsolatedBacking for TdxBacked {
         todo!()
     }
 
-    fn generate_intercept_message(
+    fn intercept_message_state(
         _this: &UhProcessor<'_, Self>,
         _vtl: GuestVtl,
         _vp_index: VpIndex,
-        _message_type: super::InterceptMessageType,
-    ) -> hvdef::HvMessage {
+        _message_type: &super::InterceptMessageType,
+    ) -> super::InterceptMessageState {
         todo!()
     }
 }
