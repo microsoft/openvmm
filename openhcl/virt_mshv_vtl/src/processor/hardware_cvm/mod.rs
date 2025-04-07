@@ -45,6 +45,8 @@ use virt::x86::MsrError;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::translate::TranslateCachingInfo;
 use virt_support_x86emu::translate::TranslationRegisters;
+use x86defs::cpuid;
+use x86defs::cpuid::CpuidFunction;
 use zerocopy::FromZeros;
 
 impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
@@ -1424,6 +1426,102 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             }
         }
         r
+    }
+
+    pub(crate) fn cvm_cpuid_result(&mut self, vtl: GuestVtl, leaf: u32, subleaf: u32) -> [u32; 4] {
+        // Get the base fixed values.
+        let [mut eax, mut ebx, mut ecx, mut edx] =
+            self.partition.cpuid_result(leaf, subleaf, &[0, 0, 0, 0]);
+
+        // Apply fixups. These must be runtime changes only, for parts of cpuid
+        // that are dynamic (either beccause it's a function of the current VP's
+        // identity or the current VP or partition state).
+        //
+        // We rely on the cpuid set being accurate during partition startup,
+        // without running through this code, so violations of this principle
+        // may cause the partition to be constructed improperly.
+        match CpuidFunction(leaf) {
+            CpuidFunction::VersionAndFeatures => {
+                let cr4 = B::cr4_for_cpuid(self, vtl);
+                ecx = cpuid::VersionAndFeaturesEcx::from(ecx)
+                    .with_os_xsave(cr4 & x86defs::X64_CR4_OSXSAVE != 0)
+                    .into();
+                ebx = cpuid::VersionAndFeaturesEbx::from(ebx)
+                    .with_initial_apic_id(self.inner.vp_info.apic_id as u8)
+                    .into();
+            }
+            CpuidFunction::ExtendedTopologyEnumeration => {
+                if subleaf == 0 || subleaf == 1 {
+                    edx = self.inner.vp_info.apic_id;
+                }
+            }
+            CpuidFunction::ExtendedStateEnumeration => match subleaf {
+                0 => {
+                    let mut state = self.access_state(vtl.into());
+                    let xfem = state.xcr().expect("can't fail to get xfem").value;
+                    drop(state);
+                    ebx = self.partition.caps.xsave.standard_len_for(xfem);
+                }
+                1 => {
+                    if cpuid::ExtendedStateEnumerationSubleaf1Eax::from(eax).xsave_s() {
+                        let mut state = self.access_state(vtl.into());
+                        let xfem = state.xcr().expect("can't fail to get xfem").value;
+                        let xss = state.xss().expect("can't fail to get xss").value;
+                        drop(state);
+                        ebx = self.partition.caps.xsave.compact_len_for(xfem | xss);
+                    }
+                }
+                _ => {}
+            },
+            CpuidFunction::ProcessorTopologyDefinition
+                if self.partition.caps.vendor.is_amd_compatible() =>
+            {
+                let apic_id = self.inner.vp_info.apic_id;
+                let vps_per_socket = self.cvm_partition().vps_per_socket;
+                eax = cpuid::ProcessorTopologyDefinitionEax::from(eax)
+                    .with_extended_apic_id(apic_id)
+                    .into();
+
+                let topology_ebx = cpuid::ProcessorTopologyDefinitionEbx::from(ebx);
+                let mut new_unit_id = apic_id & (vps_per_socket - 1);
+
+                if topology_ebx.threads_per_compute_unit() > 0 {
+                    new_unit_id /= 2;
+                }
+
+                ebx = topology_ebx.with_compute_unit_id(new_unit_id as u8).into();
+
+                // TODO SNP: Ideally we would use the actual value of this property from the host, but
+                // we currently have no way of obtaining it. 1 is the default value for all current VMs.
+                let amd_nodes_per_socket = 1u32;
+
+                let node_id = apic_id
+                    >> (vps_per_socket
+                        .trailing_zeros()
+                        .saturating_sub(amd_nodes_per_socket.trailing_zeros()));
+                // TODO: just set this part statically.
+                let nodes_per_processor = amd_nodes_per_socket - 1;
+
+                ecx = cpuid::ProcessorTopologyDefinitionEcx::from(ecx)
+                    .with_node_id(node_id as u8)
+                    .with_nodes_per_processor(nodes_per_processor as u8)
+                    .into();
+            }
+            CpuidFunction::ExtendedSevFeatures
+                if self.partition.caps.vendor.is_amd_compatible() =>
+            {
+                // SEV features are not exposed to lower VTLs at this time.
+                //
+                // TODO: set this in cvm_cpuid.
+                eax = 0;
+                ebx = 0;
+                ecx = 0;
+                edx = 0;
+            }
+
+            _ => {}
+        }
+        [eax, ebx, ecx, edx]
     }
 
     fn set_vsm_partition_config(

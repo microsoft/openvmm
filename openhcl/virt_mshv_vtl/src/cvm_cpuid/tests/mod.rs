@@ -13,6 +13,13 @@ use x86defs::snp::HvPspCpuidPage;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
+const ZERO_CPUID_RESULT: CpuidResult = CpuidResult {
+    eax: 0,
+    ebx: 0,
+    ecx: 0,
+    edx: 0,
+};
+
 // Because of the filtering logic, besides subleaves 0 and 1, these are the
 // extended state enumeration subleaves that can be tested on.
 const XSAVE_ADDITIONAL_SUBLEAF_MASK: cpuid::ExtendedStateEnumerationSubleaf0Eax =
@@ -34,6 +41,11 @@ fn fill_result(leaf: CpuidFunction, subleaf: Option<u32>) -> HvPspCpuidLeaf {
         edx_out: 0xffffffff,
         reserved_z: 0,
     }
+}
+
+fn cpuid_result(cpuid: &CpuidLeafSet, leaf: CpuidFunction, subleaf: u32) -> CpuidResult {
+    let [eax, ebx, ecx, edx] = cpuid.result(leaf.0, subleaf, &[0; 4]);
+    CpuidResult { eax, ebx, ecx, edx }
 }
 
 /// If the leaf needs extra handling for test values, fills in a value for the
@@ -237,13 +249,14 @@ fn populate_and_filter() {
     };
 
     fill_required_leaves(&mut pages, None);
-    let cpuid = CpuidResults::new(CpuidResultsIsolationType::Snp {
+    let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
-    })
+    }
+    .build()
     .unwrap();
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::ExtendedAddressSpaceSizes, 0),
+        cpuid_result(&cpuid, CpuidFunction::ExtendedAddressSpaceSizes, 0),
         CpuidResult {
             eax: cpuid::ExtendedAddressSpaceSizesEax::new()
                 .with_physical_address_size(0xff)
@@ -282,7 +295,7 @@ fn populate_and_filter() {
         ebx,
         ecx,
         edx,
-    } = cpuid.registered_result(CpuidFunction::VendorAndMaxFunction, 0);
+    } = cpuid_result(&cpuid, CpuidFunction::VendorAndMaxFunction, 0);
 
     assert!(Vendor::from_ebx_ecx_edx(ebx, ecx, edx).is_amd_compatible());
     assert_eq!(max_function, CpuidFunction::AmdMaximum.0);
@@ -293,7 +306,7 @@ fn populate_and_filter() {
         ebx,
         ecx,
         edx,
-    } = cpuid.registered_result(CpuidFunction::ExtendedMaxFunction, 0);
+    } = cpuid_result(&cpuid, CpuidFunction::ExtendedMaxFunction, 0);
 
     assert!(Vendor::from_ebx_ecx_edx(ebx, ecx, edx).is_amd_compatible());
     assert_eq!(extended_max_function, CpuidFunction::ExtendedAmdMaximum.0);
@@ -347,13 +360,14 @@ fn subleaf() {
 
     fill_required_leaves(&mut pages, None);
 
-    let cpuid = CpuidResults::new(CpuidResultsIsolationType::Snp {
+    let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
-    })
+    }
+    .build()
     .unwrap();
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::CacheTopologyDefinition, 0),
+        cpuid_result(&cpuid, CpuidFunction::CacheTopologyDefinition, 0),
         CpuidResult {
             eax: 0xffffffff,
             ebx: 0xffffffff,
@@ -363,7 +377,7 @@ fn subleaf() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::CacheTopologyDefinition, 1),
+        cpuid_result(&cpuid, CpuidFunction::CacheTopologyDefinition, 1),
         CpuidResult {
             eax: 0x12345678,
             ebx: 0x12345678,
@@ -398,9 +412,10 @@ fn invlpgb() {
     fill_required_leaves(&mut pages, None);
 
     assert!(matches!(
-        CpuidResults::new(CpuidResultsIsolationType::Snp {
+        CpuidResultsIsolationType::Snp {
             cpuid_pages: pages.as_slice().as_bytes(),
-        }),
+        }
+        .build(),
         Err(CpuidResultsError::InvlpgbUnavailable)
     ));
 }
@@ -430,15 +445,14 @@ fn extended_address_space_sizes() {
 
     fill_required_leaves(&mut pages, None);
 
-    let cpuid = CpuidResults::new(CpuidResultsIsolationType::Snp {
+    let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
-    })
+    }
+    .build()
     .unwrap();
 
     let address_space_sizes_ebx = cpuid::ExtendedAddressSpaceSizesEbx::from(
-        cpuid
-            .registered_result(CpuidFunction::ExtendedAddressSpaceSizes, 0)
-            .ebx,
+        cpuid_result(&cpuid, CpuidFunction::ExtendedAddressSpaceSizes, 0).ebx,
     );
 
     assert!(address_space_sizes_ebx.btc_no());
@@ -452,148 +466,18 @@ fn hypervisor_present() {
 
     fill_required_leaves(&mut pages, None);
 
-    let cpuid = CpuidResults::new(CpuidResultsIsolationType::Snp {
+    let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
-    })
+    }
+    .build()
     .unwrap();
 
     assert!(
         cpuid::VersionAndFeaturesEcx::from(
-            cpuid
-                .registered_result(CpuidFunction::VersionAndFeatures, 0)
-                .ecx,
+            cpuid_result(&cpuid, CpuidFunction::VersionAndFeatures, 0).ecx,
         )
         .hypervisor_present()
     );
-}
-
-#[test]
-fn guest_results() {
-    let mut pages = vec![HvPspCpuidPage::new_zeroed(), HvPspCpuidPage::new_zeroed()];
-
-    fill_required_leaves(&mut pages, None);
-
-    let cpuid = CpuidResults::new(CpuidResultsIsolationType::Snp {
-        cpuid_pages: pages.as_slice().as_bytes(),
-    })
-    .unwrap();
-
-    // Returning something non-zero, to make it obvious. The fill_required_leaves also fills
-    // in 8 as the default value, so choose something else.
-    let apic_id = 0xd;
-    let test_results = [
-        (
-            CpuidFunction::VersionAndFeatures,
-            0,
-            CpuidGuestState {
-                xfem: 0,
-                xss: 0,
-                cr4: x86defs::X64_CR4_OSXSAVE,
-                apic_id,
-            },
-            CpuidResult {
-                eax: 0xfff3fff,
-                ebx: 0xd10ffff,
-                ecx: 0xfefa3203,
-                edx: 0x178bfbff,
-            },
-        ),
-        (
-            CpuidFunction::VersionAndFeatures,
-            0,
-            CpuidGuestState {
-                xfem: 0,
-                xss: 0,
-                cr4: 0,
-                apic_id,
-            },
-            CpuidResult {
-                eax: 0xfff3fff,
-                ebx: 0xd10ffff,
-                ecx: 0xf6fa3203,
-                edx: 0x178bfbff,
-            },
-        ),
-        (
-            CpuidFunction::ExtendedTopologyEnumeration,
-            0,
-            CpuidGuestState {
-                xfem: 0,
-                xss: 0,
-                cr4: 0,
-                apic_id,
-            },
-            CpuidResult {
-                eax: 0x1,
-                ebx: 0x2,
-                ecx: 0x100,
-                edx: 0xd,
-            },
-        ),
-        (
-            CpuidFunction::ExtendedStateEnumeration,
-            0,
-            CpuidGuestState {
-                xfem: 0,
-                xss: 0,
-                cr4: 0,
-                apic_id,
-            },
-            CpuidResult {
-                eax: 0xe7,
-                ebx: 0x240,
-                ecx: 0x240,
-                edx: 0x0,
-            },
-        ),
-        (
-            CpuidFunction::ExtendedStateEnumeration,
-            1,
-            CpuidGuestState {
-                xfem: 0x3,
-                xss: 0x1800,
-                cr4: 0,
-                apic_id,
-            },
-            CpuidResult {
-                eax: 0xb,
-                ebx: 0x388,
-                ecx: 0x1800,
-                edx: 0x0,
-            },
-        ),
-        (
-            CpuidFunction::ProcessorTopologyDefinition,
-            0,
-            CpuidGuestState {
-                xfem: 0,
-                xss: 0,
-                cr4: 0,
-                apic_id,
-            },
-            CpuidResult {
-                eax: 0xd,
-                ebx: 0xffff0106,
-                ecx: 0xfffff800,
-                edx: 0x0,
-            },
-        ),
-        (
-            CpuidFunction::ExtendedSevFeatures,
-            0,
-            CpuidGuestState {
-                xfem: 0,
-                xss: 0,
-                cr4: 0,
-                apic_id,
-            },
-            ZERO_CPUID_RESULT,
-        ),
-    ];
-
-    for (leaf, subleaf, guest_state, result) in test_results {
-        assert_eq!(cpuid.guest_result(leaf, subleaf, &guest_state), result);
-    }
 }
 
 // Note: this will not test whether the list of required results is correct, but
@@ -608,9 +492,9 @@ fn validate_required_snp() {
 
     for (leaf, subleaf) in [COMMON_REQUIRED_LEAVES, snp::SNP_REQUIRED_LEAVES].concat() {
         assert!(matches!(
-            CpuidResults::new(CpuidResultsIsolationType::Snp {
+            CpuidResultsIsolationType::Snp {
                 cpuid_pages: pages.as_slice().as_bytes().as_bytes(),
-            }),
+            }.build(),
             Err(CpuidResultsError::MissingRequiredResult(err_leaf, err_subleaf)) if (err_leaf == leaf && err_subleaf == subleaf)
         ));
 
@@ -643,13 +527,14 @@ fn zeros_unsupported_leaf() {
     let mut pages = vec![HvPspCpuidPage::new_zeroed(), HvPspCpuidPage::new_zeroed()];
 
     fill_required_leaves(&mut pages, None);
-    let cpuid = CpuidResults::new(CpuidResultsIsolationType::Snp {
+    let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
-    })
+    }
+    .build()
     .unwrap();
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction::SgxEnumeration, 0),
+        cpuid_result(&cpuid, CpuidFunction::SgxEnumeration, 0),
         ZERO_CPUID_RESULT
     );
 }
@@ -675,25 +560,22 @@ fn tsc_aux() {
     };
 
     fill_required_leaves(&mut pages, Some(&[CpuidFunction::ExtendedSevFeatures]));
-    let cpuid = CpuidResults::new(CpuidResultsIsolationType::Snp {
+    let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
-    })
+    }
+    .build()
     .unwrap();
 
     assert!(
         !cpuid::ExtendedVersionAndFeaturesEdx::from(
-            cpuid
-                .registered_result(CpuidFunction::ExtendedVersionAndFeatures, 0)
-                .edx
+            cpuid_result(&cpuid, CpuidFunction::ExtendedVersionAndFeatures, 0).edx
         )
         .rdtscp()
     );
 
     assert!(
         !cpuid::ExtendedFeatureSubleaf0Ecx::from(
-            cpuid
-                .registered_result(CpuidFunction::ExtendedFeatures, 0)
-                .ecx
+            cpuid_result(&cpuid, CpuidFunction::ExtendedFeatures, 0).ecx
         )
         .rd_pid()
     );
@@ -1227,20 +1109,14 @@ fn real_values() {
     };
     pages[1].count += 1;
 
-    let cpuid = CpuidResults::new(CpuidResultsIsolationType::Snp {
+    let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
-    })
+    }
+    .build()
     .unwrap();
 
-    let guest_state = CpuidGuestState {
-        xfem: 0xe7,
-        xss: 0x800,
-        cr4: 0xb50ef8,
-        apic_id: 0,
-    };
-
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x00000000), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x00000000), 0x0),
         CpuidResult {
             eax: 0x0000000d,
             ebx: 0x68747541,
@@ -1250,17 +1126,17 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x00000001), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x00000001), 0x0),
         CpuidResult {
             eax: 0x00a10f11,
             ebx: 0x00100800,
-            ecx: 0xfefa3203,
+            ecx: 0xf6da3203,
             edx: 0x178bfbff,
         }
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x00000002), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x00000002), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1270,7 +1146,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x00000003), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x00000003), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1280,7 +1156,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x00000004), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x00000004), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1290,7 +1166,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x00000005), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x00000005), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1300,7 +1176,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x00000006), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x00000006), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1310,7 +1186,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x00000007), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x00000007), 0x0),
         CpuidResult {
             eax: 0x00000001,
             ebx: 0xf1bf07a9,
@@ -1320,7 +1196,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x00000008), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x00000008), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1330,7 +1206,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x00000009), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x00000009), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1340,7 +1216,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.registered_result(CpuidFunction(0x0000000a), 0x0),
+        cpuid_result(&cpuid, CpuidFunction(0x0000000a), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1350,7 +1226,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x0000000b), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x0000000b), 0x0),
         CpuidResult {
             eax: 0x00000001,
             ebx: 0x00000002,
@@ -1360,7 +1236,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x0000000b), 0x1, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x0000000b), 0x1),
         CpuidResult {
             eax: 0x00000004,
             ebx: 0x00000010,
@@ -1370,7 +1246,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x0000000b), 0x2, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x0000000b), 0x2),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1380,7 +1256,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x0000000c), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x0000000c), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1390,27 +1266,27 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x0000000d), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x0000000d), 0x0),
         CpuidResult {
             eax: 0x000000e7,
-            ebx: 0x00000980,
+            ebx: 0x00000240,
             ecx: 0x00000980,
             edx: 0x00000000,
         }
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x0000000d), 0x1, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x0000000d), 0x1),
         CpuidResult {
             eax: 0x0000000b,
-            ebx: 0x00000990,
+            ebx: 0x00000240,
             ecx: 0x00001800,
             edx: 0x00000000,
         }
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x0000000d), 0x2, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x0000000d), 0x2),
         CpuidResult {
             eax: 0x00000100,
             ebx: 0x00000240,
@@ -1420,7 +1296,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x0000000d), 0x5, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x0000000d), 0x5),
         CpuidResult {
             eax: 0x00000040,
             ebx: 0x00000340,
@@ -1430,7 +1306,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x0000000d), 0x6, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x0000000d), 0x6),
         CpuidResult {
             eax: 0x00000200,
             ebx: 0x00000380,
@@ -1440,7 +1316,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x0000000d), 0x7, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x0000000d), 0x7),
         CpuidResult {
             eax: 0x00000400,
             ebx: 0x00000580,
@@ -1450,7 +1326,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000000), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000000), 0x0),
         CpuidResult {
             eax: 0x80000026,
             ebx: 0x68747541,
@@ -1460,7 +1336,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000001), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000001), 0x0),
         CpuidResult {
             eax: 0x00a10f11,
             ebx: 0x40000000,
@@ -1470,7 +1346,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000002), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000002), 0x0),
         CpuidResult {
             eax: 0x20444d41,
             ebx: 0x43595045,
@@ -1480,7 +1356,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000003), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000003), 0x0),
         CpuidResult {
             eax: 0x726f432d,
             ebx: 0x72502065,
@@ -1490,7 +1366,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000004), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000004), 0x0),
         CpuidResult {
             eax: 0x20202020,
             ebx: 0x20202020,
@@ -1500,7 +1376,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000005), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000005), 0x0),
         CpuidResult {
             eax: 0xff48ff40,
             ebx: 0xff48ff40,
@@ -1510,7 +1386,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000006), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000006), 0x0),
         CpuidResult {
             eax: 0x5c002200,
             ebx: 0x6c004200,
@@ -1520,7 +1396,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000007), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000007), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1530,7 +1406,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000008), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000008), 0x0),
         CpuidResult {
             eax: 0x0000302f,
             ebx: 0x3112d01d,
@@ -1540,7 +1416,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000009), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000009), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1550,7 +1426,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x8000000a), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x8000000a), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1560,7 +1436,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x8000000b), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x8000000b), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1570,7 +1446,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x8000000c), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x8000000c), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1580,7 +1456,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x8000000d), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x8000000d), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1590,7 +1466,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x8000000e), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x8000000e), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1600,7 +1476,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x8000000f), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x8000000f), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1610,7 +1486,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000010), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000010), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1620,7 +1496,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000011), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000011), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1630,7 +1506,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000012), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000012), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1640,7 +1516,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000013), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000013), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1650,7 +1526,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000014), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000014), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1660,7 +1536,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000015), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000015), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1670,7 +1546,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000016), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000016), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1680,7 +1556,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000017), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000017), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1690,7 +1566,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000018), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000018), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1700,7 +1576,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000019), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000019), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1710,7 +1586,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x8000001a), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x8000001a), 0x0),
         CpuidResult {
             eax: 0x00000006,
             ebx: 0x00000000,
@@ -1720,7 +1596,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x8000001b), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x8000001b), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1730,7 +1606,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x8000001c), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x8000001c), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1740,7 +1616,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x8000001d), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x8000001d), 0x0),
         CpuidResult {
             eax: 0x00004121,
             ebx: 0x01c0003f,
@@ -1750,7 +1626,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x8000001e), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x8000001e), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000100,
@@ -1760,7 +1636,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x8000001f), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000020), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1770,7 +1646,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000020), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000021), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1780,7 +1656,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000021), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000022), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1790,7 +1666,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000022), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000023), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1800,7 +1676,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000023), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000024), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1810,7 +1686,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000024), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000025), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,
@@ -1820,17 +1696,7 @@ fn real_values() {
     );
 
     assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000025), 0x0, &guest_state),
-        CpuidResult {
-            eax: 0x00000000,
-            ebx: 0x00000000,
-            ecx: 0x00000000,
-            edx: 0x00000000,
-        }
-    );
-
-    assert_eq!(
-        cpuid.guest_result(CpuidFunction(0x80000026), 0x0, &guest_state),
+        cpuid_result(&cpuid, CpuidFunction(0x80000026), 0x0),
         CpuidResult {
             eax: 0x00000000,
             ebx: 0x00000000,

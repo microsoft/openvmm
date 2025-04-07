@@ -80,7 +80,7 @@ impl HypervisorBackedArm64Shared {
     /// Creates a new partition-shared data structure for hypervisor backed VMs.
     pub(crate) fn new(
         _partition_params: &UhPartitionNewParams<'_>,
-        params: BackingSharedParams,
+        params: BackingSharedParams<'_>,
     ) -> Result<Self, Error> {
         Ok(Self {
             guest_vsm: RwLock::new(GuestVsmState::from_availability(params.guest_vsm_available)),
