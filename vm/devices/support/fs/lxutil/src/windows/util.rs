@@ -67,7 +67,7 @@ pub trait FileInformationClass: Default {
     /// padding bytes which would be UB in Rust.
     fn as_ptr_len(&self) -> (*const u8, usize);
 
-    /// A prt and len describing this struct to be used for `FileInformation` in different NT methods.
+    /// A ptr and len describing this struct to be used for `FileInformation` in different NT methods.
     ///
     /// # Safety
     /// The intention for these methods are to be used directly with the C API. The ptr, len combo returned may access

@@ -1033,3 +1033,51 @@ pub fn create_link_reparse_buffer(
         ))
     }
 }
+
+/// Retrieve the file system attributes and optionally the name of a filesystem.
+pub fn get_lx_file_system_attributes(
+    file_handle: &OwnedHandle,
+    fs_type: u32,
+) -> lx::Result<lx::StatFs> {
+    let mut iosb = Default::default();
+    let mut size_info: SystemServices::FILE_FS_FULL_SIZE_INFORMATION = Default::default();
+    let mut attribute_info: HeaderVec<FileSystem::FILE_FS_ATTRIBUTE_INFORMATION, u16, 1> =
+        HeaderVec::with_capacity(Default::default(), LX_UTIL_FS_NAME_LENGTH);
+    // SAFETY: Calling Win32 API as documented.
+    unsafe {
+        let _ = util::check_status(FileSystem::NtQueryVolumeInformationFile(
+            Foundation::HANDLE(file_handle.as_raw_handle()),
+            &mut iosb,
+            std::ptr::from_mut(&mut size_info).cast(),
+            size_of::<SystemServices::FILE_FS_FULL_SIZE_INFORMATION>() as u32,
+            FileSystem::FileFsSizeInformation,
+        ))?;
+
+        let _ = util::check_status(FileSystem::NtQueryVolumeInformationFile(
+            Foundation::HANDLE(file_handle.as_raw_handle()),
+            &mut iosb,
+            attribute_info.as_mut_ptr().cast(),
+            attribute_info.total_byte_capacity() as _,
+            FileSystem::FileFsAttributeInformation,
+        ))?;
+    }
+
+    let block_size = size_info.BytesPerSector * size_info.SectorsPerAllocationUnit;
+
+    Ok(lx::StatFs {
+        fs_type: fs_type as _,
+        block_size: block_size as _,
+        block_count: size_info.TotalAllocationUnits as _,
+        free_block_count: size_info.ActualAvailableAllocationUnits as _,
+        available_block_count: size_info.CallerAvailableAllocationUnits as _,
+        file_system_id: [1, 0, 0, 0, 0, 0, 0, 0],
+        maximum_file_name_length: attribute_info.head.MaximumComponentNameLength as _,
+        file_record_size: block_size as _,
+        spare: [0; 4],
+        // The following values are faked, based mostly on what Android expected.
+        file_count: 999,
+        available_file_count: 1000000,
+        // Flags is filled out by VFS, not here.
+        flags: 0,
+    })
+}
