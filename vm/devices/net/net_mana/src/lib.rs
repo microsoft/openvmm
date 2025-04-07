@@ -11,6 +11,7 @@ use gdma_defs::Cqe;
 use gdma_defs::GDMA_EQE_COMPLETION;
 use gdma_defs::Sge;
 use gdma_defs::bnic::CQE_RX_OKAY;
+use gdma_defs::bnic::CQE_TX_GDMA_ERR;
 use gdma_defs::bnic::CQE_TX_OKAY;
 use gdma_defs::bnic::MANA_LONG_PKT_FMT;
 use gdma_defs::bnic::MANA_SHORT_PKT_FMT;
@@ -607,6 +608,7 @@ struct QueueStats {
     tx_packets: u64,
     tx_errors: u64,
     tx_dropped: u64,
+    tx_stuck: u64,
 
     rx_events: u64,
     rx_packets: u64,
@@ -622,6 +624,7 @@ impl Inspect for QueueStats {
             .counter("tx_packets", self.tx_packets)
             .counter("tx_errors", self.tx_errors)
             .counter("tx_dropped", self.tx_dropped)
+            .counter("tx_stuck", self.tx_stuck)
             .counter("rx_events", self.rx_events)
             .counter("rx_packets", self.rx_packets)
             .counter("rx_errors", self.rx_errors)
@@ -716,6 +719,26 @@ impl<T: DeviceBacking> ManaQueue<T> {
             true
         } else {
             false
+        }
+    }
+
+    fn trace_tx_wqe(&mut self, tx_oob: ManaTxCompOob) {
+        tracelimit::error_ratelimited!(
+            cqe_hdr_type = tx_oob.cqe_hdr.cqe_type(),
+            cqe_hdr_vendor_err = tx_oob.cqe_hdr.vendor_err(),
+            tx_oob_data_offset = tx_oob.tx_data_offset,
+            tx_oob_sgl_offset = tx_oob.offsets.tx_sgl_offset(),
+            tx_oob_wqe_offset = tx_oob.offsets.tx_wqe_offset(),
+            "tx completion error"
+        );
+
+        if let Some(packet) = self.posted_tx.front() {
+            tracelimit::error_ratelimited!(
+                id = packet.id.0,
+                wqe_len = packet.wqe_len,
+                bounced_len_with_padding = packet.bounced_len_with_padding,
+                "posted tx"
+            );
         }
     }
 }
@@ -903,6 +926,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
 
     fn tx_poll(&mut self, done: &mut [TxId]) -> anyhow::Result<usize> {
         let mut i = 0;
+        let mut queue_stuck = false;
         while i < done.len() {
             let id = if let Some(cqe) = self.tx_cq.pop() {
                 let tx_oob = ManaTxCompOob::read_from_prefix(&cqe.data[..]).unwrap().0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
@@ -910,10 +934,24 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                     CQE_TX_OKAY => {
                         self.stats.tx_packets += 1;
                     }
+                    CQE_TX_GDMA_ERR => {
+                        queue_stuck = true;
+                    }
                     ty => {
-                        tracelimit::error_ratelimited!(ty, "tx completion error");
+                        let vendor_err = tx_oob.cqe_hdr.vendor_err();
+                        tracelimit::error_ratelimited!(ty, vendor_err, "tx completion error");
                         self.stats.tx_errors += 1;
                     }
+                }
+                if queue_stuck {
+                    // Hardware hit an error with the packet coming from the Guest.
+                    // CQE_TX_GDMA_ERR is how the Hardware indicates that it has disabled the queue.
+                    self.stats.tx_errors += 1;
+                    self.stats.tx_stuck += 1;
+                    self.trace_tx_wqe(tx_oob);
+                    // TODO: attempt to recover by reenabling the queue.
+                    // tracelimit::info_ratelimited!("recreated tx queue");
+                    break;
                 }
                 let packet = self.posted_tx.pop_front().unwrap();
                 self.tx_wq.advance_head(packet.wqe_len);
