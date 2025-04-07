@@ -7,6 +7,7 @@ use super::BackingParams;
 use super::BackingPrivate;
 use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
+use super::InterceptMessageState;
 use super::InterceptMessageType;
 use super::UhEmulationState;
 use super::UhRunVpError;
@@ -273,12 +274,12 @@ impl HardwareIsolatedBacking for SnpBacked {
         this.runner.vmsa(vtl).cr4()
     }
 
-    fn generate_intercept_message(
+    fn intercept_message_state(
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
         vp_index: VpIndex,
-        message_type: InterceptMessageType,
-    ) -> hvdef::HvMessage {
+        message_type: &InterceptMessageType,
+    ) -> InterceptMessageState {
         let vmsa = this.runner.vmsa(vtl);
 
         let write_header = hvdef::HvX64InterceptMessageHeader {
@@ -295,36 +296,16 @@ impl HardwareIsolatedBacking for SnpBacked {
         };
 
         match message_type {
-            InterceptMessageType::Register { reg, value } => {
-                let intercept_message = hvdef::HvX64RegisterInterceptMessage {
+            InterceptMessageType::Register { reg: _, value: _ } => {
+                InterceptMessageState::Register {
                     header: write_header,
-                    flags: hvdef::HvX64RegisterInterceptMessageFlags::new(),
-                    rsvd: 0,
-                    rsvd2: 0,
-                    register_name: reg,
-                    access_info: value as u128,
-                };
-                hvdef::HvMessage::new(
-                    HvMessageType::HvMessageTypeRegisterIntercept,
-                    0,
-                    intercept_message.as_bytes(),
-                )
+                }
             }
-            InterceptMessageType::Msr { msr } => {
-                let intercept_message = hvdef::HvX64MsrInterceptMessage {
-                    header: write_header,
-                    msr_number: msr,
-                    rax: vmsa.rax(),
-                    rdx: vmsa.rdx(),
-                    reserved: 0,
-                };
-
-                hvdef::HvMessage::new(
-                    HvMessageType::HvMessageTypeMsrIntercept,
-                    0,
-                    intercept_message.as_bytes(),
-                )
-            }
+            InterceptMessageType::Msr { msr: _ } => InterceptMessageState::Msr {
+                header: write_header,
+                rax: vmsa.rax(),
+                rdx: vmsa.rdx(),
+            },
         }
     }
 }
@@ -1100,19 +1081,19 @@ impl UhProcessor<'_, SnpBacked> {
             cr4: vmsa.cr4(),
             cpl: vmsa.cpl(),
         }) {
-            if !self.cvm_protect_secure_register_write(
+            if self.cvm_protect_secure_register_write(
                 entered_from_vtl,
                 HvX64RegisterName::Xfem,
                 value,
             ) {
-                let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
-                vmsa.set_xcr0(value);
-                advance_to_next_instruction(&mut vmsa);
-            } else {
                 // Once the intercept message has been posted, no further
                 // processing is required. Do not advance the instruction
                 // pointer here, since the instruction pointer must continue to
                 // point to the instruction that generated the intercept.
+            } else {
+                let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
+                vmsa.set_xcr0(value);
+                advance_to_next_instruction(&mut vmsa);
             }
         } else {
             let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
@@ -1155,10 +1136,22 @@ impl UhProcessor<'_, SnpBacked> {
         };
 
         // Special case: LMSW/CLTS/SMSW intercepts do not provide decode assist
-        // information. No support to emulate these instructions yet.
-        assert!(mov_crx_drx.mov_crx());
+        // information. No support to emulate these instructions yet, but the
+        // access by the guest might be allowed by the higher VTL and therefore
+        // crashing is not necessarily the correct behavior.
+        //
+        // TODO SNP: consider emulating the instruction.
+        if !mov_crx_drx.mov_crx() {
+            tracelimit::warn_ratelimited!("Intercepted crx access, instruction is not mov crx");
+            return;
+        }
 
-        if !self.cvm_protect_secure_register_write(entered_from_vtl, reg, reg_value) {
+        if self.cvm_protect_secure_register_write(entered_from_vtl, reg, reg_value) {
+            // Once the intercept message has been posted, no further
+            // processing is required.  Do not advance the instruction
+            // pointer here, since the instruction pointer must continue to
+            // point to the instruction that generated the intercept.
+        } else {
             let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
             match reg {
                 HvX64RegisterName::Cr0 => vmsa.set_cr0(reg_value),
@@ -1166,11 +1159,6 @@ impl UhProcessor<'_, SnpBacked> {
                 _ => unreachable!(),
             }
             advance_to_next_instruction(&mut vmsa);
-        } else {
-            // Once the intercept message has been posted, no further
-            // processing is required.  Do not advance the instruction
-            // pointer here, since the instruction pointer must continue to
-            // point to the instruction that generated the intercept.
         }
     }
 
@@ -1496,16 +1484,12 @@ impl UhProcessor<'_, SnpBacked> {
 
             SevExitCode::EXCP_DB => &mut self.backing.exit_stats[entered_from_vtl].excp_db,
 
-            cr_exit_code @ (SevExitCode::CR0_WRITE | SevExitCode::CR4_WRITE) => {
-                self.handle_crx_intercept(
-                    entered_from_vtl,
-                    match cr_exit_code {
-                        SevExitCode::CR0_WRITE => HvX64RegisterName::Cr0,
-                        SevExitCode::CR4_WRITE => HvX64RegisterName::Cr4,
-                        _ => unreachable!(),
-                    },
-                );
-
+            SevExitCode::CR0_WRITE => {
+                self.handle_crx_intercept(entered_from_vtl, HvX64RegisterName::Cr0);
+                &mut self.backing.exit_stats[entered_from_vtl].secure_reg_write
+            }
+            SevExitCode::CR4_WRITE => {
+                self.handle_crx_intercept(entered_from_vtl, HvX64RegisterName::Cr4);
                 &mut self.backing.exit_stats[entered_from_vtl].secure_reg_write
             }
 
@@ -1513,7 +1497,6 @@ impl UhProcessor<'_, SnpBacked> {
             | SevExitCode::IDTR_WRITE
             | SevExitCode::LDTR_WRITE
             | SevExitCode::TR_WRITE) => {
-                tracing::info!(?tr_exit_code, "handling secure register write");
                 let reg = match tr_exit_code {
                     SevExitCode::GDTR_WRITE => HvX64RegisterName::Gdtr,
                     SevExitCode::IDTR_WRITE => HvX64RegisterName::Idtr,

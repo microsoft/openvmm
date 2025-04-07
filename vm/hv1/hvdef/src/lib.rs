@@ -2978,15 +2978,6 @@ pub struct HvX64RegisterInterceptMessageFlags {
     _rsvd: u8,
 }
 
-// Note: in C, the access_info is a union:
-// typedef union _HV_X64_REGISTER_ACCESS_INFO
-// {
-//     HV_REGISTER_VALUE SourceValue;
-//     HV_REGISTER_NAME DestinationRegister;
-//     UINT64 SourceAddress;
-//     UINT64 DestinationAddress;
-// } HV_X64_REGISTER_ACCESS_INFO, *PHV_X64_REGISTER_ACCESS_INFO;
-
 #[repr(C)]
 #[derive(IntoBytes, Immutable, FromBytes)]
 pub struct HvX64RegisterInterceptMessage {
@@ -2995,7 +2986,17 @@ pub struct HvX64RegisterInterceptMessage {
     pub rsvd: u8,
     pub rsvd2: u16,
     pub register_name: HvX64RegisterName,
-    pub access_info: u128,
+    pub access_info: HvX64RegisterAccessInfo,
+}
+
+#[repr(transparent)]
+#[derive(IntoBytes, Immutable, FromBytes)]
+pub struct HvX64RegisterAccessInfo(u128);
+
+impl HvX64RegisterAccessInfo {
+    pub fn new_source_value(source_value: HvRegisterValue) -> Self {
+        Self(source_value.as_u128())
+    }
 }
 
 open_enum! {

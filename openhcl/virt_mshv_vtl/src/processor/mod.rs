@@ -24,6 +24,7 @@ cfg_if::cfg_if! {
         use virt_support_apic::LocalApic;
         use virt_support_x86emu::translate::TranslationRegisters;
         use virt::vp::AccessVpState;
+        use zerocopy::IntoBytes;
     } else if #[cfg(guest_arch = "aarch64")] {
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
@@ -281,10 +282,73 @@ pub(crate) struct BackingSharedParams<'a> {
     pub _phantom: PhantomData<&'a ()>,
 }
 
-#[cfg(guest_arch = "x86_64")]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 enum InterceptMessageType {
-    Register { reg: HvX64RegisterName, value: u64 },
-    Msr { msr: u32 },
+    #[cfg(guest_arch = "x86_64")]
+    Register {
+        reg: HvX64RegisterName,
+        value: u64,
+    },
+    Msr {
+        msr: u32,
+    },
+}
+
+enum InterceptMessageState {
+    Register {
+        header: hvdef::HvX64InterceptMessageHeader,
+    },
+    Msr {
+        header: hvdef::HvX64InterceptMessageHeader,
+        rax: u64,
+        rdx: u64,
+    },
+}
+
+impl InterceptMessageType {
+    #[cfg(guest_arch = "x86_64")]
+    fn generate_hv_message(&self, state: InterceptMessageState) -> HvMessage {
+        match self {
+            InterceptMessageType::Register { reg, value } => {
+                let InterceptMessageState::Register { header } = state else {
+                    unreachable!()
+                };
+                let intercept_message = hvdef::HvX64RegisterInterceptMessage {
+                    header,
+                    flags: hvdef::HvX64RegisterInterceptMessageFlags::new(),
+                    rsvd: 0,
+                    rsvd2: 0,
+                    register_name: *reg,
+                    access_info: hvdef::HvX64RegisterAccessInfo::new_source_value(
+                        hvdef::HvRegisterValue::from(*value),
+                    ),
+                };
+                HvMessage::new(
+                    hvdef::HvMessageType::HvMessageTypeRegisterIntercept,
+                    0,
+                    intercept_message.as_bytes(),
+                )
+            }
+            InterceptMessageType::Msr { msr } => {
+                let InterceptMessageState::Msr { header, rax, rdx } = state else {
+                    unreachable!()
+                };
+                let intercept_message = hvdef::HvX64MsrInterceptMessage {
+                    header,
+                    msr_number: *msr,
+                    rax,
+                    rdx,
+                    reserved: 0,
+                };
+
+                HvMessage::new(
+                    hvdef::HvMessageType::HvMessageTypeMsrIntercept,
+                    0,
+                    intercept_message.as_bytes(),
+                )
+            }
+        }
+    }
 }
 
 /// Trait for processor backings that have hardware isolation support.
@@ -330,12 +394,12 @@ trait HardwareIsolatedBacking: Backing {
     fn cr4_for_cpuid(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
 =======
 
-    fn generate_intercept_message(
+    fn intercept_message_state(
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
         vp_index: VpIndex,
-        message_type: InterceptMessageType,
-    ) -> HvMessage;
+        message_type: &InterceptMessageType,
+    ) -> InterceptMessageState;
 
     fn cr0(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
     fn cr4(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;

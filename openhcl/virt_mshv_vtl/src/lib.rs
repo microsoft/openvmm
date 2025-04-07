@@ -433,6 +433,8 @@ pub struct SecureRegisterInterceptState {
     intercept_control: hvdef::HvRegisterCrInterceptControl,
     cr0_mask: u64,
     cr4_mask: u64,
+    // Writes to X86X_IA32_MSR_MISC_ENABLE are dropped, so this is only used so
+    // that get_vp_register returns the correct value from a set_vp_register
     ia32_misc_enable_mask: u64,
 }
 
