@@ -9,6 +9,7 @@ use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
 use super::InterceptMessageState;
 use super::InterceptMessageType;
+use super::InterceptMessageTypeState;
 use super::UhEmulationState;
 use super::UhRunVpError;
 use super::hardware_cvm;
@@ -262,10 +263,6 @@ impl HardwareIsolatedBacking for SnpBacked {
         this.runner.vmsa_mut(vtl).set_event_inject(inject_info);
     }
 
-    fn cr4_for_cpuid(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
-        this.runner.vmsa(vtl).cr4()
-    }
-
     fn cr0(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
         this.runner.vmsa(vtl).cr0()
     }
@@ -277,36 +274,45 @@ impl HardwareIsolatedBacking for SnpBacked {
     fn intercept_message_state(
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
-        vp_index: VpIndex,
         message_type: &InterceptMessageType,
     ) -> InterceptMessageState {
         let vmsa = this.runner.vmsa(vtl);
 
-        let write_header = hvdef::HvX64InterceptMessageHeader {
-            vp_index: vp_index.index(),
+        InterceptMessageState {
             instruction_length_and_cr8: (vmsa.next_rip() - vmsa.rip()) as u8,
-            intercept_access_type: hvdef::HvInterceptAccessType::WRITE,
-            execution_state: hvdef::HvX64VpExecutionState::new()
-                .with_cpl(vmsa.cpl())
-                .with_vtl(vtl.into())
-                .with_efer_lma(vmsa.efer() & x86defs::X64_EFER_LMA != 0),
+            cpl: vmsa.cpl(),
+            efer_lma: vmsa.efer() & x86defs::X64_EFER_LMA != 0,
             cs_segment: virt_seg_from_snp(vmsa.cs()).into(),
             rip: vmsa.rip(),
             rflags: vmsa.rflags(),
-        };
+            per_type_state: {
+                match message_type {
+                    InterceptMessageType::Register { reg: _, value: _ } => {
+                        InterceptMessageTypeState::Register
+                    }
 
-        match message_type {
-            InterceptMessageType::Register { reg: _, value: _ } => {
-                InterceptMessageState::Register {
-                    header: write_header,
+                    InterceptMessageType::Msr { msr: _ } => InterceptMessageTypeState::Msr {
+                        rax: vmsa.rax(),
+                        rdx: vmsa.rdx(),
+                    },
                 }
-            }
-            InterceptMessageType::Msr { msr: _ } => InterceptMessageState::Msr {
-                header: write_header,
-                rax: vmsa.rax(),
-                rdx: vmsa.rdx(),
             },
         }
+    }
+
+    fn cr_intercept_registration(
+        this: &mut UhProcessor<'_, Self>,
+        intercept_control: hvdef::HvRegisterCrInterceptControl,
+    ) {
+        this.runner
+            .set_vp_registers_hvcall(
+                Vtl::Vtl1,
+                [(
+                    HvX64RegisterName::CrInterceptControl,
+                    u64::from(intercept_control),
+                )],
+            )
+            .expect("setting intercept control succeeds");
     }
 }
 

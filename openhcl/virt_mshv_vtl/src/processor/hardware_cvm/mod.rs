@@ -752,16 +752,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             // here is only opportunistic. Make the request directly with the
             // hypervisor. Since intercept control always applies to VTL 1 control of
             // VTL 0 state, the VTL 1 intercept control register is set here.
-            self.vp
-                .runner
-                .set_vp_registers_hvcall(
-                    Vtl::Vtl1,
-                    [(
-                        HvX64RegisterName::CrInterceptControl,
-                        u64::from(intercept_control),
-                    )],
-                )
-                .expect("setting intercept control succeeds");
+            B::cr_intercept_registration(self.vp, intercept_control);
         }
 
         self.vp
@@ -1566,7 +1557,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         // may cause the partition to be constructed improperly.
         match CpuidFunction(leaf) {
             CpuidFunction::VersionAndFeatures => {
-                let cr4 = B::cr4_for_cpuid(self, vtl);
+                let cr4 = B::cr4(self, vtl);
                 ecx = cpuid::VersionAndFeaturesEcx::from(ecx)
                     .with_os_xsave(cr4 & x86defs::X64_CR4_OSXSAVE != 0)
                     .into();
@@ -2060,8 +2051,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         if send_intercept {
             let message_type = crate::processor::InterceptMessageType::Register { reg, value };
 
-            let message_state =
-                B::intercept_message_state(self, vtl, self.vp_index(), &message_type);
+            let message_state = B::intercept_message_state(self, vtl, &message_type);
 
             tracing::debug!(
                 ?reg,
@@ -2072,7 +2062,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             self.inner.post_message(
                 GuestVtl::Vtl1,
                 hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX,
-                &message_type.generate_hv_message(message_state),
+                &message_type.generate_hv_message(self.vp_index(), vtl, message_state),
             );
         }
 
@@ -2119,15 +2109,14 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
             if generate_intercept {
                 let message_type = crate::processor::InterceptMessageType::Msr { msr };
-                let message_state =
-                    B::intercept_message_state(self, vtl, self.vp_index(), &message_type);
+                let message_state = B::intercept_message_state(self, vtl, &message_type);
 
                 tracing::debug!(?msr, "sending intercept to vtl 1 for secure msr write");
 
                 self.inner.post_message(
                     GuestVtl::Vtl1,
                     hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX,
-                    &message_type.generate_hv_message(message_state),
+                    &message_type.generate_hv_message(self.vp_index(), vtl, message_state),
                 );
 
                 return true;
