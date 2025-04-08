@@ -19,6 +19,7 @@ use safeatomic::AtomicSliceOps;
 use std::mem::offset_of;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering;
 use virt::x86::MsrError;
 use vm_topology::processor::VpIndex;
 use vmcore::reference_time_source::ReferenceTimeSource;
@@ -456,14 +457,14 @@ impl ProcessorVtlHv {
     pub fn vina_asserted(&self) -> bool {
         let offset = offset_of!(hvdef::HvVpAssistPage, vtl_control)
             + offset_of!(HvVpVtlControl, vina_status);
-        self.vp_assist_page[offset..offset + 1].atomic_read_obj::<u8>() != 0
+        self.vp_assist_page[offset].load(Ordering::Relaxed) != 0
     }
 
     /// Sets whether VINA is currently asserted.
     pub fn set_vina_asserted(&mut self, value: bool) {
         let offset = offset_of!(hvdef::HvVpAssistPage, vtl_control)
             + offset_of!(HvVpVtlControl, vina_status);
-        self.vp_assist_page[offset..offset + 1].atomic_write_obj(&(value as u8));
+        self.vp_assist_page[offset].store(value as u8, Ordering::Relaxed);
     }
 }
 

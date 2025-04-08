@@ -12,7 +12,17 @@ pub(crate) struct LockedPage {
 
 impl LockedPage {
     pub fn new(guest_memory: &GuestMemory, gpn: u64) -> Result<Self, guestmem::GuestMemoryError> {
-        let page = guest_memory.lock_gpns(false, &[gpn])?;
+        let page = match guest_memory.lock_gpns(false, &[gpn]) {
+            Ok(it) => it,
+            Err(err) => {
+                tracelimit::error_ratelimited!(
+                    gpn,
+                    err = &err as &dyn std::error::Error,
+                    "Failed to lock page"
+                );
+                return Err(err);
+            }
+        };
         assert!(page.pages().len() == 1);
         Ok(Self { page })
     }
