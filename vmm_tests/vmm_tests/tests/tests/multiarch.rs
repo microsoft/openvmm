@@ -107,6 +107,7 @@ async fn kvp_ic(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
         .await?;
 
     // Validate the IP information against the default consomme confiugration.
+    tracing::info!(?ip_info, "ip information");
     assert_eq!(ip_info.ipv4_addresses.len(), 1);
     let ip = &ip_info.ipv4_addresses[0];
     assert_eq!(ip.address.to_string(), "10.0.0.2");
