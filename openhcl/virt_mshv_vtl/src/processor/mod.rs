@@ -25,6 +25,7 @@ cfg_if::cfg_if! {
         use virt_support_x86emu::translate::TranslationRegisters;
         use virt::vp::AccessVpState;
         use zerocopy::IntoBytes;
+        use hvdef::HvRegisterCrInterceptControl;
     } else if #[cfg(guest_arch = "aarch64")] {
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
@@ -282,6 +283,7 @@ pub(crate) struct BackingSharedParams<'a> {
     pub _phantom: PhantomData<&'a ()>,
 }
 
+/// Supported intercept message types.
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 enum InterceptMessageType {
     #[cfg(guest_arch = "x86_64")]
@@ -294,27 +296,52 @@ enum InterceptMessageType {
     },
 }
 
-enum InterceptMessageState {
-    Register {
-        header: hvdef::HvX64InterceptMessageHeader,
-    },
-    Msr {
-        header: hvdef::HvX64InterceptMessageHeader,
-        rax: u64,
-        rdx: u64,
-    },
+/// Per-arch state required to generate an intercept message.
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+struct InterceptMessageState {
+    instruction_length_and_cr8: u8,
+    cpl: u8,
+    efer_lma: bool,
+    cs_segment: hvdef::HvX64SegmentRegister,
+    rip: u64,
+    rflags: u64,
+    per_type_state: InterceptMessageTypeState,
+}
+
+/// Per-message-type state required to generate the intercept message.
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+enum InterceptMessageTypeState {
+    Register,
+    Msr { rax: u64, rdx: u64 },
 }
 
 impl InterceptMessageType {
     #[cfg(guest_arch = "x86_64")]
-    fn generate_hv_message(&self, state: InterceptMessageState) -> HvMessage {
+    fn generate_hv_message(
+        &self,
+        vp_index: VpIndex,
+        vtl: GuestVtl,
+        state: InterceptMessageState,
+    ) -> HvMessage {
+        let write_header = hvdef::HvX64InterceptMessageHeader {
+            vp_index: vp_index.index(),
+            instruction_length_and_cr8: state.instruction_length_and_cr8,
+            intercept_access_type: hvdef::HvInterceptAccessType::WRITE,
+            execution_state: hvdef::HvX64VpExecutionState::new()
+                .with_cpl(state.cpl)
+                .with_vtl(vtl.into())
+                .with_efer_lma(state.efer_lma),
+            cs_segment: state.cs_segment,
+            rip: state.rip,
+            rflags: state.rflags,
+        };
         match self {
             InterceptMessageType::Register { reg, value } => {
-                let InterceptMessageState::Register { header } = state else {
+                let InterceptMessageTypeState::Register = state.per_type_state else {
                     unreachable!()
                 };
                 let intercept_message = hvdef::HvX64RegisterInterceptMessage {
-                    header,
+                    header: write_header,
                     flags: hvdef::HvX64RegisterInterceptMessageFlags::new(),
                     rsvd: 0,
                     rsvd2: 0,
@@ -330,11 +357,11 @@ impl InterceptMessageType {
                 )
             }
             InterceptMessageType::Msr { msr } => {
-                let InterceptMessageState::Msr { header, rax, rdx } = state else {
+                let InterceptMessageTypeState::Msr { rax, rdx } = state.per_type_state else {
                     unreachable!()
                 };
                 let intercept_message = hvdef::HvX64MsrInterceptMessage {
-                    header,
+                    header: write_header,
                     msr_number: *msr,
                     rax,
                     rdx,
@@ -388,36 +415,22 @@ trait HardwareIsolatedBacking: Backing {
         vtl: GuestVtl,
         event: hvdef::HvX64PendingExceptionEvent,
     );
-<<<<<<< HEAD
-    /// Individual register for CPUID, since AccessVpState::registers is
-    /// relatively slow on TDX.
-    fn cr4_for_cpuid(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
-=======
 
     fn intercept_message_state(
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
-        vp_index: VpIndex,
         message_type: &InterceptMessageType,
     ) -> InterceptMessageState;
 
+    /// Individual register for CPUID and crx intercept handling, since
+    /// AccessVpState::registers is relatively slow on TDX.
     fn cr0(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
     fn cr4(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
-<<<<<<< HEAD
 
-<<<<<<< HEAD
-pub enum ControlRegisterMask {
-    Cr0(u64),
-    Cr4(u64),
-    Ia32MiscEnable(u64),
->>>>>>> b5e66ad3... sketch cr0 and cr4 intercept handling
-=======
-    fn set_cr0(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, cr0: u64);
-    fn set_cr4(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl, cr4: u64);
-    fn advance_to_next_instruction(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl);
->>>>>>> bda761df... cleanup
-=======
->>>>>>> af56d641... cleanup
+    fn cr_intercept_registration(
+        this: &mut UhProcessor<'_, Self>,
+        intercept_control: HvRegisterCrInterceptControl,
+    );
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
