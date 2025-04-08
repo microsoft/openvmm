@@ -18,17 +18,12 @@ use parking_lot::Mutex;
 use safeatomic::AtomicSliceOps;
 use std::mem::offset_of;
 use std::sync::Arc;
-use thiserror::Error;
+use std::sync::atomic::AtomicU8;
 use virt::x86::MsrError;
 use vm_topology::processor::VpIndex;
 use vmcore::reference_time_source::ReferenceTimeSource;
 use x86defs::cpuid::Vendor;
 use zerocopy::FromZeros;
-
-#[derive(Error, Debug)]
-#[error("no vp assist page was configured")]
-/// No VP assist page was configured for the given operation.
-pub struct NoVpAssistPage;
 
 /// The partition-wide hypervisor state.
 #[derive(Inspect)]
@@ -141,7 +136,7 @@ impl<const VTL_COUNT: usize> GlobalHv<VTL_COUNT> {
             vtl_state: self.vtl_mutable_state[vtl].clone(),
             synic: self.synic[vtl].add_vp(vp_index),
             vp_assist_page_reg: Default::default(),
-            vp_assist_page: None,
+            vp_assist_page: VpAssistPage::default(),
             guest_memory: self.guest_memory[vtl].clone(),
         }
     }
@@ -173,8 +168,31 @@ pub struct ProcessorVtlHv {
     pub synic: ProcessorSynic,
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
     vp_assist_page_reg: HvRegisterVpAssistPage,
-    #[inspect(with = "|x| x.is_some()")]
-    vp_assist_page: Option<LockedPage>,
+    vp_assist_page: VpAssistPage,
+}
+
+#[derive(Inspect)]
+#[inspect(external_tag)]
+enum VpAssistPage {
+    Local(#[inspect(skip)] Box<guestmem::Page>),
+    Mapped(#[inspect(skip)] LockedPage),
+}
+
+impl std::ops::Deref for VpAssistPage {
+    type Target = guestmem::Page;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            VpAssistPage::Local(page) => page,
+            VpAssistPage::Mapped(page) => page,
+        }
+    }
+}
+
+impl Default for VpAssistPage {
+    fn default() -> Self {
+        VpAssistPage::Local(std::array::from_fn(|_| AtomicU8::new(0)).into())
+    }
 }
 
 impl ProcessorVtlHv {
@@ -197,7 +215,7 @@ impl ProcessorVtlHv {
 
         synic.reset();
         *vp_assist_page_reg = Default::default();
-        *vp_assist_page = None;
+        *vp_assist_page = VpAssistPage::default();
     }
 
     /// Emulates an MSR write for the guest OS ID MSR.
@@ -212,28 +230,27 @@ impl ProcessorVtlHv {
         }
         let new_vp_assist_page_reg = HvRegisterVpAssistPage::from(v);
 
-        if new_vp_assist_page_reg.enabled()
+        let new_page = if new_vp_assist_page_reg.enabled()
             && (!self.vp_assist_page_reg.enabled()
                 || new_vp_assist_page_reg.gpa_page_number()
                     != self.vp_assist_page_reg.gpa_page_number())
         {
-            let new_page =
+            VpAssistPage::Mapped(
                 LockedPage::new(&self.guest_memory, new_vp_assist_page_reg.gpa_page_number())
-                    .map_err(|_| MsrError::InvalidAccess)?;
-
-            // Copy the contents of the old page, if it exists, to the new page.
-            if let Some(current_page) = self.vp_assist_page.as_ref() {
-                new_page.atomic_write_obj(&current_page.atomic_read_obj::<[u8; 4096]>());
-            } else {
-                new_page.atomic_fill(0);
-            }
-
-            self.vp_assist_page = Some(new_page);
+                    .map_err(|_| MsrError::InvalidAccess)?,
+            )
         } else if !new_vp_assist_page_reg.enabled() {
-            self.vp_assist_page = None;
-        }
+            VpAssistPage::default()
+        } else {
+            // Not changing the page, no need to copy.
+            self.vp_assist_page_reg = new_vp_assist_page_reg;
+            return Ok(());
+        };
 
+        // Copy the contents of the old page to the new page.
+        new_page.atomic_write_obj(&self.vp_assist_page.atomic_read_obj::<[u8; 4096]>());
         self.vp_assist_page_reg = new_vp_assist_page_reg;
+
         Ok(())
     }
 
@@ -282,7 +299,7 @@ impl ProcessorVtlHv {
                 if v.enable() && mutable.reference_tsc_reg.gpn() != v.gpn() {
                     let new_page = LockedPage::new(&self.guest_memory, v.gpn())
                         .map_err(|_| MsrError::InvalidAccess)?;
-                    new_page[0..4].atomic_write_obj(&HV_REFERENCE_TSC_SEQUENCE_INVALID);
+                    new_page[..4].atomic_write_obj(&HV_REFERENCE_TSC_SEQUENCE_INVALID);
 
                     if self.partition_state.is_ref_time_backed_by_tsc {
                         // TDX TODO: offset might need to be included
@@ -382,12 +399,13 @@ impl ProcessorVtlHv {
     /// next VP exit but before manipulating the APIC.
     #[must_use]
     pub fn set_lazy_eoi(&mut self) -> bool {
-        let Some(page) = self.vp_assist_page.as_mut() else {
+        if !self.vp_assist_page_reg.enabled() {
             return false;
-        };
+        }
+
         let offset = offset_of!(hvdef::HvVpAssistPage, apic_assist);
         let v = 1u32;
-        page[offset..offset + 4].atomic_write_obj(&v);
+        self.vp_assist_page[offset..offset + 4].atomic_write_obj(&v);
         true
     }
 
@@ -399,11 +417,8 @@ impl ProcessorVtlHv {
     /// EOI to the APIC.
     #[must_use]
     pub fn clear_lazy_eoi(&mut self) -> bool {
-        let Some(page) = self.vp_assist_page.as_mut() else {
-            return false;
-        };
         let offset = offset_of!(hvdef::HvVpAssistPage, apic_assist);
-        let v: u32 = page[offset..offset + 4].atomic_read_obj();
+        let v: u32 = self.vp_assist_page[offset..offset + 4].atomic_read_obj();
 
         if v & 1 == 0 {
             // The guest cleared the bit. The caller will perform the EOI to the
@@ -413,51 +428,37 @@ impl ProcessorVtlHv {
             // Clear the bit in case the EOI state changes before the guest runs
             // again.
             let v = v & !1;
-            page[offset..offset + 4].atomic_write_obj(&v);
+            self.vp_assist_page[offset..offset + 4].atomic_write_obj(&v);
             false
         }
     }
 
     /// Get the register values to restore on vtl return
-    pub fn return_registers(&self) -> Result<[u64; 2], NoVpAssistPage> {
-        let Some(page) = self.vp_assist_page.as_ref() else {
-            return Err(NoVpAssistPage);
-        };
+    pub fn return_registers(&self) -> [u64; 2] {
         let offset =
             offset_of!(hvdef::HvVpAssistPage, vtl_control) + offset_of!(HvVpVtlControl, registers);
-        Ok(page[offset..offset + 16].atomic_read_obj())
+        self.vp_assist_page[offset..offset + 16].atomic_read_obj()
     }
 
     /// Set the reason for the vtl return into the vp assist page
-    pub fn set_return_reason(&mut self, reason: HvVtlEntryReason) -> Result<(), NoVpAssistPage> {
-        let Some(page) = self.vp_assist_page.as_mut() else {
-            return Err(NoVpAssistPage);
-        };
+    pub fn set_return_reason(&mut self, reason: HvVtlEntryReason) {
         let offset = offset_of!(hvdef::HvVpAssistPage, vtl_control)
             + offset_of!(HvVpVtlControl, entry_reason);
-        page[offset..offset + 4].atomic_write_obj(&reason);
-        Ok(())
+        self.vp_assist_page[offset..offset + 4].atomic_write_obj(&reason);
     }
 
     /// Gets whether VINA is currently asserted.
-    pub fn vina_asserted(&self) -> Result<bool, NoVpAssistPage> {
-        let Some(page) = self.vp_assist_page.as_ref() else {
-            return Err(NoVpAssistPage);
-        };
+    pub fn vina_asserted(&self) -> bool {
         let offset = offset_of!(hvdef::HvVpAssistPage, vtl_control)
             + offset_of!(HvVpVtlControl, vina_status);
-        Ok(page[offset..offset + 1].atomic_read_obj::<u8>() != 0)
+        self.vp_assist_page[offset..offset + 1].atomic_read_obj::<u8>() != 0
     }
 
     /// Sets whether VINA is currently asserted.
-    pub fn set_vina_asserted(&mut self, value: bool) -> Result<(), NoVpAssistPage> {
-        let Some(page) = self.vp_assist_page.as_mut() else {
-            return Err(NoVpAssistPage);
-        };
+    pub fn set_vina_asserted(&mut self, value: bool) {
         let offset = offset_of!(hvdef::HvVpAssistPage, vtl_control)
             + offset_of!(HvVpVtlControl, vina_status);
-        page[offset..offset + 1].atomic_write_obj(&(value as u8));
-        Ok(())
+        self.vp_assist_page[offset..offset + 1].atomic_write_obj(&(value as u8));
     }
 }
 

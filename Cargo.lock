@@ -2878,7 +2878,6 @@ dependencies = [
  "inspect",
  "parking_lot",
  "safeatomic",
- "thiserror 2.0.12",
  "tracelimit",
  "tracing",
  "virt",

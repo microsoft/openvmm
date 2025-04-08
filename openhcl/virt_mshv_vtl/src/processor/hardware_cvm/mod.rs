@@ -856,13 +856,11 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
 
     fn vtl_call(&mut self) {
         tracing::trace!("handling vtl call");
-        self.vp
-            .raise_vtl(
-                self.intercepted_vtl,
-                GuestVtl::Vtl1,
-                HvVtlEntryReason::VTL_CALL,
-            )
-            .unwrap();
+        self.vp.raise_vtl(
+            self.intercepted_vtl,
+            GuestVtl::Vtl1,
+            HvVtlEntryReason::VTL_CALL,
+        );
     }
 }
 
@@ -888,7 +886,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
 
         let hv = &mut self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
         if hv.synic.vina().auto_reset() {
-            hv.set_vina_asserted(false).unwrap();
+            hv.set_vina_asserted(false);
         }
 
         B::switch_vtl(self.vp, self.intercepted_vtl, GuestVtl::Vtl0);
@@ -897,9 +895,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
         // - rewind interrupts
 
         if !fast {
-            let [rax, rcx] = self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
-                .return_registers()
-                .unwrap();
+            let [rax, rcx] = self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1].return_registers();
             let mut vp_state = self.vp.access_state(Vtl::Vtl0);
             let mut registers = vp_state.registers().unwrap();
             registers.rax = rax;
@@ -1534,7 +1530,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         // Check for VTL preemption - which ignores RFLAGS.IF
         if cvm_state.exit_vtl == GuestVtl::Vtl0 && is_interrupt_pending(self, GuestVtl::Vtl1, false)
         {
-            self.raise_vtl(GuestVtl::Vtl0, GuestVtl::Vtl1, HvVtlEntryReason::INTERRUPT)?;
+            self.raise_vtl(GuestVtl::Vtl0, GuestVtl::Vtl1, HvVtlEntryReason::INTERRUPT);
         }
 
         let mut reprocessing_required = false;
@@ -1546,9 +1542,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             let hv = &mut self.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
             let vina = hv.synic.vina();
 
-            if vina.enabled() && !hv.vina_asserted().map_err(UhRunVpError::VpAssistPage)? {
-                hv.set_vina_asserted(true)
-                    .map_err(UhRunVpError::VpAssistPage)?;
+            if vina.enabled() && !hv.vina_asserted() {
+                hv.set_vina_asserted(true);
                 self.partition
                     .synic_interrupt(self.vp_index(), GuestVtl::Vtl1)
                     .request_interrupt(vina.vector().into(), vina.auto_eoi());
@@ -1798,12 +1793,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         source_vtl: GuestVtl,
         target_vtl: GuestVtl,
         entry_reason: HvVtlEntryReason,
-    ) -> Result<(), UhRunVpError> {
+    ) {
         assert!(source_vtl < target_vtl);
         B::switch_vtl(self, source_vtl, target_vtl);
-        self.backing.cvm_state_mut().hv[target_vtl]
-            .set_return_reason(entry_reason)
-            .map_err(UhRunVpError::VpAssistPage)
+        self.backing.cvm_state_mut().hv[target_vtl].set_return_reason(entry_reason);
     }
 }
 
