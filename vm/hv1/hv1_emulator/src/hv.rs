@@ -225,7 +225,12 @@ impl ProcessorVtlHv {
 
     /// Emulates an MSR write for the VP assist page MSR.
     pub fn msr_write_vp_assist_page(&mut self, v: u64) -> Result<(), MsrError> {
-        if HvRegisterVpAssistPage::from(v).reserved() != 0 {
+        if v & !u64::from(
+            HvRegisterVpAssistPage::new()
+                .with_enabled(true)
+                .with_gpa_page_number(!0 >> 12),
+        ) != 0
+        {
             return Err(MsrError::InvalidAccess);
         }
         let new_vp_assist_page_reg = HvRegisterVpAssistPage::from(v);
