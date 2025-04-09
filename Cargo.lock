@@ -6678,6 +6678,7 @@ version = "0.0.0"
 dependencies = [
  "crossterm",
  "libc",
+ "thiserror 2.0.12",
  "winapi",
 ]
 

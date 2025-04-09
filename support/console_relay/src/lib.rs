@@ -64,7 +64,7 @@ pub fn relay_console(path: &Path, console_title: &str) -> anyhow::Result<()> {
         };
 
         set_raw_console(true);
-        set_console_title(console_title);
+        set_console_title(console_title)?;
 
         std::thread::Builder::new()
             .name("input_thread".into())

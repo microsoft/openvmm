@@ -6,6 +6,16 @@
 // UNSAFETY: Win32 and libc function calls to manipulate terminal state.
 #![expect(unsafe_code)]
 
+use thiserror::Error;
+
+// Errors for terminal operations.
+#[derive(Error, Debug)]
+#[expect(missing_docs)]
+pub enum Error {
+    #[error("failed to perform a virtual terminal operation: {0}")]
+    VtOperationFailed(String),
+}
+
 /// Enables VT and UTF-8 output.
 #[cfg(windows)]
 pub fn enable_vt_and_utf8() {
@@ -91,8 +101,9 @@ pub fn set_raw_console(enable: bool) {
 }
 
 /// Sets the name of the console window.
-pub fn set_console_title(title: &str) {
-    crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(title)).unwrap();
+pub fn set_console_title(title: &str) -> Result<(), Error> {
+    crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(title))
+        .map_err(|e| Error::VtOperationFailed(format!("failed to set console title: {}", e)))
 }
 
 /// Clones `file` into a `File`.
