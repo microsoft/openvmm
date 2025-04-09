@@ -186,7 +186,7 @@ struct CommandLine {
 pub async fn main(driver: DefaultDriver) -> anyhow::Result<()> {
     let command_line = CommandLine::parse();
     if let Some(relay_console_path) = command_line.relay_console_path {
-        return console_relay::relay_console(&relay_console_path, "Serial [OpenVMM]");
+        return console_relay::relay_console(&relay_console_path, "Hypestv");
     }
 
     let mut rl = rustyline::Editor::<_, rustyline::history::FileHistory>::with_config(
