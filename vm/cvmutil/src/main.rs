@@ -211,7 +211,6 @@ fn print_vtpm_srk_pub_key_name(srkpub_path: String) {
         .expect("failed to read file");
 
     // Deserialize the srkpub to a public area.
-
     let public_key =
         TpmtPublic::deserialize(&srkpub_content_buf).expect("failed to deserialize srkpub");
     let public_area: TpmtPublic = public_key.into();
@@ -265,11 +264,11 @@ fn create_random_key_in_tpm2_import_blob_format(
         "rsa" => {
             // Generate RSA 2048-bit key
             let rsa = Rsa::generate(2048).unwrap();
+            let public_key_der = rsa.public_key_to_der_pkcs1().unwrap();
             let pkey = PKey::from_rsa(rsa).unwrap();
             println!("RSA 2048-bit key generated.");
 
             // Export the public key to a file in pem format
-            let public_key_der = pkey.public_key_to_der().unwrap();
             let mut pub_file = File::create(public_key_file).unwrap();
             pub_file.write_all(&public_key_der).unwrap();
             println!("RSA public key saved to {public_key_file}.");
