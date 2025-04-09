@@ -749,10 +749,10 @@ impl virt::Synic for KvmPartition {
 
     fn new_guest_event_port(
         &self,
-        vtl: Vtl,
-        vp: u32,
-        sint: u8,
-        flag: u16,
+        _vtl: Vtl,
+        _vp: u32,
+        _sint: u8,
+        _flag: u16,
     ) -> Box<dyn vmcore::synic::GuestEventPort> {
         unimplemented!()
     }
