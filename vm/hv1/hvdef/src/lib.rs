@@ -8,6 +8,7 @@
 
 use bitfield_struct::bitfield;
 use core::fmt::Debug;
+use core::fmt::Display;
 use core::mem::size_of;
 use open_enum::open_enum;
 use static_assertions::const_assert;
@@ -435,7 +436,7 @@ impl Debug for HvError {
     }
 }
 
-impl core::fmt::Display for HvError {
+impl Display for HvError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self.doc_str() {
             Some(s) => f.write_str(s),
@@ -623,6 +624,12 @@ impl TryFrom<u8> for Vtl {
 impl From<Vtl> for u8 {
     fn from(value: Vtl) -> Self {
         value as u8
+    }
+}
+
+impl Display for Vtl {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", u8::from(*self))
     }
 }
 

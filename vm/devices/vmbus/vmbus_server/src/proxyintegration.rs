@@ -35,6 +35,7 @@ use std::collections::HashSet;
 use std::io;
 use std::os::windows::prelude::*;
 use std::sync::Arc;
+use tracing::Instrument;
 use vmbus_channel::bus::ChannelServerRequest;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
@@ -105,7 +106,8 @@ impl ProxyIntegration {
         driver
             .spawn(
                 "vmbus_proxy",
-                proxy_thread(driver.clone(), proxy, server, vtl2_server, cancel_ctx),
+                proxy_thread(driver.clone(), proxy, server, vtl2_server, cancel_ctx)
+                    .instrument(tracing::info_span!("Proxy task")),
             )
             .detach();
 
@@ -173,11 +175,16 @@ impl ProxyTask {
         // Start the worker thread for the channel.
         let proxy = Arc::clone(&self.proxy);
         let (send, recv) = mesh::oneshot();
+        let span = tracing::info_span!("Channel worker", worker_id = proxy_id);
         std::thread::Builder::new()
             .name(format!("vmbus proxy worker {:?}", proxy_id))
             .spawn(move || {
+                let _span = span.entered();
                 if let Err(err) = proxy.run_channel(proxy_id) {
-                    tracing::error!(err = &err as &dyn std::error::Error, "channel worker error");
+                    tracing::error!(
+                        error = &err as &dyn std::error::Error,
+                        "Channel worker error"
+                    );
                 }
                 send.send(());
             })
@@ -262,7 +269,7 @@ impl ProxyTask {
                 }
             }
             _ => {
-                tracing::error!(?offer, "unsupported offer VTL");
+                tracing::error!(?offer, "Unsupported offer VTL");
                 return None;
             }
         };
@@ -284,7 +291,7 @@ impl ProxyTask {
                 protocol::PipeType::BYTE => false,
                 protocol::PipeType::MESSAGE => true,
                 _ => {
-                    tracing::error!(?offer, "unsupported offer pipe mode");
+                    tracing::error!(?offer, "Unsupported offer pipe mode");
                     return None;
                 }
             };
@@ -328,10 +335,10 @@ impl ProxyTask {
                 // Currently there is no way to propagate this failure.
                 // FUTURE: consider sending a message back to the control worker to fail the VM operation.
                 tracing::error!(
-                    error = &err as &dyn std::error::Error,
                     interface_id = %interface_id,
                     instance_id = %instance_id,
-                    "failed to offer proxy channel"
+                    error = &err as &dyn std::error::Error,
+                    "Failed to offer proxy channel"
                 );
                 (None, None)
             }
@@ -386,7 +393,7 @@ impl ProxyTask {
         send: mesh::Sender<TaggedStream<u64, mesh::Receiver<ChannelRequest>>>,
     ) {
         while let Ok(action) = self.proxy.next_action().await {
-            tracing::debug!(action = ?action, "action");
+            tracing::debug!(next_action = ?action);
             match action {
                 ProxyAction::Offer {
                     id,
@@ -408,7 +415,7 @@ impl ProxyTask {
             }
         }
 
-        tracing::debug!("proxy offers finished");
+        tracing::trace!("Proxy offers finished");
     }
 
     async fn handle_request(&self, proxy_id: u64, request: Option<ChannelRequest>) {
@@ -425,7 +432,7 @@ impl ProxyTask {
                                 Err(err) => {
                                     tracing::error!(
                                         error = err.as_ref() as &dyn std::error::Error,
-                                        "failed to open proxy channel"
+                                        "Failed to open proxy channel"
                                     );
                                     None
                                 }
@@ -466,17 +473,17 @@ impl ProxyTask {
                 let gpadls = self.gpadls.lock().remove(&proxy_id);
                 if let Some(gpadls) = gpadls {
                     if !gpadls.is_empty() {
-                        tracing::warn!(proxy_id, "closed while some gpadls are still registered");
+                        tracing::warn!("Closed while some GPADLs are still registered");
                         for gpadl_id in gpadls {
                             if let Err(e) = self.proxy.delete_gpadl(proxy_id, gpadl_id.0).await {
                                 if e.code() == HRESULT::from(ERROR_CANCELLED) {
                                     // No further IOs will succeed if one was cancelled. This can
                                     // happen here if we're in the process of shutting down.
-                                    tracing::debug!("gpadl delete cancelled");
+                                    tracing::debug!("GPADL delete cancelled");
                                     break;
                                 }
 
-                                tracing::error!(error = ?e, "failed to delete gpadl");
+                                tracing::error!(error = ?e, "Failed to delete GPADL");
                             }
                         }
                     }
@@ -513,9 +520,10 @@ impl ProxyTask {
 
         let proxy = self.proxy.clone();
         spawner
-            .spawn("vmbus-proxy-hvsock-req", async move {
-                proxy.tl_connect_request(&request, vtl).await
-            })
+            .spawn(
+                "vmbus-proxy-hvsock-req",
+                async move { proxy.tl_connect_request(&request, vtl).await }.in_current_span(),
+            )
             .detach();
 
         true
@@ -565,13 +573,14 @@ impl ProxyTask {
 
             let this = self.clone();
             spawner
-                .spawn("vmbus-proxy-req", async move {
-                    this.handle_request(proxy_id, request).await
-                })
+                .spawn(
+                    "vmbus-proxy-req",
+                    async move { this.handle_request(proxy_id, request).await }.in_current_span(),
+                )
                 .detach();
         }
 
-        tracing::debug!("proxy channel requests finished");
+        tracing::debug!("Proxy channel requests finished");
     }
 }
 
@@ -618,11 +627,11 @@ async fn proxy_thread(
         task.run_server_requests(spawner, recv, hvsock_request_recv, vtl2_hvsock_request_recv);
     let cancellation = async {
         cancel.cancelled().await;
-        tracing::debug!("proxy thread cancelling");
+        tracing::debug!("Proxy thread cancelling");
         proxy.cancel();
     };
 
     futures::future::join3(offers, requests, cancellation).await;
-    tracing::debug!("proxy thread finished");
+    tracing::debug!("Proxy thread finished");
     // BUGBUG: cancel all IO if something goes wrong?
 }

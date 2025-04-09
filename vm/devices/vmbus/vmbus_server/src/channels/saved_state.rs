@@ -10,6 +10,7 @@ use guid::Guid;
 use mesh::payload::Protobuf;
 use std::fmt::Display;
 use thiserror::Error;
+use tracing::Span;
 use vmbus_channel::bus::OfferKey;
 use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::FeatureFlags;
@@ -32,7 +33,8 @@ impl super::Server {
     /// any channels that were in the saved state but were not restored via
     /// `restore_channel`.
     pub fn restore(&mut self, saved: SavedState) -> Result<(), RestoreError> {
-        tracing::trace!(?saved, "restoring channel state");
+        let _span = tracing::info_span!("Restore server state").entered();
+        tracing::debug!(?saved);
 
         if let Some(saved) = saved.state {
             self.state = saved.connection.restore()?;
@@ -134,7 +136,10 @@ impl super::Server {
         }
 
         if state == super::GpadlState::InProgress
-            && self.incomplete_gpadls.insert(gpadl_id, offer_id).is_some()
+            && self
+                .incomplete_gpadls
+                .insert(gpadl_id, (offer_id, Span::current()))
+                .is_some()
         {
             unreachable!("gpadl ID validated above");
         }
@@ -144,6 +149,7 @@ impl super::Server {
 
     /// Saves state.
     pub fn save(&self) -> SavedState {
+        let _span = tracing::info_span!("Save server state").entered();
         let state = self.save_connected_state();
         let disconnected_state = state.is_none().then(|| self.save_disconnected_state());
         SavedState {
@@ -391,18 +397,18 @@ impl Connection {
                 // No state to save.
                 None
             }
-            super::ConnectionState::Connecting { info, next_action } => {
-                Some(Connection::Connecting {
-                    version: VersionInfo::save(&info.version),
-                    interrupt_page: info.interrupt_page,
-                    monitor_page: info.monitor_page.map(MonitorPageGpas::save),
-                    target_message_vp: info.target_message_vp,
-                    next_action: ConnectionAction::save(next_action),
-                    client_id: Some(info.client_id),
-                    trusted: info.trusted,
-                })
-            }
-            super::ConnectionState::Connected(info) => Some(Connection::Connected {
+            super::ConnectionState::Connecting {
+                info, next_action, ..
+            } => Some(Connection::Connecting {
+                version: VersionInfo::save(&info.version),
+                interrupt_page: info.interrupt_page,
+                monitor_page: info.monitor_page.map(MonitorPageGpas::save),
+                target_message_vp: info.target_message_vp,
+                next_action: ConnectionAction::save(next_action),
+                client_id: Some(info.client_id),
+                trusted: info.trusted,
+            }),
+            super::ConnectionState::Connected { info, .. } => Some(Connection::Connected {
                 version: VersionInfo::save(&info.version),
                 offers_sent: info.offers_sent,
                 interrupt_page: info.interrupt_page,
@@ -413,12 +419,11 @@ impl Connection {
                 trusted: info.trusted,
                 paused: info.paused,
             }),
-            super::ConnectionState::Disconnecting {
-                next_action,
-                modify_sent: _,
-            } => Some(Connection::Disconnecting {
-                next_action: ConnectionAction::save(next_action),
-            }),
+            super::ConnectionState::Disconnecting { next_action, .. } => {
+                Some(Connection::Disconnecting {
+                    next_action: ConnectionAction::save(next_action),
+                })
+            }
         }
     }
 
@@ -445,6 +450,7 @@ impl Connection {
                     paused: false,
                 },
                 next_action: next_action.restore(),
+                trace: Span::current(),
             },
             Connection::Connected {
                 version,
@@ -456,21 +462,25 @@ impl Connection {
                 client_id,
                 trusted,
                 paused,
-            } => super::ConnectionState::Connected(super::ConnectionInfo {
-                version: version.restore(trusted)?,
-                trusted,
-                offers_sent,
-                interrupt_page,
-                monitor_page: monitor_page.map(MonitorPageGpas::restore),
-                target_message_vp,
-                modifying,
-                client_id: client_id.unwrap_or(Guid::ZERO),
-                paused,
-            }),
+            } => super::ConnectionState::Connected {
+                info: super::ConnectionInfo {
+                    version: version.restore(trusted)?,
+                    trusted,
+                    offers_sent,
+                    interrupt_page,
+                    monitor_page: monitor_page.map(MonitorPageGpas::restore),
+                    target_message_vp,
+                    modifying,
+                    client_id: client_id.unwrap_or(Guid::ZERO),
+                    paused,
+                },
+                trace: Span::current(),
+            },
             Connection::Disconnecting { next_action } => super::ConnectionState::Disconnecting {
                 next_action: next_action.restore(),
                 // If the modify request was sent, it will be resent.
                 modify_sent: false,
+                trace: Span::current(),
             },
         })
     }
@@ -540,7 +550,7 @@ impl Channel {
         let info = value.info.as_ref()?;
         let key = value.offer.key();
         if let Some(state) = ChannelState::save(&value.state) {
-            tracing::info!(%key, %state, "channel saved");
+            tracing::debug!(%key, %state, "Channel saved");
             Some(Channel {
                 channel_id: info.channel_id.0,
                 offered_connection_id: info.connection_id,
@@ -549,7 +559,7 @@ impl Channel {
                 monitor_id: info.monitor_id.map(|id| id.0),
             })
         } else {
-            tracing::info!(%key, state = %value.state, "skipping channel save");
+            tracing::debug!(%key, state = %value.state, "Skipping channel save");
             None
         }
     }
@@ -571,7 +581,7 @@ impl Channel {
         };
 
         let state = self.state.restore()?;
-        tracing::info!(key = %self.key, %state, "channel restored");
+        tracing::debug!(key = %self.key, %state, "Channel restored");
         Ok((info, stub_offer, state))
     }
 }

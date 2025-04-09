@@ -23,6 +23,7 @@ use std::ops::IndexMut;
 use std::task::Poll;
 use std::task::ready;
 use thiserror::Error;
+use tracing::Span;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::OfferKey;
@@ -109,7 +110,13 @@ pub enum OfferError {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OfferId(usize);
 
-type IncompleteGpadlMap = HashMap<GpadlId, OfferId>;
+impl Display for OfferId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+type IncompleteGpadlMap = HashMap<GpadlId, (OfferId, Span)>;
 
 type GpadlMap = HashMap<(GpadlId, OfferId), Gpadl>;
 
@@ -146,7 +153,7 @@ impl<T: Notifier> Inspect for ServerWithNotifier<'_, T> {
         let (state, info, next_action) = match &self.inner.state {
             ConnectionState::Disconnected => ("disconnected", None, None),
             ConnectionState::Connecting { info, .. } => ("connecting", Some(info), None),
-            ConnectionState::Connected(info) => (
+            ConnectionState::Connected { info, .. } => (
                 if info.offers_sent {
                     "connected"
                 } else {
@@ -215,28 +222,33 @@ enum ConnectionState {
     Disconnecting {
         next_action: ConnectionAction,
         modify_sent: bool,
+        trace: Span,
     },
     Connecting {
         info: ConnectionInfo,
         next_action: ConnectionAction,
+        trace: Span,
     },
-    Connected(ConnectionInfo),
+    Connected {
+        info: ConnectionInfo,
+        trace: Span,
+    },
 }
 
 impl ConnectionState {
     /// Checks whether the state is connected using at least the specified version.
     fn check_version(&self, min_version: Version) -> bool {
-        matches!(self, ConnectionState::Connected(info) if info.version.version >= min_version)
+        matches!(self, ConnectionState::Connected{ info, .. } if info.version.version >= min_version)
     }
 
     /// Checks whether the state is connected and the specified predicate holds for the feature
     /// flags.
     fn check_feature_flags(&self, flags: impl Fn(FeatureFlags) -> bool) -> bool {
-        matches!(self, ConnectionState::Connected(info) if flags(info.version.feature_flags))
+        matches!(self, ConnectionState::Connected{ info, .. } if flags(info.version.feature_flags))
     }
 
     fn get_version(&self) -> Option<VersionInfo> {
-        if let ConnectionState::Connected(info) = self {
+        if let ConnectionState::Connected { info, .. } = self {
             Some(info.version)
         } else {
             None
@@ -245,17 +257,38 @@ impl ConnectionState {
 
     fn is_trusted(&self) -> bool {
         match self {
-            ConnectionState::Connected(info) => info.trusted,
-            ConnectionState::Connecting { info, .. } => info.trusted,
+            ConnectionState::Connected { info, .. } | ConnectionState::Connecting { info, .. } => {
+                info.trusted
+            }
             _ => false,
         }
     }
 
     fn is_paused(&self) -> bool {
-        if let ConnectionState::Connected(info) = self {
+        if let ConnectionState::Connected { info, .. } = self {
             info.paused
         } else {
             false
+        }
+    }
+
+    fn take_span(&mut self) -> Span {
+        match self {
+            ConnectionState::Connected { trace, .. }
+            | ConnectionState::Connecting { trace, .. }
+            | ConnectionState::Disconnecting { trace, .. } => {
+                std::mem::replace(trace, Span::none())
+            }
+            _ => Span::none(),
+        }
+    }
+
+    fn get_span(&self) -> Span {
+        match self {
+            ConnectionState::Connected { trace, .. }
+            | ConnectionState::Connecting { trace, .. }
+            | ConnectionState::Disconnecting { trace, .. } => trace.clone(),
+            _ => Span::none(),
         }
     }
 }
@@ -1400,6 +1433,10 @@ impl Server {
 
         Poll::Ready(())
     }
+
+    pub fn get_current_span(&self) -> Span {
+        self.state.get_span()
+    }
 }
 
 impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
@@ -1539,6 +1576,12 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     }
 
     pub fn post_restore(&mut self) -> Result<(), RestoreError> {
+        let _span = tracing::info_span!(
+            parent: self.inner.state.take_span(),
+            "Post-restore"
+        )
+        .entered();
+
         for (offer_id, channel) in self.inner.channels.iter_mut() {
             match channel.restore_state {
                 RestoreState::Restored => {
@@ -1549,7 +1592,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     // Send the offer to the guest if it has not already been
                     // sent (which could have happened if the channel was
                     // offered after restore() but before post_restore()).
-                    if let ConnectionState::Connected(info) = &self.inner.state {
+                    if let ConnectionState::Connected { info, .. } = &self.inner.state {
                         if matches!(channel.state, ChannelState::ClientReleased) {
                             channel.prepare_channel(
                                 offer_id,
@@ -1621,10 +1664,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         // Restore server state, and resend server notifications if needed. If these notifications
         // were processed before the save, it's harmless as the values will be the same.
         let request = match self.inner.state {
-            ConnectionState::Connecting {
-                info,
-                next_action: _,
-            } => Some(ModifyConnectionRequest {
+            ConnectionState::Connecting { info, .. } => Some(ModifyConnectionRequest {
                 version: Some(info.version.version as u32),
                 interrupt_page: info.interrupt_page.into(),
                 monitor_page: info.monitor_page.into(),
@@ -1632,7 +1672,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 force: true,
                 notify_relay: true,
             }),
-            ConnectionState::Connected(info) => Some(ModifyConnectionRequest {
+            ConnectionState::Connected { info, .. } => Some(ModifyConnectionRequest {
                 version: None,
                 monitor_page: info.monitor_page.into(),
                 interrupt_page: info.interrupt_page.into(),
@@ -1691,12 +1731,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
             let info = channel.info.expect("assigned");
             if channel.restore_state == RestoreState::Unmatched {
-                tracing::debug!(
-                    vtl = self.inner.assigned_channels.vtl as u8,
-                    offer_id = offer_id.0,
-                    key = %channel.offer.key(),
-                    "matched channel"
-                );
+                tracing::trace!("Channel matched to restore state");
 
                 assert!(!matches!(channel.state, ChannelState::Revoked));
                 // This channel was previously offered to the guest in the saved
@@ -1719,12 +1754,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 // reference to it. Save the offer for reoffering immediately
                 // after the child releases it.
                 channel.state = ChannelState::Reoffered;
-                tracing::info!(
-                    vtl = self.inner.assigned_channels.vtl as u8,
-                    offer_id = offer_id.0,
-                    key = %channel.offer.key(),
-                    "channel marked for reoffer"
-                );
+                tracing::info!("Channel marked for reoffer");
             }
 
             channel.offer = offer;
@@ -1733,17 +1763,24 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         let mut connected_version = None;
         let state = match self.inner.state {
-            ConnectionState::Connected(ConnectionInfo {
-                offers_sent: true,
-                version,
+            ConnectionState::Connected {
+                info:
+                    ConnectionInfo {
+                        offers_sent: true,
+                        version,
+                        ..
+                    },
                 ..
-            }) => {
+            } => {
                 connected_version = Some(version);
                 ChannelState::Closed
             }
-            ConnectionState::Connected(ConnectionInfo {
-                offers_sent: false, ..
-            })
+            ConnectionState::Connected {
+                info: ConnectionInfo {
+                    offers_sent: false, ..
+                },
+                ..
+            }
             | ConnectionState::Connecting { .. }
             | ConnectionState::Disconnecting { .. }
             | ConnectionState::Disconnected => ChannelState::ClientReleased,
@@ -1754,9 +1791,11 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             return Err(OfferError::TooManyChannels);
         }
 
-        let key = offer.key();
-        let confidential_ring_buffer = offer.flags.confidential_ring_buffer();
-        let confidential_external_memory = offer.flags.confidential_external_memory();
+        tracing::debug!(
+            confidential_ring_buffer = offer.flags.confidential_ring_buffer(),
+            confidential_external_memory = offer.flags.confidential_external_memory()
+        );
+
         let channel = Channel {
             info: None,
             offer,
@@ -1779,14 +1818,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 .send_offer(channel, version);
         }
 
-        tracing::info!(
-            vtl = self.inner.assigned_channels.vtl as u8,
-            offer_id = offer_id.0,
-            %key,
-            confidential_ring_buffer,
-            confidential_external_memory,
-            "new channel"
-        );
         Ok(offer_id)
     }
 
@@ -1810,13 +1841,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
     /// Completes an open operation with `result`.
     pub fn open_complete(&mut self, offer_id: OfferId, result: i32) {
-        tracing::debug!(
-            vtl = self.inner.assigned_channels.vtl as u8,
-            offer_id = offer_id.0,
-            result,
-            "open complete"
-        );
-
         let channel = &mut self.inner.channels[offer_id];
         match channel.state {
             ChannelState::Opening {
@@ -1824,23 +1848,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 reserved_state,
             } => {
                 let channel_id = channel.info.expect("assigned").channel_id;
-                if result >= 0 {
-                    tracelimit::info_ratelimited!(
-                        vtl = self.inner.assigned_channels.vtl as u8,
-                        offer_id = offer_id.0,
-                        channel_id = channel_id.0,
-                        result,
-                        "opened channel"
-                    );
-                } else {
+                if result < 0 {
                     // Log channel open failures at error level for visibility.
-                    tracelimit::error_ratelimited!(
-                        vtl = self.inner.assigned_channels.vtl as u8,
-                        offer_id = offer_id.0,
-                        channel_id = channel_id.0,
-                        result,
-                        "failed to open channel"
-                    );
+                    tracelimit::error_ratelimited!(result, "Failed to open channel");
                 }
 
                 self.inner
@@ -1863,12 +1873,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 };
             }
             ChannelState::OpeningClientRelease => {
-                tracing::info!(
-                    vtl = self.inner.assigned_channels.vtl as u8,
-                    offer_id = offer_id.0,
-                    result,
-                    "opened channel (client released)"
-                );
+                tracing::trace!("Opened channel released by client");
 
                 if result >= 0 {
                     channel.state = ChannelState::ClosingClientRelease;
@@ -1887,12 +1892,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | ChannelState::Revoked
             | ChannelState::Reoffered
             | ChannelState::ClosingClientRelease => {
-                tracing::error!(
-                    vtl = self.inner.assigned_channels.vtl as u8,
-                    offer_id = offer_id.0,
-                    state = ?channel.state,
-                    "invalid open complete"
-                );
+                tracing::error!(state = ?channel.state, "Invalid channel state");
             }
         }
     }
@@ -1916,11 +1916,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             ConnectionState::Disconnecting {
                 next_action,
                 modify_sent: false,
+                ref trace,
             } => {
                 if self.are_channels_reset(matches!(next_action, ConnectionAction::Reset)) {
                     self.inner.state = ConnectionState::Disconnecting {
                         next_action,
                         modify_sent: true,
+                        trace: trace.clone(),
                     };
 
                     // Reset server state and disconnect the relay if there is one.
@@ -1959,12 +1961,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
     /// Completes a channel close operation.
     pub fn close_complete(&mut self, offer_id: OfferId) {
-        tracing::info!(
-            vtl = self.inner.assigned_channels.vtl as u8,
-            offer_id = offer_id.0,
-            "closed channel"
-        );
-
         let channel = &mut self.inner.channels[offer_id];
         match channel.state {
             ChannelState::Closing {
@@ -2016,12 +2012,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | ChannelState::Revoked
             | ChannelState::Reoffered
             | ChannelState::OpeningClientRelease => {
-                tracing::error!(
-                    vtl = self.inner.assigned_channels.vtl as u8,
-                    offer_id = offer_id.0,
-                    state = ?channel.state,
-                    "invalid close complete"
-                );
+                tracing::error!(state = ?channel.state, "Invalid channel state");
             }
         }
     }
@@ -2046,6 +2037,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         message: &SynicMessage,
         includes_client_id: bool,
     ) -> Result<(), ChannelError> {
+        let _span = tracing::info_span!("Initiate contact").entered();
+
         let target_info =
             protocol::TargetInfo::from(input.initiate_contact.interrupt_page_or_target_info);
 
@@ -2224,6 +2217,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 paused: false,
             },
             next_action: ConnectionAction::None,
+            trace: Span::current(),
         };
 
         // Update server state and notify the relay, if any. When complete,
@@ -2249,6 +2243,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         let ConnectionState::Connecting {
             mut info,
             next_action,
+            ..
         } = self.inner.state
         else {
             panic!("Invalid state for completing InitiateContact.");
@@ -2293,7 +2288,10 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         // The relay responds with all the feature flags it supports, so limit the flags reported to
         // the guest to include only those handled by the relay or locally.
         info.version.feature_flags &= relay_feature_flags | LOCAL_FEATURE_FLAGS;
-        self.inner.state = ConnectionState::Connected(info);
+        self.inner.state = ConnectionState::Connected {
+            info,
+            trace: Span::none(),
+        };
 
         self.send_version_response(Some((info.version, protocol::ConnectionState::SUCCESSFUL)));
         if !matches!(next_action, ConnectionAction::None) && self.request_disconnect(next_action) {
@@ -2421,6 +2419,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         self.inner.state = ConnectionState::Disconnecting {
                             next_action: ConnectionAction::Reset,
                             modify_sent: false,
+                            trace: Span::current(),
                         };
                     }
                 } else {
@@ -2435,6 +2434,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                     self.inner.state = ConnectionState::Disconnecting {
                         next_action: new_action,
                         modify_sent: false,
+                        trace: Span::current(),
                     };
                 }
             }
@@ -2452,6 +2452,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         if let ConnectionState::Disconnecting {
             next_action,
             modify_sent,
+            ..
         } = std::mem::replace(&mut self.inner.state, ConnectionState::Disconnected)
         {
             assert!(self.are_channels_reset(matches!(next_action, ConnectionAction::Reset)));
@@ -2488,11 +2489,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
     /// Handles MessageType::UNLOAD, which disconnects the guest.
     fn handle_unload(&mut self) {
-        tracing::debug!(
-            vtl = self.inner.assigned_channels.vtl as u8,
-            state = ?self.inner.state,
-            "VmBus received unload request from guest",
-        );
+        let _span = tracing::info_span!("Unload").entered();
+        tracing::debug!(state = ?self.inner.state);
 
         if self.request_disconnect(ConnectionAction::SendUnloadComplete) {
             self.complete_unload();
@@ -2511,7 +2509,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
     /// Handles MessageType::REQUEST_OFFERS, which requests a list of channel offers.
     fn handle_request_offers(&mut self) -> Result<(), ChannelError> {
-        let ConnectionState::Connected(info) = &mut self.inner.state else {
+        let ConnectionState::Connected { info, .. } = &mut self.inner.state else {
             unreachable!(
                 "in unexpected state {:?}, should be prevented by Message::parse()",
                 self.inner.state
@@ -2521,6 +2519,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         if info.offers_sent {
             return Err(ChannelError::OffersAlreadySent);
         }
+
+        let _span = tracing::info_span!("Send channel offers").entered();
 
         info.offers_sent = true;
 
@@ -2598,6 +2598,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .channels
             .get_by_channel_id_mut(&self.inner.assigned_channels, input.channel_id)?;
 
+        let span =
+            tracing::info_span!("Create GPADL", %offer_id, gpadl_id = %input.gpadl_id).entered();
+
         // GPADL body messages don't contain the channel ID, so prevent creating new
         // GPADLs for reserved channels to avoid GPADL ID conflicts.
         if channel.state.is_reserved() {
@@ -2619,7 +2622,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             && self
                 .inner
                 .incomplete_gpadls
-                .insert(input.gpadl_id, offer_id)
+                .insert(input.gpadl_id, (offer_id, span.clone()))
                 .is_some()
         {
             unreachable!("gpadl ID validated above");
@@ -2649,11 +2652,14 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         range: &[u8],
     ) -> Result<(), ChannelError> {
         // Find and update the GPADL.
-        let &offer_id = self
+        let &(offer_id, ref span) = self
             .inner
             .incomplete_gpadls
             .get(&input.gpadl_id)
             .ok_or(ChannelError::UnknownGpadlId)?;
+
+        let _span = span.clone().entered();
+
         let gpadl = self
             .inner
             .gpadls
@@ -2684,17 +2690,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         &mut self,
         input: &protocol::GpadlTeardown,
     ) -> Result<(), ChannelError> {
-        tracing::debug!(
-            vtl = self.inner.assigned_channels.vtl as u8,
-            channel_id = input.channel_id.0,
-            gpadl_id = input.gpadl_id.0,
-            "Received GPADL teardown request"
-        );
-
         let (offer_id, channel) = self
             .inner
             .channels
             .get_by_channel_id_mut(&self.inner.assigned_channels, input.channel_id)?;
+
+        let _span =
+            tracing::info_span!("Destroy GPADL", %offer_id, gpadl_id = %input.gpadl_id).entered();
 
         let gpadl = self
             .inner
@@ -2722,12 +2724,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 }
 
                 if channel.state.is_revoked() {
-                    tracing::trace!(
-                        vtl = self.inner.assigned_channels.vtl as u8,
-                        channel_id = input.channel_id.0,
-                        gpadl_id = input.gpadl_id.0,
-                        "Gpadl teardown for revoked channel"
-                    );
+                    tracing::trace!("Gpadl teardown for revoked channel");
 
                     self.inner.gpadls.remove(&(input.gpadl_id, offer_id));
                     self.sender().send_gpadl_torndown(input.gpadl_id);
@@ -2785,6 +2782,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .inner
             .channels
             .get_by_channel_id_mut(&self.inner.assigned_channels, input.open_channel.channel_id)?;
+
+        let _span = tracing::info_span!("Open channel", %offer_id).entered();
 
         let guest_specified_interrupt_info = self
             .inner
@@ -2845,6 +2844,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .channels
             .get_by_channel_id_mut(&self.inner.assigned_channels, input.channel_id)?;
 
+        let _span = tracing::info_span!("Close channel", %offer_id).entered();
+
         match channel.state {
             ChannelState::Open {
                 params,
@@ -2897,6 +2898,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .channels
             .get_by_channel_id_mut(&self.inner.assigned_channels, input.channel_id)?;
 
+        let _span = tracing::info_span!("Open reserved channel", %offer_id).entered();
+
         let target = ConnectionTarget {
             vp: input.target_vp,
             sint: input.target_sint as u8,
@@ -2944,6 +2947,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .inner
             .channels
             .get_by_channel_id_mut(&self.inner.assigned_channels, input.channel_id)?;
+
+        let _span = tracing::info_span!("Close reserved channel", %offer_id).entered();
 
         match channel.state {
             ChannelState::Open {
@@ -3009,6 +3014,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                         // There is no need to tear down the GPADL.
                         false
                     } else {
+                        let _span = tracing::info_span!(
+                            "Destroy GPADL",
+                            offer_id = %gpadl_offer_id,
+                            %gpadl_id
+                        )
+                        .entered();
+
                         gpadl.state = GpadlState::TearingDown;
                         sender.notifier.notify(
                             offer_id,
@@ -3079,6 +3091,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .inner
             .channels
             .get_by_channel_id_mut(&self.inner.assigned_channels, channel_id)?;
+
+        let _span = tracing::info_span!("Release channel", %offer_id).entered();
 
         match channel.state {
             ChannelState::Closed
@@ -3169,6 +3183,8 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .channels
             .get_by_channel_id_mut(&self.inner.assigned_channels, request.channel_id)?;
 
+        let _span = tracing::info_span!("Modify channel", %offer_id).entered();
+
         let (open_request, modify_state) = match &mut channel.state {
             ChannelState::Open {
                 params,
@@ -3256,7 +3272,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
     fn handle_modify_connection(&mut self, request: protocol::ModifyConnection) {
         if let Err(err) = self.modify_connection(request) {
-            tracelimit::error_ratelimited!(?err, "modifying connection failed");
+            tracelimit::error_ratelimited!(error = ?err, "Modify connection failed");
             self.complete_modify_connection(ModifyConnectionResponse::Supported(
                 protocol::ConnectionState::FAILED_UNKNOWN_FAILURE,
                 FeatureFlags::new(),
@@ -3265,7 +3281,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     }
 
     fn modify_connection(&mut self, request: protocol::ModifyConnection) -> anyhow::Result<()> {
-        let ConnectionState::Connected(info) = &mut self.inner.state else {
+        let ConnectionState::Connected { info, trace } = &mut self.inner.state else {
             anyhow::bail!(
                 "Invalid state for ModifyConnection request: {:?}",
                 self.inner.state
@@ -3285,6 +3301,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             anyhow::bail!("Guest must specify either both or no monitor pages, {request:?}");
         }
 
+        let span = tracing::info_span!("Modify connection parameters").entered();
+        assert!(std::mem::replace(trace, span.clone()).is_none());
+
         let monitor_page =
             (request.child_to_parent_monitor_page_gpa != 0).then_some(MonitorPageGpas {
                 child_to_parent: request.child_to_parent_monitor_page_gpa,
@@ -3293,21 +3312,14 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         info.modifying = true;
         info.monitor_page = monitor_page;
-        tracing::debug!(
-            vtl = self.inner.assigned_channels.vtl as u8,
-            "modifying connection parameters."
-        );
         self.notifier.modify_connection(request.into())?;
 
         Ok(())
     }
 
     pub fn complete_modify_connection(&mut self, response: ModifyConnectionResponse) {
-        tracing::debug!(
-            vtl = self.inner.assigned_channels.vtl as u8,
-            ?response,
-            "modifying connection parameters complete"
-        );
+        let _span = self.inner.state.take_span().entered();
+        tracing::debug!(?response);
 
         // InitiateContact, Unload, and actual ModifyConnection messages are all sent to the relay
         // as ModifyConnection requests, so use the server state to determine how to handle the
@@ -3315,7 +3327,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
         match &mut self.inner.state {
             ConnectionState::Connecting { .. } => self.complete_initiate_contact(response),
             ConnectionState::Disconnecting { .. } => self.complete_disconnect(),
-            ConnectionState::Connected(info) => {
+            ConnectionState::Connected { info, .. } => {
                 let ModifyConnectionResponse::Supported(connection_state, ..) = response else {
                     panic!(
                         "Relay should not return {:?} for a modify request with no version.",
@@ -3342,9 +3354,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
     }
 
     fn handle_pause(&mut self) {
-        tracelimit::info_ratelimited!("pausing sending messages");
+        tracelimit::info_ratelimited!("Pausing sending messages");
         self.sender().send_message(&protocol::PauseResponse {});
-        let ConnectionState::Connected(info) = &mut self.inner.state else {
+        let ConnectionState::Connected { info, .. } = &mut self.inner.state else {
             unreachable!(
                 "in unexpected state {:?}, should be prevented by Message::parse()",
                 self.inner.state
@@ -3359,12 +3371,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         let version = self.inner.state.get_version();
         let msg = Message::parse(&message.data, version)?;
-        tracing::trace!(
-            vtl = self.inner.assigned_channels.vtl as u8,
-            ?msg,
-            message.trusted,
-            "received vmbus message"
-        );
+        tracing::trace!(?msg, message.trusted, "Received vmbus message");
         // Do not allow untrusted messages if the connection was established
         // using a trusted message.
         //
@@ -3376,7 +3383,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
         // Unpause channel responses if they are paused.
         match &mut self.inner.state {
-            ConnectionState::Connected(info) if info.paused => {
+            ConnectionState::Connected { info, .. } if info.paused => {
                 if !matches!(
                     msg,
                     Message::Resume(..)
@@ -3514,13 +3521,6 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
     /// Releases a GPADL that is being torn down.
     pub fn gpadl_teardown_complete(&mut self, offer_id: OfferId, gpadl_id: GpadlId) {
-        tracing::debug!(
-            vtl = self.inner.assigned_channels.vtl as u8,
-            offer_id = offer_id.0,
-            gpadl_id = gpadl_id.0,
-            "Gpadl teardown complete"
-        );
-
         let gpadl = if let Some(gpadl) = Self::get_gpadl(&mut self.inner.gpadls, offer_id, gpadl_id)
         {
             gpadl
@@ -3533,7 +3533,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             | GpadlState::Offered
             | GpadlState::OfferedTearingDown
             | GpadlState::Accepted => {
-                tracelimit::error_ratelimited!(?offer_id, ?gpadl_id, ?gpadl, "invalid gpadl state");
+                tracelimit::error_ratelimited!(%offer_id, %gpadl_id, ?gpadl, "Invalid gpadl state");
             }
             GpadlState::TearingDown => {
                 if !channel.state.is_released() {
@@ -3660,13 +3660,13 @@ impl<N: Notifier> MessageSender<'_, N> {
     ) {
         let message = OutgoingMessage::new(msg);
 
-        tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "sending message");
+        tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "Sending message");
         // Don't try to send the message if there are already pending messages.
         if !self.pending_messages.0.is_empty()
             || self.is_paused
             || !self.notifier.send_message(&message, MessageTarget::Default)
         {
-            tracing::trace!("message queued");
+            tracing::trace!("Message queued");
             // Queue the message for retry later.
             self.pending_messages.0.push_back(message);
         }
@@ -3683,12 +3683,12 @@ impl<N: Notifier> MessageSender<'_, N> {
         if target == MessageTarget::Default {
             self.send_message(msg);
         } else {
-            tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "sending message");
+            tracing::trace!(typ = ?T::MESSAGE_TYPE, ?msg, "Sending message");
             // Messages for other targets are not queued, nor are they affected
             // by the paused state.
             let message = OutgoingMessage::new(msg);
             if !self.notifier.send_message(&message, target) {
-                tracelimit::warn_ratelimited!(?target, "failed to send message");
+                tracelimit::warn_ratelimited!(?target, "Failed to send message");
             }
         }
     }
@@ -3719,12 +3719,6 @@ impl<N: Notifier> MessageSender<'_, N> {
             is_dedicated: 1,
             connection_id: info.connection_id,
         };
-        tracing::info!(
-            channel_id = msg.channel_id.0,
-            connection_id = msg.connection_id,
-            key = %channel.offer.key(),
-            "sending offer to guest"
-        );
 
         self.send_message(&msg);
     }
@@ -3759,11 +3753,6 @@ impl<N: Notifier> MessageSender<'_, N> {
     }
 
     fn send_rescind(&mut self, info: &OfferedInfo) {
-        tracing::info!(
-            channel_id = info.channel_id.0,
-            "rescinding channel from guest"
-        );
-
         self.send_message(&protocol::RescindChannelOffer {
             channel_id: info.channel_id,
         });

@@ -58,6 +58,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
 use std::task::ready;
+use tracing::Instrument;
+use tracing::Span;
+use tracing::field;
 use unicycle::FuturesUnordered;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
@@ -520,10 +523,14 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
             unstick_on_start: false,
         };
 
-        let task = self.spawner.spawn("vmbus server", async move {
-            server_task.run(relay_response_recv, hvsock_recv).await;
-            server_task
-        });
+        let task = self.spawner.spawn(
+            "vmbus server",
+            async move {
+                server_task.run(relay_response_recv, hvsock_recv).await;
+                server_task
+            }
+            .instrument(tracing::info_span!("Server Task", vtl = %self.vtl)),
+        );
 
         Ok(VmbusServer {
             task_send,
@@ -575,7 +582,7 @@ impl VmbusServer {
 
     /// Resets the vmbus channel state.
     pub async fn reset(&self) {
-        tracing::debug!("resetting channel state");
+        tracing::trace!("Resetting channel state");
         self.task_send.call(VmbusRequest::Reset, ()).await.unwrap()
     }
 
@@ -641,7 +648,11 @@ struct ServerTaskInner {
     hvsock_send: mesh::Sender<HvsockConnectRequest>,
     channels: HashMap<OfferId, Channel>,
     channel_responses: FuturesUnordered<
-        Pin<Box<dyn Send + Future<Output = (OfferId, u64, Result<ChannelResponse, RpcError>)>>>,
+        Pin<
+            Box<
+                dyn Send + Future<Output = (OfferId, u64, Span, Result<ChannelResponse, RpcError>)>,
+            >,
+        >,
     >,
     external_server_send: Option<mesh::Sender<InitiateContactRequest>>,
     relay_send: mesh::Sender<ModifyRelayRequest>,
@@ -702,6 +713,8 @@ impl ServerTask {
         let key = info.params.key();
         let flags = info.params.flags;
 
+        let span = tracing::info_span!("Offer channel", %key, offer_id = field::Empty).entered();
+
         // Disable mnf if the synic doesn't support it or it's not enabled in this server.
         if info.params.use_mnf
             && (!self.inner.enable_mnf || self.inner.synic.monitor_support().is_none())
@@ -715,9 +728,12 @@ impl ServerTask {
             .offer_channel(info.params)
             .context("channel offer failed")?;
 
-        let guest_event_port = self.inner.synic.new_guest_event_port()?;
+        // TODO: remove this extra trace event when TraceloggingSubscriber is
+        // fixed so that span exit events include the span's recorded fields
+        tracing::info!(%offer_id, "Offer channel");
+        span.record("offer_id", format!("{offer_id}"));
 
-        tracing::debug!(?offer_id, %key, "offered channel");
+        let guest_event_port = self.inner.synic.new_guest_event_port()?;
 
         let id = self.next_seq;
         self.next_seq += 1;
@@ -748,7 +764,7 @@ impl ServerTask {
         // The channel may or may not exist in the map depending on whether it's been explicitly
         // revoked before being dropped.
         if self.inner.channels.remove(&offer_id).is_some() {
-            tracing::info!(?offer_id, "revoking channel");
+            let _span = tracing::info_span!("Revoke channel", %offer_id).entered();
             self.server
                 .with_notifier(&mut self.inner)
                 .revoke_channel(offer_id);
@@ -762,13 +778,13 @@ impl ServerTask {
         response: Result<ChannelResponse, RpcError>,
     ) {
         // Validate the sequence to ensure the response is not for a revoked channel.
-        let channel = self
+        if self
             .inner
             .channels
             .get(&offer_id)
-            .filter(|channel| channel.seq == seq);
-
-        if let Some(channel) = channel {
+            .filter(|channel| channel.seq == seq)
+            .is_some()
+        {
             match response {
                 Ok(response) => match response {
                     ChannelResponse::Open(result) => self.handle_open(offer_id, result),
@@ -783,14 +799,13 @@ impl ServerTask {
                 },
                 Err(err) => {
                     tracing::error!(
-                        key = %channel.key,
                         error = &err as &dyn std::error::Error,
-                        "channel response failure, channel is in inconsistent state until revoked"
+                        "Channel response failure, channel is in inconsistent state until revoked"
                     );
                 }
             }
         } else {
-            tracing::debug!(offer_id = ?offer_id, seq, ?response, "received response after revoke");
+            tracing::debug!(%seq, ?response, "Received response after revoke");
         }
     }
 
@@ -800,10 +815,11 @@ impl ServerTask {
         } else {
             protocol::STATUS_UNSUCCESSFUL
         };
+
         if let Err(err) = self.inner.complete_open(offer_id, result) {
             tracelimit::error_ratelimited!(
                 error = err.as_ref() as &dyn std::error::Error,
-                "failed to complete open"
+                "Failed to complete open"
             );
             // If complete_open failed, the channel is now in FailedOpen state and the device needs
             // to notified to close it. Calling open_complete is postponed until the device responds
@@ -839,7 +855,7 @@ impl ServerTask {
                     .open_complete(offer_id, protocol::STATUS_UNSUCCESSFUL);
             }
             _ => {
-                tracing::error!(?offer_id, "invalid close channel response");
+                tracing::error!("Invalid close channel response");
             }
         };
     }
@@ -868,6 +884,13 @@ impl ServerTask {
         offer_id: OfferId,
         open: Option<OpenResult>,
     ) -> anyhow::Result<RestoreResult> {
+        let _span = tracing::info_span!(
+            parent: self.server.get_current_span(),
+            "Restore channel",
+            %offer_id
+        )
+        .entered();
+
         let gpadls = self.server.channel_gpadls(offer_id);
 
         // If the channel is opened, handle that before calling into channels so that failure can
@@ -960,7 +983,7 @@ impl ServerTask {
                     self.inner.running = true;
                     if self.unstick_on_start {
                         tracing::info!(
-                            "lost synic bug fix is not in yet, call unstick_channels to mitigate the issue."
+                            "Lost synic bug fix is not in yet, call unstick_channels to mitigate the issue."
                         );
                         self.unstick_channels(false);
                         self.unstick_on_start = false;
@@ -1108,8 +1131,8 @@ impl ServerTask {
                     }
                 }
                 r = channel_response => {
-                    let (id, seq, response) = r.unwrap();
-                    self.handle_response(id, seq, response);
+                    let (id, seq, span, response) = r.unwrap();
+                    span.in_scope(|| { self.handle_response(id, seq, response) });
                 }
                 r = relay_response_recv.select_next_some() => {
                     self.handle_relay_response(r);
@@ -1155,7 +1178,7 @@ impl ServerTask {
         } = &channel.state
         {
             if force {
-                tracing::info!(channel = %channel.key, "waking host and guest");
+                tracing::trace!(channel = %channel.key, "Waking host and guest");
                 guest_to_host_event.0.deliver();
                 host_to_guest_interrupt.deliver();
                 return Ok(());
@@ -1185,7 +1208,7 @@ impl ServerTask {
                 tracing::warn!(
                     channel = %channel.key,
                     error = err.as_ref() as &dyn std::error::Error,
-                    "could not unstick incoming ring"
+                    "Could not unstick incoming ring"
                 );
             }
             if let Err(err) = self.unstick_outgoing_ring(
@@ -1197,7 +1220,7 @@ impl ServerTask {
                 tracing::warn!(
                     channel = %channel.key,
                     error = err.as_ref() as &dyn std::error::Error,
-                    "could not unstick outgoing ring"
+                    "Could not unstick outgoing ring"
                 );
             }
         }
@@ -1213,11 +1236,11 @@ impl ServerTask {
     ) -> Result<(), anyhow::Error> {
         let incoming_mem = GpadlRingMem::new(in_gpadl, &self.inner.gm)?;
         if ring::reader_needs_signal(&incoming_mem) {
-            tracing::info!(channel = %channel.key, "waking host for incoming ring");
+            tracing::trace!(channel = %channel.key, "Waking host for incoming ring");
             guest_to_host_event.0.deliver();
         }
         if ring::writer_needs_signal(&incoming_mem) {
-            tracing::info!(channel = %channel.key, "waking guest for incoming ring");
+            tracing::trace!(channel = %channel.key, "Waking guest for incoming ring");
             host_to_guest_interrupt.deliver();
         }
         Ok(())
@@ -1232,11 +1255,11 @@ impl ServerTask {
     ) -> Result<(), anyhow::Error> {
         let outgoing_mem = GpadlRingMem::new(out_gpadl, &self.inner.gm)?;
         if ring::reader_needs_signal(&outgoing_mem) {
-            tracing::info!(channel = %channel.key, "waking guest for outgoing ring");
+            tracing::trace!(channel = %channel.key, "Waking guest for outgoing ring");
             host_to_guest_interrupt.deliver();
         }
         if ring::writer_needs_signal(&outgoing_mem) {
-            tracing::info!(channel = %channel.key, "waking host for outgoing ring");
+            tracing::trace!(channel = %channel.key, "Waking host for outgoing ring");
             guest_to_host_event.0.deliver();
         }
         Ok(())
@@ -1256,14 +1279,20 @@ impl Notifier for ServerTaskInner {
             req: impl FnOnce(Rpc<I, R>) -> ChannelRequest,
             input: I,
             f: impl 'static + Send + FnOnce(R) -> ChannelResponse,
-        ) -> Pin<Box<dyn Send + Future<Output = (OfferId, u64, Result<ChannelResponse, RpcError>)>>>
-        {
+        ) -> Pin<
+            Box<
+                dyn Send + Future<Output = (OfferId, u64, Span, Result<ChannelResponse, RpcError>)>,
+            >,
+        > {
             let recv = channel.send.call(req, input);
             let seq = channel.seq;
-            Box::pin(async move {
-                let r = recv.await.map(f);
-                (offer_id, seq, r)
-            })
+            Box::pin(
+                async move {
+                    let r = recv.await.map(f);
+                    (offer_id, seq, Span::current(), r)
+                }
+                .in_current_span(),
+            )
         }
 
         let response = match action {
@@ -1291,11 +1320,15 @@ impl Notifier for ServerTaskInner {
 
                         // Return an error response to the channels module if the open_channel call
                         // failed.
-                        Box::pin(future::ready((
-                            offer_id,
-                            seq,
-                            Ok(ChannelResponse::Open(None)),
-                        )))
+                        Box::pin(
+                            future::ready((
+                                offer_id,
+                                seq,
+                                Span::current(),
+                                Ok(ChannelResponse::Open(None)),
+                            ))
+                            .in_current_span(),
+                        )
                     }
                 }
             }
@@ -1364,13 +1397,17 @@ impl Notifier for ServerTaskInner {
                             "could not modify channel",
                         );
                         let seq = channel.seq;
-                        Box::pin(async move {
-                            (
-                                offer_id,
-                                seq,
-                                Ok(ChannelResponse::Modify(protocol::STATUS_UNSUCCESSFUL)),
-                            )
-                        })
+                        Box::pin(
+                            async move {
+                                (
+                                    offer_id,
+                                    seq,
+                                    Span::current(),
+                                    Ok(ChannelResponse::Modify(protocol::STATUS_UNSUCCESSFUL)),
+                                )
+                            }
+                            .in_current_span(),
+                        )
                     } else {
                         handle(
                             offer_id,
@@ -1418,7 +1455,7 @@ impl Notifier for ServerTaskInner {
         if let Some(external_server) = &self.external_server_send {
             external_server.send(request);
         } else {
-            tracing::warn!(?request, "nowhere to forward unhandled request")
+            tracing::warn!(?request, "Nowhere to forward unhandled request")
         }
     }
 
@@ -1487,10 +1524,11 @@ impl Notifier for ServerTaskInner {
                     Ok(port) => port,
                     Err(err) => {
                         tracing::error!(
-                            ?err,
-                            ?self.redirect_vtl,
-                            ?target,
-                            "could not create message port"
+                            target_vtl = %self.redirect_vtl,
+                            target_vp = %target.vp,
+                            target_sint = %target.sint,
+                            error = ?err,
+                            "Could not create message port"
                         );
 
                         // There is no way to send the message.
@@ -1521,7 +1559,7 @@ impl Notifier for ServerTaskInner {
     fn reset_complete(&mut self) {
         if let Some(monitor) = self.synic.monitor_support() {
             if let Err(err) = monitor.set_monitor_page(None) {
-                tracing::warn!(?err, "resetting monitor page failed")
+                tracing::warn!(error = ?err, "Resetting monitor page failed")
             }
         }
 
@@ -1648,10 +1686,10 @@ impl ServerTaskInner {
                         guest_to_host_event,
                     }
                 }
-                s => {
-                    tracing::error!("attempting to complete open of open or closed channel");
+                state => {
+                    tracing::error!("Attempting to complete open of open or closed channel");
                     // Restore the original state
-                    s
+                    state
                 }
             }
         } else {
@@ -1773,10 +1811,11 @@ impl ServerTaskInner {
                 .new_guest_message_port(self.redirect_vtl, new_target.vp, new_target.sint)
                 .inspect_err(|err| {
                     tracing::error!(
-                        ?err,
-                        ?self.redirect_vtl,
-                        ?new_target,
-                        "could not create reserved channel message port"
+                        target_vtl = %self.redirect_vtl,
+                        target_vp = %new_target.vp,
+                        target_sint = %new_target.sint,
+                        error = ?err,
+                        "Could not create reserved message port"
                     )
                 })
                 .ok()?;
@@ -1790,10 +1829,11 @@ impl ServerTaskInner {
             // ignore it and just send to the old vp.
             if let Err(err) = message_port.set_target_vp(new_target.vp) {
                 tracing::error!(
-                    ?err,
-                    ?self.redirect_vtl,
-                    ?new_target,
-                    "could not update reserved channel message port"
+                    target_vtl = %self.redirect_vtl,
+                    target_vp = %new_target.vp,
+                    target_sint = %new_target.sint,
+                    error = ?err,
+                    "Could not update reserved channel message port"
                 );
             }
 
@@ -1861,7 +1901,7 @@ impl VmbusServerControl {
         if self.force_confidential_external_memory {
             tracing::warn!(
                 key = %offer_info.params.key(),
-                "forcing confidential external memory for channel"
+                "Forcing confidential external memory for channel"
             );
 
             offer_info
