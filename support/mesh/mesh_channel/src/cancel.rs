@@ -25,6 +25,7 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
+use thiserror::Error;
 
 /// A cancellation context.
 ///
@@ -161,6 +162,19 @@ impl CancelContext {
         })
         .await
     }
+
+    /// Runs a failable future until this context is cancelled, merging the
+    /// result with the cancellation reason.
+    pub async fn until_cancelled_failable<F: Future<Output = Result<T, E>>, T, E>(
+        &mut self,
+        fut: F,
+    ) -> Result<T, ErrorOrCancelled<E>> {
+        match self.until_cancelled(fut).await {
+            Ok(Ok(r)) => Ok(r),
+            Ok(Err(e)) => Err(ErrorOrCancelled::Error(e)),
+            Err(reason) => Err(ErrorOrCancelled::Cancelled(reason)),
+        }
+    }
 }
 
 impl Default for CancelContext {
@@ -189,6 +203,14 @@ impl std::fmt::Display for CancelReason {
 }
 
 impl std::error::Error for CancelReason {}
+
+#[derive(Error, Debug)]
+pub enum ErrorOrCancelled<E> {
+    #[error(transparent)]
+    Error(E),
+    #[error(transparent)]
+    Cancelled(CancelReason),
+}
 
 impl Future for Cancelled<'_> {
     type Output = CancelReason;

@@ -3,7 +3,9 @@
 
 //! Resource resolvers for the ICs.
 
+use crate::kvp::KvpIc;
 use crate::shutdown::ShutdownIc;
+use hyperv_ic_resources::kvp::KvpIcHandle;
 use hyperv_ic_resources::shutdown::ShutdownIcHandle;
 use std::convert::Infallible;
 use vm_resource::ResolveResource;
@@ -13,15 +15,15 @@ use vmbus_channel::resources::ResolveVmbusDeviceHandleParams;
 use vmbus_channel::resources::ResolvedVmbusDevice;
 use vmbus_channel::simple::SimpleDeviceWrapper;
 
-/// Resource resolver for the ICs.
-pub struct IcResolver;
+/// Resource resolver for the shutdown IC.
+pub struct ShutdownIcResolver;
 
 declare_static_resolver! {
-    IcResolver,
+    ShutdownIcResolver,
     (VmbusDeviceHandleKind, ShutdownIcHandle),
 }
 
-impl ResolveResource<VmbusDeviceHandleKind, ShutdownIcHandle> for IcResolver {
+impl ResolveResource<VmbusDeviceHandleKind, ShutdownIcHandle> for ShutdownIcResolver {
     type Output = ResolvedVmbusDevice;
     type Error = Infallible;
 
@@ -32,6 +34,30 @@ impl ResolveResource<VmbusDeviceHandleKind, ShutdownIcHandle> for IcResolver {
     ) -> Result<Self::Output, Self::Error> {
         Ok(
             SimpleDeviceWrapper::new(input.driver_source.simple(), ShutdownIc::new(resource.recv))
+                .into(),
+        )
+    }
+}
+
+/// Resource resolver for the KVP IC.
+pub struct KvpIcResolver;
+
+declare_static_resolver! {
+    KvpIcResolver,
+    (VmbusDeviceHandleKind, KvpIcHandle),
+}
+
+impl ResolveResource<VmbusDeviceHandleKind, KvpIcHandle> for KvpIcResolver {
+    type Output = ResolvedVmbusDevice;
+    type Error = Infallible;
+
+    fn resolve(
+        &self,
+        resource: KvpIcHandle,
+        input: ResolveVmbusDeviceHandleParams<'_>,
+    ) -> Result<Self::Output, Self::Error> {
+        Ok(
+            SimpleDeviceWrapper::new(input.driver_source.simple(), KvpIc::new(resource.recv))
                 .into(),
         )
     }

@@ -101,7 +101,7 @@ impl HypervisorBackedX86Shared {
     /// Creates a new partition-shared data structure for hypervisor backed VMs.
     pub(crate) fn new(
         _partition_params: &UhPartitionNewParams<'_>,
-        params: BackingSharedParams,
+        params: BackingSharedParams<'_>,
     ) -> Result<Self, Error> {
         Ok(Self {
             guest_vsm: RwLock::new(GuestVsmState::from_availability(params.guest_vsm_available)),
@@ -372,6 +372,8 @@ impl BackingPrivate for HypervisorBackedX86 {
         // whether VTL 1 is enabled on the vp (this can be cached).
         false
     }
+
+    fn handle_exit_activity(_this: &mut UhProcessor<'_, Self>) {}
 }
 
 fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {
@@ -2029,6 +2031,8 @@ mod save_restore {
                 runner: _,
                 // TODO CVM Servicing: The hypervisor backing doesn't need to save anything, but CVMs will.
                 backing: _,
+                // Currently only meaningful for CVMs
+                exit_activities: _,
             } = self;
 
             let per_vtl = [GuestVtl::Vtl0, GuestVtl::Vtl1]

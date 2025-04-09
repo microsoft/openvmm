@@ -8,6 +8,7 @@
 
 mod cli_args;
 mod crash_dump;
+mod kvp;
 mod meshworker;
 mod serial_io;
 mod storage_builder;
@@ -180,6 +181,7 @@ struct VmResources {
     console_in: Option<Box<dyn AsyncWrite + Send + Unpin>>,
     framebuffer_access: Option<FramebufferAccess>,
     shutdown_ic: Option<mesh::Sender<hyperv_ic_resources::shutdown::ShutdownRpc>>,
+    kvp_ic: Option<mesh::Sender<hyperv_ic_resources::kvp::KvpConnectRpc>>,
     scsi_rpc: Option<mesh::Sender<ScsiControllerRequest>>,
     ged_rpc: Option<mesh::Sender<get_resources::ged::GuestEmulationRequest>>,
     #[cfg(windows)]
@@ -1134,12 +1136,20 @@ fn vm_config_from_command_line(
     };
 
     if with_hv {
-        let (send, recv) = mesh::channel();
-        resources.shutdown_ic = Some(send);
-        vmbus_devices.push((
-            DeviceVtl::Vtl0,
-            hyperv_ic_resources::shutdown::ShutdownIcHandle { recv }.into_resource(),
-        ));
+        let (shutdown_send, shutdown_recv) = mesh::channel();
+        resources.shutdown_ic = Some(shutdown_send);
+        let (kvp_send, kvp_recv) = mesh::channel();
+        resources.kvp_ic = Some(kvp_send);
+        vmbus_devices.extend(
+            [
+                hyperv_ic_resources::shutdown::ShutdownIcHandle {
+                    recv: shutdown_recv,
+                }
+                .into_resource(),
+                hyperv_ic_resources::kvp::KvpIcHandle { recv: kvp_recv }.into_resource(),
+            ]
+            .map(|r| (DeviceVtl::Vtl0, r)),
+        );
     }
 
     if let Some(hive_path) = &opt.imc {
@@ -1875,6 +1885,9 @@ enum InteractiveCommand {
 
     /// Inject an artificial panic into OpenVMM
     Panic,
+
+    /// Use KVP to interact with the guest.
+    Kvp(kvp::KvpCommand),
 }
 
 struct CommandParser {
@@ -2835,6 +2848,15 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
 
                 if let Err(err) = vm_rpc.call(VmRpc::WriteMemory, (gpa, data)).await? {
                     eprintln!("error: {err:?}");
+                }
+            }
+            InteractiveCommand::Kvp(command) => {
+                let Some(kvp) = &resources.kvp_ic else {
+                    eprintln!("error: no kvp ic configured");
+                    continue;
+                };
+                if let Err(err) = kvp::handle_kvp(kvp, command).await {
+                    eprintln!("error: {err:#}");
                 }
             }
             InteractiveCommand::Input { .. } | InteractiveCommand::InputMode => unreachable!(),

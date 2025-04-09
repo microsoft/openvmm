@@ -1045,7 +1045,7 @@ impl<M: RingMem> OutgoingRing<M> {
                 PACKET_FLAG_COMPLETION_REQUESTED,
             ),
         };
-        let msg_len = (packet.size + header_size + 7) / 8 * 8;
+        let msg_len = (packet.size + header_size).div_ceil(8) * 8;
         let total_msg_len = (msg_len + size_of::<Footer>()) as u32;
         if total_msg_len >= self.inner.len() - 8 {
             return Err(WriteError::Corrupt(Error::InvalidMessageLength));

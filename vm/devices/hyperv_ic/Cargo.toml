@@ -15,6 +15,7 @@ vmbus_channel.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
 
+anyhow.workspace = true
 inspect.workspace = true
 mesh.workspace = true
 task_control.workspace = true
@@ -24,7 +25,6 @@ futures-concurrency.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
-[dev-dependencies]
 
 [lints]
 workspace = true

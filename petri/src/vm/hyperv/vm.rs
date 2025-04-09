@@ -158,6 +158,14 @@ impl HyperVVM {
         Ok(())
     }
 
+    /// Set the VM processor count.
+    pub fn set_processor_count(&mut self, count: u32) -> anyhow::Result<()> {
+        powershell::run_set_vm_processor(powershell::HyperVSetVMProcessorArgs {
+            vmid: &self.vmid,
+            count: Some(count),
+        })
+    }
+
     /// Set the OpenHCL firmware file
     pub fn set_openhcl_firmware(
         &mut self,

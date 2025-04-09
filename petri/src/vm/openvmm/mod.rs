@@ -31,6 +31,7 @@ use hvlite_defs::config::Config;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::Receiver;
 use mesh::Sender;
+use net_backend_resources::mac_address::MacAddress;
 use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
@@ -58,6 +59,9 @@ pub(crate) const BOOT_NVME_NSID: u32 = 37;
 
 /// The LUN ID for the NVMe controller automatically added for boot media.
 pub(crate) const BOOT_NVME_LUN: u32 = 1;
+
+/// The MAC address used by the NIC assigned with [`PetriVmConfigOpenVmm::with_nic`].
+pub const NIC_MAC_ADDRESS: MacAddress = MacAddress::new([0x00, 0x15, 0x5D, 0x12, 0x12, 0x12]);
 
 /// The set of artifacts and resources needed to instantiate a
 /// [`PetriVmConfigOpenVmm`].
@@ -130,6 +134,7 @@ struct PetriVmResourcesOpenVmm {
     log_stream_tasks: Vec<Task<anyhow::Result<()>>>,
     firmware_event_recv: Receiver<FirmwareEvent>,
     shutdown_ic_send: Sender<ShutdownRpc>,
+    kvp_ic_send: Sender<hyperv_ic_resources::kvp::KvpConnectRpc>,
     expected_boot_event: Option<FirmwareEvent>,
     ged_send: Option<Sender<get_resources::ged::GuestEmulationRequest>>,
     pipette_listener: PolledSocket<UnixListener>,

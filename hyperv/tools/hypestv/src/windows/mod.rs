@@ -255,9 +255,17 @@ pub async fn main(driver: DefaultDriver) -> anyhow::Result<()> {
 
     std::thread::spawn(move || {
         while let Ok(prompt) = block_on(send.call(Request::Prompt, ())) {
-            let Ok(line) = rl.readline(&prompt) else {
-                break;
+            let line = match rl.readline(&prompt) {
+                Ok(line) => line,
+                Err(rustyline::error::ReadlineError::Interrupted) => {
+                    // On CTRL+C, ignore the current line
+                    continue;
+                }
+                Err(_) => {
+                    break;
+                }
             };
+
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;

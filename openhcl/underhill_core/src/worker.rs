@@ -1295,13 +1295,15 @@ async fn new_underhill_vm(
     let x2apic = if isolation.is_hardware_isolated() && !hide_isolation {
         // For hardware CVMs, always enable x2apic support at boot.
         vm_topology::processor::x86::X2ApicState::Enabled
-    } else if safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx
-        & (1 << 21)
-        != 0
-    {
-        vm_topology::processor::x86::X2ApicState::Supported
     } else {
-        vm_topology::processor::x86::X2ApicState::Unsupported
+        let features = x86defs::cpuid::VersionAndFeaturesEcx::from(
+            safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx,
+        );
+        if features.x2_apic() {
+            vm_topology::processor::x86::X2ApicState::Supported
+        } else {
+            vm_topology::processor::x86::X2ApicState::Unsupported
+        }
     };
 
     #[cfg(guest_arch = "x86_64")]

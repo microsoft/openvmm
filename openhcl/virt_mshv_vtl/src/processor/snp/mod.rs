@@ -234,6 +234,34 @@ impl HardwareIsolatedBacking for SnpBacked {
             shared,
         }
     }
+
+    fn pending_event_vector(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> Option<u8> {
+        let event_inject = this.runner.vmsa(vtl).event_inject();
+        if event_inject.valid() {
+            Some(event_inject.vector())
+        } else {
+            None
+        }
+    }
+
+    fn set_pending_exception(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        event: HvX64PendingExceptionEvent,
+    ) {
+        let inject_info = SevEventInjectInfo::new()
+            .with_valid(true)
+            .with_deliver_error_code(event.deliver_error_code())
+            .with_error_code(event.error_code())
+            .with_vector(event.vector().try_into().unwrap())
+            .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT);
+
+        this.runner.vmsa_mut(vtl).set_event_inject(inject_info);
+    }
+
+    fn cr4_for_cpuid(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
+        this.runner.vmsa(vtl).cr4()
+    }
 }
 
 /// Partition-wide shared data for SNP VPs.
@@ -247,19 +275,19 @@ pub struct SnpBackedShared {
 impl SnpBackedShared {
     pub(crate) fn new(
         _partition_params: &UhPartitionNewParams<'_>,
-        params: BackingSharedParams,
+        params: BackingSharedParams<'_>,
     ) -> Result<Self, Error> {
         let cvm = params.cvm_state.unwrap();
         let invlpgb_count_max = x86defs::cpuid::ExtendedAddressSpaceSizesEdx::from(
-            cvm.cpuid
-                .registered_result(CpuidFunction::ExtendedAddressSpaceSizes, 0)
-                .edx,
+            params
+                .cpuid
+                .result(CpuidFunction::ExtendedAddressSpaceSizes.0, 0, &[0; 4])[3],
         )
         .invlpgb_count_max();
         let tsc_aux_virtualized = x86defs::cpuid::ExtendedSevFeaturesEax::from(
-            cvm.cpuid
-                .registered_result(CpuidFunction::ExtendedSevFeatures, 0)
-                .eax,
+            params
+                .cpuid
+                .result(CpuidFunction::ExtendedSevFeatures.0, 0, &[0; 4])[0],
         )
         .tsc_aux_virtualization();
 
@@ -456,9 +484,13 @@ impl BackingPrivate for SnpBacked {
         })
     }
 
+    fn handle_exit_activity(this: &mut UhProcessor<'_, Self>) {
+        this.cvm_handle_exit_activity();
+    }
+
     fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>) {
         let vtl0_vmsa = this.runner.vmsa(GuestVtl::Vtl0);
-        let vtl1_vmsa = if this.backing.cvm_state().vtl1_enabled {
+        let vtl1_vmsa = if this.backing.cvm_state().vtl1.is_some() {
             Some(this.runner.vmsa(GuestVtl::Vtl1))
         } else {
             None
@@ -764,6 +796,10 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpB
         // For now, just inject an NMI and hope for the best.
         // Don't forget to update handle_cross_vtl_interrupts if this code changes.
         let mut vmsa = self.runner.vmsa_mut(vtl);
+
+        // TODO GUEST VSM: Don't inject the NMI if there's already an event
+        // pending.
+
         vmsa.set_event_inject(
             SevEventInjectInfo::new()
                 .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_NMI)
@@ -994,25 +1030,10 @@ impl UhProcessor<'_, SnpBacked> {
 
         let stat = match sev_error_code {
             SevExitCode::CPUID => {
-                let guest_state = crate::cvm_cpuid::CpuidGuestState {
-                    xfem: vmsa.xcr0(),
-                    xss: vmsa.xss(),
-                    cr4: vmsa.cr4(),
-                    apic_id: self.inner.vp_info.apic_id,
-                };
-
-                let result = self.shared.cvm.cpuid.guest_result(
-                    CpuidFunction(vmsa.rax() as u32),
-                    vmsa.rcx() as u32,
-                    &guest_state,
-                );
-
-                let [eax, ebx, ecx, edx] = self.partition.cpuid_result(
-                    vmsa.rax() as u32,
-                    vmsa.rcx() as u32,
-                    &[result.eax, result.ebx, result.ecx, result.edx],
-                );
-
+                let leaf = vmsa.rax() as u32;
+                let subleaf = vmsa.rcx() as u32;
+                let [eax, ebx, ecx, edx] = self.cvm_cpuid_result(entered_from_vtl, leaf, subleaf);
+                let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
                 vmsa.set_rax(eax.into());
                 vmsa.set_rbx(ebx.into());
                 vmsa.set_rcx(ecx.into());
@@ -1116,7 +1137,10 @@ impl UhProcessor<'_, SnpBacked> {
             SevExitCode::IOIO => {
                 let io_info = x86defs::snp::SevIoAccessInfo::from(vmsa.exit_info1() as u32);
                 if io_info.string_access() || io_info.rep_access() {
-                    self.emulate(dev, false, entered_from_vtl, ()).await?;
+                    let interruption_pending = vmsa.event_inject().valid()
+                        || SevEventInjectInfo::from(vmsa.exit_int_info()).valid();
+                    self.emulate(dev, interruption_pending, entered_from_vtl, ())
+                        .await?;
                 } else {
                     let len = if io_info.access_size32() {
                         4
@@ -1185,6 +1209,8 @@ impl UhProcessor<'_, SnpBacked> {
                 // unmapped memory. This means that accesses to unmapped memory for lower VTLs will be
                 // forwarded to underhill as a #VC exception.
                 let exit_info2 = vmsa.exit_info2();
+                let interruption_pending = vmsa.event_inject().valid()
+                    || SevEventInjectInfo::from(vmsa.exit_int_info()).valid();
                 let exit_message = self.runner.exit_message();
                 let emulate = match exit_message.header.typ {
                     HvMessageType::HvMessageTypeExceptionIntercept => {
@@ -1212,7 +1238,8 @@ impl UhProcessor<'_, SnpBacked> {
 
                 if emulate {
                     has_intercept = false;
-                    self.emulate(dev, false, entered_from_vtl, ()).await?;
+                    self.emulate(dev, interruption_pending, entered_from_vtl, ())
+                        .await?;
                     &mut self.backing.exit_stats[entered_from_vtl].npf
                 } else {
                     &mut self.backing.exit_stats[entered_from_vtl].npf_spurious
@@ -1543,16 +1570,12 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
             hvdef::HV_X64_PENDING_EVENT_EXCEPTION
         );
 
-        let exception = HvX64PendingExceptionEvent::from(u128::from(event_info.reg_0));
+        let exception = HvX64PendingExceptionEvent::from(event_info.reg_0.into_bits());
+        assert!(!self.interruption_pending);
 
-        self.vp.runner.vmsa_mut(self.vtl).set_event_inject(
-            SevEventInjectInfo::new()
-                .with_valid(true)
-                .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT)
-                .with_vector(exception.vector() as u8)
-                .with_deliver_error_code(exception.deliver_error_code())
-                .with_error_code(exception.error_code()),
-        );
+        // There's no interruption pending, so just inject the exception
+        // directly without checking for double fault.
+        SnpBacked::set_pending_exception(self.vp, self.vtl, exception);
     }
 
     fn is_gpa_mapped(&self, gpa: u64, write: bool) -> bool {
@@ -1773,6 +1796,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
 
     fn activity(&mut self) -> Result<vp::Activity, Self::Error> {
         let lapic = &self.vp.backing.cvm.lapics[self.vtl];
+
         Ok(vp::Activity {
             mp_state: lapic.activity,
             nmi_pending: lapic.nmi_pending,
@@ -1795,6 +1819,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, SnpBacked> {
         let lapic = &mut self.vp.backing.cvm.lapics[self.vtl];
         lapic.activity = mp_state;
         lapic.nmi_pending = nmi_pending;
+
         Ok(())
     }
 

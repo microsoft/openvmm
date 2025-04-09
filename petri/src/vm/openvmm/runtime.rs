@@ -184,6 +184,11 @@ impl PetriVmOpenVmm {
         pub async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()>
     );
     petri_vm_fn!(
+        /// Waits for the KVP IC to be ready, returning a sender that can be used
+        /// to send requests to it.
+        pub async fn wait_for_kvp(&mut self) -> anyhow::Result<mesh::Sender<hyperv_ic_resources::kvp::KvpRpc>>
+    );
+    petri_vm_fn!(
         /// Restarts OpenHCL.
         pub async fn restart_openhcl(
             &mut self,
@@ -374,6 +379,20 @@ impl PetriVmInner {
         );
 
         Ok(())
+    }
+
+    async fn wait_for_kvp(
+        &mut self,
+    ) -> anyhow::Result<mesh::Sender<hyperv_ic_resources::kvp::KvpRpc>> {
+        tracing::info!("Waiting for KVP IC");
+        let (send, _) = self
+            .resources
+            .kvp_ic_send
+            .call_failable(hyperv_ic_resources::kvp::KvpConnectRpc::WaitForGuest, ())
+            .await
+            .context("failed to connect to KVP IC")?;
+
+        Ok(send)
     }
 
     async fn restart_openhcl(

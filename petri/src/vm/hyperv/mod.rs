@@ -250,6 +250,10 @@ impl PetriVmConfigHyperV {
             self.driver.clone(),
         )?;
 
+        // Hard code the processor count to 2 for now, to match the openvmm
+        // configuration.
+        vm.set_processor_count(2)?;
+
         if let Some(igvm_file) = &self.openhcl_igvm {
             // TODO: only increase VTL2 memory on debug builds
             vm.set_openhcl_firmware(

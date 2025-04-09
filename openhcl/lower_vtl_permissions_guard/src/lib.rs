@@ -105,7 +105,7 @@ impl<T: DmaClient> DmaClient for LowerVtlMemorySpawner<T> {
         }))
     }
 
-    fn attach_dma_buffer(&self, _len: usize, _base_pfn: u64) -> Result<MemoryBlock> {
+    fn attach_pending_buffers(&self) -> Result<Vec<MemoryBlock>> {
         anyhow::bail!("restore is not supported for LowerVtlMemorySpawner")
     }
 }

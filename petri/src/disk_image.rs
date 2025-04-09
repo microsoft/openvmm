@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Tools for building a disk image for a VM.
+
 use anyhow::Context;
 use fatfs::FormatVolumeOptions;
 use fatfs::FsOptions;

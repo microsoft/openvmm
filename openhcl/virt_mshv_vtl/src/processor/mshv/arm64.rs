@@ -80,7 +80,7 @@ impl HypervisorBackedArm64Shared {
     /// Creates a new partition-shared data structure for hypervisor backed VMs.
     pub(crate) fn new(
         _partition_params: &UhPartitionNewParams<'_>,
-        params: BackingSharedParams,
+        params: BackingSharedParams<'_>,
     ) -> Result<Self, Error> {
         Ok(Self {
             guest_vsm: RwLock::new(GuestVsmState::from_availability(params.guest_vsm_available)),
@@ -258,6 +258,8 @@ impl BackingPrivate for HypervisorBackedArm64 {
         // whether VTL 1 is enabled on the vp (this can be cached).
         false
     }
+
+    fn handle_exit_activity(_this: &mut UhProcessor<'_, Self>) {}
 }
 
 impl UhProcessor<'_, HypervisorBackedArm64> {

@@ -42,6 +42,7 @@ members = [
   "petri/pipette",
   # tools
   "petri/make_imc_hive",
+  "petri/petri-tool",
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
@@ -52,7 +53,7 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.85"
+rust-version = "1.86"
 edition = "2021"
 
 [workspace.dependencies]
@@ -466,7 +467,7 @@ nix = { version = "0.27", default-features = false }
 ntapi = "0.4"
 object = { version = "0.36.7", default-features = false }
 once_cell = "1.7"
-openssl = "0.10.66"
+openssl = "0.10.72"
 openssl-sys = "0.9"
 parking_lot = "0.12"
 paste = "1.0"
@@ -627,7 +628,6 @@ linkedlist = "warn"
 lossy_float_literal = "warn"
 macro_use_imports = "warn"
 match_on_vec_items = "warn"
-needless_continue = "warn"
 option_option = "warn"
 ptr_as_ptr = "warn"
 ptr_cast_constness = "warn"

@@ -256,6 +256,22 @@ pub mod artifacts {
         }
 
         declare_artifacts! {
+            /// Generation 2 windows test image
+            GEN2_WINDOWS_DATA_CENTER_CORE2025_X64
+        }
+
+        impl IsTestVhd for GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Windows;
+            const ARCH: MachineArch = MachineArch::X86_64;
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 {
+            const FILENAME: &'static str =
+                "WindowsServer-2025-datacenter-core-smalldisk-g2-26100.3476.250306.vhd";
+            const SIZE: u64 = 32214352384;
+        }
+
+        declare_artifacts! {
             /// FreeBSD 13.2
             FREE_BSD_13_2_X64
         }

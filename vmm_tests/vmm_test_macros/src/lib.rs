@@ -393,6 +393,15 @@ fn parse_vhd(input: ParseStream<'_>, generation: Generation) -> syn::Result<Imag
                 ::petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64
             )),
         },
+        "windows_datacenter_core_2025_x64" => match generation {
+            Generation::Gen1 => Err(Error::new(
+                word.span(),
+                "Windows Server 2025 is not available for PCAT",
+            )),
+            Generation::Gen2 => Ok(image_info!(
+                ::petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64
+            )),
+        },
         "ubuntu_2204_server_x64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2204_SERVER_X64
         )),
@@ -542,12 +551,13 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `none`: No guest
 ///
 /// Valid VHD options are:
-/// - `ubuntu_2204_server_x64`: Canonical's provided Ubuntu Linux 22.04 cloudimg disk image
-/// - `windows_datacenter_core_2022_x64`: Our provided Windows Datacenter Core 2022 VHD
-/// - `freebsd_13_2_x64`: The FreeBSD Project's provided FreeBSD 13.2 VHD
+/// - `ubuntu_2204_server_x64`: Ubuntu Linux 22.04 cloudimg from Canonical
+/// - `windows_datacenter_core_2022_x64`: Windows Server Datacenter Core 2022 from the Azure Marketplace
+/// - `windows_datacenter_core_2025_x64`: Windows Server Datacenter Core 2025 from the Azure Marketplace
+/// - `freebsd_13_2_x64`: FreeBSD 13.2 from the FreeBSD Project
 ///
 /// Valid x64 ISO options are:
-/// - `freebsd_13_2_x64`: The FreeBSD Project's provided FreeBSD 13.2 installer ISO
+/// - `freebsd_13_2_x64`: FreeBSD 13.2 installer from the FreeBSD Project
 ///
 /// Valid OpenHCL UEFI options are:
 /// - `nvme`: Attach the boot drive via NVMe assigned to VTL2.

@@ -424,7 +424,7 @@ fn recurse_completions<'a>(
                 let val = matches
                     .get_raw(positional.get_id().as_str())
                     .unwrap_or_default()
-                    .last()
+                    .next_back()
                     .unwrap_or_default()
                     .to_str()
                     .unwrap_or_default();

@@ -100,9 +100,14 @@ pub(crate) enum FatalError {
         response_size: usize,
         maximum_size: usize,
     },
-    #[error("received an `IGVM_ATTEST` response with no pending `IGVM_ATTEST` request")]
-    NoPendingIgvmAttestRequest,
+    #[error(
+        "received a secondary host request response {0:?} with no pending secondary host request"
+    )]
+    NoPendingSecondaryHostRequest(HostRequests),
 }
+
+type HostRequestQueue = VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>;
+type ExclusiveHostRequestResponseReceiverAccess = Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>;
 
 /// Validates the response packet received from the host. This function is only
 /// called on HOST_REQUEST/HOST_RESPONSE messages.
@@ -143,6 +148,15 @@ fn read_guest_notification<T: FromBytes + Immutable + KnownLayout>(
         len: buf.len(),
         notification,
     })
+}
+
+/// Defines which host requests should be sent through the secondary host
+/// request queue, meaning that their handling on the host may reasonably
+/// require interleaving with host requests in the primary queue, or might
+/// just be generally slow and shouldn't disrupt the primary queue making
+/// forward progress.
+fn is_secondary_host_request(request: HostRequests) -> bool {
+    request == HostRequests::IGVM_ATTEST || request == HostRequests::VPCI_DEVICE_CONTROL
 }
 
 pub(crate) mod msg {
@@ -473,7 +487,7 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     #[inspect(skip)]
     vtl2_settings_buf: Option<Vec<u8>>,
     #[inspect(skip)]
-    host_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
+    primary_host_requests: HostRequestQueue,
     #[inspect(skip)]
     pipe_channels: PipeChannels,
     #[inspect(skip)]
@@ -481,9 +495,9 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     #[inspect(skip)]
     write_recv: mesh::Receiver<WriteRequest>,
     #[inspect(skip)]
-    igvm_attest_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
+    secondary_host_requests: HostRequestQueue,
     #[inspect(skip)]
-    igvm_attest_read_send: mesh::Sender<Vec<u8>>,
+    secondary_host_requests_read_send: mesh::Sender<Vec<u8>>,
     gpa_allocator: Option<Arc<dyn DmaClient>>,
     stats: Stats,
 
@@ -548,7 +562,7 @@ mod inspect_helpers {
 }
 
 struct HostRequestPipeAccess {
-    response_message_recv_mutex: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
+    response_message_recv_mutex: ExclusiveHostRequestResponseReceiverAccess,
     response_message_recv: Option<mesh::Receiver<Vec<u8>>>,
     request_message_send: mesh::Sender<WriteRequest>,
 }
@@ -560,10 +574,12 @@ impl Drop for HostRequestPipeAccess {
 }
 
 struct PipeChannels {
-    // This is None when a `HostRequestPipeAccess` has ownership for non-IgvmAttest requests.
-    response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
-    // This is None when a `HostRequestPipeAccess` has ownership for an IgvmAttest request.
-    igvm_attest_response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
+    // This is None when a `HostRequestPipeAccess` has ownership for a host
+    // request in the primary queue.
+    primary_host_request_response_message_recv: ExclusiveHostRequestResponseReceiverAccess,
+    // This is None when a `HostRequestPipeAccess` has ownership for a host
+    // request in the secondary queue.
+    secondary_host_request_response_message_recv: ExclusiveHostRequestResponseReceiverAccess,
     message_send: mesh::Sender<WriteRequest>,
 }
 
@@ -658,7 +674,8 @@ impl HostRequestPipeAccess {
 impl<T: RingMem> ProcessLoop<T> {
     pub(crate) fn new(pipe: MessagePipe<T>) -> Self {
         let (read_send, read_recv) = mesh::channel();
-        let (igvm_attest_read_send, igvm_attest_read_recv) = mesh::channel();
+        let (secondary_host_requests_read_send, secondary_host_requests_read_recv) =
+            mesh::channel();
         let (write_send, write_recv) = mesh::channel();
 
         Self {
@@ -666,18 +683,18 @@ impl<T: RingMem> ProcessLoop<T> {
             stats: Default::default(),
             guest_notification_responses: Default::default(),
             vtl2_settings_buf: None,
-            host_requests: Default::default(),
-            igvm_attest_requests: Default::default(),
+            primary_host_requests: Default::default(),
+            secondary_host_requests: Default::default(),
             pipe_channels: PipeChannels {
-                response_message_recv: Arc::new(Mutex::new(Some(read_recv))),
-                igvm_attest_response_message_recv: Arc::new(Mutex::new(Some(
-                    igvm_attest_read_recv,
+                primary_host_request_response_message_recv: Arc::new(Mutex::new(Some(read_recv))),
+                secondary_host_request_response_message_recv: Arc::new(Mutex::new(Some(
+                    secondary_host_requests_read_recv,
                 ))),
                 message_send: write_send,
             },
             read_send,
             write_recv,
-            igvm_attest_read_send,
+            secondary_host_requests_read_send,
             guest_notification_listeners: GuestNotificationListeners {
                 generation_id: GuestNotificationSender::new(),
                 vtl2_settings: GuestNotificationSender::new(),
@@ -824,19 +841,17 @@ impl<T: RingMem> ProcessLoop<T> {
                 }
                 .map(Event::Failure);
 
-                // Run the next host request.
-                let run_next = async {
-                    while let Some(request) = self.host_requests.front_mut() {
+                // Closure to share code between the primary and secondary host request queue.
+                let run_host_request_queue = async | request_queue: &mut HostRequestQueue, response_recv: &ExclusiveHostRequestResponseReceiverAccess | {
+                    while let Some(request) = request_queue.front_mut() {
                         if let Err(e) = request.as_mut().await {
                             return e;
                         }
 
-                        self.host_requests.pop_front();
+                        request_queue.pop_front();
 
                         // Ensure there are no extra response messages that this request failed to pick up.
-                        if self
-                            .pipe_channels
-                            .response_message_recv
+                        if response_recv
                             .lock()
                             .as_mut()
                             .unwrap()
@@ -847,38 +862,29 @@ impl<T: RingMem> ProcessLoop<T> {
                         }
                     }
                     pending().await
-                }
+                };
+
+                // Run the next host request in the primary queue. These host
+                // requests are expected to be generally fast and independent
+                // of one another.
+                let run_next_primary_host_request = run_host_request_queue(
+                    &mut self.primary_host_requests,
+                    &self
+                        .pipe_channels
+                        .primary_host_request_response_message_recv,
+                )
                 .map(Event::Failure);
 
-                // Run the next IgvmAttest request.
-                //
-                // DEVNOTE: IgvmAttest requests are always sent asynchronously by the host and only one
-                // request can be outstanding at a time. Therefore, we use a dedicated queue to handle
-                // the IgvmAttest requests without blocking or being blocked by other request types
-                // handled by the `host_requests` queue.
-                let run_next_igvm_attest = async {
-                    while let Some(request) = self.igvm_attest_requests.front_mut() {
-                        if let Err(e) = request.as_mut().await {
-                            return e;
-                        }
-
-                        self.igvm_attest_requests.pop_front();
-
-                        // Ensure there are no extra response messages that this request failed to pick up.
-                        if self
-                            .pipe_channels
-                            .igvm_attest_response_message_recv
-                            .lock()
-                            .as_mut()
-                            .unwrap()
-                            .try_recv()
-                            .is_ok()
-                        {
-                            return FatalError::NoPendingRequest;
-                        }
-                    }
-                    pending().await
-                }
+                // Run the next host request in the secondary queue. These
+                // host requests may need to interleave with requests in the
+                // primary queue, or may be generally slow and shouldn't
+                // disrupt forward progress in the primary queue.
+                let run_next_secondary_host_request = run_host_request_queue(
+                    &mut self.secondary_host_requests,
+                    &self
+                        .pipe_channels
+                        .secondary_host_request_response_message_recv,
+                )
                 .map(Event::Failure);
 
                 let recv_response = async {
@@ -895,8 +901,8 @@ impl<T: RingMem> ProcessLoop<T> {
                     read_fd,
                     recv_msg,
                     send_next,
-                    run_next,
-                    run_next_igvm_attest,
+                    run_next_primary_host_request,
+                    run_next_secondary_host_request,
                     recv_response,
                 )
                     .race()
@@ -954,42 +960,48 @@ impl<T: RingMem> ProcessLoop<T> {
         }
     }
 
-    /// Spawn a host request.
+    /// Spawn a host request in the primary queue.
     ///
     /// `f` will receive a [`PipeAccess`] to send messages to the host and
     /// receive host responses.
     ///
     /// The result of `f().await` will be sent as a response to the RPC in `req`.
-    fn push_host_request_handler<F, Fut>(&mut self, f: F)
+    fn push_primary_host_request_handler<F, Fut>(&mut self, f: F)
     where
         F: 'static + Send + FnOnce(HostRequestPipeAccess) -> Fut,
         Fut: 'static + Future<Output = Result<(), FatalError>> + Send,
     {
-        let message_recv_mutex = self.pipe_channels.response_message_recv.clone();
+        let message_recv_mutex = self
+            .pipe_channels
+            .primary_host_request_response_message_recv
+            .clone();
         let message_send = self.pipe_channels.message_send.clone();
         let fut = async { f(HostRequestPipeAccess::new(message_recv_mutex, message_send)).await };
-        self.host_requests.push_back(Box::pin(fut));
+        self.primary_host_requests.push_back(Box::pin(fut));
     }
 
-    /// Spawn an IgvmAttest host request.
+    /// Spawn host request on the secondary queue.
     ///
     /// `f` will receive a [`PipeAccess`] to send messages to the host and
     /// receive host responses.
     ///
     /// The result of `f().await` will be sent as a response to the RPC in `req`.
-    fn push_igvm_attest_request_handler<F, Fut>(&mut self, f: F)
+    fn push_secondary_host_request_handler<F, Fut>(&mut self, f: F)
     where
         F: 'static + Send + FnOnce(HostRequestPipeAccess) -> Fut,
         Fut: 'static + Future<Output = Result<(), FatalError>> + Send,
     {
-        let message_recv_mutex = self.pipe_channels.igvm_attest_response_message_recv.clone();
+        let message_recv_mutex = self
+            .pipe_channels
+            .secondary_host_request_response_message_recv
+            .clone();
         let message_send = self.pipe_channels.message_send.clone();
         let fut = async { f(HostRequestPipeAccess::new(message_recv_mutex, message_send)).await };
-        self.igvm_attest_requests.push_back(Box::pin(fut));
+        self.secondary_host_requests.push_back(Box::pin(fut));
     }
 
-    /// Pushes a host request handler that sends a single host request and waits
-    /// for its response.
+    /// Pushes a host request handler that sends a single host request on the
+    /// primary queue and waits for its response.
     fn push_basic_host_request_handler<Req, I, Resp>(
         &mut self,
         req: Rpc<I, Resp>,
@@ -999,7 +1011,7 @@ impl<T: RingMem> ProcessLoop<T> {
         I: 'static + Send,
         Resp: 'static + IntoBytes + FromBytes + Send + Immutable + KnownLayout,
     {
-        self.push_host_request_handler(async move |mut access| {
+        self.push_primary_host_request_handler(async move |mut access| {
             req.handle_must_succeed(async |input| access.send_request_fixed_size(&f(input)).await)
                 .await
         });
@@ -1071,7 +1083,7 @@ impl<T: RingMem> ProcessLoop<T> {
 
             // Host Requests
             Msg::DevicePlatformSettingsV2(req) => {
-                self.push_host_request_handler(|access| {
+                self.push_primary_host_request_handler(|access| {
                     req.handle_must_succeed(async |()| {
                         request_device_platform_settings_v2(access).await
                     })
@@ -1087,9 +1099,11 @@ impl<T: RingMem> ProcessLoop<T> {
                     get_protocol::VmgsGetDeviceInfoRequest::new()
                 });
             }
-            Msg::GetVtl2SavedStateFromHost(req) => self.push_host_request_handler(|access| {
-                req.handle_must_succeed(async |()| request_saved_state(access).await)
-            }),
+            Msg::GetVtl2SavedStateFromHost(req) => {
+                self.push_primary_host_request_handler(|access| {
+                    req.handle_must_succeed(async |()| request_saved_state(access).await)
+                })
+            }
             Msg::GuestStateProtection(req) => {
                 self.push_basic_host_request_handler(req, |request| *request);
             }
@@ -1104,25 +1118,27 @@ impl<T: RingMem> ProcessLoop<T> {
             Msg::IgvmAttest(req) => {
                 let shared_pool_allocator = self.gpa_allocator.clone();
 
-                self.push_igvm_attest_request_handler(|access| {
+                self.push_secondary_host_request_handler(|access| {
                     req.handle_must_succeed(async |request| {
                         request_igvm_attest(access, *request, shared_pool_allocator).await
                     })
                 });
             }
             Msg::VmgsRead(req) => {
-                self.push_host_request_handler(|access| {
+                self.push_primary_host_request_handler(|access| {
                     req.handle_must_succeed(async |input| request_vmgs_read(access, input).await)
                 });
             }
             Msg::VmgsWrite(req) => {
-                self.push_host_request_handler(|access| {
+                self.push_primary_host_request_handler(|access| {
                     req.handle_must_succeed(async |input| request_vmgs_write(access, input).await)
                 });
             }
             Msg::VpciDeviceControl(req) => {
-                self.push_basic_host_request_handler(req, |input| {
-                    get_protocol::VpciDeviceControlRequest::new(input.code, input.bus_instance_id)
+                self.push_secondary_host_request_handler(|access| {
+                    req.handle_must_succeed(async |input| {
+                        request_vpci_device_control(access, input).await
+                    })
                 });
             }
             Msg::VpciDeviceBindingChange(req) => {
@@ -1169,7 +1185,7 @@ impl<T: RingMem> ProcessLoop<T> {
                     get_protocol::ResetRamGpaRangeRequest::new(input)
                 });
             }
-            Msg::SendServicingState(req) => self.push_host_request_handler(move |access| {
+            Msg::SendServicingState(req) => self.push_primary_host_request_handler(move |access| {
                 req.handle_must_succeed(async |data| {
                     request_send_servicing_state(access, data).await
                 })
@@ -1184,7 +1200,7 @@ impl<T: RingMem> ProcessLoop<T> {
             Msg::PowerState(state) => {
                 // Queue behind any pending requests to avoid terminating while
                 // something important is in flight.
-                self.push_host_request_handler(async move |mut access| {
+                self.push_primary_host_request_handler(async move |mut access| {
                     let message = match state {
                         msg::PowerState::PowerOff => get_protocol::PowerOffNotification::new(false)
                             .as_bytes()
@@ -1296,17 +1312,17 @@ impl<T: RingMem> ProcessLoop<T> {
         header: get_protocol::HeaderHostResponse,
         buf: &[u8],
     ) -> Result<(), FatalError> {
-        if self.host_requests.is_empty() && self.igvm_attest_requests.is_empty() {
+        if self.primary_host_requests.is_empty() && self.secondary_host_requests.is_empty() {
             return Err(FatalError::NoPendingRequest);
         }
         validate_response(header)?;
 
-        if header.message_id == HostRequests::IGVM_ATTEST {
-            if !self.igvm_attest_requests.is_empty() {
-                self.igvm_attest_read_send.send(buf.to_vec());
+        if is_secondary_host_request(header.message_id) {
+            if !self.secondary_host_requests.is_empty() {
+                self.secondary_host_requests_read_send.send(buf.to_vec());
                 return Ok(());
             }
-            return Err(FatalError::NoPendingIgvmAttestRequest);
+            return Err(FatalError::NoPendingSecondaryHostRequest(header.message_id));
         }
 
         self.read_send.send(buf.to_vec());
@@ -1819,6 +1835,21 @@ async fn request_saved_state(
     }
 
     Ok(Ok(saved_state_buf))
+}
+
+/// Send a VPCI device control request to the host and wait for the result asynchronously.
+async fn request_vpci_device_control(
+    mut access: HostRequestPipeAccess,
+    input: msg::VpciDeviceControlInput,
+) -> Result<get_protocol::VpciDeviceControlResponse, FatalError> {
+    let response: get_protocol::VpciDeviceControlResponse = access
+        .send_request_fixed_size(&get_protocol::VpciDeviceControlRequest::new(
+            input.code,
+            input.bus_instance_id,
+        ))
+        .await?;
+
+    Ok(response)
 }
 
 /// Send the attestation request to the IGVm agent on the host and wait for the result asynchronously.

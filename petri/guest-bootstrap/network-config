@@ -1,6 +1,8 @@
-# Specify a non-present device to work around https://github.com/canonical/cloud-init/issues/5511
+# Specify an optional device to work around https://github.com/canonical/cloud-init/issues/5511
 version: 1
 config:
   - type: physical
-    name: disabled
+    name: eth0
     optional: true
+    subnets:
+      - type: dhcp
