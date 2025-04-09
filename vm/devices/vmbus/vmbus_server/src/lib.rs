@@ -1359,23 +1359,10 @@ impl Notifier for ServerTaskInner {
             }
             channels::Action::Modify { target_vp } => {
                 if let ChannelState::Open {
-                    open_params,
-                    guest_event_port,
-                    ..
+                    guest_event_port, ..
                 } = &mut channel.state
                 {
-                    let (target_vtl, target_sint) = if open_params.flags.redirect_interrupt() {
-                        (self.redirect_vtl, self.redirect_sint)
-                    } else {
-                        (self.vtl, SINT)
-                    };
-
-                    if let Err(err) = guest_event_port.set(
-                        target_vtl,
-                        target_vp,
-                        target_sint,
-                        open_params.event_flag,
-                    ) {
+                    if let Err(err) = guest_event_port.set_target_vp(target_vp) {
                         tracelimit::error_ratelimited!(
                             error = &err as &dyn std::error::Error,
                             channel = %channel.key,
@@ -2048,15 +2035,7 @@ mod tests {
             Interrupt::null()
         }
 
-        fn clear(&mut self) {}
-
-        fn set(
-            &mut self,
-            _vtl: Vtl,
-            _vp: u32,
-            _sint: u8,
-            _flag: u16,
-        ) -> Result<(), vmcore::synic::HypervisorError> {
+        fn set_target_vp(&mut self, _vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
             Ok(())
         }
     }

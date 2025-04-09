@@ -1443,10 +1443,20 @@ impl virt::Synic for MshvPartition {
             .post_message(vp, sint, &HvMessage::new(HvMessageType(typ), 0, payload));
     }
 
-    fn new_guest_event_port(&self) -> Box<dyn GuestEventPort> {
+    fn new_guest_event_port(
+        &self,
+        _vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Box<dyn GuestEventPort> {
         Box::new(MshvGuestEventPort {
             partition: Arc::downgrade(&self.inner),
-            params: Default::default(),
+            params: Arc::new(Mutex::new(MshvEventPortParams {
+                vp: VpIndex::new(vp),
+                sint,
+                flag,
+            })),
         })
     }
 
@@ -1459,7 +1469,7 @@ impl virt::Synic for MshvPartition {
 #[derive(Debug, Clone)]
 struct MshvGuestEventPort {
     partition: Weak<MshvPartitionInner>,
-    params: Arc<Mutex<Option<MshvEventPortParams>>>,
+    params: Arc<Mutex<MshvEventPortParams>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1474,39 +1484,23 @@ impl GuestEventPort for MshvGuestEventPort {
         let partition = self.partition.clone();
         let params = self.params.clone();
         Interrupt::from_fn(move || {
-            if let Some(MshvEventPortParams { vp, sint, flag }) = *params.lock() {
-                if let Some(partition) = partition.upgrade() {
-                    partition
-                        .vmfd
-                        .signal_event_direct(vp.index(), sint, flag)
-                        .unwrap_or_else(|_| {
-                            panic!(
-                                "Failed signal synic sint {} on vp {:?} with flag {}",
-                                sint, vp, flag
-                            )
-                        });
-                }
+            let MshvEventPortParams { vp, sint, flag } = *params.lock();
+            if let Some(partition) = partition.upgrade() {
+                partition
+                    .vmfd
+                    .signal_event_direct(vp.index(), sint, flag)
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "Failed signal synic sint {} on vp {:?} with flag {}",
+                            sint, vp, flag
+                        )
+                    });
             }
         })
     }
 
-    fn clear(&mut self) {
-        *self.params.lock() = None;
-    }
-
-    fn set(
-        &mut self,
-        _vtl: Vtl,
-        vp: u32,
-        sint: u8,
-        flag: u16,
-    ) -> Result<(), vmcore::synic::HypervisorError> {
-        *self.params.lock() = Some(MshvEventPortParams {
-            vp: VpIndex::new(vp),
-            sint,
-            flag,
-        });
-
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
+        self.params.lock().vp = VpIndex::new(vp);
         Ok(())
     }
 }

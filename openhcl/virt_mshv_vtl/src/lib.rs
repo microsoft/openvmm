@@ -927,10 +927,22 @@ impl virt::Synic for UhPartition {
         );
     }
 
-    fn new_guest_event_port(&self) -> Box<dyn vmcore::synic::GuestEventPort> {
+    fn new_guest_event_port(
+        &self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Box<dyn vmcore::synic::GuestEventPort> {
+        let vtl = GuestVtl::try_from(vtl).expect("higher vtl not configured");
         Box::new(UhEventPort {
             partition: Arc::downgrade(&self.inner),
-            params: Default::default(),
+            params: Arc::new(Mutex::new(UhEventPortParams {
+                vp: VpIndex::new(vp),
+                sint,
+                flag,
+                vtl,
+            })),
         })
     }
 
@@ -1032,7 +1044,7 @@ impl UhPartitionInner {
 #[derive(Debug)]
 struct UhEventPort {
     partition: Weak<UhPartitionInner>,
-    params: Arc<Mutex<Option<UhEventPortParams>>>,
+    params: Arc<Mutex<UhEventPortParams>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1048,15 +1060,12 @@ impl vmcore::synic::GuestEventPort for UhEventPort {
         let partition = self.partition.clone();
         let params = self.params.clone();
         vmcore::interrupt::Interrupt::from_fn(move || {
-            let Some(UhEventPortParams {
+            let UhEventPortParams {
                 vp,
                 sint,
                 flag,
                 vtl,
-            }) = *params.lock()
-            else {
-                return;
-            };
+            } = *params.lock();
             let Some(partition) = partition.upgrade() else {
                 return;
             };
@@ -1096,25 +1105,8 @@ impl vmcore::synic::GuestEventPort for UhEventPort {
         })
     }
 
-    fn clear(&mut self) {
-        *self.params.lock() = None;
-    }
-
-    fn set(
-        &mut self,
-        vtl: Vtl,
-        vp: u32,
-        sint: u8,
-        flag: u16,
-    ) -> Result<(), vmcore::synic::HypervisorError> {
-        let vtl = GuestVtl::try_from(vtl).expect("higher vtl not configured");
-        *self.params.lock() = Some(UhEventPortParams {
-            vp: VpIndex::new(vp),
-            sint,
-            flag,
-            vtl,
-        });
-
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
+        self.params.lock().vp = VpIndex::new(vp);
         Ok(())
     }
 }

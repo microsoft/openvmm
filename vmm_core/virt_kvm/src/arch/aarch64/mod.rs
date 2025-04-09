@@ -747,7 +747,13 @@ impl virt::Synic for KvmPartition {
         unimplemented!()
     }
 
-    fn new_guest_event_port(&self) -> Box<dyn vmcore::synic::GuestEventPort> {
+    fn new_guest_event_port(
+        &self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Box<dyn vmcore::synic::GuestEventPort> {
         unimplemented!()
     }
 

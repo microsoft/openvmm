@@ -117,11 +117,8 @@ pub trait GuestEventPort: Send + Sync {
     /// Returns an interrupt object used to signal the guest.
     fn interrupt(&self) -> Interrupt;
 
-    /// Clears the event port state so that the interrupt does nothing.
-    fn clear(&mut self);
-
-    /// Updates the parameters for the event port.
-    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) -> Result<(), HypervisorError>;
+    /// Updates the target VP for the event port.
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), HypervisorError>;
 }
 
 /// A guest message port, created by [`SynicPortAccess::new_guest_message_port`].
@@ -150,26 +147,8 @@ pub struct MonitorPageGpas {
 /// Provides information about monitor usage for a synic event port.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MonitorInfo {
-    monitor_id: MonitorId,
-    latency: Duration,
-}
-
-impl MonitorInfo {
-    /// Creates a new `MonitorInfo` instance.
-    pub fn new(monitor_id: MonitorId, latency: Duration) -> Self {
-        Self {
-            monitor_id,
-            latency,
-        }
-    }
-
-    /// Returns the monitor ID associated with the event port.
-    pub fn monitor_id(&self) -> MonitorId {
-        self.monitor_id
-    }
-
-    /// Returns the interrupt latency for monitored interrupts to this port.
-    pub fn latency(&self) -> Duration {
-        self.latency
-    }
+    // The monitor ID used by the port.
+    pub monitor_id: MonitorId,
+    /// The nterrupt latency.
+    pub latency: Duration,
 }

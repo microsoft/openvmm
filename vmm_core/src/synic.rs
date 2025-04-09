@@ -147,7 +147,7 @@ impl SynicPortAccess for SynicPorts {
         let monitor = monitor_info.as_ref().and_then(|info| {
             self.partition
                 .monitor_support()
-                .map(|monitor| monitor.register_monitor(info.monitor_id(), connection_id))
+                .map(|monitor| monitor.register_monitor(info.monitor_id, connection_id))
         });
 
         Ok(Box::new(PortHandle {
@@ -181,9 +181,7 @@ impl SynicPortAccess for SynicPorts {
         flag: u16,
         _monitor_info: Option<MonitorInfo>,
     ) -> Result<Box<(dyn GuestEventPort)>, vmcore::synic::HypervisorError> {
-        let mut port = self.partition.new_guest_event_port();
-        port.set(vtl, vp, sint, flag)?;
-        Ok(port)
+        Ok(self.partition.new_guest_event_port(vtl, vp, sint, flag))
     }
 
     fn prefer_os_events(&self) -> bool {

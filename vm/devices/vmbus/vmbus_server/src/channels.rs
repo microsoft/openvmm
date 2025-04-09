@@ -545,16 +545,17 @@ impl Display for ChannelState {
     }
 }
 
+/// Indicates how a MNF (monitored interrupts) should be used for a channel.
 #[derive(Debug, Clone, Default, mesh::MeshPayload)]
 pub enum MnfUsage {
+    /// The channel does not use MNF.
     #[default]
     Disabled,
-    Enabled {
-        latency: Duration,
-    },
-    Relayed {
-        monitor_id: u8,
-    },
+    /// The channel uses MNF, handled by this server, with the specified interrupt latency.
+    Enabled { latency: Duration },
+    /// The channel uses MNF, handled by the relay host, with the monitor ID specified by the relay
+    /// host.
+    Relayed { monitor_id: u8 },
 }
 
 impl MnfUsage {
@@ -792,8 +793,12 @@ impl Channel {
             if self.state.is_reserved() {
                 None
             } else {
-                self.info
-                    .and_then(|info| info.monitor_id.map(|id| MonitorInfo::new(id, latency)))
+                self.info.and_then(|info| {
+                    info.monitor_id.map(|monitor_id| MonitorInfo {
+                        monitor_id,
+                        latency,
+                    })
+                })
             }
         })
     }
@@ -1485,11 +1490,9 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             if !self
                 .inner
                 .assigned_monitors
-                .claim_monitor(monitor_info.monitor_id())
+                .claim_monitor(monitor_info.monitor_id)
             {
-                return Err(RestoreError::DuplicateMonitorId(
-                    monitor_info.monitor_id().0,
-                ));
+                return Err(RestoreError::DuplicateMonitorId(monitor_info.monitor_id.0));
             }
         }
 
