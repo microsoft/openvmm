@@ -145,6 +145,31 @@ pub fn run_remove_vm(vmid: &Guid) -> anyhow::Result<()> {
         .context("remove_vm")
 }
 
+/// Arguments for the Set-VMProcessor powershell cmdlet
+pub struct HyperVSetVMProcessorArgs<'a> {
+    /// Specifies the ID of the virtual machine for which you want to set the
+    /// number of virtual processors.
+    pub vmid: &'a Guid,
+    /// Specifies the number of virtual processors to assign to the virtual
+    /// machine. If not specified, the number of virtual processors is not
+    /// changed.
+    pub count: Option<u32>,
+}
+
+/// Runs Set-VMProcessor with the given arguments.
+pub fn run_set_vm_processor(args: HyperVSetVMProcessorArgs<'_>) -> anyhow::Result<()> {
+    PowerShellBuilder::new()
+        .cmdlet("Get-VM")
+        .arg_string("Id", args.vmid)
+        .pipeline()
+        .cmdlet("Set-VMProcessor")
+        .arg_opt_string("Count", args.count)
+        .finish()
+        .output(true)
+        .map(|_| ())
+        .context("set_vm_processor")
+}
+
 /// Arguments for the Add-VMHardDiskDrive powershell cmdlet
 pub struct HyperVAddVMHardDiskDriveArgs<'a> {
     /// Specifies the ID of the virtual machine to which the hard disk
