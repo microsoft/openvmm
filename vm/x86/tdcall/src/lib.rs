@@ -381,8 +381,8 @@ fn set_page_attr(
                 assert_eq!(u64::from(mapping), result.mapping.into());
                 assert_eq!(attributes.l1(), result.attributes.l1());
                 assert_eq!(
-                    attributes.into_bits() ^ mask.with_reserved(0).into_bits(),
-                    result.attributes.into_bits() ^ mask.with_reserved(0).into_bits()
+                    attributes.into_bits() & mask.with_reserved(0).into_bits(),
+                    result.attributes.into_bits() & mask.with_reserved(0).into_bits()
                 );
             }
 
