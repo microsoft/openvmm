@@ -108,8 +108,17 @@ async fn kvp_ic(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
 
     // Validate the IP information against the default consomme confiugration.
     tracing::info!(?ip_info, "ip information");
-    assert_eq!(ip_info.ipv4_addresses.len(), 1);
-    let ip = &ip_info.ipv4_addresses[0];
+
+    // Filter out link-local addresses, since Windows seems to enumerate one for
+    // a little while after boot sometimes.
+    let non_local_ipv4_addresses = ip_info
+        .ipv4_addresses
+        .iter()
+        .filter(|ip| !ip.address.is_link_local())
+        .collect::<Vec<_>>();
+
+    assert_eq!(non_local_ipv4_addresses.len(), 1);
+    let ip = &non_local_ipv4_addresses[0];
     assert_eq!(ip.address.to_string(), "10.0.0.2");
     assert_eq!(ip.subnet.to_string(), "255.255.255.0");
     assert_eq!(ip_info.ipv4_gateways.len(), 1);
