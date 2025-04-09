@@ -570,7 +570,6 @@ impl HardwareIsolatedBacking for TdxBacked {
     fn intercept_message_state(
         _this: &UhProcessor<'_, Self>,
         _vtl: GuestVtl,
-        _message_type: &super::InterceptMessageType,
     ) -> super::InterceptMessageState {
         todo!()
     }
