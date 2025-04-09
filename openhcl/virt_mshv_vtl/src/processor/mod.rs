@@ -305,14 +305,8 @@ struct InterceptMessageState {
     cs_segment: hvdef::HvX64SegmentRegister,
     rip: u64,
     rflags: u64,
-    per_type_state: InterceptMessageTypeState,
-}
-
-/// Per-message-type state required to generate the intercept message.
-#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-enum InterceptMessageTypeState {
-    Register,
-    Msr { rax: u64, rdx: u64 },
+    rax: u64,
+    rdx: u64,
 }
 
 impl InterceptMessageType {
@@ -337,9 +331,6 @@ impl InterceptMessageType {
         };
         match self {
             InterceptMessageType::Register { reg, value } => {
-                let InterceptMessageTypeState::Register = state.per_type_state else {
-                    unreachable!()
-                };
                 let intercept_message = hvdef::HvX64RegisterInterceptMessage {
                     header: write_header,
                     flags: hvdef::HvX64RegisterInterceptMessageFlags::new(),
@@ -357,14 +348,11 @@ impl InterceptMessageType {
                 )
             }
             InterceptMessageType::Msr { msr } => {
-                let InterceptMessageTypeState::Msr { rax, rdx } = state.per_type_state else {
-                    unreachable!()
-                };
                 let intercept_message = hvdef::HvX64MsrInterceptMessage {
                     header: write_header,
                     msr_number: *msr,
-                    rax,
-                    rdx,
+                    rax: state.rax,
+                    rdx: state.rdx,
                     reserved: 0,
                 };
 
@@ -419,7 +407,6 @@ trait HardwareIsolatedBacking: Backing {
     fn intercept_message_state(
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
-        message_type: &InterceptMessageType,
     ) -> InterceptMessageState;
 
     /// Individual register for CPUID and crx intercept handling, since

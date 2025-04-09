@@ -2049,9 +2049,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     ) -> bool {
         let send_intercept = self.cvm_is_protected_register_write(vtl, reg, value);
         if send_intercept {
-            let message_type = crate::processor::InterceptMessageType::Register { reg, value };
-
-            let message_state = B::intercept_message_state(self, vtl, &message_type);
+            let message_state = B::intercept_message_state(self, vtl);
 
             tracing::debug!(
                 ?reg,
@@ -2062,7 +2060,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             self.inner.post_message(
                 GuestVtl::Vtl1,
                 hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX,
-                &message_type.generate_hv_message(self.vp_index(), vtl, message_state),
+                &crate::processor::InterceptMessageType::Register { reg, value }
+                    .generate_hv_message(self.vp_index(), vtl, message_state),
             );
         }
 
@@ -2108,15 +2107,18 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             };
 
             if generate_intercept {
-                let message_type = crate::processor::InterceptMessageType::Msr { msr };
-                let message_state = B::intercept_message_state(self, vtl, &message_type);
+                let message_state = B::intercept_message_state(self, vtl);
 
                 tracing::debug!(?msr, "sending intercept to vtl 1 for secure msr write");
 
                 self.inner.post_message(
                     GuestVtl::Vtl1,
                     hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX,
-                    &message_type.generate_hv_message(self.vp_index(), vtl, message_state),
+                    &crate::processor::InterceptMessageType::Msr { msr }.generate_hv_message(
+                        self.vp_index(),
+                        vtl,
+                        message_state,
+                    ),
                 );
 
                 return true;

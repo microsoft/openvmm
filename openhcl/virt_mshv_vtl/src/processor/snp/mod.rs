@@ -8,8 +8,6 @@ use super::BackingPrivate;
 use super::BackingSharedParams;
 use super::HardwareIsolatedBacking;
 use super::InterceptMessageState;
-use super::InterceptMessageType;
-use super::InterceptMessageTypeState;
 use super::UhEmulationState;
 use super::UhRunVpError;
 use super::hardware_cvm;
@@ -274,7 +272,6 @@ impl HardwareIsolatedBacking for SnpBacked {
     fn intercept_message_state(
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
-        message_type: &InterceptMessageType,
     ) -> InterceptMessageState {
         let vmsa = this.runner.vmsa(vtl);
 
@@ -285,18 +282,8 @@ impl HardwareIsolatedBacking for SnpBacked {
             cs_segment: virt_seg_from_snp(vmsa.cs()).into(),
             rip: vmsa.rip(),
             rflags: vmsa.rflags(),
-            per_type_state: {
-                match message_type {
-                    InterceptMessageType::Register { reg: _, value: _ } => {
-                        InterceptMessageTypeState::Register
-                    }
-
-                    InterceptMessageType::Msr { msr: _ } => InterceptMessageTypeState::Msr {
-                        rax: vmsa.rax(),
-                        rdx: vmsa.rdx(),
-                    },
-                }
-            },
+            rax: vmsa.rax(),
+            rdx: vmsa.rdx(),
         }
     }
 
