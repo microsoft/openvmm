@@ -885,7 +885,7 @@ impl ServerTask {
         open: Option<OpenResult>,
     ) -> anyhow::Result<RestoreResult> {
         let _span = tracing::info_span!(
-            parent: self.server.get_current_span(),
+            parent: &self.server.get_current_span(),
             "Restore channel",
             %offer_id
         )

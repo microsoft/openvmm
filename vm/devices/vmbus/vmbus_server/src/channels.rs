@@ -1577,7 +1577,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
     pub fn post_restore(&mut self) -> Result<(), RestoreError> {
         let _span = tracing::info_span!(
-            parent: self.inner.state.take_span(),
+            parent: &self.inner.state.take_span(),
             "Post-restore"
         )
         .entered();
