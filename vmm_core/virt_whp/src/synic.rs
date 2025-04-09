@@ -323,17 +323,14 @@ impl GuestEventPort for EmulatedGuestEventPort {
                 sint,
                 flag,
             } = *this.params.lock();
-            if let Some(partition) = this.partition.upgrade() {
-                let Hv1State::Emulated(hv) = &partition.vtlp(vtl).hvstate else {
-                    unreachable!()
-                };
-                let _ = hv.synic[vtl].signal_event(
-                    vp,
-                    sint,
-                    flag,
-                    &mut partition.synic_interrupt(vp, vtl),
-                );
-            }
+            let Some(partition) = this.partition.upgrade() else {
+                return;
+            };
+            let Hv1State::Emulated(hv) = &partition.hvstate else {
+                unreachable!()
+            };
+            let _ =
+                hv.synic[vtl].signal_event(vp, sint, flag, &mut partition.synic_interrupt(vp, vtl));
         })
     }
 
