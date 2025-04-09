@@ -291,6 +291,10 @@ impl HardwareIsolatedBacking for SnpBacked {
         this: &mut UhProcessor<'_, Self>,
         intercept_control: hvdef::HvRegisterCrInterceptControl,
     ) {
+        // Intercept control is always managed by the hypervisor, so any request
+        // here is only opportunistic. Make the request directly with the
+        // hypervisor. Since intercept control always applies to VTL 1 control of
+        // VTL 0 state, the VTL 1 intercept control register is set here.
         this.runner
             .set_vp_registers_hvcall(
                 Vtl::Vtl1,

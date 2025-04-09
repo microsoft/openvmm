@@ -398,9 +398,8 @@ impl UhCvmVpState {
         let lapics = VtlArray::from_fn(|vtl| {
             let apic_set = &cvm_partition.lapic[vtl];
 
-            // The APIC is software-enabled after reset for
-            // secure VTLs, to maintain compatibility with released versions of secure
-            // kernel
+            // The APIC is software-enabled after reset for secure VTLs, to
+            // maintain compatibility with released versions of secure kernel
             let mut lapic = apic_set.add_apic(vp_info, vtl == Vtl::Vtl1);
             // Initialize APIC base to match the reset VM state.
             lapic.set_apic_base(apic_base).unwrap();
