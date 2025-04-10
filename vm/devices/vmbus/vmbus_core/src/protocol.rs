@@ -7,6 +7,7 @@ use hvdef::Vtl;
 use inspect::Inspect;
 use mesh::payload::Protobuf;
 use open_enum::open_enum;
+use std::fmt::Display;
 use std::mem::size_of;
 use std::ops::BitAnd;
 use std::ops::BitAndAssign;
@@ -227,6 +228,12 @@ impl BitOr for FeatureFlags {
 )]
 #[mesh(package = "vmbus")]
 pub struct GpadlId(pub u32);
+
+impl Display for GpadlId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 #[repr(transparent)]
 #[derive(
