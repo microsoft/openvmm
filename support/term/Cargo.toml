@@ -24,13 +24,14 @@ features = [
 workspace = true
 
 [target.'cfg(unix)'.dependencies]
-crossterm.workspace = true
 libc.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-crossterm.workspace = true
 thiserror.workspace = true
+
+[dependencies]
+crossterm.workspace = true
 
 [lints]
 workspace = true
