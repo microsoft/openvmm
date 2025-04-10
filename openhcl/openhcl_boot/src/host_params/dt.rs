@@ -506,8 +506,8 @@ fn read_persisted_region_header(params: &ShimParams) -> Result<Option<MemoryRang
     );
 
     // Parse the fixed header.
-    let (header, remaining) = PersistedStateHeader::read_from_prefix_split(mapping.data)
-        .expect("BUGBUG must be big enough");
+    let (header, remaining) =
+        PersistedStateHeader::read_from_prefix(mapping.data).expect("BUGBUG must be big enough");
 
     if header.magic != PersistedStateHeader::MAGIC {
         return Ok(None);
@@ -589,7 +589,8 @@ impl PartitionInfo {
         let has_persisted_state = read_persisted_region_header(params)?;
 
         let topology = if let Some(persisted_region) = has_persisted_state {
-            topology_from_persisted_state()?
+            // topology_from_persisted_state()?
+            topology_from_host_dt(params, parsed, storage.cmdline.as_str())?
         } else {
             topology_from_host_dt(params, parsed, storage.cmdline.as_str())?
         };
