@@ -2096,7 +2096,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             let mut stdin = io::stdin();
             loop {
                 // Raw console text until Ctrl-Q.
-                term::set_raw_console(true);
+                term::set_raw_console(true).expect("failed to set raw console mode");
 
                 if let Some(input) = console_in.as_mut() {
                     let mut buf = [0; 32];
@@ -2116,7 +2116,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                     }
                 }
 
-                term::set_raw_console(false);
+                term::set_raw_console(false).expect("failed to set raw console mode");
 
                 loop {
                     let line = rl.readline("openvmm> ");

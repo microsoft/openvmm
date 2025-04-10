@@ -455,7 +455,7 @@ pub fn main() -> anyhow::Result<()> {
                 let mut stdin = process.stdin.take().unwrap();
                 let mut stdout = process.stdout.take().unwrap();
 
-                term::set_raw_console(true);
+                term::set_raw_console(true).expect("failed to set raw console mode");
                 std::thread::spawn({
                     move || {
                         let _ = std::io::copy(&mut std::io::stdin(), &mut stdin);
