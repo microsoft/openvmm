@@ -422,7 +422,7 @@ impl<T: HandlePortEvent> PortWithHandler<T> {
 
     pub fn with_handler<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         let mut state = self.raw.inner.state.lock();
-        let handler = state.handler.as_mut().unwrap() as &mut dyn Any;
+        let handler = state.handler.as_mut().unwrap().as_mut() as &mut dyn Any;
         f(handler.downcast_mut().unwrap())
     }
 
@@ -441,7 +441,7 @@ impl<T: HandlePortEvent> PortWithHandler<T> {
             peer_and_seq,
             events: &mut pending_events,
         };
-        let handler = state.handler.as_mut().unwrap() as &mut dyn Any;
+        let handler = state.handler.as_mut().unwrap().as_mut() as &mut dyn Any;
         let r = f(&mut control, handler.downcast_mut().unwrap());
         pending_events.process();
         r
