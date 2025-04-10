@@ -133,6 +133,21 @@ mod tests {
     }
 
     #[test]
+    fn initial_delta() {
+        let mut clock = SystemTimeClock::new(LocalClockDelta::from_millis(1000));
+
+        let time = clock.get_time();
+        let now = LocalClockTime::from(SystemTime::now());
+
+        let delta = time - now;
+
+        // cannot use assert_eq, because there is a *bit* of extra time elapsed
+        // aside from the thread sleep.
+        assert!(delta >= LocalClockDelta::from_millis(1000));
+        assert!(delta < LocalClockDelta::from_millis(2000)); // sanity check
+    }
+
+    #[test]
     fn naive_set_time_backwards() {
         let mut clock = SystemTimeClock::new(LocalClockDelta::ZERO);
 
