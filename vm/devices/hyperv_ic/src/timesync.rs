@@ -2,6 +2,12 @@
 // Licensed under the MIT License.
 
 //! The timesync IC.
+//!
+//! TODO:
+//! * When the device is paused+resumed, this is an indicator that time may have
+//!   stopped for the guest. We should send another sync message to update the
+//!   guest, or potentially just reoffer the vmbus channel like Hyper-V does.
+//! * Saved state support.
 
 use crate::common::IcPipe;
 use crate::common::NegotiateState;
