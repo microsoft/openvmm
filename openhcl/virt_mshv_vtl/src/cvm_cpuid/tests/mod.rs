@@ -251,6 +251,8 @@ fn populate_and_filter() {
     fill_required_leaves(&mut pages, None);
     let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
     }
     .build()
     .unwrap();
@@ -362,6 +364,8 @@ fn subleaf() {
 
     let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
     }
     .build()
     .unwrap();
@@ -414,6 +418,8 @@ fn invlpgb() {
     assert!(matches!(
         CpuidResultsIsolationType::Snp {
             cpuid_pages: pages.as_slice().as_bytes(),
+            access_vsm: false,
+            vtom: 0x80000000,
         }
         .build(),
         Err(CpuidResultsError::InvlpgbUnavailable)
@@ -447,6 +453,8 @@ fn extended_address_space_sizes() {
 
     let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
     }
     .build()
     .unwrap();
@@ -468,6 +476,8 @@ fn hypervisor_present() {
 
     let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
     }
     .build()
     .unwrap();
@@ -494,6 +504,8 @@ fn validate_required_snp() {
         assert!(matches!(
             CpuidResultsIsolationType::Snp {
                 cpuid_pages: pages.as_slice().as_bytes().as_bytes(),
+                access_vsm: false,
+                vtom: 0x80000000,
             }.build(),
             Err(CpuidResultsError::MissingRequiredResult(err_leaf, err_subleaf)) if (err_leaf == leaf && err_subleaf == subleaf)
         ));
@@ -529,6 +541,8 @@ fn zeros_unsupported_leaf() {
     fill_required_leaves(&mut pages, None);
     let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
     }
     .build()
     .unwrap();
@@ -562,6 +576,8 @@ fn tsc_aux() {
     fill_required_leaves(&mut pages, Some(&[CpuidFunction::ExtendedSevFeatures]));
     let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
     }
     .build()
     .unwrap();
@@ -1111,6 +1127,8 @@ fn real_values() {
 
     let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
     }
     .build()
     .unwrap();
