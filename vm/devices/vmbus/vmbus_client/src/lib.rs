@@ -1727,9 +1727,9 @@ struct ChannelList(
 /// as well.
 struct ChannelRef<'a>(hash_map::OccupiedEntry<'a, ChannelId, Channel>);
 
-/// A tag value used to prove that [`ChannelRef::try_release`] has been called.
-/// This is useful to put as the return value for methods that could possibly
-/// transition a channel into a fully released state.
+/// A tag value used to indicate that [`ChannelRef::try_release`] has been called.
+/// This is useful as a return value for methods that might transition a channel
+/// into a fully released state.
 struct TriedRelease(());
 
 impl ChannelRef<'_> {
