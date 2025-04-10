@@ -8,7 +8,6 @@
 
 // UNSAFETY: linkme uses link_section which is unsafe.
 #![expect(unsafe_code)]
-#![expect(missing_docs)]
 
 // Needed for `save_restore_derive`.
 extern crate self as vmcore;
@@ -21,7 +20,7 @@ pub mod local_only;
 pub mod monitor;
 pub mod non_volatile_store;
 pub mod notify;
-pub mod reference_time_source;
+pub mod reference_time;
 pub mod save_restore;
 pub mod slim_event;
 pub mod synic;

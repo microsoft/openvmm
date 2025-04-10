@@ -15,8 +15,12 @@ vmbus_channel.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
 
+pal_async.workspace = true
+tracelimit.workspace = true
+
 anyhow.workspace = true
 inspect.workspace = true
+jiff.workspace = true
 mesh.workspace = true
 task_control.workspace = true
 async-trait.workspace = true

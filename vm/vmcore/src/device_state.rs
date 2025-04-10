@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Trait definition for chipset device state transitions.
+
 use std::future::Future;
 
 /// Trait for transitioning device state.

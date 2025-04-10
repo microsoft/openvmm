@@ -5,12 +5,14 @@
 
 use anyhow::Context;
 use hyperv_ic_resources::kvp::KvpRpc;
+use jiff::SignedDuration;
 use mesh::rpc::RpcSend;
 use petri::PetriVmConfig;
 use petri::SIZE_1_GB;
 use petri::ShutdownKind;
 use petri::openvmm::NIC_MAC_ADDRESS;
 use petri::openvmm::PetriVmConfigOpenVmm;
+use std::time::Duration;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
@@ -126,6 +128,40 @@ async fn kvp_ic(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     assert_eq!(ip_info.ipv4_gateways.len(), 1);
     let gateway = &ip_info.ipv4_gateways[0];
     assert_eq!(gateway.to_string(), "10.0.0.1");
+
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+/// Test the timesync IC.
+#[openvmm_test(
+    uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_linux_direct_x64
+)]
+async fn timesync_ic(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_custom_config(|c| {
+            // Start with the clock half a day in the past so that the clock is
+            // initially wrong.
+            c.rtc_delta_milliseconds = -(Duration::from_secs(40000).as_millis() as i64)
+        })
+        .run()
+        .await?;
+
+    for _ in 0..30 {
+        let time = agent.get_time().await?;
+        let time = jiff::Timestamp::new(time.seconds, time.nanos).unwrap();
+        tracing::info!(%time, "guest time");
+        if time.duration_since(jiff::Timestamp::now()).abs() < SignedDuration::from_secs(10) {
+            break;
+        }
+        mesh::CancelContext::new()
+            .with_timeout(Duration::from_secs(1))
+            .cancelled()
+            .await;
+    }
 
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);

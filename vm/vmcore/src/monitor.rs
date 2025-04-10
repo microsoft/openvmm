@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Types for supporting hypervisor monitor pages.
+
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvMonitorPage;
 use hvdef::HvMonitorPageSmall;

@@ -64,6 +64,9 @@ use virt::vp::AccessVpState;
 use virt_support_gic as gic;
 use vm_topology::processor::aarch64::Aarch64VpInfo;
 use vmcore::interrupt::Interrupt;
+use vmcore::reference_time::GetReferenceTime;
+use vmcore::reference_time::ReferenceTimeResult;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::synic::GuestEventPort;
 use vmcore::vmtime::VmTimeAccess;
 
@@ -249,6 +252,12 @@ impl virt::Hv1 for HvfPartition {
     type Error = Error;
     type Device = virt::aarch64::gic_software_device::GicSoftwareDevice;
 
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
+        Some(ReferenceTimeSource::from(
+            self.inner.clone() as Arc<dyn GetReferenceTime>
+        ))
+    }
+
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
@@ -261,6 +270,15 @@ impl virt::DeviceBuilder for HvfPartition {
         Ok(virt::aarch64::gic_software_device::GicSoftwareDevice::new(
             self.inner.clone(),
         ))
+    }
+}
+
+impl GetReferenceTime for HvfPartitionInner {
+    fn now(&self) -> ReferenceTimeResult {
+        ReferenceTimeResult {
+            ref_time: self.vmtime.now().as_100ns().into(),
+            system_time: None,
+        }
     }
 }
 

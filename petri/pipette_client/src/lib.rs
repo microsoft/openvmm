@@ -21,6 +21,7 @@ use futures::StreamExt;
 use futures::TryFutureExt;
 use futures::io::BufReader;
 use futures_concurrency::future::TryJoin;
+use mesh::payload::Timestamp;
 use mesh::rpc::RpcError;
 use mesh_remote::PointToPointMesh;
 use pal_async::task::Spawn;
@@ -197,6 +198,14 @@ impl PipetteClient {
     /// Waits for the agent to exit.
     pub async fn wait(self) -> Result<(), mesh::RecvError> {
         self.watch.await
+    }
+
+    /// Returns the current time in the guest.
+    pub async fn get_time(&self) -> anyhow::Result<Timestamp> {
+        self.send
+            .call(PipetteRequest::GetTime, ())
+            .await
+            .context("failed to get time")
     }
 }
 

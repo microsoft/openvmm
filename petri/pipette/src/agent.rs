@@ -18,6 +18,7 @@ use pipette_protocol::PipetteBootstrap;
 use pipette_protocol::PipetteRequest;
 use socket2::Socket;
 use std::time::Duration;
+use std::time::SystemTime;
 use unicycle::FuturesUnordered;
 use vmsocket::VmAddress;
 use vmsocket::VmSocket;
@@ -172,6 +173,7 @@ async fn handle_request(
         }
         PipetteRequest::ReadFile(rpc) => rpc.handle_failable(read_file).await,
         PipetteRequest::WriteFile(rpc) => rpc.handle_failable(write_file).await,
+        PipetteRequest::GetTime(rpc) => rpc.handle_sync(|()| SystemTime::now().into()),
     }
 }
 

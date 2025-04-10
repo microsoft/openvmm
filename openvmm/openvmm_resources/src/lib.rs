@@ -79,6 +79,7 @@ vm_resource::register_static_resolvers! {
     guest_emulation_log::resolver::GuestEmulationLogResolver,
     hyperv_ic::resolver::KvpIcResolver,
     hyperv_ic::resolver::ShutdownIcResolver,
+    hyperv_ic::resolver::TimesyncIcResolver,
     netvsp::resolver::NetvspResolver,
     storvsp::resolver::StorvspResolver,
     uidevices::resolver::VmbusUiResolver,

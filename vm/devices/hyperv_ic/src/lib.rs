@@ -19,3 +19,4 @@ mod common;
 pub mod kvp;
 pub mod resolver;
 pub mod shutdown;
+pub mod timesync;

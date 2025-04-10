@@ -35,6 +35,7 @@ use std::task::Waker;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::ProcessorTopology;
 use vmcore::monitor::MonitorId;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::synic::GuestEventPort;
 use vmcore::vmtime::VmTimeSource;
 use vmcore::vpci_msi::MsiAddressData;
@@ -588,6 +589,8 @@ pub trait PartitionMemoryMapper {
 pub trait Hv1 {
     type Error: std::error::Error + Send + Sync + 'static;
     type Device: VpciInterruptMapper + MsiInterruptTarget;
+
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource>;
 
     fn new_virtual_device(
         &self,

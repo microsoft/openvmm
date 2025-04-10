@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Type definitions for types that cannot cross a mesh process boundary.
+
 use mesh::payload::Error;
 use mesh::payload::FieldDecode;
 use mesh::payload::FieldEncode;

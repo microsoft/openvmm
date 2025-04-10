@@ -28,7 +28,7 @@ const FRAMEWORK_VERSIONS: &[Version] = &[FRAMEWORK_VERSION_1, FRAMEWORK_VERSION_
 #[derive(InspectMut)]
 pub(crate) struct IcPipe {
     #[inspect(mut)]
-    pipe: MessagePipe<GpadlRingMem>,
+    pub pipe: MessagePipe<GpadlRingMem>,
     #[inspect(skip)]
     buf: Vec<u8>,
 }

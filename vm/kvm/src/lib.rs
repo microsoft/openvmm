@@ -46,6 +46,7 @@ mod ioctl {
     ioctl_write_ptr!(kvm_set_gsi_routing, KVMIO, 0x6a, kvm_irq_routing);
     ioctl_write_ptr!(kvm_irqfd, KVMIO, 0x76, kvm_irqfd);
     ioctl_write_int_bad!(kvm_set_boot_cpu_id, request_code_none!(KVMIO, 0x78));
+    ioctl_read!(kvm_get_clock, KVMIO, 0x7c, kvm_clock_data);
     ioctl_write_int_bad!(kvm_run, request_code_none!(KVMIO, 0x80));
     // Is *NOT* defined for arm64
     #[cfg(not(target_arch = "aarch64"))]
@@ -632,6 +633,16 @@ impl Partition {
             ioctl::kvm_create_device(self.vm.as_raw_fd(), &mut device)?;
             Ok(Device(File::from_raw_fd(device.fd as i32)))
         }
+    }
+
+    /// Gets the current kvmclock value.
+    pub fn get_clock_ns(&self) -> Result<kvm_clock_data> {
+        // SAFETY: Calling IOCTL as documented, with no special requirements.
+        let mut clock = kvm_clock_data::default();
+        unsafe {
+            ioctl::kvm_get_clock(self.vm.as_raw_fd(), &mut clock).map_err(Error::GetRegs)?;
+        }
+        Ok(clock)
     }
 }
 

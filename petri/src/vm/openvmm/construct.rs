@@ -250,6 +250,12 @@ impl PetriVmConfigOpenVmm {
             hyperv_ic_resources::kvp::KvpIcHandle { recv: kvp_ic_recv }.into_resource(),
         ));
 
+        // Add the Hyper-V timesync IC
+        vmbus_devices.push((
+            DeviceVtl::Vtl0,
+            hyperv_ic_resources::timesync::TimesyncIcHandle.into_resource(),
+        ));
+
         // Make a vmbus vsock path for pipette connections
         let (vmbus_vsock_listener, vmbus_vsock_path) = make_vsock_listener()?;
 
@@ -337,6 +343,7 @@ impl PetriVmConfigOpenVmm {
             secure_boot_enabled: false,
             debugger_rpc: None,
             generation_id_recv: None,
+            rtc_delta_milliseconds: 0,
         };
 
         // Make the pipette connection listener.
