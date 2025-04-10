@@ -416,19 +416,14 @@ impl<T: HandlePortEvent> PortWithHandler<T> {
 
     pub fn remove_handler(self) -> (Port, T) {
         let port = self.into_port_preserve_handler();
-        let handler = port.inner.drain_queue();
-        (port, *handler.unwrap().into_any().downcast().unwrap())
+        let handler = port.inner.drain_queue().unwrap() as Box<dyn Any>;
+        (port, *handler.downcast().unwrap())
     }
 
     pub fn with_handler<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         let mut state = self.raw.inner.state.lock();
-        f(state
-            .handler
-            .as_mut()
-            .unwrap()
-            .as_any()
-            .downcast_mut()
-            .unwrap())
+        let handler = state.handler.as_mut().unwrap() as &mut dyn Any;
+        f(handler.downcast_mut().unwrap())
     }
 
     pub fn with_port_and_handler<'a, R>(
@@ -446,16 +441,8 @@ impl<T: HandlePortEvent> PortWithHandler<T> {
             peer_and_seq,
             events: &mut pending_events,
         };
-        let r = f(
-            &mut control,
-            state
-                .handler
-                .as_mut()
-                .unwrap()
-                .as_any()
-                .downcast_mut()
-                .unwrap(),
-        );
+        let handler = state.handler.as_mut().unwrap() as &mut dyn Any;
+        let r = f(&mut control, handler.downcast_mut().unwrap());
         pending_events.process();
         r
     }
@@ -844,10 +831,7 @@ struct RemoteNodeDisconnected;
 #[error("remote node dropped")]
 struct RemoteNodeDropped;
 
-trait HandlePortEventAndAny: HandlePortEvent {
-    fn as_any(&mut self) -> &mut dyn Any;
-    fn into_any(self: Box<Self>) -> Box<dyn Any>;
-}
+trait HandlePortEventAndAny: HandlePortEvent + Any {}
 
 impl Debug for dyn HandlePortEventAndAny {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -855,15 +839,7 @@ impl Debug for dyn HandlePortEventAndAny {
     }
 }
 
-impl<T: HandlePortEvent> HandlePortEventAndAny for T {
-    fn as_any(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
-}
+impl<T: HandlePortEvent> HandlePortEventAndAny for T {}
 
 /// The mutable interior state of a port.
 #[derive(Debug)]

@@ -1159,7 +1159,7 @@ impl InitializedVm {
             _ => {}
         };
 
-        let synic = Arc::new(SynicPorts::new(partition.clone().into_synic()));
+        let synic = Arc::new(SynicPorts::new(partition.clone()));
 
         let vtl2_framebuffer_gpa_base = if cfg.vtl2_gfx {
             // calculate a safe place to put the framebuffer mapping in GPA space
@@ -2167,7 +2167,7 @@ impl InitializedVm {
         // Start the VP backing threads.
         try_join_all(vps.into_iter().zip(vp_runners).enumerate().map(
             |(vp_index, (mut vp, runner))| {
-                let partition = partition.clone().into_request_yield();
+                let partition = partition.clone();
                 let chipset = chipset.clone();
                 let (send, recv) = mesh::oneshot();
                 thread::Builder::new()
