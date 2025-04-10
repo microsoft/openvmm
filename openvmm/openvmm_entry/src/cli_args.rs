@@ -238,35 +238,35 @@ flags:
     #[clap(long, conflicts_with("virtio_console"))]
     pub virtio_console_pci: bool,
 
-    /// COM1 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// COM1 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com1: Option<SerialConfigCli>,
 
-    /// COM2 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// COM2 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com2: Option<SerialConfigCli>,
 
-    /// COM3 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// COM3 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com3: Option<SerialConfigCli>,
 
-    /// COM4 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// COM4 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com4: Option<SerialConfigCli>,
 
-    /// virtio serial binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// virtio serial binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[clap(long, value_name = "SERIAL")]
     pub virtio_serial: Option<SerialConfigCli>,
 
-    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com1_serial: Option<SerialConfigCli>,
 
-    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com2_serial: Option<SerialConfigCli>,
 
-    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none))
+    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none))
     #[clap(long, value_name = "SERIAL")]
     pub debugcon: Option<DebugconSerialConfigCli>,
 
