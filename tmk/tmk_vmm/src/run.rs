@@ -26,20 +26,37 @@ use vmcore::vmtime::VmTimeKeeper;
 use vmcore::vmtime::VmTimeSource;
 use zerocopy::TryFromBytes as _;
 
+pub const COMMAND_ADDRESS: u64 = 0xffff_0000;
+
 pub struct CommonState {
+    driver: DefaultDriver,
+    opts: Options,
+    processor_topology: ProcessorTopology,
+    memory_layout: MemoryLayout,
+}
+
+pub struct RunContext<'a> {
+    state: &'a CommonState,
     #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
-    pub driver: DefaultDriver,
-    pub vmtime_keeper: VmTimeKeeper,
-    pub vmtime_source: VmTimeSource,
-    pub opts: Options,
-    pub processor_topology: ProcessorTopology,
-    pub memory_layout: MemoryLayout,
+    pub driver: &'a DefaultDriver,
+    pub vmtime_source: &'a VmTimeSource,
+    pub processor_topology: &'a ProcessorTopology,
+    pub memory_layout: &'a MemoryLayout,
+}
+
+#[derive(Debug, Clone)]
+pub enum TestResult {
+    Passed,
+    Failed,
+    Faulted {
+        vp_index: VpIndex,
+        reason: String,
+        regs: Option<Box<virt::vp::Registers>>,
+    },
 }
 
 impl CommonState {
     pub async fn new(driver: DefaultDriver, opts: Options) -> anyhow::Result<Self> {
-        let vmtime_keeper = VmTimeKeeper::new(&driver, VmTime::from_100ns(0));
-        let vmtime_source = vmtime_keeper.builder().build(&driver).await.unwrap();
         #[cfg(guest_arch = "x86_64")]
         let processor_topology = TopologyBuilder::new_x86()
             .build(1)
@@ -59,48 +76,123 @@ impl CommonState {
 
         Ok(Self {
             driver,
-            vmtime_keeper,
-            vmtime_source,
             opts,
             processor_topology,
             memory_layout,
         })
     }
 
+    pub async fn for_each_test(
+        &mut self,
+        mut f: impl AsyncFnMut(&mut RunContext<'_>, &load::TestInfo) -> anyhow::Result<TestResult>,
+    ) -> anyhow::Result<()> {
+        let tmk = fs_err::File::open(&self.opts.tmk).context("failed to open tmk")?;
+        let available_tests = load::enumerate_tests(&tmk)?;
+        let tests = if self.opts.tests.is_empty() {
+            available_tests
+        } else {
+            self.opts
+                .tests
+                .iter()
+                .map(|name| {
+                    available_tests
+                        .iter()
+                        .find(|test| test.name == *name)
+                        .cloned()
+                        .with_context(|| format!("test {} not found", name))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?
+        };
+        let mut success = true;
+        for test in &tests {
+            tracing::info!(target: "test", name = test.name, "test started");
+
+            let mut vmtime_keeper = VmTimeKeeper::new(&self.driver, VmTime::from_100ns(0));
+            let vmtime_source = vmtime_keeper.builder().build(&self.driver).await.unwrap();
+            let mut ctx = RunContext {
+                state: self,
+                driver: &self.driver,
+                vmtime_source: &vmtime_source,
+                processor_topology: &self.processor_topology,
+                memory_layout: &self.memory_layout,
+            };
+
+            vmtime_keeper.start().await;
+
+            let r = f(&mut ctx, test)
+                .await
+                .with_context(|| format!("failed to run test {}", test.name))?;
+
+            vmtime_keeper.stop().await;
+
+            match r {
+                TestResult::Passed => {
+                    tracing::info!(target: "test", name = test.name, "test passed");
+                }
+                TestResult::Failed => {
+                    tracing::info!(target: "test", name = test.name, reason = "explicit failure", "test failed");
+                    success = false;
+                }
+                TestResult::Faulted {
+                    vp_index,
+                    reason,
+                    regs,
+                } => {
+                    tracing::info!(
+                        target: "test",
+                        name = test.name,
+                        vp_index = vp_index.index(),
+                        reason,
+                        regs = format_args!("{:#x?}", regs),
+                        "test failed"
+                    );
+                    success = false;
+                }
+            }
+        }
+        if !success {
+            anyhow::bail!("some tests failed");
+        }
+        Ok(())
+    }
+}
+
+impl RunContext<'_> {
     pub async fn run(
         &mut self,
         guest_memory: &GuestMemory,
         caps: &PartitionCapabilities,
+        test: &load::TestInfo,
         start_vp: impl AsyncFnOnce(&mut Self, RunnerBuilder) -> anyhow::Result<()>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<TestResult> {
         let (event_send, mut event_recv) = mesh::channel();
 
         // Load the TMK.
-        let tmk = fs_err::File::open(&self.opts.tmk).context("failed to open tmk")?;
+        let tmk = fs_err::File::open(&self.state.opts.tmk).context("failed to open tmk")?;
         let regs = {
             #[cfg(guest_arch = "x86_64")]
             {
                 load::load_x86(
-                    &self.memory_layout,
+                    self.memory_layout,
                     guest_memory,
-                    &self.processor_topology,
+                    self.processor_topology,
                     caps,
                     &tmk,
+                    test,
                 )?
             }
             #[cfg(guest_arch = "aarch64")]
             {
                 load::load_aarch64(
-                    &self.memory_layout,
+                    self.memory_layout,
                     guest_memory,
-                    &self.processor_topology,
+                    self.processor_topology,
                     caps,
                     &tmk,
+                    test,
                 )?
             }
         };
-
-        self.vmtime_keeper.start().await;
 
         start_vp(
             self,
@@ -114,27 +206,26 @@ impl CommonState {
         .await?;
 
         let event = event_recv.next().await.unwrap();
-        match event {
+        let r = match event {
             VpEvent::TestComplete { success } => {
-                if !success {
-                    anyhow::bail!("test failed");
+                if success {
+                    TestResult::Passed
+                } else {
+                    TestResult::Failed
                 }
-                tracing::info!("test complete");
-                Ok(())
             }
             VpEvent::Halt {
                 vp_index,
                 reason,
                 regs,
-            } => {
-                anyhow::bail!(
-                    "vp {} halted: {}\nregisters:\n{:#x?}",
-                    vp_index.index(),
-                    reason,
-                    regs
-                );
-            }
-        }
+            } => TestResult::Faulted {
+                vp_index,
+                reason,
+                regs,
+            },
+        };
+
+        Ok(r)
     }
 }
 
@@ -196,7 +287,7 @@ impl CpuIo for IoHandler<'_> {
     }
 
     async fn write_mmio(&self, vp: VpIndex, address: u64, data: &[u8]) {
-        if address == tmk_protocol::COMMAND_ADDRESS {
+        if address == COMMAND_ADDRESS {
             let p = widen(data);
             let r = self.handle_command(p);
             if let Err(e) = r {

@@ -3,10 +3,12 @@
 
 //! Integration tests that run on more than one architecture.
 
-use anyhow::Context as _;
+use anyhow::Context;
 use hyperv_ic_resources::kvp::KvpRpc;
-use mesh::rpc::RpcSend as _;
+use mesh::rpc::RpcSend;
 use petri::PetriVmConfig;
+use petri::SIZE_1_GB;
+use petri::ShutdownKind;
 use petri::openvmm::NIC_MAC_ADDRESS;
 use petri::openvmm::PetriVmConfigOpenVmm;
 use vmm_core_defs::HaltReason;
@@ -39,8 +41,8 @@ async fn frontpage(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_uefi_x64(vhd(ubuntu_2204_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
 async fn boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     let (vm, agent) = config.run().await?;
@@ -127,5 +129,184 @@ async fn kvp_ic(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
 
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+/// Validate we can reboot a VM and reconnect to pipette.
+// TODO: Reenable guests that use the framebuffer once #74 is fixed.
+#[openvmm_test(
+    openvmm_linux_direct_x64,
+    openvmm_openhcl_linux_direct_x64,
+    // openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
+    // openvmm_pcat_x64(vhd(ubuntu_2204_server_x64)),
+    // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    // openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    // openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    // openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    // openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+)]
+async fn reboot(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+    let (mut vm, agent) = config.run().await?;
+
+    agent.ping().await?;
+
+    agent.reboot().await?;
+    assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+    vm.reset().await?;
+
+    let agent = vm.wait_for_agent().await?;
+
+    agent.ping().await?;
+
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+
+    Ok(())
+}
+
+/// Basic boot test without agent
+// TODO: investigate why the shutdown ic doesn't work reliably with hyper-v
+// in our ubuntu image
+#[vmm_test(
+    openvmm_linux_direct_x64,
+    openvmm_openhcl_linux_direct_x64,
+    openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
+    openvmm_pcat_x64(iso(freebsd_13_2_x64)),
+    openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_pcat_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
+    // hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    // hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+)]
+async fn boot_no_agent(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+    let mut vm = config.run_without_agent().await?;
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+/// Basic reboot test without agent
+// TODO: Reenable guests that use the framebuffer once #74 is fixed.
+#[openvmm_test(
+    openvmm_linux_direct_x64,
+    openvmm_openhcl_linux_direct_x64,
+    // openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
+    // openvmm_pcat_x64(vhd(ubuntu_2204_server_x64)),
+    // openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    // openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    // openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    // openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    // openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
+)]
+async fn reboot_no_agent(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+    let mut vm = config.run_without_agent().await?;
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Reboot).await?;
+    assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+    vm.reset().await?;
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+/// Boot our guest-test UEFI image, which will run some tests,
+/// and then purposefully triple fault itself via an expiring
+/// watchdog timer.
+#[vmm_test(
+    openvmm_uefi_x64(guest_test_uefi_x64),
+    openvmm_uefi_aarch64(guest_test_uefi_aarch64),
+    openvmm_openhcl_uefi_x64(guest_test_uefi_x64)
+)]
+async fn guest_test_uefi(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+    let vm = config
+        .with_windows_secure_boot_template()
+        .run_without_agent()
+        .await?;
+    // No boot event check, UEFI watchdog gets fired before ExitBootServices
+    let halt_reason = vm.wait_for_teardown().await?;
+    tracing::debug!("vm halt reason: {halt_reason:?}");
+    #[cfg(guest_arch = "x86_64")]
+    assert!(matches!(halt_reason, HaltReason::TripleFault { .. }));
+    #[cfg(guest_arch = "aarch64")]
+    assert!(matches!(halt_reason, HaltReason::Reset));
+    Ok(())
+}
+
+/// Test transferring a file to the guest.
+#[vmm_test(
+    openvmm_linux_direct_x64,
+    openvmm_openhcl_linux_direct_x64,
+    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+)]
+async fn file_transfer_test(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow::Error> {
+    const TEST_CONTENT: &str = "hello world!";
+    const FILE_NAME: &str = "test.txt";
+
+    let (vm, agent) = config.run().await?;
+
+    agent.write_file(FILE_NAME, TEST_CONTENT.as_bytes()).await?;
+    assert_eq!(agent.read_file(FILE_NAME).await?, TEST_CONTENT.as_bytes());
+
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+
+    Ok(())
+}
+
+/// Boot Linux and have it write the visible memory size.
+#[openvmm_test(linux_direct_x64, uefi_aarch64(vhd(ubuntu_2404_server_aarch64)))]
+async fn five_gb(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
+    let configured_size = 5 * SIZE_1_GB;
+    let expected_size = configured_size - configured_size / 10; // 10% buffer; TODO-figure out where this goes
+
+    let (vm, agent) = config
+        .with_custom_config(|c| c.memory.mem_size = configured_size)
+        .run()
+        .await?;
+
+    // Validate that the RAM size is appropriate.
+    // Skip the first 9 characters, which are "MemTotal:", and the last two,
+    // which are the units.
+    let output = agent.unix_shell().read_file("/proc/meminfo").await?;
+    let memtotal_line = output
+        .lines()
+        .find_map(|line| line.strip_prefix("MemTotal:"))
+        .context("couldn't find memtotal")?;
+    let size_kb: u64 = memtotal_line
+        .strip_suffix("kB")
+        .context("memtotal units should be in kB")?
+        .trim()
+        .parse()
+        .context("couldn't parse size")?;
+    assert!(
+        size_kb * 1024 >= expected_size,
+        "memory size {} >= {}",
+        size_kb * 1024,
+        expected_size
+    );
+
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+
     Ok(())
 }

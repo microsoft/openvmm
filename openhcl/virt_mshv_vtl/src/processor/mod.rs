@@ -448,8 +448,6 @@ pub enum UhRunVpError {
     UnknownVmxExit(x86defs::vmx::VmxExit),
     #[error("bad guest state on VP.ENTER")]
     VmxBadGuestState,
-    #[error("failed to access VP assist page")]
-    VpAssistPage(#[source] guestmem::GuestMemoryError),
     #[error("failed to read hypercall parameters")]
     HypercallParameters(#[source] guestmem::GuestMemoryError),
     #[error("failed to write hypercall result")]

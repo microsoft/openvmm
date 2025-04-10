@@ -10,6 +10,7 @@ use inspect::Inspect;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use std::time::Duration;
 use thiserror::Error;
 
 pub trait MessagePort: Send + Sync {
@@ -53,11 +54,19 @@ pub trait SynicPortAccess: Send + Sync {
 
     /// Adds a host event port, which gets notified when the guest calls
     /// `HvSignalEvent`.
+    ///
+    /// The `monitor_info` parameter is ignored if the synic does not support MnF.
+    ///
+    /// # Panics
+    ///
+    /// Depending on the implementation, this may panic if the monitor ID indicated in
+    /// `monitor_info` is already in use.
     fn add_event_port(
         &self,
         connection_id: u32,
         minimum_vtl: Vtl,
         port: Arc<dyn EventPort>,
+        monitor_info: Option<MonitorInfo>,
     ) -> Result<Box<dyn Sync + Send>, Error>;
 
     /// Creates a [`GuestMessagePort`] for posting messages to the guest.
@@ -69,7 +78,18 @@ pub trait SynicPortAccess: Send + Sync {
     ) -> Result<Box<dyn GuestMessagePort>, HypervisorError>;
 
     /// Creates a [`GuestEventPort`] for signaling VMBus channels in the guest.
-    fn new_guest_event_port(&self) -> Result<Box<dyn GuestEventPort>, HypervisorError>;
+    ///
+    /// The `monitor_info` parameter is ignored if the synic does not support outgoing monitored
+    /// interrupts.
+    fn new_guest_event_port(
+        &self,
+        port_id: u32,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+        monitor_info: Option<MonitorInfo>,
+    ) -> Result<Box<dyn GuestEventPort>, HypervisorError>;
 
     /// Returns whether callers should pass an OS event when creating event
     /// ports, as opposed to passing a function to call.
@@ -88,15 +108,8 @@ pub trait SynicPortAccess: Send + Sync {
 
 /// Provides monitor page functionality for a `SynicPortAccess` implementation.
 pub trait SynicMonitorAccess: SynicPortAccess {
-    /// Registers a monitored interrupt. The returned struct will unregister the ID when dropped.
-    ///
-    /// # Panics
-    ///
-    /// Panics if monitor_id is already in use.
-    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send>;
-
     /// Sets the GPA of the monitor page currently in use.
-    fn set_monitor_page(&self, gpa: Option<u64>) -> anyhow::Result<()>;
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<MonitorPageGpas>) -> anyhow::Result<()>;
 }
 
 /// A guest event port, created by [`SynicPortAccess::new_guest_event_port`].
@@ -104,11 +117,8 @@ pub trait GuestEventPort: Send + Sync {
     /// Returns an interrupt object used to signal the guest.
     fn interrupt(&self) -> Interrupt;
 
-    /// Clears the event port state so that the interrupt does nothing.
-    fn clear(&mut self);
-
-    /// Updates the parameters for the event port.
-    fn set(&mut self, vtl: Vtl, vp: u32, sint: u8, flag: u16) -> Result<(), HypervisorError>;
+    /// Updates the target VP for the event port.
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), HypervisorError>;
 }
 
 /// A guest message port, created by [`SynicPortAccess::new_guest_message_port`].
@@ -121,4 +131,24 @@ pub trait GuestMessagePort: Send + Sync + Inspect {
 
     /// Changes the virtual processor to which messages are sent.
     fn set_target_vp(&mut self, vp: u32) -> Result<(), HypervisorError>;
+}
+
+/// Represents the GPA of the outgoing and incoming monitor pages.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Inspect)]
+pub struct MonitorPageGpas {
+    /// The GPA of the incoming monitor page.
+    #[inspect(hex)]
+    pub parent_to_child: u64,
+    /// The GPA of the outgoing monitor page.
+    #[inspect(hex)]
+    pub child_to_parent: u64,
+}
+
+/// Provides information about monitor usage for a synic event port.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MonitorInfo {
+    // The monitor ID used by the port.
+    pub monitor_id: MonitorId,
+    /// The nterrupt latency.
+    pub latency: Duration,
 }

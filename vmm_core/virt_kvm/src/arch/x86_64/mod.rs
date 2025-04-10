@@ -1212,11 +1212,21 @@ impl virt::Synic for KvmPartition {
         }
     }
 
-    fn new_guest_event_port(&self) -> Box<dyn GuestEventPort> {
+    fn new_guest_event_port(
+        &self,
+        _vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Box<dyn GuestEventPort> {
         Box::new(KvmGuestEventPort {
             partition: Arc::downgrade(&self.inner),
             gm: self.inner.gm.clone(),
-            params: Default::default(),
+            params: Arc::new(Mutex::new(KvmEventPortParams {
+                vp: VpIndex::new(vp),
+                sint,
+                flag,
+            })),
         })
     }
 
@@ -1236,7 +1246,7 @@ struct EmulationError {
 struct KvmGuestEventPort {
     partition: Weak<KvmPartitionInner>,
     gm: GuestMemory,
-    params: Arc<Mutex<Option<KvmEventPortParams>>>,
+    params: Arc<Mutex<KvmEventPortParams>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1250,60 +1260,43 @@ impl GuestEventPort for KvmGuestEventPort {
     fn interrupt(&self) -> Interrupt {
         let this = self.clone();
         Interrupt::from_fn(move || {
-            if let Some(KvmEventPortParams { vp, sint, flag }) = *this.params.lock() {
-                let Some(partition) = this.partition.upgrade() else {
-                    return;
-                };
-                let siefp = partition.vp(vp).siefp.read();
-                if !siefp.enabled() {
-                    return;
-                }
-                let byte_gpa =
-                    siefp.base_gpn() * HV_PAGE_SIZE + sint as u64 * 256 + flag as u64 / 8;
-                let mut byte = 0;
-                let mask = 1 << (flag % 8);
-                while byte & mask == 0 {
-                    match this.gm.compare_exchange(byte_gpa, byte, byte | mask) {
-                        Ok(Ok(_)) => {
-                            drop(siefp);
-                            partition
-                                .kvm
-                                .irq_line(VMBUS_BASE_GSI + vp.index(), true)
-                                .unwrap();
+            let KvmEventPortParams { vp, sint, flag } = *this.params.lock();
+            let Some(partition) = this.partition.upgrade() else {
+                return;
+            };
+            let siefp = partition.vp(vp).siefp.read();
+            if !siefp.enabled() {
+                return;
+            }
+            let byte_gpa = siefp.base_gpn() * HV_PAGE_SIZE + sint as u64 * 256 + flag as u64 / 8;
+            let mut byte = 0;
+            let mask = 1 << (flag % 8);
+            while byte & mask == 0 {
+                match this.gm.compare_exchange(byte_gpa, byte, byte | mask) {
+                    Ok(Ok(_)) => {
+                        drop(siefp);
+                        partition
+                            .kvm
+                            .irq_line(VMBUS_BASE_GSI + vp.index(), true)
+                            .unwrap();
 
-                            break;
-                        }
-                        Ok(Err(b)) => byte = b,
-                        Err(err) => {
-                            tracelimit::warn_ratelimited!(
-                                error = &err as &dyn std::error::Error,
-                                "failed to write event flag to guest memory"
-                            );
-                            break;
-                        }
+                        break;
+                    }
+                    Ok(Err(b)) => byte = b,
+                    Err(err) => {
+                        tracelimit::warn_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            "failed to write event flag to guest memory"
+                        );
+                        break;
                     }
                 }
             }
         })
     }
 
-    fn clear(&mut self) {
-        *self.params.lock() = None;
-    }
-
-    fn set(
-        &mut self,
-        _vtl: Vtl,
-        vp: u32,
-        sint: u8,
-        flag: u16,
-    ) -> Result<(), vmcore::synic::HypervisorError> {
-        *self.params.lock() = Some(KvmEventPortParams {
-            vp: VpIndex::new(vp),
-            sint,
-            flag,
-        });
-
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
+        self.params.lock().vp = VpIndex::new(vp);
         Ok(())
     }
 }

@@ -6,8 +6,9 @@
 // UNSAFETY: needed to map guest memory.
 #![expect(unsafe_code)]
 
-use crate::run::CommonState;
+use crate::run::RunContext;
 use crate::run::RunnerBuilder;
+use crate::run::TestResult;
 use anyhow::Context as _;
 use futures::executor::block_on;
 use guestmem::GuestMemory;
@@ -16,6 +17,7 @@ use std::future::Future;
 use std::future::poll_fn;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::Weak;
 use std::task::Context;
 use std::task::Waker;
 use virt::BindProcessor;
@@ -27,16 +29,20 @@ use virt::ProtoPartition;
 use virt::ProtoPartitionConfig;
 use virt::VpIndex;
 
-impl CommonState {
-    pub async fn run_host_vmm<H: Hypervisor>(&mut self, mut hv: H) -> anyhow::Result<()>
+impl RunContext<'_> {
+    pub async fn run_host_vmm<H: Hypervisor>(
+        &mut self,
+        mut hv: H,
+        test: &crate::load::TestInfo,
+    ) -> anyhow::Result<TestResult>
     where
         H::Partition: Partition + PartitionMemoryMapper,
     {
         let proto = hv
             .new_partition(ProtoPartitionConfig {
-                processor_topology: &self.processor_topology,
+                processor_topology: self.processor_topology,
                 hv_config: None,
-                vmtime: &self.vmtime_source,
+                vmtime: self.vmtime_source,
                 user_mode_apic: false,
                 isolation: virt::IsolationType::None,
             })
@@ -46,7 +52,7 @@ impl CommonState {
 
         let (partition, vps) = proto
             .build(PartitionConfig {
-                mem_layout: &self.memory_layout,
+                mem_layout: self.memory_layout,
                 guest_memory: &guest_memory,
                 cpuid: &[],
                 vtl0_alias_map: None,
@@ -78,12 +84,27 @@ impl CommonState {
             }?;
         }
 
-        self.run(&guest_memory, partition.caps(), async |_this, runner| {
-            let [vp] = vps.try_into().ok().unwrap();
-            start_vp(partition.clone(), vp, runner).await?;
-            Ok(())
-        })
-        .await
+        let mut threads = Vec::new();
+        let r = self
+            .run(
+                &guest_memory,
+                partition.caps(),
+                test,
+                async |_this, runner| {
+                    let [vp] = vps.try_into().ok().unwrap();
+                    threads.push(start_vp(partition.clone(), vp, runner).await?);
+                    Ok(())
+                },
+            )
+            .await?;
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        // Ensure the partition has not leaked.
+        Arc::into_inner(partition).expect("partition is no longer referenced");
+
+        Ok(r)
     }
 }
 
@@ -100,13 +121,13 @@ impl<T: Partition> RequestYield for T {
 }
 
 struct VpWaker {
-    partition: Arc<dyn RequestYield>,
+    partition: Weak<dyn RequestYield>,
     vp: VpIndex,
     inner: Waker,
 }
 
 impl VpWaker {
-    fn new(partition: Arc<dyn RequestYield>, vp: VpIndex, waker: Waker) -> Self {
+    fn new(partition: Weak<dyn RequestYield>, vp: VpIndex, waker: Waker) -> Self {
         Self {
             partition,
             vp,
@@ -117,7 +138,9 @@ impl VpWaker {
 
 impl std::task::Wake for VpWaker {
     fn wake_by_ref(self: &Arc<Self>) {
-        self.partition.request_yield(self.vp);
+        if let Some(partition) = self.partition.upgrade() {
+            partition.request_yield(self.vp);
+        }
         self.inner.wake_by_ref();
     }
 
@@ -130,9 +153,9 @@ async fn start_vp(
     partition: Arc<dyn RequestYield>,
     mut vp: impl 'static + BindProcessor + Send,
     mut runner: RunnerBuilder,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<std::thread::JoinHandle<()>> {
     let (bind_result_send, bind_result_recv) = mesh::oneshot();
-    let _vp_thread = std::thread::spawn(move || {
+    let vp_thread = std::thread::spawn(move || {
         let vp_index = VpIndex::BSP;
         let r = vp
             .bind()
@@ -149,7 +172,7 @@ async fn start_vp(
             let mut run = pin!(vp.run_vp());
             poll_fn(|cx| {
                 let waker = Waker::from(Arc::new(VpWaker::new(
-                    partition.clone(),
+                    Arc::downgrade(&partition),
                     vp_index,
                     cx.waker().clone(),
                 )));
@@ -159,5 +182,6 @@ async fn start_vp(
         })
     });
 
-    bind_result_recv.await.unwrap()
+    bind_result_recv.await.unwrap()?;
+    Ok(vp_thread)
 }

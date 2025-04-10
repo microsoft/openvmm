@@ -2,16 +2,12 @@
 // Licensed under the MIT License.
 
 //! Hypervisor MSR emulation.
-//!
-//! In the future, this will be extended to include virtual processor registers.
 
 use super::synic::GlobalSynic;
 use super::synic::ProcessorSynic;
+use crate::locked_page::LockedPage;
 use guestmem::GuestMemory;
-use guestmem::GuestMemoryError;
 use hv1_structs::VtlArray;
-use hvdef::HV_PAGE_SIZE;
-use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HV_REFERENCE_TSC_SEQUENCE_INVALID;
 use hvdef::HvRegisterVpAssistPage;
 use hvdef::HvVpVtlControl;
@@ -19,8 +15,11 @@ use hvdef::HvVtlEntryReason;
 use hvdef::Vtl;
 use inspect::Inspect;
 use parking_lot::Mutex;
+use safeatomic::AtomicSliceOps;
 use std::mem::offset_of;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::Ordering;
 use virt::x86::MsrError;
 use vm_topology::processor::VpIndex;
 use vmcore::reference_time_source::ReferenceTimeSource;
@@ -53,21 +52,26 @@ struct GlobalHvState {
 #[derive(Inspect)]
 struct MutableHvState {
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
-    hypercall: hvdef::hypercall::MsrHypercallContents,
+    hypercall_reg: hvdef::hypercall::MsrHypercallContents,
+    #[inspect(with = "|x| x.is_some()")]
+    hypercall_page: Option<LockedPage>,
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
     guest_os_id: hvdef::hypercall::HvGuestOsId,
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
-    reference_tsc: hvdef::HvRegisterReferenceTsc,
+    reference_tsc_reg: hvdef::HvRegisterReferenceTsc,
+    #[inspect(with = "|x| x.is_some()")]
+    reference_tsc_page: Option<LockedPage>,
     tsc_sequence: u32,
 }
 
 impl MutableHvState {
     fn new() -> Self {
         Self {
-            hypercall: hvdef::hypercall::MsrHypercallContents::new(),
-
+            hypercall_reg: hvdef::hypercall::MsrHypercallContents::new(),
+            hypercall_page: None,
             guest_os_id: hvdef::hypercall::HvGuestOsId::new(),
-            reference_tsc: hvdef::HvRegisterReferenceTsc::new(),
+            reference_tsc_reg: hvdef::HvRegisterReferenceTsc::new(),
+            reference_tsc_page: None,
             tsc_sequence: 0,
         }
     }
@@ -75,10 +79,21 @@ impl MutableHvState {
     fn reset(&mut self, overlay_access: &mut dyn VtlProtectHypercallOverlay) {
         overlay_access.disable_overlay();
 
-        self.hypercall = hvdef::hypercall::MsrHypercallContents::new();
-        self.guest_os_id = hvdef::hypercall::HvGuestOsId::new();
-        self.reference_tsc = hvdef::HvRegisterReferenceTsc::new();
-        self.tsc_sequence = 0;
+        let Self {
+            hypercall_reg,
+            hypercall_page,
+            guest_os_id,
+            reference_tsc_reg,
+            reference_tsc_page,
+            tsc_sequence,
+        } = self;
+
+        *hypercall_reg = hvdef::hypercall::MsrHypercallContents::new();
+        *hypercall_page = None;
+        *guest_os_id = hvdef::hypercall::HvGuestOsId::new();
+        *reference_tsc_reg = hvdef::HvRegisterReferenceTsc::new();
+        *reference_tsc_page = None;
+        *tsc_sequence = 0;
     }
 }
 
@@ -121,7 +136,8 @@ impl<const VTL_COUNT: usize> GlobalHv<VTL_COUNT> {
             partition_state: self.partition_state.clone(),
             vtl_state: self.vtl_mutable_state[vtl].clone(),
             synic: self.synic[vtl].add_vp(vp_index),
-            vp_assist_page: 0.into(),
+            vp_assist_page_reg: Default::default(),
+            vp_assist_page: VpAssistPage::default(),
             guest_memory: self.guest_memory[vtl].clone(),
         }
     }
@@ -152,7 +168,32 @@ pub struct ProcessorVtlHv {
     /// The virtual processor's synic state.
     pub synic: ProcessorSynic,
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
-    vp_assist_page: HvRegisterVpAssistPage,
+    vp_assist_page_reg: HvRegisterVpAssistPage,
+    vp_assist_page: VpAssistPage,
+}
+
+#[derive(Inspect)]
+#[inspect(external_tag)]
+enum VpAssistPage {
+    Local(#[inspect(skip)] Box<guestmem::Page>),
+    Mapped(#[inspect(skip)] LockedPage),
+}
+
+impl std::ops::Deref for VpAssistPage {
+    type Target = guestmem::Page;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            VpAssistPage::Local(page) => page,
+            VpAssistPage::Mapped(page) => page,
+        }
+    }
+}
+
+impl Default for VpAssistPage {
+    fn default() -> Self {
+        VpAssistPage::Local(std::array::from_fn(|_| AtomicU8::new(0)).into())
+    }
 }
 
 impl ProcessorVtlHv {
@@ -169,11 +210,13 @@ impl ProcessorVtlHv {
             vtl_state: _,
             guest_memory: _,
             synic,
+            vp_assist_page_reg,
             vp_assist_page,
         } = self;
 
         synic.reset();
-        *vp_assist_page = Default::default();
+        *vp_assist_page_reg = Default::default();
+        *vp_assist_page = VpAssistPage::default();
     }
 
     /// Emulates an MSR write for the guest OS ID MSR.
@@ -191,24 +234,29 @@ impl ProcessorVtlHv {
         {
             return Err(MsrError::InvalidAccess);
         }
-        let vp_assist_page = HvRegisterVpAssistPage::from(v);
+        let new_vp_assist_page_reg = HvRegisterVpAssistPage::from(v);
 
-        // Clear the target page if it is being enabled or moved.
-        if vp_assist_page.enabled()
-            && (!self.vp_assist_page.enabled()
-                || vp_assist_page.gpa_page_number() != self.vp_assist_page.gpa_page_number())
+        let new_page = if new_vp_assist_page_reg.enabled()
+            && (!self.vp_assist_page_reg.enabled()
+                || new_vp_assist_page_reg.gpa_page_number()
+                    != self.vp_assist_page_reg.gpa_page_number())
         {
-            let gpa = vp_assist_page.gpa_page_number() * HV_PAGE_SIZE;
-            if let Err(err) = self.guest_memory.fill_at(gpa, 0, HV_PAGE_SIZE_USIZE) {
-                tracelimit::warn_ratelimited!(
-                    gpa,
-                    error = &err as &dyn std::error::Error,
-                    "failed to clear vp assist page"
-                );
-                return Err(MsrError::InvalidAccess);
-            }
-        }
-        self.vp_assist_page = vp_assist_page;
+            VpAssistPage::Mapped(
+                LockedPage::new(&self.guest_memory, new_vp_assist_page_reg.gpa_page_number())
+                    .map_err(|_| MsrError::InvalidAccess)?,
+            )
+        } else if !new_vp_assist_page_reg.enabled() {
+            VpAssistPage::default()
+        } else {
+            // Not changing the page, no need to copy.
+            self.vp_assist_page_reg = new_vp_assist_page_reg;
+            return Ok(());
+        };
+
+        // Copy the contents of the old page to the new page.
+        new_page.atomic_write_obj(&self.vp_assist_page.atomic_read_obj::<[u8; 4096]>());
+        self.vp_assist_page_reg = new_vp_assist_page_reg;
+
         Ok(())
     }
 
@@ -225,7 +273,7 @@ impl ProcessorVtlHv {
             }
             hvdef::HV_X64_MSR_HYPERCALL => {
                 let mut mutable = self.vtl_state.lock();
-                if mutable.hypercall.locked() {
+                if mutable.hypercall_reg.locked() {
                     return Err(MsrError::InvalidAccess);
                 }
                 let hc = hvdef::hypercall::MsrHypercallContents::from(v);
@@ -233,23 +281,18 @@ impl ProcessorVtlHv {
                     return Err(MsrError::InvalidAccess);
                 }
                 if hc.enable()
-                    && (!mutable.hypercall.enable() || hc.gpn() != mutable.hypercall.gpn())
+                    && (!mutable.hypercall_reg.enable() || hc.gpn() != mutable.hypercall_reg.gpn())
                 {
-                    let gpa = hc.gpn() * HV_PAGE_SIZE;
-                    if let Err(err) = self.write_hypercall_page(gpa) {
-                        tracelimit::warn_ratelimited!(
-                            gpa,
-                            error = &err as &dyn std::error::Error,
-                            "failed to write hypercall page"
-                        );
-                        return Err(MsrError::InvalidAccess);
-                    }
-
+                    let new_page = LockedPage::new(&self.guest_memory, hc.gpn())
+                        .map_err(|_| MsrError::InvalidAccess)?;
+                    self.write_hypercall_page(&new_page);
                     overlay_access.change_overlay(hc.gpn());
+                    mutable.hypercall_page = Some(new_page);
                 } else if !hc.enable() {
                     overlay_access.disable_overlay();
+                    mutable.hypercall_page = None;
                 }
-                mutable.hypercall = hc;
+                mutable.hypercall_reg = hc;
             }
             hvdef::HV_X64_MSR_VP_INDEX => return Err(MsrError::InvalidAccess),
             hvdef::HV_X64_MSR_TIME_REF_COUNT => return Err(MsrError::InvalidAccess),
@@ -259,50 +302,33 @@ impl ProcessorVtlHv {
                 if v.reserved_p() != 0 {
                     return Err(MsrError::InvalidAccess);
                 }
-                if v.enable() && mutable.reference_tsc.gpn() != v.gpn() {
-                    let gm = &self.guest_memory;
-                    let gpa = v.gpn() * HV_PAGE_SIZE;
-                    if let Err(err) = gm.write_plain(gpa, &HV_REFERENCE_TSC_SEQUENCE_INVALID) {
-                        tracelimit::warn_ratelimited!(
-                            gpa,
-                            error = &err as &dyn std::error::Error,
-                            "failed to write reference tsc page"
-                        );
-                        return Err(MsrError::InvalidAccess);
-                    }
+                if v.enable() && mutable.reference_tsc_reg.gpn() != v.gpn() {
+                    let new_page = LockedPage::new(&self.guest_memory, v.gpn())
+                        .map_err(|_| MsrError::InvalidAccess)?;
+                    new_page[..4].atomic_write_obj(&HV_REFERENCE_TSC_SEQUENCE_INVALID);
+
                     if self.partition_state.is_ref_time_backed_by_tsc {
                         // TDX TODO: offset might need to be included
                         let tsc_scale = (((10_000_000_u128) << 64)
                             / self.partition_state.tsc_frequency as u128)
                             as u64;
-                        let reference_page = hvdef::HvReferenceTscPage {
-                            tsc_scale,
-                            ..FromZeros::new_zeroed()
-                        };
-                        if let Err(err) = gm.write_plain(gpa, &reference_page) {
-                            tracelimit::warn_ratelimited!(
-                                gpa,
-                                error = &err as &dyn std::error::Error,
-                                "failed to write reference tsc page"
-                            );
-                            return Err(MsrError::InvalidAccess);
-                        }
                         mutable.tsc_sequence = mutable.tsc_sequence.wrapping_add(1);
                         if mutable.tsc_sequence == HV_REFERENCE_TSC_SEQUENCE_INVALID {
                             mutable.tsc_sequence = mutable.tsc_sequence.wrapping_add(1);
                         }
-                        if let Err(err) = gm.write_plain(gpa, &mutable.tsc_sequence) {
-                            tracelimit::warn_ratelimited!(
-                                gpa,
-                                error = &err as &dyn std::error::Error,
-                                "failed to write reference tsc page"
-                            );
-                            return Err(MsrError::InvalidAccess);
-                        }
+                        let reference_page = hvdef::HvReferenceTscPage {
+                            tsc_sequence: mutable.tsc_sequence,
+                            tsc_scale,
+                            ..FromZeros::new_zeroed()
+                        };
+                        new_page.atomic_write_obj(&reference_page);
+                        mutable.reference_tsc_page = Some(new_page);
                     }
+                } else if !v.enable() {
+                    mutable.reference_tsc_page = None;
                 }
 
-                mutable.reference_tsc = v;
+                mutable.reference_tsc_reg = v;
             }
             hvdef::HV_X64_MSR_TSC_FREQUENCY => return Err(MsrError::InvalidAccess),
             hvdef::HV_X64_MSR_VP_ASSIST_PAGE => self.msr_write_vp_assist_page(v)?,
@@ -314,7 +340,11 @@ impl ProcessorVtlHv {
         Ok(())
     }
 
-    fn write_hypercall_page(&self, gpa: u64) -> Result<(), GuestMemoryError> {
+    fn write_hypercall_page(&self, page: &LockedPage) {
+        // Fill the page with int3 to catch invalid jumps into the page.
+        let int3 = 0xcc;
+        page.atomic_fill(int3);
+
         let page_contents: &[u8] = if self.partition_state.vendor.is_amd_compatible() {
             &AMD_HYPERCALL_PAGE.page
         } else if self.partition_state.vendor.is_intel_compatible() {
@@ -323,17 +353,7 @@ impl ProcessorVtlHv {
             unreachable!()
         };
 
-        self.guest_memory.write_at(gpa, page_contents)?;
-
-        // Fill the rest with int3 to catch invalid jumps into the page.
-        let int3 = 0xcc;
-        self.guest_memory.fill_at(
-            gpa + page_contents.len() as u64,
-            int3,
-            HV_PAGE_SIZE_USIZE - page_contents.len(),
-        )?;
-
-        Ok(())
+        page[..page_contents.len()].atomic_write(page_contents);
     }
 
     /// Gets the VSM code page offset register that corresponds to the hypercall
@@ -358,12 +378,12 @@ impl ProcessorVtlHv {
     pub fn msr_read(&self, msr: u32) -> Result<u64, MsrError> {
         let v = match msr {
             hvdef::HV_X64_MSR_GUEST_OS_ID => self.vtl_state.lock().guest_os_id.into(),
-            hvdef::HV_X64_MSR_HYPERCALL => self.vtl_state.lock().hypercall.into(),
+            hvdef::HV_X64_MSR_HYPERCALL => self.vtl_state.lock().hypercall_reg.into(),
             hvdef::HV_X64_MSR_VP_INDEX => self.vp_index.index() as u64, // VP index
             hvdef::HV_X64_MSR_TIME_REF_COUNT => self.partition_state.ref_time.now_100ns(),
-            hvdef::HV_X64_MSR_REFERENCE_TSC => self.vtl_state.lock().reference_tsc.into(),
+            hvdef::HV_X64_MSR_REFERENCE_TSC => self.vtl_state.lock().reference_tsc_reg.into(),
             hvdef::HV_X64_MSR_TSC_FREQUENCY => self.partition_state.tsc_frequency,
-            hvdef::HV_X64_MSR_VP_ASSIST_PAGE => self.vp_assist_page.into(),
+            hvdef::HV_X64_MSR_VP_ASSIST_PAGE => self.vp_assist_page_reg.into(),
             msr @ hvdef::HV_X64_MSR_SCONTROL..=hvdef::HV_X64_MSR_STIMER3_COUNT => {
                 self.synic.read_msr(msr)?
             }
@@ -376,7 +396,7 @@ impl ProcessorVtlHv {
 
     /// Returns the current value of the VP assist page register.
     pub fn vp_assist_page(&self) -> u64 {
-        self.vp_assist_page.into()
+        self.vp_assist_page_reg.into()
     }
 
     /// Sets the lazy EOI bit in the VP assist page.
@@ -385,25 +405,14 @@ impl ProcessorVtlHv {
     /// next VP exit but before manipulating the APIC.
     #[must_use]
     pub fn set_lazy_eoi(&mut self) -> bool {
-        if !self.vp_assist_page.enabled() {
+        if !self.vp_assist_page_reg.enabled() {
             return false;
         }
 
-        let gpa = self.vp_assist_page.gpa_page_number() * HV_PAGE_SIZE
-            + offset_of!(hvdef::HvVpAssistPage, apic_assist) as u64;
-
+        let offset = offset_of!(hvdef::HvVpAssistPage, apic_assist);
         let v = 1u32;
-
-        match self.guest_memory.write_plain(gpa, &v) {
-            Ok(()) => true,
-            Err(err) => {
-                tracelimit::warn_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to write lazy eoi to assist page"
-                );
-                false
-            }
-        }
+        self.vp_assist_page[offset..offset + 4].atomic_write_obj(&v);
+        true
     }
 
     /// Clears the lazy EOI bit in the VP assist page.
@@ -414,19 +423,8 @@ impl ProcessorVtlHv {
     /// EOI to the APIC.
     #[must_use]
     pub fn clear_lazy_eoi(&mut self) -> bool {
-        let gpa = self.vp_assist_page.gpa_page_number() * HV_PAGE_SIZE
-            + offset_of!(hvdef::HvVpAssistPage, apic_assist) as u64;
-
-        let v: u32 = match self.guest_memory.read_plain(gpa) {
-            Ok(v) => v,
-            Err(err) => {
-                tracelimit::warn_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to read lazy eoi from assist page"
-                );
-                return false;
-            }
-        };
+        let offset = offset_of!(hvdef::HvVpAssistPage, apic_assist);
+        let v: u32 = self.vp_assist_page[offset..offset + 4].atomic_read_obj();
 
         if v & 1 == 0 {
             // The guest cleared the bit. The caller will perform the EOI to the
@@ -436,50 +434,37 @@ impl ProcessorVtlHv {
             // Clear the bit in case the EOI state changes before the guest runs
             // again.
             let v = v & !1;
-            if let Err(err) = self.guest_memory.write_plain(gpa, &v) {
-                tracelimit::warn_ratelimited!(
-                    error = &err as &dyn std::error::Error,
-                    "failed to clear lazy eoi from assist page"
-                );
-            }
+            self.vp_assist_page[offset..offset + 4].atomic_write_obj(&v);
             false
         }
     }
 
     /// Get the register values to restore on vtl return
-    pub fn return_registers(&self) -> Result<[u64; 2], GuestMemoryError> {
-        let gpa = (self.vp_assist_page.gpa_page_number() * HV_PAGE_SIZE)
-            + offset_of!(hvdef::HvVpAssistPage, vtl_control) as u64
-            + offset_of!(HvVpVtlControl, registers) as u64;
-
-        self.guest_memory.read_plain(gpa)
+    pub fn return_registers(&self) -> [u64; 2] {
+        let offset =
+            offset_of!(hvdef::HvVpAssistPage, vtl_control) + offset_of!(HvVpVtlControl, registers);
+        self.vp_assist_page[offset..offset + 16].atomic_read_obj()
     }
 
     /// Set the reason for the vtl return into the vp assist page
-    pub fn set_return_reason(&self, reason: HvVtlEntryReason) -> Result<(), GuestMemoryError> {
-        let gpa = (self.vp_assist_page.gpa_page_number() * HV_PAGE_SIZE)
-            + offset_of!(hvdef::HvVpAssistPage, vtl_control) as u64
-            + offset_of!(HvVpVtlControl, entry_reason) as u64;
-
-        self.guest_memory.write_plain(gpa, &(reason.0))
+    pub fn set_return_reason(&mut self, reason: HvVtlEntryReason) {
+        let offset = offset_of!(hvdef::HvVpAssistPage, vtl_control)
+            + offset_of!(HvVpVtlControl, entry_reason);
+        self.vp_assist_page[offset..offset + 4].atomic_write_obj(&reason);
     }
 
     /// Gets whether VINA is currently asserted.
-    pub fn vina_asserted(&self) -> Result<bool, GuestMemoryError> {
-        let gpa = (self.vp_assist_page.gpa_page_number() * HV_PAGE_SIZE)
-            + offset_of!(hvdef::HvVpAssistPage, vtl_control) as u64
-            + offset_of!(HvVpVtlControl, vina_status) as u64;
-
-        self.guest_memory.read_plain(gpa).map(|v: u8| v != 0)
+    pub fn vina_asserted(&self) -> bool {
+        let offset = offset_of!(hvdef::HvVpAssistPage, vtl_control)
+            + offset_of!(HvVpVtlControl, vina_status);
+        self.vp_assist_page[offset].load(Ordering::Relaxed) != 0
     }
 
     /// Sets whether VINA is currently asserted.
-    pub fn set_vina_asserted(&self, value: bool) -> Result<(), GuestMemoryError> {
-        let gpa = (self.vp_assist_page.gpa_page_number() * HV_PAGE_SIZE)
-            + offset_of!(hvdef::HvVpAssistPage, vtl_control) as u64
-            + offset_of!(HvVpVtlControl, vina_status) as u64;
-
-        self.guest_memory.write_plain(gpa, &(value as u8))
+    pub fn set_vina_asserted(&mut self, value: bool) {
+        let offset = offset_of!(hvdef::HvVpAssistPage, vtl_control)
+            + offset_of!(HvVpVtlControl, vina_status);
+        self.vp_assist_page[offset].store(value as u8, Ordering::Relaxed);
     }
 }
 

@@ -639,7 +639,13 @@ pub trait Synic: Send + Sync {
     fn post_message(&self, vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]);
 
     /// Creates a [`GuestEventPort`] for signaling VMBus channels in the guest.
-    fn new_guest_event_port(&self) -> Box<dyn GuestEventPort>;
+    fn new_guest_event_port(
+        &self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Box<dyn GuestEventPort>;
 
     /// Returns whether callers should pass an OS event when creating event
     /// ports, as opposed to passing a function to call.
@@ -663,8 +669,8 @@ pub trait SynicMonitor: Synic {
     /// # Panics
     ///
     /// Panics if monitor_id is already in use.
-    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send>;
+    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Sync + Send>;
 
     /// Sets the GPA of the monitor page currently in use.
-    fn set_monitor_page(&self, gpa: Option<u64>) -> anyhow::Result<()>;
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()>;
 }

@@ -83,6 +83,10 @@ impl PetriVmConfig for PetriVmConfigHyperV {
         let (vm, client) = Self::run(*self).await?;
         Ok((Box::new(vm), client))
     }
+
+    fn with_windows_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_windows_secure_boot_template(*self))
+    }
 }
 
 /// A running VM that tests can interact with.
@@ -345,10 +349,9 @@ impl PetriVmConfigHyperV {
             let openhcl_log_file = self.log_source.log_file("openhcl")?;
             log_tasks.push(self.driver.spawn("openhcl-log", {
                 let driver = self.driver.clone();
-                let name = self.name.clone();
+                let vmid = *vm.vmid();
                 async move {
-                    let diag_client =
-                        diag_client::DiagClient::from_hyperv_name(driver.clone(), &name)?;
+                    let diag_client = diag_client::DiagClient::from_hyperv_id(driver.clone(), vmid);
                     loop {
                         diag_client.wait_for_server().await?;
                         crate::kmsg_log_task(
@@ -360,7 +363,7 @@ impl PetriVmConfigHyperV {
                 }
             }));
             Some(OpenHclDiagHandler::new(
-                diag_client::DiagClient::from_hyperv_name(self.driver.clone(), &self.name)?,
+                diag_client::DiagClient::from_hyperv_id(self.driver.clone(), *vm.vmid()),
             ))
         } else {
             None
@@ -374,6 +377,15 @@ impl PetriVmConfigHyperV {
             openhcl_diag_handler,
             log_tasks,
         })
+    }
+
+    /// Inject Windows secure boot templates into the VM's UEFI.
+    pub fn with_windows_secure_boot_template(mut self) -> Self {
+        if !matches!(self.generation, powershell::HyperVGeneration::Two) {
+            panic!("Secure boot templates are only supported for UEFI firmware.");
+        }
+        self.secure_boot_template = Some(powershell::HyperVSecureBootTemplate::MicrosoftWindows);
+        self
     }
 }
 

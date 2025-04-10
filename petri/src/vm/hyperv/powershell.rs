@@ -590,12 +590,26 @@ impl PowerShellBuilder {
     /// Run the PowerShell script and return the output
     pub fn output(mut self, log_stdout: bool) -> Result<String, CommandError> {
         self.0.stderr(Stdio::piped()).stdin(Stdio::null());
+
+        let ps_cmd = self.cmd();
+        tracing::debug!(ps_cmd, "executing powershell command");
+
+        let start = Timestamp::now();
         let output = self.0.output()?;
+        let time_elapsed = Timestamp::now() - start;
 
         let ps_stdout = (log_stdout || !output.status.success())
             .then(|| String::from_utf8_lossy(&output.stdout).to_string());
         let ps_stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        tracing::debug!(ps_cmd = self.cmd(), ps_stdout, ps_stderr);
+        tracing::debug!(
+            ps_cmd,
+            ps_stdout,
+            ps_stderr,
+            "powershell command exited in {:.3}s with status {}",
+            time_elapsed.total(jiff::Unit::Second).unwrap_or(-1.0),
+            output.status
+        );
+
         if !output.status.success() {
             return Err(CommandError::Command(output.status, ps_stderr));
         }

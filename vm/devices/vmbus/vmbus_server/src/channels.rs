@@ -22,6 +22,7 @@ use std::ops::Index;
 use std::ops::IndexMut;
 use std::task::Poll;
 use std::task::ready;
+use std::time::Duration;
 use thiserror::Error;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::GpadlRequest;
@@ -32,7 +33,6 @@ use vmbus_channel::bus::RestoredGpadl;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
 use vmbus_core::MaxVersionInfo;
-use vmbus_core::MonitorPageGpas;
 use vmbus_core::OutgoingMessage;
 use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
@@ -45,6 +45,8 @@ use vmbus_core::protocol::OfferFlags;
 use vmbus_core::protocol::UserDefinedData;
 use vmbus_ring::gparange;
 use vmcore::monitor::MonitorId;
+use vmcore::synic::MonitorInfo;
+use vmcore::synic::MonitorPageGpas;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -543,6 +545,46 @@ impl Display for ChannelState {
     }
 }
 
+/// Indicates how a MNF (monitored interrupts) should be used for a channel.
+#[derive(Debug, Clone, Default, mesh::MeshPayload)]
+pub enum MnfUsage {
+    /// The channel does not use MNF.
+    #[default]
+    Disabled,
+    /// The channel uses MNF, handled by this server, with the specified interrupt latency.
+    Enabled { latency: Duration },
+    /// The channel uses MNF, handled by the relay host, with the monitor ID specified by the relay
+    /// host.
+    Relayed { monitor_id: u8 },
+}
+
+impl MnfUsage {
+    pub fn is_enabled(&self) -> bool {
+        matches!(self, Self::Enabled { .. })
+    }
+
+    pub fn is_relayed(&self) -> bool {
+        matches!(self, Self::Relayed { .. })
+    }
+
+    pub fn enabled_and_then<T>(&self, f: impl FnOnce(Duration) -> Option<T>) -> Option<T> {
+        if let Self::Enabled { latency } = self {
+            f(*latency)
+        } else {
+            None
+        }
+    }
+}
+
+impl From<Option<Duration>> for MnfUsage {
+    fn from(value: Option<Duration>) -> Self {
+        match value {
+            None => Self::Disabled,
+            Some(latency) => Self::Enabled { latency },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, mesh::MeshPayload)]
 pub struct OfferParamsInternal {
     /// An informational string describing the channel type.
@@ -552,11 +594,10 @@ pub struct OfferParamsInternal {
     pub mmio_megabytes: u16,
     pub mmio_megabytes_optional: u16,
     pub subchannel_index: u16,
-    pub use_mnf: bool,
+    pub use_mnf: MnfUsage,
     pub offer_order: Option<u32>,
     pub flags: OfferFlags,
     pub user_defined: UserDefinedData,
-    pub monitor_id: Option<u8>,
 }
 
 impl OfferParamsInternal {
@@ -625,11 +666,10 @@ impl From<OfferParams> for OfferParamsInternal {
             mmio_megabytes: value.mmio_megabytes,
             mmio_megabytes_optional: value.mmio_megabytes_optional,
             subchannel_index: value.subchannel_index,
-            use_mnf: value.use_mnf,
+            use_mnf: value.mnf_interrupt_latency.into(),
             offer_order: value.offer_order,
             user_defined,
             flags,
-            monitor_id: None,
         }
     }
 }
@@ -739,21 +779,28 @@ impl Channel {
             .binary("offer_flags", self.offer.flags.into_bits());
     }
 
-    /// Returns the monitor ID only if it's being handled by this server.
+    /// Returns the monitor ID and latency only if it's being handled by this server.
     ///
-    /// The monitor ID can be set while use_mnf is false, which is the case if
+    /// The monitor ID can be set while use_mnf is Relayed, which is the case if
     /// the relay host is handling MNF.
     ///
     /// Also returns `None` for reserved channels, since monitored notifications
     /// are only usable for standard channels. Otherwise, we fail later when we
     /// try to change the MNF page as part of vmbus protocol renegotiation,
     /// since the page still appears to be in use by a device.
-    fn handled_monitor_id(&self) -> Option<MonitorId> {
-        if self.offer.use_mnf && !self.state.is_reserved() {
-            self.info.and_then(|info| info.monitor_id)
-        } else {
-            None
-        }
+    fn handled_monitor_info(&self) -> Option<MonitorInfo> {
+        self.offer.use_mnf.enabled_and_then(|latency| {
+            if self.state.is_reserved() {
+                None
+            } else {
+                self.info.and_then(|info| {
+                    info.monitor_id.map(|monitor_id| MonitorInfo {
+                        monitor_id,
+                        latency,
+                    })
+                })
+            }
+        })
     }
 
     /// Prepares a channel to be sent to the guest by allocating a channel ID if
@@ -777,17 +824,19 @@ impl Channel {
 
         // Allocate a monitor ID if the channel uses MNF.
         // N.B. If the synic doesn't support MNF or MNF is disabled by the server, use_mnf should
-        //      always be set to false. For the relay, that means the host is handling MNF so we
-        //      should use the monitor ID it provided if there is one.
-        let monitor_id = if self.offer.use_mnf {
-            let monitor_id = assigned_monitors.assign_monitor();
-            if monitor_id.is_none() {
-                tracelimit::warn_ratelimited!("Out of monitor IDs.");
-            }
+        //      always be set to Disabled, except if the relay host is handling MnF in which case
+        //      we should use the monitor ID it provided.
+        let monitor_id = match self.offer.use_mnf {
+            MnfUsage::Enabled { .. } => {
+                let monitor_id = assigned_monitors.assign_monitor();
+                if monitor_id.is_none() {
+                    tracelimit::warn_ratelimited!("Out of monitor IDs.");
+                }
 
-            monitor_id
-        } else {
-            self.offer.monitor_id.map(MonitorId)
+                monitor_id
+            }
+            MnfUsage::Relayed { monitor_id } => Some(MonitorId(monitor_id)),
+            MnfUsage::Disabled => None,
         };
 
         self.info = Some(OfferedInfo {
@@ -807,9 +856,9 @@ impl Channel {
         if let Some(info) = self.info.take() {
             assigned_channels.free(info.channel_id, offer_id);
 
-            // Only unassign the monitor ID if it was not explicitly provided by the offer.
+            // Only unassign the monitor ID if it was not a relayed ID provided by the offer.
             if let Some(monitor_id) = info.monitor_id {
-                if self.offer.use_mnf {
+                if self.offer.use_mnf.is_enabled() {
                     assigned_monitors.release_monitor(monitor_id);
                 }
             }
@@ -1138,16 +1187,17 @@ pub struct OpenParams {
     pub open_data: OpenData,
     pub connection_id: u32,
     pub event_flag: u16,
-    pub monitor_id: Option<MonitorId>,
+    pub monitor_info: Option<MonitorInfo>,
     pub flags: protocol::OpenChannelFlags,
     pub reserved_target: Option<ConnectionTarget>,
+    pub channel_id: ChannelId,
 }
 
 impl OpenParams {
     fn from_request(
         info: &OfferedInfo,
         request: &OpenRequest,
-        monitor_id: Option<MonitorId>,
+        monitor_info: Option<MonitorInfo>,
         reserved_target: Option<ConnectionTarget>,
     ) -> Self {
         // Determine whether to use the alternate IDs.
@@ -1169,9 +1219,10 @@ impl OpenParams {
             },
             connection_id,
             event_flag,
-            monitor_id,
+            monitor_info,
             flags: request.flags.with_unused(0),
             reserved_target,
+            channel_id: info.channel_id,
         }
     }
 }
@@ -1376,7 +1427,7 @@ impl Server {
         Ok(OpenParams::from_request(
             &info,
             &request,
-            channel.handled_monitor_id(),
+            channel.handled_monitor_info(),
             reserved_state.map(|state| state.target),
         ))
     }
@@ -1435,9 +1486,13 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
             .info
             .ok_or_else(|| RestoreError::MissingChannel(channel.offer.key()))?;
 
-        if let Some(monitor_id) = channel.handled_monitor_id() {
-            if !self.inner.assigned_monitors.claim_monitor(monitor_id) {
-                return Err(RestoreError::DuplicateMonitorId(monitor_id.0));
+        if let Some(monitor_info) = channel.handled_monitor_info() {
+            if !self
+                .inner
+                .assigned_monitors
+                .claim_monitor(monitor_info.monitor_id)
+            {
+                return Err(RestoreError::DuplicateMonitorId(monitor_info.monitor_id.0));
             }
         }
 
@@ -1494,7 +1549,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                             OpenParams::from_request(
                                 &info,
                                 &request,
-                                channel.handled_monitor_id(),
+                                channel.handled_monitor_info(),
                                 None,
                             ),
                             self.inner.state.get_version().expect("must be connected"),
@@ -1515,7 +1570,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                             OpenParams::from_request(
                                 &info,
                                 &request,
-                                channel.handled_monitor_id(),
+                                channel.handled_monitor_info(),
                                 reserved_state.map(|state| state.target),
                             ),
                             self.inner.state.get_version().expect("must be connected"),
@@ -1705,7 +1760,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
 
                 // The relay can specify a host-determined monitor ID, which needs to match what's
                 // in the saved state.
-                if let Some(monitor_id) = offer.monitor_id {
+                if let MnfUsage::Relayed { monitor_id } = offer.use_mnf {
                     if info.monitor_id != Some(MonitorId(monitor_id)) {
                         return Err(OfferError::MismatchedMonitorId(
                             info.monitor_id,
@@ -2733,7 +2788,7 @@ impl<'a, N: 'a + Notifier> ServerWithNotifier<'a, N> {
                 OpenParams::from_request(
                     info,
                     input,
-                    channel.handled_monitor_id(),
+                    channel.handled_monitor_info(),
                     reserved_state.map(|state| state.target),
                 ),
                 self.inner.state.get_version().expect("must be connected"),
@@ -4390,7 +4445,7 @@ mod tests {
         assert_eq!(op.open_data.connection_id, connection_id);
         assert_eq!(op.connection_id, connection_id);
         assert_eq!(op.event_flag, event_flag);
-        assert_eq!(op.monitor_id, None);
+        assert_eq!(op.monitor_info, None);
         assert_eq!(op.flags, expected_flags);
 
         server
@@ -4583,15 +4638,29 @@ mod tests {
         }
 
         fn offer(&mut self, id: u32) -> OfferId {
-            self.offer_inner(id, id, false, None, None, OfferFlags::new())
+            self.offer_inner(id, id, MnfUsage::Disabled, None, OfferFlags::new())
         }
 
         fn offer_with_mnf(&mut self, id: u32) -> OfferId {
-            self.offer_inner(id, id, true, None, None, OfferFlags::new())
+            self.offer_inner(
+                id,
+                id,
+                MnfUsage::Enabled {
+                    latency: Duration::from_micros(100),
+                },
+                None,
+                OfferFlags::new(),
+            )
         }
 
         fn offer_with_preset_mnf(&mut self, id: u32, monitor_id: u8) -> OfferId {
-            self.offer_inner(id, id, false, None, Some(monitor_id), OfferFlags::new())
+            self.offer_inner(
+                id,
+                id,
+                MnfUsage::Relayed { monitor_id },
+                None,
+                OfferFlags::new(),
+            )
         }
 
         fn offer_with_order(
@@ -4603,24 +4672,22 @@ mod tests {
             self.offer_inner(
                 interface_id,
                 instance_id,
-                false,
+                MnfUsage::Disabled,
                 order,
-                None,
                 OfferFlags::new(),
             )
         }
 
         fn offer_with_flags(&mut self, id: u32, flags: OfferFlags) -> OfferId {
-            self.offer_inner(id, id, false, None, None, flags)
+            self.offer_inner(id, id, MnfUsage::Disabled, None, flags)
         }
 
         fn offer_inner(
             &mut self,
             interface_id: u32,
             instance_id: u32,
-            use_mnf: bool,
+            use_mnf: MnfUsage,
             offer_order: Option<u32>,
-            monitor_id: Option<u8>,
             flags: OfferFlags,
         ) -> OfferId {
             self.c()
@@ -4635,7 +4702,6 @@ mod tests {
                     },
                     use_mnf,
                     offer_order,
-                    monitor_id,
                     flags,
                     ..Default::default()
                 })

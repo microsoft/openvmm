@@ -33,6 +33,8 @@ pub trait PetriVmConfig: Send {
     async fn run_with_lazy_pipette(self: Box<Self>) -> anyhow::Result<Box<dyn PetriVm>>;
     /// Run the VM, launching pipette and returning a client to it.
     async fn run(self: Box<Self>) -> anyhow::Result<(Box<dyn PetriVm>, PipetteClient)>;
+    /// Inject Windows secure boot templates into the VM's UEFI.
+    fn with_windows_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig>;
 }
 
 /// A running VM that tests can interact with.

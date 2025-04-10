@@ -20,6 +20,7 @@ use channel_bitmap::ChannelBitmap;
 use channels::ConnectionTarget;
 pub use channels::InitiateContactRequest;
 use channels::MessageTarget;
+pub use channels::MnfUsage;
 use channels::ModifyConnectionRequest;
 pub use channels::ModifyConnectionResponse;
 use channels::Notifier;
@@ -58,6 +59,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Poll;
 use std::task::ready;
+use std::time::Duration;
 use unicycle::FuturesUnordered;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
@@ -77,7 +79,6 @@ use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
 use vmbus_core::MaxVersionInfo;
-use vmbus_core::MonitorPageGpas;
 use vmbus_core::OutgoingMessage;
 use vmbus_core::TaggedStream;
 use vmbus_core::VersionInfo;
@@ -93,12 +94,14 @@ use vmcore::synic::EventPort;
 use vmcore::synic::GuestEventPort;
 use vmcore::synic::GuestMessagePort;
 use vmcore::synic::MessagePort;
+use vmcore::synic::MonitorPageGpas;
 use vmcore::synic::SynicPortAccess;
 
 const SINT: u8 = 2;
 pub const REDIRECT_SINT: u8 = 7;
 pub const REDIRECT_VTL: Vtl = Vtl::Vtl2;
 const SHARED_EVENT_CONNECTION_ID: u32 = 2;
+const EVENT_PORT_ID: u32 = 2;
 const VMBUS_MESSAGE_TYPE: u32 = 1;
 
 const MAX_CONCURRENT_HVSOCK_REQUESTS: usize = 16;
@@ -598,6 +601,10 @@ impl VmbusServer {
             | vp_index << 8
             | (sint_index as u32) << 4
     }
+
+    fn get_child_event_port_id(channel_id: protocol::ChannelId, sint_index: u8, vtl: Vtl) -> u32 {
+        EVENT_PORT_ID | (vtl as u32) << 22 | channel_id.0 << 8 | (sint_index as u32) << 4
+    }
 }
 
 #[derive(mesh::MeshPayload)]
@@ -666,7 +673,6 @@ struct Channel {
     seq: u64,
     state: ChannelState,
     gpadls: Arc<GpadlMap>,
-    guest_event_port: Box<dyn GuestEventPort>,
     flags: protocol::OfferFlags,
     // A channel can be reserved no matter what state it is in. This allows the message port for a
     // reserved channel to remain available even if the channel is closed, so the guest can read the
@@ -684,16 +690,17 @@ enum ChannelState {
     Closed,
     Opening {
         open_params: OpenParams,
-        monitor: Option<Box<dyn Send>>,
+        guest_event_port: Box<dyn GuestEventPort>,
         host_to_guest_interrupt: Interrupt,
     },
     Open {
         open_params: OpenParams,
         _event_port: Box<dyn Send>,
-        monitor: Option<Box<dyn Send>>,
+        guest_event_port: Box<dyn GuestEventPort>,
         host_to_guest_interrupt: Interrupt,
         guest_to_host_event: Arc<ChannelEvent>,
     },
+    Closing,
     FailedOpen,
 }
 
@@ -702,11 +709,20 @@ impl ServerTask {
         let key = info.params.key();
         let flags = info.params.flags;
 
-        // Disable mnf if the synic doesn't support it or it's not enabled in this server.
-        if info.params.use_mnf
-            && (!self.inner.enable_mnf || self.inner.synic.monitor_support().is_none())
-        {
-            info.params.use_mnf = false;
+        if self.inner.enable_mnf && self.inner.synic.monitor_support().is_some() {
+            // If this server is handling MnF, ignore any relayed monitor IDs but still enable MnF
+            // for those channels.
+            // N.B. Since this can only happen in OpenHCL, which emulates MnF, the latency is
+            //      ignored.
+            if info.params.use_mnf.is_relayed() {
+                info.params.use_mnf = MnfUsage::Enabled {
+                    latency: Duration::ZERO,
+                }
+            }
+        } else if info.params.use_mnf.is_enabled() {
+            // If the server is not handling MnF, disable it for the channel. This does not affect
+            // channels with a relayed monitor ID.
+            info.params.use_mnf = MnfUsage::Disabled;
         }
 
         let offer_id = self
@@ -714,8 +730,6 @@ impl ServerTask {
             .with_notifier(&mut self.inner)
             .offer_channel(info.params)
             .context("channel offer failed")?;
-
-        let guest_event_port = self.inner.synic.new_guest_event_port()?;
 
         tracing::debug!(?offer_id, %key, "offered channel");
 
@@ -728,7 +742,6 @@ impl ServerTask {
                 send: info.request_send,
                 state: ChannelState::Closed,
                 gpadls: GpadlMap::new(),
-                guest_event_port,
                 seq: id,
                 flags,
                 reserved_state: ReservedState {
@@ -824,7 +837,7 @@ impl ServerTask {
             .expect("channel still exists");
 
         match &mut channel.state {
-            ChannelState::Open { .. } => {
+            ChannelState::Closing => {
                 channel.state = ChannelState::Closed;
                 self.server
                     .with_notifier(&mut self.inner)
@@ -1306,7 +1319,7 @@ impl Notifier for ServerTaskInner {
                     }
                 }
 
-                channel.guest_event_port.clear();
+                channel.state = ChannelState::Closing;
                 handle(offer_id, channel, ChannelRequest::Close, (), |()| {
                     ChannelResponse::Close
                 })
@@ -1345,19 +1358,11 @@ impl Notifier for ServerTaskInner {
                 )
             }
             channels::Action::Modify { target_vp } => {
-                if let ChannelState::Open { open_params, .. } = channel.state {
-                    let (target_vtl, target_sint) = if open_params.flags.redirect_interrupt() {
-                        (self.redirect_vtl, self.redirect_sint)
-                    } else {
-                        (self.vtl, SINT)
-                    };
-
-                    if let Err(err) = channel.guest_event_port.set(
-                        target_vtl,
-                        target_vp,
-                        target_sint,
-                        open_params.event_flag,
-                    ) {
+                if let ChannelState::Open {
+                    guest_event_port, ..
+                } = &mut channel.state
+                {
+                    if let Err(err) = guest_event_port.set_target_vp(target_vp) {
                         tracelimit::error_ratelimited!(
                             error = &err as &dyn std::error::Error,
                             channel = %channel.key,
@@ -1520,7 +1525,7 @@ impl Notifier for ServerTaskInner {
 
     fn reset_complete(&mut self) {
         if let Some(monitor) = self.synic.monitor_support() {
-            if let Err(err) = monitor.set_monitor_page(None) {
+            if let Err(err) = monitor.set_monitor_page(self.vtl, None) {
                 tracing::warn!(?err, "resetting monitor page failed")
             }
         }
@@ -1559,21 +1564,21 @@ impl ServerTaskInner {
         } else {
             (self.vtl, SINT)
         };
-        channel
-            .guest_event_port
-            .set(target_vtl, target_vp, target_sint, event_flag)?;
+
+        let guest_event_port = self.synic.new_guest_event_port(
+            VmbusServer::get_child_event_port_id(open_params.channel_id, SINT, self.vtl),
+            target_vtl,
+            target_vp,
+            target_sint,
+            event_flag,
+            open_params.monitor_info,
+        )?;
 
         let interrupt = ChannelBitmap::create_interrupt(
             &self.channel_bitmap,
-            channel.guest_event_port.interrupt(),
+            guest_event_port.interrupt(),
             open_params.event_flag,
         );
-
-        let monitor = open_params.monitor_id.and_then(|monitor_id| {
-            self.synic
-                .monitor_support()
-                .map(|monitor| monitor.register_monitor(monitor_id, open_params.connection_id))
-        });
 
         // Delete any previously reserved state.
         channel.reserved_state.message_port = None;
@@ -1591,7 +1596,7 @@ impl ServerTaskInner {
 
         channel.state = ChannelState::Opening {
             open_params: *open_params,
-            monitor,
+            guest_event_port,
             host_to_guest_interrupt: interrupt.clone(),
         };
         Ok((channel, interrupt))
@@ -1613,7 +1618,7 @@ impl ServerTaskInner {
             match std::mem::replace(&mut channel.state, ChannelState::FailedOpen) {
                 ChannelState::Opening {
                     open_params,
-                    monitor,
+                    guest_event_port,
                     host_to_guest_interrupt,
                 } => {
                     let guest_to_host_event =
@@ -1632,6 +1637,7 @@ impl ServerTaskInner {
                             open_params.connection_id,
                             self.vtl,
                             guest_to_host_event.clone(),
+                            open_params.monitor_info,
                         )
                         .with_context(|| {
                             format!(
@@ -1643,7 +1649,7 @@ impl ServerTaskInner {
                     ChannelState::Open {
                         open_params,
                         _event_port: event_port,
-                        monitor,
+                        guest_event_port,
                         host_to_guest_interrupt,
                         guest_to_host_event,
                     }
@@ -1698,6 +1704,7 @@ impl ServerTaskInner {
             SHARED_EVENT_CONNECTION_ID,
             self.vtl,
             Arc::new(ChannelEvent(interrupt)),
+            None,
         )?);
 
         Ok(())
@@ -1721,12 +1728,12 @@ impl ServerTaskInner {
                 matches!(
                     &c.state,
                     ChannelState::Open {
-                        monitor: Some(_),
+                        open_params,
                         ..
                     } | ChannelState::Opening {
-                        monitor: Some(_),
+                        open_params,
                         ..
-                    }
+                    } if open_params.monitor_info.is_some()
                 )
             })
         {
@@ -1735,9 +1742,7 @@ impl ServerTaskInner {
 
         if self.enable_mnf {
             if let Some(monitor) = self.synic.monitor_support() {
-                if let Err(err) =
-                    monitor.set_monitor_page(monitor_page.map(|mp| mp.child_to_parent))
-                {
+                if let Err(err) = monitor.set_monitor_page(self.vtl, monitor_page) {
                     anyhow::bail!(
                         "setting monitor page failed, err = {err:?}, monitor_page = {monitor_page:?}"
                     );
@@ -1968,6 +1973,7 @@ mod tests {
     use vmbus_channel::bus::OfferParams;
     use vmbus_core::protocol::ChannelId;
     use vmbus_core::protocol::VmbusMessage;
+    use vmcore::synic::MonitorInfo;
     use vmcore::synic::SynicPortAccess;
     use zerocopy::FromBytes;
     use zerocopy::Immutable;
@@ -2029,15 +2035,7 @@ mod tests {
             Interrupt::null()
         }
 
-        fn clear(&mut self) {}
-
-        fn set(
-            &mut self,
-            _vtl: Vtl,
-            _vp: u32,
-            _sint: u8,
-            _flag: u16,
-        ) -> Result<(), vmcore::synic::HypervisorError> {
+        fn set_target_vp(&mut self, _vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
             Ok(())
         }
     }
@@ -2104,6 +2102,7 @@ mod tests {
             connection_id: u32,
             _minimum_vtl: Vtl,
             _port: Arc<dyn EventPort>,
+            _monitor_info: Option<MonitorInfo>,
         ) -> Result<Box<dyn Sync + Send>, vmcore::synic::Error> {
             Ok(Box::new(connection_id))
         }
@@ -2123,6 +2122,12 @@ mod tests {
 
         fn new_guest_event_port(
             &self,
+            _port_id: u32,
+            _vtl: Vtl,
+            _vp: u32,
+            _sint: u8,
+            _flag: u16,
+            _monitor_info: Option<MonitorInfo>,
         ) -> Result<Box<(dyn GuestEventPort)>, vmcore::synic::HypervisorError> {
             Ok(Box::new(MockGuestPort {}))
         }
@@ -2229,7 +2234,7 @@ mod tests {
                         pipe_packets: false,
                     },
                     subchannel_index: 0,
-                    use_mnf: false,
+                    mnf_interrupt_latency: None,
                     offer_order: None,
                     allow_confidential_external_memory,
                 },
@@ -2432,7 +2437,7 @@ mod tests {
                     mmio_megabytes: 0,
                     mmio_megabytes_optional: 0,
                     subchannel_index: 0,
-                    use_mnf: false,
+                    use_mnf: MnfUsage::Disabled,
                     offer_order: None,
                     flags: protocol::OfferFlags::new().with_enumerate_device_interface(true),
                     ..Default::default()

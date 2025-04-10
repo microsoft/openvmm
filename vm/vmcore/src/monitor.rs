@@ -116,7 +116,11 @@ impl MonitorPage {
     /// # Panics
     ///
     /// Panics if monitor_id is already in use.
-    pub fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send> {
+    pub fn register_monitor(
+        &self,
+        monitor_id: MonitorId,
+        connection_id: u32,
+    ) -> Box<dyn Sync + Send> {
         self.monitors.set(monitor_id, Some(connection_id));
 
         tracing::trace!(monitor_id = monitor_id.0, "registered monitor");
