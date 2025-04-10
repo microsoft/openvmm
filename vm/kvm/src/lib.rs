@@ -637,8 +637,8 @@ impl Partition {
 
     /// Gets the current kvmclock value.
     pub fn get_clock_ns(&self) -> Result<kvm_clock_data> {
-        // SAFETY: Calling IOCTL as documented, with no special requirements.
         let mut clock = kvm_clock_data::default();
+        // SAFETY: Calling IOCTL as documented, with no special requirements.
         unsafe {
             ioctl::kvm_get_clock(self.vm.as_raw_fd(), &mut clock).map_err(Error::GetRegs)?;
         }
