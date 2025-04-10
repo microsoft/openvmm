@@ -45,4 +45,12 @@ pub fn process_hv_cpuid_leaves(
             }
         });
     }
+
+    // And don't report that we're isolated.
+    let isolated_mask = hvdef::HvFeatures::new()
+        .with_privileges(hvdef::HvPartitionPrivilege::new().with_isolation(true));
+    leaves.push(
+        CpuidLeaf::new(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, [0, 0, 0, 0])
+            .masked(zerocopy::transmute!(isolated_mask)),
+    );
 }
