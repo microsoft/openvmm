@@ -8,7 +8,7 @@
 
 use thiserror::Error;
 
-// Errors for terminal operations.
+/// Errors for terminal operations.
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum Error {
