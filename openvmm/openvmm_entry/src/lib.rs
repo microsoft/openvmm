@@ -2694,7 +2694,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                         driver.clone(),
                         term.or_else(openvmm_terminal_app).as_deref(),
                         Some(ConsoleLaunchOptions {
-                            window_title: Some("HVSock [OpenVMM]".to_owned()),
+                            window_title: Some(format!("HVSock{} [OpenVMM]", port)),
                         }),
                     )?;
                     driver
