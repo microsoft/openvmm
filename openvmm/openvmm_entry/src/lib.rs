@@ -2693,6 +2693,9 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                     let mut console = console_relay::Console::new(
                         driver.clone(),
                         term.or_else(openvmm_terminal_app).as_deref(),
+                        Some(ConsoleLaunchOptions {
+                            window_title: Some("HVSock [OpenVMM]".to_owned()),
+                        }),
                     )?;
                     driver
                         .spawn("console-relay", async move { console.relay(socket).await })

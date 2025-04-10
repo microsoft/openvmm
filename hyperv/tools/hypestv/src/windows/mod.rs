@@ -179,14 +179,24 @@ pub(crate) enum InspectTarget {
 struct CommandLine {
     /// The initial VM name. Use select to change the active VM.
     vm: Option<String>,
+
     #[clap(long, hide(true))]
     relay_console_path: Option<PathBuf>,
+
+    #[clap(long, hide(true))]
+    relay_console_title: Option<String>,
 }
 
 pub async fn main(driver: DefaultDriver) -> anyhow::Result<()> {
     let command_line = CommandLine::parse();
     if let Some(relay_console_path) = command_line.relay_console_path {
-        return console_relay::relay_console(&relay_console_path, "Hypestv");
+        return console_relay::relay_console(
+            &relay_console_path,
+            command_line
+                .relay_console_title
+                .unwrap_or("Hypestv".to_owned())
+                .as_ref(),
+        );
     }
 
     let mut rl = rustyline::Editor::<_, rustyline::history::FileHistory>::with_config(

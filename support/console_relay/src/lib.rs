@@ -229,10 +229,14 @@ impl Console {
     /// `--relay-console-path` argument to specify the path of the pipe/socket
     /// used to relay data. Call [`relay_console`] with that path in your `main`
     /// function.
-    pub fn new(driver: impl Driver, app: Option<&Path>) -> anyhow::Result<Self> {
+    pub fn new(
+        driver: impl Driver,
+        app: Option<&Path>,
+        launch_options: Option<ConsoleLaunchOptions>,
+    ) -> anyhow::Result<Self> {
         let path = random_console_path();
         let this = Self::new_from_path(driver, &path)?;
-        launch_console(app, &path, ConsoleLaunchOptions::default())
+        launch_console(app, &path, launch_options.unwrap_or_default())
             .context("failed to launch console")?;
         Ok(this)
     }

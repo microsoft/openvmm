@@ -15,6 +15,7 @@ use super::hyperv::run_hcsdiag;
 use super::hyperv::run_hvc;
 use super::rustyline_printer::Printer;
 use anyhow::Context as _;
+use console_relay::ConsoleLaunchOptions;
 use diag_client::DiagClient;
 use futures::AsyncBufReadExt;
 use futures::AsyncWriteExt;
@@ -179,8 +180,14 @@ impl Vm {
                     }
                     SerialMode::Log => Some(IoTarget::Printer),
                     SerialMode::Term => Some(IoTarget::Console(
-                        console_relay::Console::new(self.inner.driver.clone(), None)
-                            .context("failed to launch console")?,
+                        console_relay::Console::new(
+                            self.inner.driver.clone(),
+                            None,
+                            Some(ConsoleLaunchOptions {
+                                window_title: Some(format!("COM{} [Hypestv]", port)),
+                            }),
+                        )
+                        .context("failed to launch console")?,
                     )),
                 };
                 if let Some(target) = target {
@@ -232,8 +239,14 @@ impl Vm {
                     }
                     LogMode::Log => Some(IoTarget::Printer),
                     LogMode::Term => Some(IoTarget::Console(
-                        console_relay::Console::new(self.inner.driver.clone(), None)
-                            .context("failed to launch console")?,
+                        console_relay::Console::new(
+                            self.inner.driver.clone(),
+                            None,
+                            Some(ConsoleLaunchOptions {
+                                window_title: Some("KMSG [Hypestv]".to_owned()),
+                            }),
+                        )
+                        .context("failed to launch console")?,
                     )),
                 };
                 if let Some(target) = target {
