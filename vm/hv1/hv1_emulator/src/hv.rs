@@ -5,7 +5,8 @@
 
 use super::synic::GlobalSynic;
 use super::synic::ProcessorSynic;
-use crate::locked_page::LockedPage;
+use crate::pages::LockedPage;
+use crate::pages::OverlayPage;
 use guestmem::GuestMemory;
 use hv1_structs::VtlArray;
 use hvdef::HV_REFERENCE_TSC_SEQUENCE_INVALID;
@@ -18,7 +19,6 @@ use parking_lot::Mutex;
 use safeatomic::AtomicSliceOps;
 use std::mem::offset_of;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use virt::x86::MsrError;
 use vm_topology::processor::VpIndex;
@@ -137,7 +137,7 @@ impl<const VTL_COUNT: usize> GlobalHv<VTL_COUNT> {
             vtl_state: self.vtl_mutable_state[vtl].clone(),
             synic: self.synic[vtl].add_vp(vp_index),
             vp_assist_page_reg: Default::default(),
-            vp_assist_page: VpAssistPage::default(),
+            vp_assist_page: OverlayPage::default(),
             guest_memory: self.guest_memory[vtl].clone(),
         }
     }
@@ -169,31 +169,7 @@ pub struct ProcessorVtlHv {
     pub synic: ProcessorSynic,
     #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
     vp_assist_page_reg: HvRegisterVpAssistPage,
-    vp_assist_page: VpAssistPage,
-}
-
-#[derive(Inspect)]
-#[inspect(external_tag)]
-enum VpAssistPage {
-    Local(#[inspect(skip)] Box<guestmem::Page>),
-    Mapped(#[inspect(skip)] LockedPage),
-}
-
-impl std::ops::Deref for VpAssistPage {
-    type Target = guestmem::Page;
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            VpAssistPage::Local(page) => page,
-            VpAssistPage::Mapped(page) => page,
-        }
-    }
-}
-
-impl Default for VpAssistPage {
-    fn default() -> Self {
-        VpAssistPage::Local(std::array::from_fn(|_| AtomicU8::new(0)).into())
-    }
+    vp_assist_page: OverlayPage,
 }
 
 impl ProcessorVtlHv {
@@ -216,7 +192,7 @@ impl ProcessorVtlHv {
 
         synic.reset();
         *vp_assist_page_reg = Default::default();
-        *vp_assist_page = VpAssistPage::default();
+        *vp_assist_page = OverlayPage::default();
     }
 
     /// Emulates an MSR write for the guest OS ID MSR.
@@ -236,25 +212,18 @@ impl ProcessorVtlHv {
         }
         let new_vp_assist_page_reg = HvRegisterVpAssistPage::from(v);
 
-        let new_page = if new_vp_assist_page_reg.enabled()
+        if new_vp_assist_page_reg.enabled()
             && (!self.vp_assist_page_reg.enabled()
                 || new_vp_assist_page_reg.gpa_page_number()
                     != self.vp_assist_page_reg.gpa_page_number())
         {
-            VpAssistPage::Mapped(
-                LockedPage::new(&self.guest_memory, new_vp_assist_page_reg.gpa_page_number())
-                    .map_err(|_| MsrError::InvalidAccess)?,
-            )
+            self.vp_assist_page
+                .remap(&self.guest_memory, new_vp_assist_page_reg.gpa_page_number())
+                .map_err(|_| MsrError::InvalidAccess)?
         } else if !new_vp_assist_page_reg.enabled() {
-            VpAssistPage::default()
-        } else {
-            // Not changing the page, no need to copy.
-            self.vp_assist_page_reg = new_vp_assist_page_reg;
-            return Ok(());
-        };
+            self.vp_assist_page.unmap();
+        }
 
-        // Copy the contents of the old page to the new page.
-        new_page.atomic_write_obj(&self.vp_assist_page.atomic_read_obj::<[u8; 4096]>());
         self.vp_assist_page_reg = new_vp_assist_page_reg;
 
         Ok(())

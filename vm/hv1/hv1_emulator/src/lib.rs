@@ -17,8 +17,8 @@
 pub mod cpuid;
 pub mod hv;
 pub mod hypercall;
-mod locked_page;
 pub mod message_queues;
+mod pages;
 pub mod synic;
 pub mod x86;
 
