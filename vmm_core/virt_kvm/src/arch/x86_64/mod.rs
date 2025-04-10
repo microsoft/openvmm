@@ -559,8 +559,9 @@ impl Hv1 for KvmPartition {
 
 impl GetReferenceTime for KvmPartitionInner {
     fn now(&self) -> ReferenceTimeResult {
-        // Although we can query the reference time MSR for a VP, we are not running in the context
-        // of a VP, and so such a query will fail. Instead, query the KVM clock, which is the backing
+        // Although we can query the reference time MSR for a VP, we are not
+        // running in the context of a VP, and so such a query will hang if the
+        // VP is running. Instead, query the KVM clock, which is the backing
         // clock for the reference time counter within KVM.
         //
         // This also gives us the system time, in some configurations.
