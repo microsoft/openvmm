@@ -913,13 +913,7 @@ impl WhpPartitionInner {
             // Add in the synthetic hv leaves if necessary.
             if let Some(hv_config) = &proto_config.hv_config {
                 if !hv_config.offload_enlightenments || proto_config.user_mode_apic {
-                    cpuid.extend(hv1_emulator::cpuid::hv_cpuid_leaves(
-                        proto_config.processor_topology,
-                        IsolationType::None,
-                        false,
-                        [0; 4],
-                        None,
-                    ));
+                    hv1_emulator::cpuid::process_hv_cpuid_leaves(&mut cpuid, false, [0; 4]);
                 }
             }
 
