@@ -276,7 +276,7 @@ impl virt::DeviceBuilder for HvfPartition {
 impl GetReferenceTime for HvfPartitionInner {
     fn now(&self) -> ReferenceTimeResult {
         ReferenceTimeResult {
-            ref_time: self.vmtime.now().as_100ns().into(),
+            ref_time: self.vmtime.now().as_100ns(),
             system_time: None,
         }
     }
