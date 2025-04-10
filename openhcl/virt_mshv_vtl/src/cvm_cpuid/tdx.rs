@@ -12,6 +12,8 @@ use super::CpuidSubtable;
 use super::ParsedCpuidEntry;
 use super::TopologyError;
 use core::arch::x86_64::CpuidResult;
+use vm_topology::processor::ProcessorTopology;
+use vm_topology::processor::x86::X86Topology;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::xsave;
@@ -32,9 +34,21 @@ pub const TDX_REQUIRED_LEAVES: &[(CpuidFunction, Option<u32>)] = &[
 ];
 
 /// Implements [`CpuidArchSupport`] for TDX-isolation support
-pub struct TdxCpuidInitializer {}
+pub struct TdxCpuidInitializer {
+    topology: ProcessorTopology<X86Topology>,
+    access_vsm: bool,
+    vtom: u64,
+}
 
 impl TdxCpuidInitializer {
+    pub fn new(topology: ProcessorTopology<X86Topology>, access_vsm: bool, vtom: u64) -> Self {
+        Self {
+            topology,
+            access_vsm,
+            vtom,
+        }
+    }
+
     fn cpuid(leaf: u32, subleaf: u32) -> CpuidResult {
         safe_intrinsics::cpuid(leaf, subleaf)
     }
@@ -247,5 +261,117 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
 
     fn supports_tsc_aux_virtualization(&self, _results: &CpuidResults) -> bool {
         true
+    }
+
+    fn hv_cpuid_leaves(&self) -> [(CpuidFunction, CpuidResult); 5] {
+        const MAX_CPUS: u32 = 2048;
+        const fn split_u128(x: u128) -> CpuidResult {
+            let bytes: [u32; 4] = zerocopy::transmute!(x);
+            CpuidResult {
+                eax: bytes[0],
+                ebx: bytes[1],
+                ecx: bytes[2],
+                edx: bytes[3],
+            }
+        }
+
+        [
+            (CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES), {
+                let privileges = hvdef::HvPartitionPrivilege::new()
+                    .with_access_partition_reference_counter(true)
+                    .with_access_hypercall_msrs(true)
+                    .with_access_vp_index(true)
+                    .with_access_frequency_msrs(true)
+                    .with_access_synic_msrs(true)
+                    .with_access_synthetic_timer_msrs(true)
+                    .with_access_apic_msrs(true)
+                    .with_access_vp_runtime_msr(true)
+                    .with_access_partition_reference_tsc(true)
+                    .with_start_virtual_processor(true)
+                    .with_enable_extended_gva_ranges_flush_va_list(true)
+                    .with_access_guest_idle_msr(true)
+                    .with_access_vsm(self.access_vsm)
+                    .with_isolation(true);
+                // TODO TDX
+                //     .with_fast_hypercall_output(true);
+
+                let features = hvdef::HvFeatures::new()
+                    .with_privileges(privileges)
+                    .with_frequency_regs_available(true)
+                    .with_direct_synthetic_timers(true)
+                    .with_extended_gva_ranges_for_flush_virtual_address_list_available(true)
+                    .with_guest_idle_available(true)
+                    .with_xmm_registers_for_fast_hypercall_available(true)
+                    .with_register_pat_available(true);
+                // TODO TDX
+                //    .with_fast_hypercall_output_available(true);
+
+                split_u128(features.into_bits())
+            }),
+            (
+                CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION),
+                {
+                    let use_apic_msrs = match self.topology.apic_mode() {
+                        vm_topology::processor::x86::ApicMode::XApic => {
+                            // If only xAPIC is supported, then the Hyper-V MSRs are
+                            // more efficient for EOIs.
+                            true
+                        }
+                        vm_topology::processor::x86::ApicMode::X2ApicSupported
+                        | vm_topology::processor::x86::ApicMode::X2ApicEnabled => {
+                            // If X2APIC is supported, then use the X2APIC MSRs. These
+                            // are as efficient as the Hyper-V MSRs, and they are
+                            // compatible with APIC hardware offloads.
+                            false
+                        }
+                    };
+
+                    let enlightenments = hvdef::HvEnlightenmentInformation::new()
+                        .with_deprecate_auto_eoi(true)
+                        .with_use_relaxed_timing(true)
+                        .with_use_ex_processor_masks(true)
+                        .with_use_apic_msrs(use_apic_msrs)
+                        .with_long_spin_wait_count(!0);
+
+                    // TODO TDX
+                    //    .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
+                    //    .with_use_synthetic_cluster_ipi(true);
+
+                    split_u128(enlightenments.into_bits())
+                },
+            ),
+            (
+                CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_IMPLEMENTATION_LIMITS),
+                CpuidResult {
+                    eax: MAX_CPUS,
+                    ebx: MAX_CPUS,
+                    ecx: 0,
+                    edx: 0,
+                },
+            ),
+            (
+                CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_HARDWARE_FEATURES),
+                split_u128(
+                    hvdef::HvHardwareFeatures::new()
+                        .with_apic_overlay_assist_in_use(true)
+                        .with_msr_bitmaps_in_use(true)
+                        .with_second_level_address_translation_in_use(true)
+                        .with_dma_remapping_in_use(false)
+                        .with_interrupt_remapping_in_use(false)
+                        .into_bits(),
+                ),
+            ),
+            (
+                CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_ISOLATION_CONFIGURATION),
+                split_u128(
+                    hvdef::HvIsolationConfiguration::new()
+                        .with_paravisor_present(true)
+                        .with_isolation_type(virt::IsolationType::Tdx.to_hv().0)
+                        .with_shared_gpa_boundary_active(true)
+                        .with_shared_gpa_boundary_bits(self.vtom.trailing_zeros() as u8)
+                        .into_bits(),
+                ),
+            ),
+        ]
     }
 }
