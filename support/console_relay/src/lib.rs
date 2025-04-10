@@ -65,7 +65,7 @@ pub fn relay_console(path: &Path, console_title: &str) -> anyhow::Result<()> {
 
         set_raw_console(true).expect("failed to set raw console mode");
         if let Err(err) = set_console_title(console_title) {
-            log::warn!("failed to set console title: {}", err);
+            tracing::warn!("failed to set console title: {}", err);
         }
 
         std::thread::Builder::new()

@@ -14,7 +14,7 @@ unix_socket.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 getrandom.workspace = true
-log.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

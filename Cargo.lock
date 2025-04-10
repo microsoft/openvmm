@@ -700,9 +700,9 @@ dependencies = [
  "anyhow",
  "futures",
  "getrandom 0.3.1",
- "log",
  "pal_async",
  "term",
+ "tracing",
  "unix_socket",
 ]
 
