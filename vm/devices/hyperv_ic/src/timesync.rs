@@ -71,13 +71,14 @@ enum ChannelState {
 #[derive(Inspect)]
 #[inspect(external_tag)]
 enum ReadyState {
-    Ready {
+    SleepUntilNextSample {
         #[inspect(with = "inspect_instant")]
         next_sample: Instant,
     },
     SendMessage {
         is_sync: bool,
     },
+    WaitForResponse,
 }
 
 fn inspect_instant(&instant: &Instant) -> inspect::AsDisplay<jiff::Timestamp> {
@@ -190,7 +191,7 @@ impl TimesyncChannel {
                 ref versions,
                 ref mut state,
             } => match *state {
-                ReadyState::Ready { next_sample } => {
+                ReadyState::SleepUntilNextSample { next_sample } => {
                     ic.timer.sleep_until(next_sample).await;
                     *state = ReadyState::SendMessage { is_sync: false };
                 }
@@ -223,7 +224,9 @@ impl TimesyncChannel {
                         .write_message(
                             versions,
                             hyperv_ic_protocol::MessageType::TIME_SYNC,
-                            hyperv_ic_protocol::HeaderFlags::new(),
+                            hyperv_ic_protocol::HeaderFlags::new()
+                                .with_request(true)
+                                .with_transaction(true),
                             message.as_bytes(),
                         )
                         .await?;
@@ -234,7 +237,15 @@ impl TimesyncChannel {
                         tracing::debug!(%time, ref_time, "sent time sample");
                     }
 
-                    *state = ReadyState::Ready {
+                    // This was sent as a transaction, which is kind of
+                    // pointless (we don't need the response), but Windows
+                    // ignores non-transactional time sync requests.
+                    *state = ReadyState::WaitForResponse;
+                }
+                ReadyState::WaitForResponse => {
+                    self.pipe.read_response().await?;
+                    // Send another sample in a few seconds.
+                    *state = ReadyState::SleepUntilNextSample {
                         next_sample: Instant::now() + SAMPLE_PERIOD,
                     };
                 }
