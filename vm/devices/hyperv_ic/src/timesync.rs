@@ -191,7 +191,7 @@ impl TimesyncChannel {
                 ref mut state,
             } => match *state {
                 ReadyState::Ready { next_sample } => {
-                    ic.timer.sleep_until(next_sample.into()).await;
+                    ic.timer.sleep_until(next_sample).await;
                     *state = ReadyState::SendMessage { is_sync: false };
                 }
                 ReadyState::SendMessage { is_sync } => {
@@ -206,7 +206,7 @@ impl TimesyncChannel {
                     // avoid drift.
                     let r = ic.ref_time.now();
                     let ref_time = r.ref_time;
-                    let time = r.system_time.unwrap_or_else(|| jiff::Timestamp::now());
+                    let time = r.system_time.unwrap_or_else(jiff::Timestamp::now);
 
                     let message = proto::TimesyncMessageV4 {
                         parent_time: ((time.duration_since(proto::EPOCH).as_nanos() / 100) as u64)
