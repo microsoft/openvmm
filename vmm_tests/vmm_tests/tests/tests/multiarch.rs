@@ -138,7 +138,8 @@ async fn kvp_ic(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
 #[openvmm_test(
     uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     uefi_x64(vhd(ubuntu_2204_server_x64)),
-    openvmm_linux_direct_x64
+    uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    linux_direct_x64
 )]
 async fn timesync_ic(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     let (vm, agent) = config
@@ -150,17 +151,23 @@ async fn timesync_ic(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
         .run()
         .await?;
 
+    let mut saw_time_sync = false;
     for _ in 0..30 {
         let time = agent.get_time().await?;
         let time = jiff::Timestamp::new(time.seconds, time.nanos).unwrap();
         tracing::info!(%time, "guest time");
         if time.duration_since(jiff::Timestamp::now()).abs() < SignedDuration::from_secs(10) {
+            saw_time_sync = true;
             break;
         }
         mesh::CancelContext::new()
             .with_timeout(Duration::from_secs(1))
             .cancelled()
             .await;
+    }
+
+    if !saw_time_sync {
+        anyhow::bail!("time never synchronized");
     }
 
     agent.power_off().await?;
