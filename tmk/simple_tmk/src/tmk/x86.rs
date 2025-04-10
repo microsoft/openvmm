@@ -10,11 +10,13 @@ mod entry {
     core::arch::global_asm! {
         ".globl _start",
         "_start:",
+        "mov r12, rsi",
         "lea rsp, {STACK_SIZE} + {stack}[rip]",
         "lea rdx, _DYNAMIC[rip]",
         "lea rdi, __ehdr_start[rip]",
         "mov rsi, rdi",
         "call {relocate}",
+        "mov rdi, r12",
         "jmp {main}",
         relocate = sym minimal_rt::reloc::relocate,
         stack = sym STACK,

@@ -27,6 +27,7 @@ anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 fs-err.workspace = true
 futures.workspace = true
+object.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zerocopy.workspace = true

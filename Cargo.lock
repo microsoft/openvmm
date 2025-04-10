@@ -6418,6 +6418,7 @@ dependencies = [
  "arrayvec",
  "minimal_rt",
  "minimal_rt_build",
+ "tmk_macros",
  "tmk_protocol",
 ]
 
@@ -6817,6 +6818,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmk_macros"
+version = "0.0.0"
+dependencies = [
+ "quote",
+ "syn 2.0.100",
+]
+
+[[package]]
 name = "tmk_protocol"
 version = "0.0.0"
 dependencies = [
@@ -6836,6 +6845,7 @@ dependencies = [
  "hvdef",
  "loader",
  "mesh",
+ "object",
  "page_table",
  "pal_async",
  "pal_uring",

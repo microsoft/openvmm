@@ -5,8 +5,9 @@
 
 #![cfg(target_os = "linux")]
 
-use crate::run::CommonState;
+use crate::run::RunContext;
 use crate::run::RunnerBuilder;
+use crate::run::TestResult;
 use guestmem::GuestMemory;
 use std::sync::Arc;
 use virt::Partition;
@@ -14,16 +15,17 @@ use virt_mshv_vtl::UhLateParams;
 use virt_mshv_vtl::UhPartitionNewParams;
 use virt_mshv_vtl::UhProcessorBox;
 
-impl CommonState {
+impl RunContext<'_> {
     pub async fn run_paravisor_vmm(
         &mut self,
         isolation: virt::IsolationType,
-    ) -> anyhow::Result<()> {
+        test: &crate::load::TestInfo,
+    ) -> anyhow::Result<TestResult> {
         let params = UhPartitionNewParams {
             isolation,
             hide_isolation: false,
-            lower_vtl_memory_layout: &self.memory_layout,
-            topology: &self.processor_topology,
+            lower_vtl_memory_layout: self.memory_layout,
+            topology: self.processor_topology,
             cvm_cpuid_info: None,
             snp_secrets: None,
             env_cvm_guest_vsm: false,
@@ -36,12 +38,12 @@ impl CommonState {
         let p = virt_mshv_vtl::UhProtoPartition::new(params, |_| self.driver.clone())?;
 
         let m = underhill_mem::init(&underhill_mem::Init {
-            processor_topology: &self.processor_topology,
+            processor_topology: self.processor_topology,
             isolation,
             vtl0_alias_map_bit: None,
             vtom: None,
-            mem_layout: &self.memory_layout,
-            complete_memory_layout: &self.memory_layout,
+            mem_layout: self.memory_layout,
+            complete_memory_layout: self.memory_layout,
             boot_init: None,
             shared_pool: &[],
             maximum_vtl: hvdef::Vtl::Vtl0,
@@ -58,14 +60,14 @@ impl CommonState {
                 #[cfg(guest_arch = "x86_64")]
                 cpuid: Vec::new(),
                 crash_notification_send: mesh::channel().0,
-                vmtime: &self.vmtime_source,
+                vmtime: self.vmtime_source,
                 cvm_params: None,
             })
             .await?;
 
         let partition = Arc::new(partition);
 
-        self.run(m.vtl0(), partition.caps(), async |_this, runner| {
+        self.run(m.vtl0(), partition.caps(), test, async |_this, runner| {
             let [vp] = vps.try_into().ok().unwrap();
             start_vp(vp, runner).await?;
             Ok(())
