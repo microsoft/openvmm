@@ -566,7 +566,7 @@ async fn vmgs_create(
     encryption_alg_key: Option<(EncryptionAlgorithm, &[u8])>,
 ) -> Result<Vmgs, Error> {
     eprintln!("Formatting VMGS");
-    let mut vmgs = Vmgs::format_new(disk).await?;
+    let mut vmgs = Vmgs::format_new(disk, None).await?;
 
     if let Some((algorithm, encryption_key)) = encryption_alg_key {
         #[cfg(with_encryption)]
@@ -930,7 +930,7 @@ async fn vmgs_open(
     encryption_key: Option<&[u8]>,
     encrypted_no_key_ok: bool,
 ) -> Result<Vmgs, Error> {
-    let mut vmgs: Vmgs = Vmgs::open(disk).await?;
+    let mut vmgs: Vmgs = Vmgs::open(disk, None).await?;
 
     if let Some(encryption_key) = encryption_key {
         #[cfg(with_encryption)]

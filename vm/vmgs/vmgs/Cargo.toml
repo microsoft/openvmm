@@ -19,6 +19,7 @@ encryption_ossl = ["dep:openssl"]
 
 [dependencies]
 disk_backend.workspace = true
+get_protocol.workspace = true
 guestmem.workspace = true
 scsi_buffers.workspace = true
 vmgs_format.workspace = true
@@ -28,6 +29,7 @@ inspect_counters = { workspace = true, optional = true }
 mesh_protobuf = { workspace = true, optional = true }
 
 anyhow.workspace = true
+async-trait.workspace = true
 cfg-if.workspace = true
 crc32fast.workspace = true
 getrandom.workspace = true

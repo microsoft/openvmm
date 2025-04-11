@@ -12,6 +12,7 @@
 #![expect(missing_docs)]
 
 pub mod ak_cert;
+pub mod logger;
 pub mod resolver;
 mod tpm20proto;
 mod tpm_helper;
@@ -25,9 +26,11 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
+use get_protocol::EventLogId;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
+use logger::TpmLogger;
 use ms_tpm_20_ref::MsTpm20RefPlatform;
 use parking_lot::Mutex;
 use std::future::Future;
@@ -218,6 +221,8 @@ pub struct Tpm {
     rt: TpmRuntime,
     #[inspect(skip)]
     ak_cert_type: TpmAkCertType,
+    #[inspect(skip)]
+    logger: Option<Arc<dyn TpmLogger>>,
 
     // Sub-emulators
     #[inspect(skip)]
@@ -293,6 +298,8 @@ pub enum TpmErrorKind {
     ClearPlatformHierarchy(#[source] TpmHelperError),
     #[error("failed to set pcr banks")]
     SetPcrBanks(#[source] TpmHelperError),
+    #[error("failed to reset TPM with Nvram state")]
+    ResetTpmWithState(#[source] ms_tpm_20_ref::Error),
 }
 
 struct TpmPlatformCallbacks {
@@ -331,6 +338,7 @@ impl Tpm {
         is_restoring: bool,
         ak_cert_type: TpmAkCertType,
         guest_secret_key: Option<Vec<u8>>,
+        logger: Option<Arc<dyn TpmLogger>>,
     ) -> Result<Self, TpmError> {
         tracing::info!("initializing TPM");
 
@@ -390,13 +398,14 @@ impl Tpm {
                 nvram_store,
             },
             ak_cert_type,
-            async_ak_cert_request: None,
-            waker: None,
+            logger,
 
             tpm_engine_helper,
 
             command_buffer: [0; TPM_PAGE_SIZE],
             pending_nvram,
+            async_ak_cert_request: None,
+            waker: None,
             ak_cert_renew_time: None,
             attestation_report_renew_time: None,
 
@@ -431,6 +440,8 @@ impl Tpm {
     }
 
     async fn on_first_boot(&mut self, guest_secret_key: Option<Vec<u8>>) -> Result<(), TpmError> {
+        use ms_tpm_20_ref::NvError;
+
         // Check whether or not we need to pave-over the blank TPM with our
         // existing nvmem state.
         {
@@ -440,7 +451,15 @@ impl Tpm {
                 .map_err(TpmErrorKind::ReadNvramState)?;
 
             if let Some(blob) = existing_nvmem_blob {
-                self.tpm_engine_helper.tpm_engine.reset(Some(&blob))?;
+                if let Err(e) = self.tpm_engine_helper.tpm_engine.reset(Some(&blob)) {
+                    if let ms_tpm_20_ref::Error::NvMem(NvError::MismatchedBlobSize) = e {
+                        if let Some(logger) = &self.logger {
+                            logger.log_event_fatal(EventLogId::TPM_INVALID_STATE).await;
+                        }
+                    }
+
+                    return Err(TpmErrorKind::ResetTpmWithState(e).into());
+                }
             }
         }
 
@@ -451,9 +470,15 @@ impl Tpm {
         // If necessary, recreate EPS & PPS.
         // The host indicates this when VM identity changes.
         if self.refresh_tpm_seeds {
-            self.tpm_engine_helper
-                .refresh_tpm_seeds()
-                .map_err(TpmErrorKind::RefreshTpmSeeds)?;
+            if let Err(e) = self.tpm_engine_helper.refresh_tpm_seeds() {
+                if let Some(logger) = &self.logger {
+                    logger
+                        .log_event_fatal(EventLogId::TPM_IDENTITY_CHANGE_FAILED)
+                        .await;
+                }
+
+                return Err(TpmErrorKind::RefreshTpmSeeds(e).into());
+            }
 
             tracing::info!("TPM seeds have been refreshed");
         }
@@ -466,8 +491,15 @@ impl Tpm {
                 .map_err(TpmErrorKind::ReadPpiState)?;
 
             if let Some(buf) = raw_ppi_state {
-                let ppi_state = persist_restore::deserialize_ppi_state(buf)
-                    .ok_or(TpmErrorKind::InvalidPpiState)?;
+                let ppi_state = match persist_restore::deserialize_ppi_state(buf) {
+                    Some(state) => state,
+                    None => {
+                        if let Some(logger) = &self.logger {
+                            logger.log_event_fatal(EventLogId::TPM_INVALID_STATE).await;
+                        }
+                        return Err(TpmErrorKind::InvalidPpiState.into());
+                    }
+                };
 
                 self.ppi_state = ppi_state;
                 if self.ppi_state.pending_ppi_operation != PpiOperation::NO_OP {
@@ -862,6 +894,11 @@ impl Tpm {
                             "Failed to request new TPM AK cert - now: {:?}",
                             now.duration_since(std::time::UNIX_EPOCH),
                         );
+
+                        if let Some(logger) = &self.logger {
+                            logger.log_event(EventLogId::CERTIFICATE_RENEWAL_FAILED)
+                        }
+
                         return;
                     }
                 };

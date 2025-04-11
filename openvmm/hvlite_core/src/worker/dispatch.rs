@@ -952,11 +952,11 @@ impl InitializedVm {
         let (vmgs_client, vmgs_task) = if let Some(vmgs_file) = cfg.vmgs_disk {
             let disk = open_simple_disk(&resolver, vmgs_file, false).await?;
             let vmgs = if cfg.format_vmgs {
-                vmgs::Vmgs::format_new(disk)
+                vmgs::Vmgs::format_new(disk, None)
                     .await
                     .context("failed to format vmgs file")?
             } else {
-                vmgs::Vmgs::open(disk)
+                vmgs::Vmgs::open(disk, None)
                     .await
                     .context("failed to open vmgs file")?
             };

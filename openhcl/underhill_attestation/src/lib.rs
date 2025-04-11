@@ -1104,7 +1104,7 @@ mod tests {
     async fn new_formatted_vmgs() -> Vmgs {
         let disk = new_test_file();
 
-        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
+        let mut vmgs = Vmgs::format_new(disk, None).await.unwrap();
 
         assert!(
             key_protector_is_empty(&mut vmgs).await,

@@ -9,6 +9,7 @@ use crate::crypto;
 use crate::igvm_attest;
 use cvm_tracing::CVM_ALLOWED;
 use guest_emulation_transport::GuestEmulationTransportClient;
+use guest_emulation_transport::api::EventLogId;
 use openhcl_attestation_protocol::igvm_attest::get::KEY_RELEASE_RESPONSE_BUFFER_SIZE;
 use openhcl_attestation_protocol::igvm_attest::get::WRAPPED_KEY_RESPONSE_BUFFER_SIZE;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
@@ -208,9 +209,6 @@ pub async fn request_vmgs_encryption_keys(
     } else {
         tracing::error!(CVM_ALLOWED, "failed to unwrap VMGS key-encryption key");
 
-        get.event_log_fatal(guest_emulation_transport::api::EventLogId::KEY_NOT_RELEASED)
-            .await;
-
         None
     };
 
@@ -248,6 +246,10 @@ async fn make_igvm_attest_requests(
     agent_data: &mut [u8; AGENT_DATA_MAX_SIZE],
     vmgs_encrypted: bool,
 ) -> Result<WrappedKeyVmgsEncryptionKeys, RequestVmgsEncryptionKeysError> {
+    // When VMGS is encrypted, empty `agent_data` from VMGS implies that the data required by the
+    // KeyRelease request needs to come from the WrappedKey response.
+    let wrapped_key_required = vmgs_encrypted && agent_data.iter().all(|&x| x == 0);
+
     // Attempt to get wrapped DiskEncryptionSettings key
     igvm_attest_request_helper.set_request_type(
         openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType::WRAPPED_KEY_REQUEST,
@@ -256,10 +258,20 @@ async fn make_igvm_attest_requests(
         .create_request(attestation_report)
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestWrappedKeyRequest)?;
 
-    let response = get
+    let response = match get
         .igvm_attest([].into(), request, WRAPPED_KEY_RESPONSE_BUFFER_SIZE)
         .await
-        .map_err(RequestVmgsEncryptionKeysError::SendIgvmAttestWrappedKeyRequest)?;
+    {
+        Ok(response) => response,
+        Err(e) => {
+            if wrapped_key_required {
+                // Notify host if WrappedKey is required for diagnosis.
+                get.event_log(EventLogId::WRAPPED_KEY_REQUIRED_BUT_INVALID);
+            }
+
+            return Err(RequestVmgsEncryptionKeysError::SendIgvmAttestWrappedKeyRequest(e));
+        }
+    };
 
     let wrapped_des_key = match igvm_attest::wrapped_key::parse_response(&response.response) {
         Ok(parsed_response) => {
@@ -294,10 +306,11 @@ async fn make_igvm_attest_requests(
         }
         Err(igvm_attest::wrapped_key::WrappedKeyError::ResponseSizeTooSmall) => {
             // The request does not succeed.
-            // When VMGS is encrypted, empty `agent_data` from VMGS implies that the data required by the
-            // KeyRelease request needs to come from the WrappedKey response. Return an error for this case,
-            // otherwise ignore the error and set the `wrapped_des_key` to None.
-            if vmgs_encrypted && agent_data.iter().all(|&x| x == 0) {
+            // Return an error if WrappedKey is required, otherwise ignore the error and set the `wrapped_des_key` to None.
+            if wrapped_key_required {
+                // Notify host if WrappedKey is required for diagnosis.
+                get.event_log(EventLogId::WRAPPED_KEY_REQUIRED_BUT_INVALID);
+
                 return Err(
                     RequestVmgsEncryptionKeysError::RequiredButInvalidIgvmAttestWrappedKeyResponse,
                 );
@@ -305,7 +318,14 @@ async fn make_igvm_attest_requests(
                 None
             }
         }
-        Err(e) => Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(e))?,
+        Err(e) => {
+            if wrapped_key_required {
+                // Notify host if WrappedKey is required for diagnosis.
+                get.event_log(EventLogId::WRAPPED_KEY_REQUIRED_BUT_INVALID);
+            }
+
+            return Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(e));
+        }
     };
 
     igvm_attest_request_helper.set_request_type(
@@ -316,14 +336,22 @@ async fn make_igvm_attest_requests(
         .map_err(RequestVmgsEncryptionKeysError::CreateIgvmAttestKeyReleaseRequest)?;
 
     // Get tenant keys based on attestation results
-    let response = get
+    let response = match get
         .igvm_attest(
             agent_data.to_vec(),
             request,
             KEY_RELEASE_RESPONSE_BUFFER_SIZE,
         )
         .await
-        .map_err(RequestVmgsEncryptionKeysError::SendIgvmAttestKeyReleaseRequest)?;
+    {
+        Ok(response) => response,
+        Err(e) => {
+            // Notify host for diagnosis.
+            get.event_log(EventLogId::KEY_NOT_RELEASED);
+
+            return Err(RequestVmgsEncryptionKeysError::SendIgvmAttestKeyReleaseRequest(e));
+        }
+    };
 
     match igvm_attest::key_release::parse_response(&response.response, transfer_key.size() as usize)
     {
@@ -332,12 +360,20 @@ async fn make_igvm_attest_requests(
             wrapped_des_key,
         }),
         Err(igvm_attest::key_release::KeyReleaseError::ResponseSizeTooSmall) => {
+            // Notify host for diagnosis.
+            get.event_log(EventLogId::KEY_NOT_RELEASED);
+
             // The request does not succeed
             Ok(WrappedKeyVmgsEncryptionKeys {
                 rsa_aes_wrapped_key: None,
                 wrapped_des_key: None,
             })
         }
-        Err(e) => Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(e))?,
+        Err(e) => {
+            // Notify host for diagnosis.
+            get.event_log(EventLogId::KEY_NOT_RELEASED);
+
+            Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(e))
+        }
     }
 }

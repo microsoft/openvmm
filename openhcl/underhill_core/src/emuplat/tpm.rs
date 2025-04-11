@@ -2,11 +2,13 @@
 // Licensed under the MIT License.
 
 use guest_emulation_transport::GuestEmulationTransportClient;
+use guest_emulation_transport::api::EventLogId;
 use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_BUFFER_SIZE;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
 use std::sync::Arc;
 use thiserror::Error;
 use tpm::ak_cert::RequestAkCert;
+use tpm::logger::TpmLogger;
 use underhill_attestation::AttestationType;
 
 #[derive(Debug, Error)]
@@ -102,7 +104,30 @@ impl RequestAkCert for TpmRequestAkCertHelper {
     }
 }
 
+/// An implementation of [`TpmLogger`].
+pub struct OpenHclTpmLogger {
+    get_client: GuestEmulationTransportClient,
+}
+
+impl OpenHclTpmLogger {
+    pub fn new(get_client: GuestEmulationTransportClient) -> Self {
+        Self { get_client }
+    }
+}
+
+#[async_trait::async_trait]
+impl TpmLogger for OpenHclTpmLogger {
+    async fn log_event_fatal(&self, event_id: EventLogId) {
+        self.get_client.event_log_fatal(event_id).await
+    }
+
+    fn log_event(&self, event_id: EventLogId) {
+        self.get_client.event_log(event_id);
+    }
+}
+
 pub mod resources {
+    use super::OpenHclTpmLogger;
     use super::TpmRequestAkCertHelper;
     use async_trait::async_trait;
     use guest_emulation_transport::resolver::GetClientKind;
@@ -110,7 +135,9 @@ pub mod resources {
     use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
     use std::sync::Arc;
     use tpm::ak_cert::ResolvedRequestAkCert;
+    use tpm::logger::ResolvedTpmLogger;
     use tpm_resources::RequestAkCertKind;
+    use tpm_resources::TpmLoggerKind;
     use underhill_attestation::AttestationType;
     use vm_resource::AsyncResolveResource;
     use vm_resource::IntoResource;
@@ -183,6 +210,41 @@ pub mod resources {
                 handle.attestation_agent_data,
             )
             .into())
+        }
+    }
+
+    #[derive(MeshPayload)]
+    pub struct GetOpenHclTpmLoggerHandle;
+
+    impl ResourceId<TpmLoggerKind> for GetOpenHclTpmLoggerHandle {
+        const ID: &'static str = "tpm_logger";
+    }
+
+    pub struct GetOpenHclTpmLoggerResolver;
+
+    declare_static_async_resolver! {
+        GetOpenHclTpmLoggerResolver,
+        (TpmLoggerKind, GetOpenHclTpmLoggerHandle)
+    }
+
+    #[async_trait]
+    impl AsyncResolveResource<TpmLoggerKind, GetOpenHclTpmLoggerHandle>
+        for GetOpenHclTpmLoggerResolver
+    {
+        type Output = ResolvedTpmLogger;
+        type Error = ResolveError;
+
+        async fn resolve(
+            &self,
+            resolver: &ResourceResolver,
+            GetOpenHclTpmLoggerHandle: GetOpenHclTpmLoggerHandle,
+            _: &(),
+        ) -> Result<Self::Output, Self::Error> {
+            let get = resolver
+                .resolve::<GetClientKind, _>(PlatformResource.into_resource(), ())
+                .await?;
+
+            Ok(OpenHclTpmLogger::new(get).into())
         }
     }
 }
