@@ -1596,10 +1596,19 @@ impl ParentBus for VmbusServerControl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use inspect::InspectMut;
+    use mesh::CancelReason;
     use pal_async::async_test;
+    use pal_async::DefaultDriver;
     use parking_lot::Mutex;
     use protocol::UserDefinedData;
+    use std::time::Duration;
     use vmbus_channel::bus::OfferParams;
+    use vmbus_channel::channel::offer_channel;
+    use vmbus_channel::channel::ChannelOpenError;
+    use vmbus_channel::channel::DeviceResources;
+    use vmbus_channel::channel::SaveRestoreVmbusDevice;
+    use vmbus_channel::channel::VmbusDevice;
     use vmbus_core::protocol::ChannelId;
     use vmbus_core::protocol::VmbusMessage;
     use vmcore::synic::SynicPortAccess;
@@ -1959,6 +1968,248 @@ mod tests {
         env.synic.send_message(protocol::RelIdReleased {
             channel_id: ChannelId(1),
         });
+    }
+
+    struct TestDeviceState {
+        id: u32,
+        started: bool,
+        resources: Option<DeviceResources>,
+        open_requests: HashMap<u16, OpenRequest>,
+        target_vps: HashMap<u16, u32>,
+    }
+
+    impl TestDeviceState {
+        pub fn id(this: &Arc<Mutex<Self>>) -> u32 {
+            this.lock().id
+        }
+
+        pub fn started(this: &Arc<Mutex<Self>>) -> bool {
+            this.lock().started
+        }
+        pub fn set_started(this: &Arc<Mutex<Self>>, started: bool) {
+            this.lock().started = started;
+        }
+
+        pub fn open_request(this: &Arc<Mutex<Self>>, channel_idx: u16) -> Option<OpenRequest> {
+            this.lock().open_requests.get(&channel_idx).cloned()
+        }
+        pub fn set_open_request(
+            this: &Arc<Mutex<Self>>,
+            channel_idx: u16,
+            open_request: OpenRequest,
+        ) {
+            assert!(this
+                .lock()
+                .open_requests
+                .insert(channel_idx, open_request)
+                .is_none());
+        }
+        pub fn remove_open_request(
+            this: &Arc<Mutex<Self>>,
+            channel_idx: u16,
+        ) -> Option<OpenRequest> {
+            this.lock().open_requests.remove(&channel_idx)
+        }
+
+        pub fn target_vp(this: &Arc<Mutex<Self>>, channel_idx: u16) -> Option<u32> {
+            this.lock().target_vps.get(&channel_idx).copied()
+        }
+        pub fn set_target_vp(this: &Arc<Mutex<Self>>, channel_idx: u16, target_vp: u32) {
+            let _ = this.lock().target_vps.insert(channel_idx, target_vp);
+        }
+    }
+
+    #[derive(InspectMut)]
+    struct TestDevice {
+        #[inspect(skip)]
+        pub state: Arc<Mutex<TestDeviceState>>,
+    }
+
+    impl TestDevice {
+        pub fn new_and_state(id: u32) -> (Self, Arc<Mutex<TestDeviceState>>) {
+            let state = TestDeviceState {
+                id,
+                resources: None,
+                open_requests: HashMap::new(),
+                target_vps: HashMap::new(),
+                started: false,
+            };
+            let state = Arc::new(Mutex::new(state));
+            let this = Self {
+                state: state.clone(),
+            };
+            (this, state)
+        }
+    }
+
+    #[async_trait]
+    impl VmbusDevice for TestDevice {
+        fn offer(&self) -> OfferParams {
+            let guid = Guid {
+                data1: TestDeviceState::id(&self.state),
+                ..Guid::ZERO
+            };
+
+            OfferParams {
+                interface_name: "test".into(),
+                instance_id: guid,
+                interface_id: guid,
+                mmio_megabytes: 0,
+                mmio_megabytes_optional: 0,
+                channel_type: vmbus_channel::bus::ChannelType::Device {
+                    pipe_packets: false,
+                },
+                subchannel_index: 0,
+                use_mnf: false,
+                offer_order: None,
+                allow_confidential_external_memory: false,
+            }
+        }
+
+        fn max_subchannels(&self) -> u16 {
+            0
+        }
+
+        fn install(&mut self, resources: DeviceResources) {
+            self.state.lock().resources = Some(resources);
+        }
+
+        async fn open(
+            &mut self,
+            channel_idx: u16,
+            open_request: &OpenRequest,
+        ) -> Result<(), ChannelOpenError> {
+            tracing::info!("OPEN");
+            TestDeviceState::set_open_request(&self.state, channel_idx, open_request.clone());
+            Ok(())
+        }
+
+        async fn close(&mut self, channel_idx: u16) {
+            tracing::info!("CLOSE");
+            assert!(TestDeviceState::remove_open_request(&self.state, channel_idx).is_some());
+        }
+
+        async fn retarget_vp(&mut self, channel_idx: u16, target_vp: u32) {
+            TestDeviceState::set_target_vp(&self.state, channel_idx, target_vp);
+        }
+
+        fn start(&mut self) {
+            tracing::info!("START");
+            TestDeviceState::set_started(&self.state, true);
+        }
+
+        async fn stop(&mut self) {
+            tracing::info!("STOP");
+            TestDeviceState::set_started(&self.state, false);
+        }
+
+        fn supports_save_restore(&mut self) -> Option<&mut dyn SaveRestoreVmbusDevice> {
+            None
+        }
+    }
+
+    #[async_test]
+    async fn test_stopped_child(spawner: DefaultDriver) {
+        // This is mostly testing vmbus_channel behavior when a channel is
+        // stopped but vbmus_server is not and continues to receive
+        // messages.
+        let mut env = TestEnv::new(spawner.clone());
+        let (test_device, test_device_state) = TestDevice::new_and_state(1);
+        let control = env.vmbus.control();
+        let channel = offer_channel(&spawner, control.as_ref(), test_device)
+            .await
+            .expect("test device failed to offer");
+
+        env.vmbus.start();
+        env.connect(1, protocol::FeatureFlags::new(), false).await;
+
+        // Stop the channel.
+        channel.stop().await;
+
+        assert_eq!(TestDeviceState::started(&test_device_state), false);
+
+        // GPADL processing is currently allowed while the channel is stopped,
+        // so this should complete.
+        env.synic.send_message_core(
+            OutgoingMessage::with_data(
+                &protocol::GpadlHeader {
+                    channel_id: ChannelId(1),
+                    gpadl_id: GpadlId(1),
+                    count: 1,
+                    len: 16,
+                },
+                [1u64, 0u64].as_bytes(),
+            ),
+            false,
+        );
+        env.expect_response(protocol::MessageType::GPADL_CREATED)
+            .await;
+
+        // Open will pend while the channel is stopped.
+        env.synic.send_message_core(
+            OutgoingMessage::new(&protocol::OpenChannel {
+                channel_id: ChannelId(1),
+                open_id: 0,
+                ring_buffer_gpadl_id: GpadlId(1),
+                target_vp: 0,
+                downstream_ring_buffer_page_offset: 0,
+                user_data: UserDefinedData::default(),
+            }),
+            false,
+        );
+        let wait_for_response = mesh::CancelContext::new()
+            .with_timeout(Duration::from_millis(150))
+            .until_cancelled(env.expect_response(protocol::MessageType::OPEN_CHANNEL_RESULT))
+            .await;
+        assert!(matches!(
+            wait_for_response,
+            Err(CancelReason::DeadlineExceeded)
+        ));
+        assert!(TestDeviceState::open_request(&test_device_state, 0).is_none());
+
+        // Restart the channel and confirm that open completes.
+        channel.start();
+        env.expect_response(protocol::MessageType::OPEN_CHANNEL_RESULT)
+            .await;
+        assert!(TestDeviceState::open_request(&test_device_state, 0).is_some());
+
+        // Stop the channel and send a modify request.
+        assert!(TestDeviceState::target_vp(&test_device_state, 0).is_none());
+        channel.stop().await;
+        env.synic.send_message_core(
+            OutgoingMessage::new(&protocol::ModifyChannel {
+                channel_id: ChannelId(1),
+                target_vp: 2,
+            }),
+            false,
+        );
+        let wait_for_response = mesh::CancelContext::new()
+            .with_timeout(Duration::from_millis(150))
+            .until_cancelled(env.expect_response(protocol::MessageType::MODIFY_CHANNEL_RESPONSE))
+            .await;
+        assert!(matches!(
+            wait_for_response,
+            Err(CancelReason::DeadlineExceeded)
+        ));
+
+        // Restart the channel and verify the modify request completes.
+        channel.start();
+        env.expect_response(protocol::MessageType::MODIFY_CHANNEL_RESPONSE)
+            .await;
+        assert_eq!(
+            TestDeviceState::target_vp(&test_device_state, 0)
+                .expect("Modify channel request received"),
+            2
+        );
+
+        // Stop the channel and send a close request. Close is currently
+        // allowed through in order to support reset of the vmbus
+        // server, so try that.
+        channel.stop().await;
+        env.vmbus.reset().await;
+        assert!(TestDeviceState::open_request(&test_device_state, 0).is_none());
+
+        env.vmbus.stop().await;
     }
 
     #[async_test]
