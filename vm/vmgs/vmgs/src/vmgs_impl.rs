@@ -91,7 +91,7 @@ pub struct Vmgs {
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
     encrypted_metadata_keys: [VmgsEncryptionKey; 2],
 
-    #[inspect(skip)]
+    #[cfg_attr(feature = "inspect", inspect(skip))]
     logger: Option<Arc<dyn VmgsLogger>>,
 }
 

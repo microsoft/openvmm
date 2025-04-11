@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! The definition of [`VmgsLogger`] trait that enables VMGS implementation
+//! The definition of `VmgsLogger` trait that enables VMGS implementation
 //! to send log events to the host.
 
 use get_protocol::EventLogId;
