@@ -3062,9 +3062,6 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
     fn registers(&mut self) -> Result<Registers, Self::Error> {
         let gps = self.vp.runner.tdx_enter_guest_gps();
 
-        tracing::trace!("not getting cr8, must read from apic page or apic tpr");
-        let cr8 = 0;
-
         let cs = self.vp.read_segment(self.vtl, TdxSegmentReg::Cs);
         let ds = self.vp.read_segment(self.vtl, TdxSegmentReg::Ds);
         let es = self.vp.read_segment(self.vtl, TdxSegmentReg::Es);
@@ -3084,6 +3081,8 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             .runner
             .read_vmcs64(self.vtl, VmcsField::VMX_VMCS_GUEST_CR3);
         let cr4 = self.vp.read_cr4(self.vtl);
+
+        let cr8 = self.vp.runner.tdx_apic_page(self.vtl).tpr.value >> 4;
 
         let efer = self.vp.backing.vtls[self.vtl].efer;
 
@@ -3120,7 +3119,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             cr2,
             cr3,
             cr4,
-            cr8,
+            cr8: cr8.into(),
             efer,
         })
     }
@@ -3213,9 +3212,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
 
         self.vp.write_cr4(self.vtl, *cr4)?;
 
-        // BUGBUG: cr8 affects interrupts but hcl asserts setting this to false.
-        // ignore for now
-        tracing::trace!(cr8, "IGNORING cr8 set_registers");
+        self.vp.runner.tdx_apic_page_mut(self.vtl).tpr.value = (*cr8 << 4) as u32;
 
         self.vp.write_efer(self.vtl, *efer)?;
 
