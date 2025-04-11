@@ -2505,15 +2505,10 @@ mod tests {
                 interface_name: "test".into(),
                 instance_id: guid,
                 interface_id: guid,
-                mmio_megabytes: 0,
-                mmio_megabytes_optional: 0,
                 channel_type: vmbus_channel::bus::ChannelType::Device {
                     pipe_packets: false,
                 },
-                subchannel_index: 0,
-                use_mnf: false,
-                offer_order: None,
-                allow_confidential_external_memory: false,
+                ..Default::default()
             }
         }
 
