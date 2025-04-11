@@ -8567,7 +8567,6 @@ dependencies = [
  "crc32fast",
  "disk_backend",
  "disklayer_ram",
- "get_protocol",
  "getrandom 0.3.1",
  "guestmem",
  "inspect",

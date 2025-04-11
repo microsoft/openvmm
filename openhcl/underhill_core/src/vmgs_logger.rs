@@ -5,6 +5,7 @@
 
 use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::EventLogId;
+use vmgs::logger::VmgsLogEvent;
 use vmgs::logger::VmgsLogger;
 
 /// An implementation of [`VmgsLogger`].
@@ -20,7 +21,11 @@ impl OpenHclVmgsLogger {
 
 #[async_trait::async_trait]
 impl VmgsLogger for OpenHclVmgsLogger {
-    async fn log_event_fatal(&self, event_id: EventLogId) {
+    async fn log_event_fatal(&self, event: VmgsLogEvent) {
+        let event_id = match event {
+            VmgsLogEvent::AccessFailed => EventLogId::VMGS_ACCESS_FAILED,
+        };
+
         self.get_client.event_log_fatal(event_id).await
     }
 }

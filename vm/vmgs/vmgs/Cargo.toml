@@ -19,7 +19,6 @@ encryption_ossl = ["dep:openssl"]
 
 [dependencies]
 disk_backend.workspace = true
-get_protocol.workspace = true
 guestmem.workspace = true
 scsi_buffers.workspace = true
 vmgs_format.workspace = true

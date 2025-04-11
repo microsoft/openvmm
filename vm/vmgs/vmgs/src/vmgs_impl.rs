@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::error::Error;
+use crate::logger::VmgsLogEvent;
 use crate::logger::VmgsLogger;
 use crate::storage::VmgsStorage;
 #[cfg(with_encryption)]
@@ -9,7 +10,6 @@ use anyhow::Context;
 #[cfg(with_encryption)]
 use anyhow::anyhow;
 use disk_backend::Disk;
-use get_protocol::EventLogId;
 #[cfg(feature = "inspect")]
 use inspect::Inspect;
 #[cfg(feature = "inspect")]
@@ -504,7 +504,7 @@ impl Vmgs {
                 .await
             {
                 if let Some(logger) = &self.logger {
-                    logger.log_event_fatal(EventLogId::VMGS_ACCESS_FAILED).await;
+                    logger.log_event_fatal(VmgsLogEvent::AccessFailed).await;
                 }
 
                 return Err(Error::WriteDisk(e));
@@ -566,7 +566,7 @@ impl Vmgs {
                 .await
             {
                 if let Some(logger) = &self.logger {
-                    logger.log_event_fatal(EventLogId::VMGS_ACCESS_FAILED).await;
+                    logger.log_event_fatal(VmgsLogEvent::AccessFailed).await;
                 }
 
                 return Err(Error::WriteDisk(e));
@@ -680,7 +680,7 @@ impl Vmgs {
             let byte_offset = block_count_to_byte_count(fcb.block_offset);
             if let Err(e) = self.storage.read_block(byte_offset, &mut buf).await {
                 if let Some(logger) = &self.logger {
-                    logger.log_event_fatal(EventLogId::VMGS_ACCESS_FAILED).await;
+                    logger.log_event_fatal(VmgsLogEvent::AccessFailed).await;
                 }
 
                 return Err(Error::ReadDisk(e));
@@ -1137,7 +1137,7 @@ impl Vmgs {
                 .await
             {
                 if let Some(logger) = &self.logger {
-                    logger.log_event_fatal(EventLogId::VMGS_ACCESS_FAILED).await;
+                    logger.log_event_fatal(VmgsLogEvent::AccessFailed).await;
                 }
 
                 return Err(Error::WriteDisk(e));
@@ -1170,7 +1170,7 @@ impl Vmgs {
                 .await
             {
                 if let Some(logger) = &self.logger {
-                    logger.log_event_fatal(EventLogId::VMGS_ACCESS_FAILED).await;
+                    logger.log_event_fatal(VmgsLogEvent::AccessFailed).await;
                 }
                 return Err(Error::ReadDisk(e));
             }
