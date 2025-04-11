@@ -93,8 +93,17 @@ struct SharedProcessorState {
     sint: [hvdef::HvSynicSint; NUM_SINTS],
 }
 
-impl Default for SharedProcessorState {
-    fn default() -> Self {
+impl SharedProcessorState {
+    fn new() -> Self {
+        Self {
+            online: false,
+            enabled: false,
+            siefp_page: OverlayPage::default(),
+            sint: [hvdef::HvSynicSint::new(); NUM_SINTS],
+        }
+    }
+
+    fn at_reset() -> Self {
         Self {
             online: true,
             enabled: true,
@@ -201,7 +210,9 @@ impl GlobalSynic {
     /// Returns a new instance of the synthetic interrupt controller.
     pub fn new(guest_memory: GuestMemory, max_vp_count: u32) -> Self {
         Self {
-            vps: (0..max_vp_count).map(|_| Default::default()).collect(),
+            vps: (0..max_vp_count)
+                .map(|_| Arc::new(RwLock::new(SharedProcessorState::new())))
+                .collect(),
             guest_memory,
         }
     }
@@ -259,7 +270,7 @@ impl GlobalSynic {
     /// Adds a virtual processor to the synthetic interrupt controller state.
     pub fn add_vp(&self, vp_index: VpIndex) -> ProcessorSynic {
         let shared = self.vps[vp_index.index() as usize].clone();
-        let old_shared = std::mem::take(&mut *shared.write());
+        let old_shared = std::mem::replace(&mut *shared.write(), SharedProcessorState::at_reset());
         assert!(!old_shared.online);
 
         ProcessorSynic {
@@ -284,7 +295,7 @@ impl ProcessorSynic {
         } = self;
         *sints = SintState::default();
         *timers = array::from_fn(|_| Timer::default());
-        *shared.write() = SharedProcessorState::default();
+        *shared.write() = SharedProcessorState::at_reset();
         *vina = HvRegisterVsmVina::new();
     }
 
