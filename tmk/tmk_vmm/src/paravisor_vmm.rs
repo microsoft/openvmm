@@ -24,8 +24,8 @@ impl RunContext<'_> {
         let params = UhPartitionNewParams {
             isolation,
             hide_isolation: false,
-            lower_vtl_memory_layout: self.memory_layout,
-            topology: self.processor_topology,
+            lower_vtl_memory_layout: &self.state.memory_layout,
+            topology: &self.state.processor_topology,
             cvm_cpuid_info: None,
             snp_secrets: None,
             env_cvm_guest_vsm: false,
@@ -38,12 +38,12 @@ impl RunContext<'_> {
         let p = virt_mshv_vtl::UhProtoPartition::new(params, |_| self.driver.clone())?;
 
         let m = underhill_mem::init(&underhill_mem::Init {
-            processor_topology: self.processor_topology,
+            processor_topology: &self.state.processor_topology,
             isolation,
             vtl0_alias_map_bit: None,
             vtom: None,
-            mem_layout: self.memory_layout,
-            complete_memory_layout: self.memory_layout,
+            mem_layout: &self.state.memory_layout,
+            complete_memory_layout: &self.state.memory_layout,
             boot_init: None,
             shared_pool: &[],
             maximum_vtl: hvdef::Vtl::Vtl0,

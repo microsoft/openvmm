@@ -88,6 +88,7 @@ pub fn check_cfg_target_arch(path: &Path, _fix: bool) -> anyhow::Result<()> {
         || path.starts_with("openhcl/sidecar")
         || path.starts_with("support/safe_intrinsics")
         || path.starts_with("tmk/simple_tmk")
+        || path.starts_with("tmk/tmk_core")
         || path.starts_with("vm/whp")
         || path.starts_with("vm/kvm")
     {

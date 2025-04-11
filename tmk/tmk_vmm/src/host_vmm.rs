@@ -40,19 +40,19 @@ impl RunContext<'_> {
     {
         let proto = hv
             .new_partition(ProtoPartitionConfig {
-                processor_topology: self.processor_topology,
+                processor_topology: &self.state.processor_topology,
                 hv_config: None,
                 vmtime: self.vmtime_source,
-                user_mode_apic: false,
+                user_mode_apic: self.state.opts.disable_offloads,
                 isolation: virt::IsolationType::None,
             })
             .context("failed to create proto partition")?;
 
-        let guest_memory = GuestMemory::allocate(self.memory_layout.end_of_ram() as usize);
+        let guest_memory = GuestMemory::allocate(self.state.memory_layout.end_of_ram() as usize);
 
         let (partition, vps) = proto
             .build(PartitionConfig {
-                mem_layout: self.memory_layout,
+                mem_layout: &self.state.memory_layout,
                 guest_memory: &guest_memory,
                 cpuid: &[],
                 vtl0_alias_map: None,
@@ -62,7 +62,7 @@ impl RunContext<'_> {
         let partition = Arc::new(partition);
 
         // Map guest memory.
-        for r in self.memory_layout.ram() {
+        for r in self.state.memory_layout.ram() {
             let range = r.range;
             // SAFETY: the guest memory is left alive as long as the partition
             // is using it.

@@ -29,19 +29,17 @@ use zerocopy::TryFromBytes as _;
 pub const COMMAND_ADDRESS: u64 = 0xffff_0000;
 
 pub struct CommonState {
-    driver: DefaultDriver,
-    opts: Options,
-    processor_topology: ProcessorTopology,
-    memory_layout: MemoryLayout,
+    pub driver: DefaultDriver,
+    pub opts: Options,
+    pub processor_topology: ProcessorTopology,
+    pub memory_layout: MemoryLayout,
 }
 
 pub struct RunContext<'a> {
-    state: &'a CommonState,
+    pub state: &'a CommonState,
     #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
     pub driver: &'a DefaultDriver,
     pub vmtime_source: &'a VmTimeSource,
-    pub processor_topology: &'a ProcessorTopology,
-    pub memory_layout: &'a MemoryLayout,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +57,7 @@ impl CommonState {
     pub async fn new(driver: DefaultDriver, opts: Options) -> anyhow::Result<Self> {
         #[cfg(guest_arch = "x86_64")]
         let processor_topology = TopologyBuilder::new_x86()
+            .x2apic(vm_topology::processor::x86::X2ApicState::Supported)
             .build(1)
             .context("failed to build processor topology")?;
 
@@ -113,8 +112,6 @@ impl CommonState {
                 state: self,
                 driver: &self.driver,
                 vmtime_source: &vmtime_source,
-                processor_topology: &self.processor_topology,
-                memory_layout: &self.memory_layout,
             };
 
             vmtime_keeper.start().await;
@@ -173,9 +170,9 @@ impl RunContext<'_> {
             #[cfg(guest_arch = "x86_64")]
             {
                 load::load_x86(
-                    self.memory_layout,
+                    &self.state.memory_layout,
                     guest_memory,
-                    self.processor_topology,
+                    &self.state.processor_topology,
                     caps,
                     &tmk,
                     test,
@@ -184,9 +181,9 @@ impl RunContext<'_> {
             #[cfg(guest_arch = "aarch64")]
             {
                 load::load_aarch64(
-                    self.memory_layout,
+                    &self.state.memory_layout,
                     guest_memory,
-                    self.processor_topology,
+                    &self.state.processor_topology,
                     caps,
                     &tmk,
                     test,

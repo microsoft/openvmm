@@ -2,14 +2,16 @@
 # Licensed under the MIT License.
 
 [package]
-name = "simple_tmk"
+name = "tmk_core"
 rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
-tmk_core.workspace = true
-tmk_macros.workspace = true
+minimal_rt.workspace = true
+tmk_protocol.workspace = true
 x86defs.workspace = true
+
+arrayvec.workspace = true
 
 [build-dependencies]
 minimal_rt_build.workspace = true

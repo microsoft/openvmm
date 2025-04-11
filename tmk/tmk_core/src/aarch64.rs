@@ -5,6 +5,8 @@
 
 #![cfg(target_arch = "aarch64")]
 
+use super::Scope;
+
 #[cfg(minimal_rt)]
 mod entry {
     core::arch::global_asm! {
@@ -35,7 +37,7 @@ mod entry {
         "b {main}",
         relocate = sym minimal_rt::reloc::relocate,
         stack = sym STACK,
-        main = sym crate::tmk::main,
+        main = sym crate::main,
         STACK_SIZE = const STACK_SIZE,
     }
 
@@ -43,4 +45,13 @@ mod entry {
     #[repr(C, align(16))]
     struct Stack([u8; STACK_SIZE]);
     static mut STACK: Stack = Stack([0; STACK_SIZE]);
+}
+
+pub(super) struct ArchScopeState;
+
+impl Scope<'_, '_> {
+    pub(super) fn arch_init() -> ArchScopeState {
+        ArchScopeState
+    }
+    pub(super) fn arch_reset(&mut self) {}
 }

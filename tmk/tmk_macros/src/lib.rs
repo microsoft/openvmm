@@ -16,7 +16,7 @@ pub fn tmk_test(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let name = item.sig.ident.to_string();
     let func = &item.sig.ident;
     quote! {
-        ::simple_tmk::define_tmk_test!(#name, #func);
+        ::tmk_core::define_tmk_test!(#name, #func);
         #item
     }
     .into_token_stream()

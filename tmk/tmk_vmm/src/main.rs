@@ -54,6 +54,10 @@ struct Options {
     /// The hypervisor interface to use to run the TMK.
     #[clap(long, required_unless_present("list"))]
     hv: Option<HypervisorOpt>,
+    /// Disable offloads to the hypervisor. This disables WHP APIC emulation,
+    /// for example.
+    #[clap(long)]
+    disable_offloads: bool,
     /// The path to the TMK binary.
     #[clap(long)]
     tmk: PathBuf,

@@ -4,11 +4,13 @@
 //! A simple test microkernel (TMK) for testing very basic VMM functionality.
 
 #![cfg_attr(minimal_rt, no_std, no_main)]
+// UNSAFETY: TMK tests are going to need to perform unsafe operations.
+#![allow(unsafe_code)]
 
-extern crate self as simple_tmk;
+mod prelude;
 
-mod tests;
-mod tmk;
+mod common;
+mod x86_64;
 
 #[cfg(not(minimal_rt))]
 fn main() {
