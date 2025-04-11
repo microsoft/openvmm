@@ -1346,7 +1346,7 @@ async fn new_underhill_vm(
                 Vmgs::open_from_saved(
                     Disk::new(disk).context("invalid vmgs disk")?,
                     vmgs_state,
-                    Some(Box::new(OpenHclVmgsLogger::new(get_client.clone()))),
+                    Some(Arc::new(OpenHclVmgsLogger::new(get_client.clone()))),
                 ),
             )
         }
@@ -1362,7 +1362,7 @@ async fn new_underhill_vm(
             let vmgs = if !env_cfg.reformat_vmgs {
                 match Vmgs::open(
                     disk.clone(),
-                    Some(Box::new(OpenHclVmgsLogger::new(get_client.clone()))),
+                    Some(Arc::new(OpenHclVmgsLogger::new(get_client.clone()))),
                 )
                 .instrument(tracing::info_span!("vmgs_open"))
                 .await
@@ -1396,7 +1396,7 @@ async fn new_underhill_vm(
             } else {
                 Vmgs::format_new(
                     disk,
-                    Some(Box::new(OpenHclVmgsLogger::new(get_client.clone()))),
+                    Some(Arc::new(OpenHclVmgsLogger::new(get_client.clone()))),
                 )
                 .instrument(tracing::info_span!("vmgs_format"))
                 .await

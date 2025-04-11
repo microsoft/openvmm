@@ -16,6 +16,7 @@ use inspect::Inspect;
 use inspect_counters::Counter;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
+use std::sync::Arc;
 use vmgs_format::EncryptionAlgorithm;
 use vmgs_format::FileAttribute;
 use vmgs_format::FileId;
@@ -91,7 +92,7 @@ pub struct Vmgs {
     encrypted_metadata_keys: [VmgsEncryptionKey; 2],
 
     #[inspect(skip)]
-    logger: Option<Box<dyn VmgsLogger>>,
+    logger: Option<Arc<dyn VmgsLogger>>,
 }
 
 #[cfg(feature = "inspect")]
@@ -140,7 +141,7 @@ impl Vmgs {
     /// Format and open a new VMGS file.
     pub async fn format_new(
         disk: Disk,
-        logger: Option<Box<dyn VmgsLogger>>,
+        logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Self, Error> {
         let mut storage = VmgsStorage::new(disk);
         tracing::debug!("formatting and initializing VMGS datastore");
@@ -153,7 +154,7 @@ impl Vmgs {
     }
 
     /// Open the VMGS file.
-    pub async fn open(disk: Disk, logger: Option<Box<dyn VmgsLogger>>) -> Result<Self, Error> {
+    pub async fn open(disk: Disk, logger: Option<Arc<dyn VmgsLogger>>) -> Result<Self, Error> {
         tracing::debug!("opening VMGS datastore");
         let mut storage = VmgsStorage::new(disk);
         // Errors from validate_file are fatal, as they involve invalid device metadata
@@ -185,7 +186,7 @@ impl Vmgs {
         mut storage: VmgsStorage,
         active_header: VmgsHeader,
         active_header_index: usize,
-        logger: Option<Box<dyn VmgsLogger>>,
+        logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Vmgs, Error> {
         let version = active_header.version;
         let (encryption_algorithm, encrypted_metadata_keys, datastore_key_count) =
@@ -1759,7 +1760,7 @@ pub mod save_restore {
         pub fn open_from_saved(
             disk: Disk,
             state: state::SavedVmgsState,
-            logger: Option<Box<dyn VmgsLogger>>,
+            logger: Option<Arc<dyn VmgsLogger>>,
         ) -> Self {
             let state::SavedVmgsState {
                 active_header_index,
