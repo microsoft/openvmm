@@ -35,6 +35,7 @@ use x86defs::tdx::TdgMemPageGpaAttr;
 use x86defs::tdx::TdxContextCode;
 use x86defs::tdx::TdxExtendedFieldCode;
 use x86defs::tdx::TdxGlaListInfo;
+use x86defs::tdx::TdxGp;
 use x86defs::tdx::TdxL2Ctls;
 use x86defs::tdx::TdxL2EnterGuestState;
 use x86defs::tdx::TdxVmFlags;
@@ -174,7 +175,7 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     /// the given [`TdxPrivateRegs`].
     pub fn read_private_regs(&self, regs: &mut TdxPrivateRegs) {
         let TdxL2EnterGuestState {
-            gps: _gps, // Shared between VTLs
+            gps, // Shared between VTLs except for RSP
             rflags,
             rip,
             ssp,
@@ -184,6 +185,7 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
         } = self.tdx_enter_guest_state();
         regs.rflags = *rflags;
         regs.rip = *rip;
+        regs.rsp = gps[TdxGp::RSP];
         regs.ssp = *ssp;
         regs.rvi = *rvi;
         regs.svi = *svi;
@@ -214,6 +216,7 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
         let TdxPrivateRegs {
             rflags,
             rip,
+            rsp,
             ssp,
             rvi,
             svi,
@@ -232,6 +235,7 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
         enter_guest_state.ssp = *ssp;
         enter_guest_state.rvi = *rvi;
         enter_guest_state.svi = *svi;
+        enter_guest_state.gps[TdxGp::RSP] = *rsp;
 
         let vp_state = self.tdx_vp_state_mut();
         vp_state.msr_kernel_gs_base = *msr_kernel_gs_base;
@@ -474,6 +478,7 @@ pub struct TdxPrivateRegs {
     // Registers on [`TdxL2EnterGuestState`].
     pub rflags: u64,
     pub rip: u64,
+    pub rsp: u64,
     pub ssp: u64,
     pub rvi: u8,
     pub svi: u8,
@@ -496,6 +501,7 @@ impl TdxPrivateRegs {
         Self {
             rflags: x86defs::RFlags::at_reset().into(),
             rip: 0,
+            rsp: 0,
             ssp: 0,
             rvi: 0,
             svi: 0,

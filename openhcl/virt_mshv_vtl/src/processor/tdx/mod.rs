@@ -1998,6 +1998,7 @@ impl UhProcessor<'_, TdxBacked> {
         let TdxPrivateRegs {
             rflags,
             rip,
+            rsp,
             ssp,
             rvi,
             svi,
@@ -2012,6 +2013,7 @@ impl UhProcessor<'_, TdxBacked> {
         tracing::error!(
             rflags,
             rip,
+            rsp,
             ssp,
             rvi,
             svi,
@@ -3092,7 +3094,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             rcx: gps[TdxGp::RCX],
             rdx: gps[TdxGp::RDX],
             rbx: gps[TdxGp::RBX],
-            rsp: gps[TdxGp::RSP],
+            rsp: self.vp.backing.vtls[self.vtl].private_regs.rsp,
             rbp: gps[TdxGp::RBP],
             rsi: gps[TdxGp::RSI],
             rdi: gps[TdxGp::RDI],
@@ -3168,7 +3170,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         gps[TdxGp::RCX] = *rcx;
         gps[TdxGp::RDX] = *rdx;
         gps[TdxGp::RBX] = *rbx;
-        gps[TdxGp::RSP] = *rsp;
+        self.vp.backing.vtls[self.vtl].private_regs.rsp = *rsp;
         gps[TdxGp::RBP] = *rbp;
         gps[TdxGp::RSI] = *rsi;
         gps[TdxGp::RDI] = *rdi;
