@@ -256,12 +256,6 @@ pub struct Tpm {
 #[error(transparent)]
 pub struct TpmError(#[from] TpmErrorKind);
 
-impl From<ms_tpm_20_ref::Error> for TpmError {
-    fn from(e: ms_tpm_20_ref::Error) -> Self {
-        Self(TpmErrorKind::TpmPlatform(e))
-    }
-}
-
 #[derive(Error, Debug)]
 pub enum TpmErrorKind {
     #[error("failed to read Ppi state")]
@@ -274,8 +268,12 @@ pub enum TpmErrorKind {
     PersistNvramState(#[source] NonVolatileStoreError),
     #[error("failed to deserialized Ppi state")]
     InvalidPpiState,
-    #[error("TPM platform error")]
-    TpmPlatform(#[from] ms_tpm_20_ref::Error),
+    #[error("failed to instantiate TPM")]
+    InstantiateTpm(#[source] ms_tpm_20_ref::Error),
+    #[error("failed to reset TPM without Nvram state")]
+    ResetTpmWithoutState(#[source] ms_tpm_20_ref::Error),
+    #[error("failed to reset TPM with Nvram state")]
+    ResetTpmWithState(#[source] ms_tpm_20_ref::Error),
     #[error("failed to initialize TPM engine")]
     InitializeTpmEngine(#[source] TpmHelperError),
     #[error("failed to clear TPM platform context")]
@@ -298,8 +296,6 @@ pub enum TpmErrorKind {
     ClearPlatformHierarchy(#[source] TpmHelperError),
     #[error("failed to set pcr banks")]
     SetPcrBanks(#[source] TpmHelperError),
-    #[error("failed to reset TPM with Nvram state")]
-    ResetTpmWithState(#[source] ms_tpm_20_ref::Error),
 }
 
 struct TpmPlatformCallbacks {
@@ -352,7 +348,8 @@ impl Tpm {
                         monotonic_timer,
                     }),
                     ms_tpm_20_ref::InitKind::ColdInit,
-                )?
+                )
+                .map_err(TpmErrorKind::InstantiateTpm)?
             },
             reply_buffer: [0u8; TPM_PAGE_SIZE],
         };
@@ -765,7 +762,10 @@ impl Tpm {
         //
         // Below is the 2nd reboot of TPM device so that the new active PCRs take into effect.
         if response_code == tpm20proto::ResponseCode::Success as u32 {
-            self.tpm_engine_helper.tpm_engine.reset(None)?;
+            self.tpm_engine_helper
+                .tpm_engine
+                .reset(None)
+                .map_err(TpmErrorKind::ResetTpmWithoutState)?;
             self.tpm_engine_helper
                 .initialize_tpm_engine()
                 .map_err(TpmErrorKind::InitializeTpmEngine)?;
