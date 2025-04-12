@@ -894,6 +894,7 @@ impl Tpm {
                             now.duration_since(std::time::UNIX_EPOCH),
                         );
 
+                        // Use the non-async version of function to log the event (without flushing).
                         self.logger.log_event(TpmLogEvent::AkCertRenewalFailed);
 
                         return;
