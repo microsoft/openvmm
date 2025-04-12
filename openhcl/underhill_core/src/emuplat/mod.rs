@@ -21,7 +21,7 @@ use vmcore::save_restore::SaveRestore;
 // These resolvers are defined in this crate and are always linked in.
 register_static_resolvers! {
     tpm::resources::GetTpmRequestAkCertHelperResolver,
-    tpm::resources::GetOpenHclTpmLoggerResolver,
+    tpm::resources::GetTpmLoggerResolver,
 }
 
 pub struct EmuplatServicing {

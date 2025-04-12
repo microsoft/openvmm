@@ -26,10 +26,10 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use get_protocol::EventLogId;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
+use logger::TpmLogEvent;
 use logger::TpmLogger;
 use ms_tpm_20_ref::MsTpm20RefPlatform;
 use parking_lot::Mutex;
@@ -453,9 +453,9 @@ impl Tpm {
             if let Some(blob) = existing_nvmem_blob {
                 if let Err(e) = self.tpm_engine_helper.tpm_engine.reset(Some(&blob)) {
                     if let ms_tpm_20_ref::Error::NvMem(NvError::MismatchedBlobSize) = e {
-                        if let Some(logger) = &self.logger {
-                            logger.log_event_fatal(EventLogId::TPM_INVALID_STATE).await;
-                        }
+                        self.logger
+                            .log_event_and_flush(TpmLogEvent::InvalidState)
+                            .await;
                     }
 
                     return Err(TpmErrorKind::ResetTpmWithState(e).into());
@@ -471,11 +471,9 @@ impl Tpm {
         // The host indicates this when VM identity changes.
         if self.refresh_tpm_seeds {
             if let Err(e) = self.tpm_engine_helper.refresh_tpm_seeds() {
-                if let Some(logger) = &self.logger {
-                    logger
-                        .log_event_fatal(EventLogId::TPM_IDENTITY_CHANGE_FAILED)
-                        .await;
-                }
+                self.logger
+                    .log_event_and_flush(TpmLogEvent::IdentityChangeFailed)
+                    .await;
 
                 return Err(TpmErrorKind::RefreshTpmSeeds(e).into());
             }
@@ -494,9 +492,10 @@ impl Tpm {
                 let ppi_state = match persist_restore::deserialize_ppi_state(buf) {
                     Some(state) => state,
                     None => {
-                        if let Some(logger) = &self.logger {
-                            logger.log_event_fatal(EventLogId::TPM_INVALID_STATE).await;
-                        }
+                        self.logger
+                            .log_event_and_flush(TpmLogEvent::InvalidState)
+                            .await;
+
                         return Err(TpmErrorKind::InvalidPpiState.into());
                     }
                 };
@@ -895,9 +894,7 @@ impl Tpm {
                             now.duration_since(std::time::UNIX_EPOCH),
                         );
 
-                        if let Some(logger) = &self.logger {
-                            logger.log_event(EventLogId::CERTIFICATE_RENEWAL_FAILED)
-                        }
+                        self.logger.log_event(TpmLogEvent::AkCertRenewalFailed);
 
                         return;
                     }

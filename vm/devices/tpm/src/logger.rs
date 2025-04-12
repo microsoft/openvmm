@@ -4,10 +4,16 @@
 //! The definition of [`TpmLogger`] trait that enables TPM implementation
 //! to send log events to the host.
 
-use get_protocol::EventLogId;
 use std::sync::Arc;
 use tpm_resources::TpmLoggerKind;
 use vm_resource::CanResolveTo;
+
+/// Events for [`TpmLogger`].
+pub enum TpmLogEvent {
+    AkCertRenewalFailed,
+    IdentityChangeFailed,
+    InvalidState,
+}
 
 impl CanResolveTo<ResolvedTpmLogger> for TpmLoggerKind {
     // Workaround for async_trait not supporting GATs with missing lifetimes.
@@ -26,9 +32,24 @@ impl<T: 'static + TpmLogger> From<T> for ResolvedTpmLogger {
 /// A trait for sending log event to the host.
 #[async_trait::async_trait]
 pub trait TpmLogger: Send + Sync {
-    /// Send a fatal event with the given id to the host.
-    async fn log_event_fatal(&self, event_id: EventLogId);
+    /// Send an event with the given id to the host and flush.
+    async fn log_event_and_flush(&self, event: TpmLogEvent);
 
-    /// Send an event with the given id to the host.
-    fn log_event(&self, event_id: EventLogId);
+    /// Send an event with the given id to the host without flushing.
+    fn log_event(&self, event: TpmLogEvent);
+}
+
+#[async_trait::async_trait]
+impl TpmLogger for Option<Arc<dyn TpmLogger>> {
+    async fn log_event_and_flush(&self, event: TpmLogEvent) {
+        if let Some(logger) = self {
+            logger.log_event_and_flush(event).await;
+        }
+    }
+
+    fn log_event(&self, event: TpmLogEvent) {
+        if let Some(logger) = self {
+            logger.log_event(event);
+        }
+    }
 }

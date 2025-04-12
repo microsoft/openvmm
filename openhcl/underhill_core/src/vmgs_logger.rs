@@ -9,18 +9,18 @@ use vmgs::logger::VmgsLogEvent;
 use vmgs::logger::VmgsLogger;
 
 /// An implementation of [`VmgsLogger`].
-pub struct OpenHclVmgsLogger {
+pub struct GetVmgsLogger {
     get_client: GuestEmulationTransportClient,
 }
 
-impl OpenHclVmgsLogger {
+impl GetVmgsLogger {
     pub fn new(get_client: GuestEmulationTransportClient) -> Self {
         Self { get_client }
     }
 }
 
 #[async_trait::async_trait]
-impl VmgsLogger for OpenHclVmgsLogger {
+impl VmgsLogger for GetVmgsLogger {
     async fn log_event_fatal(&self, event: VmgsLogEvent) {
         let event_id = match event {
             VmgsLogEvent::AccessFailed => EventLogId::VMGS_ACCESS_FAILED,
