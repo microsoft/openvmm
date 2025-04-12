@@ -1920,17 +1920,21 @@ pub mod save_restore {
 mod tests {
     use super::*;
     use pal_async::async_test;
+    #[cfg(with_encryption)]
     use parking_lot::Mutex;
+    #[cfg(with_encryption)]
     use std::sync::Arc;
     #[cfg(with_encryption)]
     use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 
+    #[cfg(with_encryption)]
     struct TestVmgsLogger {
         data: Arc<Mutex<String>>,
     }
 
+    #[cfg(with_encryption)]
     #[async_trait::async_trait]
     impl VmgsLogger for TestVmgsLogger {
         async fn log_event_fatal(&self, _event: VmgsLogEvent) {

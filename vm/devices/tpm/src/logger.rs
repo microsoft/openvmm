@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 //! The definition of [`TpmLogger`] trait that enables TPM implementation
-//! to send log events to the host.
+//! to send log events to an external logger.
 
 use std::sync::Arc;
 use tpm_resources::TpmLoggerKind;
@@ -10,8 +10,11 @@ use vm_resource::CanResolveTo;
 
 /// Events for [`TpmLogger`].
 pub enum TpmLogEvent {
+    /// Failed to renew AK cert
     AkCertRenewalFailed,
+    /// Failed to change TPM seeds
     IdentityChangeFailed,
+    /// Invalid PPI or NVRAM state
     InvalidState,
 }
 
