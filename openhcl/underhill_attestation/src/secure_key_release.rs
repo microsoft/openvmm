@@ -266,7 +266,8 @@ async fn make_igvm_attest_requests(
         Err(e) => {
             if wrapped_key_required {
                 // Notify host if WrappedKey is required for diagnosis.
-                get.event_log(EventLogId::WRAPPED_KEY_REQUIRED_BUT_INVALID);
+                get.event_log_fatal(EventLogId::WRAPPED_KEY_REQUIRED_BUT_INVALID)
+                    .await;
             }
 
             return Err(RequestVmgsEncryptionKeysError::SendIgvmAttestWrappedKeyRequest(e));
@@ -309,7 +310,8 @@ async fn make_igvm_attest_requests(
             // Return an error if WrappedKey is required, otherwise ignore the error and set the `wrapped_des_key` to None.
             if wrapped_key_required {
                 // Notify host if WrappedKey is required for diagnosis.
-                get.event_log(EventLogId::WRAPPED_KEY_REQUIRED_BUT_INVALID);
+                get.event_log_fatal(EventLogId::WRAPPED_KEY_REQUIRED_BUT_INVALID)
+                    .await;
 
                 return Err(
                     RequestVmgsEncryptionKeysError::RequiredButInvalidIgvmAttestWrappedKeyResponse,
@@ -321,7 +323,8 @@ async fn make_igvm_attest_requests(
         Err(e) => {
             if wrapped_key_required {
                 // Notify host if WrappedKey is required for diagnosis.
-                get.event_log(EventLogId::WRAPPED_KEY_REQUIRED_BUT_INVALID);
+                get.event_log_fatal(EventLogId::WRAPPED_KEY_REQUIRED_BUT_INVALID)
+                    .await;
             }
 
             return Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestWrappedKeyResponse(e));
@@ -347,7 +350,7 @@ async fn make_igvm_attest_requests(
         Ok(response) => response,
         Err(e) => {
             // Notify host for diagnosis.
-            get.event_log(EventLogId::KEY_NOT_RELEASED);
+            get.event_log_fatal(EventLogId::KEY_NOT_RELEASED).await;
 
             return Err(RequestVmgsEncryptionKeysError::SendIgvmAttestKeyReleaseRequest(e));
         }
@@ -361,7 +364,7 @@ async fn make_igvm_attest_requests(
         }),
         Err(igvm_attest::key_release::KeyReleaseError::ResponseSizeTooSmall) => {
             // Notify host for diagnosis.
-            get.event_log(EventLogId::KEY_NOT_RELEASED);
+            get.event_log_fatal(EventLogId::KEY_NOT_RELEASED).await;
 
             // The request does not succeed
             Ok(WrappedKeyVmgsEncryptionKeys {
@@ -371,7 +374,7 @@ async fn make_igvm_attest_requests(
         }
         Err(e) => {
             // Notify host for diagnosis.
-            get.event_log(EventLogId::KEY_NOT_RELEASED);
+            get.event_log_fatal(EventLogId::KEY_NOT_RELEASED).await;
 
             Err(RequestVmgsEncryptionKeysError::ParseIgvmAttestKeyReleaseResponse(e))
         }
