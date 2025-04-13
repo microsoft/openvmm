@@ -8,6 +8,7 @@ use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum PipetteOutput {
     LinuxBin {
         #[serde(rename = "pipette")]
