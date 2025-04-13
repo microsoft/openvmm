@@ -25,11 +25,11 @@ mod entry {
         "call {relocate}",
         "call {arch_init}",
         "mov rdi, r12",
-        "jmp {main}",
+        "jmp {entry}",
         relocate = sym minimal_rt::reloc::relocate,
         stack = sym STACK,
         STACK_SIZE = const STACK_SIZE,
-        main = sym crate::main,
+        entry = sym crate::entry,
         arch_init = sym super::arch_init,
     }
 

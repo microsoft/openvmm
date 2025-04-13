@@ -93,7 +93,7 @@ macro_rules! log {
 }
 
 #[cfg_attr(not(minimal_rt), expect(dead_code))]
-fn main(input: &tmk_protocol::StartInput) -> ! {
+fn entry(input: &tmk_protocol::StartInput) -> ! {
     COMMAND_ADDRESS.store(input.command as *mut _, Relaxed);
 
     // SAFETY: this is the set of test descriptors in the tmk_tests section.

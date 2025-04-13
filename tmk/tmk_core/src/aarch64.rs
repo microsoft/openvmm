@@ -34,10 +34,10 @@ mod entry {
         "add x2, x2, :lo12:_DYNAMIC",
         "bl {relocate}",
         "mov x0, x19",
-        "b {main}",
+        "b {entry}",
         relocate = sym minimal_rt::reloc::relocate,
         stack = sym STACK,
-        main = sym crate::main,
+        entry = sym crate::entry,
         STACK_SIZE = const STACK_SIZE,
     }
 
