@@ -563,6 +563,34 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
         read_from
     }
 
+    /// Returns a new instance of this variable with an artificial dependency on
+    /// `other`.
+    ///
+    /// This is useful for making explicit a non-explicit dependency between the
+    /// two variables. For example, if `self` contains a path to a file, and
+    /// `other` is only written once that file has been created, then this
+    /// method can be used to return a new `ReadVar` which depends on `other`
+    /// but is otherwise identical to `self`. This ensures that when the new
+    /// variable is read, the file has been created.
+    ///
+    /// In general, it is better to ensure that the dependency is explicit, so
+    /// that if you have a variable with a path, then you know that the file
+    /// exists when you read it. This method is useful in cases where this is
+    /// not naturally the case, e.g., when you are providing a path as part of a
+    /// request, as opposed to the path being returned to you.
+    #[must_use]
+    pub fn depending_on<U>(&self, ctx: &mut NodeCtx<'_>, other: &ReadVar<U>) -> Self
+    where
+        T: 'static,
+        U: Serialize + DeserializeOwned + 'static,
+    {
+        ctx.emit_minor_rust_stepv("🌼 Add dependency", |ctx| {
+            let this = self.clone().claim(ctx);
+            other.clone().claim(ctx);
+            move |rt| rt.read(this)
+        })
+    }
+
     /// Consume this `ReadVar` outside the context of a step, signalling that it
     /// won't be used.
     pub fn claim_unused(self, ctx: &mut NodeCtx<'_>) {

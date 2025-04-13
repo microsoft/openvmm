@@ -226,6 +226,11 @@ impl SimpleFlowNode for Node {
             FlowPlatformKind::Unix => "/will/not/exist",
         }));
 
+        // Bind the externally generated output paths together with the results
+        // to create a dependency on the VMM tests having actually run.
+        let test_log_path = test_log_path.depending_on(ctx, &results);
+        let crash_dumps_path = crash_dumps_path.depending_on(ctx, &results);
+
         let junit_xml = results.map(ctx, |r| r.junit_xml);
         let reported_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
             junit_xml,
