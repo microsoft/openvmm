@@ -2538,7 +2538,7 @@ macro_rules! __flowey_request_inner {
         $($rest:tt)*
     ) => {
         $(#[$a])*
-        #[derive(Serialize, Deserialize)]
+        #[derive($crate::reexports::Serialize, $crate::reexports::Deserialize)]
         pub struct $variant($($tt)*);
 
         impl IntoRequest for $variant {
@@ -2557,7 +2557,7 @@ macro_rules! __flowey_request_inner {
         $($rest:tt)*
     ) => {
         $(#[$a])*
-        #[derive(Serialize, Deserialize)]
+        #[derive($crate::reexports::Serialize, $crate::reexports::Deserialize)]
         pub struct $variant {
             $($tt)*
         }

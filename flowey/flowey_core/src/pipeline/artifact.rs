@@ -1,3 +1,9 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
+//! Internal nodes for publishing (well, preparing to publish) and resolving
+//! artifacts.
+
 // UNSAFETY: using internal macros which use linkme.
 #![expect(unsafe_code)]
 
