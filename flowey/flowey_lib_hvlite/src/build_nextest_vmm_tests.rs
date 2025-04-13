@@ -14,7 +14,12 @@ use std::collections::BTreeMap;
 
 /// Type-safe wrapper around a built nextest archive containing VMM tests
 #[derive(Serialize, Deserialize)]
-pub struct NextestVmmTestsArchive(pub PathBuf);
+pub struct NextestVmmTestsArchive {
+    #[serde(rename = "vmm_tests.tar.zst")]
+    pub archive_file: PathBuf,
+}
+
+impl Artifact for NextestVmmTestsArchive {}
 
 /// Build mode to use when building the nextest VMM tests
 #[derive(Serialize, Deserialize)]
@@ -167,7 +172,7 @@ impl FlowNode for Node {
                         let unit_tests = unit_tests_archive.claim(ctx);
                         |rt| {
                             let archive_file = rt.read(archive_file);
-                            rt.write(unit_tests, &NextestVmmTestsArchive(archive_file));
+                            rt.write(unit_tests, &NextestVmmTestsArchive { archive_file });
                         }
                     });
                 }

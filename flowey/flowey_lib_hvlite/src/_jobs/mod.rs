@@ -8,8 +8,6 @@ pub mod all_good_job;
 pub mod build_and_publish_guide;
 pub mod build_and_publish_hypestv;
 pub mod build_and_publish_igvmfilegen;
-pub mod build_and_publish_nextest_unit_tests_archive;
-pub mod build_and_publish_nextest_vmm_tests_archive;
 pub mod build_and_publish_ohcldiag_dev;
 pub mod build_and_publish_openhcl_igvm_from_recipe;
 pub mod build_and_publish_openvmm_hcl_baseline;

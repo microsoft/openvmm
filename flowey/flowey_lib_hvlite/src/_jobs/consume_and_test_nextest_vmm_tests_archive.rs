@@ -4,6 +4,7 @@
 //! Run a pre-built cargo-nextest based VMM tests archive.
 
 use crate::build_guest_test_uefi::GuestTestUefiOutput;
+use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
 use crate::build_openvmm::OpenvmmOutput;
 use crate::build_pipette::PipetteOutput;
 use crate::run_cargo_nextest_run::NextestProfile;
@@ -25,8 +26,8 @@ flowey_request! {
     pub struct Params {
         /// Friendly label for report JUnit test results
         pub junit_test_label: String,
-        /// Existing VMM tests archive artifact dir
-        pub vmm_tests_artifact_dir: ReadVar<PathBuf>,
+        /// Existing VMM tests archive
+        pub nextest_vmm_tests_archive: ReadVar<NextestVmmTestsArchive>,
         /// What target VMM tests were compiled for (determines required deps).
         pub target: target_lexicon::Triple,
         /// Nextest profile to use when running the source code
@@ -54,7 +55,6 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::artifact_nextest_vmm_tests_archive::resolve::Node>();
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe_extras::resolve::Node>();
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe::resolve::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_vhds::Node>();
@@ -68,7 +68,7 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params {
             junit_test_label,
-            vmm_tests_artifact_dir,
+            nextest_vmm_tests_archive,
             target,
             nextest_profile,
             nextest_filter_expr,
@@ -79,14 +79,6 @@ impl SimpleFlowNode for Node {
             artifact_dir,
             done,
         } = request;
-
-        let nextest_archive_file =
-            ctx.reqv(
-                |v| crate::artifact_nextest_vmm_tests_archive::resolve::Request {
-                    artifact_dir: vmm_tests_artifact_dir,
-                    nextest_archive: v,
-                },
-            );
 
         // use an ad-hoc, step-local dir as a staging ground for test content
         let test_content_dir = ctx.emit_rust_stepv("creating new test content dir", |_| {
@@ -153,7 +145,7 @@ impl SimpleFlowNode for Node {
         });
 
         let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
-            nextest_archive_file,
+            nextest_archive_file: nextest_vmm_tests_archive,
             nextest_profile,
             nextest_filter_expr,
             extra_env,

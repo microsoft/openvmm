@@ -820,7 +820,7 @@ jobs:
         flowey e 11 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 11 flowey_lib_hvlite::run_cargo_build 6
         flowey e 11 flowey_lib_hvlite::build_openvmm 0
-        flowey e 11 flowey_core::pipeline::artifact::publish 0
+        flowey e 11 flowey_core::pipeline::artifact::publish 1
         flowey e 11 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build vmgstool
@@ -899,7 +899,7 @@ jobs:
     - name: build guest_test_uefi.img
       run: |-
         flowey e 11 flowey_lib_hvlite::build_guest_test_uefi 0
-        flowey e 11 flowey_core::pipeline::artifact::publish 1
+        flowey e 11 flowey_core::pipeline::artifact::publish 2
       shell: bash
     - name: create cargo-nextest cache dir
       run: flowey e 11 flowey_lib_common::download_cargo_nextest 0
@@ -934,10 +934,7 @@ jobs:
       run: |-
         flowey e 11 flowey_lib_common::run_cargo_nextest_archive 0
         flowey e 11 flowey_lib_hvlite::build_nextest_vmm_tests 0
-        flowey e 11 flowey_lib_hvlite::artifact_nextest_vmm_tests_archive::publish 0
-      shell: bash
-    - name: copying vmm_tests to artifact dir
-      run: flowey e 11 flowey_lib_common::copy_to_artifact_dir 4
+        flowey e 11 flowey_core::pipeline::artifact::publish 0
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 11 flowey_lib_common::cache 3
@@ -2990,10 +2987,7 @@ jobs:
       run: |-
         flowey.exe e 18 flowey_lib_hvlite::init_vmm_tests_env 0
         flowey.exe e 18 flowey_lib_hvlite::run_cargo_nextest_run 1
-      shell: bash
-    - name: resolve vmm tests archive artifact
-      run: |-
-        flowey.exe e 18 flowey_lib_hvlite::artifact_nextest_vmm_tests_archive::resolve 0
+        flowey.exe e 18 flowey_core::pipeline::artifact::resolve 4
         flowey.exe e 18 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
@@ -3246,10 +3240,7 @@ jobs:
       run: |-
         flowey.exe e 19 flowey_lib_hvlite::init_vmm_tests_env 0
         flowey.exe e 19 flowey_lib_hvlite::run_cargo_nextest_run 1
-      shell: bash
-    - name: resolve vmm tests archive artifact
-      run: |-
-        flowey.exe e 19 flowey_lib_hvlite::artifact_nextest_vmm_tests_archive::resolve 0
+        flowey.exe e 19 flowey_core::pipeline::artifact::resolve 4
         flowey.exe e 19 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
@@ -3687,10 +3678,7 @@ jobs:
       run: |-
         flowey.exe e 20 flowey_lib_hvlite::init_vmm_tests_env 0
         flowey.exe e 20 flowey_lib_hvlite::run_cargo_nextest_run 1
-      shell: bash
-    - name: resolve vmm tests archive artifact
-      run: |-
-        flowey.exe e 20 flowey_lib_hvlite::artifact_nextest_vmm_tests_archive::resolve 0
+        flowey.exe e 20 flowey_core::pipeline::artifact::resolve 4
         flowey.exe e 20 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
@@ -3897,7 +3885,7 @@ jobs:
         flowey e 21 flowey_lib_hvlite::init_openvmm_magicpath_uefi_mu_msvm 0
         flowey e 21 flowey_lib_hvlite::run_cargo_nextest_run 0
         flowey e 21 flowey_core::pipeline::artifact::resolve 2
-        flowey e 21 flowey_core::pipeline::artifact::resolve 3
+        flowey e 21 flowey_core::pipeline::artifact::resolve 4
         flowey e 21 flowey_core::pipeline::artifact::resolve 1
         flowey e 21 flowey_core::pipeline::artifact::resolve 0
       shell: bash
@@ -3942,10 +3930,7 @@ jobs:
       run: |-
         flowey e 21 flowey_lib_hvlite::init_vmm_tests_env 0
         flowey e 21 flowey_lib_hvlite::run_cargo_nextest_run 1
-      shell: bash
-    - name: resolve vmm tests archive artifact
-      run: |-
-        flowey e 21 flowey_lib_hvlite::artifact_nextest_vmm_tests_archive::resolve 0
+        flowey e 21 flowey_core::pipeline::artifact::resolve 3
         flowey e 21 flowey_lib_hvlite::test_nextest_vmm_tests_archive 1
       shell: bash
     - name: run 'vmm_tests' nextest tests
@@ -4246,10 +4231,7 @@ jobs:
       run: |-
         flowey.exe e 22 flowey_lib_hvlite::init_vmm_tests_env 0
         flowey.exe e 22 flowey_lib_hvlite::run_cargo_nextest_run 1
-      shell: bash
-    - name: resolve vmm tests archive artifact
-      run: |-
-        flowey.exe e 22 flowey_lib_hvlite::artifact_nextest_vmm_tests_archive::resolve 0
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 4
         flowey.exe e 22 flowey_lib_hvlite::test_nextest_vmm_tests_archive 0
       shell: bash
     - name: run 'vmm_tests' nextest tests
@@ -5261,10 +5243,7 @@ jobs:
       run: |-
         flowey.exe e 7 flowey_lib_common::run_cargo_nextest_archive 0
         flowey.exe e 7 flowey_lib_hvlite::build_nextest_vmm_tests 0
-        flowey.exe e 7 flowey_lib_hvlite::artifact_nextest_vmm_tests_archive::publish 0
-      shell: bash
-    - name: copying vmm_tests to artifact dir
-      run: flowey.exe e 7 flowey_lib_common::copy_to_artifact_dir 0
+        flowey.exe e 7 flowey_core::pipeline::artifact::publish 2
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 7 flowey_lib_common::cache 3
@@ -5737,10 +5716,7 @@ jobs:
       run: |-
         flowey.exe e 9 flowey_lib_common::run_cargo_nextest_archive 0
         flowey.exe e 9 flowey_lib_hvlite::build_nextest_vmm_tests 0
-        flowey.exe e 9 flowey_lib_hvlite::artifact_nextest_vmm_tests_archive::publish 0
-      shell: bash
-    - name: copying vmm_tests to artifact dir
-      run: flowey.exe e 9 flowey_lib_common::copy_to_artifact_dir 0
+        flowey.exe e 9 flowey_core::pipeline::artifact::publish 2
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 9 flowey_lib_common::cache 3

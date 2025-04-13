@@ -11,8 +11,6 @@ pub mod _jobs;
 pub mod artifact_guide;
 pub mod artifact_hypestv;
 pub mod artifact_igvmfilegen;
-pub mod artifact_nextest_unit_tests_archive;
-pub mod artifact_nextest_vmm_tests_archive;
 pub mod artifact_ohcldiag_dev;
 pub mod artifact_openhcl_boot;
 pub mod artifact_openhcl_igvm_from_recipe;

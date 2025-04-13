@@ -138,11 +138,11 @@ impl IntoPipeline for CheckinGatesCli {
 
         // initialize the various VMM tests nextest archive artifacts
         let (pub_vmm_tests_archive_linux_x86, use_vmm_tests_archive_linux_x86) =
-            pipeline.new_artifact("x64-linux-vmm-tests-archive");
+            pipeline.new_typed_artifact("x64-linux-vmm-tests-archive");
         let (pub_vmm_tests_archive_windows_x86, use_vmm_tests_archive_windows_x86) =
-            pipeline.new_artifact("x64-windows-vmm-tests-archive");
+            pipeline.new_typed_artifact("x64-windows-vmm-tests-archive");
         let (pub_vmm_tests_archive_windows_aarch64, use_vmm_tests_archive_windows_aarch64) =
-            pipeline.new_artifact("aarch64-windows-vmm-tests-archive");
+            pipeline.new_typed_artifact("aarch64-windows-vmm-tests-archive");
 
         // wrap each publish handle in an option, so downstream code can
         // `.take()` the handle when emitting the corresponding job
@@ -457,25 +457,24 @@ impl IntoPipeline for CheckinGatesCli {
                 CommonArch::X86_64 => {
                     let pub_vmm_tests_archive_windows_x86 =
                         pub_vmm_tests_archive_windows_x86.take().unwrap();
-                    job = job.dep_on(|ctx| {
-                        flowey_lib_hvlite::_jobs::build_and_publish_nextest_vmm_tests_archive::Params {
-                            target: CommonTriple::X86_64_WINDOWS_MSVC.as_triple(),
-                            profile: CommonProfile::from_release(release),
-                            artifact_dir: ctx.publish_artifact(pub_vmm_tests_archive_windows_x86),
-                            done: ctx.new_done_handle(),
-                        }
+                    job = job.dep_on(|ctx|
+                        flowey_lib_hvlite::build_nextest_vmm_tests::Request {
+                        target: CommonTriple::X86_64_WINDOWS_MSVC.as_triple(),
+                        profile: CommonProfile::from_release(release),
+                        build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
+                            ctx.publish_typed_artifact(pub_vmm_tests_archive_windows_x86),
+                        ),
                     });
                 }
                 CommonArch::Aarch64 => {
                     let pub_vmm_tests_archive_windows_aarch64 =
                         pub_vmm_tests_archive_windows_aarch64.take().unwrap();
-                    job = job.dep_on(|ctx| {
-                        flowey_lib_hvlite::_jobs::build_and_publish_nextest_vmm_tests_archive::Params {
-                            target: CommonTriple::AARCH64_WINDOWS_MSVC.as_triple(),
-                            profile: CommonProfile::from_release(release),
-                            artifact_dir: ctx.publish_artifact(pub_vmm_tests_archive_windows_aarch64),
-                            done: ctx.new_done_handle(),
-                        }
+                    job = job.dep_on(|ctx| flowey_lib_hvlite::build_nextest_vmm_tests::Request {
+                        target: CommonTriple::AARCH64_WINDOWS_MSVC.as_triple(),
+                        profile: CommonProfile::from_release(release),
+                        build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
+                            ctx.publish_typed_artifact(pub_vmm_tests_archive_windows_aarch64),
+                        ),
                     });
                 }
             }
@@ -604,13 +603,12 @@ impl IntoPipeline for CheckinGatesCli {
             if matches!(arch, CommonArch::X86_64) {
                 let pub_vmm_tests_archive_linux_x86 =
                     pub_vmm_tests_archive_linux_x86.take().unwrap();
-                job = job.dep_on(|ctx| {
-                    flowey_lib_hvlite::_jobs::build_and_publish_nextest_vmm_tests_archive::Params {
-                        target: CommonTriple::X86_64_LINUX_GNU.as_triple(),
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_vmm_tests_archive_linux_x86),
-                        done: ctx.new_done_handle(),
-                    }
+                job = job.dep_on(|ctx| flowey_lib_hvlite::build_nextest_vmm_tests::Request {
+                    target: CommonTriple::X86_64_LINUX_GNU.as_triple(),
+                    profile: CommonProfile::from_release(release),
+                    build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
+                        ctx.publish_typed_artifact(pub_vmm_tests_archive_linux_x86),
+                    ),
                 });
             }
 
@@ -1035,7 +1033,7 @@ impl IntoPipeline for CheckinGatesCli {
                 .dep_on(|ctx| {
                     flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::Params {
                         junit_test_label: test_label,
-                        vmm_tests_artifact_dir: ctx.use_artifact(use_vmm_tests_archive),
+                        nextest_vmm_tests_archive: ctx.use_typed_artifact(use_vmm_tests_archive),
                         target: target.as_triple(),
                         nextest_profile:
                             flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
