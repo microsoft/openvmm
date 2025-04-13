@@ -3,6 +3,10 @@
 
 //! Core types and traits used to create and work with flowey pipelines.
 
+mod artifact;
+
+pub use artifact::Artifact;
+
 use self::internal::*;
 use crate::node::FlowArch;
 use crate::node::FlowNodeBase;
@@ -48,8 +52,10 @@ pub mod user_facing {
     pub use super::PipelineJobCtx;
     pub use super::PipelineJobHandle;
     pub use super::PublishArtifact;
+    pub use super::PublishTypedArtifact;
     pub use super::UseArtifact;
     pub use super::UseParameter;
+    pub use super::UseTypedArtifact;
     pub use crate::node::FlowArch;
     pub use crate::node::FlowPlatform;
 }
@@ -334,6 +340,18 @@ pub struct UseArtifact {
     idx: usize,
 }
 
+#[must_use]
+pub struct PublishTypedArtifact<T>(PublishArtifact, std::marker::PhantomData<fn() -> T>);
+
+#[must_use]
+pub struct UseTypedArtifact<T>(UseArtifact, std::marker::PhantomData<fn(T)>);
+
+impl<T> Clone for UseTypedArtifact<T> {
+    fn clone(&self) -> Self {
+        UseTypedArtifact(self.0.clone(), std::marker::PhantomData)
+    }
+}
+
 #[derive(Default)]
 pub struct Pipeline {
     jobs: Vec<PipelineJobMetadata>,
@@ -343,6 +361,7 @@ pub struct Pipeline {
     // builder internal
     artifact_names: BTreeSet<String>,
     dummy_done_idx: usize,
+    artifact_map_idx: usize,
     global_patchfns: Vec<crate::patch::PatchFn>,
     inject_all_jobs_with: Option<Box<dyn for<'a> Fn(PipelineJob<'a>) -> PipelineJob<'a>>>,
     // backend specific
@@ -616,6 +635,18 @@ impl Pipeline {
         (PublishArtifact { idx }, UseArtifact { idx })
     }
 
+    #[track_caller]
+    pub fn new_typed_artifact<T: Artifact>(
+        &mut self,
+        name: impl AsRef<str>,
+    ) -> (PublishTypedArtifact<T>, UseTypedArtifact<T>) {
+        let (publish, use_artifact) = self.new_artifact(name);
+        (
+            PublishTypedArtifact(publish, std::marker::PhantomData),
+            UseTypedArtifact(use_artifact, std::marker::PhantomData),
+        )
+    }
+
     /// (ADO only) Set the pipeline-level name.
     ///
     /// <https://learn.microsoft.com/en-us/azure/devops/pipelines/process/run-number?view=azure-devops&tabs=yaml>
@@ -860,6 +891,48 @@ impl PipelineJobCtx<'_> {
             ),
             false,
         )
+    }
+
+    fn helper_request<R: IntoRequest>(&mut self, req: R)
+    where
+        R::Node: 'static,
+    {
+        self.pipeline.jobs[self.job_idx]
+            .root_nodes
+            .entry(NodeHandle::from_type::<R::Node>())
+            .or_default()
+            .push(serde_json::to_vec(&req.into_request()).unwrap().into());
+    }
+
+    fn new_artifact_map_vars<T: Artifact>(&mut self) -> (ReadVar<T>, WriteVar<T>) {
+        let artifact_map_idx = self.pipeline.artifact_map_idx;
+        self.pipeline.artifact_map_idx += 1;
+
+        let backing_var = format!("artifact_map{}", artifact_map_idx);
+        let read_var = crate::node::thin_air_read_runtime_var(backing_var.clone(), false);
+        let write_var = crate::node::thin_air_write_runtime_var(backing_var, false);
+        (read_var, write_var)
+    }
+
+    pub fn use_typed_artifact<T: Artifact>(
+        &mut self,
+        artifact: &UseTypedArtifact<T>,
+    ) -> ReadVar<T> {
+        let artifact_path = self.use_artifact(&artifact.0);
+        let (read, write) = self.new_artifact_map_vars::<T>();
+        self.helper_request(artifact::resolve::Request::new(artifact_path, write));
+        read
+    }
+
+    pub fn publish_typed_artifact<T: Artifact>(
+        &mut self,
+        artifact: PublishTypedArtifact<T>,
+    ) -> WriteVar<T> {
+        let artifact_path = self.publish_artifact(artifact.0);
+        let (read, write) = self.new_artifact_map_vars::<T>();
+        let done = self.new_done_handle();
+        self.helper_request(artifact::publish::Request::new(read, artifact_path, done));
+        write
     }
 
     /// Obtain a `ReadVar<T>` corresponding to a pipeline parameter which is
@@ -1312,6 +1385,7 @@ pub mod internal {
                 gh_bootstrap_template,
                 // not relevant to consumer code
                 dummy_done_idx: _,
+                artifact_map_idx: _,
                 artifact_names: _,
                 global_patchfns,
                 inject_all_jobs_with: _, // processed above

@@ -14,6 +14,8 @@ pub enum VmgstoolOutput {
     WindowsBin { exe: PathBuf, pdb: PathBuf },
 }
 
+impl Artifact for VmgstoolOutput {}
+
 flowey_request! {
     pub struct Request {
         pub target: CommonTriple,

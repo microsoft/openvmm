@@ -528,10 +528,7 @@ jobs:
         flowey e 10 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 10 flowey_lib_hvlite::run_cargo_build 6
         flowey e 10 flowey_lib_hvlite::build_openvmm 0
-      shell: bash
-    - name: copying openvmm to publish dir
-      run: |-
-        flowey e 10 flowey_lib_hvlite::artifact_openvmm::publish 0
+        flowey e 10 flowey_core::pipeline::artifact::publish 0
         flowey e 10 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build vmgstool
@@ -548,7 +545,7 @@ jobs:
       shell: bash
     - name: copying vmgstool to artifact dir
       run: |-
-        flowey e 10 flowey_lib_common::copy_to_artifact_dir 4
+        flowey e 10 flowey_lib_common::copy_to_artifact_dir 3
         flowey e 10 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build vmgs_lib
@@ -561,7 +558,7 @@ jobs:
       shell: bash
     - name: copying vmgs_lib to artifact dir
       run: |-
-        flowey e 10 flowey_lib_common::copy_to_artifact_dir 3
+        flowey e 10 flowey_lib_common::copy_to_artifact_dir 2
         flowey e 10 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build igvmfilegen
@@ -578,7 +575,7 @@ jobs:
       shell: bash
     - name: copying igvmfilegen to artifact dir
       run: |-
-        flowey e 10 flowey_lib_common::copy_to_artifact_dir 1
+        flowey e 10 flowey_lib_common::copy_to_artifact_dir 0
         flowey e 10 flowey_lib_hvlite::init_cross_build 0
       shell: bash
     - name: cargo build ohcldiag-dev
@@ -595,7 +592,7 @@ jobs:
       shell: bash
     - name: copying ohcldiag-dev to artifact dir
       run: |-
-        flowey e 10 flowey_lib_common::copy_to_artifact_dir 2
+        flowey e 10 flowey_lib_common::copy_to_artifact_dir 1
         flowey e 10 flowey_lib_hvlite::init_cross_build 5
       shell: bash
     - name: cargo build guest_test_uefi
@@ -606,10 +603,7 @@ jobs:
     - name: build guest_test_uefi.img
       run: |-
         flowey e 10 flowey_lib_hvlite::build_guest_test_uefi 0
-        flowey e 10 flowey_lib_hvlite::artifact_guest_test_uefi::publish 0
-      shell: bash
-    - name: copying guest_test_uefi to artifact dir
-      run: flowey e 10 flowey_lib_common::copy_to_artifact_dir 0
+        flowey e 10 flowey_core::pipeline::artifact::publish 1
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 10 flowey_lib_common::cache 3
@@ -826,10 +820,7 @@ jobs:
         flowey e 11 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 11 flowey_lib_hvlite::run_cargo_build 6
         flowey e 11 flowey_lib_hvlite::build_openvmm 0
-      shell: bash
-    - name: copying openvmm to publish dir
-      run: |-
-        flowey e 11 flowey_lib_hvlite::artifact_openvmm::publish 0
+        flowey e 11 flowey_core::pipeline::artifact::publish 0
         flowey e 11 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build vmgstool
@@ -846,7 +837,7 @@ jobs:
       shell: bash
     - name: copying vmgstool to artifact dir
       run: |-
-        flowey e 11 flowey_lib_common::copy_to_artifact_dir 4
+        flowey e 11 flowey_lib_common::copy_to_artifact_dir 3
         flowey e 11 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build vmgs_lib
@@ -863,7 +854,7 @@ jobs:
       shell: bash
     - name: copying vmgs_lib to artifact dir
       run: |-
-        flowey e 11 flowey_lib_common::copy_to_artifact_dir 3
+        flowey e 11 flowey_lib_common::copy_to_artifact_dir 2
         flowey e 11 flowey_lib_hvlite::init_cross_build 5
       shell: bash
     - name: cargo build igvmfilegen
@@ -880,7 +871,7 @@ jobs:
       shell: bash
     - name: copying igvmfilegen to artifact dir
       run: |-
-        flowey e 11 flowey_lib_common::copy_to_artifact_dir 1
+        flowey e 11 flowey_lib_common::copy_to_artifact_dir 0
         flowey e 11 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build ohcldiag-dev
@@ -897,7 +888,7 @@ jobs:
       shell: bash
     - name: copying ohcldiag-dev to artifact dir
       run: |-
-        flowey e 11 flowey_lib_common::copy_to_artifact_dir 2
+        flowey e 11 flowey_lib_common::copy_to_artifact_dir 1
         flowey e 11 flowey_lib_hvlite::init_cross_build 6
       shell: bash
     - name: cargo build guest_test_uefi
@@ -908,10 +899,7 @@ jobs:
     - name: build guest_test_uefi.img
       run: |-
         flowey e 11 flowey_lib_hvlite::build_guest_test_uefi 0
-        flowey e 11 flowey_lib_hvlite::artifact_guest_test_uefi::publish 0
-      shell: bash
-    - name: copying guest_test_uefi to artifact dir
-      run: flowey e 11 flowey_lib_common::copy_to_artifact_dir 0
+        flowey e 11 flowey_core::pipeline::artifact::publish 1
       shell: bash
     - name: create cargo-nextest cache dir
       run: flowey e 11 flowey_lib_common::download_cargo_nextest 0
@@ -949,7 +937,7 @@ jobs:
         flowey e 11 flowey_lib_hvlite::artifact_nextest_vmm_tests_archive::publish 0
       shell: bash
     - name: copying vmm_tests to artifact dir
-      run: flowey e 11 flowey_lib_common::copy_to_artifact_dir 5
+      run: flowey e 11 flowey_lib_common::copy_to_artifact_dir 4
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey e 11 flowey_lib_common::cache 3
@@ -1293,10 +1281,7 @@ jobs:
         flowey e 12 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 12 flowey_lib_hvlite::run_cargo_build 10
         flowey e 12 flowey_lib_hvlite::build_pipette 0
-        flowey e 12 flowey_lib_hvlite::artifact_pipette::publish 0
-      shell: bash
-    - name: copying pipette to artifact dir
-      run: flowey e 12 flowey_lib_common::copy_to_artifact_dir 2
+        flowey e 12 flowey_core::pipeline::artifact::publish 0
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 12 flowey_lib_common::cache 3
@@ -1716,10 +1701,7 @@ jobs:
         flowey e 13 flowey_lib_hvlite::run_split_debug_info 7
         flowey e 13 flowey_lib_hvlite::run_cargo_build 10
         flowey e 13 flowey_lib_hvlite::build_pipette 0
-        flowey e 13 flowey_lib_hvlite::artifact_pipette::publish 0
-      shell: bash
-    - name: copying pipette to artifact dir
-      run: flowey e 13 flowey_lib_common::copy_to_artifact_dir 2
+        flowey e 13 flowey_core::pipeline::artifact::publish 0
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 13 flowey_lib_common::cache 3
@@ -2959,21 +2941,13 @@ jobs:
       run: |-
         flowey.exe e 18 flowey_lib_hvlite::init_hyperv_tests 0
         flowey.exe e 18 flowey_lib_hvlite::run_cargo_nextest_run 0
+        flowey.exe e 18 flowey_core::pipeline::artifact::resolve 2
+        flowey.exe e 18 flowey_core::pipeline::artifact::resolve 3
+        flowey.exe e 18 flowey_core::pipeline::artifact::resolve 1
+        flowey.exe e 18 flowey_core::pipeline::artifact::resolve 0
       shell: bash
     - name: creating new test content dir
       run: flowey.exe e 18 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
-      shell: bash
-    - name: resolve openvmm artifact
-      run: flowey.exe e 18 flowey_lib_hvlite::artifact_openvmm::resolve 0
-      shell: bash
-    - name: resolve pipette artifact
-      run: flowey.exe e 18 flowey_lib_hvlite::artifact_pipette::resolve 1
-      shell: bash
-    - name: resolve pipette artifact
-      run: flowey.exe e 18 flowey_lib_hvlite::artifact_pipette::resolve 0
-      shell: bash
-    - name: resolve guest_test_uefi artifact
-      run: flowey.exe e 18 flowey_lib_hvlite::artifact_guest_test_uefi::resolve 0
       shell: bash
     - name: resolve OpenHCL igvm artifact
       run: flowey.exe e 18 flowey_lib_hvlite::artifact_openhcl_igvm_from_recipe::resolve 0
@@ -3223,21 +3197,13 @@ jobs:
       run: |-
         flowey.exe e 19 flowey_lib_hvlite::init_hyperv_tests 0
         flowey.exe e 19 flowey_lib_hvlite::run_cargo_nextest_run 0
+        flowey.exe e 19 flowey_core::pipeline::artifact::resolve 2
+        flowey.exe e 19 flowey_core::pipeline::artifact::resolve 3
+        flowey.exe e 19 flowey_core::pipeline::artifact::resolve 1
+        flowey.exe e 19 flowey_core::pipeline::artifact::resolve 0
       shell: bash
     - name: creating new test content dir
       run: flowey.exe e 19 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
-      shell: bash
-    - name: resolve openvmm artifact
-      run: flowey.exe e 19 flowey_lib_hvlite::artifact_openvmm::resolve 0
-      shell: bash
-    - name: resolve pipette artifact
-      run: flowey.exe e 19 flowey_lib_hvlite::artifact_pipette::resolve 1
-      shell: bash
-    - name: resolve pipette artifact
-      run: flowey.exe e 19 flowey_lib_hvlite::artifact_pipette::resolve 0
-      shell: bash
-    - name: resolve guest_test_uefi artifact
-      run: flowey.exe e 19 flowey_lib_hvlite::artifact_guest_test_uefi::resolve 0
       shell: bash
     - name: resolve OpenHCL igvm artifact
       run: flowey.exe e 19 flowey_lib_hvlite::artifact_openhcl_igvm_from_recipe::resolve 0
@@ -3672,21 +3638,13 @@ jobs:
       run: |-
         flowey.exe e 20 flowey_lib_hvlite::init_hyperv_tests 0
         flowey.exe e 20 flowey_lib_hvlite::run_cargo_nextest_run 0
+        flowey.exe e 20 flowey_core::pipeline::artifact::resolve 2
+        flowey.exe e 20 flowey_core::pipeline::artifact::resolve 3
+        flowey.exe e 20 flowey_core::pipeline::artifact::resolve 1
+        flowey.exe e 20 flowey_core::pipeline::artifact::resolve 0
       shell: bash
     - name: creating new test content dir
       run: flowey.exe e 20 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
-      shell: bash
-    - name: resolve openvmm artifact
-      run: flowey.exe e 20 flowey_lib_hvlite::artifact_openvmm::resolve 0
-      shell: bash
-    - name: resolve pipette artifact
-      run: flowey.exe e 20 flowey_lib_hvlite::artifact_pipette::resolve 1
-      shell: bash
-    - name: resolve pipette artifact
-      run: flowey.exe e 20 flowey_lib_hvlite::artifact_pipette::resolve 0
-      shell: bash
-    - name: resolve guest_test_uefi artifact
-      run: flowey.exe e 20 flowey_lib_hvlite::artifact_guest_test_uefi::resolve 0
       shell: bash
     - name: resolve OpenHCL igvm artifact
       run: flowey.exe e 20 flowey_lib_hvlite::artifact_openhcl_igvm_from_recipe::resolve 0
@@ -3938,21 +3896,13 @@ jobs:
       run: |-
         flowey e 21 flowey_lib_hvlite::init_openvmm_magicpath_uefi_mu_msvm 0
         flowey e 21 flowey_lib_hvlite::run_cargo_nextest_run 0
+        flowey e 21 flowey_core::pipeline::artifact::resolve 2
+        flowey e 21 flowey_core::pipeline::artifact::resolve 3
+        flowey e 21 flowey_core::pipeline::artifact::resolve 1
+        flowey e 21 flowey_core::pipeline::artifact::resolve 0
       shell: bash
     - name: creating new test content dir
       run: flowey e 21 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
-      shell: bash
-    - name: resolve openvmm artifact
-      run: flowey e 21 flowey_lib_hvlite::artifact_openvmm::resolve 0
-      shell: bash
-    - name: resolve pipette artifact
-      run: flowey e 21 flowey_lib_hvlite::artifact_pipette::resolve 1
-      shell: bash
-    - name: resolve pipette artifact
-      run: flowey e 21 flowey_lib_hvlite::artifact_pipette::resolve 0
-      shell: bash
-    - name: resolve guest_test_uefi artifact
-      run: flowey e 21 flowey_lib_hvlite::artifact_guest_test_uefi::resolve 0
       shell: bash
     - name: create azcopy cache dir
       run: flowey e 21 flowey_lib_common::download_azcopy 0
@@ -4247,21 +4197,13 @@ jobs:
       run: |-
         flowey.exe e 22 flowey_lib_hvlite::init_hyperv_tests 0
         flowey.exe e 22 flowey_lib_hvlite::run_cargo_nextest_run 0
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 2
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 3
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 1
+        flowey.exe e 22 flowey_core::pipeline::artifact::resolve 0
       shell: bash
     - name: creating new test content dir
       run: flowey.exe e 22 flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive 0
-      shell: bash
-    - name: resolve openvmm artifact
-      run: flowey.exe e 22 flowey_lib_hvlite::artifact_openvmm::resolve 0
-      shell: bash
-    - name: resolve pipette artifact
-      run: flowey.exe e 22 flowey_lib_hvlite::artifact_pipette::resolve 1
-      shell: bash
-    - name: resolve pipette artifact
-      run: flowey.exe e 22 flowey_lib_hvlite::artifact_pipette::resolve 0
-      shell: bash
-    - name: resolve guest_test_uefi artifact
-      run: flowey.exe e 22 flowey_lib_hvlite::artifact_guest_test_uefi::resolve 0
       shell: bash
     - name: resolve OpenHCL igvm artifact
       run: flowey.exe e 22 flowey_lib_hvlite::artifact_openhcl_igvm_from_recipe::resolve 0
@@ -5276,10 +5218,7 @@ jobs:
         flowey.exe e 7 flowey_lib_common::run_cargo_build 0
         flowey.exe e 7 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 7 flowey_lib_hvlite::build_openvmm 0
-      shell: bash
-    - name: copying openvmm to publish dir
-      run: |-
-        flowey.exe e 7 flowey_lib_hvlite::artifact_openvmm::publish 0
+        flowey.exe e 7 flowey_core::pipeline::artifact::publish 0
         flowey.exe e 7 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build pipette
@@ -5287,10 +5226,7 @@ jobs:
         flowey.exe e 7 flowey_lib_common::run_cargo_build 1
         flowey.exe e 7 flowey_lib_hvlite::run_cargo_build 1
         flowey.exe e 7 flowey_lib_hvlite::build_pipette 0
-        flowey.exe e 7 flowey_lib_hvlite::artifact_pipette::publish 0
-      shell: bash
-    - name: copying pipette to artifact dir
-      run: flowey.exe e 7 flowey_lib_common::copy_to_artifact_dir 0
+        flowey.exe e 7 flowey_core::pipeline::artifact::publish 1
       shell: bash
     - name: create cargo-nextest cache dir
       run: flowey.exe e 7 flowey_lib_common::download_cargo_nextest 0
@@ -5328,7 +5264,7 @@ jobs:
         flowey.exe e 7 flowey_lib_hvlite::artifact_nextest_vmm_tests_archive::publish 0
       shell: bash
     - name: copying vmm_tests to artifact dir
-      run: flowey.exe e 7 flowey_lib_common::copy_to_artifact_dir 1
+      run: flowey.exe e 7 flowey_lib_common::copy_to_artifact_dir 0
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 7 flowey_lib_common::cache 3
@@ -5758,10 +5694,7 @@ jobs:
         flowey.exe e 9 flowey_lib_common::run_cargo_build 0
         flowey.exe e 9 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 9 flowey_lib_hvlite::build_openvmm 0
-      shell: bash
-    - name: copying openvmm to publish dir
-      run: |-
-        flowey.exe e 9 flowey_lib_hvlite::artifact_openvmm::publish 0
+        flowey.exe e 9 flowey_core::pipeline::artifact::publish 0
         flowey.exe e 9 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build pipette
@@ -5769,10 +5702,7 @@ jobs:
         flowey.exe e 9 flowey_lib_common::run_cargo_build 1
         flowey.exe e 9 flowey_lib_hvlite::run_cargo_build 1
         flowey.exe e 9 flowey_lib_hvlite::build_pipette 0
-        flowey.exe e 9 flowey_lib_hvlite::artifact_pipette::publish 0
-      shell: bash
-    - name: copying pipette to artifact dir
-      run: flowey.exe e 9 flowey_lib_common::copy_to_artifact_dir 0
+        flowey.exe e 9 flowey_core::pipeline::artifact::publish 1
       shell: bash
     - name: create cargo-nextest cache dir
       run: flowey.exe e 9 flowey_lib_common::download_cargo_nextest 0
@@ -5810,7 +5740,7 @@ jobs:
         flowey.exe e 9 flowey_lib_hvlite::artifact_nextest_vmm_tests_archive::publish 0
       shell: bash
     - name: copying vmm_tests to artifact dir
-      run: flowey.exe e 9 flowey_lib_common::copy_to_artifact_dir 1
+      run: flowey.exe e 9 flowey_lib_common::copy_to_artifact_dir 0
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 9 flowey_lib_common::cache 3

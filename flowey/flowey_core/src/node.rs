@@ -61,6 +61,7 @@ pub mod user_facing {
     pub use crate::new_flow_node;
     pub use crate::new_simple_flow_node;
     pub use crate::node::FlowPlatformLinuxDistro;
+    pub use crate::pipeline::Artifact;
 
     /// Helper method to streamline request validation in cases where a value is
     /// expected to be identical across all incoming requests.
@@ -245,6 +246,14 @@ impl<T: Serialize + DeserializeOwned> WriteVar<T, VarNotClaimed> {
         let val = ReadVar::from_static(val);
         val.write_into(ctx, self, |v| v);
     }
+
+    pub(crate) fn into_json(self) -> WriteVar<serde_json::Value> {
+        WriteVar {
+            backing_var: self.backing_var,
+            is_secret: self.is_secret,
+            _kind: std::marker::PhantomData,
+        }
+    }
 }
 
 impl<T: Serialize + DeserializeOwned, C> WriteVar<T, C> {
@@ -316,14 +325,14 @@ impl<U: Ord, T: ClaimVar> ClaimVar for BTreeMap<U, T> {
 
 macro_rules! impl_tuple_claim {
     ($($T:tt)*) => {
-        impl<$($T,)*> ClaimVar for ($($T,)*)
+        impl<$($T,)*> $crate::node::ClaimVar for ($($T,)*)
         where
-            $($T: ClaimVar,)*
+            $($T: $crate::node::ClaimVar,)*
         {
             type Claimed = ($($T::Claimed,)*);
 
             #[expect(non_snake_case)]
-            fn claim(self, ctx: &mut StepCtx<'_>) -> Self::Claimed {
+            fn claim(self, ctx: &mut $crate::node::StepCtx<'_>) -> Self::Claimed {
                 let ($($T,)*) = self;
                 ($($T.claim(ctx),)*)
             }
@@ -368,8 +377,7 @@ pub struct GhUserSecretVar(pub(crate) String);
 /// of a write into [`WriteVar`], whose API enforces that there can only ever be
 /// a single Write to a `WriteVar`.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ReadVar<T: Serialize + DeserializeOwned, C = VarNotClaimed> {
-    #[serde(bound = "")] // work around serde/issues/1296
+pub struct ReadVar<T, C = VarNotClaimed> {
     backing_var: ReadVarBacking<T>,
     is_secret: bool,
     #[serde(skip)]
@@ -392,9 +400,8 @@ impl<T: Serialize + DeserializeOwned, C> Clone for ReadVar<T, C> {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-enum ReadVarBacking<T: Serialize + DeserializeOwned> {
+enum ReadVarBacking<T> {
     RuntimeVar(String),
-    #[serde(bound = "")] // work around serde/issues/1296
     Inline(T),
     InlineSideEffect,
 }
@@ -598,6 +605,26 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
             ReadVarBacking::RuntimeVar(s) => ctx.backend.borrow_mut().on_unused_read_var(&s),
             ReadVarBacking::Inline(_) => {}
             ReadVarBacking::InlineSideEffect => {}
+        }
+    }
+
+    pub(crate) fn into_json(self) -> ReadVar<serde_json::Value> {
+        match self.backing_var {
+            ReadVarBacking::RuntimeVar(s) => ReadVar {
+                backing_var: ReadVarBacking::RuntimeVar(s),
+                is_secret: self.is_secret,
+                _kind: std::marker::PhantomData,
+            },
+            ReadVarBacking::Inline(v) => ReadVar {
+                backing_var: ReadVarBacking::Inline(serde_json::to_value(v).unwrap()),
+                is_secret: self.is_secret,
+                _kind: std::marker::PhantomData,
+            },
+            ReadVarBacking::InlineSideEffect => ReadVar {
+                backing_var: ReadVarBacking::InlineSideEffect,
+                is_secret: self.is_secret,
+                _kind: std::marker::PhantomData,
+            },
         }
     }
 }
@@ -2396,14 +2423,14 @@ macro_rules! new_flow_node {
         {
             type Request = <Node as FlowNode>::Request;
 
-            fn imports(&mut self, dep: &mut ImportCtx<'_>) {
+            fn imports(&mut self, dep: &mut $crate::node::ImportCtx<'_>) {
                 <Node as FlowNode>::imports(dep)
             }
 
             fn emit(
                 &mut self,
                 requests: Vec<Self::Request>,
-                ctx: &mut NodeCtx<'_>,
+                ctx: &mut $crate::node::NodeCtx<'_>,
             ) -> anyhow::Result<()> {
                 <Node as FlowNode>::emit(requests, ctx)
             }
@@ -2460,17 +2487,17 @@ macro_rules! new_simple_flow_node {
 
         impl $crate::node::FlowNodeBase for Node
         where
-            Node: SimpleFlowNode,
+            Node: $crate::node::SimpleFlowNode,
         {
-            type Request = <Node as SimpleFlowNode>::Request;
+            type Request = <Node as $crate::node::SimpleFlowNode>::Request;
 
-            fn imports(&mut self, dep: &mut ImportCtx<'_>) {
-                <Node as SimpleFlowNode>::imports(dep)
+            fn imports(&mut self, dep: &mut $crate::node::ImportCtx<'_>) {
+                <Node as $crate::node::SimpleFlowNode>::imports(dep)
             }
 
-            fn emit(&mut self, requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
+            fn emit(&mut self, requests: Vec<Self::Request>, ctx: &mut $crate::node::NodeCtx<'_>) -> anyhow::Result<()> {
                 for req in requests {
-                    <Node as SimpleFlowNode>::process_request(req, ctx)?
+                    <Node as $crate::node::SimpleFlowNode>::process_request(req, ctx)?
                 }
 
                 Ok(())
@@ -2678,12 +2705,12 @@ macro_rules! flowey_request {
         }
     ) => {
         $(#[$a])*
-        #[derive(Serialize, Deserialize)]
+        #[derive($crate::reexports::Serialize, $crate::reexports::Deserialize)]
         pub enum $req {
             $($tt)*
         }
 
-        impl IntoRequest for $req {
+        impl $crate::node::IntoRequest for $req {
             type Node = Node;
             fn into_request(self) -> $req {
                 self
@@ -2699,12 +2726,12 @@ macro_rules! flowey_request {
         }
     ) => {
         $(#[$a])*
-        #[derive(Serialize, Deserialize)]
+        #[derive($crate::reexports::Serialize, $crate::reexports::Deserialize)]
         pub struct $req {
             $($tt)*
         }
 
-        impl IntoRequest for $req {
+        impl $crate::node::IntoRequest for $req {
             type Node = Node;
             fn into_request(self) -> $req {
                 self
@@ -2718,10 +2745,10 @@ macro_rules! flowey_request {
         pub struct $req:ident($($tt:tt)*);
     ) => {
         $(#[$a])*
-        #[derive(Serialize, Deserialize)]
+        #[derive($crate::reexports::Serialize, $crate::reexports::Deserialize)]
         pub struct $req($($tt)*);
 
-        impl IntoRequest for $req {
+        impl $crate::node::IntoRequest for $req {
             type Node = Node;
             fn into_request(self) -> $req {
                 self
