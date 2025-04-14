@@ -24,6 +24,7 @@ pub struct OpenvmmBuildParams {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum OpenvmmOutput {
     WindowsBin {
         #[serde(rename = "openvmm.exe")]
