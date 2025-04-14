@@ -171,7 +171,7 @@ impl PetriVmConfigHyperV {
                 Firmware::Pcat { guest, .. } => (
                     powershell::HyperVGuestStateIsolationType::Disabled,
                     powershell::HyperVGeneration::One,
-                    guest.artifact(),
+                    Some(guest.artifact()),
                     None,
                 ),
                 Firmware::Uefi { guest, .. } => (
@@ -199,7 +199,9 @@ impl PetriVmConfigHyperV {
                 // TODO: OpenHCL PCAT
             };
 
-        let reference_disk_path = guest_artifact;
+        let vhd_paths = guest_artifact
+            .map(|artifact| vec![vec![artifact.into()]])
+            .unwrap_or_default();
         let openhcl_igvm = igvm_artifact.cloned();
 
         Ok(PetriVmConfigHyperV {
@@ -208,7 +210,7 @@ impl PetriVmConfigHyperV {
             guest_state_isolation_type,
             memory: 0x1_0000_0000,
             proc_count: 2,
-            vhd_paths: vec![vec![reference_disk_path.clone().into()]],
+            vhd_paths,
             secure_boot_template: matches!(generation, powershell::HyperVGeneration::Two)
                 .then_some(match firmware.os_flavor() {
                     OsFlavor::Windows => powershell::HyperVSecureBootTemplate::MicrosoftWindows,
