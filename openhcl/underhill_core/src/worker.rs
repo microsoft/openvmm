@@ -283,6 +283,9 @@ pub struct UnderhillEnvCfg {
 
     /// test configuration
     pub test_configuration: Option<TestScenarioConfig>,
+
+    /// Disable the UEFI front page.
+    pub disable_uefi_frontpage: bool,
 }
 
 /// Bundle of config + runtime objects for hooking into the underhill remote
@@ -2938,6 +2941,7 @@ async fn new_underhill_vm(
             load_kind,
             &dps,
             isolation.is_isolated(),
+            env_cfg.disable_uefi_frontpage,
         )
         .instrument(tracing::info_span!("load_firmware"))
         .await?;
@@ -3228,12 +3232,16 @@ async fn load_firmware(
     load_kind: LoadKind,
     dps: &DevicePlatformSettings,
     isolated: bool,
+    disable_uefi_frontpage: bool,
 ) -> Result<(), anyhow::Error> {
     let cmdline_append = match cmdline_append {
         Some(cmdline) => CString::new(cmdline.as_bytes()).context("bad command line")?,
         None => CString::default(),
     };
-    let loader_config = crate::loader::Config { cmdline_append };
+    let loader_config = crate::loader::Config {
+        cmdline_append,
+        disable_uefi_frontpage,
+    };
     let caps = partition.caps();
     let vtl0_vp_context = crate::loader::load(
         gm,
