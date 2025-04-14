@@ -335,15 +335,15 @@ impl IntoPipeline for CheckinGatesCli {
             // path"
             // artifacts which _are not_ in the VMM tests "hot path"
             let (pub_igvmfilegen, _use_igvmfilegen) =
-                pipeline.new_artifact(format!("{arch_tag}-windows-igvmfilegen"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-igvmfilegen"));
             let (pub_vmgs_lib, _use_vmgs_lib) =
-                pipeline.new_artifact(format!("{arch_tag}-windows-vmgs_lib"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgs_lib"));
             let (pub_vmgstool, _use_vmgstool) =
-                pipeline.new_artifact(format!("{arch_tag}-windows-vmgstool"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgstool"));
             let (pub_hypestv, _use_hypestv) =
-                pipeline.new_artifact(format!("{arch_tag}-windows-hypestv"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-hypestv"));
             let (pub_ohcldiag_dev, _use_ohcldiag_dev) =
-                pipeline.new_artifact(format!("{arch_tag}-windows-ohcldiag-dev"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-ohcldiag-dev"));
 
             let job = pipeline
                 .new_job(
@@ -354,62 +354,49 @@ impl IntoPipeline for CheckinGatesCli {
                 .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
                     FlowPlatform::Windows,
                 ))
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_vmgstool::Params {
+                .dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    with_crypto: true,
+                    vmgstool: ctx.publish_typed_artifact(pub_vmgstool),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_hypestv::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    hypestv: ctx.publish_typed_artifact(pub_hypestv),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_and_test_vmgs_lib::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    vmgs_lib: ctx.publish_typed_artifact(pub_vmgs_lib),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_igvmfilegen::Request {
+                    build_params: flowey_lib_hvlite::build_igvmfilegen::IgvmfilegenBuildParams {
                         target: CommonTriple::Common {
                             arch,
                             platform: CommonPlatform::WindowsMsvc,
                         },
                         profile: CommonProfile::from_release(release),
-                        with_crypto: true,
-                        artifact_dir: ctx.publish_artifact(pub_vmgstool),
-                        done: ctx.new_done_handle(),
                     },
-                )
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_hypestv::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::WindowsMsvc,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_hypestv),
-                        done: ctx.new_done_handle(),
+                    igvmfilegen: ctx.publish_typed_artifact(pub_igvmfilegen),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_ohcldiag_dev::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
                     },
-                )
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_vmgs_lib::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::WindowsMsvc,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_vmgs_lib),
-                        done: ctx.new_done_handle(),
-                    },
-                )
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_igvmfilegen::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::WindowsMsvc,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_igvmfilegen),
-                        done: ctx.new_done_handle(),
-                    },
-                )
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_ohcldiag_dev::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::WindowsMsvc,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_ohcldiag_dev),
-                        done: ctx.new_done_handle(),
-                    },
-                );
+                    profile: CommonProfile::from_release(release),
+                    ohcldiag_dev: ctx.publish_typed_artifact(pub_ohcldiag_dev),
+                });
 
             all_jobs.push(job.finish());
 
@@ -492,11 +479,13 @@ impl IntoPipeline for CheckinGatesCli {
             let (pub_openvmm, use_openvmm) =
                 pipeline.new_typed_artifact(format!("{arch_tag}-linux-openvmm"));
             let (pub_igvmfilegen, _) =
-                pipeline.new_artifact(format!("{arch_tag}-linux-igvmfilegen"));
-            let (pub_vmgs_lib, _) = pipeline.new_artifact(format!("{arch_tag}-linux-vmgs_lib"));
-            let (pub_vmgstool, _) = pipeline.new_artifact(format!("{arch_tag}-linux-vmgstool"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-igvmfilegen"));
+            let (pub_vmgs_lib, _) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmgs_lib"));
+            let (pub_vmgstool, _) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmgstool"));
             let (pub_ohcldiag_dev, _) =
-                pipeline.new_artifact(format!("{arch_tag}-linux-ohcldiag-dev"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-ohcldiag-dev"));
 
             // NOTE: the choice to build it as part of this linux job was pretty
             // arbitrary. It could just as well hang off the windows job.
@@ -546,51 +535,41 @@ impl IntoPipeline for CheckinGatesCli {
                         openvmm: ctx.publish_typed_artifact(pub_openvmm),
                     }
                 })
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_vmgstool::Params {
+                .dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::LinuxGnu,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    with_crypto: true,
+                    vmgstool: ctx.publish_typed_artifact(pub_vmgstool),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_and_test_vmgs_lib::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::LinuxGnu,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    vmgs_lib: ctx.publish_typed_artifact(pub_vmgs_lib),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_igvmfilegen::Request {
+                    build_params: flowey_lib_hvlite::build_igvmfilegen::IgvmfilegenBuildParams {
                         target: CommonTriple::Common {
                             arch,
                             platform: CommonPlatform::LinuxGnu,
                         },
                         profile: CommonProfile::from_release(release),
-                        with_crypto: true,
-                        artifact_dir: ctx.publish_artifact(pub_vmgstool),
-                        done: ctx.new_done_handle(),
                     },
-                )
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_vmgs_lib::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxGnu,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_vmgs_lib),
-                        done: ctx.new_done_handle(),
+                    igvmfilegen: ctx.publish_typed_artifact(pub_igvmfilegen),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_ohcldiag_dev::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::LinuxGnu,
                     },
-                )
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_igvmfilegen::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxGnu,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_igvmfilegen),
-                        done: ctx.new_done_handle(),
-                    },
-                )
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_ohcldiag_dev::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxGnu,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_ohcldiag_dev),
-                        done: ctx.new_done_handle(),
-                    },
-                )
+                    profile: CommonProfile::from_release(release),
+                    ohcldiag_dev: ctx.publish_typed_artifact(pub_ohcldiag_dev),
+                })
                 .dep_on(|ctx| flowey_lib_hvlite::build_guest_test_uefi::Request {
                     arch,
                     profile: CommonProfile::from_release(release),
