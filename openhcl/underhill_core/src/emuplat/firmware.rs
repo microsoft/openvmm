@@ -20,24 +20,33 @@ pub struct UnderhillLogger {
 
 impl UefiLogger for UnderhillLogger {
     fn log_event(&self, event: UefiEvent) {
-        let log_event_id = match event {
-            UefiEvent::BootSuccess(boot_info) => {
-                if boot_info.secure_boot_succeeded {
-                    EventLogId::BOOT_SUCCESS
-                } else {
-                    EventLogId::BOOT_SUCCESS_SECURE_BOOT_FAILED
-                }
+        match event {
+            // Special case for the diagnostics GPA
+            UefiEvent::EfiDiagnosticsGpa(gpa) => self.get.send_efi_diagnostics_gpa(gpa),
+
+            // Handle all other boot events
+            event => {
+                let log_event_id = match event {
+                    UefiEvent::BootSuccess(boot_info) => {
+                        if boot_info.secure_boot_succeeded {
+                            EventLogId::BOOT_SUCCESS
+                        } else {
+                            EventLogId::BOOT_SUCCESS_SECURE_BOOT_FAILED
+                        }
+                    }
+                    UefiEvent::BootFailure(boot_info) => {
+                        if boot_info.secure_boot_succeeded {
+                            EventLogId::BOOT_FAILURE
+                        } else {
+                            EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED
+                        }
+                    }
+                    UefiEvent::NoBootDevice => EventLogId::NO_BOOT_DEVICE,
+                    UefiEvent::EfiDiagnosticsGpa(_) => unreachable!(),
+                };
+                self.get.event_log(log_event_id);
             }
-            UefiEvent::BootFailure(boot_info) => {
-                if boot_info.secure_boot_succeeded {
-                    EventLogId::BOOT_FAILURE
-                } else {
-                    EventLogId::BOOT_FAILURE_SECURE_BOOT_FAILED
-                }
-            }
-            UefiEvent::NoBootDevice => EventLogId::NO_BOOT_DEVICE,
-        };
-        self.get.event_log(log_event_id);
+        }
     }
 }
 

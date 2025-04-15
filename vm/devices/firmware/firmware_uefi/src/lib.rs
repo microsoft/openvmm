@@ -104,6 +104,7 @@ struct UefiDeviceServices {
     generation_id: service::generation_id::GenerationIdServices,
     #[inspect(mut)]
     time: service::time::TimeServices,
+    diagnostics: service::diagnostics::DiagnosticsServices,
 }
 
 // Begin and end range are inclusive.
@@ -199,6 +200,7 @@ impl UefiDevice {
                     generation_id_deps,
                 ),
                 time: service::time::TimeServices::new(time_source),
+                diagnostics: service::diagnostics::DiagnosticsServices::new(),
             },
         };
         Ok(uefi)
@@ -252,9 +254,9 @@ impl UefiDevice {
                     );
                 }
             }
-            UefiCommand::SET_ADVANCED_LOGGER_GPA => {
-                // Just log the GPA
-                tracelimit::info_ratelimited!("The advanced logger gpa is located at {:#x}", data);
+            UefiCommand::SET_DIAGNOSTICS_GPA => {
+                // self.set_diagnostics_gpa(data)
+                tracelimit::info_ratelimited!("UEFI Diagnostics GPA set to {:#x}", data);
             }
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
@@ -404,8 +406,8 @@ open_enum::open_enum! {
         WATCHDOG_RESOLUTION          = 0x28,
         WATCHDOG_COUNT               = 0x29,
 
-        // UEFI Advanced Logger GPA
-        SET_ADVANCED_LOGGER_GPA      = 0x2B,
+        // Address of UEFI diagnostics buffer
+        SET_DIAGNOSTICS_GPA          = 0x2B,
 
         // Event Logging (Windows 8.1 MQ/M0)
         EVENT_LOG_FLUSH              = 0x30,
@@ -439,6 +441,7 @@ mod save_restore {
     use vmcore::save_restore::SaveRestore;
 
     mod state {
+        use crate::service::diagnostics::DiagnosticsServices;
         use crate::service::event_log::EventLogServices;
         use crate::service::generation_id::GenerationIdServices;
         use crate::service::nvram::NvramServices;
@@ -464,6 +467,8 @@ mod save_restore {
             pub generation_id: <GenerationIdServices as SaveRestore>::SavedState,
             #[mesh(6)]
             pub time: <TimeServices as SaveRestore>::SavedState,
+            #[mesh(7)]
+            pub diagnostics: <DiagnosticsServices as SaveRestore>::SavedState,
         }
     }
 
@@ -482,6 +487,7 @@ mod save_restore {
                         uefi_watchdog,
                         generation_id,
                         time,
+                        diagnostics,
                     },
                 address,
             } = self;
@@ -494,6 +500,7 @@ mod save_restore {
                 watchdog: uefi_watchdog.save()?,
                 generation_id: generation_id.save()?,
                 time: time.save()?,
+                diagnostics: diagnostics.save()?,
             })
         }
 
@@ -506,6 +513,7 @@ mod save_restore {
                 watchdog,
                 generation_id,
                 time,
+                diagnostics,
             } = state;
 
             self.address = address;
@@ -515,6 +523,7 @@ mod save_restore {
             self.service.uefi_watchdog.restore(watchdog)?;
             self.service.generation_id.restore(generation_id)?;
             self.service.time.restore(time)?;
+            self.service.diagnostics.restore(diagnostics)?;
 
             Ok(())
         }

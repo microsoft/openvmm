@@ -445,6 +445,14 @@ impl GuestEmulationTransportClient {
         self.control.notify(msg::Msg::EventLog(event_log_id));
     }
 
+    /// Send the gpa of the advanced logger buffer to the host.
+    ///
+    /// This function is non-blocking and does not wait for a response from the
+    /// host.
+    pub fn send_efi_diagnostics_gpa(&self, gpa: u32) {
+        self.control.notify(msg::Msg::EfiDiagnosticsGpa(gpa));
+    }
+
     /// This async method will only resolve after all outstanding event logs
     /// are written back to the host.
     pub async fn event_log_flush(&self) {

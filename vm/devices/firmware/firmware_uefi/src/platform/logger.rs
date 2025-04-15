@@ -10,6 +10,7 @@ pub enum UefiEvent {
     BootSuccess(BootInfo),
     BootFailure(BootInfo),
     NoBootDevice,
+    EfiDiagnosticsGpa(u32),
 }
 
 #[derive(Debug)]

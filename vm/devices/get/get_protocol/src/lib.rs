@@ -114,6 +114,8 @@ open_enum! {
         START_VTL0_COMPLETED               = 7,
         VTL_CRASH                          = 8,
         TRIPLE_FAULT                       = 9,
+        // --- GE ---
+        EFI_DIAGNOSTICS_GPA               = 11,
     }
 }
 
@@ -364,6 +366,24 @@ impl EventLogNotification {
         Self {
             message_header: HeaderGeneric::new(HostNotifications::EVENT_LOG),
             event_log_id,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct EfiDiagnosticsGpaNotification {
+    pub message_header: HeaderHostNotification,
+    pub gpa: u32,
+}
+
+const_assert_eq!(8, size_of::<EfiDiagnosticsGpaNotification>());
+
+impl EfiDiagnosticsGpaNotification {
+    pub fn new(gpa: u32) -> Self {
+        Self {
+            message_header: HeaderGeneric::new(HostNotifications::EFI_DIAGNOSTICS_GPA),
+            gpa,
         }
     }
 }

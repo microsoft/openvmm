@@ -33,6 +33,7 @@ impl UefiLogger for MeshLogger {
             UefiEvent::BootSuccess(_) => FirmwareEvent::BootSuccess,
             UefiEvent::BootFailure(_) => FirmwareEvent::BootFailed,
             UefiEvent::NoBootDevice => FirmwareEvent::NoBootDevice,
+            UefiEvent::EfiDiagnosticsGpa(_) => FirmwareEvent::EfiDiagnosticsGpa,
         };
         self.send(event);
     }

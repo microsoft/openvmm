@@ -306,6 +306,8 @@ pub(crate) mod msg {
         // Host Notifications (don't require a response)
         /// Report an event to the host.
         EventLog(get_protocol::EventLogId),
+        /// Report the gpa of the UEFI diagnostics buffer host.
+        EfiDiagnosticsGpa(u32),
         /// Report a power state change to the host.
         PowerState(PowerState),
         /// Report the result of a restore operation to the host.
@@ -1221,6 +1223,15 @@ impl<T: RingMem> ProcessLoop<T> {
                 // any pending requests.
                 self.send_message(
                     get_protocol::EventLogNotification::new(event_log_id)
+                        .as_bytes()
+                        .to_vec(),
+                );
+            }
+            Msg::EfiDiagnosticsGpa(gpa) => {
+                // Send the diagnostics gpa right away, jumping the line in front of
+                // any pending requests.
+                self.send_message(
+                    get_protocol::EfiDiagnosticsGpaNotification::new(gpa)
                         .as_bytes()
                         .to_vec(),
                 );

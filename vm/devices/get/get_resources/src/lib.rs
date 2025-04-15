@@ -217,5 +217,7 @@ pub mod ged {
         NoBootDevice,
         /// A boot attempt was made.
         BootAttempt,
+        /// Diagnostics GPA.
+        EfiDiagnosticsGpa,
     }
 }

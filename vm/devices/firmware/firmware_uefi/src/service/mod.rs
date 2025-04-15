@@ -4,6 +4,7 @@
 //! Various UEFI device subsystems.
 
 pub mod crypto;
+pub mod diagnostics;
 pub mod event_log;
 pub mod generation_id;
 pub mod nvram;
