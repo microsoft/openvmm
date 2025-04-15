@@ -91,12 +91,12 @@ function Set-VmSystemSettings {
     param(
         [ValidateNotNullOrEmpty()]
         [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
-        [Microsoft.Management.Infrastructure.CimInstance]$CimRasd
+        [Microsoft.Management.Infrastructure.CimInstance]$Vssd
     )
 
     $vmms = Get-Vmms
     $vmms | Invoke-CimMethod -Name "ModifySystemSettings" -Arguments @{
-        "SystemSettings" = ($vssd | ConvertTo-CimEmbeddedString)
+        "SystemSettings" = ($Vssd | ConvertTo-CimEmbeddedString)
     }
 }
 
