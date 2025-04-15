@@ -7,3 +7,4 @@
 
 pub mod kvp;
 pub mod shutdown;
+pub mod timesync;

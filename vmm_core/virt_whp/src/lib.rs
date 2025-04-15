@@ -66,7 +66,9 @@ use virt::vm::AccessVmState;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::monitor::MonitorPage;
-use vmcore::reference_time_source::ReferenceTimeSource;
+use vmcore::reference_time::GetReferenceTime;
+use vmcore::reference_time::ReferenceTimeResult;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::vmtime::VmTimeAccess;
 use vmcore::vmtime::VmTimeSource;
 use vp::WhpRunVpError;
@@ -1024,13 +1026,15 @@ impl WhpPartitionInner {
                 Hv1State::Offloaded
             } else {
                 let tsc_frequency = vtl0.whp.tsc_frequency().for_op("get tsc frequency")?;
-                let ref_time =
-                    Box::new(VmTimeReferenceTimeSource::new(proto_config.vmtime.clone()));
+                let ref_time = ReferenceTimeSource::new(VmTimeReferenceTimeSource::new(
+                    proto_config.vmtime.clone(),
+                ));
                 Hv1State::Emulated(GlobalHv::new(GlobalHvParams {
                     max_vp_count: proto_config.processor_topology.vp_count(),
                     vendor,
                     tsc_frequency,
                     ref_time,
+                    is_ref_time_backed_by_tsc: false,
                     guest_memory: VtlArray::from_fn(|_| config.guest_memory.clone()),
                 }))
             }
@@ -1124,13 +1128,12 @@ impl WhpPartitionInner {
 }
 
 /// A time implementation based on VmTime.
-impl ReferenceTimeSource for VmTimeReferenceTimeSource {
-    fn now_100ns(&self) -> u64 {
-        self.vmtime.now().as_100ns()
-    }
-
-    fn is_backed_by_tsc(&self) -> bool {
-        false
+impl GetReferenceTime for VmTimeReferenceTimeSource {
+    fn now(&self) -> ReferenceTimeResult {
+        ReferenceTimeResult {
+            ref_time: self.vmtime.now().as_100ns(),
+            system_time: None,
+        }
     }
 }
 
@@ -1518,10 +1521,27 @@ impl virt::Hv1 for WhpPartition {
     #[cfg(guest_arch = "aarch64")]
     type Device = virt::aarch64::gic_software_device::GicSoftwareDevice;
 
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
+        match &self.inner.hvstate {
+            Hv1State::Emulated(hv) => Some(hv.ref_time_source().clone()),
+            Hv1State::Offloaded => Some(ReferenceTimeSource::from(self.inner.clone() as Arc<_>)),
+            Hv1State::Disabled => None,
+        }
+    }
+
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         Some(self)
+    }
+}
+
+impl GetReferenceTime for WhpPartitionInner {
+    fn now(&self) -> ReferenceTimeResult {
+        ReferenceTimeResult {
+            ref_time: self.vtl0.whp.reference_time().unwrap(),
+            system_time: None,
+        }
     }
 }
 

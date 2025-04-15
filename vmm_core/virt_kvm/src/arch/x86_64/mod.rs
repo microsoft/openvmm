@@ -76,6 +76,9 @@ use virt::x86::vp::AccessVpState;
 use vm_topology::processor::x86::ApicMode;
 use vm_topology::processor::x86::X86VpInfo;
 use vmcore::interrupt::Interrupt;
+use vmcore::reference_time::GetReferenceTime;
+use vmcore::reference_time::ReferenceTimeResult;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::synic::GuestEventPort;
 use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeAccess;
@@ -541,10 +544,33 @@ impl Hv1 for KvmPartition {
     type Error = KvmError;
     type Device = virt::x86::apic_software_device::ApicSoftwareDevice;
 
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
+        self.inner
+            .hv1_enabled
+            .then(|| ReferenceTimeSource::from(self.inner.clone() as Arc<dyn GetReferenceTime>))
+    }
+
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         None
+    }
+}
+
+impl GetReferenceTime for KvmPartitionInner {
+    fn now(&self) -> ReferenceTimeResult {
+        // Although we can query the reference time MSR for a VP, we are not
+        // running in the context of a VP, and so such a query will hang if the
+        // VP is running. Instead, query the KVM clock, which is the backing
+        // clock for the reference time counter within KVM.
+        //
+        // This also gives us the system time, in some configurations.
+        let clock = self.kvm.get_clock_ns().unwrap();
+        ReferenceTimeResult {
+            ref_time: clock.clock / 100,
+            system_time: (clock.flags & kvm::KVM_CLOCK_REALTIME != 0)
+                .then(|| jiff::Timestamp::from_nanosecond(clock.realtime as i128).unwrap()),
+        }
     }
 }
 

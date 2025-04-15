@@ -5,6 +5,9 @@
 
 #![cfg_attr(minimal_rt, no_std, no_main)]
 
+extern crate self as simple_tmk;
+
+mod tests;
 mod tmk;
 
 #[cfg(not(minimal_rt))]

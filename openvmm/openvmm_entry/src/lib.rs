@@ -18,6 +18,7 @@ mod ttrpc;
 // `pub` so that the missing_docs warning fires for options without
 // documentation.
 pub use cli_args::Options;
+use console_relay::ConsoleLaunchOptions;
 
 use crate::cli_args::SecureBootTemplateCli;
 use anyhow::Context;
@@ -250,12 +251,21 @@ fn vm_config_from_command_line(
             SerialConfigCli::Tcp(addr) => {
                 Some(serial_io::bind_tcp_serial(&addr).context("failed to bind serial")?)
             }
-            SerialConfigCli::NewConsole(app) => {
+            SerialConfigCli::NewConsole(app, window_title) => {
                 let path = console_relay::random_console_path();
                 let config =
                     serial_io::bind_serial(&path).context("failed to bind console serial")?;
-                console_relay::launch_console(app.or_else(openvmm_terminal_app).as_deref(), &path)
-                    .context("failed to launch console")?;
+                let window_title =
+                    window_title.unwrap_or_else(|| name.to_uppercase() + " [OpenVMM]");
+
+                console_relay::launch_console(
+                    app.or_else(openvmm_terminal_app).as_deref(),
+                    &path,
+                    ConsoleLaunchOptions {
+                        window_title: Some(window_title + " [OpenVMM]"),
+                    },
+                )
+                .context("failed to launch console")?;
 
                 Some(config)
             }
@@ -294,7 +304,7 @@ fn vm_config_from_command_line(
                 Some(io.config)
             }
             SerialConfigCli::Tcp(_addr) => anyhow::bail!("TCP virtio serial not supported"),
-            SerialConfigCli::NewConsole(app) => {
+            SerialConfigCli::NewConsole(app, window_title) => {
                 let path = console_relay::random_console_path();
 
                 let mut io = SerialIo::new().context("creating serial IO")?;
@@ -302,8 +312,17 @@ fn vm_config_from_command_line(
                     .with_context(|| format!("listening on pipe {}", path.display()))?
                     .detach();
 
-                console_relay::launch_console(app.or_else(openvmm_terminal_app).as_deref(), &path)
-                    .context("failed to launch console")?;
+                let window_title =
+                    window_title.unwrap_or_else(|| name.to_uppercase() + " [OpenVMM]");
+
+                console_relay::launch_console(
+                    app.or_else(openvmm_terminal_app).as_deref(),
+                    &path,
+                    ConsoleLaunchOptions {
+                        window_title: Some(window_title),
+                    },
+                )
+                .context("failed to launch console")?;
                 Some(io.config)
             }
         })
@@ -1128,6 +1147,7 @@ fn vm_config_from_command_line(
                 }
                 .into_resource(),
                 hyperv_ic_resources::kvp::KvpIcHandle { recv: kvp_recv }.into_resource(),
+                hyperv_ic_resources::timesync::TimesyncIcHandle.into_resource(),
             ]
             .map(|r| (DeviceVtl::Vtl0, r)),
         );
@@ -1322,6 +1342,7 @@ fn vm_config_from_command_line(
         firmware_event_send: None,
         debugger_rpc: None,
         generation_id_recv: None,
+        rtc_delta_milliseconds: 0,
     };
 
     storage.build_config(&mut cfg, &mut resources, opt.scsi_sub_channels)?;
@@ -1630,7 +1651,8 @@ fn do_main() -> anyhow::Result<()> {
     }
 
     if let Some(path) = opt.relay_console_path {
-        return console_relay::relay_console(&path);
+        let console_title = opt.relay_console_title.unwrap_or_default();
+        return console_relay::relay_console(&path, console_title.as_str());
     }
 
     if let Some(path) = opt.ttrpc.as_ref().or(opt.grpc.as_ref()) {
@@ -2076,7 +2098,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
             let mut stdin = io::stdin();
             loop {
                 // Raw console text until Ctrl-Q.
-                term::set_raw_console(true);
+                term::set_raw_console(true).expect("failed to set raw console mode");
 
                 if let Some(input) = console_in.as_mut() {
                     let mut buf = [0; 32];
@@ -2096,7 +2118,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                     }
                 }
 
-                term::set_raw_console(false);
+                term::set_raw_console(false).expect("failed to set raw console mode");
 
                 loop {
                     let line = rl.readline("openvmm> ");
@@ -2673,6 +2695,9 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                     let mut console = console_relay::Console::new(
                         driver.clone(),
                         term.or_else(openvmm_terminal_app).as_deref(),
+                        Some(ConsoleLaunchOptions {
+                            window_title: Some(format!("HVSock{} [OpenVMM]", port)),
+                        }),
                     )?;
                     driver
                         .spawn("console-relay", async move { console.relay(socket).await })

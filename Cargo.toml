@@ -178,6 +178,7 @@ openvmm_hcl_resources = { path = "openhcl/openvmm_hcl_resources" }
 underhill_threadpool = { path = "openhcl/underhill_threadpool" }
 virt_mshv_vtl = { path = "openhcl/virt_mshv_vtl" }
 
+tmk_macros = { path = "tmk/tmk_macros" }
 tmk_protocol = { path = "tmk/tmk_protocol" }
 
 aarch64defs = { path = "vm/aarch64/aarch64defs" }

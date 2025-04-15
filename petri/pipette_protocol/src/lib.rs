@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 use mesh::MeshPayload;
+use mesh::payload::Timestamp;
 use mesh::pipe::ReadPipe;
 use mesh::pipe::WritePipe;
 use mesh::rpc::FailableRpc;
@@ -44,6 +45,8 @@ pub enum PipetteRequest {
     ReadFile(FailableRpc<ReadFileRequest, ()>),
     /// Writes a file
     WriteFile(FailableRpc<WriteFileRequest, ()>),
+    /// Get the current time in the guest.
+    GetTime(Rpc<(), Timestamp>),
 }
 
 /// A request to execute a command inside the guest.

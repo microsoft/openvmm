@@ -109,7 +109,9 @@ use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::monitor::MonitorPage;
-use vmcore::reference_time_source::ReferenceTimeSource;
+use vmcore::reference_time::GetReferenceTime;
+use vmcore::reference_time::ReferenceTimeResult;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::vmtime::VmTimeSource;
 use x86defs::snp::REG_TWEAK_BITMAP_OFFSET;
 use x86defs::snp::REG_TWEAK_BITMAP_SIZE;
@@ -519,22 +521,22 @@ impl TscReferenceTimeSource {
 }
 
 /// A time implementation based on TSC.
-impl ReferenceTimeSource for TscReferenceTimeSource {
-    fn now_100ns(&self) -> u64 {
+impl GetReferenceTime for TscReferenceTimeSource {
+    fn now(&self) -> ReferenceTimeResult {
         #[cfg(guest_arch = "x86_64")]
         {
             let tsc = safe_intrinsics::rdtsc();
-            ((self.tsc_scale as u128 * tsc as u128) >> 64) as u64
+            let ref_time = ((self.tsc_scale as u128 * tsc as u128) >> 64) as u64;
+            ReferenceTimeResult {
+                ref_time,
+                system_time: None,
+            }
         }
 
         #[cfg(guest_arch = "aarch64")]
         {
             todo!("AARCH64_TODO");
         }
-    }
-
-    fn is_backed_by_tsc(&self) -> bool {
-        true
     }
 }
 
@@ -767,10 +769,14 @@ impl UhPartition {
 
     /// Returns the current hypervisor reference time, in 100ns units.
     pub fn reference_time(&self) -> u64 {
-        self.inner
-            .hcl
-            .reference_time()
-            .expect("should not fail to get the reference time")
+        if let Some(hv) = self.inner.hv() {
+            hv.ref_time_source().now().ref_time
+        } else {
+            self.inner
+                .hcl
+                .reference_time()
+                .expect("should not fail to get the reference time")
+        }
     }
 }
 
@@ -1115,10 +1121,27 @@ impl virt::Hv1 for UhPartition {
     type Error = Error;
     type Device = virt::x86::apic_software_device::ApicSoftwareDevice;
 
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
+        Some(if let Some(hv) = self.inner.hv() {
+            hv.ref_time_source().clone()
+        } else {
+            ReferenceTimeSource::from(self.inner.clone() as Arc<_>)
+        })
+    }
+
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         self.inner.software_devices.is_some().then_some(self)
+    }
+}
+
+impl GetReferenceTime for UhPartitionInner {
+    fn now(&self) -> ReferenceTimeResult {
+        ReferenceTimeResult {
+            ref_time: self.hcl.reference_time().unwrap(),
+            system_time: None,
+        }
     }
 }
 
@@ -1854,6 +1877,8 @@ impl UhProtoPartition<'_> {
         guest_memory: VtlArray<GuestMemory, 2>,
         guest_vsm_available: bool,
     ) -> Result<UhCvmPartitionState, Error> {
+        use vmcore::reference_time::ReferenceTimeSource;
+
         let vp_count = params.topology.vp_count() as usize;
         let vps = (0..vp_count)
             .map(|vp_index| UhCvmVpInner {
@@ -1874,7 +1899,7 @@ impl UhProtoPartition<'_> {
         });
 
         let tsc_frequency = get_tsc_frequency(params.isolation)?;
-        let ref_time = Box::new(TscReferenceTimeSource::new(tsc_frequency));
+        let ref_time = ReferenceTimeSource::new(TscReferenceTimeSource::new(tsc_frequency));
 
         // If we're emulating the APIC, then we also must emulate the hypervisor
         // enlightenments, since the hypervisor can't support enlightenments
@@ -1887,6 +1912,7 @@ impl UhProtoPartition<'_> {
             vendor: caps.vendor,
             tsc_frequency,
             ref_time,
+            is_ref_time_backed_by_tsc: true,
             guest_memory,
         });
 

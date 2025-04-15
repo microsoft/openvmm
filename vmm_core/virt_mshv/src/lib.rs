@@ -75,6 +75,9 @@ use virt_support_x86emu::emulate::TranslateMode;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::interrupt::Interrupt;
+use vmcore::reference_time::GetReferenceTime;
+use vmcore::reference_time::ReferenceTimeResult;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::synic::GuestEventPort;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
@@ -362,10 +365,31 @@ impl Hv1 for MshvPartition {
     type Error = Error;
     type Device = virt::UnimplementedDevice;
 
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
+        Some(ReferenceTimeSource::from(self.inner.clone() as Arc<_>))
+    }
+
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         None
+    }
+}
+
+impl GetReferenceTime for MshvPartitionInner {
+    fn now(&self) -> ReferenceTimeResult {
+        let mut regs = [hv_register_assoc {
+            name: hvdef::HvAllArchRegisterName::TimeRefCount.0,
+            value: hv_register_value { reg64: 0 },
+            ..Default::default()
+        }];
+        self.vp(VpIndex::BSP).vcpufd.get_reg(&mut regs).unwrap();
+        // SAFETY: the value has been written by the kernel.
+        let ref_time = unsafe { regs[0].value.reg64 };
+        ReferenceTimeResult {
+            ref_time,
+            system_time: None,
+        }
     }
 }
 

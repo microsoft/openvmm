@@ -702,6 +702,7 @@ dependencies = [
  "getrandom 0.3.1",
  "pal_async",
  "term",
+ "tracing",
  "unix_socket",
 ]
 
@@ -3141,9 +3142,12 @@ dependencies = [
  "hyperv_ic_protocol",
  "hyperv_ic_resources",
  "inspect",
+ "jiff",
  "mesh",
+ "pal_async",
  "task_control",
  "thiserror 2.0.12",
+ "tracelimit",
  "tracing",
  "vm_resource",
  "vmbus_async",
@@ -3180,6 +3184,7 @@ version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.10.1",
  "guid",
+ "jiff",
  "open_enum",
  "zerocopy 0.8.23",
 ]
@@ -6419,6 +6424,7 @@ dependencies = [
  "arrayvec",
  "minimal_rt",
  "minimal_rt_build",
+ "tmk_macros",
  "tmk_protocol",
 ]
 
@@ -6692,6 +6698,7 @@ version = "0.0.0"
 dependencies = [
  "crossterm",
  "libc",
+ "thiserror 2.0.12",
  "winapi",
 ]
 
@@ -6818,6 +6825,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmk_macros"
+version = "0.0.0"
+dependencies = [
+ "quote",
+ "syn 2.0.100",
+]
+
+[[package]]
 name = "tmk_protocol"
 version = "0.0.0"
 dependencies = [
@@ -6837,6 +6852,7 @@ dependencies = [
  "hvdef",
  "loader",
  "mesh",
+ "object",
  "page_table",
  "pal_async",
  "pal_uring",
@@ -7806,6 +7822,7 @@ dependencies = [
  "hv1_hypercall",
  "hvdef",
  "inspect",
+ "jiff",
  "kvm",
  "memory_range",
  "open_enum",
@@ -8535,6 +8552,7 @@ dependencies = [
  "futures-concurrency",
  "hvdef",
  "inspect",
+ "jiff",
  "linkme",
  "mesh",
  "pal_async",
@@ -8751,6 +8769,7 @@ dependencies = [
  "hvlite_defs",
  "hvlite_ttrpc_vmservice",
  "hyperv_ic_resources",
+ "jiff",
  "mesh",
  "mesh_rpc",
  "nvme_resources",

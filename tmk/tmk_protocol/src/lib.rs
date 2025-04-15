@@ -6,10 +6,42 @@
 #![no_std]
 
 use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::IntoBytes;
 use zerocopy::TryFromBytes;
 
-/// Address for issuing a command. Write a `&Command` to log.
-pub const COMMAND_ADDRESS: u64 = 0xffff0000;
+/// Start input from the VMM to the TMK.
+#[repr(C)]
+#[derive(IntoBytes, Immutable)]
+pub struct StartInput {
+    /// The address to write commands to.
+    pub command: u64,
+    /// The test index.
+    pub test_index: u64,
+}
+
+/// A TMK test descriptor.
+#[repr(C)]
+pub struct TestDescriptor {
+    /// The test name as a UTF-8 string.
+    pub name: &'static str,
+    /// The test entry point.
+    pub entrypoint: fn(),
+}
+
+/// A 64-bit TMK test descriptor.
+///
+/// Has the same layout as [`TestDescriptor`] for 64-bit architectures.
+#[repr(C)]
+#[derive(IntoBytes, FromBytes, Immutable)]
+pub struct TestDescriptor64 {
+    /// The address of the test's name.
+    pub name: u64,
+    /// The length of the test's name.
+    pub name_len: u64,
+    /// The test entry point.
+    pub entrypoint: u64,
+}
 
 /// TMK command.
 #[repr(u32)]

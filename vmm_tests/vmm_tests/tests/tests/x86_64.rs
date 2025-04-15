@@ -83,19 +83,6 @@ async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Basic VBS boot test with a single VP.
-#[openvmm_test(
-    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
-)]
-async fn vbs_boot_single_proc(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
-    let mut vm = config.with_single_processor().run_without_agent().await?;
-    vm.wait_for_successful_boot_event().await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
-    Ok(())
-}
-
 /// Basic VBS boot test with TPM enabled.
 #[openvmm_test(
     openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),

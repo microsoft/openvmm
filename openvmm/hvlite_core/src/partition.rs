@@ -44,6 +44,7 @@ use virt::vp::AccessVpState;
 use virt::vp::VpSavedState;
 #[cfg(guest_arch = "x86_64")]
 use vmcore::line_interrupt::LineSetTarget;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
@@ -102,6 +103,9 @@ pub trait HvlitePartition: Inspect + Send + Sync {
 
     /// Returns whether partition reset is supported.
     fn supports_reset(&self) -> bool;
+
+    /// Returns the reference time source.
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource>;
 
     /// Gets an interface to support downcasting to specific partition types.
     ///
@@ -227,6 +231,10 @@ where
 
     fn supports_reset(&self) -> bool {
         self.supports_reset().is_some()
+    }
+
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
+        self.reference_time_source()
     }
 
     #[cfg(all(windows, feature = "virt_whp"))]

@@ -22,7 +22,7 @@ use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use virt::x86::MsrError;
 use vm_topology::processor::VpIndex;
-use vmcore::reference_time_source::ReferenceTimeSource;
+use vmcore::reference_time::ReferenceTimeSource;
 use x86defs::cpuid::Vendor;
 use zerocopy::FromZeros;
 
@@ -43,8 +43,7 @@ pub struct GlobalHv<const VTL_COUNT: usize> {
 struct GlobalHvState {
     #[inspect(display)]
     vendor: Vendor,
-    #[inspect(skip)]
-    ref_time: Box<dyn ReferenceTimeSource>,
+    ref_time: ReferenceTimeSource,
     tsc_frequency: u64,
     is_ref_time_backed_by_tsc: bool,
 }
@@ -106,7 +105,10 @@ pub struct GlobalHvParams<const VTL_COUNT: usize> {
     /// The TSC frequency.
     pub tsc_frequency: u64,
     /// The reference time system to use.
-    pub ref_time: Box<dyn ReferenceTimeSource>,
+    pub ref_time: ReferenceTimeSource,
+    /// If true, the reference time is backed by the TSC, with an implicit
+    /// offset of zero.
+    pub is_ref_time_backed_by_tsc: bool,
     /// The guest memory accessor for each VTL.
     pub guest_memory: VtlArray<GuestMemory, VTL_COUNT>,
 }
@@ -118,7 +120,7 @@ impl<const VTL_COUNT: usize> GlobalHv<VTL_COUNT> {
             partition_state: Arc::new(GlobalHvState {
                 vendor: params.vendor,
                 tsc_frequency: params.tsc_frequency,
-                is_ref_time_backed_by_tsc: params.ref_time.is_backed_by_tsc(),
+                is_ref_time_backed_by_tsc: params.is_ref_time_backed_by_tsc,
                 ref_time: params.ref_time,
             }),
             vtl_mutable_state: VtlArray::from_fn(|_| Arc::new(Mutex::new(MutableHvState::new()))),
@@ -154,6 +156,11 @@ impl<const VTL_COUNT: usize> GlobalHv<VTL_COUNT> {
     /// The current guest_os_id value.
     pub fn guest_os_id(&self, vtl: Vtl) -> hvdef::hypercall::HvGuestOsId {
         self.vtl_mutable_state[vtl].lock().guest_os_id
+    }
+
+    /// Returns the reference time source.
+    pub fn ref_time_source(&self) -> &ReferenceTimeSource {
+        &self.partition_state.ref_time
     }
 }
 
@@ -199,7 +206,7 @@ impl Default for VpAssistPage {
 impl ProcessorVtlHv {
     /// The current reference time.
     pub fn ref_time_now(&self) -> u64 {
-        self.partition_state.ref_time.now_100ns()
+        self.partition_state.ref_time.now().ref_time
     }
 
     /// Resets the processor's state.
@@ -380,7 +387,7 @@ impl ProcessorVtlHv {
             hvdef::HV_X64_MSR_GUEST_OS_ID => self.vtl_state.lock().guest_os_id.into(),
             hvdef::HV_X64_MSR_HYPERCALL => self.vtl_state.lock().hypercall_reg.into(),
             hvdef::HV_X64_MSR_VP_INDEX => self.vp_index.index() as u64, // VP index
-            hvdef::HV_X64_MSR_TIME_REF_COUNT => self.partition_state.ref_time.now_100ns(),
+            hvdef::HV_X64_MSR_TIME_REF_COUNT => self.partition_state.ref_time.now().ref_time,
             hvdef::HV_X64_MSR_REFERENCE_TSC => self.vtl_state.lock().reference_tsc_reg.into(),
             hvdef::HV_X64_MSR_TSC_FREQUENCY => self.partition_state.tsc_frequency,
             hvdef::HV_X64_MSR_VP_ASSIST_PAGE => self.vp_assist_page_reg.into(),

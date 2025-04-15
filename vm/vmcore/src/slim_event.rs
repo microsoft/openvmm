@@ -25,6 +25,7 @@ struct State {
 }
 
 impl SlimEvent {
+    /// Returns a new event.
     pub fn new() -> Self {
         Self::default()
     }

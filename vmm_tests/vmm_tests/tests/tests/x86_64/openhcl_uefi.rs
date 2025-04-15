@@ -18,7 +18,7 @@ async fn nvme_relay_test_core(
     let (mut vm, agent) = config
         .with_openhcl_command_line(openhcl_cmdline)
         .with_vmbus_redirect()
-        .with_single_processor()
+        .with_processors(1)
         .run()
         .await?;
 

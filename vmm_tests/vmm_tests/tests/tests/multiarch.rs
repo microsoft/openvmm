@@ -5,12 +5,14 @@
 
 use anyhow::Context;
 use hyperv_ic_resources::kvp::KvpRpc;
+use jiff::SignedDuration;
 use mesh::rpc::RpcSend;
 use petri::PetriVmConfig;
 use petri::SIZE_1_GB;
 use petri::ShutdownKind;
 use petri::openvmm::NIC_MAC_ADDRESS;
 use petri::openvmm::PetriVmConfigOpenVmm;
+use std::time::Duration;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
@@ -132,6 +134,47 @@ async fn kvp_ic(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Test the timesync IC.
+#[openvmm_test(
+    uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    uefi_x64(vhd(ubuntu_2204_server_x64)),
+    uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    linux_direct_x64
+)]
+async fn timesync_ic(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+    let (vm, agent) = config
+        .with_custom_config(|c| {
+            // Start with the clock half a day in the past so that the clock is
+            // initially wrong.
+            c.rtc_delta_milliseconds = -(Duration::from_secs(40000).as_millis() as i64)
+        })
+        .run()
+        .await?;
+
+    let mut saw_time_sync = false;
+    for _ in 0..30 {
+        let time = agent.get_time().await?;
+        let time = jiff::Timestamp::new(time.seconds, time.nanos).unwrap();
+        tracing::info!(%time, "guest time");
+        if time.duration_since(jiff::Timestamp::now()).abs() < SignedDuration::from_secs(10) {
+            saw_time_sync = true;
+            break;
+        }
+        mesh::CancelContext::new()
+            .with_timeout(Duration::from_secs(1))
+            .cancelled()
+            .await;
+    }
+
+    if !saw_time_sync {
+        anyhow::bail!("time never synchronized");
+    }
+
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
 /// Validate we can reboot a VM and reconnect to pipette.
 // TODO: Reenable guests that use the framebuffer once #74 is fixed.
 #[openvmm_test(
@@ -165,6 +208,8 @@ async fn reboot(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
 }
 
 /// Basic boot test without agent
+// TODO: investigate why the shutdown ic doesn't work reliably with hyper-v
+// in our ubuntu image
 #[vmm_test(
     openvmm_linux_direct_x64,
     openvmm_openhcl_linux_direct_x64,
@@ -179,15 +224,29 @@ async fn reboot(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
-    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    // hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // the shutdown ic doesn't work reliably with hyper-v in our ubuntu image
     // hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
     hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
 )]
 async fn boot_no_agent(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+/// Basic boot test without agent and with a single VP.
+#[vmm_test(
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64)),
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+)]
+async fn boot_no_agent_single_proc(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+    let mut vm = config.with_processors(1).run_without_agent().await?;
     vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);

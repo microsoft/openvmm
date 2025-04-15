@@ -79,11 +79,12 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    /// Set the VM to use a single processor.
-    /// This is useful mainly for heavier OpenHCL tests, as our WHP emulation
+    /// Set the VM to use the specified number of virtual processors.
+    ///
+    /// Using 1 CPU is useful for heavier OpenHCL tests, as our WHP emulation
     /// layer is rather slow when dealing with cross-cpu communication.
-    pub fn with_single_processor(mut self) -> Self {
-        self.config.processor_topology.proc_count = 1;
+    pub fn with_processors(mut self, count: u32) -> Self {
+        self.config.processor_topology.proc_count = count;
         self
     }
 
