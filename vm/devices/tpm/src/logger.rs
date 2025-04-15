@@ -36,9 +36,12 @@ impl<T: 'static + TpmLogger> From<T> for ResolvedTpmLogger {
 #[async_trait::async_trait]
 pub trait TpmLogger: Send + Sync {
     /// Send an event with the given id to the host and flush.
+    /// This is a non-blocking call that can be used in an async context.
     async fn log_event_and_flush(&self, event: TpmLogEvent);
 
     /// Send an event with the given id to the host without flushing.
+    /// This is a blocking call that can be used in a non-async context
+    /// such as the callback of `PollDevice::poll_device` for AK cert request.
     fn log_event(&self, event: TpmLogEvent);
 }
 
