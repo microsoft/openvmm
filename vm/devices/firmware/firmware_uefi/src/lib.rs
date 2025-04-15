@@ -252,6 +252,10 @@ impl UefiDevice {
                     );
                 }
             }
+            UefiCommand::SET_ADVANCED_LOGGER_GPA => {
+                // Just log the GPA
+                tracelimit::info_ratelimited!("The advanced logger gpa is located at {:#x}", data);
+            }
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
     }
@@ -399,6 +403,9 @@ open_enum::open_enum! {
         WATCHDOG_CONFIG              = 0x27,
         WATCHDOG_RESOLUTION          = 0x28,
         WATCHDOG_COUNT               = 0x29,
+
+        // UEFI Advanced Logger GPA
+        SET_ADVANCED_LOGGER_GPA      = 0x2B,
 
         // Event Logging (Windows 8.1 MQ/M0)
         EVENT_LOG_FLUSH              = 0x30,
