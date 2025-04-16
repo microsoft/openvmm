@@ -591,6 +591,8 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
         T: 'static,
         U: Serialize + DeserializeOwned + 'static,
     {
+        // This could probably be handled without an additional Rust step with some
+        // additional work in the backend, but this is simple enough for now.
         ctx.emit_minor_rust_stepv("🌼 Add dependency", |ctx| {
             let this = self.clone().claim(ctx);
             other.clone().claim(ctx);
