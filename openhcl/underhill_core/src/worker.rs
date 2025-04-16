@@ -514,26 +514,10 @@ impl UnderhillVmWorker {
 
         let is_post_servicing = servicing_state.is_some();
         let correlation_id = (servicing_state.as_ref()).and_then(|s| s.init_state.correlation_id);
-        let (mut servicing_init_state, servicing_unit_state) = match servicing_state {
+        let (servicing_init_state, servicing_unit_state) = match servicing_state {
             None => (None, None),
             Some(ServicingState { init_state, units }) => (Some(init_state), Some(units)),
         };
-
-        if let Some(state) = servicing_unit_state.as_ref() {
-            if let Some(s) = state.iter().find(|s| s.name.contains("net:")) {
-                if let Ok(netvsp_state) = s.state.parse::<netvsp::saved_state::SavedState>() {
-                    if let Some(init_state) = servicing_init_state.as_mut() {
-                        if let Some(mana_state) = init_state.mana_state.as_mut() {
-                            if !mana_state.is_empty() {
-                                if let Some(queues) = netvsp_state.saved_queues {
-                                    mana_state[0].queues = queues;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
 
         // Build the VM.
         let mut vm = new_underhill_vm(
@@ -850,13 +834,12 @@ impl UhVmNetworkSettings {
                     })
                     .await?,
             );
-            let nic = nic_builder.build_with_saved_state(
+            let nic = nic_builder.build(
                 driver_source,
                 vmbus_instance_id,
                 endpoint,
                 mac_address,
                 adapter_index,
-                servicing_mana_state.as_ref().map(|s| &s.queues).cloned(),
             );
 
             let channel = offer_channel_unit(
@@ -964,6 +947,8 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
     async fn unload_for_servicing(&mut self, mana_keepalive: bool) {
         let mut vf_managers: Vec<(Guid, Arc<HclNetworkVFManager>)> =
             self.vf_managers.drain().collect();
+
+        tracing::info!("unloading vf managers: {}", vf_managers.len());
         self.shutdown_vf_devices(&mut vf_managers, false, true, mana_keepalive)
             .await;
     }
@@ -1001,15 +986,70 @@ impl LoadedVmNetworkSettings for UhVmNetworkSettings {
         &mut self,
         mana_keepalive_flag: bool,
     ) -> Option<Vec<Result<ManaSavedState, anyhow::Error>>> {
+        if !mana_keepalive_flag {
+            return None;
+        }
+
+        let vf_managers: Vec<(Guid, Arc<HclNetworkVFManager>)> = self.vf_managers.drain().collect();
+
+        // Collect the instance_id of every vf_manager being shutdown
+        let instance_ids: Vec<Guid> = vf_managers
+            .iter()
+            .map(|(instance_id, _)| *instance_id)
+            .collect();
+
+        // Only remove the vmbus channels and NICs from the VF Managers
+        let mut nic_channels = Vec::new();
+        let mut i = 0;
+        while i < self.nics.len() {
+            if instance_ids.contains(&self.nics[i].0) {
+                let val = self.nics.remove(i);
+                nic_channels.push(val);
+            } else {
+                i += 1;
+            }
+        }
+
+        for instance_id in instance_ids {
+            if !nic_channels.iter().any(|(id, _)| *id == instance_id) {
+                tracing::error!(
+                    "No vmbus channel found that matches VF Manager instance_id: {instance_id}"
+                );
+            }
+        }
+
+        let mut endpoints: Vec<_> =
+            join_all(nic_channels.drain(..).map(async |(instance_id, channel)| {
+                async {
+                    let nic = channel.remove().await.revoke().await;
+                    nic.shutdown()
+                }
+                .instrument(tracing::info_span!("nic_shutdown", %instance_id))
+                .await
+            }))
+            .await;
+
+        let run_endpoints = async {
+            loop {
+                let _ = endpoints
+                    .iter_mut()
+                    .map(|endpoint| endpoint.wait_for_endpoint_action())
+                    .collect::<Vec<_>>()
+                    .race()
+                    .await;
+            }
+        };
+
+        let save_vf_managers = join_all(vf_managers.into_iter().map(|(_, vf_manager)| {
+            let manager = vf_manager.clone();
+            async move { manager.save().await }
+        }));
+
+        let state = (run_endpoints, save_vf_managers).race().await;
+        tracing::info!("save returned: {state:?}");
+
         if mana_keepalive_flag {
-            Some(
-                join_all(
-                    self.vf_managers
-                        .values()
-                        .map(|vf_manager| vf_manager.save()),
-                )
-                .await,
-            )
+            Some(state)
         } else {
             None
         }

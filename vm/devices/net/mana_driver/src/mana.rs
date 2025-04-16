@@ -27,6 +27,11 @@ use gdma_defs::bnic::ManaQueryStatisticsResponse;
 use gdma_defs::bnic::ManaQueryVportCfgResp;
 use gdma_defs::bnic::STATISTICS_FLAGS_ALL;
 use inspect::Inspect;
+use mana_save_restore::save_restore::BnicEqSavedState;
+use mana_save_restore::save_restore::BnicWqSavedState;
+use mana_save_restore::save_restore::ContiguousBufferManagerSavedState;
+use mana_save_restore::save_restore::MemoryBlockSavedState;
+use mana_save_restore::save_restore::QueueResourcesSavedState;
 use net_backend_resources::mac_address::MacAddress;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
@@ -55,6 +60,8 @@ pub struct ManaDevice<T: DeviceBacking> {
     hwc_task: Option<Task<()>>,
     inspect_send: mesh::Sender<inspect::Deferred>,
 
+    /// The memory blocks that were restored during servicing.
+    pub restored_mem: Option<Vec<MemoryBlock>>,
     /// Whether the device should be left untouched during servicing or not
     pub keepalive: bool,
 }
@@ -84,8 +91,32 @@ impl<T: DeviceBacking> ManaDevice<T> {
         mana_state: Option<ManaSavedState>,
         mana_keepalive: bool,
     ) -> anyhow::Result<Self> {
+        let dma_client = device.dma_client();
+        let restored_mem = dma_client.attach_pending_buffers()?;
+
+        tracing::info!("restored memory blocks len: {:?}", restored_mem.len());
+
+        let restored_mem = if restored_mem.is_empty() {
+            None
+        } else {
+            Some(restored_mem)
+        };
+
         let mut gdma = if let Some(ref mana_state) = mana_state {
-            GdmaDriver::restore(mana_state.mana_device.gdma.clone(), device).await?
+            tracing::info!("restoring GDMA driver");
+            let mem = restored_mem
+                .clone()
+                .expect("should have restored memory when restoring");
+            let dma_buffer = mem
+                .iter()
+                .find(|s| {
+                    mana_state.mana_device.gdma.mem.len == s.len()
+                        && mana_state.mana_device.gdma.mem.base_pfn == s.pfns()[0]
+                })
+                .expect("failed to find matching memory block")
+                .to_owned();
+
+            GdmaDriver::restore(mana_state.mana_device.gdma.clone(), device, dma_buffer).await?
         } else {
             GdmaDriver::new(driver, device, num_vps, mana_keepalive).await?
         };
@@ -158,6 +189,7 @@ impl<T: DeviceBacking> ManaDevice<T> {
             inspect_task,
             hwc_task: None,
             keepalive: mana_keepalive,
+            restored_mem,
         };
         Ok(device)
     }
@@ -231,6 +263,7 @@ impl<T: DeviceBacking> ManaDevice<T> {
         vport_state: Option<VportState>,
         dev_config: &ManaQueryDeviceCfgResp,
     ) -> anyhow::Result<Vport<T>> {
+        tracing::info!("new vport {}", index);
         let vport_config = self.query_vport_config(index).await?;
 
         let vport_state = vport_state.unwrap_or(VportState::new(None, None));
@@ -240,6 +273,7 @@ impl<T: DeviceBacking> ManaDevice<T> {
             config: vport_config,
             vport_state,
             id: index,
+            restored_mem: self.restored_mem.clone(),
         };
 
         if dev_config.cap_filter_state_query() {
@@ -318,6 +352,7 @@ pub struct Vport<T: DeviceBacking> {
     config: ManaQueryVportCfgResp,
     vport_state: VportState,
     id: u32,
+    restored_mem: Option<Vec<MemoryBlock>>,
 }
 
 impl<T: DeviceBacking> Vport<T> {
@@ -393,6 +428,45 @@ impl<T: DeviceBacking> Vport<T> {
         })
     }
 
+    pub async fn restore_eq(
+        &self,
+        arena: &mut ResourceArena,
+        saved_state: BnicEqSavedState,
+    ) -> anyhow::Result<BnicEq> {
+        if self.restored_mem.is_none() {
+            anyhow::bail!("no restored memory to restore eq");
+        }
+
+        let mem = self.restored_mem.clone().unwrap();
+        let memory = mem
+            .iter()
+            .find(|m| saved_state.mem.base == m.pfns()[0] && saved_state.mem.len == m.len());
+
+        if memory.is_none() {
+            anyhow::bail!("failed to find matching memory block to restore eq");
+        }
+
+        let mem = memory.unwrap().clone();
+
+        let interrupt = self
+            .inner
+            .gdma
+            .lock()
+            .await
+            .get_interrupt_for_eq(saved_state.id);
+
+        if interrupt.is_none() {
+            anyhow::bail!("failed to find matching interrupt to restore eq");
+        }
+
+        Ok(BnicEq {
+            doorbell: DoorbellPage::new(self.inner.doorbell.clone(), self.inner.dev_data.db_id)?,
+            mem,
+            id: saved_state.id,
+            interrupt: interrupt.unwrap(),
+        })
+    }
+
     /// Creates a new work queue (transmit or receive).
     pub async fn new_wq(
         &self,
@@ -452,6 +526,83 @@ impl<T: DeviceBacking> Vport<T> {
             is_send,
             wq_obj: resp.wq_obj,
         })
+    }
+
+    pub async fn restore_wq(
+        &self,
+        arena: &mut ResourceArena,
+        saved_state: BnicWqSavedState,
+    ) -> anyhow::Result<BnicWq> {
+        if self.restored_mem.is_none() {
+            anyhow::bail!("no restored memory to restore eq");
+        }
+
+        let mem = self.restored_mem.clone().unwrap();
+
+        tracing::info!(
+            "looking for wq_memory: {:x}, {}",
+            saved_state.wq_mem.base,
+            saved_state.wq_mem.len
+        );
+        tracing::info!(
+            "looking for cq_memory: {:x}, {}",
+            saved_state.cq_mem.base,
+            saved_state.cq_mem.len
+        );
+
+        mem.iter().for_each(|m| {
+            tracing::info!("restored_mem: {:x}, {}", m.pfns()[0], m.len());
+        });
+
+        let wq_memory = mem.iter().find(|m| {
+            saved_state.wq_mem.base == m.pfns()[0]
+                && (saved_state.wq_mem.len + saved_state.cq_mem.len) == m.len()
+        });
+
+        if wq_memory.is_none() {
+            anyhow::bail!("failed to find matching memory block to restore wq");
+        }
+
+        let wq_memory = wq_memory.unwrap().clone();
+
+        let wq_memory = wq_memory.subblock(0, saved_state.wq_mem.len);
+        let cq_memory = wq_memory.subblock(saved_state.wq_mem.len, saved_state.cq_mem.len);
+
+        tracing::info!("wq_memory: {:x}, {}", wq_memory.pfns()[0], wq_memory.len());
+        tracing::info!("cq_memory: {:x}, {}", cq_memory.pfns()[0], cq_memory.len());
+
+        Ok(BnicWq {
+            doorbell: DoorbellPage::new(self.inner.doorbell.clone(), self.inner.dev_data.db_id)?,
+            wq_mem: wq_memory.clone(),
+            cq_mem: cq_memory.clone(),
+            wq_id: saved_state.wq_id,
+            cq_id: saved_state.cq_id,
+            is_send: saved_state.is_send,
+            wq_obj: saved_state.wq_obj,
+        })
+    }
+
+    pub async fn restore_bounce_buffer_memory(
+        &self,
+        saved_bounce_buffer: &ContiguousBufferManagerSavedState,
+    ) -> anyhow::Result<MemoryBlock> {
+        if self.restored_mem.is_none() {
+            anyhow::bail!("no restored memory to restore bounce buffer");
+        }
+
+        let mem = self.restored_mem.clone().unwrap();
+
+        let bounce_buffer = mem.iter().find(|m| {
+            saved_bounce_buffer.mem.base == m.pfns()[0] && saved_bounce_buffer.mem.len == m.len()
+        });
+
+        if bounce_buffer.is_none() {
+            anyhow::bail!("failed to find matching memory block to restore bounce buffer");
+        }
+
+        let bounce_buffer = bounce_buffer.unwrap().clone();
+
+        Ok(bounce_buffer)
     }
 
     /// Get the transmit configuration.
@@ -616,6 +767,18 @@ impl BnicEq {
     pub fn queue(&self) -> queues::Eq {
         queues::Eq::new_eq(self.mem.clone(), self.doorbell.clone(), self.id)
     }
+
+    pub fn save(&self) -> BnicEqSavedState {
+        BnicEqSavedState {
+            mem: MemoryBlockSavedState {
+                base: self.mem.pfns()[0],
+                len: self.mem.len(),
+                pfns: self.mem.pfns().to_vec(),
+                pfn_bias: self.mem.pfn_bias(),
+            },
+            id: self.id,
+        }
+    }
 }
 
 /// A work queue (transmit or receive).
@@ -647,5 +810,27 @@ impl BnicWq {
     /// Gets the work queue object ID.
     pub fn wq_obj(&self) -> u64 {
         self.wq_obj
+    }
+
+    /// Saves the state of the work queue for restoration after servicing.
+    pub fn save(&self) -> BnicWqSavedState {
+        BnicWqSavedState {
+            wq_mem: MemoryBlockSavedState {
+                base: self.wq_mem.pfns()[0],
+                len: self.wq_mem.len(),
+                pfns: self.wq_mem.pfns().to_vec(),
+                pfn_bias: self.wq_mem.pfn_bias(),
+            },
+            cq_mem: MemoryBlockSavedState {
+                base: self.cq_mem.pfns()[0],
+                len: self.cq_mem.len(),
+                pfns: self.cq_mem.pfns().to_vec(),
+                pfn_bias: self.cq_mem.pfn_bias(),
+            },
+            wq_id: self.wq_id,
+            cq_id: self.cq_id,
+            is_send: self.is_send,
+            wq_obj: self.wq_obj,
+        }
     }
 }

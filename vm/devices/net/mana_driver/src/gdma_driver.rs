@@ -558,7 +558,11 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         })
     }
 
-    pub async fn restore(saved_state: GdmaDriverSavedState, mut device: T) -> anyhow::Result<Self> {
+    pub async fn restore(
+        saved_state: GdmaDriverSavedState,
+        mut device: T,
+        dma_buffer: MemoryBlock,
+    ) -> anyhow::Result<Self> {
         let bar0_mapping = device.map_bar(0)?;
         let bar0_len = bar0_mapping.len();
         if bar0_len < size_of::<RegMap>() {
@@ -605,17 +609,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 map.vf_gdma_sriov_shared_reg_start
             );
         }
-
-        let dma_client = device.dma_client();
-        let memory = dma_client.attach_pending_buffers()?;
-
-        tracing::info!("number of pending buffers attached: {}", memory.len());
-
-        let dma_buffer = memory
-            .iter()
-            .find(|s| saved_state.mem.len == s.len() && saved_state.mem.base_pfn == s.pfns()[0])
-            .expect("failed to find matching memory block")
-            .to_owned();
 
         let doorbell_shift = map.vf_db_page_sz.trailing_zeros();
         let bar0 = Arc::new(Bar0 {

@@ -815,6 +815,9 @@ impl PagePoolAllocator {
     pub fn restore_pending_allocs(&self) -> Vec<PagePoolHandle> {
         let mut inner = self.inner.state.lock();
         let inner = &mut *inner;
+
+        tracing::info!("slot state: {:?}", inner.slots);
+
         let mut slots: Vec<&mut Slot> = inner
             .slots
             .iter_mut()

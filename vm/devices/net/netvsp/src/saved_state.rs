@@ -13,8 +13,6 @@ use vmcore::save_restore::SavedStateRoot;
 pub struct SavedState {
     #[mesh(1)]
     pub open: Option<OpenState>,
-    #[mesh(2)]
-    pub saved_queues: Option<Vec<QueueSavedState>>,
 }
 
 #[derive(Debug, Protobuf)]

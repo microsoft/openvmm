@@ -222,6 +222,8 @@ struct HclNetworkVFManagerWorker {
     #[inspect(skip)]
     save_state: RuntimeSavedState,
     #[inspect(skip)]
+    mana_save_state: Option<ManaSavedState>,
+    #[inspect(skip)]
     uevent_handler: HclNetworkVfManagerUeventHandler,
     vp_count: u32,
     #[inspect(skip)]
@@ -249,6 +251,7 @@ impl HclNetworkVFManagerWorker {
         max_sub_channels: u16,
         dma_mode: GuestDmaMode,
         dma_client: Arc<dyn DmaClient>,
+        mana_state: Option<ManaSavedState>,
     ) -> (Self, mesh::Sender<HclNetworkVfManagerMessage>) {
         let (tx_to_worker, worker_rx) = mesh::channel();
         let vtl0_bus_control = if save_state.hidden_vtl0.lock().unwrap_or(false) {
@@ -279,14 +282,19 @@ impl HclNetworkVFManagerWorker {
                 vtl2_pci_id,
                 dma_mode,
                 dma_client,
+                mana_save_state: mana_state,
             },
             tx_to_worker,
         )
     }
 
-    pub async fn connect_endpoints(&mut self) -> anyhow::Result<Vec<MacAddress>> {
+    pub async fn connect_endpoints(
+        &mut self,
+        saved_state: Option<ManaSavedState>,
+    ) -> anyhow::Result<Vec<MacAddress>> {
         let device = self.mana_device.as_ref().expect("valid endpoint");
         let indices = (0..device.num_vports()).collect::<Vec<u32>>();
+        tracing::info!("saved_state: {:?}", saved_state);
         let result = futures::future::try_join_all(
             indices.iter().zip(self.endpoint_controls.iter_mut()).map(
                 |(index, endpoint_control)| {
@@ -310,6 +318,9 @@ impl HclNetworkVFManagerWorker {
                                 vport,
                                 self.dma_mode,
                                 device.keepalive,
+                                saved_state
+                                    .clone()
+                                    .map(|state| state.endpoints[(*index) as usize].clone()),
                             )
                             .await,
                         );
@@ -421,6 +432,17 @@ impl HclNetworkVFManagerWorker {
         for update in self.guest_state_notifications.iter() {
             drop(update.call(HclNetworkVFUpdateNotification::Update, ()));
         }
+    }
+
+    pub async fn disconnect_endpoints(
+        &mut self,
+    ) -> Vec<Result<Option<Box<dyn Endpoint>>, anyhow::Error>> {
+        futures::future::join_all(
+            self.endpoint_controls
+                .iter_mut()
+                .map(async |control| control.disconnect().await),
+        )
+        .await
     }
 
     pub async fn shutdown_vtl2_device(&mut self, keep_vf_alive: bool) {
@@ -694,12 +716,36 @@ impl HclNetworkVFManagerWorker {
                 }
                 NextWorkItem::ManagerMessage(HclNetworkVfManagerMessage::SaveState(rpc)) => {
                     drop(self.messages.take().unwrap());
-
                     rpc.handle(|_| async move {
+                        tracing::info!("trying to disconnect endpoints");
+                        let mut endpoints = self.disconnect_endpoints().await;
+                        let endpoints: Vec<_> = endpoints
+                            .iter_mut()
+                            .map(|result| match result {
+                                Ok(Some(endpoint)) => {
+                                    tracing::info!(
+                                        "saving endpoint type: {}",
+                                        endpoint.endpoint_type()
+                                    );
+                                    endpoint.save()
+                                }
+                                Ok(None) => todo!(),
+                                Err(_) => todo!(),
+                            })
+                            .collect();
+
+                        let saved_endpoints = endpoints
+                            .into_iter()
+                            .filter_map(|endpoint| match endpoint {
+                                Ok(endpoint) => Some(endpoint),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>();
+
                         ManaSavedState {
                             pci_id: self.vtl2_pci_id.clone(),
                             mana_device: self.mana_device.as_ref().unwrap().save().await.unwrap(),
-                            queues: Vec::new(), // Filled in by VMBus level save/restore
+                            endpoints: saved_endpoints,
                         }
                     })
                     .await;
@@ -734,7 +780,7 @@ impl HclNetworkVFManagerWorker {
                     {
                         Ok(device) => {
                             self.mana_device = Some(device);
-                            self.connect_endpoints().await.is_ok()
+                            self.connect_endpoints(None).await.is_ok()
                         }
                         Err(err) => {
                             tracing::error!(
@@ -970,10 +1016,11 @@ impl HclNetworkVFManager {
             max_sub_channels,
             dma_mode,
             dma_client,
+            mana_state.clone(),
         );
 
         // Queue new endpoints.
-        let mac_addresses = worker.connect_endpoints().await?;
+        let mac_addresses = worker.connect_endpoints(mana_state.clone()).await?;
         // The proxy endpoints are not yet in use, so run them here to switch to the queued endpoints.
         // N.B Endpoint should not return any other action type other than `RestartRequired`
         //     at this time because the notification task hasn't been started yet.

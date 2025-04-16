@@ -160,6 +160,64 @@ pub mod save_restore {
         ManaQueue(ManaQueueSavedState),
     }
 
+    #[derive(Debug, Protobuf, Clone)]
+    #[mesh(package = "mana_driver")]
+    pub enum EndpointSavedState {
+        /// Variant specific to Mana endpoints
+        #[mesh(1)]
+        ManaEndpoint(ManaEndpointSavedState),
+    }
+
+    #[derive(Debug, Protobuf, Clone)]
+    #[mesh(package = "mana_driver")]
+    pub struct ManaEndpointSavedState {
+        #[mesh(1)]
+        pub queue_resources: Vec<QueueResourcesSavedState>,
+    }
+
+    #[derive(Protobuf, Clone, Debug)]
+    #[mesh(package = "mana_driver")]
+    pub struct QueueResourcesSavedState {
+        #[mesh(1)]
+        pub _eq: BnicEqSavedState,
+        #[mesh(2)]
+        pub rxq: BnicWqSavedState,
+        #[mesh(3)]
+        pub _txq: BnicWqSavedState,
+        #[mesh(4)]
+        pub tx_bounce_buffer: ContiguousBufferManagerSavedState,
+        #[mesh(5)]
+        pub rx_bounce_buffer: Option<ContiguousBufferManagerSavedState>,
+    }
+
+    /// Saved state of a work queue for restoration during servicing
+    #[derive(Protobuf, Clone, Debug)]
+    #[mesh(package = "mana_driver")]
+    pub struct BnicWqSavedState {
+        #[mesh(1)]
+        pub wq_mem: MemoryBlockSavedState,
+        #[mesh(2)]
+        pub cq_mem: MemoryBlockSavedState,
+        #[mesh(3)]
+        pub wq_id: u32,
+        #[mesh(4)]
+        pub cq_id: u32,
+        #[mesh(5)]
+        pub is_send: bool,
+        #[mesh(6)]
+        pub wq_obj: u64,
+    }
+
+    /// Saved state of an event queue for restoration after servicing.
+    #[derive(Protobuf, Clone, Debug)]
+    #[mesh(package = "mana_driver")]
+    pub struct BnicEqSavedState {
+        #[mesh(1)]
+        pub mem: MemoryBlockSavedState,
+        #[mesh(2)]
+        pub id: u32,
+    }
+
     /// Saved state of a MANA queue to be restored after servicing
     #[derive(Debug, Protobuf, Clone)]
     #[mesh(package = "mana_driver")]

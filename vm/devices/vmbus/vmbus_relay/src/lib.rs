@@ -282,6 +282,8 @@ struct RelayChannelTask {
 impl RelayChannelTask {
     /// Relay open channel request from VTL0 to Host, responding with Open Result
     async fn handle_open_channel(&mut self, open_request: &OpenRequest) -> Result<OpenResult> {
+        tracing::info!("handle_open_channel");
+
         // If the guest uses the channel bitmap, the host can't send interrupts
         // directly and they must be relayed.
         let redirect_interrupt = self.channel.use_interrupt_relay.load(Ordering::SeqCst);

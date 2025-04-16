@@ -20,6 +20,7 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::InspectMut;
+use mana_save_restore::save_restore::EndpointSavedState;
 use mana_save_restore::save_restore::QueueSavedState;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
@@ -114,6 +115,13 @@ pub trait Endpoint: Send + Sync + InspectMut {
         _queues: &mut Vec<Box<dyn Queue>>,
     ) -> anyhow::Result<()> {
         anyhow::bail!("Endpoint does not support restoring queues")
+    }
+
+    fn save(&mut self) -> anyhow::Result<EndpointSavedState> {
+        anyhow::bail!(
+            "{} endpoint does not support saving state",
+            self.endpoint_type()
+        )
     }
 }
 
@@ -615,5 +623,9 @@ impl Endpoint for DisconnectableEndpoint {
         self.current_mut()
             .restore_queues(queue_configs, saved_state, queues)
             .await
+    }
+
+    fn save(&mut self) -> anyhow::Result<EndpointSavedState> {
+        self.current_mut().save()
     }
 }

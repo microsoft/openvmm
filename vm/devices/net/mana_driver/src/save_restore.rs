@@ -4,6 +4,7 @@
 //! Types to save and restore the state of a MANA device.
 
 use mana_save_restore::save_restore::CqEqSavedState;
+use mana_save_restore::save_restore::EndpointSavedState;
 use mana_save_restore::save_restore::QueueSavedState;
 use mana_save_restore::save_restore::SavedMemoryState;
 use mana_save_restore::save_restore::WqSavedState;
@@ -18,9 +19,9 @@ pub struct ManaSavedState {
     #[mesh(1)]
     pub mana_device: ManaDeviceSavedState,
 
-    /// Saved queue state
+    /// Endpoint saved state
     #[mesh(2)]
-    pub queues: Vec<QueueSavedState>,
+    pub endpoints: Vec<EndpointSavedState>,
 
     /// Id of the device
     #[mesh(3)]
