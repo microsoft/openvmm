@@ -746,14 +746,11 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             return Err(HvError::InvalidRegisterValue);
         }
 
-        // TODO TDX GUEST VSM
-        if let virt::IsolationType::Snp = self.vp.partition.isolation {
-            // Intercept control is always managed by the hypervisor, so any request
-            // here is only opportunistic. Make the request directly with the
-            // hypervisor. Since intercept control always applies to VTL 1 control of
-            // VTL 0 state, the VTL 1 intercept control register is set here.
-            B::cr_intercept_registration(self.vp, intercept_control);
-        }
+        // Intercept control is always managed by the hypervisor, so any request
+        // here is only opportunistic. Make the request directly with the
+        // hypervisor. Since intercept control always applies to VTL 1 control of
+        // VTL 0 state, the VTL 1 intercept control register is set here.
+        B::cr_intercept_registration(self.vp, intercept_control);
 
         self.vp
             .backing

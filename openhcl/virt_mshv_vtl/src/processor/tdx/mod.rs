@@ -245,7 +245,7 @@ struct VirtualRegister {
     /// The value the guest sees.
     shadow_value: u64,
     /// Additional constraints on bits.
-    allowed_bits: Option<u64>,
+    allowed_bits: u64,
 }
 
 #[derive(Debug, Error)]
@@ -255,12 +255,7 @@ enum VirtualRegisterError {
 }
 
 impl VirtualRegister {
-    fn new(
-        reg: ShadowedRegister,
-        vtl: GuestVtl,
-        initial_value: u64,
-        allowed_bits: Option<u64>,
-    ) -> Self {
+    fn new(reg: ShadowedRegister, vtl: GuestVtl, initial_value: u64, allowed_bits: u64) -> Self {
         Self {
             register: reg,
             vtl,
@@ -279,7 +274,7 @@ impl VirtualRegister {
     ) -> Result<(), VirtualRegisterError> {
         tracing::trace!(?self.register, value, "write virtual register");
 
-        if value & !self.allowed_bits.unwrap_or(u64::MAX) != 0 {
+        if value & !self.allowed_bits != 0 {
             return Err(VirtualRegisterError::InvalidValue(
                 value,
                 self.register.name(),
@@ -420,11 +415,11 @@ struct TdxVtl {
     cr4: VirtualRegister,
 
     tpr_threshold: u8,
-    #[inspect(skip)]
+    #[inspect(debug)]
     processor_controls: ProcessorControls,
-    #[inspect(skip)]
+    #[inspect(debug)]
     secondary_processor_controls: SecondaryProcessorControls,
-    #[inspect(skip)]
+    #[inspect(debug)]
     interruption_information: InterruptionInformation,
     exception_error_code: u32,
     interruption_set: bool,
@@ -566,25 +561,67 @@ impl HardwareIsolatedBacking for TdxBacked {
     }
 
     fn cr0(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
-        this.backing.vtls[vtl].cr0.read(&this.runner)
+        this.read_cr0(vtl)
     }
 
     fn cr4(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
-        this.backing.vtls[vtl].cr4.read(&this.runner)
+        this.read_cr4(vtl)
     }
 
     fn intercept_message_state(
-        _this: &UhProcessor<'_, Self>,
-        _vtl: GuestVtl,
+        this: &UhProcessor<'_, Self>,
+        vtl: GuestVtl,
     ) -> super::InterceptMessageState {
-        todo!()
+        let exit = TdxExit(this.runner.tdx_vp_enter_exit_info());
+        let backing_vtl = &this.backing.vtls[vtl];
+        let shared_gps = this.runner.tdx_enter_guest_gps();
+
+        super::InterceptMessageState {
+            instruction_length_and_cr8: exit.instr_info().length() as u8,
+            cpl: exit.cpl(),
+            efer_lma: backing_vtl.efer & X64_EFER_LMA != 0,
+            cs_segment: exit.cs().into(),
+            rip: backing_vtl.private_regs.rip,
+            rflags: backing_vtl.private_regs.rflags,
+            rax: shared_gps[TdxGp::RAX],
+            rdx: shared_gps[TdxGp::RDX],
+        }
     }
 
     fn cr_intercept_registration(
-        _this: &mut UhProcessor<'_, Self>,
-        _intercept_control: hvdef::HvRegisterCrInterceptControl,
+        this: &mut UhProcessor<'_, Self>,
+        intercept_control: hvdef::HvRegisterCrInterceptControl,
     ) {
-        todo!()
+        let intercept_masks = &this
+            .backing
+            .cvm_state()
+            .vtl1
+            .as_ref()
+            .unwrap()
+            .reg_intercept;
+        this.runner.write_vmcs64(
+            GuestVtl::Vtl0,
+            VmcsField::VMX_VMCS_CR0_GUEST_HOST_MASK,
+            !0,
+            this.shared.cr_guest_host_mask(ShadowedRegister::Cr0)
+                | if intercept_control.cr0_write() {
+                    intercept_masks.cr0_mask
+                } else {
+                    0
+                },
+        );
+        this.runner.write_vmcs64(
+            GuestVtl::Vtl0,
+            VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK,
+            !0,
+            this.shared.cr_guest_host_mask(ShadowedRegister::Cr4)
+                | if intercept_control.cr4_write() {
+                    intercept_masks.cr4_mask
+                } else {
+                    0
+                },
+        );
+        // TODO TDX GUEST VSM register for descriptor table exits, msr bitmap exits
     }
 }
 
@@ -599,6 +636,8 @@ pub struct TdxBackedShared {
     flush_state: VtlArray<RwLock<TdxPartitionFlushState>, 2>,
     #[inspect(iter_by_index)]
     active_vtl: Vec<AtomicU8>,
+    /// CR4 bits that the guest is allowed to set to 1.
+    cr4_allowed_bits: u64,
 }
 
 impl TdxBackedShared {
@@ -618,6 +657,12 @@ impl TdxBackedShared {
                     partition_params.topology.vp_count(),
                 )
             });
+
+        // TODO TDX: Consider just using MSR kernel module instead of explicit ioctl.
+        let cr4_fixed1 = params.hcl.read_vmx_cr4_fixed1();
+        let cr4_allowed_bits =
+            (ShadowedRegister::Cr4.guest_owned_mask() | X64_CR4_MCE) & cr4_fixed1;
+
         Ok(Self {
             untrusted_synic,
             flush_state: VtlArray::from_fn(|_| RwLock::new(TdxPartitionFlushState::new())),
@@ -626,7 +671,20 @@ impl TdxBackedShared {
             active_vtl: std::iter::repeat_n(2, partition_params.topology.vp_count() as usize)
                 .map(AtomicU8::new)
                 .collect(),
+            cr4_allowed_bits,
         })
+    }
+
+    /// Get the default guest host mask for the specified register.
+    fn cr_guest_host_mask(&self, reg: ShadowedRegister) -> u64 {
+        match reg {
+            ShadowedRegister::Cr0 => {
+                !ShadowedRegister::Cr0.guest_owned_mask() | X64_CR0_PE | X64_CR0_PG
+            }
+            ShadowedRegister::Cr4 => {
+                !(ShadowedRegister::Cr4.guest_owned_mask() & self.cr4_allowed_bits)
+            }
+        }
     }
 }
 
@@ -660,13 +718,6 @@ impl BackingPrivate for TdxBacked {
         // TODO TDX: lapic / APIC setup?
         // TODO TDX: see ValInitializeVplc
         // TODO TDX: XCR_XFMEM setup?
-
-        // Allowed cr4 bits depend on the values allowed by the SEAM.
-        //
-        // TODO TDX: Consider just using MSR kernel module instead of explicit
-        // ioctl.
-        let read_cr4 = params.partition.hcl.read_vmx_cr4_fixed1();
-        let allowed_cr4_bits = (ShadowedRegister::Cr4.guest_owned_mask() | X64_CR4_MCE) & read_cr4;
 
         for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
             let controls = TdxL2Ctls::new()
@@ -702,7 +753,7 @@ impl BackingPrivate for TdxBacked {
                 vtl,
                 VmcsField::VMX_VMCS_CR0_GUEST_HOST_MASK,
                 !0,
-                !ShadowedRegister::Cr0.guest_owned_mask() | X64_CR0_PE | X64_CR0_PG,
+                shared.cr_guest_host_mask(ShadowedRegister::Cr0),
             );
 
             let initial_cr4 = params
@@ -717,7 +768,7 @@ impl BackingPrivate for TdxBacked {
                 vtl,
                 VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK,
                 !0,
-                !(ShadowedRegister::Cr4.guest_owned_mask() & allowed_cr4_bits),
+                shared.cr_guest_host_mask(ShadowedRegister::Cr4),
             );
 
             // Configure the MSR bitmap for this VP.  Since the default MSR bitmap
@@ -776,7 +827,7 @@ impl BackingPrivate for TdxBacked {
                         params
                             .runner
                             .read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR0),
-                        None,
+                        !0,
                     ),
                     cr4: VirtualRegister::new(
                         ShadowedRegister::Cr4,
@@ -784,7 +835,7 @@ impl BackingPrivate for TdxBacked {
                         params
                             .runner
                             .read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR4),
-                        Some(allowed_cr4_bits),
+                        shared.cr4_allowed_bits,
                     ),
                     tpr_threshold: 0,
                     processor_controls: params
@@ -1729,33 +1780,40 @@ impl UhProcessor<'_, TdxBacked> {
                 let value =
                     (gps[TdxGp::RAX] as u32 as u64) | ((gps[TdxGp::RDX] as u32 as u64) << 32);
 
-                let result = self.backing.cvm.lapics[intercepted_vtl]
-                    .lapic
-                    .access(&mut TdxApicClient {
-                        partition: self.partition,
-                        vmtime: &self.vmtime,
-                        apic_page: self.runner.tdx_apic_page_mut(intercepted_vtl),
-                        dev,
-                        vtl: intercepted_vtl,
-                    })
-                    .msr_write(msr, value)
-                    .or_else_if_unknown(|| self.write_msr_cvm(msr, value, intercepted_vtl))
-                    .or_else_if_unknown(|| self.write_msr(msr, value, intercepted_vtl))
-                    .or_else_if_unknown(|| self.write_msr_tdx(msr, value, intercepted_vtl));
-
-                let inject_gp = match result {
-                    Ok(()) => false,
-                    Err(MsrError::Unknown) => {
-                        tracelimit::warn_ratelimited!(msr, value, "unknown tdx vm msr write");
-                        false
-                    }
-                    Err(MsrError::InvalidAccess) => true,
-                };
-
-                if inject_gp {
-                    self.inject_gpf(intercepted_vtl);
+                if self.cvm_protect_msr_write(intercepted_vtl, msr) {
+                    // An intercept message has been posted, no further processing is
+                    // required. Return without advancing instruction pointer, it must
+                    // continue to point to the instruction that generated the
+                    // intercept.
                 } else {
-                    self.advance_to_next_instruction(intercepted_vtl);
+                    let result = self.backing.cvm.lapics[intercepted_vtl]
+                        .lapic
+                        .access(&mut TdxApicClient {
+                            partition: self.partition,
+                            vmtime: &self.vmtime,
+                            apic_page: self.runner.tdx_apic_page_mut(intercepted_vtl),
+                            dev,
+                            vtl: intercepted_vtl,
+                        })
+                        .msr_write(msr, value)
+                        .or_else_if_unknown(|| self.write_msr_cvm(msr, value, intercepted_vtl))
+                        .or_else_if_unknown(|| self.write_msr(msr, value, intercepted_vtl))
+                        .or_else_if_unknown(|| self.write_msr_tdx(msr, value, intercepted_vtl));
+
+                    let inject_gp = match result {
+                        Ok(()) => false,
+                        Err(MsrError::Unknown) => {
+                            tracelimit::warn_ratelimited!(msr, value, "unknown tdx vm msr write");
+                            false
+                        }
+                        Err(MsrError::InvalidAccess) => true,
+                    };
+
+                    if inject_gp {
+                        self.inject_gpf(intercepted_vtl);
+                    } else {
+                        self.advance_to_next_instruction(intercepted_vtl);
+                    }
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.msr_write
             }
@@ -1815,21 +1873,35 @@ impl UhProcessor<'_, TdxBacked> {
                     }
                     access_type => unreachable!("not registered for cr access type {access_type}"),
                 }
-                let r = match cr {
-                    0 => self.backing.vtls[intercepted_vtl]
-                        .cr0
-                        .write(value, &mut self.runner),
-                    4 => self.backing.vtls[intercepted_vtl]
-                        .cr4
-                        .write(value, &mut self.runner),
-                    cr => unreachable!("not registered for cr{cr} accesses"),
+
+                let cr = match cr {
+                    0 => HvX64RegisterName::Cr0,
+                    4 => HvX64RegisterName::Cr4,
+                    _ => unreachable!("not registered for cr{cr} accesses"),
                 };
-                if r.is_ok() {
-                    self.update_execution_mode(intercepted_vtl).expect("BUGBUG");
-                    self.advance_to_next_instruction(intercepted_vtl);
+
+                if self.cvm_protect_secure_register_write(intercepted_vtl, cr, value) {
+                    // Once the intercept message has been posted, no further
+                    // processing is required.  Do not advance the instruction
+                    // pointer here, since the instruction pointer must continue to
+                    // point to the instruction that generated the intercept.
                 } else {
-                    tracelimit::warn_ratelimited!(cr, value, "failed to write cr");
-                    self.inject_gpf(intercepted_vtl);
+                    let r = match cr {
+                        HvX64RegisterName::Cr0 => self.backing.vtls[intercepted_vtl]
+                            .cr0
+                            .write(value, &mut self.runner),
+                        HvX64RegisterName::Cr4 => self.backing.vtls[intercepted_vtl]
+                            .cr4
+                            .write(value, &mut self.runner),
+                        _ => unreachable!(),
+                    };
+                    if r.is_ok() {
+                        self.update_execution_mode(intercepted_vtl).expect("BUGBUG");
+                        self.advance_to_next_instruction(intercepted_vtl);
+                    } else {
+                        tracelimit::warn_ratelimited!(?cr, value, "failed to write cr");
+                        self.inject_gpf(intercepted_vtl);
+                    }
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.cr_access
             }
@@ -1844,12 +1916,23 @@ impl UhProcessor<'_, TdxBacked> {
                         cpl: exit_info.cpl(),
                     })
                 {
-                    self.runner
-                        .set_vp_register(intercepted_vtl, HvX64RegisterName::Xfem, value.into())
-                        .map_err(|err| {
-                            VpHaltReason::Hypervisor(UhRunVpError::EmulationState(err))
-                        })?;
-                    self.advance_to_next_instruction(intercepted_vtl);
+                    if self.cvm_protect_secure_register_write(
+                        intercepted_vtl,
+                        HvX64RegisterName::Xfem,
+                        value,
+                    ) {
+                        // Once the intercept message has been posted, no further
+                        // processing is required. Do not advance the instruction
+                        // pointer here, since the instruction pointer must continue to
+                        // point to the instruction that generated the intercept.
+                    } else {
+                        self.runner
+                            .set_vp_register(intercepted_vtl, HvX64RegisterName::Xfem, value.into())
+                            .map_err(|err| {
+                                VpHaltReason::Hypervisor(UhRunVpError::EmulationState(err))
+                            })?;
+                        self.advance_to_next_instruction(intercepted_vtl);
+                    }
                 } else {
                     self.inject_gpf(intercepted_vtl);
                 }
