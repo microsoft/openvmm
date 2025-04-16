@@ -12,6 +12,50 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::path::Path;
 
+/// A trait representing a collection of files that can be published to or
+/// resolved from a pipeline artifact.
+///
+/// This can be used with [`PipelineJobCtx::publish_typed_artifact`] and
+/// [`PipelineJobCtx::resolve_typed_artifact`] to publish or resolve artifacts
+/// between jobs in a pipeline in a structured way.
+///
+/// By implementing this trait, you are guaranteeing that the type serializes
+/// into JSON in a format reflecting a directory structure, where each key is a
+/// file name and each value is either a string containing the path to the file,
+/// or another JSON object representing a subdirectory.
+///
+/// For example, you might have Rust types like this:
+/// ```rust
+/// #[derive(Serialize, Deserialize)]
+/// struct Artifact {
+///     #[serde(rename = "file.exe")]
+///     file: PathBuf,
+///     subdir: Option<Inner>,
+/// }
+///
+/// #[derive(Serialize, Deserialize)]
+/// struct Inner {
+///     #[serde(rename = "file2.exe")]
+///     file2: PathBuf,
+/// }
+/// ```
+///
+/// This would serialize into JSON like this:
+/// ```json
+/// {
+///    "file.exe": "path/to/file.exe",
+///   "subdir": {
+///       "file2.exe": "path/to/file2.exe"
+///   }
+/// }
+/// ```
+///
+/// Which would in turn reflect a directory structure like this:
+/// ```text
+/// - file.exe
+/// - subdir/
+///   - file2.exe
+/// ```
 pub trait Artifact: Serialize + DeserializeOwned {}
 
 fn json_to_fs(value: serde_json::Value, path: &Path) -> anyhow::Result<()> {

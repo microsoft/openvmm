@@ -340,9 +340,12 @@ pub struct UseArtifact {
     idx: usize,
 }
 
+/// Opaque handle to an artifact of type `T` which must be published by a single job.
 #[must_use]
 pub struct PublishTypedArtifact<T>(PublishArtifact, std::marker::PhantomData<fn() -> T>);
 
+/// Opaque handle to an artifact of type `T` which can be used by one or more
+/// jobs.
 #[must_use]
 pub struct UseTypedArtifact<T>(UseArtifact, std::marker::PhantomData<fn(T)>);
 
@@ -635,6 +638,8 @@ impl Pipeline {
         (PublishArtifact { idx }, UseArtifact { idx })
     }
 
+    /// Returns a pair of opaque handles to a new artifact for use across jobs
+    /// in the pipeline.
     #[track_caller]
     pub fn new_typed_artifact<T: Artifact>(
         &mut self,
@@ -914,6 +919,8 @@ impl PipelineJobCtx<'_> {
         (read_var, write_var)
     }
 
+    /// Claim that this job will use this artifact, obtaining the resolved
+    /// contents of the artifact.
     pub fn use_typed_artifact<T: Artifact>(
         &mut self,
         artifact: &UseTypedArtifact<T>,
@@ -924,6 +931,9 @@ impl PipelineJobCtx<'_> {
         read
     }
 
+    /// Claim that this job will publish this artifact, obtaining a variable to
+    /// write the artifact's contents to. The artifact will be published at
+    /// the end of the job.
     pub fn publish_typed_artifact<T: Artifact>(
         &mut self,
         artifact: PublishTypedArtifact<T>,

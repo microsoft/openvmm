@@ -10,8 +10,18 @@ use flowey_lib_common::run_cargo_build::CargoCrateType;
 
 #[derive(Serialize, Deserialize)]
 pub enum VmgstoolOutput {
-    LinuxBin { bin: PathBuf, dbg: PathBuf },
-    WindowsBin { exe: PathBuf, pdb: PathBuf },
+    LinuxBin {
+        #[serde(rename = "vmgstool")]
+        bin: PathBuf,
+        #[serde(rename = "vmgstool.dbg")]
+        dbg: PathBuf,
+    },
+    WindowsBin {
+        #[serde(rename = "vmgstool.exe")]
+        exe: PathBuf,
+        #[serde(rename = "vmgstool.pdb")]
+        pdb: PathBuf,
+    },
 }
 
 impl Artifact for VmgstoolOutput {}
