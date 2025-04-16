@@ -1007,7 +1007,7 @@ impl InitializedVm {
 
         let generation_id_recv = cfg.generation_id_recv.unwrap_or_else(|| mesh::channel().1);
 
-        let logger = Box::new(emuplat::firmware::MeshLogger::new(
+        let logger = Arc::new(emuplat::firmware::MeshLogger::new(
             cfg.firmware_event_send.clone(),
         ));
 

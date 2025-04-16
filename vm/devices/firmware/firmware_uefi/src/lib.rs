@@ -72,6 +72,7 @@ use platform::logger::UefiLogger;
 use platform::nvram::VsmConfig;
 use std::convert::TryInto;
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::task::Context;
 use thiserror::Error;
 use uefi_nvram_storage::InspectableNvramStorage;
@@ -129,7 +130,7 @@ pub struct UefiConfig {
 pub struct UefiRuntimeDeps<'a> {
     pub gm: GuestMemory,
     pub nvram_storage: Box<dyn InspectableNvramStorage>,
-    pub logger: Box<dyn UefiLogger>,
+    pub logger: Arc<dyn UefiLogger>,
     pub vmtime: &'a VmTimeSource,
     pub watchdog_platform: Box<dyn WatchdogPlatform>,
     pub generation_id_deps: generation_id::GenerationIdRuntimeDeps,

@@ -37,6 +37,7 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use std::fmt::Debug;
 use std::ops::RangeInclusive;
+use std::sync::Arc;
 use std::task::Context;
 use std::time::Duration;
 use thiserror::Error;
@@ -144,7 +145,7 @@ pub enum PcatEvent {
 }
 
 /// Platform interface to emit PCAT events.
-pub trait PcatLogger: Send {
+pub trait PcatLogger: Send + Sync {
     /// Emit a log corresponding to the provided event.
     fn log_event(&self, event: PcatEvent);
 }
@@ -189,7 +190,7 @@ impl PcatBiosState {
 #[expect(missing_docs)] // self-explanatory fields
 pub struct PcatBiosRuntimeDeps<'a> {
     pub gm: GuestMemory,
-    pub logger: Box<dyn PcatLogger>,
+    pub logger: Arc<dyn PcatLogger>,
     pub generation_id_deps: generation_id::GenerationIdRuntimeDeps,
     pub vmtime: &'a VmTimeSource,
     /// The BIOS ROM.
@@ -211,7 +212,7 @@ pub struct PcatBiosDevice {
     vmtime_wait: VmTimeAccess,
     gm: GuestMemory,
     #[inspect(skip)]
-    logger: Box<dyn PcatLogger>,
+    logger: Arc<dyn PcatLogger>,
     #[inspect(skip)]
     _rom_mems: Vec<Box<dyn UnmapRom>>,
     pre_boot_pio: PreBootStubbedPio,

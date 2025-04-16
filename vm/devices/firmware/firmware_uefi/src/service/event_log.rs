@@ -11,6 +11,7 @@ use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
 use std::fmt::Debug;
+use std::sync::Arc;
 use thiserror::Error;
 use zerocopy::FromBytes;
 
@@ -33,11 +34,11 @@ pub enum EventLogError {
 #[derive(Inspect)]
 pub struct EventLogServices {
     #[inspect(skip)]
-    logger: Box<dyn UefiLogger>,
+    logger: Arc<dyn UefiLogger>,
 }
 
 impl EventLogServices {
-    pub fn new(logger: Box<dyn UefiLogger>) -> EventLogServices {
+    pub fn new(logger: Arc<dyn UefiLogger>) -> EventLogServices {
         EventLogServices { logger }
     }
 

@@ -1951,7 +1951,7 @@ async fn new_underhill_vm(
 
             deps_hyperv_firmware_pcat = Some(dev::HyperVFirmwarePcat {
                 config,
-                logger: Box::new(UnderhillLogger {
+                logger: Arc::new(UnderhillLogger {
                     get: get_client.clone(),
                 }),
                 generation_id_recv: get_client
@@ -2025,7 +2025,7 @@ async fn new_underhill_vm(
 
             deps_hyperv_firmware_uefi = Some(dev::HyperVFirmwareUefi {
                 config,
-                logger: Box::new(UnderhillLogger {
+                logger: Arc::new(UnderhillLogger {
                     get: get_client.clone(),
                 }),
                 nvram_storage: Box::new(HclCompatNvram::new(

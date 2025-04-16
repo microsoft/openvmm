@@ -1297,7 +1297,7 @@ pub mod options {
             /// helper device
             pub config: firmware_pcat::config::PcatBiosConfig,
             /// Interface to log PCAT BIOS events
-            pub logger: Box<dyn firmware_pcat::PcatLogger>,
+            pub logger: Arc<dyn firmware_pcat::PcatLogger>,
             /// Channel to receive updated generation ID values
             pub generation_id_recv: mesh::Receiver<[u8; 16]>,
             /// Interface to map VMBIOS.bin into memory (or None, if that's
@@ -1314,7 +1314,7 @@ pub mod options {
             /// helper device
             pub config: firmware_uefi::UefiConfig,
             /// Interface to log UEFI BIOS events
-            pub logger: Box<dyn firmware_uefi::platform::logger::UefiLogger>,
+            pub logger: Arc<dyn firmware_uefi::platform::logger::UefiLogger>,
             /// Interface for storing/retrieving UEFI NVRAM variables
             pub nvram_storage: Box<dyn uefi_nvram_storage::InspectableNvramStorage>,
             /// Channel to receive updated generation ID values

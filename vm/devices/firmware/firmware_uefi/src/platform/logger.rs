@@ -18,6 +18,6 @@ pub struct BootInfo {
 }
 
 /// Interface to log UEFI events.
-pub trait UefiLogger: Send {
+pub trait UefiLogger: Send + Sync {
     fn log_event(&self, event: UefiEvent);
 }
