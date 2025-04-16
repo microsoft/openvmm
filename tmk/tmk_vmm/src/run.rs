@@ -38,7 +38,6 @@ pub struct CommonState {
 pub struct RunContext<'a> {
     pub state: &'a CommonState,
     #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
-    pub driver: &'a DefaultDriver,
     pub vmtime_source: &'a VmTimeSource,
 }
 
@@ -110,7 +109,6 @@ impl CommonState {
             let vmtime_source = vmtime_keeper.builder().build(&self.driver).await.unwrap();
             let mut ctx = RunContext {
                 state: self,
-                driver: &self.driver,
                 vmtime_source: &vmtime_source,
             };
 

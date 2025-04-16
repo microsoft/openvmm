@@ -35,7 +35,7 @@ impl RunContext<'_> {
             use_mmio_hypercalls: false,
             intercept_debug_exceptions: false,
         };
-        let p = virt_mshv_vtl::UhProtoPartition::new(params, |_| self.driver.clone())?;
+        let p = virt_mshv_vtl::UhProtoPartition::new(params, |_| self.state.driver.clone())?;
 
         let m = underhill_mem::init(&underhill_mem::Init {
             processor_topology: &self.state.processor_topology,

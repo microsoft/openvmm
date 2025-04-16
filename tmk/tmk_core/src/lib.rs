@@ -159,6 +159,8 @@ macro_rules! define_tmk_test {
 }
 
 /// A TMK test descriptor.
+///
+/// Has the same layout as [`tmk_protocol::TestDescriptor64`].
 #[repr(C)]
 pub struct TestDescriptor {
     /// The test name as a UTF-8 string.

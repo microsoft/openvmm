@@ -21,8 +21,6 @@ pub struct StartInput {
 }
 
 /// A 64-bit TMK test descriptor.
-///
-/// Has the same layout as `TestDescriptor` for 64-bit architectures.
 #[repr(C)]
 #[derive(IntoBytes, FromBytes, Immutable)]
 pub struct TestDescriptor64 {
