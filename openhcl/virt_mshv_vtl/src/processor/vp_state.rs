@@ -23,8 +23,8 @@ pub enum Error {
     SetRegisters(#[source] hcl::ioctl::Error),
     #[error("failed to get registers")]
     GetRegisters(#[source] hcl::ioctl::Error),
-    #[error("the value for setting efer {0} is invalid, {1}")]
-    SetEfer(u64, &'static str),
+    #[error("invalid value {0} for register {1}: {2}")]
+    InvalidValue(u64, &'static str, &'static str),
     #[error("'{0}' state is not implemented yet")]
     Unimplemented(&'static str),
     #[error("failed to set apic base MSR")]

@@ -50,7 +50,6 @@ use inspect_counters::Counter;
 use parking_lot::RwLock;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
-use thiserror::Error;
 use tlb_flush::FLUSH_GVA_LIST_SIZE;
 use tlb_flush::TdxFlushState;
 use tlb_flush::TdxPartitionFlushState;
@@ -248,12 +247,6 @@ struct VirtualRegister {
     allowed_bits: Option<u64>,
 }
 
-#[derive(Debug, Error)]
-enum VirtualRegisterError {
-    #[error("invalid value {0} for register {1}")]
-    InvalidValue(u64, &'static str),
-}
-
 impl VirtualRegister {
     fn new(
         reg: ShadowedRegister,
@@ -276,13 +269,14 @@ impl VirtualRegister {
         &mut self,
         value: u64,
         runner: &mut ProcessorRunner<'a, Tdx<'a>>,
-    ) -> Result<(), VirtualRegisterError> {
+    ) -> Result<(), vp_state::Error> {
         tracing::trace!(?self.register, value, "write virtual register");
 
         if value & !self.allowed_bits.unwrap_or(u64::MAX) != 0 {
-            return Err(VirtualRegisterError::InvalidValue(
+            return Err(vp_state::Error::InvalidValue(
                 value,
                 self.register.name(),
+                "disallowed bit set",
             ));
         }
 
@@ -1807,7 +1801,7 @@ impl UhProcessor<'_, TdxBacked> {
                     cr => unreachable!("not registered for cr{cr} accesses"),
                 };
                 if r.is_ok() {
-                    self.update_execution_mode(intercepted_vtl).expect("BUGBUG");
+                    self.update_execution_mode(intercepted_vtl);
                     self.advance_to_next_instruction(intercepted_vtl);
                 } else {
                     tracelimit::warn_ratelimited!(cr, value, "failed to write cr");
@@ -2398,7 +2392,7 @@ impl UhProcessor<'_, TdxBacked> {
             X86X_MSR_EFER => {
                 self.write_efer(vtl, value)
                     .map_err(|_| MsrError::InvalidAccess)?;
-                self.update_execution_mode(vtl).unwrap();
+                self.update_execution_mode(vtl);
             }
             x86defs::X86X_MSR_STAR => state.msr_star = value,
             x86defs::X86X_MSR_CSTAR => {
@@ -2818,12 +2812,16 @@ impl UhProcessor<'_, TdxBacked> {
     /// updating EFER.
     fn write_efer(&mut self, vtl: GuestVtl, efer: u64) -> Result<(), vp_state::Error> {
         if efer & (X64_EFER_SVME | X64_EFER_FFXSR) != 0 {
-            return Err(vp_state::Error::SetEfer(efer, "SVME or FFXSR set"));
+            return Err(vp_state::Error::InvalidValue(
+                efer,
+                "EFER",
+                "SVME or FFXSR set",
+            ));
         }
 
         // EFER.NXE must be 1.
         if efer & X64_EFER_NXE == 0 {
-            return Err(vp_state::Error::SetEfer(efer, "NXE not set"));
+            return Err(vp_state::Error::InvalidValue(efer, "EFER", "NXE not set"));
         }
 
         // Update the local value of EFER and the VMCS.
@@ -2847,9 +2845,6 @@ impl UhProcessor<'_, TdxBacked> {
         self.backing.vtls[vtl]
             .cr0
             .write(value | X64_CR0_ET, &mut self.runner)
-            .expect("BUGBUG map error");
-
-        Ok(())
     }
 
     fn read_cr4(&self, vtl: GuestVtl) -> u64 {
@@ -2857,12 +2852,7 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn write_cr4(&mut self, vtl: GuestVtl, value: u64) -> Result<(), vp_state::Error> {
-        self.backing.vtls[vtl]
-            .cr4
-            .write(value, &mut self.runner)
-            .expect("BUGBUG map error");
-
-        Ok(())
+        self.backing.vtls[vtl].cr4.write(value, &mut self.runner)
     }
 
     fn write_table_register(
@@ -2889,7 +2879,7 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     /// Update execution mode when CR0 or EFER is changed.
-    fn update_execution_mode(&mut self, vtl: GuestVtl) -> Result<(), vp_state::Error> {
+    fn update_execution_mode(&mut self, vtl: GuestVtl) {
         let lme = self.backing.vtls[vtl].efer & X64_EFER_LME == X64_EFER_LME;
         let pg = self.read_cr0(vtl) & X64_CR0_PG == X64_CR0_PG;
         let efer_lma = self.backing.vtls[vtl].efer & X64_EFER_LMA == X64_EFER_LMA;
@@ -2898,7 +2888,8 @@ impl UhProcessor<'_, TdxBacked> {
         if lma != efer_lma {
             // Flip only the LMA bit.
             let new_efer = self.backing.vtls[vtl].efer ^ X64_EFER_LMA;
-            self.write_efer(vtl, new_efer)?;
+            self.write_efer(vtl, new_efer)
+                .expect("EFER was valid before, it should still be valid");
         }
 
         self.runner.write_vmcs32(
@@ -2911,7 +2902,6 @@ impl UhProcessor<'_, TdxBacked> {
                 0
             },
         );
-        Ok(())
     }
 }
 
@@ -3219,7 +3209,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         self.vp.write_efer(self.vtl, *efer)?;
 
         // Execution mode must be updated after setting EFER and CR0.
-        self.vp.update_execution_mode(self.vtl)?;
+        self.vp.update_execution_mode(self.vtl);
 
         Ok(())
     }

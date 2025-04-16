@@ -139,7 +139,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         match err {
             super::vp_state::Error::SetRegisters(_) => HvError::OperationFailed,
             super::vp_state::Error::GetRegisters(_) => HvError::OperationFailed,
-            super::vp_state::Error::SetEfer(_, _) => HvError::InvalidRegisterValue,
+            super::vp_state::Error::InvalidValue(_, _, _) => HvError::InvalidRegisterValue,
             super::vp_state::Error::Unimplemented(_) => HvError::InvalidParameter,
             super::vp_state::Error::InvalidApicBase(_) => HvError::InvalidRegisterValue,
         }
