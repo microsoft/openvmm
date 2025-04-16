@@ -9,6 +9,7 @@ use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum VmgstoolOutput {
     LinuxBin {
         #[serde(rename = "vmgstool")]
