@@ -42,3 +42,6 @@ pub mod vmgs_helpers {
     pub use crate::vmgs_impl::read_headers;
     pub use crate::vmgs_impl::validate_header;
 }
+
+/// Expose the `VmgsLogger` trait
+pub mod logger;

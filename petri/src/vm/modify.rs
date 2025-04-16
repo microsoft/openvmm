@@ -62,6 +62,7 @@ impl PetriVmConfig {
                     ak_cert_type: tpm_resources::TpmAkCertTypeResource::None,
                     register_layout: TpmRegisterLayout::IoPort,
                     guest_secret_key: None,
+                    logger: None,
                 }
                 .into_resource(),
             });

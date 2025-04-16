@@ -22,6 +22,7 @@ mod servicing;
 mod threadpool_vm_task_backend;
 mod vmbus_relay_unit;
 mod vmgs;
+mod vmgs_logger;
 mod vp;
 mod vpci;
 mod worker;

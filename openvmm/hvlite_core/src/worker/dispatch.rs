@@ -961,11 +961,11 @@ impl InitializedVm {
                 let disk = Box::new(vmgs::disk::vhd_file::VhdFileDisk::new(path, flag)?);
 
                 let vmgs = if exists {
-                    vmgs::Vmgs::open(disk)
+                    vmgs::Vmgs::open(disk, None)
                         .await
                         .context("failed to open vmgs file")?
                 } else {
-                    vmgs::Vmgs::format_new(disk)
+                    vmgs::Vmgs::format_new(disk, None)
                         .await
                         .context("failed to format vmgs file")?
                 };

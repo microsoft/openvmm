@@ -4,6 +4,8 @@
 use crate::disk::BlockStorage;
 use crate::disk::BlockStorageMetadata;
 use crate::error::Error;
+use crate::logger::VmgsLogEvent;
+use crate::logger::VmgsLogger;
 #[cfg(with_encryption)]
 use anyhow::anyhow;
 #[cfg(with_encryption)]
@@ -14,6 +16,7 @@ use inspect::Inspect;
 use inspect_counters::Counter;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
+use std::sync::Arc;
 use vmgs_format::EncryptionAlgorithm;
 use vmgs_format::FileAttribute;
 use vmgs_format::FileId;
@@ -88,6 +91,9 @@ pub struct Vmgs {
     metadata_key: VmgsDatastoreKey,
     #[cfg_attr(feature = "inspect", inspect(iter_by_index))]
     encrypted_metadata_keys: [VmgsEncryptionKey; 2],
+
+    #[cfg_attr(feature = "inspect", inspect(skip))]
+    logger: Option<Arc<dyn VmgsLogger>>,
 }
 
 #[cfg(feature = "inspect")]
@@ -134,18 +140,24 @@ mod vmgs_inspect {
 
 impl Vmgs {
     /// Format and open a new VMGS file.
-    pub async fn format_new(mut storage: Box<dyn BlockStorage>) -> Result<Self, Error> {
+    pub async fn format_new(
+        mut storage: Box<dyn BlockStorage>,
+        logger: Option<Arc<dyn VmgsLogger>>,
+    ) -> Result<Self, Error> {
         tracing::debug!("formatting and initializing VMGS datastore");
         // Errors from validate_file are fatal, as they involve invalid device metadata
         Vmgs::validate_file(&storage)?;
 
         let active_header = Self::format(&mut storage, VMGS_VERSION_3_0).await?;
 
-        Self::finish_open(storage, active_header, 0).await
+        Self::finish_open(storage, active_header, 0, logger).await
     }
 
     /// Open the VMGS file.
-    pub async fn open(mut storage: Box<dyn BlockStorage>) -> Result<Self, Error> {
+    pub async fn open(
+        mut storage: Box<dyn BlockStorage>,
+        logger: Option<Arc<dyn VmgsLogger>>,
+    ) -> Result<Self, Error> {
         tracing::debug!("opening VMGS datastore");
         // Errors from validate_file are fatal, as they involve invalid device metadata
         Vmgs::validate_file(&storage)?;
@@ -169,13 +181,14 @@ impl Vmgs {
             header_2
         };
 
-        Self::finish_open(storage, active_header, active_header_index).await
+        Self::finish_open(storage, active_header, active_header_index, logger).await
     }
 
     async fn finish_open(
         mut storage: Box<dyn BlockStorage>,
         active_header: VmgsHeader,
         active_header_index: usize,
+        logger: Option<Arc<dyn VmgsLogger>>,
     ) -> Result<Vmgs, Error> {
         let version = active_header.version;
         let (encryption_algorithm, encrypted_metadata_keys, datastore_key_count) =
@@ -249,6 +262,8 @@ impl Vmgs {
 
             #[cfg(feature = "inspect")]
             stats: Default::default(),
+
+            logger,
         })
     }
 
@@ -487,14 +502,22 @@ impl Vmgs {
             let data_nonce = generate_nonce();
             let mut data_auth_tag = VmgsAuthTag::new_zeroed();
 
-            self.write_encrypted_data(
-                data_fcb.block_offset,
-                &data_encryption_key,
-                &data_nonce,
-                buf,
-                &mut data_auth_tag,
-            )
-            .await?;
+            if let Err(e) = self
+                .write_encrypted_data(
+                    data_fcb.block_offset,
+                    &data_encryption_key,
+                    &data_nonce,
+                    buf,
+                    &mut data_auth_tag,
+                )
+                .await
+            {
+                self.logger
+                    .log_event_fatal(VmgsLogEvent::AccessFailed)
+                    .await;
+
+                return Err(e);
+            }
 
             // Update the data file control block.
             data_fcb.nonce.copy_from_slice(&data_nonce);
@@ -505,10 +528,17 @@ impl Vmgs {
             Some((data_nonce, data_auth_tag))
         } else {
             // Write the file contents to the newly allocated space
-            self.storage
+            if let Err(e) = self
+                .storage
                 .write_block(block_count_to_byte_count(data_fcb.block_offset), buf)
                 .await
-                .map_err(Error::WriteDisk)?;
+            {
+                self.logger
+                    .log_event_fatal(VmgsLogEvent::AccessFailed)
+                    .await;
+
+                return Err(Error::WriteDisk(e));
+            }
             None
         };
 
@@ -557,13 +587,20 @@ impl Vmgs {
 
         if should_write_file_table {
             // Write out the new file table.
-            self.storage
+            if let Err(e) = self
+                .storage
                 .write_block(
                     block_count_to_byte_count(file_table_fcb.block_offset),
                     new_file_table.as_bytes(),
                 )
                 .await
-                .map_err(Error::WriteDisk)?;
+            {
+                self.logger
+                    .log_event_fatal(VmgsLogEvent::AccessFailed)
+                    .await;
+
+                return Err(Error::WriteDisk(e));
+            }
         }
 
         // Update the in-memory file control blocks. Updating file_control_block last ensures
@@ -659,22 +696,33 @@ impl Vmgs {
             && file_is_encrypted
             && self.active_datastore_key_index.is_some()
         {
-            self.read_decrypted_data(
-                fcb.block_offset,
-                &fcb.encryption_key,
-                &fcb.nonce,
-                &fcb.authentication_tag,
-                &mut buf,
-            )
-            .await?;
+            if let Err(e) = self
+                .read_decrypted_data(
+                    fcb.block_offset,
+                    &fcb.encryption_key,
+                    &fcb.nonce,
+                    &fcb.authentication_tag,
+                    &mut buf,
+                )
+                .await
+            {
+                self.logger
+                    .log_event_fatal(VmgsLogEvent::AccessFailed)
+                    .await;
+
+                return Err(e);
+            }
         } else if file_is_encrypted && decrypt {
             return Err(Error::ReadEncrypted);
         } else {
             let byte_offset = block_count_to_byte_count(fcb.block_offset);
-            self.storage
-                .read_block(byte_offset, &mut buf)
-                .await
-                .map_err(Error::ReadDisk)?;
+            if let Err(e) = self.storage.read_block(byte_offset, &mut buf).await {
+                self.logger
+                    .log_event_fatal(VmgsLogEvent::AccessFailed)
+                    .await;
+
+                return Err(Error::ReadDisk(e));
+            }
         }
 
         #[cfg(feature = "inspect")]
@@ -1789,6 +1837,7 @@ pub mod save_restore {
         pub fn open_from_saved(
             storage: Box<dyn BlockStorage>,
             state: state::SavedVmgsState,
+            logger: Option<Arc<dyn VmgsLogger>>,
         ) -> Self {
             let state::SavedVmgsState {
                 active_header_index,
@@ -1857,6 +1906,7 @@ pub mod save_restore {
                         encryption_key,
                     }
                 }),
+                logger,
             }
         }
 
@@ -1907,6 +1957,7 @@ pub mod save_restore {
                 datastore_keys,
                 metadata_key,
                 encrypted_metadata_keys,
+                logger: _,
             } = self;
 
             state::SavedVmgsState {
@@ -1970,11 +2021,29 @@ mod tests {
     use crate::disk::vhd_file::FileDiskFlag;
     use crate::disk::vhd_file::VhdFileDisk;
     use pal_async::async_test;
+    #[cfg(with_encryption)]
+    use parking_lot::Mutex;
     use std::path::PathBuf;
+    #[cfg(with_encryption)]
+    use std::sync::Arc;
     #[cfg(with_encryption)]
     use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
 
     const ONE_MEGA_BYTE: u64 = 1024 * 1024;
+
+    #[cfg(with_encryption)]
+    struct TestVmgsLogger {
+        data: Arc<Mutex<String>>,
+    }
+
+    #[cfg(with_encryption)]
+    #[async_trait::async_trait]
+    impl VmgsLogger for TestVmgsLogger {
+        async fn log_event_fatal(&self, _event: VmgsLogEvent) {
+            let mut data = self.data.lock();
+            *data = "test logger".to_string();
+        }
+    }
 
     fn new_test_file(flag: FileDiskFlag) -> (VhdFileDisk, PathBuf) {
         tempfile_helpers::with_temp_path(|path| VhdFileDisk::new(path, flag)).unwrap()
@@ -1988,7 +2057,7 @@ mod tests {
             force_create: false,
         });
 
-        let result = Vmgs::open(Box::new(storage)).await;
+        let result = Vmgs::open(Box::new(storage), None).await;
         assert!(matches!(result, Err(Error::EmptyFile)));
     }
 
@@ -1999,7 +2068,7 @@ mod tests {
             force_create: false,
         });
 
-        let result = Vmgs::format_new(Box::new(storage)).await;
+        let result = Vmgs::format_new(Box::new(storage), None).await;
         assert!(result.is_ok());
     }
 
@@ -2009,7 +2078,7 @@ mod tests {
             file_size: None,
             force_create: false,
         });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::format_new(Box::new(storage), None).await.unwrap();
         assert_eq!(vmgs.active_header_index, 0);
         assert_eq!(vmgs.active_header_sequence_number, 1);
         assert_eq!(vmgs.version, VMGS_VERSION_3_0);
@@ -2036,7 +2105,7 @@ mod tests {
             force_create: false,
         });
 
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::format_new(Box::new(storage), None).await.unwrap();
 
         // write
         let buf: Vec<u8> = (0..).map(|x| x as u8).take(1024 * 4 + 1).collect();
@@ -2095,7 +2164,7 @@ mod tests {
             file_size: None,
             force_create: false,
         });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::format_new(Box::new(storage), None).await.unwrap();
 
         vmgs.write_file(FileId::BIOS_NVRAM, buf_1).await.unwrap();
 
@@ -2124,7 +2193,7 @@ mod tests {
         drop(vmgs);
 
         let storage = VhdFileDisk::new(&path, FileDiskFlag::ReadWrite).unwrap();
-        let mut vmgs = Vmgs::open(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::open(Box::new(storage), None).await.unwrap();
 
         assert_eq!(vmgs.fcbs[&FileId(0)].block_offset, 4);
         assert_eq!(vmgs.fcbs[&FileId(1)].block_offset, 7);
@@ -2149,7 +2218,7 @@ mod tests {
             file_size: None,
             force_create: false,
         });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::format_new(Box::new(storage), None).await.unwrap();
 
         let buf_1 = b"Data data data";
         let buf_2 = b"password";
@@ -2200,7 +2269,7 @@ mod tests {
             file_size: None,
             force_create: false,
         });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::format_new(Box::new(storage), None).await.unwrap();
 
         let buf: Vec<u8> = vec![1; ONE_MEGA_BYTE as usize * 5];
         let result = vmgs.write_file(FileId::BIOS_NVRAM, &buf).await;
@@ -2221,7 +2290,7 @@ mod tests {
             file_size: None,
             force_create: false,
         });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::format_new(Box::new(storage), None).await.unwrap();
 
         let buf: Vec<u8> = Vec::new();
         vmgs.write_file(FileId::BIOS_NVRAM, &buf).await.unwrap();
@@ -2345,7 +2414,7 @@ mod tests {
             file_size: None,
             force_create: false,
         });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::format_new(Box::new(storage), None).await.unwrap();
 
         vmgs.active_header_sequence_number = u32::MAX;
 
@@ -2373,7 +2442,7 @@ mod tests {
             file_size: None,
             force_create: false,
         });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::format_new(Box::new(storage), None).await.unwrap();
         let encryption_key = [12; VMGS_ENCRYPTION_KEY_SIZE];
 
         // write
@@ -2398,7 +2467,7 @@ mod tests {
         // Read the file after re-opening the vmgs file
         drop(vmgs);
         let storage = VhdFileDisk::new(&path, FileDiskFlag::Read).unwrap();
-        let mut vmgs = Vmgs::open(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::open(Box::new(storage), None).await.unwrap();
         let read_buf = vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap();
         assert_eq!(buf, read_buf.as_bytes());
         let info = vmgs.get_file_info(FileId::TPM_PPI).unwrap();
@@ -2423,7 +2492,7 @@ mod tests {
             file_size: None,
             force_create: false,
         });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::format_new(Box::new(storage), None).await.unwrap();
         let encryption_key = [1; VMGS_ENCRYPTION_KEY_SIZE];
         let buf = vec![1; 8 * 1024];
         let buf_1 = vec![2; 8 * 1024];
@@ -2460,7 +2529,7 @@ mod tests {
             file_size: None,
             force_create: false,
         });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::format_new(Box::new(storage), None).await.unwrap();
 
         // Add datastore key.
         let key_index = vmgs
@@ -2482,7 +2551,7 @@ mod tests {
 
         // Read the file, after closing and reopening the data store.
         let storage = VhdFileDisk::new(&path, FileDiskFlag::ReadWrite).unwrap();
-        let mut vmgs = Vmgs::open(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::open(Box::new(storage), None).await.unwrap();
 
         let info = vmgs.get_file_info(FileId::BIOS_NVRAM).unwrap();
         assert_eq!(info.valid_bytes as usize, buf.len());
@@ -2521,7 +2590,7 @@ mod tests {
             file_size: None,
             force_create: false,
         });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::format_new(Box::new(storage), None).await.unwrap();
 
         // Add datastore key.
         let key_index = vmgs
@@ -2538,7 +2607,7 @@ mod tests {
         // Read the file, after closing and reopening the data store.
         drop(vmgs);
         let storage = VhdFileDisk::new(&path, FileDiskFlag::ReadWrite).unwrap();
-        let mut vmgs = Vmgs::open(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::open(Box::new(storage), None).await.unwrap();
         let key_index = vmgs
             .unlock_with_encryption_key(&encryption_key)
             .await
@@ -2557,7 +2626,7 @@ mod tests {
         // Read the file by using two different datastore keys, after closing and reopening the data store.
         drop(vmgs);
         let storage = VhdFileDisk::new(path, FileDiskFlag::ReadWrite).unwrap();
-        let mut vmgs = Vmgs::open(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::open(Box::new(storage), None).await.unwrap();
         let key_index = vmgs
             .unlock_with_encryption_key(&encryption_key)
             .await
@@ -2604,7 +2673,7 @@ mod tests {
             file_size: None,
             force_create: false,
         });
-        let mut vmgs = Vmgs::format_new(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::format_new(Box::new(storage), None).await.unwrap();
         let buf = b"This is plaintext";
 
         // call write file encrypted
@@ -2621,10 +2690,50 @@ mod tests {
         // FileId as plaintext
         drop(vmgs);
         let storage = VhdFileDisk::new(&path, FileDiskFlag::ReadWrite).unwrap();
-        let mut vmgs = Vmgs::open(Box::new(storage)).await.unwrap();
+        let mut vmgs = Vmgs::open(Box::new(storage), None).await.unwrap();
 
         let read_buf = vmgs.read_file(FileId::BIOS_NVRAM).await.unwrap();
         assert_eq!(vmgs.encryption_algorithm, EncryptionAlgorithm::NONE);
         assert_eq!(buf, &*read_buf);
+    }
+
+    #[cfg(with_encryption)]
+    #[async_test]
+    async fn test_logger() {
+        // Initialize version 3 data store
+        let (storage, _path) = new_test_file(FileDiskFlag::Create {
+            file_size: None,
+            force_create: false,
+        });
+        let data = Arc::new(Mutex::new(String::new()));
+        let mut vmgs = Vmgs::format_new(
+            Box::new(storage),
+            Some(Arc::new(TestVmgsLogger { data: data.clone() })),
+        )
+        .await
+        .unwrap();
+        let encryption_key = [12; VMGS_ENCRYPTION_KEY_SIZE];
+
+        // write
+        let buf = b"hello world";
+        vmgs.add_new_encryption_key(&encryption_key, EncryptionAlgorithm::AES_GCM)
+            .await
+            .unwrap();
+        vmgs.write_file_encrypted(FileId::BIOS_NVRAM, buf)
+            .await
+            .unwrap();
+
+        let fcb = vmgs.fcbs.get_mut(&FileId::BIOS_NVRAM).unwrap();
+
+        // Manipulate the nonce and expect the read to fail.
+        fcb.nonce[0] += 1;
+
+        // read and expect to fail
+        let result = vmgs.read_file(FileId::BIOS_NVRAM).await;
+        assert!(result.is_err());
+
+        // verify that the string is logged
+        let result = data.lock();
+        assert_eq!(*result, "test logger");
     }
 }

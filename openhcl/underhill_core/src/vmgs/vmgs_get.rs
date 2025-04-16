@@ -133,7 +133,7 @@ mod tests {
     async fn spawn_vmgs(driver: &DefaultDriver) -> (VmgsClient, TestGet, Task<()>) {
         let get = new_transport_pair(driver, None, ProtocolVersion::NICKEL_REV2).await;
         let vmgs_get = VmgsGet::new(get.client.clone()).await.unwrap();
-        let vmgs = Vmgs::format_new(Box::new(vmgs_get)).await.unwrap();
+        let vmgs = Vmgs::format_new(Box::new(vmgs_get), None).await.unwrap();
         let (vmgs, task) = spawn_vmgs_broker(driver, vmgs);
         (vmgs, get, task)
     }
@@ -239,7 +239,7 @@ mod tests {
     async fn test_read_write_encryption(driver: DefaultDriver) {
         let get = new_transport_pair(&driver, None, ProtocolVersion::NICKEL_REV2).await;
         let vmgs_get = VmgsGet::new(get.client.clone()).await.unwrap();
-        let mut vmgs = Vmgs::format_new(Box::new(vmgs_get)).await.unwrap();
+        let mut vmgs = Vmgs::format_new(Box::new(vmgs_get), None).await.unwrap();
         let file_id = FileId::BIOS_NVRAM;
         let encryption_key = vec![1; 32];
 
@@ -261,7 +261,7 @@ mod tests {
         drop(vmgs);
 
         let vmgs_get = VmgsGet::new(get.client.clone()).await.unwrap();
-        let mut vmgs = Vmgs::open(Box::new(vmgs_get)).await.unwrap();
+        let mut vmgs = Vmgs::open(Box::new(vmgs_get), None).await.unwrap();
 
         let read_buf = vmgs.read_file(file_id).await.unwrap();
 

@@ -112,7 +112,7 @@ async fn do_read(
     let flag = FileDiskFlag::Read;
     let storage = VhdFileDisk::new(&file_path, flag).map_err(|_| VmgsError::FileDisk)?;
 
-    let mut vmgs = Vmgs::open(Box::new(storage))
+    let mut vmgs = Vmgs::open(Box::new(storage), None)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
@@ -206,7 +206,7 @@ async fn do_write(
     let flag = FileDiskFlag::ReadWrite;
     let storage = VhdFileDisk::new(&file_path, flag).map_err(|_| VmgsError::FileDisk)?;
 
-    let mut vmgs = Vmgs::open(Box::new(storage))
+    let mut vmgs = Vmgs::open(Box::new(storage), None)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
@@ -306,7 +306,7 @@ async fn do_create(
 
     let storage = VhdFileDisk::new(&file_path, flag).map_err(|_| VmgsError::FileDisk)?;
 
-    let mut vmgs = Vmgs::format_new(Box::new(storage))
+    let mut vmgs = Vmgs::format_new(Box::new(storage), None)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
@@ -355,7 +355,7 @@ async fn do_query_size(file_path: &str, file_id: FileId) -> Result<u64, VmgsErro
     let file_path = PathBuf::from(file_path);
     let flag = FileDiskFlag::Read;
     let storage = VhdFileDisk::new(file_path, flag).map_err(|_| VmgsError::FileDisk)?;
-    let vmgs = Vmgs::open(Box::new(storage))
+    let vmgs = Vmgs::open(Box::new(storage), None)
         .await
         .map_err(|_| VmgsError::InvalidVmgs)?;
 
