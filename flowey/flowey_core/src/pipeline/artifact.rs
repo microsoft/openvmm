@@ -15,9 +15,9 @@ use std::path::Path;
 /// A trait representing a collection of files that can be published to or
 /// resolved from a pipeline artifact.
 ///
-/// This can be used with [`PipelineJobCtx::publish_typed_artifact`] and
-/// [`PipelineJobCtx::resolve_typed_artifact`] to publish or resolve artifacts
-/// between jobs in a pipeline in a structured way.
+/// This can be used with `publish_typed_artifact` and `resolve_typed_artifact`
+/// to publish or resolve artifacts between jobs in a pipeline in a structured
+/// way.
 ///
 /// By implementing this trait, you are guaranteeing that the type serializes
 /// into JSON in a format reflecting a directory structure, where each key is a
@@ -26,6 +26,8 @@ use std::path::Path;
 ///
 /// For example, you might have Rust types like this:
 /// ```rust
+/// # use serde::{Serialize, Deserialize};
+/// # use std::path::PathBuf;
 /// #[derive(Serialize, Deserialize)]
 /// struct Artifact {
 ///     #[serde(rename = "file.exe")]
