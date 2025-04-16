@@ -141,8 +141,8 @@ pub struct Options {
     /// conditions in order to simulate various test scenarios.
     pub test_configuration: Option<TestScenarioConfig>,
 
-    /// (OPENHCL_DISABLE_UEFI_FRONTPAGE=1) Disable the front page in UEFI, which
-    /// will result in UEFI terminating shutting down the guest instead of
+    /// (OPENHCL_DISABLE_UEFI_FRONTPAGE=1) Disable the frontpage in UEFI which
+    /// will result in UEFI terminating, shutting down the guest instead of
     /// showing the frontpage.
     pub disable_uefi_frontpage: bool,
 }
@@ -243,7 +243,7 @@ impl Options {
                 })
                 .ok()
         });
-        let uefi_disable_frontpage = parse_env_bool("OPENHCL_DISABLE_UEFI_FRONTPAGE");
+        let disable_uefi_frontpage = parse_env_bool("OPENHCL_DISABLE_UEFI_FRONTPAGE");
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -298,7 +298,7 @@ impl Options {
             no_sidecar_hotplug,
             nvme_keep_alive,
             test_configuration,
-            disable_uefi_frontpage: uefi_disable_frontpage,
+            disable_uefi_frontpage,
         })
     }
 
