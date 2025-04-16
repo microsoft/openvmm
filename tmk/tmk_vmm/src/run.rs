@@ -37,7 +37,6 @@ pub struct CommonState {
 
 pub struct RunContext<'a> {
     pub state: &'a CommonState,
-    #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
     pub vmtime_source: &'a VmTimeSource,
 }
 
