@@ -746,10 +746,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             return Err(HvError::InvalidRegisterValue);
         }
 
-        // TODO TDX GUEST VSM
-        if let virt::IsolationType::Snp = self.vp.partition.isolation {
-            B::cr_intercept_registration(self.vp, intercept_control);
-        }
+        B::cr_intercept_registration(self.vp, intercept_control);
 
         self.vp
             .backing

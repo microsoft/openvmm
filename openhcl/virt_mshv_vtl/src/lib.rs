@@ -85,7 +85,6 @@ use parking_lot::RwLock;
 use processor::BackingSharedParams;
 use processor::SidecarExitReason;
 use sidecar_client::NewSidecarClientError;
-use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
@@ -1724,8 +1723,8 @@ impl<'a> UhProtoPartition<'a> {
                 guest_memory: late_params.gm.clone(),
                 #[cfg(guest_arch = "x86_64")]
                 cpuid: &cpuid,
+                hcl: &hcl,
                 guest_vsm_available,
-                _phantom: PhantomData,
             },
         )?;
 
