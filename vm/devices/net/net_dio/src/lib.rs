@@ -18,6 +18,7 @@ use net_backend::QueueConfig;
 use net_backend::RssConfig;
 use net_backend::RxId;
 use net_backend::RxMetadata;
+use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxSegment;
 use net_backend::next_packet;

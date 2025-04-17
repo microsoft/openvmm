@@ -32,6 +32,7 @@ use net_backend::EndpointAction;
 use net_backend::MultiQueueSupport;
 use net_backend::Queue as NetQueue;
 use net_backend::QueueConfig;
+use net_backend::TxError;
 use net_backend::TxOffloadSupport;
 use net_backend::null::NullEndpoint;
 use pal_async::DefaultDriver;
