@@ -21,6 +21,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
+jiff.workspace = true
 linkme.workspace = true
 parking_lot.workspace = true
 slab.workspace = true

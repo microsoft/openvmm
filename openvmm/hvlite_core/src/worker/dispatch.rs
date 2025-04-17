@@ -52,6 +52,7 @@ use igvm::IgvmFile;
 use input_core::InputData;
 use input_core::MultiplexedInputHandle;
 use inspect::Inspect;
+use local_clock::LocalClockDelta;
 use membacking::GuestMemoryBuilder;
 use membacking::GuestMemoryManager;
 use membacking::SharedMemoryBacking;
@@ -185,6 +186,7 @@ impl Manifest {
             vmbus_devices: config.vmbus_devices,
             chipset_devices: config.chipset_devices,
             generation_id_recv: config.generation_id_recv,
+            rtc_delta_milliseconds: config.rtc_delta_milliseconds,
         }
     }
 }
@@ -225,6 +227,7 @@ pub struct Manifest {
     vmbus_devices: Vec<(DeviceVtl, Resource<VmbusDeviceHandleKind>)>,
     chipset_devices: Vec<ChipsetDeviceHandle>,
     generation_id_recv: Option<mesh::Receiver<[u8; 16]>>,
+    rtc_delta_milliseconds: i64,
 }
 
 #[derive(Protobuf, SavedStateRoot)]
@@ -949,14 +952,21 @@ impl InitializedVm {
 
         let mut resolver = ResourceResolver::new();
 
+        // Expose the partition reference time source, if available.
+        if cfg.hypervisor.with_hv {
+            if let Some(ref_time) = partition.reference_time_source() {
+                resolver.add_resolver(ref_time);
+            }
+        }
+
         let (vmgs_client, vmgs_task) = if let Some(vmgs_file) = cfg.vmgs_disk {
             let disk = open_simple_disk(&resolver, vmgs_file, false).await?;
             let vmgs = if cfg.format_vmgs {
-                vmgs::Vmgs::format_new(disk)
+                vmgs::Vmgs::format_new(disk, None)
                     .await
                     .context("failed to format vmgs file")?
             } else {
-                vmgs::Vmgs::open(disk)
+                vmgs::Vmgs::open(disk, None)
                     .await
                     .context("failed to open vmgs file")?
             };
@@ -1077,7 +1087,9 @@ impl InitializedVm {
                     },
                     vsm_config: None,
                     // TODO: persist SystemTimeClock time across reboots.
-                    time_source: Box::new(local_clock::SystemTimeClock::new()),
+                    time_source: Box::new(local_clock::SystemTimeClock::new(
+                        LocalClockDelta::from_millis(cfg.rtc_delta_milliseconds),
+                    )),
                 })
             }
             #[cfg(guest_arch = "x86_64")]
@@ -1159,7 +1171,7 @@ impl InitializedVm {
             _ => {}
         };
 
-        let synic = Arc::new(SynicPorts::new(partition.clone().into_synic()));
+        let synic = Arc::new(SynicPorts::new(partition.clone()));
 
         let vtl2_framebuffer_gpa_base = if cfg.vtl2_gfx {
             // calculate a safe place to put the framebuffer mapping in GPA space
@@ -1309,7 +1321,9 @@ impl InitializedVm {
         let deps_generic_cmos_rtc = (cfg.chipset.with_generic_cmos_rtc).then(|| {
             // TODO: persist SystemTimeClock time across reboots.
             // TODO: move to instantiate via a resource.
-            let time_source = Box::new(local_clock::SystemTimeClock::new());
+            let time_source = Box::new(local_clock::SystemTimeClock::new(
+                LocalClockDelta::from_millis(cfg.rtc_delta_milliseconds),
+            ));
             dev::GenericCmosRtcDeps {
                 irq: 8,
                 time_source,
@@ -1460,7 +1474,9 @@ impl InitializedVm {
         let deps_piix4_cmos_rtc = (cfg.chipset.with_piix4_cmos_rtc).then(|| {
             // TODO: persist SystemTimeClock time across reboots.
             // TODO: move to instantiate via a resource.
-            let time_source = Box::new(local_clock::SystemTimeClock::new());
+            let time_source = Box::new(local_clock::SystemTimeClock::new(
+                LocalClockDelta::from_millis(cfg.rtc_delta_milliseconds),
+            ));
             dev::Piix4CmosRtcDeps {
                 time_source,
                 initial_cmos: initial_rtc_cmos,
@@ -2167,7 +2183,7 @@ impl InitializedVm {
         // Start the VP backing threads.
         try_join_all(vps.into_iter().zip(vp_runners).enumerate().map(
             |(vp_index, (mut vp, runner))| {
-                let partition = partition.clone().into_request_yield();
+                let partition = partition.clone();
                 let chipset = chipset.clone();
                 let (send, recv) = mesh::oneshot();
                 thread::Builder::new()
@@ -2833,10 +2849,11 @@ impl LoadedVm {
             secure_boot_enabled: false, // TODO
             custom_uefi_vars: Default::default(), // TODO
             firmware_event_send: self.inner.firmware_event_send,
-            debugger_rpc: None,       // TODO
-            vmbus_devices: vec![],    // TODO
-            chipset_devices: vec![],  // TODO
-            generation_id_recv: None, // TODO
+            debugger_rpc: None,        // TODO
+            vmbus_devices: vec![],     // TODO
+            chipset_devices: vec![],   // TODO
+            generation_id_recv: None,  // TODO
+            rtc_delta_milliseconds: 0, // TODO
         };
         RestartState {
             hypervisor: self.inner.hypervisor,

@@ -506,6 +506,7 @@ impl VmService {
             debugger_rpc: None,
             chipset_devices: chipset.chipset_devices,
             generation_id_recv: None,
+            rtc_delta_milliseconds: 0,
         };
 
         let mut scsi_rpc = None;

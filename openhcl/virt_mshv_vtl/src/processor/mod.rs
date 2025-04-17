@@ -38,6 +38,7 @@ use super::UhVpInner;
 use crate::ExitActivity;
 use crate::GuestVtl;
 use crate::WakeReason;
+use guestmem::GuestMemory;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_hypercall::HvRepResult;
@@ -269,9 +270,15 @@ pub trait Backing: BackingPrivate {}
 
 impl<T: BackingPrivate> Backing for T {}
 
-pub(crate) struct BackingSharedParams {
+pub(crate) struct BackingSharedParams<'a> {
     pub cvm_state: Option<crate::UhCvmPartitionState>,
+    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
+    pub guest_memory: VtlArray<GuestMemory, 2>,
+    #[cfg(guest_arch = "x86_64")]
+    pub cpuid: &'a virt::CpuidLeafSet,
     pub guest_vsm_available: bool,
+    /// Not all arches reference 'a.
+    pub _phantom: PhantomData<&'a ()>,
 }
 
 /// Trait for processor backings that have hardware isolation support.
@@ -311,6 +318,9 @@ trait HardwareIsolatedBacking: Backing {
         vtl: GuestVtl,
         event: hvdef::HvX64PendingExceptionEvent,
     );
+    /// Individual register for CPUID, since AccessVpState::registers is
+    /// relatively slow on TDX.
+    fn cr4_for_cpuid(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -438,8 +448,6 @@ pub enum UhRunVpError {
     UnknownVmxExit(x86defs::vmx::VmxExit),
     #[error("bad guest state on VP.ENTER")]
     VmxBadGuestState,
-    #[error("failed to access VP assist page")]
-    VpAssistPage(#[source] guestmem::GuestMemoryError),
     #[error("failed to read hypercall parameters")]
     HypercallParameters(#[source] guestmem::GuestMemoryError),
     #[error("failed to write hypercall result")]
@@ -512,7 +520,6 @@ impl<T: Backing> UhProcessor<'_, T> {
             };
             let (ready_sints, next_ref_time) = synic.scan(
                 ref_time_now,
-                &self.partition.gm[vtl],
                 &mut self
                     .partition
                     .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
@@ -1040,7 +1047,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 if proxied_sints & (1 << sint) != 0 {
                     if let Some(synic) = self.backing.untrusted_synic_mut().as_mut() {
                         synic.post_message(
-                            &self.partition.gm[vtl],
                             sint,
                             message,
                             &mut self
@@ -1061,7 +1067,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                         .unwrap()
                         .synic
                         .post_message(
-                            &self.partition.gm[vtl],
                             sint,
                             message,
                             &mut self

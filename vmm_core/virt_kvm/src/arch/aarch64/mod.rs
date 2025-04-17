@@ -45,6 +45,7 @@ use virt::vp::Registers;
 use virt::vp::SystemRegisters;
 use virt::x86::DebugState;
 use vm_topology::processor::aarch64::Aarch64VpInfo;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::vmtime::VmTimeAccess;
 
 // linux/arch/arm64/include/asm/sysreg.h
@@ -693,6 +694,11 @@ impl virt::Hv1 for KvmPartition {
     type Error = KvmError;
     type Device = virt::UnimplementedDevice;
 
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
+        // TODO once Hyper-V enlightenments are implemented.
+        None
+    }
+
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
@@ -747,7 +753,13 @@ impl virt::Synic for KvmPartition {
         unimplemented!()
     }
 
-    fn new_guest_event_port(&self) -> Box<dyn vmcore::synic::GuestEventPort> {
+    fn new_guest_event_port(
+        &self,
+        _vtl: Vtl,
+        _vp: u32,
+        _sint: u8,
+        _flag: u16,
+    ) -> Box<dyn vmcore::synic::GuestEventPort> {
         unimplemented!()
     }
 

@@ -75,6 +75,9 @@ use virt_support_x86emu::emulate::TranslateMode;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::interrupt::Interrupt;
+use vmcore::reference_time::GetReferenceTime;
+use vmcore::reference_time::ReferenceTimeResult;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::synic::GuestEventPort;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
@@ -362,10 +365,31 @@ impl Hv1 for MshvPartition {
     type Error = Error;
     type Device = virt::UnimplementedDevice;
 
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
+        Some(ReferenceTimeSource::from(self.inner.clone() as Arc<_>))
+    }
+
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         None
+    }
+}
+
+impl GetReferenceTime for MshvPartitionInner {
+    fn now(&self) -> ReferenceTimeResult {
+        let mut regs = [hv_register_assoc {
+            name: hvdef::HvAllArchRegisterName::TimeRefCount.0,
+            value: hv_register_value { reg64: 0 },
+            ..Default::default()
+        }];
+        self.vp(VpIndex::BSP).vcpufd.get_reg(&mut regs).unwrap();
+        // SAFETY: the value has been written by the kernel.
+        let ref_time = unsafe { regs[0].value.reg64 };
+        ReferenceTimeResult {
+            ref_time,
+            system_time: None,
+        }
     }
 }
 
@@ -1443,10 +1467,20 @@ impl virt::Synic for MshvPartition {
             .post_message(vp, sint, &HvMessage::new(HvMessageType(typ), 0, payload));
     }
 
-    fn new_guest_event_port(&self) -> Box<dyn GuestEventPort> {
+    fn new_guest_event_port(
+        &self,
+        _vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Box<dyn GuestEventPort> {
         Box::new(MshvGuestEventPort {
             partition: Arc::downgrade(&self.inner),
-            params: Default::default(),
+            params: Arc::new(Mutex::new(MshvEventPortParams {
+                vp: VpIndex::new(vp),
+                sint,
+                flag,
+            })),
         })
     }
 
@@ -1459,7 +1493,7 @@ impl virt::Synic for MshvPartition {
 #[derive(Debug, Clone)]
 struct MshvGuestEventPort {
     partition: Weak<MshvPartitionInner>,
-    params: Arc<Mutex<Option<MshvEventPortParams>>>,
+    params: Arc<Mutex<MshvEventPortParams>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1474,39 +1508,23 @@ impl GuestEventPort for MshvGuestEventPort {
         let partition = self.partition.clone();
         let params = self.params.clone();
         Interrupt::from_fn(move || {
-            if let Some(MshvEventPortParams { vp, sint, flag }) = *params.lock() {
-                if let Some(partition) = partition.upgrade() {
-                    partition
-                        .vmfd
-                        .signal_event_direct(vp.index(), sint, flag)
-                        .unwrap_or_else(|_| {
-                            panic!(
-                                "Failed signal synic sint {} on vp {:?} with flag {}",
-                                sint, vp, flag
-                            )
-                        });
-                }
+            let MshvEventPortParams { vp, sint, flag } = *params.lock();
+            if let Some(partition) = partition.upgrade() {
+                partition
+                    .vmfd
+                    .signal_event_direct(vp.index(), sint, flag)
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "Failed signal synic sint {} on vp {:?} with flag {}",
+                            sint, vp, flag
+                        )
+                    });
             }
         })
     }
 
-    fn clear(&mut self) {
-        *self.params.lock() = None;
-    }
-
-    fn set(
-        &mut self,
-        _vtl: Vtl,
-        vp: u32,
-        sint: u8,
-        flag: u16,
-    ) -> Result<(), vmcore::synic::HypervisorError> {
-        *self.params.lock() = Some(MshvEventPortParams {
-            vp: VpIndex::new(vp),
-            sint,
-            flag,
-        });
-
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
+        self.params.lock().vp = VpIndex::new(vp);
         Ok(())
     }
 }

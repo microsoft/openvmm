@@ -9,10 +9,23 @@ use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum IgvmfilegenOutput {
-    LinuxBin { bin: PathBuf, dbg: PathBuf },
-    WindowsBin { exe: PathBuf, pdb: PathBuf },
+    LinuxBin {
+        #[serde(rename = "igvmfilegen")]
+        bin: PathBuf,
+        #[serde(rename = "igvmfilegen.dbg")]
+        dbg: PathBuf,
+    },
+    WindowsBin {
+        #[serde(rename = "igvmfilegen.exe")]
+        exe: PathBuf,
+        #[serde(rename = "igvmfilegen.pdb")]
+        pdb: PathBuf,
+    },
 }
+
+impl Artifact for IgvmfilegenOutput {}
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct IgvmfilegenBuildParams {

@@ -702,6 +702,7 @@ dependencies = [
  "getrandom 0.3.1",
  "pal_async",
  "term",
+ "tracing",
  "unix_socket",
 ]
 
@@ -2877,6 +2878,7 @@ dependencies = [
  "hvdef",
  "inspect",
  "parking_lot",
+ "safeatomic",
  "tracelimit",
  "tracing",
  "virt",
@@ -3132,6 +3134,7 @@ dependencies = [
 name = "hyperv_ic"
 version = "0.0.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "futures",
  "futures-concurrency",
@@ -3139,9 +3142,12 @@ dependencies = [
  "hyperv_ic_protocol",
  "hyperv_ic_resources",
  "inspect",
+ "jiff",
  "mesh",
+ "pal_async",
  "task_control",
  "thiserror 2.0.12",
+ "tracelimit",
  "tracing",
  "vm_resource",
  "vmbus_async",
@@ -3178,6 +3184,7 @@ version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.10.1",
  "guid",
+ "jiff",
  "open_enum",
  "zerocopy 0.8.23",
 ]
@@ -4225,7 +4232,7 @@ dependencies = [
 [[package]]
 name = "ms-tpm-20-ref"
 version = "0.1.0"
-source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?branch=main#3e9d3874fe9273056c8e6806fc1f35493e7bdfad"
+source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?branch=main#92fdd699015cb7b168c3f58aa78ca87979a14ff5"
 dependencies = [
  "cc",
  "once_cell",
@@ -4789,9 +4796,9 @@ dependencies = [
 
 [[package]]
 name = "openssl"
-version = "0.10.71"
+version = "0.10.72"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e14130c6a98cd258fdcb0fb6d744152343ff729cbfcb28c656a9d12b999fbcd"
+checksum = "fedfea7d58a1f73118430a55da6a286e7b044961736ce96a16a17068ea25e5da"
 dependencies = [
  "bitflags 2.9.0",
  "cfg-if",
@@ -4830,9 +4837,9 @@ dependencies = [
 
 [[package]]
 name = "openssl-sys"
-version = "0.9.106"
+version = "0.9.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bb61ea9811cc39e3c2069f40b8b8e2e70d8569b361f879786cc7ed48b777cdd"
+checksum = "8288979acd84749c744a9014b4382d42b8f7b2592847b5afb2ed29e5d16ede07"
 dependencies = [
  "cc",
  "libc",
@@ -5358,6 +5365,7 @@ dependencies = [
  "mesh_process",
  "mesh_worker",
  "net_backend_resources",
+ "netvsp_resources",
  "nvme_resources",
  "pal",
  "pal_async",
@@ -6425,10 +6433,10 @@ checksum = "d66dc143e6b11c1eddc06d5c423cfc97062865baf299914ab64caa38182078fe"
 name = "simple_tmk"
 version = "0.0.0"
 dependencies = [
- "arrayvec",
- "minimal_rt",
  "minimal_rt_build",
- "tmk_protocol",
+ "tmk_core",
+ "tmk_macros",
+ "x86defs",
 ]
 
 [[package]]
@@ -6701,6 +6709,7 @@ version = "0.0.0"
 dependencies = [
  "crossterm",
  "libc",
+ "thiserror 2.0.12",
  "winapi",
 ]
 
@@ -6827,6 +6836,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmk_core"
+version = "0.0.0"
+dependencies = [
+ "arrayvec",
+ "minimal_rt",
+ "minimal_rt_build",
+ "tmk_protocol",
+ "x86defs",
+]
+
+[[package]]
+name = "tmk_macros"
+version = "0.0.0"
+dependencies = [
+ "quote",
+ "syn 2.0.100",
+]
+
+[[package]]
 name = "tmk_protocol"
 version = "0.0.0"
 dependencies = [
@@ -6846,6 +6874,7 @@ dependencies = [
  "hvdef",
  "loader",
  "mesh",
+ "object",
  "page_table",
  "pal_async",
  "pal_uring",
@@ -6869,9 +6898,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.44.1"
+version = "1.44.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f382da615b842244d4b8738c82ed1275e6c5dd90c459a30941cd07080b06c91a"
+checksum = "e6b88822cbe49de4185e3a4cbf8321dd487cf5fe0c5c65695fef6346371e9c48"
 dependencies = [
  "backtrace",
  "bytes",
@@ -7815,6 +7844,7 @@ dependencies = [
  "hv1_hypercall",
  "hvdef",
  "inspect",
+ "jiff",
  "kvm",
  "memory_range",
  "open_enum",
@@ -8544,6 +8574,7 @@ dependencies = [
  "futures-concurrency",
  "hvdef",
  "inspect",
+ "jiff",
  "linkme",
  "mesh",
  "pal_async",
@@ -8571,6 +8602,7 @@ name = "vmgs"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "cfg-if",
  "crc32fast",
  "disk_backend",
@@ -8582,6 +8614,7 @@ dependencies = [
  "mesh_protobuf",
  "openssl",
  "pal_async",
+ "parking_lot",
  "scsi_buffers",
  "thiserror 2.0.12",
  "tracing",
@@ -8759,6 +8792,8 @@ dependencies = [
  "guid",
  "hvlite_defs",
  "hvlite_ttrpc_vmservice",
+ "hyperv_ic_resources",
+ "jiff",
  "mesh",
  "mesh_rpc",
  "nvme_resources",

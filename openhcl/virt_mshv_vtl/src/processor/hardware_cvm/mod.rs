@@ -45,6 +45,8 @@ use virt::x86::MsrError;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::translate::TranslateCachingInfo;
 use virt_support_x86emu::translate::TranslationRegisters;
+use x86defs::cpuid;
+use x86defs::cpuid::CpuidFunction;
 use zerocopy::FromZeros;
 
 impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
@@ -137,7 +139,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         match err {
             super::vp_state::Error::SetRegisters(_) => HvError::OperationFailed,
             super::vp_state::Error::GetRegisters(_) => HvError::OperationFailed,
-            super::vp_state::Error::SetEfer(_, _) => HvError::InvalidRegisterValue,
+            super::vp_state::Error::InvalidValue(_, _, _) => HvError::InvalidRegisterValue,
             super::vp_state::Error::Unimplemented(_) => HvError::InvalidParameter,
             super::vp_state::Error::InvalidApicBase(_) => HvError::InvalidRegisterValue,
         }
@@ -532,7 +534,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             | HvX64RegisterName::Stimer3Count
             | HvX64RegisterName::VsmVina) => self.vp.backing.cvm_state_mut().hv[vtl]
                 .synic
-                .write_reg(&self.vp.partition.gm[vtl], synic_reg.into(), reg.value),
+                .write_reg(synic_reg.into(), reg.value),
             HvX64RegisterName::ApicBase => {
                 // No changes are allowed on this path.
                 let current = self.vp.backing.cvm_state_mut().lapics[vtl]
@@ -856,13 +858,11 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
 
     fn vtl_call(&mut self) {
         tracing::trace!("handling vtl call");
-        self.vp
-            .raise_vtl(
-                self.intercepted_vtl,
-                GuestVtl::Vtl1,
-                HvVtlEntryReason::VTL_CALL,
-            )
-            .unwrap();
+        self.vp.raise_vtl(
+            self.intercepted_vtl,
+            GuestVtl::Vtl1,
+            HvVtlEntryReason::VTL_CALL,
+        );
     }
 }
 
@@ -888,7 +888,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
 
         let hv = &mut self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
         if hv.synic.vina().auto_reset() {
-            hv.set_vina_asserted(false).unwrap();
+            hv.set_vina_asserted(false);
         }
 
         B::switch_vtl(self.vp, self.intercepted_vtl, GuestVtl::Vtl0);
@@ -897,19 +897,13 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
         // - rewind interrupts
 
         if !fast {
-            let [rax, rcx] = self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1]
-                .return_registers()
-                .expect("getting return registers shouldn't fail");
+            let [rax, rcx] = self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1].return_registers();
             let mut vp_state = self.vp.access_state(Vtl::Vtl0);
-            let mut registers = vp_state
-                .registers()
-                .expect("getting registers shouldn't fail");
+            let mut registers = vp_state.registers().unwrap();
             registers.rax = rax;
             registers.rcx = rcx;
 
-            vp_state
-                .set_registers(&registers)
-                .expect("setting registers shouldn't fail");
+            vp_state.set_registers(&registers).unwrap();
         }
     }
 }
@@ -1403,9 +1397,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             }
         }
 
-        // Perform this delay dance with the TLB flush to avoid a double borrow.
-        // We need the whole UhProcessor to perform a flush, but the hv emulator
-        // is inside the UhProcessor.
         let mut access = HypercallOverlayAccess {
             vtl,
             protector: B::cvm_partition_state(self.shared)
@@ -1424,6 +1415,102 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             }
         }
         r
+    }
+
+    pub(crate) fn cvm_cpuid_result(&mut self, vtl: GuestVtl, leaf: u32, subleaf: u32) -> [u32; 4] {
+        // Get the base fixed values.
+        let [mut eax, mut ebx, mut ecx, mut edx] =
+            self.partition.cpuid_result(leaf, subleaf, &[0, 0, 0, 0]);
+
+        // Apply fixups. These must be runtime changes only, for parts of cpuid
+        // that are dynamic (either beccause it's a function of the current VP's
+        // identity or the current VP or partition state).
+        //
+        // We rely on the cpuid set being accurate during partition startup,
+        // without running through this code, so violations of this principle
+        // may cause the partition to be constructed improperly.
+        match CpuidFunction(leaf) {
+            CpuidFunction::VersionAndFeatures => {
+                let cr4 = B::cr4_for_cpuid(self, vtl);
+                ecx = cpuid::VersionAndFeaturesEcx::from(ecx)
+                    .with_os_xsave(cr4 & x86defs::X64_CR4_OSXSAVE != 0)
+                    .into();
+                ebx = cpuid::VersionAndFeaturesEbx::from(ebx)
+                    .with_initial_apic_id(self.inner.vp_info.apic_id as u8)
+                    .into();
+            }
+            CpuidFunction::ExtendedTopologyEnumeration => {
+                if subleaf == 0 || subleaf == 1 {
+                    edx = self.inner.vp_info.apic_id;
+                }
+            }
+            CpuidFunction::ExtendedStateEnumeration => match subleaf {
+                0 => {
+                    let mut state = self.access_state(vtl.into());
+                    let xfem = state.xcr().expect("can't fail to get xfem").value;
+                    drop(state);
+                    ebx = self.partition.caps.xsave.standard_len_for(xfem);
+                }
+                1 => {
+                    if cpuid::ExtendedStateEnumerationSubleaf1Eax::from(eax).xsave_s() {
+                        let mut state = self.access_state(vtl.into());
+                        let xfem = state.xcr().expect("can't fail to get xfem").value;
+                        let xss = state.xss().expect("can't fail to get xss").value;
+                        drop(state);
+                        ebx = self.partition.caps.xsave.compact_len_for(xfem | xss);
+                    }
+                }
+                _ => {}
+            },
+            CpuidFunction::ProcessorTopologyDefinition
+                if self.partition.caps.vendor.is_amd_compatible() =>
+            {
+                let apic_id = self.inner.vp_info.apic_id;
+                let vps_per_socket = self.cvm_partition().vps_per_socket;
+                eax = cpuid::ProcessorTopologyDefinitionEax::from(eax)
+                    .with_extended_apic_id(apic_id)
+                    .into();
+
+                let topology_ebx = cpuid::ProcessorTopologyDefinitionEbx::from(ebx);
+                let mut new_unit_id = apic_id & (vps_per_socket - 1);
+
+                if topology_ebx.threads_per_compute_unit() > 0 {
+                    new_unit_id /= 2;
+                }
+
+                ebx = topology_ebx.with_compute_unit_id(new_unit_id as u8).into();
+
+                // TODO SNP: Ideally we would use the actual value of this property from the host, but
+                // we currently have no way of obtaining it. 1 is the default value for all current VMs.
+                let amd_nodes_per_socket = 1u32;
+
+                let node_id = apic_id
+                    >> (vps_per_socket
+                        .trailing_zeros()
+                        .saturating_sub(amd_nodes_per_socket.trailing_zeros()));
+                // TODO: just set this part statically.
+                let nodes_per_processor = amd_nodes_per_socket - 1;
+
+                ecx = cpuid::ProcessorTopologyDefinitionEcx::from(ecx)
+                    .with_node_id(node_id as u8)
+                    .with_nodes_per_processor(nodes_per_processor as u8)
+                    .into();
+            }
+            CpuidFunction::ExtendedSevFeatures
+                if self.partition.caps.vendor.is_amd_compatible() =>
+            {
+                // SEV features are not exposed to lower VTLs at this time.
+                //
+                // TODO: set this in cvm_cpuid.
+                eax = 0;
+                ebx = 0;
+                ecx = 0;
+                edx = 0;
+            }
+
+            _ => {}
+        }
+        [eax, ebx, ecx, edx]
     }
 
     fn set_vsm_partition_config(
@@ -1541,7 +1628,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         // Check for VTL preemption - which ignores RFLAGS.IF
         if cvm_state.exit_vtl == GuestVtl::Vtl0 && is_interrupt_pending(self, GuestVtl::Vtl1, false)
         {
-            self.raise_vtl(GuestVtl::Vtl0, GuestVtl::Vtl1, HvVtlEntryReason::INTERRUPT)?;
+            self.raise_vtl(GuestVtl::Vtl0, GuestVtl::Vtl1, HvVtlEntryReason::INTERRUPT);
         }
 
         let mut reprocessing_required = false;
@@ -1550,12 +1637,11 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         if self.backing.cvm_state().exit_vtl == GuestVtl::Vtl1
             && is_interrupt_pending(self, GuestVtl::Vtl0, true)
         {
-            let hv = &self.backing.cvm_state().hv[GuestVtl::Vtl1];
+            let hv = &mut self.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
             let vina = hv.synic.vina();
 
-            if vina.enabled() && !hv.vina_asserted().map_err(UhRunVpError::VpAssistPage)? {
-                hv.set_vina_asserted(true)
-                    .map_err(UhRunVpError::VpAssistPage)?;
+            if vina.enabled() && !hv.vina_asserted() {
+                hv.set_vina_asserted(true);
                 self.partition
                     .synic_interrupt(self.vp_index(), GuestVtl::Vtl1)
                     .request_interrupt(vina.vector().into(), vina.auto_eoi());
@@ -1805,12 +1891,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         source_vtl: GuestVtl,
         target_vtl: GuestVtl,
         entry_reason: HvVtlEntryReason,
-    ) -> Result<(), UhRunVpError> {
+    ) {
         assert!(source_vtl < target_vtl);
         B::switch_vtl(self, source_vtl, target_vtl);
-        self.backing.cvm_state_mut().hv[target_vtl]
-            .set_return_reason(entry_reason)
-            .map_err(UhRunVpError::VpAssistPage)
+        self.backing.cvm_state_mut().hv[target_vtl].set_return_reason(entry_reason);
     }
 }
 

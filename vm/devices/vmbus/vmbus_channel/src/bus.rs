@@ -12,6 +12,7 @@ use mesh::payload::Protobuf;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use std::fmt::Display;
+use std::time::Duration;
 use vmbus_core::protocol;
 use vmbus_core::protocol::GpadlId;
 use vmbus_core::protocol::UserDefinedData;
@@ -278,8 +279,9 @@ pub struct OfferParams {
     pub channel_type: ChannelType,
     /// The subchannel index. Index 0 indicates a primary (normal channel).
     pub subchannel_index: u16,
-    /// Indicates whether the channel's interrupts should use monitor pages.
-    pub use_mnf: bool,
+    /// Indicates whether the channel's interrupts should use monitor pages,
+    /// and the interrupt latency if it's enabled.
+    pub mnf_interrupt_latency: Option<Duration>,
     /// The order in which channels with the same interface will be offered to
     /// the guest (optional).
     pub offer_order: Option<u32>,

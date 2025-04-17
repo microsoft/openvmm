@@ -10,7 +10,7 @@
 ///
 /// Also, sets the `minimal_rt` `cfg` so that code can detect that it should
 /// build for running as a minimal kernel.
-pub fn init() {
+pub fn init() -> bool {
     println!("cargo:rustc-check-cfg=cfg(minimal_rt)");
 
     // If the user sets this environment variable, build the binary for use as a
@@ -26,7 +26,7 @@ pub fn init() {
         std::env::var("MINIMAL_RT_BUILD").as_deref().ok(),
         None | Some("")
     ) {
-        return;
+        return false;
     }
 
     let triple = std::env::var("TARGET").unwrap();
@@ -83,4 +83,5 @@ pub fn init() {
     }
 
     println!("cargo:rustc-cfg=minimal_rt");
+    true
 }

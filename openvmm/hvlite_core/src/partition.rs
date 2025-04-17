@@ -44,6 +44,7 @@ use virt::vp::AccessVpState;
 use virt::vp::VpSavedState;
 #[cfg(guest_arch = "x86_64")]
 use vmcore::line_interrupt::LineSetTarget;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
@@ -54,10 +55,7 @@ use vmm_core::partition_unit::VmPartition;
 use vmm_core::partition_unit::VpRunner;
 
 /// A base partition, with methods needed at rutnime along with methods to initialize the vm.
-pub trait HvlitePartition: Inspect + Send + Sync {
-    /// Gets an interface for cancelling VPs.
-    fn into_request_yield(self: Arc<Self>) -> Arc<dyn RequestYield>;
-
+pub trait HvlitePartition: Inspect + Send + Sync + RequestYield + Synic {
     /// Gets a line set target to trigger local APIC LINTs.
     ///
     /// The line number is the VP index times 2, plus the LINT number (0 or 1).
@@ -85,9 +83,6 @@ pub trait HvlitePartition: Inspect + Send + Sync {
     #[cfg(guest_arch = "aarch64")]
     fn control_gic(&self, vtl: Vtl) -> Arc<dyn virt::irqcon::ControlGic>;
 
-    /// Gets the [`Synic`] interface.
-    fn into_synic(self: Arc<Self>) -> Arc<dyn Synic>;
-
     /// Gets the [`DoorbellRegistration`] interface for a particular VTL.
     fn into_doorbell_registration(
         self: Arc<Self>,
@@ -102,6 +97,9 @@ pub trait HvlitePartition: Inspect + Send + Sync {
 
     /// Returns whether partition reset is supported.
     fn supports_reset(&self) -> bool;
+
+    /// Returns the reference time source.
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource>;
 
     /// Gets an interface to support downcasting to specific partition types.
     ///
@@ -166,10 +164,6 @@ impl<T> HvlitePartition for T
 where
     T: BasicPartitionStateAccess + ArchPartition + PartitionMemoryMapper + Synic,
 {
-    fn into_request_yield(self: Arc<Self>) -> Arc<dyn RequestYield> {
-        self
-    }
-
     #[cfg(guest_arch = "x86_64")]
     fn into_lint_target(self: Arc<Self>, vtl: Vtl) -> Arc<dyn LineSetTarget> {
         Arc::new(virt::irqcon::ApicLintLineTarget::new(self, vtl))
@@ -202,10 +196,6 @@ where
         self.control_gic(vtl)
     }
 
-    fn into_synic(self: Arc<Self>) -> Arc<dyn Synic> {
-        self
-    }
-
     fn into_doorbell_registration(
         self: Arc<Self>,
         minimum_vtl: Vtl,
@@ -227,6 +217,10 @@ where
 
     fn supports_reset(&self) -> bool {
         self.supports_reset().is_some()
+    }
+
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
+        self.reference_time_source()
     }
 
     #[cfg(all(windows, feature = "virt_whp"))]

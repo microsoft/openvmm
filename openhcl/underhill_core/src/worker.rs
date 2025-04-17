@@ -34,6 +34,7 @@ use crate::emuplat::netvsp::HclNetworkVFManagerEndpointInfo;
 use crate::emuplat::netvsp::HclNetworkVFManagerShutdownInProgress;
 use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::emuplat::non_volatile_store::VmbsBrokerNonVolatileStore;
+use crate::emuplat::tpm::resources::GetTpmLoggerHandle;
 use crate::emuplat::tpm::resources::GetTpmRequestAkCertHelperHandle;
 use crate::emuplat::vga_proxy::UhRegisterHostIoFastPath;
 use crate::emuplat::watchdog::UnderhillWatchdog;
@@ -51,6 +52,7 @@ use crate::servicing::ServicingState;
 use crate::servicing::transposed::OptionServicingInitState;
 use crate::threadpool_vm_task_backend::ThreadpoolBackend;
 use crate::vmbus_relay_unit::VmbusRelayHandle;
+use crate::vmgs_logger::GetVmgsLogger;
 use crate::wrapped_partition::WrappedPartition;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -1386,13 +1388,15 @@ async fn new_underhill_vm(
     let x2apic = if isolation.is_hardware_isolated() && !hide_isolation {
         // For hardware CVMs, always enable x2apic support at boot.
         vm_topology::processor::x86::X2ApicState::Enabled
-    } else if safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx
-        & (1 << 21)
-        != 0
-    {
-        vm_topology::processor::x86::X2ApicState::Supported
     } else {
-        vm_topology::processor::x86::X2ApicState::Unsupported
+        let features = x86defs::cpuid::VersionAndFeaturesEcx::from(
+            safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, 0).ecx,
+        );
+        if features.x2_apic() {
+            vm_topology::processor::x86::X2ApicState::Supported
+        } else {
+            vm_topology::processor::x86::X2ApicState::Unsupported
+        }
     };
 
     #[cfg(guest_arch = "x86_64")]
@@ -1430,7 +1434,11 @@ async fn new_underhill_vm(
             .context("failed to open VMGS disk")?;
             (
                 disk.save_meta(),
-                Vmgs::open_from_saved(Disk::new(disk).context("invalid vmgs disk")?, vmgs_state),
+                Vmgs::open_from_saved(
+                    Disk::new(disk).context("invalid vmgs disk")?,
+                    vmgs_state,
+                    Some(Arc::new(GetVmgsLogger::new(get_client.clone()))),
+                ),
             )
         }
         None => {
@@ -1443,9 +1451,12 @@ async fn new_underhill_vm(
             let disk = Disk::new(disk).context("invalid vmgs disk")?;
 
             let vmgs = if !env_cfg.reformat_vmgs {
-                match Vmgs::open(disk.clone())
-                    .instrument(tracing::info_span!("vmgs_open"))
-                    .await
+                match Vmgs::open(
+                    disk.clone(),
+                    Some(Arc::new(GetVmgsLogger::new(get_client.clone()))),
+                )
+                .instrument(tracing::info_span!("vmgs_open"))
+                .await
                 {
                     Ok(vmgs) => Some(vmgs),
                     Err(vmgs::Error::EmptyFile) if !is_restoring => {
@@ -1474,7 +1485,7 @@ async fn new_underhill_vm(
             let vmgs = if let Some(vmgs) = vmgs {
                 vmgs
             } else {
-                Vmgs::format_new(disk)
+                Vmgs::format_new(disk, Some(Arc::new(GetVmgsLogger::new(get_client.clone()))))
                     .instrument(tracing::info_span!("vmgs_format"))
                     .await
                     .context("failed to format vmgs")?
@@ -2528,6 +2539,7 @@ async fn new_underhill_vm(
                 ak_cert_type,
                 register_layout,
                 guest_secret_key: platform_attestation_data.guest_secret_key,
+                logger: Some(GetTpmLoggerHandle.into_resource()),
             }
             .into_resource(),
         });

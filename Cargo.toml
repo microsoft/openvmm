@@ -53,7 +53,7 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.85"
+rust-version = "1.86"
 edition = "2021"
 
 [workspace.dependencies]
@@ -178,6 +178,8 @@ openvmm_hcl_resources = { path = "openhcl/openvmm_hcl_resources" }
 underhill_threadpool = { path = "openhcl/underhill_threadpool" }
 virt_mshv_vtl = { path = "openhcl/virt_mshv_vtl" }
 
+tmk_core = { path = "tmk/tmk_core" }
+tmk_macros = { path = "tmk/tmk_macros" }
 tmk_protocol = { path = "tmk/tmk_protocol" }
 
 aarch64defs = { path = "vm/aarch64/aarch64defs" }
@@ -468,7 +470,7 @@ nix = { version = "0.27", default-features = false }
 ntapi = "0.4"
 object = { version = "0.36.7", default-features = false }
 once_cell = "1.7"
-openssl = "0.10.66"
+openssl = "0.10.72"
 openssl-sys = "0.9"
 parking_lot = "0.12"
 paste = "1.0"

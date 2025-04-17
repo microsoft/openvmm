@@ -33,6 +33,8 @@ pub enum ResolveTpmError {
     ResolveGetAttestationReport(#[source] ResolveError),
     #[error("error resolving request ak cert")]
     ResolveRequestAkCert(#[source] ResolveError),
+    #[error("error resolving request TPM logger")]
+    ResolveTpmLogger(#[source] ResolveError),
     #[error("error creating tpm")]
     Tpm(#[source] TpmError),
     #[error(
@@ -92,6 +94,18 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
             }
         });
 
+        let logger = if let Some(r) = resource.logger {
+            Some(
+                resolver
+                    .resolve(r, &())
+                    .await
+                    .map_err(ResolveTpmError::ResolveTpmLogger)?
+                    .0,
+            )
+        } else {
+            None
+        };
+
         let tpm = Tpm::new(
             resource.register_layout,
             input.encrypted_guest_memory.clone(),
@@ -102,6 +116,7 @@ impl AsyncResolveResource<ChipsetDeviceHandleKind, TpmDeviceHandle> for TpmDevic
             input.is_restoring,
             ak_cert_type,
             resource.guest_secret_key,
+            logger,
         )
         .await
         .map_err(ResolveTpmError::Tpm)?;

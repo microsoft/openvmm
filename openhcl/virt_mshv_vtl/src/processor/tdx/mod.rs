@@ -50,7 +50,6 @@ use inspect_counters::Counter;
 use parking_lot::RwLock;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
-use thiserror::Error;
 use tlb_flush::FLUSH_GVA_LIST_SIZE;
 use tlb_flush::TdxFlushState;
 use tlb_flush::TdxPartitionFlushState;
@@ -89,7 +88,6 @@ use x86defs::X64_EFER_NXE;
 use x86defs::X64_EFER_SVME;
 use x86defs::X86X_MSR_EFER;
 use x86defs::apic::X2APIC_MSR_BASE;
-use x86defs::cpuid::CpuidFunction;
 use x86defs::tdx::TdCallResultCode;
 use x86defs::tdx::TdVmCallR10Result;
 use x86defs::tdx::TdxGp;
@@ -249,12 +247,6 @@ struct VirtualRegister {
     allowed_bits: Option<u64>,
 }
 
-#[derive(Debug, Error)]
-enum VirtualRegisterError {
-    #[error("invalid value {0} for register {1}")]
-    InvalidValue(u64, &'static str),
-}
-
 impl VirtualRegister {
     fn new(
         reg: ShadowedRegister,
@@ -277,13 +269,14 @@ impl VirtualRegister {
         &mut self,
         value: u64,
         runner: &mut ProcessorRunner<'a, Tdx<'a>>,
-    ) -> Result<(), VirtualRegisterError> {
+    ) -> Result<(), vp_state::Error> {
         tracing::trace!(?self.register, value, "write virtual register");
 
         if value & !self.allowed_bits.unwrap_or(u64::MAX) != 0 {
-            return Err(VirtualRegisterError::InvalidValue(
+            return Err(vp_state::Error::InvalidValue(
                 value,
                 self.register.name(),
+                "disallowed bit set",
             ));
         }
 
@@ -565,6 +558,10 @@ impl HardwareIsolatedBacking for TdxBacked {
         this.backing.vtls[vtl].interruption_information = new_intr;
         this.backing.vtls[vtl].exception_error_code = event.error_code();
     }
+
+    fn cr4_for_cpuid(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
+        this.backing.vtls[vtl].cr4.read(&this.runner)
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.
@@ -583,7 +580,7 @@ pub struct TdxBackedShared {
 impl TdxBackedShared {
     pub(crate) fn new(
         partition_params: &UhPartitionNewParams<'_>,
-        params: BackingSharedParams,
+        params: BackingSharedParams<'_>,
     ) -> Result<Self, crate::Error> {
         // Create a second synic to fully manage the untrusted SINTs
         // here. At time of writing, the hypervisor does not support
@@ -591,7 +588,12 @@ impl TdxBackedShared {
         // performance would be poor for cases where the L1 implements
         // high-performance devices.
         let untrusted_synic = (partition_params.handle_synic && !partition_params.hide_isolation)
-            .then(|| GlobalSynic::new(partition_params.topology.vp_count()));
+            .then(|| {
+                GlobalSynic::new(
+                    params.guest_memory[GuestVtl::Vtl0].clone(),
+                    partition_params.topology.vp_count(),
+                )
+            });
         Ok(Self {
             untrusted_synic,
             flush_state: VtlArray::from_fn(|_| RwLock::new(TdxPartitionFlushState::new())),
@@ -827,14 +829,8 @@ impl BackingPrivate for TdxBacked {
         ];
 
         let reg_count = if let Some(synic) = &mut this.backing.untrusted_synic {
-            synic.set_simp(
-                &this.partition.gm[GuestVtl::Vtl0],
-                reg(pfns[UhDirectOverlay::Sipp as usize]),
-            );
-            synic.set_siefp(
-                &this.partition.gm[GuestVtl::Vtl0],
-                reg(pfns[UhDirectOverlay::Sifp as usize]),
-            );
+            synic.set_simp(reg(pfns[UhDirectOverlay::Sipp as usize]));
+            synic.set_siefp(reg(pfns[UhDirectOverlay::Sifp as usize]));
             // Set the SIEFP in the hypervisor so that the hypervisor can
             // directly signal synic events. Don't set the SIMP, since the
             // message page is owned by the paravisor.
@@ -1740,40 +1736,15 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.msr_write
             }
             VmxExitBasic::CPUID => {
-                let xss = self.backing.vtls[intercepted_vtl].private_regs.msr_xss;
                 let gps = self.runner.tdx_enter_guest_gps();
                 let leaf = gps[TdxGp::RAX] as u32;
                 let subleaf = gps[TdxGp::RCX] as u32;
-                let xfem = self
-                    .runner
-                    .get_vp_register(intercepted_vtl, HvX64RegisterName::Xfem)
-                    .map_err(|err| VpHaltReason::Hypervisor(UhRunVpError::EmulationState(err)))?
-                    .as_u64();
-                let guest_state = crate::cvm_cpuid::CpuidGuestState {
-                    xfem,
-                    xss,
-                    cr4: self.backing.vtls[intercepted_vtl].cr4.read(&self.runner),
-                    apic_id: self.inner.vp_info.apic_id,
-                };
-
-                let result =
-                    self.shared
-                        .cvm
-                        .cpuid
-                        .guest_result(CpuidFunction(leaf), subleaf, &guest_state);
-
-                let [eax, ebx, ecx, edx] = self.partition.cpuid_result(
-                    leaf,
-                    subleaf,
-                    &[result.eax, result.ebx, result.ecx, result.edx],
-                );
-
+                let [eax, ebx, ecx, edx] = self.cvm_cpuid_result(intercepted_vtl, leaf, subleaf);
                 let gps = self.runner.tdx_enter_guest_gps_mut();
                 gps[TdxGp::RAX] = eax.into();
                 gps[TdxGp::RBX] = ebx.into();
                 gps[TdxGp::RCX] = ecx.into();
                 gps[TdxGp::RDX] = edx.into();
-
                 self.advance_to_next_instruction(intercepted_vtl);
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.cpuid
             }
@@ -1830,7 +1801,7 @@ impl UhProcessor<'_, TdxBacked> {
                     cr => unreachable!("not registered for cr{cr} accesses"),
                 };
                 if r.is_ok() {
-                    self.update_execution_mode(intercepted_vtl).expect("BUGBUG");
+                    self.update_execution_mode(intercepted_vtl);
                     self.advance_to_next_instruction(intercepted_vtl);
                 } else {
                     tracelimit::warn_ratelimited!(cr, value, "failed to write cr");
@@ -2021,6 +1992,7 @@ impl UhProcessor<'_, TdxBacked> {
         let TdxPrivateRegs {
             rflags,
             rip,
+            rsp,
             ssp,
             rvi,
             svi,
@@ -2035,6 +2007,7 @@ impl UhProcessor<'_, TdxBacked> {
         tracing::error!(
             rflags,
             rip,
+            rsp,
             ssp,
             rvi,
             svi,
@@ -2325,7 +2298,7 @@ impl UhProcessor<'_, TdxBacked> {
                     .untrusted_synic
                     .as_mut()
                     .unwrap()
-                    .write_nontimer_msr(&self.partition.gm[intercepted_vtl], msr, value)?;
+                    .write_nontimer_msr(msr, value)?;
                 // Propagate sint MSR writes to the hypervisor as well
                 // so that the hypervisor can directly inject events.
                 if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
@@ -2419,7 +2392,7 @@ impl UhProcessor<'_, TdxBacked> {
             X86X_MSR_EFER => {
                 self.write_efer(vtl, value)
                     .map_err(|_| MsrError::InvalidAccess)?;
-                self.update_execution_mode(vtl).unwrap();
+                self.update_execution_mode(vtl);
             }
             x86defs::X86X_MSR_STAR => state.msr_star = value,
             x86defs::X86X_MSR_CSTAR => {
@@ -2839,12 +2812,16 @@ impl UhProcessor<'_, TdxBacked> {
     /// updating EFER.
     fn write_efer(&mut self, vtl: GuestVtl, efer: u64) -> Result<(), vp_state::Error> {
         if efer & (X64_EFER_SVME | X64_EFER_FFXSR) != 0 {
-            return Err(vp_state::Error::SetEfer(efer, "SVME or FFXSR set"));
+            return Err(vp_state::Error::InvalidValue(
+                efer,
+                "EFER",
+                "SVME or FFXSR set",
+            ));
         }
 
         // EFER.NXE must be 1.
         if efer & X64_EFER_NXE == 0 {
-            return Err(vp_state::Error::SetEfer(efer, "NXE not set"));
+            return Err(vp_state::Error::InvalidValue(efer, "EFER", "NXE not set"));
         }
 
         // Update the local value of EFER and the VMCS.
@@ -2868,9 +2845,6 @@ impl UhProcessor<'_, TdxBacked> {
         self.backing.vtls[vtl]
             .cr0
             .write(value | X64_CR0_ET, &mut self.runner)
-            .expect("BUGBUG map error");
-
-        Ok(())
     }
 
     fn read_cr4(&self, vtl: GuestVtl) -> u64 {
@@ -2878,12 +2852,7 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     fn write_cr4(&mut self, vtl: GuestVtl, value: u64) -> Result<(), vp_state::Error> {
-        self.backing.vtls[vtl]
-            .cr4
-            .write(value, &mut self.runner)
-            .expect("BUGBUG map error");
-
-        Ok(())
+        self.backing.vtls[vtl].cr4.write(value, &mut self.runner)
     }
 
     fn write_table_register(
@@ -2910,7 +2879,7 @@ impl UhProcessor<'_, TdxBacked> {
     }
 
     /// Update execution mode when CR0 or EFER is changed.
-    fn update_execution_mode(&mut self, vtl: GuestVtl) -> Result<(), vp_state::Error> {
+    fn update_execution_mode(&mut self, vtl: GuestVtl) {
         let lme = self.backing.vtls[vtl].efer & X64_EFER_LME == X64_EFER_LME;
         let pg = self.read_cr0(vtl) & X64_CR0_PG == X64_CR0_PG;
         let efer_lma = self.backing.vtls[vtl].efer & X64_EFER_LMA == X64_EFER_LMA;
@@ -2919,7 +2888,8 @@ impl UhProcessor<'_, TdxBacked> {
         if lma != efer_lma {
             // Flip only the LMA bit.
             let new_efer = self.backing.vtls[vtl].efer ^ X64_EFER_LMA;
-            self.write_efer(vtl, new_efer)?;
+            self.write_efer(vtl, new_efer)
+                .expect("EFER was valid before, it should still be valid");
         }
 
         self.runner.write_vmcs32(
@@ -2932,7 +2902,6 @@ impl UhProcessor<'_, TdxBacked> {
                 0
             },
         );
-        Ok(())
     }
 }
 
@@ -3085,9 +3054,6 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
     fn registers(&mut self) -> Result<Registers, Self::Error> {
         let gps = self.vp.runner.tdx_enter_guest_gps();
 
-        tracing::trace!("not getting cr8, must read from apic page or apic tpr");
-        let cr8 = 0;
-
         let cs = self.vp.read_segment(self.vtl, TdxSegmentReg::Cs);
         let ds = self.vp.read_segment(self.vtl, TdxSegmentReg::Ds);
         let es = self.vp.read_segment(self.vtl, TdxSegmentReg::Es);
@@ -3108,6 +3074,8 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             .read_vmcs64(self.vtl, VmcsField::VMX_VMCS_GUEST_CR3);
         let cr4 = self.vp.read_cr4(self.vtl);
 
+        let cr8 = self.vp.runner.tdx_apic_page(self.vtl).tpr.value >> 4;
+
         let efer = self.vp.backing.vtls[self.vtl].efer;
 
         Ok(Registers {
@@ -3115,7 +3083,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             rcx: gps[TdxGp::RCX],
             rdx: gps[TdxGp::RDX],
             rbx: gps[TdxGp::RBX],
-            rsp: gps[TdxGp::RSP],
+            rsp: self.vp.backing.vtls[self.vtl].private_regs.rsp,
             rbp: gps[TdxGp::RBP],
             rsi: gps[TdxGp::RSI],
             rdi: gps[TdxGp::RDI],
@@ -3143,7 +3111,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             cr2,
             cr3,
             cr4,
-            cr8,
+            cr8: cr8.into(),
             efer,
         })
     }
@@ -3191,7 +3159,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
         gps[TdxGp::RCX] = *rcx;
         gps[TdxGp::RDX] = *rdx;
         gps[TdxGp::RBX] = *rbx;
-        gps[TdxGp::RSP] = *rsp;
+        self.vp.backing.vtls[self.vtl].private_regs.rsp = *rsp;
         gps[TdxGp::RBP] = *rbp;
         gps[TdxGp::RSI] = *rsi;
         gps[TdxGp::RDI] = *rdi;
@@ -3236,14 +3204,12 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
 
         self.vp.write_cr4(self.vtl, *cr4)?;
 
-        // BUGBUG: cr8 affects interrupts but hcl asserts setting this to false.
-        // ignore for now
-        tracing::trace!(cr8, "IGNORING cr8 set_registers");
+        self.vp.runner.tdx_apic_page_mut(self.vtl).tpr.value = (*cr8 << 4) as u32;
 
         self.vp.write_efer(self.vtl, *efer)?;
 
         // Execution mode must be updated after setting EFER and CR0.
-        self.vp.update_execution_mode(self.vtl)?;
+        self.vp.update_execution_mode(self.vtl);
 
         Ok(())
     }

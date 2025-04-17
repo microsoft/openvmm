@@ -18,6 +18,7 @@ use pipette_protocol::PipetteBootstrap;
 use pipette_protocol::PipetteRequest;
 use socket2::Socket;
 use std::time::Duration;
+use std::time::SystemTime;
 use unicycle::FuturesUnordered;
 use vmsocket::VmAddress;
 use vmsocket::VmSocket;
@@ -172,27 +173,28 @@ async fn handle_request(
         }
         PipetteRequest::ReadFile(rpc) => rpc.handle_failable(read_file).await,
         PipetteRequest::WriteFile(rpc) => rpc.handle_failable(write_file).await,
+        PipetteRequest::GetTime(rpc) => rpc.handle_sync(|()| SystemTime::now().into()),
     }
 }
 
-async fn read_file(mut request: pipette_protocol::ReadFileRequest) -> anyhow::Result<()> {
+async fn read_file(mut request: pipette_protocol::ReadFileRequest) -> anyhow::Result<u64> {
     tracing::debug!(path = request.path, "Beginning file read request");
     let file = fs_err::File::open(request.path)?;
-    futures::io::copy(&mut futures::io::AllowStdIo::new(file), &mut request.sender).await?;
+    let n = futures::io::copy(&mut futures::io::AllowStdIo::new(file), &mut request.sender).await?;
     tracing::debug!("file read request complete");
-    Ok(())
+    Ok(n)
 }
 
-async fn write_file(mut request: pipette_protocol::WriteFileRequest) -> anyhow::Result<()> {
+async fn write_file(mut request: pipette_protocol::WriteFileRequest) -> anyhow::Result<u64> {
     tracing::debug!(path = request.path, "Beginning file write request");
     let file = fs_err::File::create(request.path)?;
-    futures::io::copy(
+    let n = futures::io::copy(
         &mut request.receiver,
         &mut futures::io::AllowStdIo::new(file),
     )
     .await?;
     tracing::debug!("file write request complete");
-    Ok(())
+    Ok(n)
 }
 
 impl DiagnosticSender {

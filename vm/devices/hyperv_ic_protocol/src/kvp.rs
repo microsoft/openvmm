@@ -4,11 +4,17 @@
 //! Protocol definitions for the KVP (Key-Value Pair) protocol.
 
 use crate::Version;
+use guid::Guid;
 use open_enum::open_enum;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
+
+/// The VMBus KVP channel interface GUID.
+pub const INTERFACE_ID: Guid = guid::guid!("a9a0f4e7-5a45-4d96-b827-8a841e8c03e6");
+/// The VMBus KVP channel instance GUID.
+pub const INSTANCE_ID: Guid = guid::guid!("242ff919-07db-4180-9c2e-b86cb68c8c55");
 
 /// Version 3.0.
 pub const KVP_VERSION_3: Version = Version::new(3, 0);
@@ -130,16 +136,26 @@ pub struct MessageEnumerate {
 pub struct KvpMessage {
     /// The header.
     pub header: KvpHeader,
-    /// Zero padding.
-    pub padding: [u8; 2],
-    /// The body of the message.
-    pub body: [u8; 2576],
+    /// The body of the message. The actual message may start
+    /// at a different offset, depending on alignment.
+    pub data: [u8; 2578],
+}
+
+/// The message for exchanging IP address information.
+#[repr(C)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct KvpMessage2 {
+    /// The message header.
+    pub header: KvpHeader,
+    /// The body of the message. The actual message may start
+    /// at a different offset, depending on alignment.
+    pub data: [u8; 0x1d02],
 }
 
 /// IP address information, in UTF-16 string form.
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct IpAddressInfo {
+pub struct MessageIpAddressInfo {
     /// The adapter ID, as a null-terminated UTF-16 string.
     pub adapter_id: [u16; 128],
     /// The protocols this message applies to.
@@ -175,7 +191,7 @@ open_enum! {
 /// IP address information, in binary form.
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct IpAddressValueBinary {
+pub struct MessageIpAddressInfoBinary {
     /// The number of IPv4 addresses.
     pub ipv4_address_count: u32,
     /// The number of IPv6 addresses.
@@ -197,13 +213,13 @@ pub struct IpAddressValueBinary {
     /// Zero padding.
     pub padding: u16,
     /// The IPv4 addresses.
-    pub ipv4_addressese: [IpAddressV4; 64],
+    pub ipv4_addresses: [IpAddressV4; 64],
     /// The IPv6 addresses.
-    pub ipv6_addressese: [IpAddressV6; 64],
+    pub ipv6_addresses: [IpAddressV6; 64],
     /// The IPv4 subnets.
     pub ipv4_subnets: [IpAddressV4; 64],
     /// The IPv6 subnets.
-    pub ipv6_subnets: [IpAddressV6; 64],
+    pub ipv6_subnets: [u32; 64],
     /// The IPv4 gateways.
     pub ipv4_gateways: [IpAddressV4; 5],
     /// The IPv6 gateways.
@@ -220,7 +236,7 @@ pub struct IpAddressValueBinary {
 open_enum! {
     /// The origin of an IP address.
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-    pub enum IpAddressOrigin: u32 {
+    pub enum IpAddressOrigin: u16 {
         /// Unknown origin.
         UNKNOWN = 0,
         /// Non-static assignment (probably DHCP).
@@ -235,29 +251,7 @@ open_enum! {
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IpAddressV4(pub [u8; 4]);
 
-/// An IPv6 address, encoded as sixteen segments in network byte order.
+/// An IPv6 address, encoded as sixteen octets in network byte order.
 #[repr(C)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct IpAddressV6(pub [u8; 16]);
-
-/// A message for exchanging IP address information in string format.
-#[repr(C)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct MessageIpAddressInfo {
-    /// The message header.
-    pub header: KvpHeader,
-    /// The IP address information.
-    pub value: IpAddressInfo,
-}
-
-/// A message for exchanging IP address information in binary format.
-#[repr(C)]
-#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct MessageIpAddressInfoBinary {
-    /// The message header.
-    pub header: KvpHeader,
-    /// Zero padding.
-    pub padding: u16,
-    /// The IP address information.
-    pub value: IpAddressValueBinary,
-}

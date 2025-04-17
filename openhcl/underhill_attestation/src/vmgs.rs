@@ -299,7 +299,7 @@ mod tests {
     async fn new_formatted_vmgs() -> Vmgs {
         let disk = new_test_file();
 
-        Vmgs::format_new(disk).await.unwrap()
+        Vmgs::format_new(disk, None).await.unwrap()
     }
 
     fn new_hardware_key_protector() -> HardwareKeyProtector {

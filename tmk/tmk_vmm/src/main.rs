@@ -12,6 +12,7 @@ mod load;
 mod paravisor_vmm;
 mod run;
 
+use anyhow::Context;
 use clap::Parser;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;
@@ -51,14 +52,24 @@ fn main() -> anyhow::Result<()> {
 #[derive(Parser)]
 struct Options {
     /// The hypervisor interface to use to run the TMK.
+    #[clap(long, required_unless_present("list"))]
+    hv: Option<HypervisorOpt>,
+    /// Disable offloads to the hypervisor. This disables WHP APIC emulation,
+    /// for example.
     #[clap(long)]
-    hv: HypervisorOpt,
+    disable_offloads: bool,
     /// The path to the TMK binary.
     #[clap(long)]
     tmk: PathBuf,
+    /// List tests available in the TMK.
+    #[clap(long)]
+    list: bool,
+    /// Tests to run. Default is to run all tests.
+    #[clap(conflicts_with("list"))]
+    tests: Vec<String>,
 }
 
-#[derive(clap::ValueEnum, Clone)]
+#[derive(clap::ValueEnum, Copy, Clone)]
 enum HypervisorOpt {
     /// Use KVM to run the TMK.
     #[cfg(target_os = "linux")]
@@ -81,18 +92,34 @@ enum HypervisorOpt {
 async fn do_main(driver: DefaultDriver) -> anyhow::Result<()> {
     let opts = Options::parse();
 
-    let mut state = CommonState::new(driver, opts).await?;
+    if opts.list {
+        let tmk = fs_err::File::open(&opts.tmk).context("failed to open TMK")?;
+        let tests = load::enumerate_tests(&tmk)?;
+        for test in tests {
+            println!("{}", test.name);
+        }
+        Ok(())
+    } else {
+        let hv = opts.hv.context("missing --hv option")?;
+        let mut state = CommonState::new(driver, opts).await?;
 
-    match state.opts.hv {
-        #[cfg(target_os = "linux")]
-        HypervisorOpt::Kvm => state.run_host_vmm(virt_kvm::Kvm).await,
-        #[cfg(all(target_os = "linux", guest_arch = "x86_64"))]
-        HypervisorOpt::Mshv => state.run_host_vmm(virt_mshv::LinuxMshv).await,
-        #[cfg(target_os = "linux")]
-        HypervisorOpt::MshvVtl => state.run_paravisor_vmm(virt::IsolationType::None).await,
-        #[cfg(windows)]
-        HypervisorOpt::Whp => state.run_host_vmm(virt_whp::Whp).await,
-        #[cfg(target_os = "macos")]
-        HypervisorOpt::Hvf => state.run_host_vmm(virt_hvf::HvfHypervisor).await,
+        state
+            .for_each_test(async |state, test| match hv {
+                #[cfg(target_os = "linux")]
+                HypervisorOpt::Kvm => state.run_host_vmm(virt_kvm::Kvm, test).await,
+                #[cfg(all(target_os = "linux", guest_arch = "x86_64"))]
+                HypervisorOpt::Mshv => state.run_host_vmm(virt_mshv::LinuxMshv, test).await,
+                #[cfg(target_os = "linux")]
+                HypervisorOpt::MshvVtl => {
+                    state
+                        .run_paravisor_vmm(virt::IsolationType::None, test)
+                        .await
+                }
+                #[cfg(windows)]
+                HypervisorOpt::Whp => state.run_host_vmm(virt_whp::Whp, test).await,
+                #[cfg(target_os = "macos")]
+                HypervisorOpt::Hvf => state.run_host_vmm(virt_hvf::HvfHypervisor, test).await,
+            })
+            .await
     }
 }

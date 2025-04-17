@@ -40,7 +40,7 @@ vm_resource::register_static_resolvers! {
     scsidisk::resolver::SimpleScsiResolver,
 
     // Vmbus devices
-    hyperv_ic::resolver::IcResolver,
+    hyperv_ic::resolver::ShutdownIcResolver,
     storvsp::resolver::StorvspResolver,
     #[cfg(feature = "uidevices")]
     uidevices::resolver::VmbusUiResolver,

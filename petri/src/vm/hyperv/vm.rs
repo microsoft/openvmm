@@ -57,10 +57,23 @@ impl HyperVVM {
         }
 
         // Delete the VM if it already exists
+        let cleanup = |vmid: &Guid| -> anyhow::Result<()> {
+            hvc::hvc_ensure_off(vmid)?;
+            powershell::run_remove_vm(vmid)
+        };
+
         if let Ok(vmids) = powershell::vm_id_from_name(&name) {
             for vmid in vmids {
-                hvc::hvc_ensure_off(&vmid)?;
-                powershell::run_remove_vm(&vmid)?;
+                match cleanup(&vmid) {
+                    Ok(_) => {
+                        tracing::info!("Successfully cleaned up VM from previous test run ({vmid})")
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to clean up VM from previous test run ({vmid}): {e:?}"
+                        )
+                    }
+                }
             }
         }
 
@@ -74,6 +87,9 @@ impl HyperVVM {
         })?;
 
         tracing::info!(name, vmid = vmid.to_string(), "Created Hyper-V VM");
+
+        // Remove the default network adapter
+        powershell::run_remove_vm_network_adapter(&vmid)?;
 
         Ok(Self {
             name,
@@ -156,6 +172,14 @@ impl HyperVVM {
         }
 
         Ok(())
+    }
+
+    /// Set the VM processor count.
+    pub fn set_processor_count(&mut self, count: u32) -> anyhow::Result<()> {
+        powershell::run_set_vm_processor(powershell::HyperVSetVMProcessorArgs {
+            vmid: &self.vmid,
+            count: Some(count),
+        })
     }
 
     /// Set the OpenHCL firmware file

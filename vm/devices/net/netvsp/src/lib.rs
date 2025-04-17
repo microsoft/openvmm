@@ -1136,7 +1136,7 @@ impl VmbusDevice for Nic {
                 data4: [0x91, 0x3f, 0xf2, 0xd2, 0xf9, 0x65, 0xed, 0xe],
             },
             subchannel_index: 0,
-            use_mnf: true,
+            mnf_interrupt_latency: Some(Duration::from_micros(100)),
             ..Default::default()
         }
     }

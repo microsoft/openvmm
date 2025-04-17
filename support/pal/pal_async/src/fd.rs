@@ -3,7 +3,6 @@
 
 //! File-descriptor readiness.
 
-use crate::any::AsAny;
 use crate::interest::InterestSlot;
 use crate::interest::PollEvents;
 use std::io;
@@ -21,7 +20,7 @@ pub trait FdReadyDriver: Unpin {
 }
 
 /// A trait for polling file descriptor readiness.
-pub trait PollFdReady: Unpin + Send + Sync + AsAny {
+pub trait PollFdReady: Unpin + Send + Sync {
     /// Polls a file descriptor for readiness.
     fn poll_fd_ready(
         &mut self,

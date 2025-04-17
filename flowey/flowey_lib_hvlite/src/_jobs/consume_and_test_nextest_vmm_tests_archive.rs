@@ -3,6 +3,10 @@
 
 //! Run a pre-built cargo-nextest based VMM tests archive.
 
+use crate::build_guest_test_uefi::GuestTestUefiOutput;
+use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
+use crate::build_openvmm::OpenvmmOutput;
+use crate::build_pipette::PipetteOutput;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -11,10 +15,10 @@ use vmm_test_images::KnownVhd;
 
 #[derive(Serialize, Deserialize)]
 pub struct VmmTestsDepArtifacts {
-    pub artifact_dir_openvmm: Option<ReadVar<PathBuf>>,
-    pub artifact_dir_pipette_windows: Option<ReadVar<PathBuf>>,
-    pub artifact_dir_pipette_linux_musl: Option<ReadVar<PathBuf>>,
-    pub artifact_dir_guest_test_uefi: Option<ReadVar<PathBuf>>,
+    pub openvmm: Option<ReadVar<OpenvmmOutput>>,
+    pub pipette_windows: Option<ReadVar<PipetteOutput>>,
+    pub pipette_linux_musl: Option<ReadVar<PipetteOutput>>,
+    pub guest_test_uefi: Option<ReadVar<GuestTestUefiOutput>>,
     pub artifact_dir_openhcl_igvm_files: Option<ReadVar<PathBuf>>,
 }
 
@@ -22,8 +26,8 @@ flowey_request! {
     pub struct Params {
         /// Friendly label for report JUnit test results
         pub junit_test_label: String,
-        /// Existing VMM tests archive artifact dir
-        pub vmm_tests_artifact_dir: ReadVar<PathBuf>,
+        /// Existing VMM tests archive
+        pub nextest_vmm_tests_archive: ReadVar<NextestVmmTestsArchive>,
         /// What target VMM tests were compiled for (determines required deps).
         pub target: target_lexicon::Triple,
         /// Nextest profile to use when running the source code
@@ -51,12 +55,8 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::artifact_guest_test_uefi::resolve::Node>();
-        ctx.import::<crate::artifact_nextest_vmm_tests_archive::resolve::Node>();
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe_extras::resolve::Node>();
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe::resolve::Node>();
-        ctx.import::<crate::artifact_openvmm::resolve::Node>();
-        ctx.import::<crate::artifact_pipette::resolve::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_vhds::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
         ctx.import::<crate::init_hyperv_tests::Node>();
@@ -68,7 +68,7 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params {
             junit_test_label,
-            vmm_tests_artifact_dir,
+            nextest_vmm_tests_archive,
             target,
             nextest_profile,
             nextest_filter_expr,
@@ -80,54 +80,18 @@ impl SimpleFlowNode for Node {
             done,
         } = request;
 
-        let nextest_archive_file =
-            ctx.reqv(
-                |v| crate::artifact_nextest_vmm_tests_archive::resolve::Request {
-                    artifact_dir: vmm_tests_artifact_dir,
-                    nextest_archive: v,
-                },
-            );
-
         // use an ad-hoc, step-local dir as a staging ground for test content
         let test_content_dir = ctx.emit_rust_stepv("creating new test content dir", |_| {
             |_| Ok(std::env::current_dir()?.absolute()?)
         });
 
         let VmmTestsDepArtifacts {
-            artifact_dir_openvmm,
-            artifact_dir_pipette_windows,
-            artifact_dir_pipette_linux_musl,
-            artifact_dir_guest_test_uefi,
+            openvmm: register_openvmm,
+            pipette_windows: register_pipette_windows,
+            pipette_linux_musl: register_pipette_linux_musl,
+            guest_test_uefi: register_guest_test_uefi,
             artifact_dir_openhcl_igvm_files,
         } = dep_artifact_dirs;
-
-        let register_openvmm = artifact_dir_openvmm.map(|artifact_dir| {
-            ctx.reqv(|v| crate::artifact_openvmm::resolve::Request {
-                artifact_dir,
-                openvmm: v,
-            })
-        });
-
-        let register_pipette_windows = artifact_dir_pipette_windows.map(|artifact_dir| {
-            ctx.reqv(|v| crate::artifact_pipette::resolve::Request {
-                artifact_dir,
-                pipette: v,
-            })
-        });
-
-        let register_pipette_linux_musl = artifact_dir_pipette_linux_musl.map(|artifact_dir| {
-            ctx.reqv(|v| crate::artifact_pipette::resolve::Request {
-                artifact_dir,
-                pipette: v,
-            })
-        });
-
-        let register_guest_test_uefi = artifact_dir_guest_test_uefi.map(|artifact_dir| {
-            ctx.reqv(|v| crate::artifact_guest_test_uefi::resolve::Request {
-                artifact_dir,
-                guest_test_uefi: v,
-            })
-        });
 
         let register_openhcl_igvm_files = artifact_dir_openhcl_igvm_files.map(|artifact_dir| {
             ctx.reqv(
@@ -181,7 +145,7 @@ impl SimpleFlowNode for Node {
         });
 
         let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
-            nextest_archive_file,
+            nextest_archive_file: nextest_vmm_tests_archive,
             nextest_profile,
             nextest_filter_expr,
             extra_env,
@@ -194,6 +158,11 @@ impl SimpleFlowNode for Node {
             FlowPlatformKind::Windows => r#"C:\Users\cloudtest\AppData\Local\CrashDumps"#,
             FlowPlatformKind::Unix => "/will/not/exist",
         }));
+
+        // Bind the externally generated output paths together with the results
+        // to create a dependency on the VMM tests having actually run.
+        let test_log_path = test_log_path.depending_on(ctx, &results);
+        let crash_dumps_path = crash_dumps_path.depending_on(ctx, &results);
 
         let junit_xml = results.map(ctx, |r| r.junit_xml);
         let reported_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {

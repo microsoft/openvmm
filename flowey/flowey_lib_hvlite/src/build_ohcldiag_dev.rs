@@ -8,10 +8,23 @@ use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum OhcldiagDevOutput {
-    LinuxBin { bin: PathBuf, dbg: PathBuf },
-    WindowsBin { exe: PathBuf, pdb: PathBuf },
+    LinuxBin {
+        #[serde(rename = "ohcldiag-dev")]
+        bin: PathBuf,
+        #[serde(rename = "ohcldiag-dev.dbg")]
+        dbg: PathBuf,
+    },
+    WindowsBin {
+        #[serde(rename = "ohcldiag-dev.exe")]
+        exe: PathBuf,
+        #[serde(rename = "ohcldiag-dev.pdb")]
+        pdb: PathBuf,
+    },
 }
+
+impl Artifact for OhcldiagDevOutput {}
 
 flowey_request! {
     pub struct Request {

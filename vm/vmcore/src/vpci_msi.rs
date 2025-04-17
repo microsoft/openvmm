@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 //! Trait to model host-assisted MSI/MSI-X configuration (when using VPCI).
 
 use inspect::Inspect;

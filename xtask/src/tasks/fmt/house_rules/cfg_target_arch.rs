@@ -82,12 +82,15 @@ pub fn check_cfg_target_arch(path: &Path, _fix: bool) -> anyhow::Result<()> {
     //
     // the whp/kvm crates are inherently arch-specific, as they contain
     // low-level bindings to a particular platform's virtualization APIs
+    //
+    // The TMK-related crates run in the guest and are inherently arch-specific.
     if path.starts_with("guest_test_uefi")
         || path.starts_with("openhcl/openhcl_boot")
         || path.starts_with("openhcl/minimal_rt")
         || path.starts_with("openhcl/sidecar")
         || path.starts_with("support/safe_intrinsics")
         || path.starts_with("tmk/simple_tmk")
+        || path.starts_with("tmk/tmk_core")
         || path.starts_with("vm/whp")
         || path.starts_with("vm/kvm")
     {

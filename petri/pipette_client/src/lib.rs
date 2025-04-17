@@ -17,10 +17,11 @@ use futures::AsyncBufReadExt;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use futures::AsyncWriteExt;
+use futures::FutureExt as _;
 use futures::StreamExt;
-use futures::TryFutureExt;
 use futures::io::BufReader;
 use futures_concurrency::future::TryJoin;
+use mesh::payload::Timestamp;
 use mesh::rpc::RpcError;
 use mesh_remote::PointToPointMesh;
 use pal_async::task::Spawn;
@@ -140,23 +141,23 @@ impl PipetteClient {
             sender: send_pipe,
         };
 
-        let request_future = self
-            .send
-            .call(PipetteRequest::ReadFile, req)
-            .map_err(anyhow::Error::from);
+        let request_future = self.send.call_failable(PipetteRequest::ReadFile, req);
 
-        let transfer_future = async {
-            let mut contents = Vec::new();
-            let copy_result = futures::io::copy(recv_pipe, &mut contents).await;
-            copy_result.map_err(anyhow::Error::from)?;
-            Ok(contents)
-        };
+        let mut contents = Vec::new();
+        let transfer_future = async { futures::io::copy(recv_pipe, &mut contents).await };
 
         tracing::debug!(path = path.as_ref(), "beginning file read transfer");
-        let (request_result, contents) = (request_future, transfer_future).try_join().await?;
+        let (bytes_read, io_result) = (request_future, transfer_future.map(Ok))
+            .try_join()
+            .await
+            .context("failed to read file")?;
+
+        io_result.context("io failure")?;
+        if bytes_read != contents.len() as u64 {
+            anyhow::bail!("file truncated");
+        }
 
         tracing::debug!("file read complete");
-        request_result.map_err(anyhow::Error::from)?;
         Ok(contents)
     }
 
@@ -175,28 +176,38 @@ impl PipetteClient {
             receiver: recv_pipe,
         };
 
-        let request_future = self
-            .send
-            .call(PipetteRequest::WriteFile, req)
-            .map_err(anyhow::Error::from);
+        let request_future = self.send.call_failable(PipetteRequest::WriteFile, req);
 
         let transfer_future = async {
             let copy_result = futures::io::copy(contents, &mut send_pipe).await;
             send_pipe.close().await?;
-            copy_result.map_err(anyhow::Error::from)
+            copy_result
         };
 
-        tracing::debug!(path = path.as_ref(), "beginning file write transfer");
-        let (request_result, _bytes_transferred) =
-            (request_future, transfer_future).try_join().await?;
+        tracing::debug!(path = path.as_ref(), "beginning file wurite transfer");
+        let (bytes_written, io_result) = (request_future, transfer_future.map(Ok))
+            .try_join()
+            .await
+            .context("failed to write file")?;
+        if bytes_written != io_result.context("io failure")? {
+            anyhow::bail!("file truncated");
+        }
 
         tracing::debug!("file write complete");
-        request_result.map_err(anyhow::Error::from)
+        Ok(())
     }
 
     /// Waits for the agent to exit.
     pub async fn wait(self) -> Result<(), mesh::RecvError> {
         self.watch.await
+    }
+
+    /// Returns the current time in the guest.
+    pub async fn get_time(&self) -> anyhow::Result<Timestamp> {
+        self.send
+            .call(PipetteRequest::GetTime, ())
+            .await
+            .context("failed to get time")
     }
 }
 

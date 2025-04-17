@@ -24,10 +24,23 @@ pub struct OpenvmmBuildParams {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum OpenvmmOutput {
-    WindowsBin { exe: PathBuf, pdb: PathBuf },
-    LinuxBin { bin: PathBuf, dbg: PathBuf },
+    WindowsBin {
+        #[serde(rename = "openvmm.exe")]
+        exe: PathBuf,
+        #[serde(rename = "openvmm.pdb")]
+        pdb: PathBuf,
+    },
+    LinuxBin {
+        #[serde(rename = "openvmm")]
+        bin: PathBuf,
+        #[serde(rename = "openvmm.dbg")]
+        dbg: PathBuf,
+    },
 }
+
+impl Artifact for OpenvmmOutput {}
 
 flowey_request! {
     pub struct Request {

@@ -138,11 +138,11 @@ impl IntoPipeline for CheckinGatesCli {
 
         // initialize the various VMM tests nextest archive artifacts
         let (pub_vmm_tests_archive_linux_x86, use_vmm_tests_archive_linux_x86) =
-            pipeline.new_artifact("x64-linux-vmm-tests-archive");
+            pipeline.new_typed_artifact("x64-linux-vmm-tests-archive");
         let (pub_vmm_tests_archive_windows_x86, use_vmm_tests_archive_windows_x86) =
-            pipeline.new_artifact("x64-windows-vmm-tests-archive");
+            pipeline.new_typed_artifact("x64-windows-vmm-tests-archive");
         let (pub_vmm_tests_archive_windows_aarch64, use_vmm_tests_archive_windows_aarch64) =
-            pipeline.new_artifact("aarch64-windows-vmm-tests-archive");
+            pipeline.new_typed_artifact("aarch64-windows-vmm-tests-archive");
 
         // wrap each publish handle in an option, so downstream code can
         // `.take()` the handle when emitting the corresponding job
@@ -311,10 +311,10 @@ impl IntoPipeline for CheckinGatesCli {
 
             // artifacts which _are_ in the VMM tests "hot path"
             let (pub_openvmm, use_openvmm) =
-                pipeline.new_artifact(format!("{arch_tag}-windows-openvmm"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-openvmm"));
 
             let (pub_pipette_windows, use_pipette_windows) =
-                pipeline.new_artifact(format!("{arch_tag}-windows-pipette"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-pipette"));
 
             // filter off interesting artifacts required by the VMM tests job
             match arch {
@@ -335,15 +335,15 @@ impl IntoPipeline for CheckinGatesCli {
             // path"
             // artifacts which _are not_ in the VMM tests "hot path"
             let (pub_igvmfilegen, _use_igvmfilegen) =
-                pipeline.new_artifact(format!("{arch_tag}-windows-igvmfilegen"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-igvmfilegen"));
             let (pub_vmgs_lib, _use_vmgs_lib) =
-                pipeline.new_artifact(format!("{arch_tag}-windows-vmgs_lib"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgs_lib"));
             let (pub_vmgstool, _use_vmgstool) =
-                pipeline.new_artifact(format!("{arch_tag}-windows-vmgstool"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-vmgstool"));
             let (pub_hypestv, _use_hypestv) =
-                pipeline.new_artifact(format!("{arch_tag}-windows-hypestv"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-hypestv"));
             let (pub_ohcldiag_dev, _use_ohcldiag_dev) =
-                pipeline.new_artifact(format!("{arch_tag}-windows-ohcldiag-dev"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-windows-ohcldiag-dev"));
 
             let job = pipeline
                 .new_job(
@@ -354,62 +354,49 @@ impl IntoPipeline for CheckinGatesCli {
                 .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
                     FlowPlatform::Windows,
                 ))
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_vmgstool::Params {
+                .dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    with_crypto: true,
+                    vmgstool: ctx.publish_typed_artifact(pub_vmgstool),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_hypestv::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    hypestv: ctx.publish_typed_artifact(pub_hypestv),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_and_test_vmgs_lib::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    vmgs_lib: ctx.publish_typed_artifact(pub_vmgs_lib),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_igvmfilegen::Request {
+                    build_params: flowey_lib_hvlite::build_igvmfilegen::IgvmfilegenBuildParams {
                         target: CommonTriple::Common {
                             arch,
                             platform: CommonPlatform::WindowsMsvc,
                         },
                         profile: CommonProfile::from_release(release),
-                        with_crypto: true,
-                        artifact_dir: ctx.publish_artifact(pub_vmgstool),
-                        done: ctx.new_done_handle(),
                     },
-                )
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_hypestv::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::WindowsMsvc,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_hypestv),
-                        done: ctx.new_done_handle(),
+                    igvmfilegen: ctx.publish_typed_artifact(pub_igvmfilegen),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_ohcldiag_dev::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
                     },
-                )
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_vmgs_lib::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::WindowsMsvc,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_vmgs_lib),
-                        done: ctx.new_done_handle(),
-                    },
-                )
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_igvmfilegen::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::WindowsMsvc,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_igvmfilegen),
-                        done: ctx.new_done_handle(),
-                    },
-                )
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_ohcldiag_dev::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::WindowsMsvc,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_ohcldiag_dev),
-                        done: ctx.new_done_handle(),
-                    },
-                );
+                    profile: CommonProfile::from_release(release),
+                    ohcldiag_dev: ctx.publish_typed_artifact(pub_ohcldiag_dev),
+                });
 
             all_jobs.push(job.finish());
 
@@ -424,59 +411,57 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowPlatform::Windows,
                 ))
                 .dep_on(|ctx| {
-                    flowey_lib_hvlite::_jobs::build_and_publish_openvmm::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::WindowsMsvc,
+                    flowey_lib_hvlite::build_openvmm::Request {
+                        params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::WindowsMsvc,
+                            },
+                            profile: CommonProfile::from_release(release),
+                            // FIXME: this relies on openvmm default features
+                            // Our ARM test runners need the latest WHP changes
+                            features: if matches!(arch, CommonArch::Aarch64) {
+                                [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::UnstableWhp]
+                                    .into()
+                            } else {
+                                [].into()
+                            },
                         },
-                        profile: CommonProfile::from_release(release),
-                        // FIXME: this relies on openvmm default features
-                        // Our ARM test runners need the latest WHP changes
-                        features: if matches!(arch, CommonArch::Aarch64) {
-                            [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::UnstableWhp].into()
-                        } else {
-                            [].into()
-                        },
-                        artifact_dir: ctx.publish_artifact(pub_openvmm),
-                        done: ctx.new_done_handle(),
+                        openvmm: ctx.publish_typed_artifact(pub_openvmm),
                     }
                 })
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_pipette::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::WindowsMsvc,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_pipette_windows),
-                        done: ctx.new_done_handle(),
+                .dep_on(|ctx| flowey_lib_hvlite::build_pipette::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::WindowsMsvc,
                     },
-                );
+                    profile: CommonProfile::from_release(release),
+                    pipette: ctx.publish_typed_artifact(pub_pipette_windows),
+                });
 
             // Hang building the windows VMM tests off this big windows job.
             match arch {
                 CommonArch::X86_64 => {
                     let pub_vmm_tests_archive_windows_x86 =
                         pub_vmm_tests_archive_windows_x86.take().unwrap();
-                    job = job.dep_on(|ctx| {
-                        flowey_lib_hvlite::_jobs::build_and_publish_nextest_vmm_tests_archive::Params {
-                            target: CommonTriple::X86_64_WINDOWS_MSVC.as_triple(),
-                            profile: CommonProfile::from_release(release),
-                            artifact_dir: ctx.publish_artifact(pub_vmm_tests_archive_windows_x86),
-                            done: ctx.new_done_handle(),
-                        }
+                    job = job.dep_on(|ctx|
+                        flowey_lib_hvlite::build_nextest_vmm_tests::Request {
+                        target: CommonTriple::X86_64_WINDOWS_MSVC.as_triple(),
+                        profile: CommonProfile::from_release(release),
+                        build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
+                            ctx.publish_typed_artifact(pub_vmm_tests_archive_windows_x86),
+                        ),
                     });
                 }
                 CommonArch::Aarch64 => {
                     let pub_vmm_tests_archive_windows_aarch64 =
                         pub_vmm_tests_archive_windows_aarch64.take().unwrap();
-                    job = job.dep_on(|ctx| {
-                        flowey_lib_hvlite::_jobs::build_and_publish_nextest_vmm_tests_archive::Params {
-                            target: CommonTriple::AARCH64_WINDOWS_MSVC.as_triple(),
-                            profile: CommonProfile::from_release(release),
-                            artifact_dir: ctx.publish_artifact(pub_vmm_tests_archive_windows_aarch64),
-                            done: ctx.new_done_handle(),
-                        }
+                    job = job.dep_on(|ctx| flowey_lib_hvlite::build_nextest_vmm_tests::Request {
+                        target: CommonTriple::AARCH64_WINDOWS_MSVC.as_triple(),
+                        profile: CommonProfile::from_release(release),
+                        build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
+                            ctx.publish_typed_artifact(pub_vmm_tests_archive_windows_aarch64),
+                        ),
                     });
                 }
             }
@@ -492,13 +477,15 @@ impl IntoPipeline for CheckinGatesCli {
             };
 
             let (pub_openvmm, use_openvmm) =
-                pipeline.new_artifact(format!("{arch_tag}-linux-openvmm"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-openvmm"));
             let (pub_igvmfilegen, _) =
-                pipeline.new_artifact(format!("{arch_tag}-linux-igvmfilegen"));
-            let (pub_vmgs_lib, _) = pipeline.new_artifact(format!("{arch_tag}-linux-vmgs_lib"));
-            let (pub_vmgstool, _) = pipeline.new_artifact(format!("{arch_tag}-linux-vmgstool"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-igvmfilegen"));
+            let (pub_vmgs_lib, _) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmgs_lib"));
+            let (pub_vmgstool, _) =
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-vmgstool"));
             let (pub_ohcldiag_dev, _) =
-                pipeline.new_artifact(format!("{arch_tag}-linux-ohcldiag-dev"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-ohcldiag-dev"));
 
             // NOTE: the choice to build it as part of this linux job was pretty
             // arbitrary. It could just as well hang off the windows job.
@@ -507,7 +494,7 @@ impl IntoPipeline for CheckinGatesCli {
             // E2E pipeline times, owing to how the VMM tests artifact dependency
             // graph looks like.
             let (pub_guest_test_uefi, use_guest_test_uefi) =
-                pipeline.new_artifact(format!("{arch_tag}-guest_test_uefi"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-guest_test_uefi"));
 
             // skim off interesting artifacts required by the VMM tests job
             match arch {
@@ -534,70 +521,59 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 .dep_on(|ctx| {
-                    flowey_lib_hvlite::_jobs::build_and_publish_openvmm::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxGnu,
+                    flowey_lib_hvlite::build_openvmm::Request {
+                        params: flowey_lib_hvlite::build_openvmm::OpenvmmBuildParams {
+                            target: CommonTriple::Common {
+                                arch,
+                                platform: CommonPlatform::LinuxGnu,
+                            },
+                            profile: CommonProfile::from_release(release),
+                            // FIXME: this relies on openvmm default features
+                            features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm]
+                                .into(),
                         },
-                        profile: CommonProfile::from_release(release),
-                        // FIXME: this relies on openvmm default features
-                        features: [flowey_lib_hvlite::build_openvmm::OpenvmmFeature::Tpm].into(),
-                        artifact_dir: ctx.publish_artifact(pub_openvmm),
-                        done: ctx.new_done_handle(),
+                        openvmm: ctx.publish_typed_artifact(pub_openvmm),
                     }
                 })
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_vmgstool::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxGnu,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        with_crypto: true,
-                        artifact_dir: ctx.publish_artifact(pub_vmgstool),
-                        done: ctx.new_done_handle(),
-                    },
-                )
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_vmgs_lib::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxGnu,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_vmgs_lib),
-                        done: ctx.new_done_handle(),
-                    },
-                )
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_igvmfilegen::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxGnu,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_igvmfilegen),
-                        done: ctx.new_done_handle(),
-                    },
-                )
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_ohcldiag_dev::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxGnu,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_ohcldiag_dev),
-                        done: ctx.new_done_handle(),
-                    },
-                )
-                .dep_on(|ctx| {
-                    flowey_lib_hvlite::_jobs::build_and_publish_guest_test_uefi::Params {
+                .dep_on(|ctx| flowey_lib_hvlite::build_vmgstool::Request {
+                    target: CommonTriple::Common {
                         arch,
+                        platform: CommonPlatform::LinuxGnu,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    with_crypto: true,
+                    vmgstool: ctx.publish_typed_artifact(pub_vmgstool),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_and_test_vmgs_lib::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::LinuxGnu,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    vmgs_lib: ctx.publish_typed_artifact(pub_vmgs_lib),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_igvmfilegen::Request {
+                    build_params: flowey_lib_hvlite::build_igvmfilegen::IgvmfilegenBuildParams {
+                        target: CommonTriple::Common {
+                            arch,
+                            platform: CommonPlatform::LinuxGnu,
+                        },
                         profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_guest_test_uefi),
-                        done: ctx.new_done_handle(),
-                    }
+                    },
+                    igvmfilegen: ctx.publish_typed_artifact(pub_igvmfilegen),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_ohcldiag_dev::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::LinuxGnu,
+                    },
+                    profile: CommonProfile::from_release(release),
+                    ohcldiag_dev: ctx.publish_typed_artifact(pub_ohcldiag_dev),
+                })
+                .dep_on(|ctx| flowey_lib_hvlite::build_guest_test_uefi::Request {
+                    arch,
+                    profile: CommonProfile::from_release(release),
+                    guest_test_uefi: ctx.publish_typed_artifact(pub_guest_test_uefi),
                 });
 
             // Hang building the linux VMM tests off this big linux job.
@@ -606,13 +582,12 @@ impl IntoPipeline for CheckinGatesCli {
             if matches!(arch, CommonArch::X86_64) {
                 let pub_vmm_tests_archive_linux_x86 =
                     pub_vmm_tests_archive_linux_x86.take().unwrap();
-                job = job.dep_on(|ctx| {
-                    flowey_lib_hvlite::_jobs::build_and_publish_nextest_vmm_tests_archive::Params {
-                        target: CommonTriple::X86_64_LINUX_GNU.as_triple(),
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_vmm_tests_archive_linux_x86),
-                        done: ctx.new_done_handle(),
-                    }
+                job = job.dep_on(|ctx| flowey_lib_hvlite::build_nextest_vmm_tests::Request {
+                    target: CommonTriple::X86_64_LINUX_GNU.as_triple(),
+                    profile: CommonProfile::from_release(release),
+                    build_mode: flowey_lib_hvlite::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(
+                        ctx.publish_typed_artifact(pub_vmm_tests_archive_linux_x86),
+                    ),
                 });
             }
 
@@ -650,7 +625,7 @@ impl IntoPipeline for CheckinGatesCli {
             // toolchain, it would require pulling in all the openhcl
             // toolchain deps...
             let (pub_pipette_linux_musl, use_pipette_linux_musl) =
-                pipeline.new_artifact(format!("{arch_tag}-linux-musl-pipette"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-linux-musl-pipette"));
 
             // skim off interesting artifacts required by the VMM tests job
             match arch {
@@ -717,17 +692,14 @@ impl IntoPipeline for CheckinGatesCli {
                         done: ctx.new_done_handle(),
                     }
                 })
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_pipette::Params {
-                        target: CommonTriple::Common {
-                            arch,
-                            platform: CommonPlatform::LinuxMusl,
-                        },
-                        profile: CommonProfile::from_release(release),
-                        artifact_dir: ctx.publish_artifact(pub_pipette_linux_musl),
-                        done: ctx.new_done_handle(),
+                .dep_on(|ctx| flowey_lib_hvlite::build_pipette::Request {
+                    target: CommonTriple::Common {
+                        arch,
+                        platform: CommonPlatform::LinuxMusl,
                     },
-                );
+                    profile: CommonProfile::from_release(release),
+                    pipette: ctx.publish_typed_artifact(pub_pipette_linux_musl),
+                });
 
             all_jobs.push(job.finish());
 
@@ -1040,7 +1012,7 @@ impl IntoPipeline for CheckinGatesCli {
                 .dep_on(|ctx| {
                     flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::Params {
                         junit_test_label: test_label,
-                        vmm_tests_artifact_dir: ctx.use_artifact(use_vmm_tests_archive),
+                        nextest_vmm_tests_archive: ctx.use_typed_artifact(use_vmm_tests_archive),
                         target: target.as_triple(),
                         nextest_profile:
                             flowey_lib_hvlite::run_cargo_nextest_run::NextestProfile::Ci,
@@ -1131,6 +1103,9 @@ impl IntoPipeline for CheckinGatesCli {
 mod vmm_tests_artifact_builders {
     use flowey::pipeline::prelude::*;
     use flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::VmmTestsDepArtifacts;
+    use flowey_lib_hvlite::build_guest_test_uefi::GuestTestUefiOutput;
+    use flowey_lib_hvlite::build_openvmm::OpenvmmOutput;
+    use flowey_lib_hvlite::build_pipette::PipetteOutput;
 
     pub type ResolveVmmTestsDepArtifacts =
         Box<dyn Fn(&mut PipelineJobCtx<'_>) -> VmmTestsDepArtifacts>;
@@ -1138,12 +1113,12 @@ mod vmm_tests_artifact_builders {
     #[derive(Default)]
     pub struct VmmTestsArtifactsBuilderLinuxX86 {
         // windows build machine
-        pub use_pipette_windows: Option<UseArtifact>,
+        pub use_pipette_windows: Option<UseTypedArtifact<PipetteOutput>>,
         // linux build machine
-        pub use_openvmm: Option<UseArtifact>,
-        pub use_pipette_linux_musl: Option<UseArtifact>,
+        pub use_openvmm: Option<UseTypedArtifact<OpenvmmOutput>>,
+        pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
         // any machine
-        pub use_guest_test_uefi: Option<UseArtifact>,
+        pub use_guest_test_uefi: Option<UseTypedArtifact<GuestTestUefiOutput>>,
     }
 
     impl VmmTestsArtifactsBuilderLinuxX86 {
@@ -1161,10 +1136,10 @@ mod vmm_tests_artifact_builders {
             let use_pipette_windows = use_pipette_windows.ok_or("pipette_windows")?;
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
-                artifact_dir_openvmm: Some(ctx.use_artifact(&use_openvmm)),
-                artifact_dir_pipette_windows: Some(ctx.use_artifact(&use_pipette_windows)),
-                artifact_dir_pipette_linux_musl: Some(ctx.use_artifact(&use_pipette_linux_musl)),
-                artifact_dir_guest_test_uefi: Some(ctx.use_artifact(&use_guest_test_uefi)),
+                openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
+                pipette_windows: Some(ctx.use_typed_artifact(&use_pipette_windows)),
+                pipette_linux_musl: Some(ctx.use_typed_artifact(&use_pipette_linux_musl)),
+                guest_test_uefi: Some(ctx.use_typed_artifact(&use_guest_test_uefi)),
                 // not currently required, since OpenHCL tests cannot be run on OpenVMM on linux
                 artifact_dir_openhcl_igvm_files: None,
             }))
@@ -1174,13 +1149,13 @@ mod vmm_tests_artifact_builders {
     #[derive(Default, Clone)]
     pub struct VmmTestsArtifactsBuilderWindowsX86 {
         // windows build machine
-        pub use_openvmm: Option<UseArtifact>,
-        pub use_pipette_windows: Option<UseArtifact>,
+        pub use_openvmm: Option<UseTypedArtifact<OpenvmmOutput>>,
+        pub use_pipette_windows: Option<UseTypedArtifact<PipetteOutput>>,
         // linux build machine
         pub use_openhcl_igvm_files: Option<UseArtifact>,
-        pub use_pipette_linux_musl: Option<UseArtifact>,
+        pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
         // any machine
-        pub use_guest_test_uefi: Option<UseArtifact>,
+        pub use_guest_test_uefi: Option<UseTypedArtifact<GuestTestUefiOutput>>,
     }
 
     impl VmmTestsArtifactsBuilderWindowsX86 {
@@ -1200,10 +1175,10 @@ mod vmm_tests_artifact_builders {
             let use_openhcl_igvm_files = use_openhcl_igvm_files.ok_or("openhcl_igvm_files")?;
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
-                artifact_dir_openvmm: Some(ctx.use_artifact(&use_openvmm)),
-                artifact_dir_pipette_windows: Some(ctx.use_artifact(&use_pipette_windows)),
-                artifact_dir_pipette_linux_musl: Some(ctx.use_artifact(&use_pipette_linux_musl)),
-                artifact_dir_guest_test_uefi: Some(ctx.use_artifact(&use_guest_test_uefi)),
+                openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
+                pipette_windows: Some(ctx.use_typed_artifact(&use_pipette_windows)),
+                pipette_linux_musl: Some(ctx.use_typed_artifact(&use_pipette_linux_musl)),
+                guest_test_uefi: Some(ctx.use_typed_artifact(&use_guest_test_uefi)),
                 artifact_dir_openhcl_igvm_files: Some(ctx.use_artifact(&use_openhcl_igvm_files)),
             }))
         }
@@ -1212,13 +1187,13 @@ mod vmm_tests_artifact_builders {
     #[derive(Default, Clone)]
     pub struct VmmTestsArtifactsBuilderWindowsAarch64 {
         // windows build machine
-        pub use_openvmm: Option<UseArtifact>,
-        pub use_pipette_windows: Option<UseArtifact>,
+        pub use_openvmm: Option<UseTypedArtifact<OpenvmmOutput>>,
+        pub use_pipette_windows: Option<UseTypedArtifact<PipetteOutput>>,
         // linux build machine
         pub use_openhcl_igvm_files: Option<UseArtifact>,
-        pub use_pipette_linux_musl: Option<UseArtifact>,
+        pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
         // any machine
-        pub use_guest_test_uefi: Option<UseArtifact>,
+        pub use_guest_test_uefi: Option<UseTypedArtifact<GuestTestUefiOutput>>,
     }
 
     impl VmmTestsArtifactsBuilderWindowsAarch64 {
@@ -1238,10 +1213,10 @@ mod vmm_tests_artifact_builders {
             let use_openhcl_igvm_files = use_openhcl_igvm_files.ok_or("openhcl_igvm_files")?;
 
             Ok(Box::new(move |ctx| VmmTestsDepArtifacts {
-                artifact_dir_openvmm: Some(ctx.use_artifact(&use_openvmm)),
-                artifact_dir_pipette_windows: Some(ctx.use_artifact(&use_pipette_windows)),
-                artifact_dir_pipette_linux_musl: Some(ctx.use_artifact(&use_pipette_linux_musl)),
-                artifact_dir_guest_test_uefi: Some(ctx.use_artifact(&use_guest_test_uefi)),
+                openvmm: Some(ctx.use_typed_artifact(&use_openvmm)),
+                pipette_windows: Some(ctx.use_typed_artifact(&use_pipette_windows)),
+                pipette_linux_musl: Some(ctx.use_typed_artifact(&use_pipette_linux_musl)),
+                guest_test_uefi: Some(ctx.use_typed_artifact(&use_guest_test_uefi)),
                 artifact_dir_openhcl_igvm_files: Some(ctx.use_artifact(&use_openhcl_igvm_files)),
             }))
         }

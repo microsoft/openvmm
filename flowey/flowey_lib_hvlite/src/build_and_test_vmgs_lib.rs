@@ -12,16 +12,23 @@ use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum VmgsLibOutput {
     LinuxDynamicLib {
+        #[serde(rename = "libvmgs_lib.so")]
         so: PathBuf,
     },
     WindowsDynamicLib {
+        #[serde(rename = "vmgs_lib.dll")]
         dll: PathBuf,
+        #[serde(rename = "vmgs_lib.dll.lib")]
         dll_lib: PathBuf,
+        #[serde(rename = "vmgs_lib.pdb")]
         pdb: PathBuf,
     },
 }
+
+impl Artifact for VmgsLibOutput {}
 
 flowey_request! {
     pub struct Request {

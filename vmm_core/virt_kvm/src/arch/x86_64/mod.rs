@@ -76,6 +76,9 @@ use virt::x86::vp::AccessVpState;
 use vm_topology::processor::x86::ApicMode;
 use vm_topology::processor::x86::X86VpInfo;
 use vmcore::interrupt::Interrupt;
+use vmcore::reference_time::GetReferenceTime;
+use vmcore::reference_time::ReferenceTimeResult;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::synic::GuestEventPort;
 use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeAccess;
@@ -282,7 +285,9 @@ impl ProtoPartition for KvmProtoPartition<'_> {
         mut self,
         config: PartitionConfig<'_>,
     ) -> Result<(Self::Partition, Vec<Self::ProcessorBinder>), Self::Error> {
-        self.cpuid.extend(config.cpuid);
+        let mut cpuid = self.cpuid.into_leaves();
+        cpuid.extend(config.cpuid);
+        let cpuid = CpuidLeafSet::new(cpuid);
 
         let bsp_apic_id = self.config.processor_topology.vp_arch(VpIndex::BSP).apic_id;
         if bsp_apic_id != 0 {
@@ -291,7 +296,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
         let mut caps = virt::PartitionCapabilities::from_cpuid(
             self.config.processor_topology,
-            &mut |function, index| self.cpuid.result(function, index, &[0; 4]),
+            &mut |function, index| cpuid.result(function, index, &[0; 4]),
         );
 
         caps.can_freeze_time = false;
@@ -323,8 +328,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
 
             // Convert the CPUID entries and update the APIC ID in CPUID for
             // this VCPU.
-            let cpuid_entries = self
-                .cpuid
+            let cpuid_entries = cpuid
                 .leaves()
                 .iter()
                 .map(|leaf| {
@@ -404,7 +408,7 @@ impl ProtoPartition for KvmProtoPartition<'_> {
                 .collect(),
             gsi_routing: Mutex::new(gsi_routing),
             caps,
-            cpuid: self.cpuid,
+            cpuid,
         };
 
         let partition = KvmPartition {
@@ -540,10 +544,33 @@ impl Hv1 for KvmPartition {
     type Error = KvmError;
     type Device = virt::x86::apic_software_device::ApicSoftwareDevice;
 
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
+        self.inner
+            .hv1_enabled
+            .then(|| ReferenceTimeSource::from(self.inner.clone() as Arc<dyn GetReferenceTime>))
+    }
+
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
         None
+    }
+}
+
+impl GetReferenceTime for KvmPartitionInner {
+    fn now(&self) -> ReferenceTimeResult {
+        // Although we can query the reference time MSR for a VP, we are not
+        // running in the context of a VP, and so such a query will hang if the
+        // VP is running. Instead, query the KVM clock, which is the backing
+        // clock for the reference time counter within KVM.
+        //
+        // This also gives us the system time, in some configurations.
+        let clock = self.kvm.get_clock_ns().unwrap();
+        ReferenceTimeResult {
+            ref_time: clock.clock / 100,
+            system_time: (clock.flags & kvm::KVM_CLOCK_REALTIME != 0)
+                .then(|| jiff::Timestamp::from_nanosecond(clock.realtime as i128).unwrap()),
+        }
     }
 }
 
@@ -1211,11 +1238,21 @@ impl virt::Synic for KvmPartition {
         }
     }
 
-    fn new_guest_event_port(&self) -> Box<dyn GuestEventPort> {
+    fn new_guest_event_port(
+        &self,
+        _vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Box<dyn GuestEventPort> {
         Box::new(KvmGuestEventPort {
             partition: Arc::downgrade(&self.inner),
             gm: self.inner.gm.clone(),
-            params: Default::default(),
+            params: Arc::new(Mutex::new(KvmEventPortParams {
+                vp: VpIndex::new(vp),
+                sint,
+                flag,
+            })),
         })
     }
 
@@ -1235,7 +1272,7 @@ struct EmulationError {
 struct KvmGuestEventPort {
     partition: Weak<KvmPartitionInner>,
     gm: GuestMemory,
-    params: Arc<Mutex<Option<KvmEventPortParams>>>,
+    params: Arc<Mutex<KvmEventPortParams>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1249,60 +1286,43 @@ impl GuestEventPort for KvmGuestEventPort {
     fn interrupt(&self) -> Interrupt {
         let this = self.clone();
         Interrupt::from_fn(move || {
-            if let Some(KvmEventPortParams { vp, sint, flag }) = *this.params.lock() {
-                let Some(partition) = this.partition.upgrade() else {
-                    return;
-                };
-                let siefp = partition.vp(vp).siefp.read();
-                if !siefp.enabled() {
-                    return;
-                }
-                let byte_gpa =
-                    siefp.base_gpn() * HV_PAGE_SIZE + sint as u64 * 256 + flag as u64 / 8;
-                let mut byte = 0;
-                let mask = 1 << (flag % 8);
-                while byte & mask == 0 {
-                    match this.gm.compare_exchange(byte_gpa, byte, byte | mask) {
-                        Ok(Ok(_)) => {
-                            drop(siefp);
-                            partition
-                                .kvm
-                                .irq_line(VMBUS_BASE_GSI + vp.index(), true)
-                                .unwrap();
+            let KvmEventPortParams { vp, sint, flag } = *this.params.lock();
+            let Some(partition) = this.partition.upgrade() else {
+                return;
+            };
+            let siefp = partition.vp(vp).siefp.read();
+            if !siefp.enabled() {
+                return;
+            }
+            let byte_gpa = siefp.base_gpn() * HV_PAGE_SIZE + sint as u64 * 256 + flag as u64 / 8;
+            let mut byte = 0;
+            let mask = 1 << (flag % 8);
+            while byte & mask == 0 {
+                match this.gm.compare_exchange(byte_gpa, byte, byte | mask) {
+                    Ok(Ok(_)) => {
+                        drop(siefp);
+                        partition
+                            .kvm
+                            .irq_line(VMBUS_BASE_GSI + vp.index(), true)
+                            .unwrap();
 
-                            break;
-                        }
-                        Ok(Err(b)) => byte = b,
-                        Err(err) => {
-                            tracelimit::warn_ratelimited!(
-                                error = &err as &dyn std::error::Error,
-                                "failed to write event flag to guest memory"
-                            );
-                            break;
-                        }
+                        break;
+                    }
+                    Ok(Err(b)) => byte = b,
+                    Err(err) => {
+                        tracelimit::warn_ratelimited!(
+                            error = &err as &dyn std::error::Error,
+                            "failed to write event flag to guest memory"
+                        );
+                        break;
                     }
                 }
             }
         })
     }
 
-    fn clear(&mut self) {
-        *self.params.lock() = None;
-    }
-
-    fn set(
-        &mut self,
-        _vtl: Vtl,
-        vp: u32,
-        sint: u8,
-        flag: u16,
-    ) -> Result<(), vmcore::synic::HypervisorError> {
-        *self.params.lock() = Some(KvmEventPortParams {
-            vp: VpIndex::new(vp),
-            sint,
-            flag,
-        });
-
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
+        self.params.lock().vp = VpIndex::new(vp);
         Ok(())
     }
 }

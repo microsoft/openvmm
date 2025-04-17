@@ -2311,7 +2311,7 @@ mod tests {
             {
                 assert_eq!(nv_index, TPM_NV_INDEX_AIK_CERT);
                 assert_eq!(input_size, ak_cert_input_larger.len());
-                assert_eq!(allocated_size, MAX_NV_INDEX_SIZE.into());
+                assert_eq!(allocated_size, MAX_NV_INDEX_SIZE as usize);
             } else {
                 panic!()
             }
@@ -2403,7 +2403,7 @@ mod tests {
             {
                 assert_eq!(nv_index, TPM_NV_INDEX_ATTESTATION_REPORT);
                 assert_eq!(input_size, report_input_larger.len());
-                assert_eq!(allocated_size, MAX_ATTESTATION_INDEX_SIZE.into());
+                assert_eq!(allocated_size, MAX_ATTESTATION_INDEX_SIZE as usize);
             }
         }
 
