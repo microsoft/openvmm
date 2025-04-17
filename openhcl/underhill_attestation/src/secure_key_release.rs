@@ -28,11 +28,11 @@ pub(crate) enum RequestVmgsEncryptionKeysError {
     GenerateTransferKey(#[source] openssl::error::ErrorStack),
     #[error("failed to get a TEE attestation report")]
     GetAttestationReport(#[source] tee_call::Error),
-    #[error("failed to create IgvmAttest WRAPPED_KEY request")]
+    #[error("failed to create an IgvmAttest WRAPPED_KEY request")]
     CreateIgvmAttestWrappedKeyRequest(#[source] igvm_attest::Error),
     #[error("failed to make an IgvmAttest WRAPPED_KEY GET request")]
     SendIgvmAttestWrappedKeyRequest(#[source] guest_emulation_transport::error::IgvmAttestError),
-    #[error("failed to parse IgvmAttest WRAPPED_KEY response")]
+    #[error("failed to parse the IgvmAttest WRAPPED_KEY response")]
     ParseIgvmAttestWrappedKeyResponse(#[source] igvm_attest::wrapped_key::WrappedKeyError),
     #[error(
         "failed to get a valid IgvmAttest WRAPPED_KEY response that is required because agent data from VMGS is empty"
@@ -40,18 +40,18 @@ pub(crate) enum RequestVmgsEncryptionKeysError {
     RequiredButInvalidIgvmAttestWrappedKeyResponse,
     #[error("wrapped key from WRAPPED_KEY response is empty")]
     EmptyWrappedKey,
-    #[error("key reference size {key_reference_size} from WRAPPED_KEY response was larger than expected {expected_size}")]
+    #[error("key reference size {key_reference_size} from the WRAPPED_KEY response was larger than expected {expected_size}")]
     InvalidKeyReferenceSize {
         key_reference_size: usize,
         expected_size: usize,
     },
     #[error("key reference from WRAPPED_KEY response is empty")]
     EmptyKeyReference,
-    #[error("failed to create IgvmAttest KEY_RELEASE request")]
+    #[error("failed to create an IgvmAttest KEY_RELEASE request")]
     CreateIgvmAttestKeyReleaseRequest(#[source] igvm_attest::Error),
     #[error("failed to make an IgvmAttest KEY_RELEASE GET request")]
     SendIgvmAttestKeyReleaseRequest(#[source] guest_emulation_transport::error::IgvmAttestError),
-    #[error("failed to parse IgvmAttest KEY_RELEASE response")]
+    #[error("failed to parse the IgvmAttest KEY_RELEASE response")]
     ParseIgvmAttestKeyReleaseResponse(#[source] igvm_attest::key_release::KeyReleaseError),
     #[error("PKCS11 RSA AES key unwrap failed")]
     Pkcs11RsaAesKeyUnwrap(#[source] crypto::Pkcs11RsaAesKeyUnwrapError),
