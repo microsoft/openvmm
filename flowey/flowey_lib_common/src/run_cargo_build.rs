@@ -88,6 +88,7 @@ flowey_request! {
         pub features: BTreeSet<String>,
         pub output_kind: CargoCrateType,
         pub target: target_lexicon::Triple,
+        pub skip_target_install: bool,
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
         pub config: Vec<String>,
         /// Wait for specified side-effects to resolve before running cargo-run.
@@ -121,15 +122,18 @@ impl FlowNode for Node {
             features,
             output_kind,
             target,
+            skip_target_install,
             extra_env,
             config,
             pre_build_deps,
             output,
         } in requests
         {
-            ctx.req(crate::install_rust::Request::InstallTargetTriple(
-                target.clone(),
-            ));
+            if !skip_target_install {
+                ctx.req(crate::install_rust::Request::InstallTargetTriple(
+                    target.clone(),
+                ));
+            }
 
             ctx.emit_rust_step(format!("cargo build {crate_name}"), |ctx| {
                 pre_build_deps.claim(ctx);
