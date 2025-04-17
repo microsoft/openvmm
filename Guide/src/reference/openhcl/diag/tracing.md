@@ -8,34 +8,34 @@ different sorts of traces from OpenHCL.
 We suggest starting here, before exploring some of the other options presented
 on this page.
 
-## Configuring Startup OpenHCL Trace Logging
+## \[OpenVMM\] Enabling serial logging for OpenHCL
 
-OpenHCL supports a variety of trace logging options that can be configured using the `OPENVMM_LOG=` command line variable passed during OpenHCL startup.
+OpenVMM can specify command line arguments to pass to OpenHCL during startup. These are specified through the openvmm binary command line argument `-c`.
+To configure tracing verbosity for OpenHCL, the `OPENVMM_LOG` variable must be passed to OpenHCL through the `-c` argument.
 
-For more information on the available trace logging options, see examples from [OpenVMM Logging](../../openvmm/logging.md).
+To open a new terminal window with global OpenHCL debug level tracing enabled:
+```
+openvmm.exe -c "OPENVMM_LOG=debug" --com3 "term,name=VTL2 OpenHCL" [...]
+```
 
-## (Advanced) Enable Linux Kernel Tracing
+Configure log levels of only a given module name:
+```
+openvmm.exe -c "OPENVMM_LOG=mesh=trace" --com3 "term,name=VTL2 OpenHCL" [...]
+```
 
-Sometimes it can be useful to extract additional information from the kernel
-during runtime. By default the config OpenHCL uses does not support tracing;
-as such you will need to build a custom kernel with tracing support. First, see
-the [Kernel Development](../../../dev_guide/getting_started/build_ohcl_kernel.md)
-section of the docs to find the repo. To set up a tracing enabled kernel:
+Multiple modules can be specified by separating them with a comma:
+```
+openvmm.exe -c "OPENVMM_LOG=mesh=trace,nvme_driver=trace" --com3 "term,name=VTL2 OpenHCL" [...]
+```
 
-1. Find `CONFIG_FTRACE` in Microsoft/hcl-dev.config and change it from
-   `CONFIG_FTRACE is not set` to `CONFIG_FTRACE=y`.
-2. Build the kernel using the Microsoft/build-hcl-kernel.sh script.
-3. In the loader json you intend to use, change the `kernel_path` entry to point
-   to your newly built vmlinux. This can usually be found at
-   linux-dom0-hyperv/out/vmlinux.
-4. Build OpenHCL using `cargo xflowey build-igvm --custom-kernel path/to/vmlinux`.
-5. When launching your OpenHCL vm, be sure to Set-VmFirmwareParameters
-   correctly. The following is an example that enables tracing hyper-v linux
-   components such as vmbus: `tp_printk=1 trace_event=hyperv`
-   * `tp_printk=1` tells the kernel to print traces to the kernel log.
-   * `trace_events=<module>` tells the kernel which module traces to print.
+```admonish tip
+To retrieve OpenHCL log output at runtime, an output console or file must attach to the OpenHCL COM port. By default, OpenHCL outputs to `COM3`. The
+way the logs are retrieved and displayed depends on the value of `--com3` passed to the OpenVMM startup binary.
 
-## \[Hyper-V] Saving traces to the Windows event log
+For more configuration examples, see the [Running OpenHCL Guide](../../../user_guide/openhcl/run/openvmm.md).
+```
+
+## \[Hyper-V\] Saving traces to the Windows event log
 
 
 The OpenHCL traces can be saved to the Windows event log on the host. That is
@@ -60,3 +60,24 @@ To retrieve the events with Powershell, start with this one-liner and tweak it t
 ```pwsh
 Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-Hyper-V-Worker-Operational'; ProviderName='Microsoft-Windows-Hyper-V-Chipset' }
 ```
+
+## (Advanced) Enable Linux Kernel Tracing
+
+Sometimes it can be useful to extract additional information from the kernel
+during runtime. By default the config OpenHCL uses does not support tracing;
+as such you will need to build a custom kernel with tracing support. First, see
+the [Kernel Development](../../../dev_guide/getting_started/build_ohcl_kernel.md)
+section of the docs to find the repo. To set up a tracing enabled kernel:
+
+1. Find `CONFIG_FTRACE` in Microsoft/hcl-dev.config and change it from
+   `CONFIG_FTRACE is not set` to `CONFIG_FTRACE=y`.
+2. Build the kernel using the Microsoft/build-hcl-kernel.sh script.
+3. In the loader json you intend to use, change the `kernel_path` entry to point
+   to your newly built vmlinux. This can usually be found at
+   linux-dom0-hyperv/out/vmlinux.
+4. Build OpenHCL using `cargo xflowey build-igvm --custom-kernel path/to/vmlinux`.
+5. When launching your OpenHCL vm, be sure to Set-VmFirmwareParameters
+   correctly. The following is an example that enables tracing hyper-v linux
+   components such as vmbus: `tp_printk=1 trace_event=hyperv`
+   * `tp_printk=1` tells the kernel to print traces to the kernel log.
+   * `trace_events=<module>` tells the kernel which module traces to print.
