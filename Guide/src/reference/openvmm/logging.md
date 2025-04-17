@@ -25,7 +25,7 @@ environment variable can be supplied to OpenHCL as command line argument or can 
 
 ## Configuring OpenHCL Trace Logging
 
-If OpenHCL is used, it supports an a [`EnvFilter`](https://docs.rs/tracing-subscriber/0.2.17/tracing_subscriber/struct.EnvFilter.html) style trace logging options that can be configured using the `OPENVMM_LOG=` command line variable passed during OpenHCL startup. 
+If OpenHCL is used, it supports an [`EnvFilter`](https://docs.rs/tracing-subscriber/0.2.17/tracing_subscriber/struct.EnvFilter.html) style trace logging options that can be configured using the `OPENVMM_LOG=` command line variable passed during OpenHCL startup. 
 
 The `OPENVMM_LOG` variable can be used to configure logging for OpenHCL by passing the variable using the `-c` command line argument in OpenVMM. This sets the command line arguments passed to OpenHCL initialization. OpenHCL tracing can also be configured at runtime with `ohcldiag-dev`. See: [OpenHCL Diagnostics](../openhcl/diag/ohcldiag_dev.md).
 
