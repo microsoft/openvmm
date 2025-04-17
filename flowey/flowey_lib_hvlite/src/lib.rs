@@ -29,6 +29,8 @@ pub mod build_openvmm_hcl;
 pub mod build_pipette;
 pub mod build_rustdoc;
 pub mod build_sidecar;
+pub mod build_tmk_vmm;
+pub mod build_tmks;
 pub mod build_vmfirmwareigvm_dll;
 pub mod build_vmgstool;
 pub mod build_xtask;

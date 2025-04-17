@@ -71,6 +71,12 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
 
             _ if id == test_iso::FREE_BSD_13_2_X64 => get_guest_iso_path(KnownIso::FreeBsd13_2),
 
+            _ if id == tmks::TMK_VMM_NATIVE => tmk_vmm_native_executable_path(),
+            _ if id == tmks::TMK_VMM_LINUX_X64_MUSL => tmk_vmm_paravisor_path(MachineArch::X86_64),
+            _ if id == tmks::TMK_VMM_LINUX_AARCH64_MUSL => tmk_vmm_paravisor_path(MachineArch::Aarch64),
+            _ if id == tmks::SIMPLE_TMK_X64 => simple_tmk_path(MachineArch::X86_64),
+            _ if id == tmks::SIMPLE_TMK_AARCH64 => simple_tmk_path(MachineArch::Aarch64),
+
             _ => anyhow::bail!("no support for given artifact type"),
         }
     }
@@ -198,6 +204,48 @@ fn pipette_path(arch: MachineArch, os_flavor: PipetteFlavor) -> anyhow::Result<P
 /// Path to the output location of the hvlite executable.
 fn openvmm_native_executable_path() -> anyhow::Result<PathBuf> {
     get_output_executable_path("openvmm")
+}
+
+/// Path to the output location of the tmk_vmm executable.
+fn tmk_vmm_native_executable_path() -> anyhow::Result<PathBuf> {
+    get_output_executable_path("tmk_vmm")
+}
+
+fn tmk_vmm_paravisor_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    let target = match arch {
+        MachineArch::X86_64 => "x86_64-unknown-linux-musl",
+        MachineArch::Aarch64 => "aarch64-unknown-linux-musl",
+    };
+    get_path(
+        format!("target/{target}/debug"),
+        "tmk_vmm",
+        MissingCommand::Build {
+            package: "tmk_vmm",
+            target: Some(target),
+        },
+    )
+}
+
+/// Path to the output location of the simple_tmk executable.
+fn simple_tmk_path(arch: MachineArch) -> anyhow::Result<PathBuf> {
+    let arch_str = match arch {
+        MachineArch::X86_64 => "x86_64",
+        MachineArch::Aarch64 => "aarch64",
+    };
+    let target = match arch {
+        MachineArch::X86_64 => "x86_64-unknown-none",
+        MachineArch::Aarch64 => "aarch64-minimal_rt-none",
+    };
+    get_path(
+        format!("target/{target}/debug"),
+        "simple_tmk",
+        MissingCommand::Custom {
+            description: "simple_tmk",
+            cmd: &format!(
+                "RUSTC_BOOTSTRAP=1 cargo build -p simple_tmk --config openhcl/minimal_rt/{arch_str}-config.toml"
+            ),
+        },
+    )
 }
 
 /// Path to our packaged linux direct test kernel.

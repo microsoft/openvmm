@@ -320,7 +320,7 @@ impl FlowNode for Node {
             profile,
             features,
             crate_type,
-            target,
+            mut target,
             no_split_dbg_info,
             extra_env,
             pre_build_deps: user_pre_build_deps,
@@ -372,6 +372,17 @@ impl FlowNode for Node {
                 injected_env
             };
 
+            let mut config = Vec::new();
+            if target.vendor.as_str() == "minimal_rt" {
+                config.push(format!(
+                    "openhcl/minimal_rt/{arch}-config.toml",
+                    arch = target.architecture.into_str()
+                ));
+                if target.architecture == target_lexicon::Architecture::X86_64 {
+                    target.vendor = target_lexicon::Vendor::Unknown;
+                }
+            }
+
             let base_output = ctx.reqv(|v| flowey_lib_common::run_cargo_build::Request {
                 in_folder: openvmm_repo_path.clone(),
                 crate_name,
@@ -390,6 +401,7 @@ impl FlowNode for Node {
                 output_kind: crate_type,
                 target: target.clone(),
                 extra_env: Some(extra_env),
+                config,
                 pre_build_deps,
                 output: v,
             });

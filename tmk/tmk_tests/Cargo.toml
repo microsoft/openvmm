@@ -1,0 +1,20 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "tmk_tests"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+petri.workspace = true
+petri_artifact_resolver_openvmm_known_paths.workspace = true
+petri_artifacts_common.workspace = true
+petri_artifacts_vmm_test.workspace = true
+
+pal_async.workspace = true
+
+anyhow.workspace = true
+
+[lints]
+workspace = true

@@ -89,6 +89,7 @@ flowey_request! {
         pub output_kind: CargoCrateType,
         pub target: target_lexicon::Triple,
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
+        pub config: Vec<String>,
         /// Wait for specified side-effects to resolve before running cargo-run.
         ///
         /// (e.g: to allow for some ambient packages / dependencies to get
@@ -121,6 +122,7 @@ impl FlowNode for Node {
             output_kind,
             target,
             extra_env,
+            config,
             pre_build_deps,
             output,
         } in requests
@@ -192,6 +194,7 @@ impl FlowNode for Node {
                             v.push(target.to_string());
                             v.push("--profile".into());
                             v.push(cargo_profile.into());
+                            v.extend(config.iter().flat_map(|x| ["--config", x]).map(Into::into));
                             match output_kind {
                                 CargoCrateType::Bin => {
                                     v.push("--bin".into());

@@ -168,7 +168,7 @@ impl SimpleFlowNode for Node {
         });
 
         let register_pipette_linux_musl = ctx.reqv(|v| crate::build_pipette::Request {
-            target: targets.linux,
+            target: targets.linux.clone(),
             profile,
             pipette: v,
         });
@@ -177,6 +177,24 @@ impl SimpleFlowNode for Node {
             arch,
             profile,
             guest_test_uefi: v,
+        });
+
+        let register_tmks = ctx.reqv(|v| crate::build_tmks::Request {
+            arch,
+            profile,
+            tmks: v,
+        });
+
+        let register_tmk_vmm = ctx.reqv(|v| crate::build_tmk_vmm::Request {
+            profile,
+            target: targets.linux.clone(),
+            tmk_vmm: v,
+        });
+
+        let register_tmk_vmm_linux_musl = ctx.reqv(|v| crate::build_tmk_vmm::Request {
+            profile,
+            target: targets.linux,
+            tmk_vmm: v,
         });
 
         ctx.requests::<crate::download_openvmm_vmm_tests_vhds::Node>([
@@ -200,6 +218,9 @@ impl SimpleFlowNode for Node {
             register_pipette_windows: Some(register_pipette_windows),
             register_pipette_linux_musl: Some(register_pipette_linux_musl),
             register_guest_test_uefi: Some(register_guest_test_uefi),
+            register_tmks: Some(register_tmks),
+            register_tmk_vmm: Some(register_tmk_vmm),
+            register_tmk_vmm_linux_musl: Some(register_tmk_vmm_linux_musl),
             disk_images_dir: Some(disk_images_dir),
             register_openhcl_igvm_files: Some(register_openhcl_igvm_files),
             get_test_log_path: Some(get_test_log_path),

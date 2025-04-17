@@ -7,6 +7,8 @@ use crate::build_guest_test_uefi::GuestTestUefiOutput;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
 use crate::build_openvmm::OpenvmmOutput;
 use crate::build_pipette::PipetteOutput;
+use crate::build_tmk_vmm::TmkVmmOutput;
+use crate::build_tmks::TmksOutput;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -20,6 +22,9 @@ pub struct VmmTestsDepArtifacts {
     pub pipette_linux_musl: Option<ReadVar<PipetteOutput>>,
     pub guest_test_uefi: Option<ReadVar<GuestTestUefiOutput>>,
     pub artifact_dir_openhcl_igvm_files: Option<ReadVar<PathBuf>>,
+    pub tmks: Option<ReadVar<TmksOutput>>,
+    pub tmk_vmm: Option<ReadVar<TmkVmmOutput>>,
+    pub tmk_vmm_linux_musl: Option<ReadVar<TmkVmmOutput>>,
 }
 
 flowey_request! {
@@ -91,6 +96,9 @@ impl SimpleFlowNode for Node {
             pipette_linux_musl: register_pipette_linux_musl,
             guest_test_uefi: register_guest_test_uefi,
             artifact_dir_openhcl_igvm_files,
+            tmks: register_tmks,
+            tmk_vmm: register_tmk_vmm,
+            tmk_vmm_linux_musl: register_tmk_vmm_linux_musl,
         } = dep_artifact_dirs;
 
         let register_openhcl_igvm_files = artifact_dir_openhcl_igvm_files.map(|artifact_dir| {
@@ -138,6 +146,9 @@ impl SimpleFlowNode for Node {
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,
+            register_tmks,
+            register_tmk_vmm,
+            register_tmk_vmm_linux_musl,
             disk_images_dir: Some(disk_images_dir),
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),

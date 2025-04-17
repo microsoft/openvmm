@@ -168,8 +168,8 @@ impl PetriVmConfigOpenVmm {
             let (vtl2_vsock_listener, vtl2_vsock_path) = make_vsock_listener()?;
             (
                 Some(Vtl2Config {
-                    vtl0_alias_map: false, // TODO: enable when OpenVMM supports it for DMA
-                    late_map_vtl0_memory: Some(LateMapVtl0MemoryPolicy::InjectException),
+                    vtl0_alias_map: false,      // TODO: enable when OpenVMM supports it for DMA
+                    late_map_vtl0_memory: None, //Some(LateMapVtl0MemoryPolicy::InjectException),
                 }),
                 Some(VmbusConfig {
                     vsock_listener: Some(vtl2_vsock_listener),

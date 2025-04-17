@@ -6851,6 +6851,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tmk_tests"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "pal_async",
+ "petri",
+ "petri_artifact_resolver_openvmm_known_paths",
+ "petri_artifacts_common",
+ "petri_artifacts_vmm_test",
+]
+
+[[package]]
 name = "tmk_vmm"
 version = "0.0.0"
 dependencies = [
@@ -8795,6 +8807,7 @@ dependencies = [
  "scsidisk_resources",
  "storvsp_resources",
  "tempfile",
+ "tmk_tests",
  "tracing",
  "unix_socket",
  "vm_resource",

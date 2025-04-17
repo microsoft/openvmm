@@ -299,4 +299,20 @@ impl PetriVmConfigOpenVmm {
         f(&mut self.config);
         self
     }
+
+    /// Adds a file to the agent image.
+    pub fn with_agent_file(mut self, name: &str, artifact: ResolvedArtifact) -> Self {
+        self.resources.agent_image.add_file(name, artifact);
+        self
+    }
+
+    /// Adds a file to the OpenHCL agent image.
+    pub fn with_openhcl_agent_file(mut self, name: &str, artifact: ResolvedArtifact) -> Self {
+        self.resources
+            .openhcl_agent_image
+            .as_mut()
+            .unwrap()
+            .add_file(name, artifact);
+        self
+    }
 }
