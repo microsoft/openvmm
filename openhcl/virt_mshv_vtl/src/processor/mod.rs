@@ -298,6 +298,7 @@ enum InterceptMessageType {
 
 /// Per-arch state required to generate an intercept message.
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+#[derive(Debug)]
 struct InterceptMessageState {
     instruction_length_and_cr8: u8,
     cpl: u8,

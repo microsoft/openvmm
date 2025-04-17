@@ -31,6 +31,8 @@ open_enum! {
         MSR_WRITE = 0x20,
         BAD_GUEST_STATE = 0x21,
         TPR_BELOW_THRESHOLD = 0x2B,
+        GDTR_OR_IDTR = 0x2E,
+        LDTR_OR_TR = 0x2F,
         EPT_VIOLATION = 0x30,
         WBINVD_INSTRUCTION = 0x36,
         XSETBV = 0x37,
@@ -288,6 +290,120 @@ pub struct InterruptionInformation {
     #[bits(19)]
     pub reserved: u32,
     pub valid: bool,
+}
+
+#[bitfield(u32)]
+pub struct GdtrOrIdtrInstructionInfo {
+    #[bits(2)]
+    pub scaling: u8,
+    #[bits(5)]
+    _reserved1: u8,
+    #[bits(3)]
+    pub address_size: u8,
+    _reserved2: bool,
+    pub operand_size: bool,
+    #[bits(3)]
+    _reserved3: u8,
+    #[bits(3)]
+    pub segment_register: u8,
+    #[bits(4)]
+    pub index_register: u8,
+    pub index_register_valid: bool,
+    #[bits(4)]
+    pub base_register: u8,
+    pub base_register_valid: bool,
+    #[bits(2)]
+    pub instruction: GdtrOrIdtrInstruction,
+    #[bits(2)]
+    _reserved4: u8,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum GdtrOrIdtrInstruction {
+    Sgdt = 0,
+    Sidt = 1,
+    Lgdt = 2,
+    Lidt = 3,
+}
+
+impl GdtrOrIdtrInstruction {
+    pub const fn from_bits(value: u8) -> Self {
+        match value {
+            0 => GdtrOrIdtrInstruction::Sgdt,
+            1 => GdtrOrIdtrInstruction::Sidt,
+            2 => GdtrOrIdtrInstruction::Lgdt,
+            3 => GdtrOrIdtrInstruction::Lidt,
+            _ => unreachable!(),
+        }
+    }
+
+    pub const fn into_bits(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn is_write(self) -> bool {
+        match self {
+            GdtrOrIdtrInstruction::Lgdt | GdtrOrIdtrInstruction::Lidt => true,
+            GdtrOrIdtrInstruction::Sgdt | GdtrOrIdtrInstruction::Sidt => false,
+        }
+    }
+}
+
+#[bitfield(u32)]
+pub struct LdtrOrTrInstructionInfo {
+    #[bits(2)]
+    pub scaling: u8,
+    _reserved1: bool,
+    #[bits(4)]
+    pub register_1: u8,
+    #[bits(3)]
+    pub address_size: u8,
+    pub memory_or_register: bool,
+    #[bits(4)]
+    _reserved2: u8,
+    #[bits(3)]
+    pub segment_register: u8,
+    #[bits(4)]
+    pub index_register: u8,
+    pub index_register_valid: bool,
+    #[bits(4)]
+    pub base_register: u8,
+    pub base_register_valid: bool,
+    #[bits(2)]
+    pub instruction: LdtrOrTrInstruction,
+    #[bits(2)]
+    _reserved4: u8,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum LdtrOrTrInstruction {
+    Sldt = 0,
+    Str = 1,
+    Lldt = 2,
+    Ltr = 3,
+}
+
+impl LdtrOrTrInstruction {
+    pub const fn from_bits(value: u8) -> Self {
+        match value {
+            0 => LdtrOrTrInstruction::Sldt,
+            1 => LdtrOrTrInstruction::Str,
+            2 => LdtrOrTrInstruction::Lldt,
+            3 => LdtrOrTrInstruction::Ltr,
+            _ => unreachable!(),
+        }
+    }
+
+    pub const fn into_bits(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn is_write(self) -> bool {
+        match self {
+            LdtrOrTrInstruction::Lldt | LdtrOrTrInstruction::Ltr => true,
+            LdtrOrTrInstruction::Sldt | LdtrOrTrInstruction::Str => false,
+        }
+    }
 }
 
 pub const INTERRUPT_TYPE_EXTERNAL: u8 = 0;

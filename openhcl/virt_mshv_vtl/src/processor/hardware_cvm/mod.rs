@@ -1751,6 +1751,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         // Check for VTL preemption - which ignores RFLAGS.IF
         if cvm_state.exit_vtl == GuestVtl::Vtl0 && is_interrupt_pending(self, GuestVtl::Vtl1, false)
         {
+            tracing::trace!("VTL 0 preempted by VTL 1 interrupt");
             self.raise_vtl(GuestVtl::Vtl0, GuestVtl::Vtl1, HvVtlEntryReason::INTERRUPT);
         }
 
@@ -1764,6 +1765,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             let vina = hv.synic.vina();
 
             if vina.enabled() && !hv.vina_asserted() {
+                tracing::trace!("VINA set for VTL 1");
                 hv.set_vina_asserted(true);
                 self.partition
                     .synic_interrupt(self.vp_index(), GuestVtl::Vtl1)

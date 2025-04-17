@@ -101,6 +101,8 @@ use x86defs::vmx::CR_ACCESS_TYPE_LMSW;
 use x86defs::vmx::CR_ACCESS_TYPE_MOV_TO_CR;
 use x86defs::vmx::CrAccessQualification;
 use x86defs::vmx::ExitQualificationIo;
+use x86defs::vmx::GdtrOrIdtrInstruction;
+use x86defs::vmx::GdtrOrIdtrInstructionInfo;
 use x86defs::vmx::INTERRUPT_TYPE_EXTERNAL;
 use x86defs::vmx::INTERRUPT_TYPE_HARDWARE_EXCEPTION;
 use x86defs::vmx::INTERRUPT_TYPE_NMI;
@@ -109,6 +111,8 @@ use x86defs::vmx::IO_SIZE_16_BIT;
 use x86defs::vmx::IO_SIZE_32_BIT;
 use x86defs::vmx::Interruptibility;
 use x86defs::vmx::InterruptionInformation;
+use x86defs::vmx::LdtrOrTrInstruction;
+use x86defs::vmx::LdtrOrTrInstructionInfo;
 use x86defs::vmx::ProcessorControls;
 use x86defs::vmx::SecondaryProcessorControls;
 use x86defs::vmx::VMX_ENTRY_CONTROL_LONG_MODE_GUEST;
@@ -415,11 +419,11 @@ struct TdxVtl {
     cr4: VirtualRegister,
 
     tpr_threshold: u8,
-    #[inspect(debug)]
+    #[inspect(skip)]
     processor_controls: ProcessorControls,
-    #[inspect(debug)]
+    #[inspect(skip)]
     secondary_processor_controls: SecondaryProcessorControls,
-    #[inspect(debug)]
+    #[inspect(skip)]
     interruption_information: InterruptionInformation,
     exception_error_code: u32,
     interruption_set: bool,
@@ -470,6 +474,7 @@ struct ExitStats {
     pause: Counter,
     needs_interrupt_reinject: Counter,
     exception: Counter,
+    descriptor_table: Counter,
 }
 
 enum UhDirectOverlay {
@@ -576,7 +581,7 @@ impl HardwareIsolatedBacking for TdxBacked {
         let backing_vtl = &this.backing.vtls[vtl];
         let shared_gps = this.runner.tdx_enter_guest_gps();
 
-        super::InterceptMessageState {
+        let r = super::InterceptMessageState {
             instruction_length_and_cr8: exit.instr_info().length() as u8,
             cpl: exit.cpl(),
             efer_lma: backing_vtl.efer & X64_EFER_LMA != 0,
@@ -585,13 +590,19 @@ impl HardwareIsolatedBacking for TdxBacked {
             rflags: backing_vtl.private_regs.rflags,
             rax: shared_gps[TdxGp::RAX],
             rdx: shared_gps[TdxGp::RDX],
-        }
+        };
+        tracing::warn!(?r, "intercept message state");
+        r
     }
 
     fn cr_intercept_registration(
         this: &mut UhProcessor<'_, Self>,
         intercept_control: hvdef::HvRegisterCrInterceptControl,
     ) {
+        // Today we only support intercepting VTL 0 on behalf of VTL 1.
+        let vtl = GuestVtl::Vtl0;
+
+        // Update CR0 and CR4 intercept masks in the VMCS.
         let intercept_masks = &this
             .backing
             .cvm_state()
@@ -600,7 +611,7 @@ impl HardwareIsolatedBacking for TdxBacked {
             .unwrap()
             .reg_intercept;
         this.runner.write_vmcs64(
-            GuestVtl::Vtl0,
+            vtl,
             VmcsField::VMX_VMCS_CR0_GUEST_HOST_MASK,
             !0,
             this.shared.cr_guest_host_mask(ShadowedRegister::Cr0)
@@ -611,7 +622,7 @@ impl HardwareIsolatedBacking for TdxBacked {
                 },
         );
         this.runner.write_vmcs64(
-            GuestVtl::Vtl0,
+            vtl,
             VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK,
             !0,
             this.shared.cr_guest_host_mask(ShadowedRegister::Cr4)
@@ -621,7 +632,24 @@ impl HardwareIsolatedBacking for TdxBacked {
                     0
                 },
         );
-        // TODO TDX GUEST VSM register for descriptor table exits, msr bitmap exits
+
+        // Update descriptor table intercepts.
+        let intercept_tables = intercept_control.gdtr_write()
+            | intercept_control.idtr_write()
+            | intercept_control.ldtr_write()
+            | intercept_control.tr_write();
+        this.runner.write_vmcs32(
+            vtl,
+            VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS,
+            SecondaryProcessorControls::new()
+                .with_descriptor_table_exiting(true)
+                .into_bits(),
+            SecondaryProcessorControls::new()
+                .with_descriptor_table_exiting(intercept_tables)
+                .into_bits(),
+        );
+
+        // TODO Update MSR bitmaps
     }
 }
 
@@ -1115,7 +1143,7 @@ impl UhProcessor<'_, TdxBacked> {
         }
 
         if self.backing.vtls[vtl].processor_controls != new_processor_controls {
-            tracing::debug!(?new_processor_controls, "requesting window change");
+            tracing::debug!(?new_processor_controls, ?vtl, "requesting window change");
             self.runner.write_vmcs32(
                 vtl,
                 VmcsField::VMX_VMCS_PROCESSOR_CONTROLS,
@@ -1781,10 +1809,10 @@ impl UhProcessor<'_, TdxBacked> {
                     (gps[TdxGp::RAX] as u32 as u64) | ((gps[TdxGp::RDX] as u32 as u64) << 32);
 
                 if self.cvm_protect_msr_write(intercepted_vtl, msr) {
-                    // An intercept message has been posted, no further processing is
-                    // required. Return without advancing instruction pointer, it must
-                    // continue to point to the instruction that generated the
-                    // intercept.
+                    // Once the intercept message has been posted, no further
+                    // processing is required. Do not advance the instruction
+                    // pointer here, since the instruction pointer must continue to
+                    // point to the instruction that generated the intercept.
                 } else {
                     let result = self.backing.cvm.lapics[intercepted_vtl]
                         .lapic
@@ -2070,6 +2098,56 @@ impl UhProcessor<'_, TdxBacked> {
                 return Err(VpHaltReason::TripleFault {
                     vtl: intercepted_vtl.into(),
                 });
+            }
+            VmxExitBasic::GDTR_OR_IDTR => {
+                let info = GdtrOrIdtrInstructionInfo::from(exit_info.instr_info().info());
+                tracing::trace!("Intercepted GDT or IDT instruction: {:?}", info);
+                let reg = match info.instruction() {
+                    GdtrOrIdtrInstruction::Sidt | GdtrOrIdtrInstruction::Lidt => {
+                        HvX64RegisterName::Idtr
+                    }
+                    GdtrOrIdtrInstruction::Sgdt | GdtrOrIdtrInstruction::Lgdt => {
+                        HvX64RegisterName::Gdtr
+                    }
+                };
+                // We only support intercepting descriptor table writes today.
+                if info.instruction().is_write()
+                    && self.cvm_protect_secure_register_write(intercepted_vtl, reg, 0)
+                {
+                    // Once the intercept message has been posted, no further
+                    // processing is required. Do not advance the instruction
+                    // pointer here, since the instruction pointer must continue to
+                    // point to the instruction that generated the intercept.
+                } else {
+                    todo!();
+                }
+                &mut self.backing.vtls[intercepted_vtl]
+                    .exit_stats
+                    .descriptor_table
+            }
+            VmxExitBasic::LDTR_OR_TR => {
+                let info = LdtrOrTrInstructionInfo::from(exit_info.instr_info().info());
+                tracing::trace!("Intercepted LDT or TR instruction: {:?}", info);
+                let reg = match info.instruction() {
+                    LdtrOrTrInstruction::Sldt | LdtrOrTrInstruction::Lldt => {
+                        HvX64RegisterName::Ldtr
+                    }
+                    LdtrOrTrInstruction::Str | LdtrOrTrInstruction::Ltr => HvX64RegisterName::Tr,
+                };
+                // We only support intercepting descriptor table writes today.
+                if info.instruction().is_write()
+                    && self.cvm_protect_secure_register_write(intercepted_vtl, reg, 0)
+                {
+                    // Once the intercept message has been posted, no further
+                    // processing is required. Do not advance the instruction
+                    // pointer here, since the instruction pointer must continue to
+                    // point to the instruction that generated the intercept.
+                } else {
+                    todo!()
+                }
+                &mut self.backing.vtls[intercepted_vtl]
+                    .exit_stats
+                    .descriptor_table
             }
             _ => {
                 return Err(VpHaltReason::Hypervisor(UhRunVpError::UnknownVmxExit(
