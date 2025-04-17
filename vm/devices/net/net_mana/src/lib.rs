@@ -44,6 +44,7 @@ use net_backend::RssConfig;
 use net_backend::RxChecksumState;
 use net_backend::RxId;
 use net_backend::RxMetadata;
+use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
@@ -722,15 +723,21 @@ impl<T: DeviceBacking> ManaQueue<T> {
         }
     }
 
-    fn trace_tx_wqe(&mut self, tx_oob: ManaTxCompOob) {
+    fn trace_tx_wqe(&mut self, tx_oob: ManaTxCompOob, done_length: usize) {
         tracelimit::error_ratelimited!(
             cqe_hdr_type = tx_oob.cqe_hdr.cqe_type(),
             cqe_hdr_vendor_err = tx_oob.cqe_hdr.vendor_err(),
             tx_oob_data_offset = tx_oob.tx_data_offset,
             tx_oob_sgl_offset = tx_oob.offsets.tx_sgl_offset(),
             tx_oob_wqe_offset = tx_oob.offsets.tx_wqe_offset(),
+            done_length,
+            posted_tx_len = self.posted_tx.len(),
             "tx completion error"
         );
+
+        // TODO: Use tx_wqe_offset to read the Wqe.
+        // Use Wqe.ClientOob to read the ManaTxOob.s_oob.
+        // Log properties of s_oob like checksum, etc.
 
         if let Some(packet) = self.posted_tx.front() {
             tracelimit::error_ratelimited!(
@@ -924,7 +931,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
         Ok((false, i))
     }
 
-    fn tx_poll(&mut self, done: &mut [TxId]) -> anyhow::Result<usize> {
+    fn tx_poll(&mut self, done: &mut [TxId]) -> Result<usize, TxError> {
         let mut i = 0;
         let mut queue_stuck = false;
         while i < done.len() {
@@ -938,8 +945,7 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                         queue_stuck = true;
                     }
                     ty => {
-                        let vendor_err = tx_oob.cqe_hdr.vendor_err();
-                        tracelimit::error_ratelimited!(ty, vendor_err, "tx completion error");
+                        tracelimit::error_ratelimited!(ty, "tx completion error");
                         self.stats.tx_errors += 1;
                     }
                 }
@@ -948,10 +954,9 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                     // CQE_TX_GDMA_ERR is how the Hardware indicates that it has disabled the queue.
                     self.stats.tx_errors += 1;
                     self.stats.tx_stuck += 1;
-                    self.trace_tx_wqe(tx_oob);
-                    // TODO: attempt to recover by reenabling the queue.
-                    // tracelimit::info_ratelimited!("recreated tx queue");
-                    break;
+                    self.trace_tx_wqe(tx_oob, done.len());
+                    // Return a TryRestart error to indicate that the queue needs to be restarted.
+                    return Err(TxError::TryRestart(anyhow::anyhow!("GDMA error")));
                 }
                 let packet = self.posted_tx.pop_front().unwrap();
                 self.tx_wq.advance_head(packet.wqe_len);

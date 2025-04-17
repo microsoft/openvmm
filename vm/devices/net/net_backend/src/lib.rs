@@ -24,6 +24,7 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use null::NullEndpoint;
 use pal_async::driver::Driver;
+use std::fmt;
 use std::future::pending;
 use std::sync::Arc;
 use std::task::Context;
@@ -135,6 +136,30 @@ pub struct RssConfig<'a> {
     pub flags: u32, // TODO
 }
 
+#[derive(Debug)]
+pub enum TxError {
+    TryRestart(anyhow::Error),
+    Fatal(anyhow::Error),
+}
+
+impl fmt::Display for TxError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TxError::TryRestart(err) => write!(f, "Try restart: {}", err),
+            TxError::Fatal(err) => write!(f, "Fatal error: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for TxError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            TxError::TryRestart(err) => Some(err.as_ref()),
+            TxError::Fatal(err) => Some(err.as_ref()),
+        }
+    }
+}
+
 /// A trait for sending and receiving network packets.
 #[async_trait]
 pub trait Queue: Send + InspectMut {
@@ -158,7 +183,7 @@ pub trait Queue: Send + InspectMut {
     fn tx_avail(&mut self, segments: &[TxSegment]) -> anyhow::Result<(bool, usize)>;
 
     /// Polls the device for transmit completions.
-    fn tx_poll(&mut self, done: &mut [TxId]) -> anyhow::Result<usize>;
+    fn tx_poll(&mut self, done: &mut [TxId]) -> Result<usize, TxError>;
 
     /// Get the buffer access.
     fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess>;
