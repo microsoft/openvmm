@@ -94,11 +94,6 @@ pub enum TpmHelperError {
     ExportRsaPublicFromPrimaryObject(#[source] TpmHelperUtilityError),
     #[error("nv index {0:#x} without owner read flag")]
     NoOwnerReadFlag(u32),
-<<<<<<< HEAD
-    #[error("nv index {0:#x} with invalid write permission")]
-    InvalidWritePermission(u32),
-    #[error("input size {input_size} to nv write exceeds the allocated size {allocated_size} of nv index {nv_index:#x}")]
-=======
     #[error(
         "nv index {nv_index:#x} without auth write ({auth_write}) or platform created ({platform_created}) flag"
     )]
@@ -110,7 +105,6 @@ pub enum TpmHelperError {
     #[error(
         "input size {input_size} to nv write exceeds the allocated size {allocated_size} of nv index {nv_index:#x}"
     )]
->>>>>>> 4206685041 (tpm: Preserve AK cert across boots for resiliency (#1120))
     NvWriteInputTooLarge {
         nv_index: u32,
         input_size: usize,
