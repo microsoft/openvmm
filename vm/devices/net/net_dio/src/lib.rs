@@ -191,7 +191,7 @@ impl Queue for DioQueue {
         Ok((true, n))
     }
 
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> anyhow::Result<usize> {
+    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
         Ok(0)
     }
 
