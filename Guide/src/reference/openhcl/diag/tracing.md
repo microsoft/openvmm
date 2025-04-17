@@ -8,6 +8,12 @@ different sorts of traces from OpenHCL.
 We suggest starting here, before exploring some of the other options presented
 on this page.
 
+## Configuring Startup OpenHCL Trace Logging
+
+OpenHCL supports a variety of trace logging options that can be configured using the `OPENVMM_LOG=` command line variable passed during OpenHCL startup.
+
+For more information on the available trace logging options, see examples from [OpenVMM Logging](../../openvmm/logging.md).
+
 ## (Advanced) Enable Linux Kernel Tracing
 
 Sometimes it can be useful to extract additional information from the kernel
