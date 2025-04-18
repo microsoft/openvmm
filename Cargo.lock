@@ -1851,6 +1851,7 @@ dependencies = [
  "rlimit",
  "rustc-hash",
  "serde",
+ "serde_json",
  "target-lexicon",
  "toml_edit",
  "which 7.0.2",
