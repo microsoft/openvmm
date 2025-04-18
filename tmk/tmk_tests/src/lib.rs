@@ -86,6 +86,7 @@ fn openvmm_openhcl_tmks(
             .with_openhcl_agent_file("tmk_vmm", tmk_vmm)
             .with_openhcl_agent_file("simple_tmk", tmk)
             .with_processors(1)
+            .with_allow_early_vtl0_access(true) // TODO: remove once the TMK VMM initializes memory properly.
             .run_without_agent()
             .await?;
 

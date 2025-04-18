@@ -315,4 +315,19 @@ impl PetriVmConfigOpenVmm {
             .add_file(name, artifact);
         self
     }
+
+    /// Specifies whether VTL2 should be allowed to access VTL0 memory before it
+    /// sets any VTL protections.
+    ///
+    /// This is needed just for the TMK VMM, and only until it gains support for
+    /// setting VTL protections.
+    pub fn with_allow_early_vtl0_access(mut self, allow: bool) -> Self {
+        self.config
+            .hypervisor
+            .with_vtl2
+            .as_mut()
+            .unwrap()
+            .late_map_vtl0_memory =
+            (!allow).then_some(hvlite_defs::config::LateMapVtl0MemoryPolicy::InjectException);
+    }
 }
