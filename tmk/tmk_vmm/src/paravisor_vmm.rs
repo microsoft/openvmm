@@ -62,6 +62,7 @@ impl RunContext<'_> {
                 crash_notification_send: mesh::channel().0,
                 vmtime: self.vmtime_source,
                 cvm_params: None,
+                vmbus_relay: false,
             })
             .await?;
 
