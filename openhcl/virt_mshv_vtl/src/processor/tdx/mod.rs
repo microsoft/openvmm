@@ -559,8 +559,26 @@ impl HardwareIsolatedBacking for TdxBacked {
         this.backing.vtls[vtl].exception_error_code = event.error_code();
     }
 
-    fn cr4_for_cpuid(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
+    fn cr0(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
+        this.backing.vtls[vtl].cr0.read(&this.runner)
+    }
+
+    fn cr4(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
         this.backing.vtls[vtl].cr4.read(&this.runner)
+    }
+
+    fn intercept_message_state(
+        _this: &UhProcessor<'_, Self>,
+        _vtl: GuestVtl,
+    ) -> super::InterceptMessageState {
+        todo!()
+    }
+
+    fn cr_intercept_registration(
+        _this: &mut UhProcessor<'_, Self>,
+        _intercept_control: hvdef::HvRegisterCrInterceptControl,
+    ) {
+        todo!()
     }
 }
 

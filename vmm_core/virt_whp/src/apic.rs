@@ -741,7 +741,7 @@ pub(crate) struct ApicState {
 impl ApicState {
     pub fn new(table: &LocalApicSet, vp_info: &vm_topology::processor::x86::X86VpInfo) -> Self {
         Self {
-            apic: table.add_apic(vp_info),
+            apic: table.add_apic(vp_info, false),
             startup_suspend: !vp_info.base.is_bsp(),
             nmi_pending: false,
         }
