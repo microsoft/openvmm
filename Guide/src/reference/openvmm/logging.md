@@ -28,6 +28,8 @@ The environment variable configuration and style of `OPENVMM_LOG` for OpenHCL is
 
 OpenHCL tracing can also be configured and dumped at runtime with `ohcldiag-dev`. See: [OpenHCL Diagnostics](../openhcl/diag/ohcldiag_dev.md)
 
+To retrieve OpenHCL log output at runtime, an output console or file must attach to the OpenHCL logging COM port. By default, OpenHCL outputs to `COM3`.
+
 To open a new terminal window with global OpenHCL debug level tracing enabled:
 ```
 openvmm.exe -c "OPENVMM_LOG=debug" --com3 "term,name=VTL2 OpenHCL" [...]
@@ -44,9 +46,7 @@ openvmm.exe -c "OPENVMM_LOG=mesh=trace,nvme_driver=trace" --com3 "term,name=VTL2
 ```
 
 ```admonish tip
-To retrieve OpenHCL log output at runtime, an output console or file must attach to the OpenHCL logging COM port. By default, OpenHCL outputs to `COM3`.
-
-For more configuration examples of serial ports, see the [Running OpenHCL Guide](../../../user_guide/openhcl/run/openvmm.md) and CLI `--help` output.
+For more configuration examples of serial ports and the OpenVMM CLI, see the [Running OpenHCL Guide](../../../user_guide/openhcl/run/openvmm.md) and CLI `--help` output.
 ```
 
 ## Capturing the ETW traces on the host
