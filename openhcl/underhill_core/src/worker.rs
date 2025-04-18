@@ -1748,6 +1748,7 @@ async fn new_underhill_vm(
         crash_notification_send,
         vmtime: &vmtime_source,
         cvm_params,
+        vmbus_relay: with_vmbus_relay,
     };
 
     let (partition, vps) = proto_partition
