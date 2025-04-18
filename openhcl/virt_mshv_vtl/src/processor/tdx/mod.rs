@@ -620,23 +620,7 @@ impl HardwareIsolatedBacking for TdxBacked {
                 },
         );
 
-        // Update descriptor table intercepts.
-        let intercept_tables = intercept_control.gdtr_write()
-            | intercept_control.idtr_write()
-            | intercept_control.ldtr_write()
-            | intercept_control.tr_write();
-        this.runner.write_vmcs32(
-            vtl,
-            VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS,
-            SecondaryProcessorControls::new()
-                .with_descriptor_table_exiting(true)
-                .into_bits(),
-            SecondaryProcessorControls::new()
-                .with_descriptor_table_exiting(intercept_tables)
-                .into_bits(),
-        );
-
-        // TODO Update MSR bitmaps
+        // TODO Update descriptor table intercepts and MSR bitmaps
     }
 }
 
