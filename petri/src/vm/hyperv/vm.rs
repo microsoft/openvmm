@@ -92,14 +92,12 @@ impl HyperVVM {
 
         tracing::info!(name, vmid = vmid.to_string(), "Created Hyper-V VM");
 
-<<<<<<< HEAD
         // Remove the default network adapter
         powershell::run_remove_vm_network_adapter(&vmid)?;
-=======
+
         // Set the default behavior to disable the UEFI frontpage, via OpenHCL
         // cmdline
         powershell::run_set_vm_command_line(&vmid, &ps_mod, "OPENHCL_DISABLE_UEFI_FRONTPAGE=1")?;
->>>>>>> 0836936b (petri/hyperv: disable uefi frontpage by default)
 
         Ok(Self {
             name,
