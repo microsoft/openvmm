@@ -121,14 +121,13 @@ impl FlowNode for Node {
             features,
             output_kind,
             target,
-            skip_target_install,
             extra_env,
             config,
             pre_build_deps,
             output,
         } in requests
         {
-            if !skip_target_install {
+            if let Some(target) = &target {
                 ctx.req(crate::install_rust::Request::InstallTargetTriple(
                     target.clone(),
                 ));
@@ -193,8 +192,10 @@ impl FlowNode for Node {
                                 v.push("--features".into());
                                 v.push(features);
                             }
+                            if let Some(target) = &target {
                             v.push("--target".into());
                             v.push(target.to_string());
+                            }
                             v.push("--profile".into());
                             v.push(cargo_profile.into());
                             v.extend(config.iter().flat_map(|x| ["--config", x]).map(Into::into));
