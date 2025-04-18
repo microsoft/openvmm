@@ -28,11 +28,16 @@ Multiple modules can be specified by separating them with a comma:
 openvmm.exe -c "OPENVMM_LOG=mesh=trace,nvme_driver=trace" --com3 "term,name=VTL2 OpenHCL" [...]
 ```
 
+
 ```admonish tip
 To retrieve OpenHCL log output at runtime, an output console or file must attach to the OpenHCL COM port. By default, OpenHCL outputs to `COM3`. The
 way the logs are retrieved and displayed depends on the value of `--com3` passed to the OpenVMM startup binary.
 
 For more configuration examples, see the [Running OpenHCL Guide](../../../user_guide/openhcl/run/openvmm.md).
+```
+
+```admonish tip
+For more information on configuring OpenVMM logging or OpenHCL logging when using OpenVMM, see [OpenVMM Logging](../../../reference/openvmm/logging.md).
 ```
 
 ## \[Hyper-V\] Saving traces to the Windows event log

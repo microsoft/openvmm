@@ -22,18 +22,22 @@ type; see the associated documentation for more details.
 
 ## Configuring OpenHCL Trace Logging
 
-If OpenHCL is used, it supports an [`EnvFilter`](https://docs.rs/tracing-subscriber/0.2.17/tracing_subscriber/struct.EnvFilter.html) style trace logging options that can be configured using the `OPENVMM_LOG=` command line variable passed during OpenHCL startup with `-c OPENVMM_LOG=`. The `-c` argument in OpenVMM passes a string of command line arguments to OpenHCL initialization. The environment variable configuration and style of `OPENVMM_LOG` for OpenHCL is the same for configuring tracing for OpenVMM as seen above.
+If OpenHCL is used, it supports an [`EnvFilter`](https://docs.rs/tracing-subscriber/0.2.17/tracing_subscriber/struct.EnvFilter.html) style trace logging options that can be configured using the `OPENVMM_LOG=` command line variable passed during OpenHCL startup with `-c OPENVMM_LOG=`. The `-c` argument in OpenVMM passes a string of command line arguments to OpenHCL initialization. 
 
-OpenHCL tracing can also be configured at runtime with `ohcldiag-dev`. See: [OpenHCL Diagnostics](../openhcl/diag/ohcldiag_dev.md).
+The environment variable configuration and style of `OPENVMM_LOG` for OpenHCL is the same for configuring tracing for OpenVMM.
 
 OpenHCL by default uses the `COM3` serial port for output.
+
+OpenHCL tracing can also be configured at runtime with `ohcldiag-dev`. See: [OpenHCL Diagnostics](../openhcl/diag/ohcldiag_dev.md)
 
 For example: 
 ```cmd
 openvmm.exe -c "OPENVMM_LOG=debug" --com3 "term,name=VTL2 OpenHCL"
 ```
 
+```admonish tip
 For more information on the available trace logging options, see examples from [OpenHCL Tracing](../openhcl/diag/tracing.md).
+```
 
 ## Capturing the ETW traces on the host
 
