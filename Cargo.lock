@@ -6855,6 +6855,7 @@ name = "tmk_tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "build_rs_guest_arch",
  "pal_async",
  "petri",
  "petri_artifacts_common",

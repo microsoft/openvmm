@@ -12,9 +12,17 @@ petri::test!(host_tmks, |resolver| {
     let tmk_vmm = resolver
         .require(petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_NATIVE)
         .erase();
-    let tmk = resolver
-        .require(petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_X64)
-        .erase();
+    let tmk = if cfg!(guest_arch = "x86_64") {
+        resolver
+            .require(petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_X64)
+            .erase()
+    } else if cfg!(guest_arch = "aarch64") {
+        resolver
+            .require(petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_AARCH64)
+            .erase()
+    } else {
+        panic!("Unsupported guest architecture");
+    };
     (tmk_vmm, tmk)
 });
 
@@ -50,41 +58,65 @@ fn host_tmks(
     Ok(())
 }
 
-petri::test!(openvmm_openhcl_tmks, |resolver| {
+petri::test!(openvmm_openhcl_tmks, resolve_openvmm_openhcl_tmks);
+
+struct OpenvmmOpenhclArtifacts {
+    vm: petri::openvmm::PetriVmArtifactsOpenVmm,
+    tmk_vmm: ResolvedArtifact,
+    tmk: ResolvedArtifact,
+}
+
+fn resolve_openvmm_openhcl_tmks(resolver: &petri::ArtifactResolver<'_>) -> OpenvmmOpenhclArtifacts {
+    let igvm_path;
+    let tmk_vmm;
+    let tmk;
+
+    if cfg!(guest_arch = "x86_64") {
+        igvm_path = resolver
+            .require(petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64)
+            .erase();
+        tmk_vmm = resolver
+            .require(petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_X64_MUSL)
+            .erase();
+        tmk = resolver
+            .require(petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_X64)
+            .erase();
+    } else if cfg!(guest_arch = "aarch64") {
+        igvm_path = resolver
+            .require(petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64)
+            .erase();
+        tmk_vmm = resolver
+            .require(petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_AARCH64_MUSL)
+            .erase();
+        tmk = resolver
+            .require(petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_AARCH64)
+            .erase();
+    } else {
+        panic!("Unsupported guest architecture");
+    };
+
     let vm = petri::openvmm::PetriVmArtifactsOpenVmm::new(
         resolver,
         petri::Firmware::OpenhclUefi {
             guest: petri::UefiGuest::None,
             isolation: None,
             vtl2_nvme_boot: false,
-            igvm_path: resolver
-                .require(petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64)
-                .erase(),
+            igvm_path,
         },
         petri_artifacts_common::tags::MachineArch::X86_64,
     );
-    let tmk_vmm = resolver
-        .require(petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_X64_MUSL)
-        .erase();
-    let tmk = resolver
-        .require(petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_X64)
-        .erase();
-    (vm, tmk_vmm, tmk)
-});
+    OpenvmmOpenhclArtifacts { vm, tmk_vmm, tmk }
+}
 
 fn openvmm_openhcl_tmks(
     params: petri::PetriTestParams<'_>,
-    (artifacts, tmk_vmm, tmk): (
-        petri::openvmm::PetriVmArtifactsOpenVmm,
-        ResolvedArtifact,
-        ResolvedArtifact,
-    ),
+    artifacts: OpenvmmOpenhclArtifacts,
 ) -> anyhow::Result<()> {
     DefaultPool::run_with(async |driver| {
-        let mut vm = petri::openvmm::PetriVmConfigOpenVmm::new(&params, artifacts, &driver)?
+        let mut vm = petri::openvmm::PetriVmConfigOpenVmm::new(&params, artifacts.vm, &driver)?
             .with_openhcl_command_line("OPENHCL_WAIT_FOR_START=1")
-            .with_openhcl_agent_file("tmk_vmm", tmk_vmm)
-            .with_openhcl_agent_file("simple_tmk", tmk)
+            .with_openhcl_agent_file("tmk_vmm", artifacts.tmk_vmm)
+            .with_openhcl_agent_file("simple_tmk", artifacts.tmk)
             .with_processors(1)
             .with_allow_early_vtl0_access(true) // TODO: remove once the TMK VMM initializes memory properly.
             .run_without_agent()
