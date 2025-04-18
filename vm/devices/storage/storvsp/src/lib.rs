@@ -7,11 +7,8 @@
 #[cfg(feature = "ioperf")]
 pub mod ioperf;
 
-#[cfg(feature = "fuzz_helpers")]
+// Needs to be pub for use with storage tests in a separate crate.
 pub mod test_helpers;
-
-#[cfg(not(feature = "fuzz_helpers"))]
-mod test_helpers;
 
 pub mod resolver;
 mod save_restore;
