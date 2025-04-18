@@ -6857,7 +6857,6 @@ dependencies = [
  "anyhow",
  "pal_async",
  "petri",
- "petri_artifact_resolver_openvmm_known_paths",
  "petri_artifacts_common",
  "petri_artifacts_vmm_test",
 ]
