@@ -8,37 +8,12 @@ different sorts of traces from OpenHCL.
 We suggest starting here, before exploring some of the other options presented
 on this page.
 
-## \[OpenVMM\] Enabling serial logging for OpenHCL
+## Enabling serial logging for OpenHCL
 
-OpenVMM can specify command line arguments to pass to OpenHCL during startup. These are specified through the openvmm binary command line argument `-c`.
-To configure tracing verbosity for OpenHCL, the `OPENVMM_LOG` variable must be passed to OpenHCL through the `-c` argument.
+The OpenHCL startup binary accepts a commmand line argument `OPENVMM_LOG` that can be used to enable global or discrete tracing levels.
+These logs are written by default to `COM3` and the host can be configured to redirect them to a file or console output.
 
-To open a new terminal window with global OpenHCL debug level tracing enabled:
-```
-openvmm.exe -c "OPENVMM_LOG=debug" --com3 "term,name=VTL2 OpenHCL" [...]
-```
-
-Configure log levels of only a given module name:
-```
-openvmm.exe -c "OPENVMM_LOG=mesh=trace" --com3 "term,name=VTL2 OpenHCL" [...]
-```
-
-Multiple modules can be specified by separating them with a comma:
-```
-openvmm.exe -c "OPENVMM_LOG=mesh=trace,nvme_driver=trace" --com3 "term,name=VTL2 OpenHCL" [...]
-```
-
-
-```admonish tip
-To retrieve OpenHCL log output at runtime, an output console or file must attach to the OpenHCL COM port. By default, OpenHCL outputs to `COM3`. The
-way the logs are retrieved and displayed depends on the value of `--com3` passed to the OpenVMM startup binary.
-
-For more configuration examples, see the [Running OpenHCL Guide](../../../user_guide/openhcl/run/openvmm.md).
-```
-
-```admonish tip
-For more information on configuring OpenVMM logging or OpenHCL logging when using OpenVMM, see [OpenVMM Logging](../../openvmm/logging.md).
-```
+For examples on how to enable `OPENVMM_LOG`, see [OpenVMM Logging](../../openvmm/logging.md).
 
 ## \[Hyper-V\] Saving traces to the Windows event log
 
