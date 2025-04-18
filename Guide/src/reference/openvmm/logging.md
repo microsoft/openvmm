@@ -20,14 +20,11 @@ This is backed by the
 [`EnvFilter`](https://docs.rs/tracing-subscriber/0.2.17/tracing_subscriber/struct.EnvFilter.html)
 type; see the associated documentation for more details.
 
-The environment variable configuration and style is the same for configuring tracing for OpenVMM as OpenHCL. The `OPENVMM_LOG`
-environment variable can be supplied to OpenHCL as command line argument or can be configured at runtime with `ohcldiag-dev`. See: [OpenHCL Diagnostics](../openhcl/diag/ohcldiag_dev.md).
-
 ## Configuring OpenHCL Trace Logging
 
-If OpenHCL is used, it supports an [`EnvFilter`](https://docs.rs/tracing-subscriber/0.2.17/tracing_subscriber/struct.EnvFilter.html) style trace logging options that can be configured using the `OPENVMM_LOG=` command line variable passed during OpenHCL startup. 
+If OpenHCL is used, it supports an [`EnvFilter`](https://docs.rs/tracing-subscriber/0.2.17/tracing_subscriber/struct.EnvFilter.html) style trace logging options that can be configured using the `OPENVMM_LOG=` command line variable passed during OpenHCL startup with `-c OPENVMM_LOG=`. The `-c` argument in OpenVMM passes a string of command line arguments to OpenHCL initialization. The environment variable configuration and style of `OPENVMM_LOG` for OpenHCL is the same for configuring tracing for OpenVMM as seen above.
 
-The `OPENVMM_LOG` variable can be used to configure logging for OpenHCL by passing the variable using the `-c` command line argument in OpenVMM. This sets the command line arguments passed to OpenHCL initialization. OpenHCL tracing can also be configured at runtime with `ohcldiag-dev`. See: [OpenHCL Diagnostics](../openhcl/diag/ohcldiag_dev.md).
+OpenHCL tracing can also be configured at runtime with `ohcldiag-dev`. See: [OpenHCL Diagnostics](../openhcl/diag/ohcldiag_dev.md).
 
 OpenHCL by default uses the `COM3` serial port for output.
 
