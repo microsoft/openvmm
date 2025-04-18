@@ -28,11 +28,18 @@ impl FlowNode for Node {
                 |_| {
                     let sh = xshell::Shell::new()?;
 
-                    // TODO: add this to the initial CI image (and maybe the reg keys too)
+                    // TODO: perform these operation on the reference CI image
+
+                    // Install the Hyper-V Powershell commands
                     xshell::cmd!(sh, "DISM /Online /Norestart /Enable-Feature /All /FeatureName:Microsoft-Hyper-V-Management-PowerShell").run()?;
 
-                    let firmware_load_path = r#"HKLM\Software\Microsoft\Windows NT\CurrentVersion\Virtualization"#;
-                    xshell::cmd!(sh, "reg add {firmware_load_path} /v AllowFirmwareLoadFromFile /t REG_DWORD /d 1 /f").run()?;
+                    let virt_reg_path = r#"HKLM\Software\Microsoft\Windows NT\CurrentVersion\Virtualization"#;
+
+                    // Allow loading IGVM from file (to run custom OpenHCL firmware)
+                    xshell::cmd!(sh, "reg add {virt_reg_path} /v AllowFirmwareLoadFromFile /t REG_DWORD /d 1 /f").run()?;
+
+                    // Enable COM3 and COM4 for Hyper-V VMs so we can get the OpenHCL KMSG logs over serial
+                    xshell::cmd!(sh, "reg add {virt_reg_path} /v EnableAdditionalComPorts /t REG_DWORD /d 1 /f").run()?;
 
                     Ok(())
                 }

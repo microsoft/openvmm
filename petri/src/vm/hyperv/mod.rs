@@ -336,14 +336,14 @@ impl PetriVmConfigHyperV {
 
         let mut log_tasks = Vec::new();
 
-        let serial_pipe_path = vm.set_vm_com_port(1)?;
+        let guest_serial_pipe_path = vm.set_vm_com_port(1)?;
         let serial_log_file = self.log_source.log_file("guest")?;
         log_tasks.push(self.driver.spawn("guest-log", {
             let driver = self.driver.clone();
             async move {
                 let serial = diag_client::hyperv::open_serial_port(
                     &driver,
-                    diag_client::hyperv::ComPortAccessInfo::PortPipePath(&serial_pipe_path),
+                    diag_client::hyperv::ComPortAccessInfo::PortPipePath(&guest_serial_pipe_path),
                 )
                 .await?;
                 crate::log_stream(serial_log_file, PolledPipe::new(&driver, serial)?).await
@@ -351,20 +351,19 @@ impl PetriVmConfigHyperV {
         }));
 
         let openhcl_diag_handler = if self.openhcl_igvm.is_some() {
+            let openhcl_serial_pipe_path = vm.set_vm_com_port(3)?;
             let openhcl_log_file = self.log_source.log_file("openhcl")?;
             log_tasks.push(self.driver.spawn("openhcl-log", {
                 let driver = self.driver.clone();
-                let vmid = *vm.vmid();
                 async move {
-                    let diag_client = diag_client::DiagClient::from_hyperv_id(driver.clone(), vmid);
-                    loop {
-                        diag_client.wait_for_server().await?;
-                        crate::kmsg_log_task(
-                            openhcl_log_file.clone(),
-                            diag_client.kmsg(true).await?,
-                        )
-                        .await?
-                    }
+                    let serial = diag_client::hyperv::open_serial_port(
+                        &driver,
+                        diag_client::hyperv::ComPortAccessInfo::PortPipePath(
+                            &openhcl_serial_pipe_path,
+                        ),
+                    )
+                    .await?;
+                    crate::log_stream(openhcl_log_file, PolledPipe::new(&driver, serial)?).await
                 }
             }));
             Some(OpenHclDiagHandler::new(
