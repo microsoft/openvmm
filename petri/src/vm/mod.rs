@@ -336,11 +336,11 @@ impl UefiGuest {
         UefiGuest::GuestTestUefi(artifact)
     }
 
-    fn artifact(&self) -> &ResolvedArtifact {
+    fn artifact(&self) -> Option<&ResolvedArtifact> {
         match self {
-            UefiGuest::Vhd(vhd) => &vhd.artifact,
-            UefiGuest::GuestTestUefi(p) => p,
-            UefiGuest::None => unreachable!(),
+            UefiGuest::Vhd(vhd) => Some(&vhd.artifact),
+            UefiGuest::GuestTestUefi(p) => Some(p),
+            UefiGuest::None => None,
         }
     }
 }

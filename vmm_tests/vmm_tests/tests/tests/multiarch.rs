@@ -18,8 +18,14 @@ use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 
 /// Boot through the UEFI firmware, it will shut itself down after booting.
-#[openvmm_test(uefi_x64(none), openhcl_uefi_x64(none), uefi_aarch64(none))]
-async fn frontpage(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+#[vmm_test(
+    openvmm_uefi_x64(none),
+    openvmm_openhcl_uefi_x64(none),
+    openvmm_uefi_aarch64(none),
+    hyperv_openhcl_uefi_aarch64(none),
+    hyperv_openhcl_uefi_x64(none)
+)]
+async fn frontpage(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
     vm.wait_for_successful_boot_event().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);

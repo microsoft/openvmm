@@ -693,9 +693,12 @@ impl PetriVmConfigSetupCore<'_> {
                                 disk: LayeredDiskHandle {
                                     layers: vec![
                                         RamDiskLayerHandle { len: None }.into_resource().into(),
-                                        DiskLayerHandle(open_disk_type(disk_path.as_ref(), true)?)
-                                            .into_resource()
-                                            .into(),
+                                        DiskLayerHandle(open_disk_type(
+                                            disk_path.expect("not uefi guest none").as_ref(),
+                                            true,
+                                        )?)
+                                        .into_resource()
+                                        .into(),
                                     ],
                                 }
                                 .into_resource(),
@@ -725,9 +728,12 @@ impl PetriVmConfigSetupCore<'_> {
                             disk: LayeredDiskHandle {
                                 layers: vec![
                                     RamDiskLayerHandle { len: None }.into_resource().into(),
-                                    DiskLayerHandle(open_disk_type(disk_path.as_ref(), true)?)
-                                        .into_resource()
-                                        .into(),
+                                    DiskLayerHandle(open_disk_type(
+                                        disk_path.expect("not uefi guest none").as_ref(),
+                                        true,
+                                    )?)
+                                    .into_resource()
+                                    .into(),
                                 ],
                             }
                             .into_resource(),
