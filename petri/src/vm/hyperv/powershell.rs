@@ -600,19 +600,6 @@ pub fn vm_shutdown_ic_status(vmid: &Guid) -> anyhow::Result<VmShutdownIcStatus> 
     })
 }
 
-/// Runs Remove-VmNetworkAdapter to remove all network adapters from a VM.
-pub fn run_remove_vm_network_adapter(vmid: &Guid) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Get-VM")
-        .arg_string("Id", vmid)
-        .pipeline()
-        .cmdlet("Remove-VMNetworkAdapter")
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("remove_vm_network_adapter")
-}
-
 /// A PowerShell script builder
 pub struct PowerShellBuilder(Command);
 
