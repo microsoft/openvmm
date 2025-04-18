@@ -829,8 +829,12 @@ impl BackingPrivate for TdxBacked {
         ];
 
         let reg_count = if let Some(synic) = &mut this.backing.untrusted_synic {
-            synic.set_simp(reg(pfns[UhDirectOverlay::Sipp as usize]));
-            synic.set_siefp(reg(pfns[UhDirectOverlay::Sifp as usize]));
+            synic
+                .set_simp(reg(pfns[UhDirectOverlay::Sipp as usize]))
+                .unwrap();
+            synic
+                .set_siefp(reg(pfns[UhDirectOverlay::Sifp as usize]))
+                .unwrap();
             // Set the SIEFP in the hypervisor so that the hypervisor can
             // directly signal synic events. Don't set the SIMP, since the
             // message page is owned by the paravisor.
