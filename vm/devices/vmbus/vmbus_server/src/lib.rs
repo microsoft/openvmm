@@ -207,7 +207,6 @@ enum VmbusRequest {
     Inspect(inspect::Deferred),
     Save(Rpc<(), SavedState>),
     Restore(Rpc<SavedState, Result<(), RestoreError>>),
-    PostRestore(Rpc<(), Result<(), RestoreError>>),
     Start,
     Stop(Rpc<(), ()>),
 }
@@ -555,13 +554,6 @@ impl VmbusServer {
     pub async fn restore(&self, state: SavedState) -> Result<(), RestoreError> {
         self.task_send
             .call(VmbusRequest::Restore, state)
-            .await
-            .unwrap()
-    }
-
-    pub async fn post_restore(&self) -> Result<(), RestoreError> {
-        self.task_send
-            .call(VmbusRequest::PostRestore, ())
             .await
             .unwrap()
     }
@@ -958,11 +950,10 @@ impl ServerTask {
             }),
             VmbusRequest::Restore(rpc) => rpc.handle_sync(|state| {
                 self.unstick_on_start = !state.lost_synic_bug_fixed;
-                self.server.restore(state.server)
+                self.server
+                    .with_notifier(&mut self.inner)
+                    .restore(state.server)
             }),
-            VmbusRequest::PostRestore(rpc) => {
-                rpc.handle_sync(|()| self.server.with_notifier(&mut self.inner).post_restore())
-            }
             VmbusRequest::Stop(rpc) => rpc.handle_sync(|()| {
                 if self.inner.running {
                     self.inner.running = false;
@@ -971,6 +962,9 @@ impl ServerTask {
             VmbusRequest::Start => {
                 if !self.inner.running {
                     self.inner.running = true;
+                    self.server
+                        .with_notifier(&mut self.inner)
+                        .revoke_unclaimed_channels();
                     if self.unstick_on_start {
                         tracing::info!(
                             "lost synic bug fix is not in yet, call unstick_channels to mitigate the issue."
@@ -1397,7 +1391,7 @@ impl Notifier for ServerTaskInner {
         self.map_interrupt_page(request.interrupt_page)
             .context("Failed to map interrupt page.")?;
 
-        self.set_monitor_page(request.monitor_page, request.force)
+        self.set_monitor_page(request.monitor_page)
             .context("Failed to map monitor page.")?;
 
         if let Some(vp) = request.target_message_vp {
@@ -1710,33 +1704,26 @@ impl ServerTaskInner {
         Ok(())
     }
 
-    fn set_monitor_page(
-        &mut self,
-        monitor_page: Update<MonitorPageGpas>,
-        force: bool,
-    ) -> anyhow::Result<()> {
+    fn set_monitor_page(&mut self, monitor_page: Update<MonitorPageGpas>) -> anyhow::Result<()> {
         let monitor_page = match monitor_page {
             Update::Unchanged => return Ok(()),
             Update::Reset => None,
             Update::Set(value) => Some(value),
         };
 
-        // Force is used by restore because there may be restored channels in the open state.
         // TODO: can this check be moved into channels.rs?
-        if !force
-            && self.channels.iter().any(|(_, c)| {
-                matches!(
-                    &c.state,
-                    ChannelState::Open {
-                        open_params,
-                        ..
-                    } | ChannelState::Opening {
-                        open_params,
-                        ..
-                    } if open_params.monitor_info.is_some()
-                )
-            })
-        {
+        if self.channels.iter().any(|(_, c)| {
+            matches!(
+                &c.state,
+                ChannelState::Open {
+                    open_params,
+                    ..
+                } | ChannelState::Opening {
+                    open_params,
+                    ..
+                } if open_params.monitor_info.is_some()
+            )
+        }) {
             anyhow::bail!("attempt to change monitor page while open channels using mnf");
         }
 
@@ -2407,7 +2394,6 @@ mod tests {
         // will be repeated. This must not panic.
         env.vmbus.restore(saved_state).await.unwrap();
         channel.restore().await;
-        env.vmbus.post_restore().await.unwrap();
         env.vmbus.start();
 
         // Handle the teardown after restore.
