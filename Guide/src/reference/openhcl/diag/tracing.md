@@ -11,7 +11,7 @@ on this page.
 ## Enabling serial logging for OpenHCL
 
 The OpenHCL startup binary accepts a commmand line argument `OPENVMM_LOG` that can be used to enable global or discrete tracing levels.
-These logs are written by default to `COM3` and the host can be configured to redirect them to a file or console output.
+These logs are written by default to `COM3` and OpenVMM can be configured to redirect them to a file or console output.
 
 For examples on how to enable `OPENVMM_LOG`, see [OpenVMM Logging](../../openvmm/logging.md).
 
