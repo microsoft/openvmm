@@ -406,6 +406,7 @@ pub struct TdxBacked {
     #[inspect(skip)]
     flush_page: user_driver::memory::MemoryBlock,
 
+    #[inspect(flatten)]
     cvm: UhCvmVpState,
 }
 
@@ -634,6 +635,7 @@ impl HardwareIsolatedBacking for TdxBacked {
         );
 
         // Update descriptor table intercepts.
+        // TODO update cached value
         let intercept_tables = intercept_control.gdtr_write()
             | intercept_control.idtr_write()
             | intercept_control.ldtr_write()
@@ -956,6 +958,9 @@ impl BackingPrivate for TdxBacked {
             .lapic
             .enable_offload();
 
+        // But disable it for VTL 1.
+        this.set_apic_offload(GuestVtl::Vtl1, false);
+
         // Initialize registers to the reset state, since this may be different
         // than what's on the VMCS and is certainly different than what's in the
         // VP enter and private register state (which was mostly zero
@@ -1074,6 +1079,7 @@ impl BackingPrivate for TdxBacked {
                 return false;
             }
 
+            tracing::trace!(vector, ppr, ?vtl, "cross VTL interrupt");
             true
         })
     }
@@ -1425,6 +1431,13 @@ impl UhProcessor<'_, TdxBacked> {
     async fn run_vp_tdx(&mut self, dev: &impl CpuIo) -> Result<(), VpHaltReason<UhRunVpError>> {
         let next_vtl = self.backing.cvm.exit_vtl;
 
+        tracing::trace!(
+            ?next_vtl,
+            rip = self.backing.vtls[next_vtl].private_regs.rip,
+            entry_reason = ?self.backing.cvm_state().hv[next_vtl].return_reason(),
+            "run_vp_tdx"
+        );
+
         if self.backing.vtls[next_vtl].interruption_information.valid() {
             tracing::debug!(
                 vector = self.backing.vtls[next_vtl]
@@ -1715,6 +1728,7 @@ impl UhProcessor<'_, TdxBacked> {
         }
 
         let mut breakpoint_debug_exception = false;
+        tracing::trace!(vmx_exit = ?vmx_exit.basic_reason(), ?intercepted_vtl, "handling vmx exit");
         let stat = match vmx_exit.basic_reason() {
             VmxExitBasic::IO_INSTRUCTION => {
                 let io_qual = ExitQualificationIo::from(exit_info.qualification() as u32);
@@ -2047,6 +2061,7 @@ impl UhProcessor<'_, TdxBacked> {
             }
             VmxExitBasic::INTERRUPT_WINDOW => {
                 // Loop around to reevaluate the APIC.
+                tracing::trace!(rflags = ?self.backing.vtls[intercepted_vtl].private_regs.rflags, ?intercepted_vtl, "interrupt window");
                 &mut self.backing.vtls[intercepted_vtl]
                     .exit_stats
                     .interrupt_window
@@ -2106,6 +2121,8 @@ impl UhProcessor<'_, TdxBacked> {
             VmxExitBasic::GDTR_OR_IDTR => {
                 let info = GdtrOrIdtrInstructionInfo::from(exit_info.instr_info().info());
                 tracing::trace!("Intercepted GDT or IDT instruction: {:?}", info);
+                self.trace_processor_state(GuestVtl::Vtl1);
+                self.trace_processor_state(GuestVtl::Vtl0);
                 let reg = match info.instruction() {
                     GdtrOrIdtrInstruction::Sidt | GdtrOrIdtrInstruction::Lidt => {
                         HvX64RegisterName::Idtr
@@ -2132,6 +2149,8 @@ impl UhProcessor<'_, TdxBacked> {
             VmxExitBasic::LDTR_OR_TR => {
                 let info = LdtrOrTrInstructionInfo::from(exit_info.instr_info().info());
                 tracing::trace!("Intercepted LDT or TR instruction: {:?}", info);
+                self.trace_processor_state(GuestVtl::Vtl1);
+                self.trace_processor_state(GuestVtl::Vtl0);
                 let reg = match info.instruction() {
                     LdtrOrTrInstruction::Sldt | LdtrOrTrInstruction::Lldt => {
                         HvX64RegisterName::Ldtr
@@ -2258,19 +2277,31 @@ impl UhProcessor<'_, TdxBacked> {
         let cached_processor_controls = self.backing.vtls[vtl].processor_controls;
         let cached_secondary_processor_controls =
             self.backing.vtls[vtl].secondary_processor_controls;
-        let vmcs_processor_controls = self
-            .runner
-            .read_vmcs32(vtl, VmcsField::VMX_VMCS_PROCESSOR_CONTROLS);
-        let vmcs_secondary_processor_controls = self
-            .runner
-            .read_vmcs32(vtl, VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS);
+        let vmcs_processor_controls = ProcessorControls::from(
+            self.runner
+                .read_vmcs32(vtl, VmcsField::VMX_VMCS_PROCESSOR_CONTROLS),
+        );
+        let vmcs_secondary_processor_controls = SecondaryProcessorControls::from(
+            self.runner
+                .read_vmcs32(vtl, VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS),
+        );
         tracing::error!(
             ?cached_processor_controls,
             ?cached_secondary_processor_controls,
-            vmcs_processor_controls,
-            vmcs_secondary_processor_controls,
+            ?vmcs_processor_controls,
+            ?vmcs_secondary_processor_controls,
             "processor controls"
         );
+
+        if cached_processor_controls != vmcs_processor_controls {
+            tracing::error!("BUGBUG cached processor controls != vmcs processor controls");
+        }
+
+        if cached_secondary_processor_controls != vmcs_secondary_processor_controls {
+            tracing::error!(
+                "BUGBUG cached secondary processor controls != vmcs secondary processor controls",
+            );
+        }
 
         let cached_tpr_threshold = self.backing.vtls[vtl].tpr_threshold;
         let vmcs_tpr_threshold = self

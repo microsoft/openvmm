@@ -460,6 +460,7 @@ pub struct ProcessorControls {
 }
 
 #[bitfield(u32)]
+#[derive(PartialEq, Eq)]
 pub struct SecondaryProcessorControls {
     pub virtualize_apic_accesses: bool,
     pub enable_ept: bool,

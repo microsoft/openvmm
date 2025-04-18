@@ -422,6 +422,13 @@ impl ProcessorVtlHv {
         self.vp_assist_page[offset..offset + 16].atomic_read_obj()
     }
 
+    /// Get the reason for the vtl return into the vp assist page
+    pub fn return_reason(&self) -> HvVtlEntryReason {
+        let offset = offset_of!(hvdef::HvVpAssistPage, vtl_control)
+            + offset_of!(HvVpVtlControl, entry_reason);
+        self.vp_assist_page[offset..offset + 4].atomic_read_obj()
+    }
+
     /// Set the reason for the vtl return into the vp assist page
     pub fn set_return_reason(&mut self, reason: HvVtlEntryReason) {
         let offset = offset_of!(hvdef::HvVpAssistPage, vtl_control)
