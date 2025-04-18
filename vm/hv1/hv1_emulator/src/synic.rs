@@ -245,7 +245,9 @@ impl GlobalSynic {
         }
         let byte_offset = sint_index * (HV_PAGE_SIZE_USIZE / NUM_SINTS) + flag / 8;
         let mask = 1 << (flag % 8);
-        vp.siefp_page[byte_offset].fetch_or(mask, Ordering::SeqCst);
+        if vp.siefp_page[byte_offset].fetch_or(mask, Ordering::SeqCst) & mask != 0 {
+            return Ok(false);
+        }
         sint_interrupt(interrupt, sint);
         Ok(true)
     }
