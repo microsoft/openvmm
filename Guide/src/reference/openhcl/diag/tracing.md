@@ -37,7 +37,7 @@ For more configuration examples, see the [Running OpenHCL Guide](../../../user_g
 ```
 
 ```admonish tip
-For more information on configuring OpenVMM logging or OpenHCL logging when using OpenVMM, see [OpenVMM Logging](../../../reference/openvmm/logging.md).
+For more information on configuring OpenVMM logging or OpenHCL logging when using OpenVMM, see [OpenVMM Logging](../../openvmm/logging.md).
 ```
 
 ## \[Hyper-V\] Saving traces to the Windows event log
