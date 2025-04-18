@@ -29,7 +29,6 @@ use hvdef::HvMapGpaFlags;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmVpSecureVtlConfig;
 use hvdef::HvResult;
-use hvdef::HvSynicSint;
 use hvdef::HvVtlEntryReason;
 use hvdef::HvX64PendingExceptionEvent;
 use hvdef::HvX64RegisterName;
@@ -1386,16 +1385,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     ) -> Result<(), MsrError> {
         let self_index = self.vp_index();
         let hv = &mut self.backing.cvm_state_mut().hv[vtl];
-        // If updated is Synic MSR, then check if its proxy or previous was proxy
-        // in either case, we need to update the `proxy_irr_blocked`
-        let mut irr_filter_update = false;
-        if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
-            let sint_curr = HvSynicSint::from(hv.synic.sint((msr - hvdef::HV_X64_MSR_SINT0) as u8));
-            let sint_new = HvSynicSint::from(value);
-            if sint_curr.proxy() || sint_new.proxy() {
-                irr_filter_update = true;
-            }
-        }
 
         let mut access = HypercallOverlayAccess {
             vtl,
@@ -1409,8 +1398,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         let r = hv.msr_write(msr, value, &mut access);
 
         if !matches!(r, Err(MsrError::Unknown)) {
-            // Check if proxy filter update was required (in case of SINT writes)
-            if irr_filter_update {
+            // If updated is Synic MSR, then update the `proxy_irr_blocked`
+            if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
                 self.update_proxy_irr_filter(vtl);
             }
         }

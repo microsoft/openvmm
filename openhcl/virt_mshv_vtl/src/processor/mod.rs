@@ -1089,7 +1089,10 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             for sint in 0..NUM_SINTS as u8 {
                 let sint_msr = hv.synic.sint(sint);
                 let hv_sint = HvSynicSint::from(sint_msr);
-                if hv_sint.proxy() && !hv_sint.masked() {
+                // When vmbus relay is active, then SINT will not be proxied
+                // in case of non-relay, guest will setup proxied sint
+                if (hv_sint.proxy() || self.partition.is_vmbus_relay_enabled()) && !hv_sint.masked()
+                {
                     irr_bits.set(hv_sint.vector() as usize, true);
                 }
             }
