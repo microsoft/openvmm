@@ -3741,5 +3741,5 @@ pub struct HvRegisterCrInterceptControl {
     pub msr_pls_ssp_write: bool,
     pub msr_interrupt_ssp_table_addr_write: bool,
     #[bits(35)]
-    pub rsvd_z: u64,
+    _rsvd_z: u64,
 }
