@@ -46,7 +46,7 @@ pub(crate) enum OverlayPage {
     Mapped(#[inspect(skip)] LockedPage),
 }
 
-// TODO: Technically we should restore the prior contents of a mapped location when we
+// FUTURE: Technically we should restore the prior contents of a mapped location when we
 // remap/unmap it, but we don't know of any scenario that actually requires this.
 impl OverlayPage {
     pub fn remap(
