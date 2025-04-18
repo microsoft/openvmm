@@ -128,11 +128,14 @@ async fn do_main(driver: DefaultDriver) -> anyhow::Result<()> {
 }
 
 fn choose_hypervisor() -> anyhow::Result<HypervisorOpt> {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", guest_arch = "x86_64"))]
     {
         if virt::Hypervisor::is_available(&virt_mshv::LinuxMshv)? {
             return Ok(HypervisorOpt::Mshv);
         }
+    }
+    #[cfg(target_os = "linux")]
+    {
         if virt::Hypervisor::is_available(&virt_kvm::Kvm)? {
             return Ok(HypervisorOpt::Kvm);
         }

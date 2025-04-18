@@ -39,6 +39,9 @@ flowey_request! {
         /// commands)
         GetRustupToolchain(WriteVar<Option<String>>),
 
+        /// Install the specified component.
+        InstallComponent(String),
+
         /// Get the path to $CARGO_HOME
         GetCargoHome(WriteVar<PathBuf>),
 
@@ -64,6 +67,7 @@ impl FlowNode for Node {
         let mut auto_install = None;
         let mut ignore_version = None;
         let mut additional_target_triples = BTreeSet::new();
+        let mut additional_components = BTreeSet::new();
         let mut get_rust_toolchain = Vec::new();
         let mut get_cargo_home = Vec::new();
 
@@ -79,6 +83,9 @@ impl FlowNode for Node {
                 Request::Version(v) => same_across_all_reqs("Version", &mut rust_toolchain, v)?,
                 Request::InstallTargetTriple(s) => {
                     additional_target_triples.insert(s.to_string());
+                }
+                Request::InstallComponent(v) => {
+                    additional_components.insert(v);
                 }
                 Request::GetRustupToolchain(v) => get_rust_toolchain.push(v),
                 Request::GetCargoHome(v) => get_cargo_home.push(v),
@@ -99,6 +106,7 @@ impl FlowNode for Node {
         let rust_toolchain =
             rust_toolchain.ok_or(anyhow::anyhow!("Missing essential request: RustToolchain"))?;
         let additional_target_triples = additional_target_triples;
+        let additional_components = additional_components;
         let get_rust_toolchain = get_rust_toolchain;
         let get_cargo_home = get_cargo_home;
 
@@ -109,6 +117,7 @@ impl FlowNode for Node {
         let check_rust_install = {
             let rust_toolchain = rust_toolchain.clone();
             let additional_target_triples = additional_target_triples.clone();
+            let additional_components = additional_components.clone();
 
             move |_: &mut RustRuntimeServices<'_>| {
                 if which::which("cargo").is_err() {
@@ -116,53 +125,60 @@ impl FlowNode for Node {
                 }
 
                 let rust_toolchain = rust_toolchain.map(|s| format!("+{s}"));
+                let rust_toolchain = rust_toolchain.as_ref();
 
                 // make sure the specific rust version was installed
                 let sh = xshell::Shell::new()?;
-                {
-                    let rust_toolchain = rust_toolchain.clone();
-                    xshell::cmd!(sh, "rustc {rust_toolchain...} -vV").run()?;
-                }
+                xshell::cmd!(sh, "rustc {rust_toolchain...} -vV").run()?;
 
                 // make sure the additional target triples were installed
                 if let Ok(rustup) = which::which("rustup") {
-                    let output =
-                        xshell::cmd!(sh, "{rustup} {rust_toolchain...} target list --installed")
-                            .ignore_status()
-                            .output()?;
-                    let stderr = String::from_utf8(output.stderr)?;
-                    let stdout = String::from_utf8(output.stdout)?;
+                    for (thing, expected_things) in [
+                        ("target", &additional_target_triples),
+                        ("compoment", &additional_components),
+                    ] {
+                        let output = xshell::cmd!(
+                            sh,
+                            "{rustup} {rust_toolchain...} {thing} list --installed"
+                        )
+                        .ignore_status()
+                        .output()?;
+                        let stderr = String::from_utf8(output.stderr)?;
+                        let stdout = String::from_utf8(output.stdout)?;
 
-                    // This error message may occur if the user has rustup
-                    // installed, but is using a custom custom toolchain.
-                    //
-                    // NOTE: not thrilled that we are sniffing a magic string
-                    // from stderr... but I'm also not sure if there's a better
-                    // way to detect this...
-                    if stderr.contains("does not support components") {
-                        log::warn!("Detected a non-standard `rustup default` toolchain!");
-                        log::warn!(
-                            "Will not be able to double-check that all required target-triples are available."
-                        );
-                    } else {
-                        let mut installed_target_triples = BTreeSet::new();
+                        // This error message may occur if the user has rustup
+                        // installed, but is using a custom custom toolchain.
+                        //
+                        // NOTE: not thrilled that we are sniffing a magic string
+                        // from stderr... but I'm also not sure if there's a better
+                        // way to detect this...
+                        if stderr.contains("does not support components") {
+                            log::warn!("Detected a non-standard `rustup default` toolchain!");
+                            log::warn!(
+                                "Will not be able to double-check that all required target-triples and components are available."
+                            );
+                        } else {
+                            let mut installed_things = BTreeSet::new();
 
-                        for line in stdout.lines() {
-                            let triple = line.trim();
-                            installed_target_triples.insert(triple);
-                        }
+                            for line in stdout.lines() {
+                                let triple = line.trim();
+                                installed_things.insert(triple);
+                            }
 
-                        for expected_target in additional_target_triples {
-                            if !installed_target_triples.contains(expected_target.as_str()) {
-                                anyhow::bail!(
-                                    "missing required target-triple: {expected_target}; to intsall: `rustup target add {expected_target}`"
-                                )
+                            for expected_thing in expected_things {
+                                if !installed_things.contains(expected_thing.as_str()) {
+                                    anyhow::bail!(
+                                        "missing required {thing}: {expected_thing}; to install: `rustup {thing} add {expected_thing}`"
+                                    )
+                                }
                             }
                         }
                     }
                 } else {
                     log::warn!("`rustup` was not found!");
-                    log::warn!("Unable to double-check that all target-triples are available.")
+                    log::warn!(
+                        "Unable to double-check that all target-triples and components are available."
+                    )
                 }
 
                 anyhow::Ok(())
@@ -267,6 +283,10 @@ impl FlowNode for Node {
 
                             if !additional_target_triples.is_empty() {
                                 xshell::cmd!(sh, "rustup target add {additional_target_triples...}")
+                                    .run()?;
+                            }
+                            if !additional_components.is_empty() {
+                                xshell::cmd!(sh, "rustup component add {additional_components...}")
                                     .run()?;
                             }
 

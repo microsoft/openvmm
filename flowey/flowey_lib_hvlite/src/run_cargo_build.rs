@@ -306,6 +306,7 @@ impl FlowNode for Node {
         ctx.import::<crate::run_split_debug_info::Node>();
         ctx.import::<crate::init_cross_build::Node>();
         ctx.import::<flowey_lib_common::run_cargo_build::Node>();
+        ctx.import::<flowey_lib_common::install_rust::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -390,7 +391,11 @@ impl FlowNode for Node {
                     Some(target.clone())
                 } else {
                     // We are building the target from source, so don't try to
-                    // install it via rustup.
+                    // install it via rustup. But do make sure the rust-src
+                    // component is available.
+                    ctx.req(flowey_lib_common::install_rust::Request::InstallComponent(
+                        "rust-src".into(),
+                    ));
                     None
                 }
             } else {
