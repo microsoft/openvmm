@@ -1799,12 +1799,7 @@ impl UhProcessor<'_, TdxBacked> {
                 let value =
                     (gps[TdxGp::RAX] as u32 as u64) | ((gps[TdxGp::RDX] as u32 as u64) << 32);
 
-                if self.cvm_protect_msr_write(intercepted_vtl, msr) {
-                    // Once the intercept message has been posted, no further
-                    // processing is required. Do not advance the instruction
-                    // pointer here, since the instruction pointer must continue to
-                    // point to the instruction that generated the intercept.
-                } else {
+                if !self.try_cvm_protect_msr_write(intercepted_vtl, msr) {
                     let result = self.backing.cvm.lapics[intercepted_vtl]
                         .lapic
                         .access(&mut TdxApicClient {
@@ -1899,12 +1894,7 @@ impl UhProcessor<'_, TdxBacked> {
                     _ => unreachable!("not registered for cr{cr} accesses"),
                 };
 
-                if self.cvm_protect_secure_register_write(intercepted_vtl, cr, value) {
-                    // Once the intercept message has been posted, no further
-                    // processing is required.  Do not advance the instruction
-                    // pointer here, since the instruction pointer must continue to
-                    // point to the instruction that generated the intercept.
-                } else {
+                if !self.try_cvm_protect_secure_register_write(intercepted_vtl, cr, value) {
                     let r = match cr {
                         HvX64RegisterName::Cr0 => self.backing.vtls[intercepted_vtl]
                             .cr0
@@ -1935,16 +1925,11 @@ impl UhProcessor<'_, TdxBacked> {
                         cpl: exit_info.cpl(),
                     })
                 {
-                    if self.cvm_protect_secure_register_write(
+                    if !self.try_cvm_protect_secure_register_write(
                         intercepted_vtl,
                         HvX64RegisterName::Xfem,
                         value,
                     ) {
-                        // Once the intercept message has been posted, no further
-                        // processing is required. Do not advance the instruction
-                        // pointer here, since the instruction pointer must continue to
-                        // point to the instruction that generated the intercept.
-                    } else {
                         self.runner
                             .set_vp_register(intercepted_vtl, HvX64RegisterName::Xfem, value.into())
                             .map_err(|err| {

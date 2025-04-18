@@ -1991,7 +1991,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
     /// Returns whether a higher VTL has registered for write intercepts on the
     /// register.
-    pub(crate) fn cvm_is_protected_register_write(
+    fn cvm_is_protected_register_write(
         &self,
         vtl: GuestVtl,
         reg: HvX64RegisterName,
@@ -2034,7 +2034,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
     /// Checks if a higher VTL registered for write intercepts on the register,
     /// and sends the intercept as required.
-    pub(crate) fn cvm_protect_secure_register_write(
+    ///
+    /// If an intercept message is posted then no further processing is required.
+    /// The instruction pointer should not be advanced, since the instruction
+    /// pointer must continue to point to the instruction that generated the
+    /// intercept.
+    pub(crate) fn try_cvm_protect_secure_register_write(
         &mut self,
         vtl: GuestVtl,
         reg: HvX64RegisterName,
@@ -2063,7 +2068,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
     /// Checks if a higher VTL registered for write intercepts on the MSR, and
     /// sends the intercept as required.
-    pub(crate) fn cvm_protect_msr_write(&self, vtl: GuestVtl, msr: u32) -> bool {
+    ///
+    /// If an intercept message is posted then no further processing is required.
+    /// The instruction pointer should not be advanced, since the instruction
+    /// pointer must continue to point to the instruction that generated the
+    /// intercept.
+    pub(crate) fn try_cvm_protect_msr_write(&self, vtl: GuestVtl, msr: u32) -> bool {
         if vtl == GuestVtl::Vtl0 && self.backing.cvm_state().vtl1.is_some() {
             let configured_intercepts = self
                 .backing
