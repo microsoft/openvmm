@@ -32,16 +32,23 @@ impl SimpleFlowNode for Node {
             out_dbg_info,
         } = request;
 
+        let platform = ctx.platform();
+        let arch_str = match arch {
+            CommonArch::X86_64 => match platform {
+                FlowPlatform::Linux(linux_distribution) => match linux_distribution {
+                    FlowPlatformLinuxDistro::Fedora => "x86_64",
+                    FlowPlatformLinuxDistro::Ubuntu => "x86-64",
+                    FlowPlatformLinuxDistro::Unknown => anyhow::bail!("Unknown Linux distribution"),
+                },
+                _ => anyhow::bail!("Unsupported platform"),
+            },
+            CommonArch::Aarch64 => "aarch64",
+        };
+
         let installed_objcopy =
             ctx.reqv(
                 |side_effect| flowey_lib_common::install_dist_pkg::Request::Install {
-                    package_names: vec![
-                        match arch {
-                            CommonArch::X86_64 => "binutils-x86-64-linux-gnu",
-                            CommonArch::Aarch64 => "binutils-aarch64-linux-gnu",
-                        }
-                        .into(),
-                    ],
+                    package_names: vec![format!("binutils-{arch_str}-linux-gnu")],
                     done: side_effect,
                 },
             );

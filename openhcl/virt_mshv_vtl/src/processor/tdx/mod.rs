@@ -417,8 +417,6 @@ struct TdxVtl {
     #[inspect(skip)]
     processor_controls: ProcessorControls,
     #[inspect(skip)]
-    secondary_processor_controls: SecondaryProcessorControls,
-    #[inspect(skip)]
     interruption_information: InterruptionInformation,
     exception_error_code: u32,
     interruption_set: bool,
@@ -785,10 +783,6 @@ impl BackingPrivate for TdxBacked {
                         .runner
                         .read_vmcs32(vtl, VmcsField::VMX_VMCS_PROCESSOR_CONTROLS)
                         .into(),
-                    secondary_processor_controls: params
-                        .runner
-                        .read_vmcs32(vtl, VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS)
-                        .into(),
                     interruption_information: Default::default(),
                     exception_error_code: 0,
                     interruption_set: false,
@@ -870,6 +864,9 @@ impl BackingPrivate for TdxBacked {
         this.backing.cvm.lapics[GuestVtl::Vtl0]
             .lapic
             .enable_offload();
+
+        // But disable it for VTL 1.
+        this.set_apic_offload(GuestVtl::Vtl1, false);
 
         // Initialize registers to the reset state, since this may be different
         // than what's on the VMCS and is certainly different than what's in the
@@ -1194,21 +1191,16 @@ impl UhProcessor<'_, TdxBacked> {
         }
 
         // Update virtual-interrupt delivery.
-        if self.backing.vtls[vtl]
-            .secondary_processor_controls
-            .virtual_interrupt_delivery()
-            != offload
-        {
-            self.backing.vtls[vtl]
-                .secondary_processor_controls
-                .set_virtual_interrupt_delivery(offload);
-            self.runner.write_vmcs32(
-                vtl,
-                VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS,
-                !0,
-                self.backing.vtls[vtl].secondary_processor_controls.into(),
-            );
-        }
+        self.runner.write_vmcs32(
+            vtl,
+            VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS,
+            SecondaryProcessorControls::new()
+                .with_virtual_interrupt_delivery(true)
+                .into(),
+            SecondaryProcessorControls::new()
+                .with_virtual_interrupt_delivery(offload)
+                .into(),
+        );
 
         // Clear any pending external interrupt when enabling the APIC offload.
         if offload
@@ -1412,11 +1404,7 @@ impl UhProcessor<'_, TdxBacked> {
         // Do not do this if there is a pending interruption, since we need to
         // run code on the next exit to clear it. If we miss this opportunity,
         // we will probably double-inject the interruption, wreaking havoc.
-        let offload_enabled = next_vtl == GuestVtl::Vtl0
-            && self.backing.vtls[next_vtl]
-                .secondary_processor_controls
-                .virtual_interrupt_delivery()
-            && self.backing.cvm.lapics[next_vtl].lapic.can_offload_irr()
+        let offload_enabled = self.backing.cvm.lapics[next_vtl].lapic.can_offload_irr()
             && !self.backing.vtls[next_vtl].interruption_information.valid();
         let x2apic_enabled = self.backing.cvm.lapics[next_vtl].lapic.x2apic_enabled();
 
@@ -2089,21 +2077,24 @@ impl UhProcessor<'_, TdxBacked> {
         tracing::error!(exception_bitmap, "exception bitmap");
 
         let cached_processor_controls = self.backing.vtls[vtl].processor_controls;
-        let cached_secondary_processor_controls =
-            self.backing.vtls[vtl].secondary_processor_controls;
-        let vmcs_processor_controls = self
-            .runner
-            .read_vmcs32(vtl, VmcsField::VMX_VMCS_PROCESSOR_CONTROLS);
-        let vmcs_secondary_processor_controls = self
-            .runner
-            .read_vmcs32(vtl, VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS);
+        let vmcs_processor_controls = ProcessorControls::from(
+            self.runner
+                .read_vmcs32(vtl, VmcsField::VMX_VMCS_PROCESSOR_CONTROLS),
+        );
+        let vmcs_secondary_processor_controls = SecondaryProcessorControls::from(
+            self.runner
+                .read_vmcs32(vtl, VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS),
+        );
         tracing::error!(
             ?cached_processor_controls,
-            ?cached_secondary_processor_controls,
-            vmcs_processor_controls,
-            vmcs_secondary_processor_controls,
+            ?vmcs_processor_controls,
+            ?vmcs_secondary_processor_controls,
             "processor controls"
         );
+
+        if cached_processor_controls != vmcs_processor_controls {
+            tracing::error!("BUGBUG: processor controls mismatch");
+        }
 
         let cached_tpr_threshold = self.backing.vtls[vtl].tpr_threshold;
         let vmcs_tpr_threshold = self

@@ -5,6 +5,7 @@ use flowey::node::prelude::FlowPlatformKind;
 use flowey::node::prelude::RustRuntimeServices;
 use std::path::Path;
 
+pub mod cargo_output;
 pub mod extract;
 pub mod wslpath;
 

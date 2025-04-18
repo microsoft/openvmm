@@ -9,6 +9,7 @@
 //! such as setting global cargo flags (e.g: --verbose, --locked), ensuring any
 //! required Rust dependencies are installed (i.e: toolchain, triples), etc...
 
+use crate::_util::cargo_output;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -36,6 +37,16 @@ pub enum CargoCrateType {
     Bin,
     StaticLib,
     DynamicLib,
+}
+
+impl CargoCrateType {
+    fn as_str(&self) -> &str {
+        match self {
+            CargoCrateType::Bin => "bin",
+            CargoCrateType::StaticLib => "staticlib",
+            CargoCrateType::DynamicLib => "cdylib",
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -149,29 +160,6 @@ impl FlowNode for Node {
                         "cargo"
                     };
 
-                    let cargo_out_dir = {
-                        // DEVNOTE: this is a _pragmatic_ implementation of this
-                        // logic, and is written with the undersatnding that
-                        // there are undoubtedly many "edge-cases" that may
-                        // result in the final target directory changing.
-                        //
-                        // One possible way to make this handling more robust
-                        // would be to start using `--message-format=json` when
-                        // invoking `cargo`, and then parsing the machine
-                        // readable output in order to obtain the output
-                        // artifact path _after_ the compilation has succeeded.
-                        if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
-                            PathBuf::from(dir)
-                        } else {
-                            in_folder.join("target")
-                        }
-                    }
-                    .join(target.to_string())
-                    .join(match profile {
-                        CargoBuildProfile::Debug => "debug",
-                        _ => cargo_profile,
-                    });
-
                     // FIXME: this flow is vestigial from a time when this node
                     // would return `CargoBuildCommand` back to the caller.
                     //
@@ -187,6 +175,7 @@ impl FlowNode for Node {
                                 v.push("cargo".into());
                             }
                             v.push("build".into());
+                            v.push("--message-format=json-render-diagnostics".into());
                             if verbose {
                                 v.push("--verbose".into());
                             }
@@ -216,10 +205,8 @@ impl FlowNode for Node {
                         },
                         with_env,
                         cargo_work_dir: in_folder.clone(),
-                        cargo_out_dir,
                         out_name,
                         crate_type: output_kind,
-                        target,
                     };
 
                     let CargoBuildCommand {
@@ -227,44 +214,13 @@ impl FlowNode for Node {
                         params,
                         with_env,
                         cargo_work_dir,
-                        cargo_out_dir,
                         out_name,
                         crate_type,
-                        target,
                     } = cmd;
 
                     let sh = xshell::Shell::new()?;
 
                     let out_dir = sh.current_dir();
-
-                    let do_rename_output = |dry_run| {
-                        rename_output(
-                            &out_name,
-                            &target,
-                            crate_type,
-                            &out_dir,
-                            &cargo_out_dir,
-                            dry_run,
-                        )
-                    };
-
-                    let check_paths = match do_rename_output(true)? {
-                        CargoBuildOutput::WindowsBin { exe, pdb } => vec![exe, pdb],
-                        CargoBuildOutput::ElfBin { bin } => vec![bin],
-                        CargoBuildOutput::LinuxStaticLib { a } => vec![a],
-                        CargoBuildOutput::LinuxDynamicLib { so } => vec![so],
-                        CargoBuildOutput::WindowsStaticLib { lib, pdb } => vec![lib, pdb],
-                        CargoBuildOutput::WindowsDynamicLib { dll, dll_lib, pdb } => {
-                            vec![dll, dll_lib, pdb]
-                        }
-                        CargoBuildOutput::UefiBin { efi, pdb } => vec![efi, pdb],
-                    };
-
-                    for path in check_paths {
-                        if path.exists() {
-                            anyhow::bail!("BUG: The `cargo_build` helper requires the Node ensure the build directory is fresh!")
-                        }
-                    }
 
                     sh.change_dir(cargo_work_dir);
                     let mut cmd = xshell::cmd!(sh, "{argv0} {params...}");
@@ -277,11 +233,17 @@ impl FlowNode for Node {
                         log::info!("extra_env: {key}={val}");
                         cmd = cmd.env(key, val);
                     }
-                    cmd.run()?;
+                    let json = cmd.read()?;
+                    let messages: Vec<cargo_output::Message> =
+                        serde_json::Deserializer::from_str(&json)
+                            .into_iter()
+                            .collect::<Result<_, _>>()
+                            .context("failed to deserialize cargo output")?;
 
                     sh.change_dir(out_dir.clone());
 
-                    let build_output = do_rename_output(false)?;
+                    let build_output =
+                        rename_output(&messages, &crate_name, &out_name, crate_type, &out_dir)?;
 
                     rt.write(output, &build_output);
 
@@ -299,20 +261,41 @@ struct CargoBuildCommand {
     params: Vec<String>,
     with_env: BTreeMap<String, String>,
     cargo_work_dir: PathBuf,
-    cargo_out_dir: PathBuf,
     out_name: String,
     crate_type: CargoCrateType,
-    target: target_lexicon::Triple,
 }
 
 fn rename_output(
+    messages: &[cargo_output::Message],
+    crate_name: &str,
     out_name: &str,
-    target: &target_lexicon::Triple,
     crate_type: CargoCrateType,
     out_dir: &Path,
-    cargo_out_dir: &Path,
-    dry_run: bool,
 ) -> Result<CargoBuildOutput, anyhow::Error> {
+    let filenames = messages
+        .iter()
+        .find_map(|msg| match msg {
+            cargo_output::Message::CompilerArtifact {
+                target: cargo_output::Target { name, kind },
+                filenames,
+            } if name == crate_name && kind.iter().any(|k| k == crate_type.as_str()) => {
+                Some(filenames)
+            }
+            _ => None,
+        })
+        .with_context(|| {
+            format!(
+                "failed to find artifact {crate_name} of kind {kind}",
+                kind = crate_type.as_str()
+            )
+        })?;
+
+    let find_source = |name: &str| {
+        filenames
+            .iter()
+            .find(|path| path.file_name().is_some_and(|f| f == name))
+    };
+
     fn rename_or_copy(from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<()> {
         let res = fs_err::rename(from.as_ref(), to.as_ref());
 
@@ -332,88 +315,78 @@ fn rename_output(
     }
 
     let do_rename = |ext: &str, no_dash: bool| -> anyhow::Result<_> {
-        let file_name = if !no_dash {
+        let mut file_name = if !no_dash {
             out_name.into()
         } else {
             out_name.replace('-', "_")
         };
-
-        let out_path_base = cargo_out_dir.join(&file_name);
-        let rename_path_base = out_dir.join(&file_name);
-
-        if !dry_run {
-            rename_or_copy(
-                out_path_base.with_extension(ext),
-                rename_path_base.with_extension(ext),
-            )?;
+        if !ext.is_empty() {
+            file_name.push('.');
+            file_name.push_str(ext);
         }
 
-        anyhow::Ok(rename_path_base.with_extension(ext))
+        let rename_path_base = out_dir.join(&file_name);
+        rename_or_copy(
+            find_source(&file_name)
+                .with_context(|| format!("failed to find artifact file {file_name}"))?,
+            &rename_path_base,
+        )?;
+        anyhow::Ok(rename_path_base)
     };
 
-    let expected_output = match (crate_type, target.operating_system) {
-        (CargoCrateType::Bin, target_lexicon::OperatingSystem::Windows) => {
-            let exe = do_rename("exe", false)?;
-            let pdb = do_rename("pdb", true)?;
-            CargoBuildOutput::WindowsBin { exe, pdb }
+    let expected_output = match crate_type {
+        CargoCrateType::Bin => {
+            if find_source(&format!("{out_name}.exe")).is_some() {
+                let exe = do_rename("exe", false)?;
+                let pdb = do_rename("pdb", true)?;
+                CargoBuildOutput::WindowsBin { exe, pdb }
+            } else if find_source(&format!("{out_name}.efi")).is_some() {
+                let efi = do_rename("efi", false)?;
+                let pdb = do_rename("pdb", true)?;
+                CargoBuildOutput::UefiBin { efi, pdb }
+            } else if find_source(out_name).is_some() {
+                let bin = do_rename("", false)?;
+                CargoBuildOutput::ElfBin { bin }
+            } else {
+                anyhow::bail!("failed to find binary artifact for {out_name}");
+            }
         }
-        (
-            CargoCrateType::Bin,
-            target_lexicon::OperatingSystem::Linux | target_lexicon::OperatingSystem::None_,
-        ) => {
-            let bin = do_rename("", false)?;
-            CargoBuildOutput::ElfBin { bin }
-        }
-        (CargoCrateType::DynamicLib, target_lexicon::OperatingSystem::Windows) => {
-            let dll = do_rename("dll", false)?;
-            let dll_lib = do_rename("dll.lib", false)?;
-            let pdb = do_rename("pdb", true)?;
+        CargoCrateType::DynamicLib => {
+            if find_source(&format!("{out_name}.dll")).is_some() {
+                let dll = do_rename("dll", false)?;
+                let dll_lib = do_rename("dll.lib", false)?;
+                let pdb = do_rename("pdb", true)?;
 
-            CargoBuildOutput::WindowsDynamicLib { dll, dll_lib, pdb }
-        }
-        (CargoCrateType::DynamicLib, target_lexicon::OperatingSystem::Linux) => {
-            let so = {
-                let rename_path = out_dir.join(format!("lib{out_name}.so"));
-                if !dry_run {
-                    rename_or_copy(
-                        cargo_out_dir.join(format!("lib{out_name}.so")),
-                        &rename_path,
-                    )?;
-                }
-                rename_path
-            };
+                CargoBuildOutput::WindowsDynamicLib { dll, dll_lib, pdb }
+            } else if let Some(source) = find_source(&format!("lib{out_name}.so")) {
+                let so = {
+                    let rename_path = out_dir.join(format!("lib{out_name}.so"));
+                    rename_or_copy(source, &rename_path)?;
+                    rename_path
+                };
 
-            CargoBuildOutput::LinuxDynamicLib { so }
+                CargoBuildOutput::LinuxDynamicLib { so }
+            } else {
+                anyhow::bail!("failed to find dynamic library artifact for {out_name}");
+            }
         }
-        (CargoCrateType::StaticLib, target_lexicon::OperatingSystem::Windows) => {
-            let lib = do_rename("lib", false)?;
-            let pdb = do_rename("pdb", true)?;
+        CargoCrateType::StaticLib => {
+            if find_source(&format!("{out_name}.lib")).is_some() {
+                let lib = do_rename("lib", false)?;
+                let pdb = do_rename("pdb", true)?;
 
-            CargoBuildOutput::WindowsStaticLib { lib, pdb }
-        }
-        (CargoCrateType::StaticLib, target_lexicon::OperatingSystem::Linux) => {
-            let a = {
-                let rename_path = out_dir.join(format!("lib{out_name}.a"));
-                if !dry_run {
-                    rename_or_copy(cargo_out_dir.join(format!("lib{out_name}.a")), &rename_path)?;
-                }
-                rename_path
-            };
+                CargoBuildOutput::WindowsStaticLib { lib, pdb }
+            } else if let Some(source) = find_source(&format!("lib{out_name}.a")) {
+                let a = {
+                    let rename_path = out_dir.join(format!("lib{out_name}.a"));
+                    rename_or_copy(source, &rename_path)?;
+                    rename_path
+                };
 
-            CargoBuildOutput::LinuxStaticLib { a }
-        }
-        (CargoCrateType::Bin, target_lexicon::OperatingSystem::Uefi) => {
-            let efi = do_rename("efi", false)?;
-            let pdb = do_rename("pdb", true)?;
-
-            CargoBuildOutput::UefiBin { efi, pdb }
-        }
-        _ => {
-            anyhow::bail!(
-                "missing support for building {:?} on {}",
-                crate_type,
-                target
-            )
+                CargoBuildOutput::LinuxStaticLib { a }
+            } else {
+                anyhow::bail!("failed to find static library artifact for {out_name}");
+            }
         }
     };
 
