@@ -329,5 +329,7 @@ impl PetriVmConfigOpenVmm {
             .unwrap()
             .late_map_vtl0_memory =
             (!allow).then_some(hvlite_defs::config::LateMapVtl0MemoryPolicy::InjectException);
+
+        self
     }
 }
