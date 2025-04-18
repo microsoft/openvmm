@@ -413,8 +413,6 @@ struct TdxVtl {
     /// Virtual cr4.
     cr4: VirtualRegister,
 
-    offload_apic: bool,
-
     tpr_threshold: u8,
     #[inspect(skip)]
     processor_controls: ProcessorControls,
@@ -768,7 +766,6 @@ impl BackingPrivate for TdxBacked {
                         .read_vmcs32(vtl, VmcsField::VMX_VMCS_PROCESSOR_CONTROLS)
                         .into(),
                     interruption_information: Default::default(),
-                    offload_apic: false,
                     exception_error_code: 0,
                     interruption_set: false,
                     flush_state: TdxFlushState::new(),
@@ -847,7 +844,7 @@ impl BackingPrivate for TdxBacked {
             .enable_offload();
 
         // But disable it for VTL 1.
-        this.set_apic_offload(GuestVtl::Vtl0, false);
+        this.set_apic_offload(GuestVtl::Vtl1, false);
 
         // Initialize registers to the reset state, since this may be different
         // than what's on the VMCS and is certainly different than what's in the
@@ -1194,8 +1191,6 @@ impl UhProcessor<'_, TdxBacked> {
                 .interruption_information
                 .set_valid(false);
         }
-
-        self.backing.vtls[vtl].offload_apic = offload;
     }
 }
 
@@ -1387,9 +1382,7 @@ impl UhProcessor<'_, TdxBacked> {
         // Do not do this if there is a pending interruption, since we need to
         // run code on the next exit to clear it. If we miss this opportunity,
         // we will probably double-inject the interruption, wreaking havoc.
-        let offload_enabled = next_vtl == GuestVtl::Vtl0
-            && self.backing.vtls[next_vtl].offload_apic
-            && self.backing.cvm.lapics[next_vtl].lapic.can_offload_irr()
+        let offload_enabled = self.backing.cvm.lapics[next_vtl].lapic.can_offload_irr()
             && !self.backing.vtls[next_vtl].interruption_information.valid();
         let x2apic_enabled = self.backing.cvm.lapics[next_vtl].lapic.x2apic_enabled();
 
