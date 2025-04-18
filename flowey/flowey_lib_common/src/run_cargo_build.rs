@@ -337,13 +337,8 @@ fn rename_output(
         }
 
         let rename_path_base = out_dir.join(&file_name);
-
-        rename_or_copy(
-            find_source(&file_name)?,
-            rename_path_base.with_extension(ext),
-        )?;
-
-        anyhow::Ok(rename_path_base.with_extension(ext))
+        rename_or_copy(find_source(&file_name)?, &rename_path_base)?;
+        anyhow::Ok(rename_path_base)
     };
 
     let expected_output = match (crate_type, target.operating_system) {
