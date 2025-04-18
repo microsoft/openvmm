@@ -15,6 +15,7 @@ use memory_range::MemoryRange;
 use memory_range::subtract_ranges;
 use shim_params::IsolationType;
 
+mod dma_hint;
 mod dt;
 mod mmio;
 pub mod shim_params;

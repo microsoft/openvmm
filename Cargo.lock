@@ -4759,6 +4759,7 @@ dependencies = [
  "sha2",
  "sidecar_defs",
  "tdcall",
+ "test_with_tracing",
  "underhill_confidentiality",
  "x86defs",
  "zerocopy 0.8.23",

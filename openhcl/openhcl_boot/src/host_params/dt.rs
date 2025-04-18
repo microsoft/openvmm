@@ -13,6 +13,7 @@ use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
 use crate::host_params::MAX_VTL2_USED_RANGES;
+use crate::host_params::dma_hint::vtl2_calculate_dma_hint;
 use crate::single_threaded::OffStackRef;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayVec;
@@ -463,7 +464,17 @@ impl PartitionInfo {
                 crate::cmdline::parse_boot_command_line(storage.cmdline.as_str())
                     .enable_vtl2_gpa_pool;
 
-            max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0))
+            let hostval = max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0));
+            if hostval == 0 &&
+                parsed.nvme_keepalive &&
+                params.isolation_type == IsolationType::None &&
+                storage.memory_allocation_mode == MemoryAllocationMode::Host {
+                // If host did not provide the DMA hint value, re-evaluate
+                // it internally if conditions satisfy.
+                vtl2_calculate_dma_hint(parsed.cpu_count(), storage)
+            } else {
+                hostval
+            }
         };
         if vtl2_gpa_pool_size != 0 {
             // Reserve the specified number of pages for the pool. Use the used
