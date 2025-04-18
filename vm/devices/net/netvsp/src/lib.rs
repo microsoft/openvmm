@@ -11,7 +11,7 @@ mod protocol;
 pub mod resolver;
 mod rndisprot;
 mod rx_bufs;
-mod saved_state;
+pub mod saved_state;
 mod test;
 
 use crate::buffers::GuestBuffers;
@@ -46,6 +46,7 @@ use inspect::InspectMut;
 use inspect::SensitivityLevel;
 use inspect_counters::Counter;
 use inspect_counters::Histogram;
+use mana_save_restore::save_restore::QueueSavedState;
 use mesh::rpc::Rpc;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
@@ -1374,6 +1375,7 @@ impl Nic {
         // processor.
         driver_builder.run_on_target(!self.adapter.tx_fast_completions);
 
+        tracing::info!("inserting coordinator - restoring {}", restoring);
         #[expect(clippy::disallowed_methods)] // TODO
         let (send, recv) = mpsc::channel(1);
         self.coordinator_send = Some(send);
@@ -3683,6 +3685,7 @@ impl Coordinator {
         let mut sleep_duration: Option<Instant> = None;
         loop {
             if self.restart {
+                tracing::info!("restarting workers");
                 stop.until_stopped(self.stop_workers()).await?;
                 // The queue restart operation is not restartable, so do not
                 // poll on `stop` here.
@@ -3832,7 +3835,10 @@ impl Coordinator {
                 Message::Internal(CoordinatorMessage::UpdateGuestVfState) => {
                     self.update_guest_vf_state(state).await;
                 }
-                Message::UpdateFromEndpoint(EndpointAction::RestartRequired) => self.restart = true,
+                Message::UpdateFromEndpoint(EndpointAction::RestartRequired) => {
+                    tracing::info!("EndpointAction::RestartRequired");
+                    self.restart = true;
+                }
                 Message::UpdateFromEndpoint(EndpointAction::LinkStatusNotify(connect)) => {
                     self.workers[0].stop().await;
 
@@ -3850,7 +3856,10 @@ impl Coordinator {
                     // If there is any existing sleep timer running, cancel it out.
                     sleep_duration = None;
                 }
-                Message::Internal(CoordinatorMessage::Restart) => self.restart = true,
+                Message::Internal(CoordinatorMessage::Restart) => {
+                    tracing::info!("CoordinatorMessage::Restart");
+                    self.restart = true;
+                }
                 Message::Internal(CoordinatorMessage::StartTimer(duration)) => {
                     sleep_duration = Some(duration);
                     // Restart primary task.
@@ -4245,6 +4254,7 @@ impl Coordinator {
                     flags: 0,
                 });
 
+            tracing::info!("restarting queues");
             c_state
                 .endpoint
                 .get_queues(queue_config, rss.as_ref(), &mut queues)
@@ -4341,6 +4351,7 @@ impl<T: RingMem + 'static> Worker<T> {
                         data: ProcessingData::new(),
                     };
 
+                    tracing::info!("sending CoordinatorMessage::Restart");
                     // Wake up the coordinator task to start the queues.
                     let _ = self.coordinator_send.try_send(CoordinatorMessage::Restart);
 

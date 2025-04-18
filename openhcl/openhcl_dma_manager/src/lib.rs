@@ -369,7 +369,7 @@ impl OpenhclDmaManager {
 
         if let Some(private_pool) = &self.private_pool {
             private_pool
-                .validate_restore(false)
+                .validate_restore(true)
                 .context("failed to validate restore for private pool")?
         }
 
@@ -429,6 +429,22 @@ impl DmaClientBacking {
             DmaClientBacking::LockedMemoryLowerVtl(spawner) => spawner.attach_pending_buffers(),
         }
     }
+
+    fn get_dma_buffer(
+        &self,
+        len: usize,
+        base_pfn: u64,
+    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+        match self {
+            DmaClientBacking::SharedPool(allocator) => allocator.get_dma_buffer(len, base_pfn),
+            DmaClientBacking::PrivatePool(allocator) => allocator.get_dma_buffer(len, base_pfn),
+            DmaClientBacking::LockedMemory(spawner) => spawner.get_dma_buffer(len, base_pfn),
+            DmaClientBacking::PrivatePoolLowerVtl(spawner) => spawner.get_dma_buffer(len, base_pfn),
+            DmaClientBacking::LockedMemoryLowerVtl(spawner) => {
+                spawner.get_dma_buffer(len, base_pfn)
+            }
+        }
+    }
 }
 
 /// An OpenHCL dma client. This client implements inspect to allow seeing what
@@ -449,5 +465,13 @@ impl DmaClient for OpenhclDmaClient {
 
     fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
         self.backing.attach_pending_buffers()
+    }
+
+    fn get_dma_buffer(
+        &self,
+        len: usize,
+        base_pfn: u64,
+    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+        self.backing.get_dma_buffer(len, base_pfn)
     }
 }

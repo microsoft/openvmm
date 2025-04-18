@@ -12,6 +12,8 @@ use futures::lock::Mutex;
 use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
+use mana_save_restore::save_restore::EndpointSavedState;
+use mana_save_restore::save_restore::QueueSavedState;
 use mesh::error::RemoteError;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;
@@ -354,6 +356,21 @@ impl Endpoint for PacketCaptureEndpoint {
 
     fn link_speed(&self) -> u64 {
         self.current().link_speed()
+    }
+
+    async fn restore_queues(
+        &mut self,
+        queue_config: Vec<QueueConfig<'_>>,
+        saved_state: Vec<QueueSavedState>,
+        queues: &mut Vec<Box<dyn Queue>>,
+    ) -> anyhow::Result<()> {
+        self.current_mut()
+            .restore_queues(queue_config, saved_state, queues)
+            .await
+    }
+
+    fn save(&mut self) -> anyhow::Result<EndpointSavedState> {
+        self.current_mut().save()
     }
 }
 
