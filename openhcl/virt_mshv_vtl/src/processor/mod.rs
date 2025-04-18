@@ -273,9 +273,9 @@ pub trait Backing: BackingPrivate {}
 
 impl<T: BackingPrivate> Backing for T {}
 
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 pub(crate) struct BackingSharedParams<'a> {
     pub cvm_state: Option<crate::UhCvmPartitionState>,
-    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     pub guest_memory: VtlArray<GuestMemory, 2>,
     #[cfg(guest_arch = "x86_64")]
     pub cpuid: &'a virt::CpuidLeafSet,

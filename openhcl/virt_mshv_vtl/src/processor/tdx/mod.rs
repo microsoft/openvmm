@@ -586,6 +586,8 @@ impl HardwareIsolatedBacking for TdxBacked {
         this: &mut UhProcessor<'_, Self>,
         intercept_control: hvdef::HvRegisterCrInterceptControl,
     ) {
+        // Today we only support intercepting VTL 0 on behalf of VTL 1.
+        let vtl = GuestVtl::Vtl0;
         let intercept_masks = &this
             .backing
             .cvm_state()
@@ -593,8 +595,10 @@ impl HardwareIsolatedBacking for TdxBacked {
             .as_ref()
             .unwrap()
             .reg_intercept;
+
+        // Update CR0 and CR4 intercept masks in the VMCS.
         this.runner.write_vmcs64(
-            GuestVtl::Vtl0,
+            vtl,
             VmcsField::VMX_VMCS_CR0_GUEST_HOST_MASK,
             !0,
             this.shared.cr_guest_host_mask(ShadowedRegister::Cr0)
@@ -605,7 +609,7 @@ impl HardwareIsolatedBacking for TdxBacked {
                 },
         );
         this.runner.write_vmcs64(
-            GuestVtl::Vtl0,
+            vtl,
             VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK,
             !0,
             this.shared.cr_guest_host_mask(ShadowedRegister::Cr4)
@@ -615,7 +619,24 @@ impl HardwareIsolatedBacking for TdxBacked {
                     0
                 },
         );
-        // TODO TDX GUEST VSM register for descriptor table exits, update msr bitmap
+
+        // Update descriptor table intercepts.
+        let intercept_tables = intercept_control.gdtr_write()
+            | intercept_control.idtr_write()
+            | intercept_control.ldtr_write()
+            | intercept_control.tr_write();
+        this.runner.write_vmcs32(
+            vtl,
+            VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS,
+            SecondaryProcessorControls::new()
+                .with_descriptor_table_exiting(true)
+                .into_bits(),
+            SecondaryProcessorControls::new()
+                .with_descriptor_table_exiting(intercept_tables)
+                .into_bits(),
+        );
+
+        // TODO Update MSR bitmaps
     }
 }
 
@@ -1113,7 +1134,7 @@ impl UhProcessor<'_, TdxBacked> {
         }
 
         if self.backing.vtls[vtl].processor_controls != new_processor_controls {
-            tracing::debug!(?new_processor_controls, "requesting window change");
+            tracing::debug!(?new_processor_controls, ?vtl, "requesting window change");
             self.runner.write_vmcs32(
                 vtl,
                 VmcsField::VMX_VMCS_PROCESSOR_CONTROLS,
@@ -1779,10 +1800,10 @@ impl UhProcessor<'_, TdxBacked> {
                     (gps[TdxGp::RAX] as u32 as u64) | ((gps[TdxGp::RDX] as u32 as u64) << 32);
 
                 if self.cvm_protect_msr_write(intercepted_vtl, msr) {
-                    // An intercept message has been posted, no further processing is
-                    // required. Return without advancing instruction pointer, it must
-                    // continue to point to the instruction that generated the
-                    // intercept.
+                    // Once the intercept message has been posted, no further
+                    // processing is required. Do not advance the instruction
+                    // pointer here, since the instruction pointer must continue to
+                    // point to the instruction that generated the intercept.
                 } else {
                     let result = self.backing.cvm.lapics[intercepted_vtl]
                         .lapic
