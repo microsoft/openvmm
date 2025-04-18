@@ -1783,7 +1783,7 @@ impl UhProcessor<'_, TdxBacked> {
                 let value =
                     (gps[TdxGp::RAX] as u32 as u64) | ((gps[TdxGp::RDX] as u32 as u64) << 32);
 
-                if !self.try_cvm_protect_msr_write(intercepted_vtl, msr) {
+                if !self.cvm_try_protect_msr_write(intercepted_vtl, msr) {
                     let result = self.backing.cvm.lapics[intercepted_vtl]
                         .lapic
                         .access(&mut TdxApicClient {
@@ -1878,7 +1878,7 @@ impl UhProcessor<'_, TdxBacked> {
                     _ => unreachable!("not registered for cr{cr} accesses"),
                 };
 
-                if !self.try_cvm_protect_secure_register_write(intercepted_vtl, cr, value) {
+                if !self.cvm_try_protect_secure_register_write(intercepted_vtl, cr, value) {
                     let r = match cr {
                         HvX64RegisterName::Cr0 => self.backing.vtls[intercepted_vtl]
                             .cr0
@@ -1909,7 +1909,7 @@ impl UhProcessor<'_, TdxBacked> {
                         cpl: exit_info.cpl(),
                     })
                 {
-                    if !self.try_cvm_protect_secure_register_write(
+                    if !self.cvm_try_protect_secure_register_write(
                         intercepted_vtl,
                         HvX64RegisterName::Xfem,
                         value,

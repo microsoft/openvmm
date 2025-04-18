@@ -979,7 +979,7 @@ impl UhProcessor<'_, SnpBacked> {
         msr: u32,
         is_write: bool,
     ) {
-        if is_write && self.try_cvm_protect_msr_write(entered_from_vtl, msr) {
+        if is_write && self.cvm_try_protect_msr_write(entered_from_vtl, msr) {
             return;
         }
 
@@ -1074,7 +1074,7 @@ impl UhProcessor<'_, SnpBacked> {
             cr4: vmsa.cr4(),
             cpl: vmsa.cpl(),
         }) {
-            if !self.try_cvm_protect_secure_register_write(
+            if !self.cvm_try_protect_secure_register_write(
                 entered_from_vtl,
                 HvX64RegisterName::Xfem,
                 value,
@@ -1134,7 +1134,7 @@ impl UhProcessor<'_, SnpBacked> {
             return;
         }
 
-        if !self.try_cvm_protect_secure_register_write(entered_from_vtl, reg, reg_value) {
+        if !self.cvm_try_protect_secure_register_write(entered_from_vtl, reg, reg_value) {
             let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
             match reg {
                 HvX64RegisterName::Cr0 => vmsa.set_cr0(reg_value),
@@ -1488,7 +1488,7 @@ impl UhProcessor<'_, SnpBacked> {
                     _ => unreachable!(),
                 };
 
-                if !self.try_cvm_protect_secure_register_write(entered_from_vtl, reg, 0) {
+                if !self.cvm_try_protect_secure_register_write(entered_from_vtl, reg, 0) {
                     // This is an unexpected intercept: should only have received an
                     // intercept for these registers if a VTL (i.e. VTL 1) requested
                     // it. If an unexpected intercept has been received, then the
