@@ -245,24 +245,7 @@ impl GlobalSynic {
         }
         let byte_offset = sint_index * (HV_PAGE_SIZE_USIZE / NUM_SINTS) + flag / 8;
         let mask = 1 << (flag % 8);
-        // Guess zero for the current value of the byte to avoid an extra read
-        // in the common case.
-        let mut byte: u8 = 0;
-        loop {
-            match vp.siefp_page[byte_offset].compare_exchange(
-                byte,
-                byte | mask,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => break,
-                Err(b) => byte = b,
-            }
-            if byte & mask != 0 {
-                // Already signaled.
-                return Ok(false);
-            }
-        }
+        vp.siefp_page[byte_offset].fetch_or(mask, Ordering::SeqCst);
         sint_interrupt(interrupt, sint);
         Ok(true)
     }
