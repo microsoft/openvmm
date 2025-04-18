@@ -8,6 +8,9 @@ use super::NIC_MAC_ADDRESS;
 use super::PetriVmConfigOpenVmm;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
+use disk_backend_resources::LayeredDiskHandle;
+use disk_backend_resources::layer::DiskLayerHandle;
+use disk_backend_resources::layer::RamDiskLayerHandle;
 use fs_err::File;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
@@ -16,8 +19,10 @@ use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
+use hvlite_helpers::disk::open_disk_type;
 use petri_artifacts_common::tags::IsOpenhclIgvm;
 use petri_artifacts_core::ResolvedArtifact;
+use std::path::Path;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
 use vm_resource::IntoResource;
@@ -229,6 +234,56 @@ impl PetriVmConfigOpenVmm {
                 }
             }
             _ => panic!("not a UEFI boot"),
+        }
+        self
+    }
+
+    /// Specifies whether the UEFI will always attempt a default boot
+    pub fn with_default_boot_always_attempt(mut self, val: bool) -> Self {
+        match self.config.load_mode {
+            LoadMode::Uefi {
+                ref mut default_boot_always_attempt,
+                ..
+            } => {
+                *default_boot_always_attempt = val;
+            }
+            LoadMode::Igvm { .. } => {
+                let ged = self.ged.as_mut().expect("no GED to configure DPS");
+                match ged.firmware {
+                    get_resources::ged::GuestFirmwareConfig::Uefi {
+                        ref mut default_boot_always_attempt,
+                        ..
+                    } => {
+                        *default_boot_always_attempt = val;
+                    }
+                    _ => {
+                        panic!("not a UEFI boot");
+                    }
+                }
+            }
+            _ => panic!("not a UEFI boot"),
+        }
+        self
+    }
+
+    /// Specifies an existing VMGS file to use
+    pub fn with_vmgs(mut self, vmgs_path: impl AsRef<Path>) -> Self {
+        let vmgs_disk = LayeredDiskHandle {
+            layers: vec![
+                RamDiskLayerHandle { len: None }.into_resource().into(),
+                DiskLayerHandle(
+                    open_disk_type(vmgs_path.as_ref(), true).expect("failed to open VMGS file"),
+                )
+                .into_resource()
+                .into(),
+            ],
+        }
+        .into_resource();
+
+        if self.firmware.is_openhcl() {
+            self.ged.as_mut().unwrap().vmgs_disk = Some(vmgs_disk);
+        } else {
+            self.config.vmgs_disk = Some(vmgs_disk);
         }
         self
     }

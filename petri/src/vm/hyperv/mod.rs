@@ -129,6 +129,10 @@ impl PetriVm for PetriVmHyperV {
         Self::wait_for_successful_boot_event(self).await
     }
 
+    async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
+        Self::wait_for_boot_event(self).await
+    }
+
     async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
         Self::send_enlightened_shutdown(self, kind).await
     }
@@ -452,6 +456,12 @@ impl PetriVmHyperV {
     ///   method is best effort for them.
     pub async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
         self.vm.wait_for_successful_boot_event().await
+    }
+
+    /// Waits for an event emitted by the firmware about its boot status, and
+    /// returns that status.
+    pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
+        self.vm.wait_for_boot_event().await
     }
 
     /// Instruct the guest to shutdown via the Hyper-V shutdown IC.

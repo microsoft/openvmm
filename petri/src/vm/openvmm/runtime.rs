@@ -13,6 +13,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
+use get_resources::ged::FirmwareEvent;
 use hvlite_defs::rpc::PulseSaveRestoreError;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::CancelContext;
@@ -68,6 +69,10 @@ impl PetriVm for PetriVmOpenVmm {
 
     async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
         Self::wait_for_successful_boot_event(self).await
+    }
+
+    async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
+        Self::wait_for_boot_event(self).await
     }
 
     async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()> {
@@ -173,6 +178,11 @@ impl PetriVmOpenVmm {
         /// * PCAT guests may not emit an event depending on the PCAT version, this
         /// method is best effort for them.
         pub async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Waits for an event emitted by the firmware about its boot status, and
+        /// returns that status.
+        pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent>
     );
     petri_vm_fn!(
         /// Waits for the Hyper-V shutdown IC to be ready, returning a receiver
@@ -314,12 +324,7 @@ impl PetriVmInner {
 
     async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
         if let Some(expected_event) = self.resources.expected_boot_event {
-            let event = self
-                .resources
-                .firmware_event_recv
-                .recv()
-                .await
-                .context("Failed to get firmware boot event")?;
+            let event = self.wait_for_boot_event().await?;
 
             anyhow::ensure!(
                 event == expected_event,
@@ -330,6 +335,14 @@ impl PetriVmInner {
         }
 
         Ok(())
+    }
+
+    async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
+        self.resources
+            .firmware_event_recv
+            .recv()
+            .await
+            .context("Failed to get firmware boot event")
     }
 
     async fn wait_for_enlightened_shutdown_ready(

@@ -917,6 +917,7 @@ impl IntoPipeline for CheckinGatesCli {
             KnownVhd::Gen1WindowsDataCenterCore2022,
             KnownVhd::Gen2WindowsDataCenterCore2022,
             KnownVhd::Ubuntu2204Server,
+            KnownVhd::VmgsWithBootEntry,
         ];
         let standard_x64_isos = vec![KnownIso::FreeBsd13_2];
 
@@ -987,7 +988,10 @@ impl IntoPipeline for CheckinGatesCli {
                 target: CommonTriple::AARCH64_WINDOWS_MSVC,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_windows_aarch64,
                 nextest_filter_expr: "all()".to_string(),
-                vhds: vec![KnownVhd::Ubuntu2404ServerAarch64],
+                vhds: vec![
+                    KnownVhd::Ubuntu2404ServerAarch64,
+                    KnownVhd::VmgsWithBootEntry,
+                ],
                 isos: vec![],
             },
         ] {

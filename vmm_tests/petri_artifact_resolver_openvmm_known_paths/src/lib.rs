@@ -71,6 +71,8 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
 
             _ if id == test_iso::FREE_BSD_13_2_X64 => get_guest_iso_path(KnownIso::FreeBsd13_2),
 
+            _ if id == test_vmgs::VMGS_WITH_BOOT_ENTRY => get_guest_vhd_path(KnownVhd::VmgsWithBootEntry),
+
             _ => anyhow::bail!("no support for given artifact type"),
         }
     }
