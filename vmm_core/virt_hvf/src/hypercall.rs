@@ -132,8 +132,16 @@ impl<T> SetVpRegisters for HvfHypercallHandler<'_, '_, T> {
                     .hv1
                     .guest_os_id
                     .store(value.as_u64(), Ordering::Relaxed),
-                HvArm64RegisterName::Sipp => self.vp.hv1.set_simp(value.as_u64()),
-                HvArm64RegisterName::Sifp => self.vp.hv1.set_siefp(value.as_u64()),
+                HvArm64RegisterName::Sipp => self
+                    .vp
+                    .hv1
+                    .set_simp(value.as_u64())
+                    .map_err(|_| (HvError::InvalidParameter, 1))?,
+                HvArm64RegisterName::Sifp => self
+                    .vp
+                    .hv1
+                    .set_siefp(value.as_u64())
+                    .map_err(|_| (HvError::InvalidParameter, 1))?,
                 HvArm64RegisterName::Scontrol => self.vp.hv1.set_scontrol(value.as_u64()),
                 HvArm64RegisterName::Eom => {}
                 r if (HvArm64RegisterName::Sint0..=HvArm64RegisterName::Sint15).contains(&r) => {
