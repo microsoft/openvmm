@@ -193,8 +193,8 @@ impl FlowNode for Node {
                                 v.push(features);
                             }
                             if let Some(target) = &target {
-                            v.push("--target".into());
-                            v.push(target.to_string());
+                                v.push("--target".into());
+                                v.push(target.to_string());
                             }
                             v.push("--profile".into());
                             v.push(cargo_profile.into());

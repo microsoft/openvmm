@@ -373,12 +373,11 @@ impl FlowNode for Node {
             };
 
             let mut config = Vec::new();
-            let mut skip_target_install = false;
 
             // If the target vendor is specified as `minimal_rt`, then this is
             // our custom target triple for the minimal_rt toolchain. Include the appropriate
             // config file.
-            if target.vendor.as_str() == "minimal_rt" {
+            let passed_target = if target.vendor.as_str() == "minimal_rt" {
                 config.push(format!(
                     "openhcl/minimal_rt/{arch}-config.toml",
                     arch = target.architecture.into_str()
@@ -388,12 +387,15 @@ impl FlowNode for Node {
                     // since the x86_64-unknown-none target is stage 2 and has
                     // reasonable defaults.
                     target.vendor = target_lexicon::Vendor::Unknown;
+                    Some(target.clone())
                 } else {
                     // We are building the target from source, so don't try to
                     // install it via rustup.
-                    skip_target_install = true;
+                    None
                 }
-            }
+            } else {
+                Some(target.clone())
+            };
 
             let base_output = ctx.reqv(|v| flowey_lib_common::run_cargo_build::Request {
                 in_folder: openvmm_repo_path.clone(),
@@ -411,8 +413,7 @@ impl FlowNode for Node {
                 },
                 features,
                 output_kind: crate_type,
-                target: target.clone(),
-                skip_target_install,
+                target: passed_target,
                 extra_env: Some(extra_env),
                 config,
                 pre_build_deps,
