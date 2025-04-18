@@ -341,55 +341,59 @@ fn rename_output(
         anyhow::Ok(rename_path_base)
     };
 
-    let expected_output = match (crate_type, target.operating_system) {
-        (CargoCrateType::Bin, target_lexicon::OperatingSystem::Windows) => {
+    let expected_output = match crate_type {
+        CargoCrateType::Bin => {
+            if let Ok(source) = find_source(&format!("{out_name}.exe")) {
             let exe = do_rename("exe", false)?;
             let pdb = do_rename("pdb", true)?;
             CargoBuildOutput::WindowsBin { exe, pdb }
-        }
-        (
-            CargoCrateType::Bin,
-            target_lexicon::OperatingSystem::Linux | target_lexicon::OperatingSystem::None_,
-        ) => {
+            } else if find_source(&format!("{out_name}.efi")).is_some() {
+                let efi = do_rename("efi", false)?;
+                let pdb = do_rename("pdb", true)?;
+                CargoBuildOutput::UefiBin { efi, pdb }
+            } else if find_source(out_name).is_some() {
             let bin = do_rename("", false)?;
             CargoBuildOutput::ElfBin { bin }
+            } else {
+                anyhow::bail!("failed to find binary artifact for {out_name}");
+            }
         }
-        (CargoCrateType::DynamicLib, target_lexicon::OperatingSystem::Windows) => {
+        CargoCrateType::DynamicLib => {
+            if find_source(&format!("{out_name}.dll")).is_ok() {
             let dll = do_rename("dll", false)?;
             let dll_lib = do_rename("dll.lib", false)?;
             let pdb = do_rename("pdb", true)?;
 
             CargoBuildOutput::WindowsDynamicLib { dll, dll_lib, pdb }
-        }
-        (CargoCrateType::DynamicLib, target_lexicon::OperatingSystem::Linux) => {
+            } else if let Ok(source) = find_source(&format!("lib{out_name}.so")) {
             let so = {
                 let rename_path = out_dir.join(format!("lib{out_name}.so"));
-                rename_or_copy(find_source(&format!("lib{out_name}.so"))?, &rename_path)?;
+                    rename_or_copy(source, &rename_path)?;
                 rename_path
             };
 
             CargoBuildOutput::LinuxDynamicLib { so }
+            } else {
+                anyhow::bail!("failed to find dynamic library artifact for {out_name}");
+            }
         }
-        (CargoCrateType::StaticLib, target_lexicon::OperatingSystem::Windows) => {
+        CargoCrateType::StaticLib => {
+            if find_source(&format!("{out_name}.lib")).is_ok() {
             let lib = do_rename("lib", false)?;
             let pdb = do_rename("pdb", true)?;
 
             CargoBuildOutput::WindowsStaticLib { lib, pdb }
-        }
-        (CargoCrateType::StaticLib, target_lexicon::OperatingSystem::Linux) => {
+            } else if let Ok(source) = find_source(&format!("lib{out_name}.a")) {
             let a = {
                 let rename_path = out_dir.join(format!("lib{out_name}.a"));
-                rename_or_copy(find_source(&format!("lib{out_name}.a"))?, &rename_path)?;
+                    rename_or_copy(source, &rename_path)?;
                 rename_path
             };
 
             CargoBuildOutput::LinuxStaticLib { a }
+            } else {
+                anyhow::bail!("failed to find static library artifact for {out_name}");
         }
-        (CargoCrateType::Bin, target_lexicon::OperatingSystem::Uefi) => {
-            let efi = do_rename("efi", false)?;
-            let pdb = do_rename("pdb", true)?;
-
-            CargoBuildOutput::UefiBin { efi, pdb }
         }
         _ => {
             anyhow::bail!(
