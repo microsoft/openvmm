@@ -87,8 +87,7 @@ flowey_request! {
         pub profile: CargoBuildProfile,
         pub features: BTreeSet<String>,
         pub output_kind: CargoCrateType,
-        pub target: target_lexicon::Triple,
-        pub skip_target_install: bool,
+        pub target: Option<target_lexicon::Triple>,
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
         pub config: Vec<String>,
         /// Wait for specified side-effects to resolve before running cargo-run.
