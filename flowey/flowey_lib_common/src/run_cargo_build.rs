@@ -207,7 +207,6 @@ impl FlowNode for Node {
                         cargo_work_dir: in_folder.clone(),
                         out_name,
                         crate_type: output_kind,
-                        target,
                     };
 
                     let CargoBuildCommand {
@@ -217,7 +216,6 @@ impl FlowNode for Node {
                         cargo_work_dir,
                         out_name,
                         crate_type,
-                        target,
                     } = cmd;
 
                     let sh = xshell::Shell::new()?;
@@ -244,14 +242,8 @@ impl FlowNode for Node {
 
                     sh.change_dir(out_dir.clone());
 
-                    let build_output = rename_output(
-                        &messages,
-                        &crate_name,
-                        &out_name,
-                        &target,
-                        crate_type,
-                        &out_dir,
-                    )?;
+                    let build_output =
+                        rename_output(&messages, &crate_name, &out_name, crate_type, &out_dir)?;
 
                     rt.write(output, &build_output);
 
@@ -271,14 +263,12 @@ struct CargoBuildCommand {
     cargo_work_dir: PathBuf,
     out_name: String,
     crate_type: CargoCrateType,
-    target: target_lexicon::Triple,
 }
 
 fn rename_output(
     messages: &[cargo_output::Message],
     crate_name: &str,
     out_name: &str,
-    target: &target_lexicon::Triple,
     crate_type: CargoCrateType,
     out_dir: &Path,
 ) -> Result<CargoBuildOutput, anyhow::Error> {
@@ -304,7 +294,6 @@ fn rename_output(
         filenames
             .iter()
             .find(|path| path.file_name().is_some_and(|f| f == name))
-            .with_context(|| format!("failed to find artifact file {name}"))
     };
 
     fn rename_or_copy(from: impl AsRef<Path>, to: impl AsRef<Path>) -> std::io::Result<()> {
@@ -337,70 +326,67 @@ fn rename_output(
         }
 
         let rename_path_base = out_dir.join(&file_name);
-        rename_or_copy(find_source(&file_name)?, &rename_path_base)?;
+        rename_or_copy(
+            find_source(&file_name)
+                .with_context(|| format!("failed to find artifact file {file_name}"))?,
+            &rename_path_base,
+        )?;
         anyhow::Ok(rename_path_base)
     };
 
     let expected_output = match crate_type {
         CargoCrateType::Bin => {
-            if let Ok(source) = find_source(&format!("{out_name}.exe")) {
-            let exe = do_rename("exe", false)?;
-            let pdb = do_rename("pdb", true)?;
-            CargoBuildOutput::WindowsBin { exe, pdb }
+            if find_source(&format!("{out_name}.exe")).is_some() {
+                let exe = do_rename("exe", false)?;
+                let pdb = do_rename("pdb", true)?;
+                CargoBuildOutput::WindowsBin { exe, pdb }
             } else if find_source(&format!("{out_name}.efi")).is_some() {
                 let efi = do_rename("efi", false)?;
                 let pdb = do_rename("pdb", true)?;
                 CargoBuildOutput::UefiBin { efi, pdb }
             } else if find_source(out_name).is_some() {
-            let bin = do_rename("", false)?;
-            CargoBuildOutput::ElfBin { bin }
+                let bin = do_rename("", false)?;
+                CargoBuildOutput::ElfBin { bin }
             } else {
                 anyhow::bail!("failed to find binary artifact for {out_name}");
             }
         }
         CargoCrateType::DynamicLib => {
-            if find_source(&format!("{out_name}.dll")).is_ok() {
-            let dll = do_rename("dll", false)?;
-            let dll_lib = do_rename("dll.lib", false)?;
-            let pdb = do_rename("pdb", true)?;
+            if find_source(&format!("{out_name}.dll")).is_some() {
+                let dll = do_rename("dll", false)?;
+                let dll_lib = do_rename("dll.lib", false)?;
+                let pdb = do_rename("pdb", true)?;
 
-            CargoBuildOutput::WindowsDynamicLib { dll, dll_lib, pdb }
-            } else if let Ok(source) = find_source(&format!("lib{out_name}.so")) {
-            let so = {
-                let rename_path = out_dir.join(format!("lib{out_name}.so"));
+                CargoBuildOutput::WindowsDynamicLib { dll, dll_lib, pdb }
+            } else if let Some(source) = find_source(&format!("lib{out_name}.so")) {
+                let so = {
+                    let rename_path = out_dir.join(format!("lib{out_name}.so"));
                     rename_or_copy(source, &rename_path)?;
-                rename_path
-            };
+                    rename_path
+                };
 
-            CargoBuildOutput::LinuxDynamicLib { so }
+                CargoBuildOutput::LinuxDynamicLib { so }
             } else {
                 anyhow::bail!("failed to find dynamic library artifact for {out_name}");
             }
         }
         CargoCrateType::StaticLib => {
-            if find_source(&format!("{out_name}.lib")).is_ok() {
-            let lib = do_rename("lib", false)?;
-            let pdb = do_rename("pdb", true)?;
+            if find_source(&format!("{out_name}.lib")).is_some() {
+                let lib = do_rename("lib", false)?;
+                let pdb = do_rename("pdb", true)?;
 
-            CargoBuildOutput::WindowsStaticLib { lib, pdb }
-            } else if let Ok(source) = find_source(&format!("lib{out_name}.a")) {
-            let a = {
-                let rename_path = out_dir.join(format!("lib{out_name}.a"));
+                CargoBuildOutput::WindowsStaticLib { lib, pdb }
+            } else if let Some(source) = find_source(&format!("lib{out_name}.a")) {
+                let a = {
+                    let rename_path = out_dir.join(format!("lib{out_name}.a"));
                     rename_or_copy(source, &rename_path)?;
-                rename_path
-            };
+                    rename_path
+                };
 
-            CargoBuildOutput::LinuxStaticLib { a }
+                CargoBuildOutput::LinuxStaticLib { a }
             } else {
                 anyhow::bail!("failed to find static library artifact for {out_name}");
-        }
-        }
-        _ => {
-            anyhow::bail!(
-                "missing support for building {:?} on {}",
-                crate_type,
-                target
-            )
+            }
         }
     };
 
