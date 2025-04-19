@@ -52,7 +52,7 @@ fn main() -> anyhow::Result<()> {
 #[derive(Parser)]
 struct Options {
     /// The hypervisor interface to use to run the TMK.
-    #[clap(long, required_unless_present("list"))]
+    #[clap(long)]
     hv: Option<HypervisorOpt>,
     /// Disable offloads to the hypervisor. This disables WHP APIC emulation,
     /// for example.
@@ -100,7 +100,10 @@ async fn do_main(driver: DefaultDriver) -> anyhow::Result<()> {
         }
         Ok(())
     } else {
-        let hv = opts.hv.context("missing --hv option")?;
+        let hv = match opts.hv {
+            Some(hv) => hv,
+            None => choose_hypervisor()?,
+        };
         let mut state = CommonState::new(driver, opts).await?;
 
         state
@@ -122,4 +125,33 @@ async fn do_main(driver: DefaultDriver) -> anyhow::Result<()> {
             })
             .await
     }
+}
+
+fn choose_hypervisor() -> anyhow::Result<HypervisorOpt> {
+    #[cfg(all(target_os = "linux", guest_arch = "x86_64"))]
+    {
+        if virt::Hypervisor::is_available(&virt_mshv::LinuxMshv)? {
+            return Ok(HypervisorOpt::Mshv);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if virt::Hypervisor::is_available(&virt_kvm::Kvm)? {
+            return Ok(HypervisorOpt::Kvm);
+        }
+    }
+    #[cfg(windows)]
+    {
+        if virt::Hypervisor::is_available(&virt_whp::Whp)? {
+            return Ok(HypervisorOpt::Whp);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if virt::Hypervisor::is_available(&virt_hvf::HvfHypervisor)? {
+            return Ok(HypervisorOpt::Hvf);
+        }
+    }
+
+    anyhow::bail!("no hypervisor available");
 }

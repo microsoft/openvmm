@@ -360,6 +360,48 @@ pub mod artifacts {
             const SIZE: u64 = 4245487616;
         }
     }
+
+    /// TMK-related artifacts
+    pub mod tmks {
+        use petri_artifacts_core::declare_artifacts;
+
+        macro_rules! tmk_native {
+            ($id_ty:ty, $os:literal, $arch:literal) => {
+                /// tmk_vmm "native" executable
+                // xtask-fmt allow-target-arch oneoff-petri-native-test-deps
+                #[cfg(all(target_os = $os, target_arch = $arch))]
+                pub const TMK_VMM_NATIVE: petri_artifacts_core::ArtifactHandle<$id_ty> =
+                    petri_artifacts_core::ArtifactHandle::new();
+            };
+        }
+
+        tmk_native!(TMK_VMM_WIN_X64, "windows", "x86_64");
+        tmk_native!(TMK_VMM_LINUX_X64, "linux", "x86_64");
+        tmk_native!(TMK_VMM_WIN_AARCH64, "windows", "aarch64");
+        tmk_native!(TMK_VMM_LINUX_AARCH64, "linux", "aarch64");
+        tmk_native!(TMK_VMM_MACOS_AARCH64, "macos", "aarch64");
+
+        declare_artifacts! {
+            /// TMK VMM for Windows x64
+            TMK_VMM_WIN_X64,
+            /// TMK VMM for Linux x64
+            TMK_VMM_LINUX_X64,
+            /// TMK VMM for MacOS x64
+            TMK_VMM_WIN_AARCH64,
+            /// TMK VMM for Linux aarch64
+            TMK_VMM_LINUX_AARCH64,
+            /// TMK VMM for MacOS aarch64
+            TMK_VMM_MACOS_AARCH64,
+            /// TMK VMM for Linux musl x64
+            TMK_VMM_LINUX_X64_MUSL,
+            /// TMK VMM for Linux musl aarch64
+            TMK_VMM_LINUX_AARCH64_MUSL,
+            /// TMK binary for x64
+            SIMPLE_TMK_X64,
+            /// TMK binary for aarch64
+            SIMPLE_TMK_AARCH64,
+        }
+    }
 }
 
 /// Artifact tag trait declarations

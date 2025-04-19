@@ -398,6 +398,12 @@ impl PetriVmConfigHyperV {
         self.secure_boot_template = Some(powershell::HyperVSecureBootTemplate::MicrosoftWindows);
         self
     }
+
+    /// Adds a file to the agent image.
+    pub fn with_agent_file(mut self, name: &str, artifact: ResolvedArtifact) -> Self {
+        self.agent_image.add_file(name, artifact);
+        self
+    }
 }
 
 impl PetriVmHyperV {
