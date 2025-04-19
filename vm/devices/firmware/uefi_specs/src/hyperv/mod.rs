@@ -11,6 +11,7 @@ pub mod bios_event_log;
 pub mod boot_bios_log;
 pub mod common;
 pub mod crypto;
+pub mod efi_diagnostics;
 pub mod nvram;
 pub mod time;
 

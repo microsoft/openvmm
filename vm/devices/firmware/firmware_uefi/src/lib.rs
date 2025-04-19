@@ -254,12 +254,8 @@ impl UefiDevice {
                     );
                 }
             }
-            UefiCommand::SET_EFI_DIAGNOSTICS_GPA => {
-                tracelimit::warn_ratelimited!("EFI diagnostics gpa set to {:#x}", data);
-            }
-            UefiCommand::PROCESS_EFI_DIAGNOSTICS => {
-                tracelimit::warn_ratelimited!("Recieved notification to process EFI diagnostics");
-            }
+            UefiCommand::SET_EFI_DIAGNOSTICS_GPA => self.set_diagnostics_gpa(data),
+            UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.process_diagnostics(self.gm.clone()),
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
     }

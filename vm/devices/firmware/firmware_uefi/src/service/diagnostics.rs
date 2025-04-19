@@ -7,14 +7,25 @@
 //! When signaled, the diagnostics buffer is parsed and written to
 //! trace logs.
 use crate::UefiDevice;
+use guestmem::GuestMemory;
 use inspect::Inspect;
 use std::fmt::Debug;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum DiagnosticsError {
-    #[error("invalid diagnostics address")]
-    InvalidAddress,
+    #[error("invalid diagnostics gpa")]
+    InvalidGpa,
+    #[error("invalid header signature")]
+    InvalidHeaderSignature,
+    #[error("invalid header log buffer size")]
+    InvalidHeaderLogBufferSize,
+    #[error("invalid entry signature")]
+    InvalidEntrySignature,
+    #[error("invalid entry timestamp")]
+    InvalidEntryTimestamp,
+    #[error("invalid entry message length")]
+    InvalidEntryMessageLength,
 }
 
 #[derive(Inspect)]
@@ -31,23 +42,29 @@ impl DiagnosticsServices {
         self.gpa = 0
     }
 
-    pub fn set_gpa(&mut self, gpa: u32) -> Result<(), DiagnosticsError> {
+    pub fn set_diagnostics_gpa(&mut self, gpa: u32) -> Result<(), DiagnosticsError> {
+        tracelimit::info_ratelimited!("Setting diagnostics GPA to {:#x}", gpa);
         if gpa == 0 || gpa == u32::MAX {
-            return Err(DiagnosticsError::InvalidAddress);
+            tracelimit::error_ratelimited!("Invalid GPA: {:#x}", gpa);
+            return Err(DiagnosticsError::InvalidGpa);
         }
         self.gpa = gpa;
+        Ok(())
+    }
+
+    pub fn process_diagnostics(&self, _gm: GuestMemory) -> Result<(), DiagnosticsError> {
+        tracelimit::info_ratelimited!("Recieved notification to process EFI diagnostics");
         Ok(())
     }
 }
 
 impl UefiDevice {
-    pub(crate) fn _set_diagnostics_gpa(&mut self, gpa: u32) {
-        if let Err(err) = self.service.diagnostics.set_gpa(gpa) {
-            tracelimit::error_ratelimited!(
-                error = &err as &dyn std::error::Error,
-                "Failed to set diagnostics GPA",
-            );
-        }
+    pub(crate) fn set_diagnostics_gpa(&mut self, gpa: u32) {
+        let _ = self.service.diagnostics.set_diagnostics_gpa(gpa);
+    }
+
+    pub(crate) fn process_diagnostics(&self, gm: GuestMemory) {
+        let _ = self.service.diagnostics.process_diagnostics(gm);
     }
 }
 
