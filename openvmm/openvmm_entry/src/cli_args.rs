@@ -529,6 +529,10 @@ flags:
     /// set the uefi console mode
     #[clap(long)]
     pub uefi_console_mode: Option<UefiConsoleModeCli>,
+
+    /// Perform a default boot even if boot entries exist and fail
+    #[clap(long)]
+    pub default_boot_always_attempt: bool,
 }
 
 #[derive(Clone)]

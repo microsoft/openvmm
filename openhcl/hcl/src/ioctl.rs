@@ -2113,6 +2113,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                     | HvX64RegisterName::VsmVpWaitForTlbLock
                     | HvX64RegisterName::VsmVpSecureConfigVtl0
                     | HvX64RegisterName::VsmVpSecureConfigVtl1
+                    | HvX64RegisterName::CrInterceptControl
             )
         ));
         self.set_vp_registers_hvcall_inner(vtl, &registers)

@@ -1171,7 +1171,7 @@ impl InitializedVm {
             _ => {}
         };
 
-        let synic = Arc::new(SynicPorts::new(partition.clone().into_synic()));
+        let synic = Arc::new(SynicPorts::new(partition.clone()));
 
         let vtl2_framebuffer_gpa_base = if cfg.vtl2_gfx {
             // calculate a safe place to put the framebuffer mapping in GPA space
@@ -2183,7 +2183,7 @@ impl InitializedVm {
         // Start the VP backing threads.
         try_join_all(vps.into_iter().zip(vp_runners).enumerate().map(
             |(vp_index, (mut vp, runner))| {
-                let partition = partition.clone().into_request_yield();
+                let partition = partition.clone();
                 let chipset = chipset.clone();
                 let (send, recv) = mesh::oneshot();
                 thread::Builder::new()
@@ -2373,6 +2373,7 @@ impl LoadedVmInner {
                 enable_serial,
                 enable_vpci_boot,
                 uefi_console_mode,
+                default_boot_always_attempt,
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
@@ -2387,6 +2388,7 @@ impl LoadedVmInner {
                     vpci_boot: enable_vpci_boot,
                     serial: enable_serial,
                     uefi_console_mode,
+                    default_boot_always_attempt,
                 };
                 let regs = super::vm_loaders::uefi::load_uefi(
                     firmware,

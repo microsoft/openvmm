@@ -8,10 +8,23 @@ use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum PipetteOutput {
-    LinuxBin { bin: PathBuf, dbg: PathBuf },
-    WindowsBin { exe: PathBuf, pdb: PathBuf },
+    LinuxBin {
+        #[serde(rename = "pipette")]
+        bin: PathBuf,
+        #[serde(rename = "pipette.dbg")]
+        dbg: PathBuf,
+    },
+    WindowsBin {
+        #[serde(rename = "pipette.exe")]
+        exe: PathBuf,
+        #[serde(rename = "pipette.pdb")]
+        pdb: PathBuf,
+    },
 }
+
+impl Artifact for PipetteOutput {}
 
 flowey_request! {
     pub struct Request {

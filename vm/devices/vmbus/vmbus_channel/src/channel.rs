@@ -49,7 +49,7 @@ pub type ChannelOpenError = anyhow::Error;
 
 /// Trait implemented by VMBus devices.
 #[async_trait]
-pub trait VmbusDevice: Send + IntoAny + InspectMut {
+pub trait VmbusDevice: Send + Any + InspectMut {
     /// The offer parameters.
     fn offer(&self) -> OfferParams;
 
@@ -102,18 +102,6 @@ pub trait SaveRestoreVmbusDevice: VmbusDevice {
         control: RestoreControl<'_>,
         state: SavedStateBlob,
     ) -> Result<(), RestoreError>;
-}
-
-/// Trait for converting into a `Box<dyn Any>`.
-pub trait IntoAny {
-    /// Converts into a `Box<dyn Any>`.
-    fn into_any(self: Box<Self>) -> Box<dyn Any>;
-}
-
-impl<T: Any> IntoAny for T {
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
 }
 
 /// Resources used by the device to communicate with the guest.
@@ -277,12 +265,9 @@ impl<T: ?Sized> std::fmt::Debug for ChannelHandle<T> {
 impl<T: 'static + VmbusDevice> ChannelHandle<T> {
     /// Revokes the channel, returning it if the VMBus server is still running.
     pub async fn revoke(self) -> Option<T> {
+        let device = self.0.revoke().await? as Box<dyn Any>;
         Some(
-            *self
-                .0
-                .revoke()
-                .await?
-                .into_any()
+            *device
                 .downcast()
                 .expect("type must match the one used to create it"),
         )

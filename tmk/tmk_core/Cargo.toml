@@ -1,0 +1,20 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "tmk_core"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+minimal_rt.workspace = true
+tmk_protocol.workspace = true
+x86defs.workspace = true
+
+arrayvec.workspace = true
+
+[build-dependencies]
+minimal_rt_build.workspace = true
+
+[lints]
+workspace = true

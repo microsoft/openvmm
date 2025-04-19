@@ -315,6 +315,7 @@ impl GuestEmulationTransportClient {
                         ),
                     }
                 },
+                default_boot_always_attempt: json.v2.r#static.default_boot_always_attempt,
                 nvdimm_count: json.v2.dynamic.nvdimm_count,
                 psp_enabled: json.v2.dynamic.enable_psp,
                 vmbus_redirection_enabled: json.v2.r#static.vmbus_redirection_enabled,

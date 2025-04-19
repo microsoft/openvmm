@@ -242,6 +242,7 @@ pub fn create_host_channel(
             enable_vpci_boot: false,
             disable_frontpage: false,
             console_mode: UefiConsoleMode::DEFAULT,
+            default_boot_always_attempt: false,
         },
         com1: true,
         com2: true,

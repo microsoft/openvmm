@@ -9,9 +9,13 @@ use flowey::node::prelude::*;
 
 #[derive(Serialize, Deserialize)]
 pub struct HypestvOutput {
+    #[serde(rename = "hypestv.exe")]
     pub exe: PathBuf,
+    #[serde(rename = "hypestv.pdb")]
     pub pdb: PathBuf,
 }
+
+impl Artifact for HypestvOutput {}
 
 flowey_request! {
     pub struct Request {

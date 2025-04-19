@@ -101,6 +101,7 @@ pub mod platform_settings {
         pub media_present_enabled_by_default: bool,
         pub vpci_boot_enabled: bool,
         pub memory_protection_mode: MemoryProtectionMode,
+        pub default_boot_always_attempt: bool,
         pub num_lock_enabled: bool,
         #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDebug)")]
         pub pcat_boot_device_order: [PcatBootDevice; 4],

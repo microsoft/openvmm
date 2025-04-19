@@ -20,18 +20,7 @@ pub struct StartInput {
     pub test_index: u64,
 }
 
-/// A TMK test descriptor.
-#[repr(C)]
-pub struct TestDescriptor {
-    /// The test name as a UTF-8 string.
-    pub name: &'static str,
-    /// The test entry point.
-    pub entrypoint: fn(),
-}
-
 /// A 64-bit TMK test descriptor.
-///
-/// Has the same layout as [`TestDescriptor`] for 64-bit architectures.
 #[repr(C)]
 #[derive(IntoBytes, FromBytes, Immutable)]
 pub struct TestDescriptor64 {

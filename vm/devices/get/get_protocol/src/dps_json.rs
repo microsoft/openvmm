@@ -93,6 +93,7 @@ pub enum PcatBootDevice {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct HclDevicePlatformSettingsV2Static {
+    //UEFI flags
     pub legacy_memory_map: bool,
     pub pause_after_boot_failure: bool,
     pub pxe_ip_v6: bool,
@@ -101,12 +102,16 @@ pub struct HclDevicePlatformSettingsV2Static {
     pub disable_sha384_pcr: bool,
     pub media_present_enabled_by_default: bool,
     pub memory_protection_mode: u8,
+    #[serde(default)]
+    pub default_boot_always_attempt: bool,
 
+    // UEFI info
     pub vpci_boot_enabled: bool,
     #[serde(default)]
     #[serde(with = "serde_helpers::opt_guid_str")]
     pub vpci_instance_filter: Option<Guid>,
 
+    // PCAT info
     pub num_lock_enabled: bool,
     pub pcat_boot_device_order: Option<[PcatBootDevice; 4]>,
 

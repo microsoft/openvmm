@@ -356,7 +356,7 @@ pub fn run_set_vm_com_port(vmid: &Guid, port: u8, path: &Path) -> anyhow::Result
         .finish()
         .output(true)
         .map(|_| ())
-        .context("run_set_vm_com_port")
+        .context("set_vm_com_port")
 }
 
 /// Windows event log as retrieved by `run_get_winevent`
@@ -441,7 +441,7 @@ pub fn run_get_winevent(
             {
                 Ok(Vec::new())
             }
-            e => Err(e).context("run_get_winevent"),
+            e => Err(e).context("get_winevent"),
         },
     }
 }
@@ -556,6 +556,19 @@ pub fn vm_shutdown_ic_status(vmid: &Guid) -> anyhow::Result<VmShutdownIcStatus> 
         "Lost Communication" => VmShutdownIcStatus::LostCommunication,
         s => anyhow::bail!("Unknown VM shutdown status: {s}"),
     })
+}
+
+/// Runs Remove-VmNetworkAdapter to remove all network adapters from a VM.
+pub fn run_remove_vm_network_adapter(vmid: &Guid) -> anyhow::Result<()> {
+    PowerShellBuilder::new()
+        .cmdlet("Get-VM")
+        .arg_string("Id", vmid)
+        .pipeline()
+        .cmdlet("Remove-VMNetworkAdapter")
+        .finish()
+        .output(true)
+        .map(|_| ())
+        .context("remove_vm_network_adapter")
 }
 
 /// A PowerShell script builder

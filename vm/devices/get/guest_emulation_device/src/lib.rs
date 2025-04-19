@@ -158,6 +158,8 @@ pub enum GuestFirmwareConfig {
         /// Where to send UEFI console output
         #[inspect(debug)]
         console_mode: UefiConsoleMode,
+        /// Perform a default boot even if boot entries exist and fail
+        default_boot_always_attempt: bool,
     },
     Pcat {
         #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDebug)")]
@@ -1245,12 +1247,14 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let firmware_mode_is_pcat;
         let pcat_boot_device_order;
         let uefi_console_mode;
+        let default_boot_always_attempt;
         match state.config.firmware {
             GuestFirmwareConfig::Uefi {
                 enable_vpci_boot,
                 firmware_debug,
                 disable_frontpage: v_disable_frontpage,
                 console_mode,
+                default_boot_always_attempt: v_default_boot_always_attempt,
             } => {
                 vpci_boot_enabled = enable_vpci_boot;
                 enable_firmware_debugging = firmware_debug;
@@ -1258,6 +1262,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 firmware_mode_is_pcat = false;
                 pcat_boot_device_order = None;
                 uefi_console_mode = Some(console_mode);
+                default_boot_always_attempt = v_default_boot_always_attempt;
             }
             GuestFirmwareConfig::Pcat { boot_order } => {
                 vpci_boot_enabled = false;
@@ -1266,6 +1271,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 firmware_mode_is_pcat = true;
                 pcat_boot_device_order = Some(boot_order);
                 uefi_console_mode = None;
+                default_boot_always_attempt = false;
             }
         }
 
@@ -1312,6 +1318,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     disable_sha384_pcr: false,
                     media_present_enabled_by_default: false,
                     memory_protection_mode: 0,
+                    default_boot_always_attempt,
                     vpci_boot_enabled,
                     vpci_instance_filter: None,
                     num_lock_enabled: false,

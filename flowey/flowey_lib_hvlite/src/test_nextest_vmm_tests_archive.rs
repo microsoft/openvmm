@@ -65,7 +65,7 @@ impl SimpleFlowNode for Node {
             });
         }
 
-        let nextest_archive = nextest_archive_file.map(ctx, |x| x.0);
+        let nextest_archive = nextest_archive_file.map(ctx, |x| x.archive_file);
 
         ctx.req(crate::run_cargo_nextest_run::Request {
             friendly_name: "vmm_tests".into(),

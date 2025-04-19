@@ -320,6 +320,7 @@ async fn launch_workers(
         hide_isolation: opt.hide_isolation,
         nvme_keep_alive: opt.nvme_keep_alive,
         test_configuration: opt.test_configuration,
+        disable_uefi_frontpage: opt.disable_uefi_frontpage,
     };
 
     let (mut remote_console_cfg, framebuffer_access) =

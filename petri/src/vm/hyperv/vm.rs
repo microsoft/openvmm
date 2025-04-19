@@ -88,6 +88,9 @@ impl HyperVVM {
 
         tracing::info!(name, vmid = vmid.to_string(), "Created Hyper-V VM");
 
+        // Remove the default network adapter
+        powershell::run_remove_vm_network_adapter(&vmid)?;
+
         Ok(Self {
             name,
             vmid,

@@ -3,9 +3,9 @@
 
 //! Simple tests common to all architectures.
 
-use crate::tests::prelude::*;
+use crate::prelude::*;
 
 #[tmk_test]
-fn boot() {
+fn boot(_: TestContext<'_>) {
     log!("hello world");
 }

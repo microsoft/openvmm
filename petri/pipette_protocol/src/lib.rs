@@ -42,9 +42,9 @@ pub enum PipetteRequest {
     /// pipette is terminated during the shutdown process.
     Shutdown(FailableRpc<ShutdownRequest, ()>),
     /// Reads the full contents of a file.
-    ReadFile(FailableRpc<ReadFileRequest, ()>),
+    ReadFile(FailableRpc<ReadFileRequest, u64>),
     /// Writes a file
-    WriteFile(FailableRpc<WriteFileRequest, ()>),
+    WriteFile(FailableRpc<WriteFileRequest, u64>),
     /// Get the current time in the guest.
     GetTime(Rpc<(), Timestamp>),
 }

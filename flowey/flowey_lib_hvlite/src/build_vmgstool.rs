@@ -9,10 +9,23 @@ use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum VmgstoolOutput {
-    LinuxBin { bin: PathBuf, dbg: PathBuf },
-    WindowsBin { exe: PathBuf, pdb: PathBuf },
+    LinuxBin {
+        #[serde(rename = "vmgstool")]
+        bin: PathBuf,
+        #[serde(rename = "vmgstool.dbg")]
+        dbg: PathBuf,
+    },
+    WindowsBin {
+        #[serde(rename = "vmgstool.exe")]
+        exe: PathBuf,
+        #[serde(rename = "vmgstool.pdb")]
+        pdb: PathBuf,
+    },
 }
+
+impl Artifact for VmgstoolOutput {}
 
 flowey_request! {
     pub struct Request {

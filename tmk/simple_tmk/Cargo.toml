@@ -7,11 +7,9 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
-minimal_rt.workspace = true
+tmk_core.workspace = true
 tmk_macros.workspace = true
-tmk_protocol.workspace = true
-
-arrayvec.workspace = true
+x86defs.workspace = true
 
 [build-dependencies]
 minimal_rt_build.workspace = true

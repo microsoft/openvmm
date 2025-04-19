@@ -3,6 +3,7 @@
 
 //! Run a pre-built cargo-nextest based unit test archive.
 
+use crate::build_nextest_unit_tests::NextestUnitTestArchive;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
@@ -11,8 +12,8 @@ flowey_request! {
     pub struct Params {
         /// Friendly label for report JUnit test results
         pub junit_test_label: String,
-        /// Existing unit test archive artifact dir
-        pub unit_test_artifact_dir: ReadVar<PathBuf>,
+        /// Existing unit test archive
+        pub nextest_unit_test_archive: ReadVar<NextestUnitTestArchive>,
         /// Nextest profile to use when running the source code
         pub nextest_profile: NextestProfile,
 
@@ -31,30 +32,21 @@ impl SimpleFlowNode for Node {
 
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
-        ctx.import::<crate::artifact_nextest_unit_tests_archive::resolve::Node>();
         ctx.import::<crate::test_nextest_unit_tests_archive::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params {
             junit_test_label,
-            unit_test_artifact_dir,
+            nextest_unit_test_archive,
             nextest_profile,
             fail_job_on_test_fail,
             artifact_dir,
             done,
         } = request;
 
-        let nextest_archive_file =
-            ctx.reqv(
-                |v| crate::artifact_nextest_unit_tests_archive::resolve::Request {
-                    artifact_dir: unit_test_artifact_dir,
-                    nextest_archive: v,
-                },
-            );
-
         let results = ctx.reqv(|v| crate::test_nextest_unit_tests_archive::Request {
-            nextest_archive_file,
+            nextest_archive_file: nextest_unit_test_archive,
             nextest_profile,
             results: v,
         });

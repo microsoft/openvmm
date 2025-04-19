@@ -85,7 +85,6 @@ use parking_lot::RwLock;
 use processor::BackingSharedParams;
 use processor::SidecarExitReason;
 use sidecar_client::NewSidecarClientError;
-use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
@@ -350,6 +349,17 @@ struct GuestVsmVpState {
     /// next exit to VTL 0.
     #[inspect(with = "|x| x.as_ref().map(inspect::AsDebug)")]
     vtl0_exit_pending_event: Option<hvdef::HvX64PendingExceptionEvent>,
+    reg_intercept: SecureRegisterInterceptState,
+}
+
+#[cfg(guest_arch = "x86_64")]
+impl GuestVsmVpState {
+    fn new() -> Self {
+        GuestVsmVpState {
+            vtl0_exit_pending_event: None,
+            reg_intercept: Default::default(),
+        }
+    }
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -386,7 +396,10 @@ impl UhCvmVpState {
         let apic_base = virt::vp::Apic::at_reset(&inner.caps, vp_info).apic_base;
         let lapics = VtlArray::from_fn(|vtl| {
             let apic_set = &cvm_partition.lapic[vtl];
-            let mut lapic = apic_set.add_apic(vp_info);
+
+            // The APIC is software-enabled after reset for secure VTLs, to
+            // maintain compatibility with released versions of secure kernel
+            let mut lapic = apic_set.add_apic(vp_info, vtl == Vtl::Vtl1);
             // Initialize APIC base to match the reset VM state.
             lapic.set_apic_base(apic_base).unwrap();
             // Only the VTL 0 non-BSP LAPICs should be in the WaitForSipi state.
@@ -408,6 +421,19 @@ impl UhCvmVpState {
             vtl1: None,
         })
     }
+}
+
+#[cfg(guest_arch = "x86_64")]
+#[derive(Inspect, Default)]
+/// Configuration of VTL 1 registration for intercepts on certain registers
+pub struct SecureRegisterInterceptState {
+    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    intercept_control: hvdef::HvRegisterCrInterceptControl,
+    cr0_mask: u64,
+    cr4_mask: u64,
+    // Writes to X86X_IA32_MSR_MISC_ENABLE are dropped, so this is only used so
+    // that get_vp_register returns the correct value from a set_vp_register
+    ia32_misc_enable_mask: u64,
 }
 
 #[derive(Inspect)]
@@ -1697,8 +1723,8 @@ impl<'a> UhProtoPartition<'a> {
                 guest_memory: late_params.gm.clone(),
                 #[cfg(guest_arch = "x86_64")]
                 cpuid: &cpuid,
+                hcl: &hcl,
                 guest_vsm_available,
-                _phantom: PhantomData,
             },
         )?;
 

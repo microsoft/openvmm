@@ -6,6 +6,7 @@
 //! global cargo flags (e.g: --verbose, --locked), ensuring base Rust
 //! dependencies are installed, etc...
 
+use crate::_util::cargo_output;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -13,7 +14,6 @@ use std::collections::BTreeMap;
 pub struct CargoDocCommands {
     cmds: Vec<Vec<String>>,
     cargo_work_dir: PathBuf,
-    cargo_out_dir: PathBuf,
 }
 
 impl CargoDocCommands {
@@ -36,18 +36,39 @@ impl CargoDocCommands {
         let Self {
             cmds,
             cargo_work_dir,
-            cargo_out_dir,
         } = self;
 
         let out_dir = sh.current_dir();
         sh.change_dir(cargo_work_dir);
 
+        let mut json = String::new();
         for mut cmd in cmds {
             let argv0 = cmd.remove(0);
             let cmd = xshell::cmd!(sh, "{argv0} {cmd...}");
             let cmd = f(cmd);
-            cmd.run()?;
+            json.push_str(&cmd.read()?);
         }
+        let messages: Vec<cargo_output::Message> = serde_json::Deserializer::from_str(&json)
+            .into_iter()
+            .collect::<Result<_, _>>()?;
+
+        // Find the output directory. Look for a file name like `foo/bar/doc/mycrate/index.html`.
+        let cargo_out_dir = messages
+            .iter()
+            .find_map(|msg| match msg {
+                cargo_output::Message::CompilerArtifact { filenames, .. } => {
+                    filenames.iter().find_map(|filename| {
+                        filename
+                            .file_name()
+                            .is_some_and(|f| f == "index.html")
+                            .then(|| filename.parent().unwrap().parent().unwrap())
+                    })
+                }
+                _ => None,
+            })
+            .context("could not find cargo doc output directory")?;
+
+        assert_eq!(cargo_out_dir.file_name().unwrap(), "doc");
 
         let final_dir = out_dir.join("cargo-doc-out");
         fs_err::rename(cargo_out_dir, &final_dir)?;
@@ -184,6 +205,7 @@ impl FlowNode for Node {
                             v.push(format!("+{rust_toolchain}"))
                         }
                         v.push("doc".into());
+                        v.push("--message-format=json-render-diagnostics".into());
                         v.push("--target".into());
                         v.push(target_triple.to_string());
                         if locked {
@@ -245,30 +267,9 @@ impl FlowNode for Node {
                         cmds.push(v)
                     }
 
-                    let cargo_out_dir = {
-                        // DEVNOTE: this is a _pragmatic_ implementation of this
-                        // logic, and is written with the undersatnding that
-                        // there are undoubtedly many "edge-cases" that may
-                        // result in the final target directory changing.
-                        //
-                        // One possible way to make this handling more robust
-                        // would be to start using `--message-format=json` when
-                        // invoking `cargo`, and then parsing the machine
-                        // readable output in order to obtain the output
-                        // artifact path _after_ the compilation has succeeded.
-                        if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
-                            PathBuf::from(dir)
-                        } else {
-                            in_folder.join("target")
-                        }
-                    }
-                    .join(target_triple.to_string())
-                    .join("doc");
-
                     let cmd = CargoDocCommands {
                         cmds,
                         cargo_work_dir: in_folder.clone(),
-                        cargo_out_dir,
                     };
 
                     rt.write(write_doc_cmd, &cmd);

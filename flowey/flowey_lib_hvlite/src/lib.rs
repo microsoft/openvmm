@@ -8,22 +8,11 @@
 // #![warn(missing_docs)] // TODO: lots to do here
 
 pub mod _jobs;
-pub mod artifact_guest_test_uefi;
 pub mod artifact_guide;
-pub mod artifact_hypestv;
-pub mod artifact_igvmfilegen;
-pub mod artifact_nextest_unit_tests_archive;
-pub mod artifact_nextest_vmm_tests_archive;
-pub mod artifact_ohcldiag_dev;
-pub mod artifact_openhcl_boot;
 pub mod artifact_openhcl_igvm_from_recipe;
 pub mod artifact_openhcl_igvm_from_recipe_extras;
-pub mod artifact_openvmm;
 pub mod artifact_openvmm_hcl_sizecheck;
-pub mod artifact_pipette;
 pub mod artifact_rustdoc;
-pub mod artifact_vmgs_lib;
-pub mod artifact_vmgstool;
 pub mod build_and_test_vmgs_lib;
 pub mod build_guest_test_uefi;
 pub mod build_guide;

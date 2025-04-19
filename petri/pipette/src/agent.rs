@@ -177,24 +177,24 @@ async fn handle_request(
     }
 }
 
-async fn read_file(mut request: pipette_protocol::ReadFileRequest) -> anyhow::Result<()> {
+async fn read_file(mut request: pipette_protocol::ReadFileRequest) -> anyhow::Result<u64> {
     tracing::debug!(path = request.path, "Beginning file read request");
     let file = fs_err::File::open(request.path)?;
-    futures::io::copy(&mut futures::io::AllowStdIo::new(file), &mut request.sender).await?;
+    let n = futures::io::copy(&mut futures::io::AllowStdIo::new(file), &mut request.sender).await?;
     tracing::debug!("file read request complete");
-    Ok(())
+    Ok(n)
 }
 
-async fn write_file(mut request: pipette_protocol::WriteFileRequest) -> anyhow::Result<()> {
+async fn write_file(mut request: pipette_protocol::WriteFileRequest) -> anyhow::Result<u64> {
     tracing::debug!(path = request.path, "Beginning file write request");
     let file = fs_err::File::create(request.path)?;
-    futures::io::copy(
+    let n = futures::io::copy(
         &mut request.receiver,
         &mut futures::io::AllowStdIo::new(file),
     )
     .await?;
     tracing::debug!("file write request complete");
-    Ok(())
+    Ok(n)
 }
 
 impl DiagnosticSender {

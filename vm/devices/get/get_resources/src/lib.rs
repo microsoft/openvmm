@@ -103,6 +103,8 @@ pub mod ged {
             disable_frontpage: bool,
             /// Where to send UEFI console output
             console_mode: UefiConsoleMode,
+            /// Perform a default boot even if boot entries exist and fail
+            default_boot_always_attempt: bool,
         },
         /// Boot from PC/AT BIOS with Hyper-V generation 1 devices.
         Pcat {
