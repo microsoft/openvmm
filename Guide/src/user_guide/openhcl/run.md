@@ -3,6 +3,12 @@
 This chapter provides a high-level overview of different ways to launch and
 interact with OpenHCL.
 
+## OpenHCL Platforms
+
+- [On Windows - Hyper-V](./run/hyperv.md)
+- [On Windows - OpenVMM](./run/openvmm.md)
+- [On Linux](./run/openvmm_linux.md)
+
 ## High-level Overview
 
 In order to run OpenHCL, an existing host VMM must first load the OpenHCL
