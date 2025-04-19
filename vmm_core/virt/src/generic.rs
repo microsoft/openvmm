@@ -93,7 +93,7 @@ impl IsolationType {
 pub struct UnexpectedIsolationType;
 
 impl IsolationType {
-    pub fn from_hv(
+    pub const fn from_hv(
         value: hvdef::HvPartitionIsolationType,
     ) -> Result<Self, UnexpectedIsolationType> {
         match value {
@@ -105,7 +105,7 @@ impl IsolationType {
         }
     }
 
-    pub fn to_hv(self) -> hvdef::HvPartitionIsolationType {
+    pub const fn to_hv(self) -> hvdef::HvPartitionIsolationType {
         match self {
             IsolationType::None => hvdef::HvPartitionIsolationType::NONE,
             IsolationType::Vbs => hvdef::HvPartitionIsolationType::VBS,

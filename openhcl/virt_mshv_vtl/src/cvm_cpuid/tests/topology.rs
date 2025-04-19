@@ -52,6 +52,8 @@ fn real_topology() {
 
     let cpuid = CpuidResults::new(CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
     })
     .unwrap();
 
@@ -157,6 +159,8 @@ fn initialize_topology(
 
     CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
     }
     .build()
 }
