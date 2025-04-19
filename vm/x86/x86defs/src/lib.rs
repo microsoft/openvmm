@@ -482,3 +482,10 @@ pub struct X86xMcgStatusRegister {
     #[bits(61)]
     pub reserved0: u64,
 }
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct ApicRegister {
+    pub value: u32,
+    _reserved: [u32; 3],
+}

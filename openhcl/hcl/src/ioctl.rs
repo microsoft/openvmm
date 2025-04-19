@@ -77,9 +77,10 @@ use std::sync::atomic::Ordering;
 use thiserror::Error;
 use user_driver::DmaClient;
 use user_driver::memory::MemoryBlock;
+use x86defs::snp::SevAvicPage;
 use x86defs::snp::SevVmsa;
 use x86defs::tdx::TdCallResultCode;
-use x86defs::vmx::ApicPage;
+use x86defs::vmx::VmxApicPage;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -1548,9 +1549,12 @@ enum BackingState {
     },
     Snp {
         vmsa: VtlArray<MappedPage<SevVmsa>, 2>,
+        vtl0_apic_page: MappedPage<SevAvicPage>,
+        /// VTL1 runs with the alternate interrupt injection.
+        vtl1_apic_page: MemoryBlock,
     },
     Tdx {
-        vtl0_apic_page: MappedPage<ApicPage>,
+        vtl0_apic_page: MappedPage<VmxApicPage>,
         vtl1_apic_page: MemoryBlock,
     },
 }
@@ -1602,6 +1606,12 @@ impl HclVp {
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl1)))?;
                 BackingState::Snp {
                     vmsa: [vmsa_vtl0, vmsa_vtl1].into(),
+                    vtl0_apic_page: MappedPage::new(fd, MSHV_APIC_PAGE_OFFSET | vp as i64)
+                        .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,
+                    vtl1_apic_page: private_dma_client
+                        .ok_or(Error::MissingPrivateMemory)?
+                        .allocate_dma_buffer(HV_PAGE_SIZE as usize)
+                        .map_err(Error::AllocVp)?,
                 }
             }
             IsolationType::Tdx => BackingState::Tdx {

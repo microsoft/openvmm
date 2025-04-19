@@ -3,7 +3,9 @@
 
 //! AMD SEV-SNP specific definitions.
 
+use crate::ApicRegister;
 use bitfield_struct::bitfield;
+use static_assertions::const_assert_eq;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -414,6 +416,52 @@ pub struct SevVmsa {
     pub ymm_registers: [SevXmmRegister; 16],
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
+/// Structure representing the SEV-ES AVIC backing page.
+/// Specification: "AMD64 PPR Vol3 System Programming", 15.29.3  AVIC Backing Page.
+pub struct SevAvicPage {
+    pub reserved_0: [ApicRegister; 2],
+    pub id: ApicRegister,
+    pub version: ApicRegister,
+    pub reserved_4: [ApicRegister; 4],
+    pub tpr: ApicRegister,
+    pub apr: ApicRegister,
+    pub ppr: ApicRegister,
+    pub eoi: ApicRegister,
+    pub rrd: ApicRegister,
+    pub ldr: ApicRegister,
+    pub dfr: ApicRegister,
+    pub svr: ApicRegister,
+    pub isr: [ApicRegister; 8],
+    pub tmr: [ApicRegister; 8],
+    pub irr: [ApicRegister; 8],
+    pub esr: ApicRegister,
+    pub reserved_29: [ApicRegister; 6],
+    pub lvt_cmci: ApicRegister,
+    pub icr: [ApicRegister; 2],
+    pub lvt_timer: ApicRegister,
+    pub lvt_thermal: ApicRegister,
+    pub lvt_pmc: ApicRegister,
+    pub lvt_lint0: ApicRegister,
+    pub lvt_lint1: ApicRegister,
+    pub lvt_error: ApicRegister,
+    pub timer_icr: ApicRegister,
+    pub timer_ccr: ApicRegister,
+    pub reserved_3a: [ApicRegister; 4],
+    pub timer_dcr: ApicRegister,
+    pub self_ipi: ApicRegister,
+    pub eafr: ApicRegister,
+    pub eacr: ApicRegister,
+    pub seoi: ApicRegister,
+    pub reserved_44: [ApicRegister; 0x5],
+    pub ier: [ApicRegister; 8],
+    pub ei_lv_tr: [ApicRegister; 3],
+    pub reserved_54: [ApicRegister; 0xad],
+}
+
+const_assert_eq!(size_of::<SevAvicPage>(), 4096);
+
 // Info codes for the GHCB MSR protocol.
 open_enum::open_enum! {
     pub enum GhcbInfo: u64 {
@@ -740,14 +788,16 @@ pub struct SevStatusMsr {
     pub debug_swap: bool,
     pub prevent_host_ibs: bool,
     pub snp_btb_isolation: bool,
-    pub _rsvd1: bool,
+    pub vmpl_sss: bool,
     pub secure_tsc: bool,
-    pub _rsvd2: bool,
+    pub vmgexit_param: bool,
     pub _rsvd3: bool,
-    pub _rsvd4: bool,
+    pub ibs_virt: bool,
     pub _rsvd5: bool,
     pub vmsa_reg_prot: bool,
-    #[bits(47)]
+    pub smt_prot: bool,
+    pub secure_avic: bool,
+    #[bits(45)]
     _unused: u64,
 }
 
