@@ -8778,6 +8778,7 @@ dependencies = [
  "anyhow",
  "build_rs_guest_arch",
  "disk_backend_resources",
+ "get_resources",
  "guid",
  "hvlite_defs",
  "hvlite_ttrpc_vmservice",

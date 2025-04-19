@@ -36,7 +36,7 @@ pub mod cfg_openvmm_magicpath;
 pub mod download_lxutil;
 pub mod download_openhcl_kernel_package;
 pub mod download_openvmm_deps;
-pub mod download_openvmm_vmm_tests_vhds;
+pub mod download_openvmm_vmm_tests_artifacts;
 pub mod download_uefi_mu_msvm;
 pub mod git_checkout_openvmm_repo;
 pub mod init_cross_build;

@@ -2941,12 +2941,12 @@ jobs:
         flowey.exe e 18 flowey_lib_common::download_azcopy 1
       shell: bash
     - name: calculating required VMM tests disk images
-      run: flowey.exe e 18 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 0
+      run: flowey.exe e 18 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
       shell: bash
     - name: downloading VMM test disk images
       run: |-
-        flowey.exe e 18 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 1
-        flowey.exe e 18 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 2
+        flowey.exe e 18 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
+        flowey.exe e 18 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
       shell: bash
     - name: unpack openvmm-deps archive
       run: flowey.exe e 18 flowey_lib_hvlite::download_openvmm_deps 0
@@ -3194,12 +3194,12 @@ jobs:
         flowey.exe e 19 flowey_lib_common::download_azcopy 1
       shell: bash
     - name: calculating required VMM tests disk images
-      run: flowey.exe e 19 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 0
+      run: flowey.exe e 19 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
       shell: bash
     - name: downloading VMM test disk images
       run: |-
-        flowey.exe e 19 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 1
-        flowey.exe e 19 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 2
+        flowey.exe e 19 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
+        flowey.exe e 19 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
       shell: bash
     - name: unpack openvmm-deps archive
       run: flowey.exe e 19 flowey_lib_hvlite::download_openvmm_deps 0
@@ -3632,12 +3632,12 @@ jobs:
         flowey.exe e 20 flowey_lib_common::download_azcopy 1
       shell: bash
     - name: calculating required VMM tests disk images
-      run: flowey.exe e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 0
+      run: flowey.exe e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
       shell: bash
     - name: downloading VMM test disk images
       run: |-
-        flowey.exe e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 1
-        flowey.exe e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 2
+        flowey.exe e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
+        flowey.exe e 20 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
       shell: bash
     - name: unpack openvmm-deps archive
       run: flowey.exe e 20 flowey_lib_hvlite::download_openvmm_deps 0
@@ -3884,12 +3884,12 @@ jobs:
         flowey e 21 flowey_lib_common::download_azcopy 1
       shell: bash
     - name: calculating required VMM tests disk images
-      run: flowey e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 0
+      run: flowey e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
       shell: bash
     - name: downloading VMM test disk images
       run: |-
-        flowey e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 1
-        flowey e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 2
+        flowey e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
+        flowey e 21 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
       shell: bash
     - name: unpack openvmm-deps archive
       run: flowey e 21 flowey_lib_hvlite::download_openvmm_deps 0
@@ -4185,12 +4185,12 @@ jobs:
         flowey.exe e 22 flowey_lib_common::download_azcopy 1
       shell: bash
     - name: calculating required VMM tests disk images
-      run: flowey.exe e 22 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 0
+      run: flowey.exe e 22 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 0
       shell: bash
     - name: downloading VMM test disk images
       run: |-
-        flowey.exe e 22 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 1
-        flowey.exe e 22 flowey_lib_hvlite::download_openvmm_vmm_tests_vhds 2
+        flowey.exe e 22 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 1
+        flowey.exe e 22 flowey_lib_hvlite::download_openvmm_vmm_tests_artifacts 2
       shell: bash
     - name: unpack openvmm-deps archive
       run: flowey.exe e 22 flowey_lib_hvlite::download_openvmm_deps 0

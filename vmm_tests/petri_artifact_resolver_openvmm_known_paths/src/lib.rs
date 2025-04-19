@@ -10,8 +10,7 @@ use petri_artifacts_core::ErasedArtifactHandle;
 use std::env::consts::EXE_EXTENSION;
 use std::path::Path;
 use std::path::PathBuf;
-use vmm_test_images::KnownIso;
-use vmm_test_images::KnownVhd;
+use vmm_test_images::KnownTestArtifacts;
 
 /// An implementation of [`petri_artifacts_core::ResolveTestArtifact`]
 /// that resolves artifacts to various "known paths" within the context of
@@ -62,14 +61,17 @@ impl petri_artifacts_core::ResolveTestArtifact for OpenvmmKnownPathsTestArtifact
 
             _ if id == test_vhd::GUEST_TEST_UEFI_X64 => guest_test_uefi_disk_path(MachineArch::X86_64),
             _ if id == test_vhd::GUEST_TEST_UEFI_AARCH64 => guest_test_uefi_disk_path(MachineArch::Aarch64),
-            _ if id == test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64 => get_guest_vhd_path(KnownVhd::Gen1WindowsDataCenterCore2022),
-            _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64 => get_guest_vhd_path(KnownVhd::Gen2WindowsDataCenterCore2022),
-            _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 => get_guest_vhd_path(KnownVhd::Gen2WindowsDataCenterCore2025),
-            _ if id == test_vhd::FREE_BSD_13_2_X64 => get_guest_vhd_path(KnownVhd::FreeBsd13_2),
-            _ if id == test_vhd::UBUNTU_2204_SERVER_X64 => get_guest_vhd_path(KnownVhd::Ubuntu2204Server),
-            _ if id == test_vhd::UBUNTU_2404_SERVER_AARCH64 => get_guest_vhd_path(KnownVhd::Ubuntu2404ServerAarch64),
+            _ if id == test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64 => get_test_artifact_path(KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd),
+            _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64 => get_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd),
+            _ if id == test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64 => get_test_artifact_path(KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd),
+            _ if id == test_vhd::FREE_BSD_13_2_X64 => get_test_artifact_path(KnownTestArtifacts::FreeBsd13_2X64Vhd),
+            _ if id == test_vhd::UBUNTU_2204_SERVER_X64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2204ServerX64Vhd),
+            _ if id == test_vhd::UBUNTU_2404_SERVER_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd),
+            _ if id == test_vhd::WINDOWS_11_AARCH64 => get_test_artifact_path(KnownTestArtifacts::Windows11Aarch64Vhdx),
 
-            _ if id == test_iso::FREE_BSD_13_2_X64 => get_guest_iso_path(KnownIso::FreeBsd13_2),
+            _ if id == test_iso::FREE_BSD_13_2_X64 => get_test_artifact_path(KnownTestArtifacts::FreeBsd13_2X64Iso),
+
+            _ if id == test_vmgs::VMGS_WITH_BOOT_ENTRY => get_test_artifact_path(KnownTestArtifacts::VmgsWithBootEntry),
 
             _ => anyhow::bail!("no support for given artifact type"),
         }
@@ -109,7 +111,7 @@ fn target_arch_path(arch: MachineArch) -> &'static str {
     }
 }
 
-fn get_guest_vhd_path(vhd: KnownVhd) -> Result<PathBuf, anyhow::Error> {
+fn get_test_artifact_path(vhd: KnownTestArtifacts) -> Result<PathBuf, anyhow::Error> {
     let images_dir = std::env::var("VMM_TEST_IMAGES");
     let full_path = Path::new(images_dir.as_deref().unwrap_or("images"));
 
@@ -117,22 +119,8 @@ fn get_guest_vhd_path(vhd: KnownVhd) -> Result<PathBuf, anyhow::Error> {
         full_path,
         vhd.filename(),
         MissingCommand::Xtask {
-            xtask_args: &["guest-test", "download-image", "--vhds", &vhd.name()],
+            xtask_args: &["guest-test", "download-image", "--artifacts", &vhd.name()],
             description: "guest vhd image",
-        },
-    )
-}
-
-fn get_guest_iso_path(iso: KnownIso) -> Result<PathBuf, anyhow::Error> {
-    let images_dir = std::env::var("VMM_TEST_IMAGES");
-    let full_path = Path::new(images_dir.as_deref().unwrap_or("images"));
-
-    get_path(
-        full_path,
-        iso.filename(),
-        MissingCommand::Xtask {
-            xtask_args: &["guest-test", "download-image", "--isos", &iso.name()],
-            description: "guest iso image",
         },
     )
 }

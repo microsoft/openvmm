@@ -323,6 +323,22 @@ pub mod artifacts {
             const FILENAME: &'static str = "ubuntu-24.04-server-cloudimg-arm64.vhd";
             const SIZE: u64 = 3758211584;
         }
+
+        declare_artifacts! {
+            /// Ubuntu 24.04 Server Aarch64
+            WINDOWS_11_AARCH64
+        }
+
+        impl IsTestVhd for WINDOWS_11_AARCH64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Windows;
+            const ARCH: MachineArch = MachineArch::Aarch64;
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for WINDOWS_11_AARCH64 {
+            const FILENAME: &'static str =
+                "windows11preview-arm64-win11-24h2-ent-26100.3775.250406-1.vhdx";
+            const SIZE: u64 = 24398266368;
+        }
     }
 
     /// Test ISO artifacts
@@ -358,6 +374,22 @@ pub mod artifacts {
         impl IsHostedOnHvliteAzureBlobStore for FREE_BSD_13_2_X64 {
             const FILENAME: &'static str = "FreeBSD-13.2-RELEASE-amd64-dvd1.iso";
             const SIZE: u64 = 4245487616;
+        }
+    }
+
+    /// Test VMGS artifacts
+    pub mod test_vmgs {
+        use crate::tags::IsHostedOnHvliteAzureBlobStore;
+        use petri_artifacts_core::declare_artifacts;
+
+        declare_artifacts! {
+            /// Sample VMGS for use in tests
+            VMGS_WITH_BOOT_ENTRY,
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for VMGS_WITH_BOOT_ENTRY {
+            const FILENAME: &'static str = "sample-vmgs.vhd";
+            const SIZE: u64 = 4194816;
         }
     }
 }
