@@ -20,6 +20,7 @@ use net_backend::RssConfig;
 use net_backend::RxChecksumState;
 use net_backend::RxId;
 use net_backend::RxMetadata;
+use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
@@ -231,7 +232,7 @@ impl net_backend::Queue for ConsommeQueue {
         Ok((false, segments.len()))
     }
 
-    fn tx_poll(&mut self, done: &mut [TxId]) -> anyhow::Result<usize> {
+    fn tx_poll(&mut self, done: &mut [TxId]) -> Result<usize, TxError> {
         let n = done.len().min(self.state.tx_ready.len());
         for (x, y) in done.iter_mut().zip(self.state.tx_ready.drain(..n)) {
             *x = y;

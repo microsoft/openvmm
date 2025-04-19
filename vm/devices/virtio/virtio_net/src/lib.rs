@@ -926,7 +926,7 @@ impl Worker {
         // Drain completed transmits.
         let n = epqueue
             .tx_poll(&mut self.active_state.data.tx_done)
-            .map_err(WorkerError::Endpoint)?;
+            .map_err(|tx_error| WorkerError::Endpoint(tx_error.into()))?;
         if n == 0 {
             return Ok(false);
         }
