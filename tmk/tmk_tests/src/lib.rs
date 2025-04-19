@@ -58,6 +58,7 @@ fn host_tmks(
     Ok(())
 }
 
+#[cfg(guest_arch = "x86_64")] // We don't support openvmm+openhcl tests on aarch64 yet
 petri::test!(openvmm_openhcl_tmks, resolve_openvmm_openhcl_tmks);
 
 struct OpenvmmOpenhclArtifacts {
@@ -66,6 +67,7 @@ struct OpenvmmOpenhclArtifacts {
     tmk: ResolvedArtifact,
 }
 
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn resolve_openvmm_openhcl_tmks(resolver: &petri::ArtifactResolver<'_>) -> OpenvmmOpenhclArtifacts {
     let igvm_path;
     let tmk_vmm;
@@ -108,6 +110,7 @@ fn resolve_openvmm_openhcl_tmks(resolver: &petri::ArtifactResolver<'_>) -> Openv
     OpenvmmOpenhclArtifacts { vm, tmk_vmm, tmk }
 }
 
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn openvmm_openhcl_tmks(
     params: petri::PetriTestParams<'_>,
     artifacts: OpenvmmOpenhclArtifacts,
