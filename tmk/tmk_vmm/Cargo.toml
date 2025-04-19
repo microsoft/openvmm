@@ -6,6 +6,9 @@ name = "tmk_vmm"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+unstable_whp = ["virt_whp/unstable_whp"]
+
 [dependencies]
 tmk_protocol.workspace = true
 

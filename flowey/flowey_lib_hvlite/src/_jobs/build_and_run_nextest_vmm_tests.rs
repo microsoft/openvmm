@@ -188,12 +188,14 @@ impl SimpleFlowNode for Node {
         let register_tmk_vmm = ctx.reqv(|v| crate::build_tmk_vmm::Request {
             profile,
             target: targets.linux.clone(),
+            unstable_whp: false,
             tmk_vmm: v,
         });
 
         let register_tmk_vmm_linux_musl = ctx.reqv(|v| crate::build_tmk_vmm::Request {
             profile,
             target: targets.linux,
+            unstable_whp: false,
             tmk_vmm: v,
         });
 

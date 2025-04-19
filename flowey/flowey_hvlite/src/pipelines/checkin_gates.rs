@@ -407,6 +407,7 @@ impl IntoPipeline for CheckinGatesCli {
                         arch,
                         platform: CommonPlatform::WindowsMsvc,
                     },
+                    unstable_whp: true, // The ARM64 CI runner supports the unstable WHP interface
                     profile: CommonProfile::from_release(release),
                     tmk_vmm: ctx.publish_typed_artifact(pub_tmk_vmm),
                 });
@@ -736,6 +737,7 @@ impl IntoPipeline for CheckinGatesCli {
                         platform: CommonPlatform::LinuxMusl,
                     },
                     profile: CommonProfile::from_release(release),
+                    unstable_whp: false,
                     tmk_vmm: ctx.publish_typed_artifact(pub_tmk_vmm),
                 });
 
