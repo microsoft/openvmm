@@ -94,10 +94,9 @@ impl AdvancedLoggerInfo {
         }
 
         // Check the log buffer size
-        let log_buffer_size = self.log_buffer_size;
-        if log_buffer_size > MAX_LOG_BUFFER_SIZE {
+        if self.log_buffer_size > MAX_LOG_BUFFER_SIZE {
             return Err(AdvancedLoggerInfoError::InvalidLogBufferSize(
-                log_buffer_size,
+                self.log_buffer_size,
                 MAX_LOG_BUFFER_SIZE,
             ));
         }
@@ -121,10 +120,9 @@ impl AdvancedLoggerMessageEntryV2 {
         }
 
         // Check the message length
-        let message_len = self.message_len;
-        if message_len > MAX_MESSAGE_LENGTH {
+        if self.message_len > MAX_MESSAGE_LENGTH {
             return Err(AdvancedLoggerEntryError::InvalidMessageLength(
-                message_len,
+                self.message_len,
                 MAX_MESSAGE_LENGTH,
             ));
         }
