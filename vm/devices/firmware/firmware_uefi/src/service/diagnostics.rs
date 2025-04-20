@@ -10,6 +10,7 @@ use crate::UefiDevice;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use std::fmt::Debug;
+use std::mem::size_of;
 use thiserror::Error;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerEntryError;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerInfo;
@@ -18,6 +19,10 @@ use uefi_specs::hyperv::advanced_logger::AdvancedLoggerMessageEntryV2;
 use uefi_specs::hyperv::advanced_logger::MAX_LOG_BUFFER_SIZE;
 use uefi_specs::hyperv::advanced_logger::MAX_MESSAGE_LENGTH;
 use zerocopy::FromBytes;
+
+// Constants for parsing
+const ALIGNMENT: usize = 8;
+const ALIGNMENT_MASK: usize = ALIGNMENT - 1;
 
 // Every parsed advanced logger entry turns into this
 pub struct EfiDiagnosticsLog {
@@ -193,7 +198,7 @@ impl DiagnosticsServices {
             let message = String::from_utf8_lossy(&buffer_slice[message_start..message_end]);
 
             //
-            // Step 5a: Handle message accumulation
+            // Step 5b: Handle message accumulation
             //
             if !is_accumulating {
                 debug_level = entry.debug_level;
@@ -226,7 +231,7 @@ impl DiagnosticsServices {
             }
 
             //
-            // Step 5b: Move to the next entry
+            // Step 5c: Move to the next entry
             //
 
             // Calculate base offset (entry header size + message length)
@@ -241,10 +246,13 @@ impl DiagnosticsServices {
                 })?;
 
             // Add padding for 8-byte alignment
-            let aligned_offset = base_offset.checked_add(7).ok_or_else(|| {
-                DiagnosticsError(format!("Overflow: base_offset ({}) + 7", base_offset))
+            let aligned_offset = base_offset.checked_add(ALIGNMENT_MASK).ok_or_else(|| {
+                DiagnosticsError(format!(
+                    "Overflow: base_offset ({}) + {}",
+                    base_offset, ALIGNMENT_MASK
+                ))
             })?;
-            let next_offset = aligned_offset & !7;
+            let next_offset = aligned_offset & !ALIGNMENT_MASK;
 
             // Update overall bytes read counter
             bytes_read = bytes_read.checked_add(next_offset).ok_or_else(|| {
@@ -260,6 +268,17 @@ impl DiagnosticsServices {
                 break;
             }
             buffer_slice = &buffer_slice[next_offset..];
+        }
+
+        // Process remaining messages
+        if is_accumulating {
+            logs.push(EfiDiagnosticsLog {
+                debug_level,
+                time_stamp,
+                phase,
+                message: accumulated_message.clone(),
+            });
+            entries_processed += 1;
         }
 
         // Print summary statistics
