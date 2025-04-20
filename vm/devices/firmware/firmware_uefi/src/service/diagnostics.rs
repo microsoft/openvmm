@@ -287,7 +287,7 @@ impl UefiDevice {
             Ok(_) => {
                 // Print the logs to the trace log
                 for log in logs.iter() {
-                    tracelimit::info_ratelimited!(
+                    tracing::info!(
                         "EFI Diagnostics: Debug Level: {}, Timestamp: {}, Phase: {}, Message: {}",
                         log.debug_level,
                         log.time_stamp,
