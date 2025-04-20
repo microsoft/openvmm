@@ -95,7 +95,7 @@ impl DiagnosticsServices {
             .checked_sub(header.log_buffer_offset)
             .ok_or_else(|| {
                 DiagnosticsError(format!(
-                    "Overflow: Log current offset ({:#x}) - Log buffer offset ({:#x})",
+                    "Overflow: log_current_offset ({:#x}) - log_buffer_offset ({:#x})",
                     header.log_current_offset as u32, header.log_buffer_offset as u32
                 ))
             })?;
@@ -106,7 +106,7 @@ impl DiagnosticsServices {
             || used_log_buffer_size > MAX_LOG_BUFFER_SIZE
         {
             return Err(DiagnosticsError(format!(
-                "Invalid used log buffer size: {:#x}",
+                "Invalid used_log_buffer_size: {:#x}",
                 used_log_buffer_size
             )));
         }
@@ -125,7 +125,7 @@ impl DiagnosticsServices {
         // Calculate start address of the log buffer
         let buffer_start_addr = gpa.checked_add(header.log_buffer_offset).ok_or_else(|| {
             DiagnosticsError(format!(
-                "Overflow: GPA ({:#x}) + Log buffer offset ({:#x})",
+                "Overflow: gpa ({:#x}) + log_buffer_offset ({:#x})",
                 gpa, header.log_buffer_offset as u32
             ))
         })?;
@@ -134,14 +134,14 @@ impl DiagnosticsServices {
         gm.read_at(buffer_start_addr as u64, &mut buffer_data)
             .map_err(|_| {
                 DiagnosticsError(format!(
-                    "Failed to read log buffer at {:#x} with size {:#x}",
+                    "Failed to read buffer_data at {:#x} with size {:#x}",
                     buffer_start_addr, used_log_buffer_size
                 ))
             })?;
 
         // Empty buffer data should early exit
         if buffer_data.is_empty() {
-            tracelimit::info_ratelimited!("Diagnostics buffer is empty, ending processing");
+            tracelimit::info_ratelimited!("buffer_data is empty, ending processing");
             return Ok(());
         }
 
@@ -154,7 +154,7 @@ impl DiagnosticsServices {
             let (entry, _) =
                 AdvancedLoggerMessageEntryV2::read_from_prefix(buffer_slice).map_err(|_| {
                     DiagnosticsError(format!(
-                        "Failed to read AdvancedLoggerMessageEntryV2 from buffer slice: {:?}",
+                        "Failed to read AdvancedLoggerMessageEntryV2 from buffer_slice: {:?}",
                         buffer_slice
                     ))
                 })?;
@@ -202,7 +202,7 @@ impl DiagnosticsServices {
             // Validate that the accumulated message is not too long
             if accumulated_message.len() > MAX_MESSAGE_LENGTH as usize {
                 return Err(DiagnosticsError(format!(
-                    "Accumulated message length exceeds maximum: {}. Max: {}",
+                    "accumulated_message exceeds maximum length: {}. Max: {}",
                     accumulated_message.len(),
                     MAX_MESSAGE_LENGTH
                 )));
@@ -229,7 +229,7 @@ impl DiagnosticsServices {
                 .checked_add(entry.message_len as usize)
                 .ok_or_else(|| {
                     DiagnosticsError(format!(
-                        "Overflow: AdvancedLoggerMessageEntryV2 size ({}) + message length ({})",
+                        "Overflow: AdvancedLoggerMessageEntryV2 size ({}) + message_len ({})",
                         size_of::<AdvancedLoggerMessageEntryV2>(),
                         entry.message_len as u16
                     ))
