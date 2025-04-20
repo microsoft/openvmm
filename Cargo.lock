@@ -7194,6 +7194,7 @@ dependencies = [
  "inspect",
  "open_enum",
  "static_assertions",
+ "thiserror 2.0.12",
  "ucs2 0.0.0",
  "wchar",
  "zerocopy 0.8.23",
