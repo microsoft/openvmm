@@ -6,6 +6,9 @@
 //! Package from Project Mu.
 
 use crate::uefi::time::EFI_TIME;
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::KnownLayout;
 
 // Parsing constants
 pub const MAX_LOG_BUFFER_SIZE: u32 = 0x400000; // 4MB
@@ -19,7 +22,7 @@ pub const SIG_ENTRY: u32 = u32::from_le_bytes(*b"ALM2");
 // with the Advanced Logger Package in UEFI. The entries
 // live right after.
 #[repr(C, packed)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, FromBytes, Immutable, KnownLayout)]
 pub struct AdvancedLoggerInfo {
     pub signature: u32,         // Signature 'ALOG'
     pub version: u16,           // Current Version
@@ -29,12 +32,12 @@ pub struct AdvancedLoggerInfo {
     pub log_current_offset: u32, // Offset from LoggerInfo to where to store next log entry
     pub discarded_size: u32,     // Number of bytes of messages missed
     pub log_buffer_size: u32,    // Size of allocated buffer
-    pub in_permanent_ram: bool,  // Log in permanent RAM
-    pub at_runtime: bool,        // After ExitBootServices
-    pub gone_virtual: bool,      // After VirtualAddressChange
-    pub hdw_port_initialized: bool, // HdwPort initialized
-    pub hdw_port_disabled: bool, // HdwPort is Disabled
-    pub reserved2: [bool; 3],    // Reserved
+    pub in_permanent_ram: u8,    // Log in permanent RAM
+    pub at_runtime: u8,          // After ExitBootServices
+    pub gone_virtual: u8,        // After VirtualAddressChange
+    pub hdw_port_initialized: u8, // HdwPort initialized
+    pub hdw_port_disabled: u8,   // HdwPort is Disabled
+    pub reserved2: [u8; 3],      // Reserved
     pub timer_frequency: u64,    // Ticks per second for log timing
     pub ticks_at_time: u64,      // Ticks when Time Acquired
     pub time: EFI_TIME,          // Uefi Time Field
@@ -46,14 +49,15 @@ pub struct AdvancedLoggerInfo {
 // Advanced Logger Package in UEFI. The messages live
 // right after.
 #[repr(C, packed)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, FromBytes, Immutable, KnownLayout)]
 pub struct AdvancedLoggerMessageEntryV2 {
-    pub signature: u32,      // Signature
-    pub major_version: u8,   // Major version of advanced logger message structure
-    pub minor_version: u8,   // Minor version of advanced logger message structure
-    pub debug_level: u32,    // Debug Level
-    pub time_stamp: u64,     // Time stamp
-    pub phase: u16,          // Boot phase that produced this message entry
-    pub message_len: u16,    // Number of bytes in Message
+    pub signature: u32,    // Signature
+    pub major_version: u8, // Major version of advanced logger message structure
+    pub minor_version: u8, // Minor version of advanced logger message structure
+    pub debug_level: u32,  // Debug Level
+    pub time_stamp: u64,   // Time stamp
+    pub phase: u16,        // Boot phase that produced this message entry
+    pub message_len: u16,  // Number of bytes in Message
     pub message_offset: u16, // Offset of Message from start of structure
+                           // Rust does not support flexible arrays, but message lives after
 }
