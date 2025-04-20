@@ -288,7 +288,7 @@ impl UefiDevice {
                 // Print the logs to the trace log
                 for log in logs.iter() {
                     tracelimit::info_ratelimited!(
-                        "Diagnostics Log: Debug Level: {}, Timestamp: {}, Phase: {}, Message: {}",
+                        "EFI Diagnostics: Debug Level: {}, Timestamp: {}, Phase: {}, Message: {}",
                         log.debug_level,
                         log.time_stamp,
                         log.phase,
@@ -296,8 +296,11 @@ impl UefiDevice {
                     );
                 }
             }
-            Err(e) => {
-                tracelimit::error_ratelimited!("Diagnostics Error: {}", e);
+            Err(error) => {
+                tracelimit::error_ratelimited!(
+                    "EFI Diagnostics: Encountered an error during processing {}",
+                    error
+                );
             }
         }
 
