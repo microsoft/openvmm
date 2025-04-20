@@ -277,9 +277,13 @@ impl UefiDevice {
 impl ChangeDeviceState for UefiDevice {
     fn start(&mut self) {}
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        self.process_diagnostics(self.diagnostics_gpa, self.gm.clone());
+    }
 
     async fn reset(&mut self) {
+        self.process_diagnostics(self.diagnostics_gpa, self.gm.clone());
+
         self.address = 0;
 
         self.service.nvram.reset();
