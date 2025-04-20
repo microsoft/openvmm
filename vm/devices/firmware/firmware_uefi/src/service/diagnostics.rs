@@ -292,7 +292,7 @@ impl UefiDevice {
                         log.debug_level,
                         log.time_stamp,
                         log.phase,
-                        log.message
+                        log.message.trim_end_matches(&['\r', '\n'][..]) // Remove trailing newlines
                     );
                 }
             }
