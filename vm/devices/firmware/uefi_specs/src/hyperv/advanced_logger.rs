@@ -11,24 +11,24 @@ use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::KnownLayout;
 
-// Errors for validating the Advanced Logger Info structure
+// Validation errors for the Advanced Logger Info structure
 #[derive(Debug, Error)]
 pub enum AdvancedLoggerInfoError {
     #[error("Invalid header signature: {0:#x}, expected: {1:#x}")]
-    InvalidSignature(u32, u32),
+    Signature(u32, u32),
     #[error("Invalid log buffer size: {0:#x}, max: {1:#x}")]
-    InvalidLogBufferSize(u32, u32),
+    LogBufferSize(u32, u32),
 }
 
-// Errors for validating the Advanced Logger Entry structure
+// Validation errors for the Advanced Logger Entry structure
 #[derive(Debug, Error)]
 pub enum AdvancedLoggerEntryError {
     #[error("Invalid entry signature: {0:#x}, expected: {1:#x}")]
-    InvalidSignature(u32, u32),
+    Signature(u32, u32),
     #[error("Invalid timestamp: {0:#x}")]
-    InvalidTimestamp(u64),
+    Timestamp(u64),
     #[error("Invalid message length: {0:#x}, max: {1:#x}")]
-    InvalidMessageLength(u16, u16),
+    MessageLength(u16, u16),
 }
 
 // Advanced Logger Info validation constants
@@ -88,14 +88,12 @@ impl AdvancedLoggerInfo {
         // Check the signature
         let signature = self.signature.to_le();
         if signature != SIG_HEADER {
-            return Err(AdvancedLoggerInfoError::InvalidSignature(
-                signature, SIG_HEADER,
-            ));
+            return Err(AdvancedLoggerInfoError::Signature(signature, SIG_HEADER));
         }
 
         // Check the log buffer size
         if self.log_buffer_size > MAX_LOG_BUFFER_SIZE {
-            return Err(AdvancedLoggerInfoError::InvalidLogBufferSize(
+            return Err(AdvancedLoggerInfoError::LogBufferSize(
                 self.log_buffer_size,
                 MAX_LOG_BUFFER_SIZE,
             ));
@@ -109,19 +107,17 @@ impl AdvancedLoggerMessageEntryV2 {
         // Check the signature
         let signature = self.signature.to_le();
         if signature != SIG_ENTRY {
-            return Err(AdvancedLoggerEntryError::InvalidSignature(
-                signature, SIG_ENTRY,
-            ));
+            return Err(AdvancedLoggerEntryError::Signature(signature, SIG_ENTRY));
         }
 
         // Check the timestamp
         if self.time_stamp == 0 {
-            return Err(AdvancedLoggerEntryError::InvalidTimestamp(self.time_stamp));
+            return Err(AdvancedLoggerEntryError::Timestamp(self.time_stamp));
         }
 
         // Check the message length
         if self.message_len > MAX_MESSAGE_LENGTH {
-            return Err(AdvancedLoggerEntryError::InvalidMessageLength(
+            return Err(AdvancedLoggerEntryError::MessageLength(
                 self.message_len,
                 MAX_MESSAGE_LENGTH,
             ));

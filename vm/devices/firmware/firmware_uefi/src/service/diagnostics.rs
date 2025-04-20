@@ -11,7 +11,12 @@ use guestmem::GuestMemory;
 use inspect::Inspect;
 use std::fmt::Debug;
 use thiserror::Error;
-use uefi_specs::hyperv::advanced_logger::*;
+use uefi_specs::hyperv::advanced_logger::AdvancedLoggerEntryError;
+use uefi_specs::hyperv::advanced_logger::AdvancedLoggerInfo;
+use uefi_specs::hyperv::advanced_logger::AdvancedLoggerInfoError;
+use uefi_specs::hyperv::advanced_logger::AdvancedLoggerMessageEntryV2;
+use uefi_specs::hyperv::advanced_logger::MAX_LOG_BUFFER_SIZE;
+use uefi_specs::hyperv::advanced_logger::MAX_MESSAGE_LENGTH;
 use zerocopy::FromBytes;
 
 // Every parsed advanced logger entry turns into this
