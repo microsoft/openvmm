@@ -41,56 +41,40 @@ impl From<AdvancedLoggerEntryError> for DiagnosticsError {
 
 // Holds necessary state for diagnostics services
 #[derive(Inspect)]
-pub struct DiagnosticsServices {
-    gpa: u32,
-    did_parse: bool,
-}
+pub struct DiagnosticsServices {}
 
 impl DiagnosticsServices {
     pub fn new() -> DiagnosticsServices {
-        DiagnosticsServices {
-            gpa: 0,
-            did_parse: false,
-        }
+        DiagnosticsServices {}
     }
 
     pub fn reset(&mut self) {
-        self.gpa = 0;
-        self.did_parse = false;
+        // Does nothing
     }
 
     fn validate_gpa(&self, gpa: u32) -> Result<(), DiagnosticsError> {
-        if gpa == u32::MAX {
+        if gpa == 0 || gpa == u32::MAX {
             return Err(DiagnosticsError(format!("Invalid GPA: {:#x}", gpa)));
         }
         Ok(())
     }
 
-    pub fn set_diagnostics_gpa(&mut self, gpa: u32) -> Result<(), DiagnosticsError> {
-        tracelimit::info_ratelimited!("Setting diagnostics GPA to {:#x}", gpa);
-        self.validate_gpa(gpa)?;
-        self.gpa = gpa;
-        Ok(())
-    }
-
     pub fn process_diagnostics(
         &self,
+        gpa: u32,
         gm: GuestMemory,
         logs: &mut Vec<EfiDiagnosticsLog>,
     ) -> Result<(), DiagnosticsError> {
         //
         // Step 1: Validate GPA
         //
-        self.validate_gpa(self.gpa)?;
+        self.validate_gpa(gpa)?;
 
         //
         // Step 2: Read and validate the advanced logger header
         //
-        let header: AdvancedLoggerInfo = gm.read_plain(self.gpa as u64).map_err(|_| {
-            DiagnosticsError(format!(
-                "Failed to read AdvancedLoggerInfo at {:#x}",
-                self.gpa
-            ))
+        let header: AdvancedLoggerInfo = gm.read_plain(gpa as u64).map_err(|_| {
+            DiagnosticsError(format!("Failed to read AdvancedLoggerInfo at {:#x}", gpa))
         })?;
         header.validate()?;
 
@@ -139,15 +123,12 @@ impl DiagnosticsServices {
         //
 
         // Calculate start address of the log buffer
-        let buffer_start_addr =
-            self.gpa
-                .checked_add(header.log_buffer_offset)
-                .ok_or_else(|| {
-                    DiagnosticsError(format!(
-                        "Overflow: GPA ({:#x}) + Log buffer offset ({:#x})",
-                        self.gpa, header.log_buffer_offset as u32
-                    ))
-                })?;
+        let buffer_start_addr = gpa.checked_add(header.log_buffer_offset).ok_or_else(|| {
+            DiagnosticsError(format!(
+                "Overflow: GPA ({:#x}) + Log buffer offset ({:#x})",
+                gpa, header.log_buffer_offset as u32
+            ))
+        })?;
 
         let mut buffer_data = vec![0u8; used_log_buffer_size as usize];
         gm.read_at(buffer_start_addr as u64, &mut buffer_data)
@@ -288,14 +269,23 @@ impl DiagnosticsServices {
 }
 
 impl UefiDevice {
-    pub(crate) fn set_diagnostics_gpa(&mut self, gpa: u32) {
-        let _ = self.service.diagnostics.set_diagnostics_gpa(gpa);
-    }
+    pub(crate) fn process_diagnostics(&mut self, gpa: u32, gm: GuestMemory) {
+        // Do not process if already done
+        if self.processed_diagnostics {
+            tracelimit::info_ratelimited!("EFI Diagnostics already processed, skipping");
+            return;
+        }
+        self.processed_diagnostics = true;
 
-    pub(crate) fn process_diagnostics(&self, gm: GuestMemory) {
+        // Collect diagnostics logs
         let mut logs = Vec::new();
-        match self.service.diagnostics.process_diagnostics(gm, &mut logs) {
+        match self
+            .service
+            .diagnostics
+            .process_diagnostics(gpa, gm, &mut logs)
+        {
             Ok(_) => {
+                // Print the logs to the trace log
                 for log in logs.iter() {
                     tracelimit::info_ratelimited!(
                         "Diagnostics Log: Debug Level: {}, Timestamp: {}, Phase: {}, Message: {}",
@@ -310,6 +300,9 @@ impl UefiDevice {
                 tracelimit::error_ratelimited!("Diagnostics Error: {}", e);
             }
         }
+
+        // Reset stored gpa
+        self.diagnostics_gpa = 0;
     }
 }
 

@@ -155,6 +155,13 @@ pub struct UefiDevice {
     // Volatile state
     #[inspect(hex)]
     address: u32,
+
+    // Diagnostics state
+    #[inspect(mut)]
+    diagnostics_gpa: u32,
+
+    #[inspect(mut)]
+    processed_diagnostics: bool,
 }
 
 impl UefiDevice {
@@ -202,6 +209,8 @@ impl UefiDevice {
                 time: service::time::TimeServices::new(time_source),
                 diagnostics: service::diagnostics::DiagnosticsServices::new(),
             },
+            diagnostics_gpa: 0,
+            processed_diagnostics: false,
         };
         Ok(uefi)
     }
@@ -254,8 +263,12 @@ impl UefiDevice {
                     );
                 }
             }
-            UefiCommand::SET_EFI_DIAGNOSTICS_GPA => self.set_diagnostics_gpa(data),
-            UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.process_diagnostics(self.gm.clone()),
+            UefiCommand::SET_EFI_DIAGNOSTICS_GPA => {
+                self.diagnostics_gpa = data;
+            }
+            UefiCommand::PROCESS_EFI_DIAGNOSTICS => {
+                self.process_diagnostics(self.diagnostics_gpa, self.gm.clone())
+            }
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
     }
@@ -489,6 +502,8 @@ mod save_restore {
                         diagnostics,
                     },
                 address,
+                diagnostics_gpa: _,
+                processed_diagnostics: _,
             } = self;
 
             Ok(state::SavedState {

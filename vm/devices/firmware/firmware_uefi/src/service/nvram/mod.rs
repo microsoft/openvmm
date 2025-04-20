@@ -572,7 +572,7 @@ impl UefiDevice {
                 self.service.nvram.services.exit_boot_services();
 
                 // When exit boot services is called, process EFI diagnostics
-                let _ = self.process_diagnostics(self.gm.clone());
+                let _ = self.process_diagnostics(self.diagnostics_gpa, self.gm.clone());
 
                 (EfiStatus::SUCCESS, None)
             }
