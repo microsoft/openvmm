@@ -429,8 +429,8 @@ impl UefiDevice {
             }
             Err(error) => {
                 tracelimit::error_ratelimited!(
-                    "EFI Diagnostics: Encountered an error during processing {}",
-                    error
+                    error = &error as &dyn std::error::Error,
+                    "EFI Diagnostics: Failed to process diagnostics buffer"
                 );
             }
         }
