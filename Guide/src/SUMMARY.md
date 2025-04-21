@@ -45,6 +45,7 @@
   - [Coding Conventions](./dev_guide/contrib/code.md)
   - [Releases & Code Flow](./dev_guide/contrib/release.md)
   - [Submitting Changes](./dev_guide/contrib/pr.md)
+  - [Code Review Process](./dev_guide/contrib/code_review.md)
   - [Guide Updates](./dev_guide/contrib/guide.md)
 
 # Reference
