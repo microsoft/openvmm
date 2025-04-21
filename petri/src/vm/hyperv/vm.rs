@@ -92,9 +92,18 @@ impl HyperVVM {
         powershell::run_remove_vm_network_adapter(&vmid)
             .context("remove default network adapter")?;
 
-        // Set the default behavior to disable the UEFI frontpage, via OpenHCL
-        // cmdline
-        powershell::run_set_vm_command_line(&vmid, &ps_mod, "OPENHCL_DISABLE_UEFI_FRONTPAGE=1")?;
+        // TODO: Fix vm config so that we get more information at this layer
+        // what kind of VM it is. For now, if it's UEFI, assume that it's
+        // OpenHCL and set the default behavior to disable the UEFI frontpage,
+        // via OpenHCL cmdline, since Hyper-V doesn't support setting this
+        // option thru WMI.
+        if generation == powershell::HyperVGeneration::Two {
+            powershell::run_set_vm_command_line(
+                &vmid,
+                &ps_mod,
+                "OPENHCL_DISABLE_UEFI_FRONTPAGE=1",
+            )?;
+        }
 
         Ok(Self {
             name,

@@ -18,7 +18,7 @@ use std::process::Stdio;
 use std::str::FromStr;
 
 /// Hyper-V VM Generation
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum HyperVGeneration {
     /// Generation 1 (with emulated legacy devices and PCAT BIOS)
     One,
