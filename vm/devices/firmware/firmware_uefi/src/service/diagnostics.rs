@@ -293,7 +293,14 @@ impl DiagnosticsServices {
             }
 
             // Get the message
-            let message = String::from_utf8_lossy(&buffer_slice[message_start..message_end]);
+            let message = std::str::from_utf8(&buffer_slice[message_start..message_end])
+                .map_err(|error| {
+                    ProcessingError(format!(
+                        "Invalid UTF-8 in message at offset {}: {}",
+                        message_start, error
+                    ))
+                })?
+                .to_string();
 
             //
             // Step 5b: Handle message accumulation
@@ -403,7 +410,7 @@ impl UefiDevice {
         }
         self.processed_diagnostics = true;
 
-        // Collect diagnostics logs
+        // Collect diagnostics logs and send to tracing
         let mut logs = Vec::new();
         match self
             .service
@@ -411,14 +418,13 @@ impl UefiDevice {
             .process_diagnostics(gpa, gm, &mut logs)
         {
             Ok(_) => {
-                // Print the logs to the trace log
                 for log in logs.iter() {
                     tracing::info!(
-                        "EFI Diagnostics: Debug Level: {}, Timestamp: {}, Phase: {}, Message: {}",
-                        log.debug_level,
-                        log.time_stamp,
-                        log.phase,
-                        log.message
+                        debug_level = log.debug_level,
+                        timestamp = log.time_stamp,
+                        phase = log.phase,
+                        description = %log.message,
+                        "EFI Diagnostics:"
                     );
                 }
             }
