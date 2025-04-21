@@ -1,4 +1,5 @@
 #![feature(panic_location)]
+#[no_std]
 
 use core::any::type_name;
 use core::fmt::Write;
@@ -7,7 +8,6 @@ use core::result;
 use crate::arch::serial::{InstrIoAccess, Serial};
 use crate::sync::Mutex;
 use alloc::string::{String, ToString};
-#[no_std]
 use serde_json::json;
 use serde::Serialize;
 pub enum Level {

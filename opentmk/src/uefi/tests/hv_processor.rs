@@ -5,8 +5,6 @@ use crate::{
     criticallog, infolog, sync::{self, Mutex}, tmk_assert, uefi::context::{TestCtxTrait, VpExecutor}
 };
 
-static VP_RUNNING: Mutex<Vec<(u32, Vtl)>> = Mutex::new(Vec::new());
-
 pub fn exec(ctx: &mut dyn TestCtxTrait) {
     ctx.setup_interrupt_handler();
     ctx.setup_partition_vtl(Vtl::Vtl1);
