@@ -91,7 +91,7 @@ function Set-VmSystemSettings {
     param(
         [ValidateNotNullOrEmpty()]
         [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
-        [Microsoft.Management.Infrastructure.CimInstance]$Vssd
+        [Microsoft.Management.Infrastructure.CimInstance] $Vssd
     )
 
     $vmms = Get-Vmms

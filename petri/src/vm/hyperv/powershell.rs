@@ -145,19 +145,6 @@ pub fn run_remove_vm(vmid: &Guid) -> anyhow::Result<()> {
         .context("remove_vm")
 }
 
-/// Runs Remove-VmNetworkAdapter to remove all network adapters from a VM.
-pub fn run_remove_vm_network_adapter(vmid: &Guid) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
-        .cmdlet("Get-VM")
-        .arg_string("Id", vmid)
-        .pipeline()
-        .cmdlet("Remove-VMNetworkAdapter")
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("remove_vm_network_adapters")
-}
-
 /// Arguments for the Set-VMProcessor powershell cmdlet
 pub struct HyperVSetVMProcessorArgs<'a> {
     /// Specifies the ID of the virtual machine for which you want to set the
@@ -598,6 +585,19 @@ pub fn vm_shutdown_ic_status(vmid: &Guid) -> anyhow::Result<VmShutdownIcStatus> 
         "Lost Communication" => VmShutdownIcStatus::LostCommunication,
         s => anyhow::bail!("Unknown VM shutdown status: {s}"),
     })
+}
+
+/// Runs Remove-VmNetworkAdapter to remove all network adapters from a VM.
+pub fn run_remove_vm_network_adapter(vmid: &Guid) -> anyhow::Result<()> {
+    PowerShellBuilder::new()
+        .cmdlet("Get-VM")
+        .arg_string("Id", vmid)
+        .pipeline()
+        .cmdlet("Remove-VMNetworkAdapter")
+        .finish()
+        .output(true)
+        .map(|_| ())
+        .context("remove_vm_network_adapters")
 }
 
 /// A PowerShell script builder
