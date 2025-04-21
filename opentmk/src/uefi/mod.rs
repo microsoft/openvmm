@@ -32,5 +32,5 @@ use uefi::Status;
 fn uefi_main() -> Status {
     init().expect_assert("Failed to initialize environment");
     tests::run_test();
-    loop {}
+    Status::SUCCESS
 }

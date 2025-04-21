@@ -2,8 +2,8 @@ use super::{
     context::{TestCtxTrait, VpExecutor},
     hypercall::HvCall,
 };
-use crate::{debuglog, slog::AssertResult};
 use crate::uefi::alloc::ALLOCATOR;
+use crate::{debuglog, slog::AssertResult};
 use crate::{
     infolog,
     slog::AssertOption,
@@ -46,10 +46,7 @@ fn register_command_queue(vp_index: u32) {
             CMD.lock().insert(vp_index, LinkedList::new());
             debuglog!("registered command queue for vp: {}", vp_index);
         } else {
-            debuglog!(
-                "command queue already registered for vp: {}",
-                vp_index
-            );
+            debuglog!("command queue already registered for vp: {}", vp_index);
         }
     }
 }
@@ -67,6 +64,71 @@ impl Drop for HvTestCtx {
     }
 }
 
+/// Implementation of the `TestCtxTrait` for the `HvTestCtx` structure, providing
+/// various methods to manage and interact with virtual processors (VPs) and
+/// Virtual Trust Levels (VTLs) in a hypervisor context.
+///
+/// # Methods
+///
+/// - `start_on_vp(&mut self, cmd: VpExecutor)`:
+///   Starts a virtual processor (VP) on a specified VTL. Handles enabling VTLs,
+///   switching between high and low VTLs, and managing VP execution contexts.
+///
+/// - `queue_command_vp(&mut self, cmd: VpExecutor)`:
+///   Queues a command for a specific VP and VTL.
+///
+/// - `switch_to_high_vtl(&mut self)`:
+///   Switches the current execution context to a high VTL.
+///
+/// - `switch_to_low_vtl(&mut self)`:
+///   Switches the current execution context to a low VTL.
+///
+/// - `setup_partition_vtl(&mut self, vtl: Vtl)`:
+///   Configures the partition to enable a specified VTL.
+///
+/// - `setup_interrupt_handler(&mut self)`:
+///   Sets up the interrupt handler for the architecture.
+///
+/// - `setup_vtl_protection(&mut self)`:
+///   Enables VTL protection for the current partition.
+///
+/// - `setup_secure_intercept(&mut self, interrupt_idx: u8)`:
+///   Configures secure intercept for a specified interrupt index, including
+///   setting up the SIMP and SINT0 registers.
+///
+/// - `apply_vtl_protection_for_memory(&mut self, range: Range<u64>, vtl: Vtl)`:
+///   Applies VTL protections to a specified memory range.
+///
+/// - `write_msr(&mut self, msr: u32, value: u64)`:
+///   Writes a value to a specified Model-Specific Register (MSR).
+///
+/// - `read_msr(&mut self, msr: u32) -> u64`:
+///   Reads the value of a specified Model-Specific Register (MSR).
+///
+/// - `start_running_vp_with_default_context(&mut self, cmd: VpExecutor)`:
+///   Starts a VP with the default execution context.
+///
+/// - `set_default_ctx_to_vp(&mut self, vp_index: u32, vtl: Vtl)`:
+///   Sets the default execution context for a specified VP and VTL.
+///
+/// - `enable_vp_vtl_with_default_context(&mut self, vp_index: u32, vtl: Vtl)`:
+///   Enables a VTL for a specified VP using the default execution context.
+///
+/// - `set_interupt_idx(&mut self, interrupt_idx: u8, handler: fn())`:
+///   Sets an interrupt handler for a specified interrupt index. (x86_64 only)
+///
+/// - `get_vp_count(&self) -> u32`:
+///   Retrieves the number of virtual processors available on the system.
+///
+/// - `get_register(&mut self, reg: u32) -> u128`:
+///   Retrieves the value of a specified register. Supports both x86_64 and
+///   aarch64 architectures.
+///
+/// - `get_current_vp(&self) -> u32`:
+///   Returns the index of the current virtual processor.
+///
+/// - `get_current_vtl(&self) -> Vtl`:
+///   Returns the current Virtual Trust Level (VTL).
 impl TestCtxTrait for HvTestCtx {
     fn start_on_vp(&mut self, cmd: VpExecutor) {
         let (vp_index, vtl, cmd) = cmd.get();
@@ -145,11 +207,11 @@ impl TestCtxTrait for HvTestCtx {
     }
 
     fn switch_to_high_vtl(&mut self) {
-        HvCall::high_vtl();
+        HvCall::vtl_call();
     }
 
     fn switch_to_low_vtl(&mut self) {
-        HvCall::low_vtl();
+        HvCall::vtl_return();
     }
 
     fn setup_partition_vtl(&mut self, vtl: Vtl) {

@@ -11,7 +11,6 @@ use hvdef::HvRegisterGuestVsmPartitionConfig;
 use hvdef::HvRegisterValue;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvX64RegisterName;
-use minimal_rt::arch::hypercall::{invoke_hypercall_vtl};
 use zerocopy::FromZeros;
 use core::arch;
 use core::cell::RefCell;
@@ -21,7 +20,7 @@ use hvdef::hypercall::HvInputVtl;
 use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
-use minimal_rt::arch::hypercall::invoke_hypercall;
+use minimal_rt::arch::hypercall::{invoke_hypercall, HYPERCALL_PAGE};
 use zerocopy::IntoBytes;
 use zerocopy::FromBytes;
 
@@ -30,6 +29,19 @@ use zerocopy::FromBytes;
 struct HvcallPage {
     buffer: [u8; HV_PAGE_SIZE as usize],
 
+}
+
+pub fn invoke_hypercall_vtl(control: hvdef::hypercall::Control) {
+    // SAFETY: the caller guarantees the safety of this operation.
+    unsafe {
+        core::arch::asm! {
+            "call {hypercall_page}",
+            hypercall_page = sym HYPERCALL_PAGE,
+            inout("rcx") u64::from(control) => _,
+            in("rdx") 0,
+            in("rax") 0,
+        }
+    }
 }
 
 impl HvcallPage {
@@ -52,6 +64,59 @@ impl HvcallPage {
 }
 
 /// Provides mechanisms to invoke hypercalls within the boot shim.
+/// 
+/// This module defines the `HvCall` struct and associated methods to interact with
+/// hypervisor functionalities through hypercalls. It includes utilities for managing
+/// hypercall pages, setting and getting virtual processor (VP) registers, enabling
+/// VTL (Virtual Trust Levels), and applying memory protections.
+///
+/// # Overview
+///
+/// - **Hypercall Pages**: Manages page-aligned buffers for hypercall input and output.
+/// - **VP Registers**: Provides methods to set and get VP registers.
+/// - **VTL Management**: Includes methods to enable VTLs, apply VTL protections, and
+///   manage VTL-specific operations.
+/// - **Memory Protections**: Supports applying VTL protections and accepting VTL2 pages.
+///
+/// # Safety
+///
+/// Many methods in this module involve unsafe operations, such as invoking hypercalls
+/// or interacting with low-level memory structures. The caller must ensure the safety
+/// of these operations by adhering to the requirements of the hypervisor and the
+/// underlying architecture.
+///
+/// # Usage
+///
+/// This module is designed for use in single-threaded environments, such as the boot
+/// shim. It uses static buffers for hypercall pages, so it is not thread-safe.
+///
+/// # Features
+///
+/// - **Architecture-Specific Implementations**: Some methods are only available for
+///   specific architectures (e.g., `x86_64` or `aarch64`).
+/// - **Error Handling**: Methods return `Result` types to handle hypervisor errors.
+///
+/// # Examples
+///
+/// ```rust
+/// let mut hv_call = HvCall::new();
+/// hv_call.initialize();
+/// let vtl = hv_call.vtl();
+/// println!("Current VTL: {:?}", vtl);
+/// hv_call.uninitialize();
+/// ```
+///
+/// # Modules and Types
+///
+/// - `HvCall`: Main struct for managing hypercalls.
+/// - `HvcallPage`: Struct for page-aligned buffers.
+/// - `HwId`: Type alias for hardware IDs (APIC ID on `x86_64`, MPIDR on `aarch64`).
+///
+/// # Notes
+///
+/// - This module assumes the presence of a hypervisor that supports the required
+///   hypercalls.
+/// - The boot shim must ensure that hypercalls are invoked in a valid context.
 /// Internally uses static buffers for the hypercall page, the input
 /// page, and the output page, so this should not be used in any
 /// multi-threaded capacity (which the boot shim currently is not).
@@ -62,13 +127,6 @@ pub struct HvCall {
     output_page: HvcallPage,
 }
 
-/// Returns an [`HvCall`] instance.
-///
-/// Panics if another instance is already in use.
-// #[track_caller]
-// pub fn hvcall() -> core::cell::RefMut<'static, HvCall> {
-//     HVCALL.borrow_mut()
-// }
 
 #[expect(unsafe_code)]
 impl HvCall {
@@ -384,7 +442,7 @@ impl HvCall {
         Ok(context)
     }
 
-    pub fn high_vtl() {
+    pub fn vtl_call() {
         let control: hvdef::hypercall::Control = hvdef::hypercall::Control::new()
             .with_code(hvdef::HypercallCode::HvCallVtlCall.0)
             .with_rep_count(0);
@@ -397,7 +455,7 @@ impl HvCall {
         }
     }
 
-    pub fn low_vtl() {
+    pub fn vtl_return() {
         let control: hvdef::hypercall::Control = hvdef::hypercall::Control::new()
             .with_code(hvdef::HypercallCode::HvCallVtlReturn.0)
             .with_rep_count(0);
