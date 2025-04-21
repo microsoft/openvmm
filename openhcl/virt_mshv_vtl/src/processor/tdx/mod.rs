@@ -100,6 +100,8 @@ use x86defs::vmx::CR_ACCESS_TYPE_LMSW;
 use x86defs::vmx::CR_ACCESS_TYPE_MOV_TO_CR;
 use x86defs::vmx::CrAccessQualification;
 use x86defs::vmx::ExitQualificationIo;
+use x86defs::vmx::GdtrOrIdtrInstruction;
+use x86defs::vmx::GdtrOrIdtrInstructionInfo;
 use x86defs::vmx::INTERRUPT_TYPE_EXTERNAL;
 use x86defs::vmx::INTERRUPT_TYPE_HARDWARE_EXCEPTION;
 use x86defs::vmx::INTERRUPT_TYPE_NMI;
@@ -108,6 +110,8 @@ use x86defs::vmx::IO_SIZE_16_BIT;
 use x86defs::vmx::IO_SIZE_32_BIT;
 use x86defs::vmx::Interruptibility;
 use x86defs::vmx::InterruptionInformation;
+use x86defs::vmx::LdtrOrTrInstruction;
+use x86defs::vmx::LdtrOrTrInstructionInfo;
 use x86defs::vmx::ProcessorControls;
 use x86defs::vmx::SecondaryProcessorControls;
 use x86defs::vmx::VMX_ENTRY_CONTROL_LONG_MODE_GUEST;
@@ -462,6 +466,7 @@ struct ExitStats {
     pause: Counter,
     needs_interrupt_reinject: Counter,
     exception: Counter,
+    descriptor_table: Counter,
 }
 
 enum UhDirectOverlay {
@@ -618,7 +623,23 @@ impl HardwareIsolatedBacking for TdxBacked {
                 },
         );
 
-        // TODO Update descriptor table intercepts and MSR bitmaps
+        // Update descriptor table intercepts.
+        let intercept_tables = intercept_control.gdtr_write()
+            | intercept_control.idtr_write()
+            | intercept_control.ldtr_write()
+            | intercept_control.tr_write();
+        this.runner.write_vmcs32(
+            vtl,
+            VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS,
+            SecondaryProcessorControls::new()
+                .with_descriptor_table_exiting(true)
+                .into_bits(),
+            SecondaryProcessorControls::new()
+                .with_descriptor_table_exiting(intercept_tables)
+                .into_bits(),
+        );
+
+        // TODO Update MSR bitmaps
     }
 }
 
@@ -2046,6 +2067,48 @@ impl UhProcessor<'_, TdxBacked> {
                 return Err(VpHaltReason::TripleFault {
                     vtl: intercepted_vtl.into(),
                 });
+            }
+            VmxExitBasic::GDTR_OR_IDTR => {
+                let info = GdtrOrIdtrInstructionInfo::from(exit_info.instr_info().info());
+                tracing::trace!("Intercepted GDT or IDT instruction: {:?}", info);
+                let reg = match info.instruction() {
+                    GdtrOrIdtrInstruction::Sidt | GdtrOrIdtrInstruction::Lidt => {
+                        HvX64RegisterName::Idtr
+                    }
+                    GdtrOrIdtrInstruction::Sgdt | GdtrOrIdtrInstruction::Lgdt => {
+                        HvX64RegisterName::Gdtr
+                    }
+                };
+                // We only support fowarding intercepts for descriptor table writes today.
+                if (info.instruction().is_write()
+                    && !self.cvm_try_protect_secure_register_write(intercepted_vtl, reg, 0))
+                    || !info.instruction().is_write()
+                {
+                    todo!();
+                }
+                &mut self.backing.vtls[intercepted_vtl]
+                    .exit_stats
+                    .descriptor_table
+            }
+            VmxExitBasic::LDTR_OR_TR => {
+                let info = LdtrOrTrInstructionInfo::from(exit_info.instr_info().info());
+                tracing::trace!("Intercepted LDT or TR instruction: {:?}", info);
+                let reg = match info.instruction() {
+                    LdtrOrTrInstruction::Sldt | LdtrOrTrInstruction::Lldt => {
+                        HvX64RegisterName::Ldtr
+                    }
+                    LdtrOrTrInstruction::Str | LdtrOrTrInstruction::Ltr => HvX64RegisterName::Tr,
+                };
+                // We only support fowarding intercepts for descriptor table writes today.
+                if (info.instruction().is_write()
+                    && !self.cvm_try_protect_secure_register_write(intercepted_vtl, reg, 0))
+                    || !info.instruction().is_write()
+                {
+                    todo!()
+                }
+                &mut self.backing.vtls[intercepted_vtl]
+                    .exit_stats
+                    .descriptor_table
             }
             _ => {
                 return Err(VpHaltReason::Hypervisor(UhRunVpError::UnknownVmxExit(
