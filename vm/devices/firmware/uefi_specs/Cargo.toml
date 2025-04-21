@@ -18,7 +18,6 @@ open_enum.workspace = true
 ucs2.workspace = true
 
 bitfield-struct.workspace = true
-thiserror.workspace = true
 static_assertions.workspace = true
 wchar.workspace = true
 zerocopy.workspace = true

@@ -1,42 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Types and constants defined for EFI diagnostics.
-//! Many of these types come from the UEFI Advanced Logger
-//! Package from Project Mu.
-
+//! Types and constants defined by Project Mu's Advanced Logger package,
+//! used in the Hyper-V UEFI firmware.
 use crate::uefi::time::EFI_TIME;
-use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::KnownLayout;
 
-// Validation errors for the Advanced Logger Info structure
-#[derive(Debug, Error)]
-pub enum AdvancedLoggerInfoError {
-    #[error("Invalid header signature: {0:#x}, expected: {1:#x}")]
-    Signature(u32, u32),
-    #[error("Invalid log buffer size: {0:#x}, max: {1:#x}")]
-    LogBufferSize(u32, u32),
-}
-
-// Validation errors for the Advanced Logger Entry structure
-#[derive(Debug, Error)]
-pub enum AdvancedLoggerEntryError {
-    #[error("Invalid entry signature: {0:#x}, expected: {1:#x}")]
-    Signature(u32, u32),
-    #[error("Invalid timestamp: {0:#x}")]
-    Timestamp(u64),
-    #[error("Invalid message length: {0:#x}, max: {1:#x}")]
-    MessageLength(u16, u16),
-}
-
-// Advanced Logger Info validation constants
-pub const MAX_LOG_BUFFER_SIZE: u32 = 0x400000; // 4MB
+// Advanced Logger Info signature
 pub const SIG_HEADER: u32 = u32::from_le_bytes(*b"ALOG");
 
-// Advanced Logger Entry validation constants
-pub const MAX_MESSAGE_LENGTH: u16 = 0x1000; // 4KB
+// Advanced Logger Entry signature
 pub const SIG_ENTRY: u32 = u32::from_le_bytes(*b"ALM2");
 
 // UEFI Advanced Logger Info Header, which is shared
@@ -80,48 +55,5 @@ pub struct AdvancedLoggerMessageEntryV2 {
     pub phase: u16,        // Boot phase that produced this message entry
     pub message_len: u16,  // Number of bytes in Message
     pub message_offset: u16, // Offset of Message from start of structure
-                           // Rust does not support flexible arrays, but message lives after
-}
-
-impl AdvancedLoggerInfo {
-    pub fn validate(&self) -> Result<(), AdvancedLoggerInfoError> {
-        // Check the signature
-        let signature = self.signature.to_le();
-        if signature != SIG_HEADER {
-            return Err(AdvancedLoggerInfoError::Signature(signature, SIG_HEADER));
-        }
-
-        // Check the log buffer size
-        if self.log_buffer_size > MAX_LOG_BUFFER_SIZE {
-            return Err(AdvancedLoggerInfoError::LogBufferSize(
-                self.log_buffer_size,
-                MAX_LOG_BUFFER_SIZE,
-            ));
-        }
-        Ok(())
-    }
-}
-
-impl AdvancedLoggerMessageEntryV2 {
-    pub fn validate(&self) -> Result<(), AdvancedLoggerEntryError> {
-        // Check the signature
-        let signature = self.signature.to_le();
-        if signature != SIG_ENTRY {
-            return Err(AdvancedLoggerEntryError::Signature(signature, SIG_ENTRY));
-        }
-
-        // Check the timestamp
-        if self.time_stamp == 0 {
-            return Err(AdvancedLoggerEntryError::Timestamp(self.time_stamp));
-        }
-
-        // Check the message length
-        if self.message_len > MAX_MESSAGE_LENGTH {
-            return Err(AdvancedLoggerEntryError::MessageLength(
-                self.message_len,
-                MAX_MESSAGE_LENGTH,
-            ));
-        }
-        Ok(())
-    }
+                           // Rust prevents C flexible array members, but "message_text: [u8; _]" would be here
 }
