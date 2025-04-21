@@ -12,12 +12,13 @@
 //! specification within the uefi_specs crate.
 //!
 //! TODO:
+//!  - Move state from UefiDevice to diagnostics service
+//!  - Introduce a block_processing flag, who gets set after EBS
 //!  - Document functions
 //!  - Add unit tests
-//!  - Change ProcessingError from struct to enum to be more granular
-//!    on the processing errors that occur?
 use crate::UefiDevice;
 use guestmem::GuestMemory;
+use guestmem::GuestMemoryError;
 use inspect::Inspect;
 use std::fmt::Debug;
 use std::mem::size_of;
@@ -48,7 +49,7 @@ pub struct EfiDiagnosticsLog {
 }
 
 //
-// Error types for the advanced logger spec types
+// Validation error types for the advanced logger spec types
 //
 #[derive(Debug, Error)]
 pub enum AdvancedLoggerInfoError {
@@ -59,7 +60,7 @@ pub enum AdvancedLoggerInfoError {
 }
 
 #[derive(Debug, Error)]
-pub enum AdvancedLoggerEntryError {
+pub enum AdvancedLoggerMessageEntryV2Error {
     #[error("Invalid entry signature: {0:#x}, expected: {1:#x}")]
     Signature(u32, u32),
     #[error("Invalid timestamp: {0:#x}")]
@@ -96,20 +97,24 @@ impl Validateable for AdvancedLoggerInfo {
 }
 
 impl Validateable for AdvancedLoggerMessageEntryV2 {
-    type Error = AdvancedLoggerEntryError;
+    type Error = AdvancedLoggerMessageEntryV2Error;
 
     fn validate(&self) -> Result<(), Self::Error> {
         let signature = self.signature.to_le();
         if signature != SIG_ENTRY {
-            return Err(AdvancedLoggerEntryError::Signature(signature, SIG_ENTRY));
+            return Err(AdvancedLoggerMessageEntryV2Error::Signature(
+                signature, SIG_ENTRY,
+            ));
         }
 
         if self.time_stamp == 0 {
-            return Err(AdvancedLoggerEntryError::Timestamp(self.time_stamp));
+            return Err(AdvancedLoggerMessageEntryV2Error::Timestamp(
+                self.time_stamp,
+            ));
         }
 
         if self.message_len > MAX_MESSAGE_LENGTH {
-            return Err(AdvancedLoggerEntryError::MessageLength(
+            return Err(AdvancedLoggerMessageEntryV2Error::MessageLength(
                 self.message_len,
                 MAX_MESSAGE_LENGTH,
             ));
@@ -118,24 +123,33 @@ impl Validateable for AdvancedLoggerMessageEntryV2 {
     }
 }
 
-//
-// Generic error raised when processing the
-// efi diagnostics buffer
-//
+/// Errors that occur during processing
+/// TODO: Add more specific error types
 #[derive(Debug, Error)]
-#[error("{0}")]
-pub struct ProcessingError(pub String);
+pub enum DiagnosticsError {
+    #[error("Bad GPA value: {0:#x}")]
+    BadGpa(u32),
 
-impl From<AdvancedLoggerInfoError> for ProcessingError {
-    fn from(err: AdvancedLoggerInfoError) -> Self {
-        ProcessingError(err.to_string())
-    }
-}
+    #[error("Failed to read from guest memory: {0}")]
+    GuestMemoryRead(#[from] GuestMemoryError),
 
-impl From<AdvancedLoggerEntryError> for ProcessingError {
-    fn from(err: AdvancedLoggerEntryError) -> Self {
-        ProcessingError(err.to_string())
-    }
+    #[error("Invalid UTF-8 in message: {0}")]
+    Utf8Error(#[from] std::str::Utf8Error),
+
+    #[error("Encountered arithmetic overflow: {0}")]
+    Overflow(String),
+
+    #[error("Faild to validate AdvancedLoggerInfo: {0}")]
+    HeaderValidation(#[from] AdvancedLoggerInfoError),
+
+    #[error("Failed to validate AdvancedLoggerMessageEntryV2: {0}")]
+    EntryValidation(#[from] AdvancedLoggerMessageEntryV2Error),
+
+    #[error("Failed to read buffer data: {0}")]
+    BoundsError(#[from] std::io::Error),
+
+    #[error("General error: {0}")]
+    GeneralError(String),
 }
 
 //
@@ -153,9 +167,9 @@ impl DiagnosticsServices {
         // Does nothing
     }
 
-    fn validate_gpa(&self, gpa: u32) -> Result<(), ProcessingError> {
+    fn validate_gpa(&self, gpa: u32) -> Result<(), DiagnosticsError> {
         if gpa == 0 || gpa == u32::MAX {
-            return Err(ProcessingError(format!("Invalid GPA: {:#x}", gpa)));
+            return Err(DiagnosticsError::BadGpa(gpa));
         }
         Ok(())
     }
@@ -165,7 +179,7 @@ impl DiagnosticsServices {
         gpa: u32,
         gm: GuestMemory,
         logs: &mut Vec<EfiDiagnosticsLog>,
-    ) -> Result<(), ProcessingError> {
+    ) -> Result<(), DiagnosticsError> {
         //
         // Step 1: Validate GPA
         //
@@ -174,9 +188,7 @@ impl DiagnosticsServices {
         //
         // Step 2: Read and validate the advanced logger header
         //
-        let header: AdvancedLoggerInfo = gm.read_plain(gpa as u64).map_err(|_| {
-            ProcessingError(format!("Failed to read AdvancedLoggerInfo at {:#x}", gpa))
-        })?;
+        let header: AdvancedLoggerInfo = gm.read_plain(gpa as u64)?;
         header.validate()?;
 
         //
@@ -198,8 +210,8 @@ impl DiagnosticsServices {
         let used_log_buffer_size = log_current_offset
             .checked_sub(log_buffer_offset)
             .ok_or_else(|| {
-                ProcessingError(format!(
-                    "Overflow: log_current_offset ({:#x}) - log_buffer_offset ({:#x})",
+                DiagnosticsError::Overflow(format!(
+                    "log_current_offset ({:#x}) - log_buffer_offset ({:#x})",
                     log_current_offset, log_buffer_offset
                 ))
             })?;
@@ -209,9 +221,9 @@ impl DiagnosticsServices {
             || used_log_buffer_size > header.log_buffer_size
             || used_log_buffer_size > MAX_LOG_BUFFER_SIZE
         {
-            return Err(ProcessingError(format!(
-                "Invalid used_log_buffer_size: {:#x}",
-                used_log_buffer_size
+            return Err(DiagnosticsError::GeneralError(format!(
+                "Invalid used log buffer size: {:#x}, max: {:#x}",
+                used_log_buffer_size, MAX_LOG_BUFFER_SIZE
             )));
         }
 
@@ -228,20 +240,14 @@ impl DiagnosticsServices {
 
         // Calculate start address of the log buffer
         let buffer_start_addr = gpa.checked_add(log_buffer_offset).ok_or_else(|| {
-            ProcessingError(format!(
-                "Overflow: gpa ({:#x}) + log_buffer_offset ({:#x})",
+            DiagnosticsError::Overflow(format!(
+                "gpa ({:#x}) + log_buffer_offset ({:#x})",
                 gpa, log_buffer_offset
             ))
         })?;
 
         let mut buffer_data = vec![0u8; used_log_buffer_size as usize];
-        gm.read_at(buffer_start_addr as u64, &mut buffer_data)
-            .map_err(|_| {
-                ProcessingError(format!(
-                    "Failed to read buffer_data at {:#x} with size {:#x}",
-                    buffer_start_addr, used_log_buffer_size
-                ))
-            })?;
+        gm.read_at(buffer_start_addr as u64, &mut buffer_data)?;
 
         // Empty buffer data should early exit
         if buffer_data.is_empty() {
@@ -256,10 +262,10 @@ impl DiagnosticsServices {
         while !buffer_slice.is_empty() {
             // Parse and validate the entry header
             let (entry, _) =
-                AdvancedLoggerMessageEntryV2::read_from_prefix(buffer_slice).map_err(|_| {
-                    ProcessingError(format!(
-                        "Failed to read AdvancedLoggerMessageEntryV2 from buffer_slice: {:?}",
-                        buffer_slice
+                AdvancedLoggerMessageEntryV2::read_from_prefix(buffer_slice).map_err(|error| {
+                    DiagnosticsError::GeneralError(format!(
+                        "Failed to parse entry from buffer_slice: {}",
+                        error
                     ))
                 })?;
             entry.validate()?;
@@ -277,30 +283,23 @@ impl DiagnosticsServices {
             let message_end = message_start
                 .checked_add(message_len as usize)
                 .ok_or_else(|| {
-                    ProcessingError(format!(
-                        "Overflow: message_start ({}) + message_length ({})",
+                    DiagnosticsError::Overflow(format!(
+                        "message_start ({}) + message_len ({})",
                         message_start, message_len
                     ))
                 })?;
 
             // Validate message end fits within the buffer slice
             if message_end > buffer_slice.len() {
-                return Err(ProcessingError(format!(
-                    "message_end exceeds buffer_slice: {} > {}",
+                return Err(DiagnosticsError::GeneralError(format!(
+                    "message_end ({}) exceeds buffer slice length ({})",
                     message_end,
                     buffer_slice.len()
                 )));
             }
 
             // Get the message
-            let message = std::str::from_utf8(&buffer_slice[message_start..message_end])
-                .map_err(|error| {
-                    ProcessingError(format!(
-                        "Invalid UTF-8 in message at offset {}: {}",
-                        message_start, error
-                    ))
-                })?
-                .to_string();
+            let message = std::str::from_utf8(&buffer_slice[message_start..message_end])?;
 
             //
             // Step 5b: Handle message accumulation
@@ -312,12 +311,12 @@ impl DiagnosticsServices {
                 accumulated_message.clear();
                 is_accumulating = true;
             }
-            accumulated_message.push_str(&message);
+            accumulated_message.push_str(message);
 
             // Validate that the accumulated message is not too long
             if accumulated_message.len() > MAX_MESSAGE_LENGTH as usize {
-                return Err(ProcessingError(format!(
-                    "accumulated_message exceeds maximum length: {}. Max: {}",
+                return Err(DiagnosticsError::GeneralError(format!(
+                    "Accumulated message length ({}) exceeds max length ({})",
                     accumulated_message.len(),
                     MAX_MESSAGE_LENGTH
                 )));
@@ -345,8 +344,8 @@ impl DiagnosticsServices {
             let base_offset = size_of::<AdvancedLoggerMessageEntryV2>()
                 .checked_add(message_len as usize)
                 .ok_or_else(|| {
-                    ProcessingError(format!(
-                        "Overflow: AdvancedLoggerMessageEntryV2 size ({}) + message_len ({})",
+                    DiagnosticsError::Overflow(format!(
+                        "size_of::<AdvancedLoggerMessageEntryV2> ({}) + message_len ({})",
                         size_of::<AdvancedLoggerMessageEntryV2>(),
                         message_len
                     ))
@@ -354,8 +353,8 @@ impl DiagnosticsServices {
 
             // Add padding for 8-byte alignment
             let aligned_offset = base_offset.checked_add(ALIGNMENT_MASK).ok_or_else(|| {
-                ProcessingError(format!(
-                    "Overflow: base_offset ({}) + {}",
+                DiagnosticsError::Overflow(format!(
+                    "base_offset ({}) + ALIGNMENT_MASK ({})",
                     base_offset, ALIGNMENT_MASK
                 ))
             })?;
@@ -363,8 +362,8 @@ impl DiagnosticsServices {
 
             // Update overall bytes read counter
             bytes_read = bytes_read.checked_add(next_offset).ok_or_else(|| {
-                ProcessingError(format!(
-                    "Overflow: bytes_read ({}) + next_offset ({})",
+                DiagnosticsError::Overflow(format!(
+                    "bytes_read ({}) + next_offset ({})",
                     bytes_read, next_offset
                 ))
             })?;
