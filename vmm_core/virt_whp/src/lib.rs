@@ -32,7 +32,6 @@ use hv1_emulator::message_queues::MessageQueues;
 use hv1_structs::VtlArray;
 use hv1_structs::VtlSet;
 use hvdef::HvDeliverabilityNotificationsRegister;
-use hvdef::HvEnlightenmentInformation;
 use hvdef::HvMessage;
 use hvdef::HvMessageType;
 use hvdef::Vtl;
@@ -914,7 +913,7 @@ impl WhpPartitionInner {
             // Add in the synthetic hv leaves if necessary.
             if let Some(hv_config) = &proto_config.hv_config {
                 if !hv_config.offload_enlightenments || proto_config.user_mode_apic {
-                    let enlightenments = HvEnlightenmentInformation::new()
+                    let enlightenments = hvdef::HvEnlightenmentInformation::new()
                         .with_deprecate_auto_eoi(true)
                         .with_use_relaxed_timing(true)
                         .with_use_ex_processor_masks(true)
