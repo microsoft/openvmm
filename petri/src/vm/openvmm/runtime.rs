@@ -11,6 +11,7 @@ use crate::openhcl_diag::OpenHclDiagHandler;
 use crate::worker::Worker;
 use anyhow::Context;
 use async_trait::async_trait;
+use diag_client::kmsg_stream::KmsgStream;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use get_resources::ged::FirmwareEvent;
@@ -213,6 +214,10 @@ impl PetriVmOpenVmm {
     petri_vm_fn!(
         /// Test that we are able to inspect OpenHCL.
         pub async fn test_inspect_openhcl(&mut self) -> anyhow::Result<()>
+    );
+    petri_vm_fn!(
+        /// Get the kmsg stream from OpenHCL.
+        pub async fn kmsg(&mut self) -> anyhow::Result<KmsgStream>
     );
     petri_vm_fn!(
         /// Wait for a connection from a pipette agent running in the guest.
@@ -458,6 +463,10 @@ impl PetriVmInner {
 
     async fn test_inspect_openhcl(&self) -> anyhow::Result<()> {
         self.openhcl_diag()?.test_inspect().await
+    }
+
+    async fn kmsg(&self) -> anyhow::Result<KmsgStream> {
+        self.openhcl_diag()?.kmsg().await
     }
 
     async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient> {
