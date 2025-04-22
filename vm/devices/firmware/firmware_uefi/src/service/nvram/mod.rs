@@ -571,8 +571,10 @@ impl UefiDevice {
                 }
                 self.service.nvram.services.exit_boot_services();
 
-                // When exit boot services is called, process EFI diagnostics
-                self.process_diagnostics(self.diagnostics_gpa, self.gm.clone());
+                // Process efi diagnostics and set the ebs complete flag
+                // to prevent double processing.
+                self.process_diagnostics(self.gm.clone());
+                self.service.diagnostics.set_ebs_complete();
 
                 (EfiStatus::SUCCESS, None)
             }

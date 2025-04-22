@@ -12,9 +12,7 @@
 //! specification within the uefi_specs crate.
 //!
 //! TODO:
-//!  - Move state from UefiDevice to diagnostics service
-//!  - Introduce a block_processing flag, who gets set after EBS
-//!  - Document functions
+//!  - Add more doc comments
 //!  - Add unit tests
 use crate::UefiDevice;
 use guestmem::GuestMemory;
@@ -139,7 +137,7 @@ pub enum DiagnosticsError {
     #[error("Encountered arithmetic overflow: {0}")]
     Overflow(String),
 
-    #[error("Faild to validate AdvancedLoggerInfo: {0}")]
+    #[error("Failed to validate AdvancedLoggerInfo: {0}")]
     HeaderValidation(#[from] AdvancedLoggerInfoError),
 
     #[error("Failed to validate AdvancedLoggerMessageEntryV2: {0}")]
@@ -152,38 +150,65 @@ pub enum DiagnosticsError {
     GeneralError(String),
 }
 
-//
-// Define the state and functinality of this service
-//
+/// Definition of the diagnostics services state
 #[derive(Inspect)]
-pub struct DiagnosticsServices {}
+pub struct DiagnosticsServices {
+    gpa: Option<u32>,   // The guest physical address of the diagnostics buffer
+    ebs_complete: bool, // Flag indicating if ExitBootServices has been reached
+}
 
 impl DiagnosticsServices {
+    /// Create a new instance of the diagnostics services
     pub fn new() -> DiagnosticsServices {
-        DiagnosticsServices {}
-    }
-
-    pub fn reset(&mut self) {
-        // Does nothing
-    }
-
-    fn validate_gpa(&self, gpa: u32) -> Result<(), DiagnosticsError> {
-        if gpa == 0 || gpa == u32::MAX {
-            return Err(DiagnosticsError::BadGpa(gpa));
+        DiagnosticsServices {
+            gpa: None,
+            ebs_complete: false,
         }
-        Ok(())
     }
 
+    /// Reset the diagnostics services state
+    pub fn reset(&mut self) {
+        self.gpa = None;
+        self.ebs_complete = false;
+    }
+
+    /// Set the GPA of the diagnostics buffer
+    pub fn set_gpa(&mut self, gpa: u32) {
+        self.gpa = match gpa {
+            0 => None,
+            _ => Some(gpa),
+        }
+    }
+
+    /// Mark the Exit Boot Services (EBS) event complete
+    pub fn set_ebs_complete(&mut self) {
+        self.ebs_complete = true;
+    }
+
+    /// Process the diagnostics buffer into friendly logs
     pub fn process_diagnostics(
         &self,
-        gpa: u32,
         gm: GuestMemory,
         logs: &mut Vec<EfiDiagnosticsLog>,
     ) -> Result<(), DiagnosticsError> {
+        // Do not proceed if we have encountered ExitBootServices
+        if self.ebs_complete {
+            tracelimit::warn_ratelimited!("Diagnostics: EBS complete, skipping processing");
+            return Ok(());
+        }
+
         //
         // Step 1: Validate GPA
         //
-        self.validate_gpa(gpa)?;
+        let gpa = match self.gpa {
+            Some(gpa) if gpa != 0 && gpa != u32::MAX => gpa,
+            Some(invalid_gpa) => return Err(DiagnosticsError::BadGpa(invalid_gpa)),
+            None => {
+                return Err(DiagnosticsError::GeneralError(
+                    "No diagnostics GPA set".to_string(),
+                ));
+            }
+        };
 
         //
         // Step 2: Read and validate the advanced logger header
@@ -401,21 +426,11 @@ impl DiagnosticsServices {
 }
 
 impl UefiDevice {
-    pub(crate) fn process_diagnostics(&mut self, gpa: u32, gm: GuestMemory) {
-        // Do not process if already done
-        if self.processed_diagnostics {
-            tracelimit::info_ratelimited!("EFI Diagnostics already processed, skipping");
-            return;
-        }
-        self.processed_diagnostics = true;
-
+    /// Process the diagnostics buffer and log the entries to tracing
+    pub(crate) fn process_diagnostics(&mut self, gm: GuestMemory) {
         // Collect diagnostics logs and send to tracing
         let mut logs = Vec::new();
-        match self
-            .service
-            .diagnostics
-            .process_diagnostics(gpa, gm, &mut logs)
-        {
+        match self.service.diagnostics.process_diagnostics(gm, &mut logs) {
             Ok(_) => {
                 for log in logs.iter() {
                     tracing::info!(
@@ -434,27 +449,43 @@ impl UefiDevice {
                 );
             }
         }
-
-        // Reset stored gpa
-        self.diagnostics_gpa = 0;
     }
 }
 
 mod save_restore {
     use super::*;
-    use vmcore::save_restore::NoSavedState;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;
     use vmcore::save_restore::SaveRestore;
 
+    mod state {
+        use mesh::payload::Protobuf;
+        use vmcore::save_restore::SavedStateRoot;
+
+        #[derive(Protobuf, SavedStateRoot)]
+        #[mesh(package = "firmware.uefi.diagnostics")]
+        pub struct SavedState {
+            #[mesh(1)]
+            pub gpa: Option<u32>,
+            #[mesh(2)]
+            pub ebs_complete: bool,
+        }
+    }
+
     impl SaveRestore for DiagnosticsServices {
-        type SavedState = NoSavedState;
+        type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            Ok(NoSavedState)
+            Ok(state::SavedState {
+                gpa: self.gpa,
+                ebs_complete: self.ebs_complete,
+            })
         }
 
-        fn restore(&mut self, NoSavedState: Self::SavedState) -> Result<(), RestoreError> {
+        fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
+            let state::SavedState { gpa, ebs_complete } = state;
+            self.gpa = gpa;
+            self.ebs_complete = ebs_complete;
             Ok(())
         }
     }
