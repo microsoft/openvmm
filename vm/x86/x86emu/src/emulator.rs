@@ -222,7 +222,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             Bitness::Bit64 => Some(rip),
             Bitness::Bit32 | Bitness::Bit16 => {
                 self.verify_segment_access(
-                    Register::CS,
+                    Segment::CS,
                     OperationKind::AddressComputation,
                     offset,
                     1,
@@ -255,29 +255,27 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     /// access within the segment is allowed.
     fn compute_and_validate_gva(
         &mut self,
-        segment: Register,
+        segment: Segment,
         offset: u64,
         len: usize,
         op: OperationKind,
         alignment: AlignmentMode,
     ) -> Result<u64, Error<T::Error>> {
-        assert!(segment.is_segment_register());
-
         let cr0 = self.cpu.cr0();
         let efer = self.cpu.efer();
         let cs = self.cpu.segment(Segment::CS);
 
         let base = match bitness(cr0, efer, cs) {
             Bitness::Bit64 => {
-                if segment == Register::FS || segment == Register::GS {
-                    self.cpu.segment(segment.into()).base
+                if matches!(segment, Segment::FS | Segment::GS) {
+                    self.cpu.segment(segment).base
                 } else {
                     0
                 }
             }
             Bitness::Bit32 | Bitness::Bit16 => {
                 self.verify_segment_access(segment, op, offset, len)?;
-                self.cpu.segment(segment.into()).base
+                self.cpu.segment(segment).base
             }
         };
 
@@ -292,7 +290,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     /// checks are ignored in this case.
     fn verify_segment_access(
         &mut self,
-        segment: Register,
+        segment: Segment,
         op: OperationKind,
         offset: u64,
         len: usize,
@@ -304,8 +302,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         let bitness = bitness(cr0, efer, cs);
         assert_ne!(bitness, Bitness::Bit64);
 
-        let segment_index = segment.number();
-        let segment = self.cpu.segment(segment.into());
+        let segment_value = self.cpu.segment(segment);
 
         // Since we're not in long mode, offset can be at most u32::MAX, and same goes for len. So this
         // can't overflow.
@@ -318,30 +315,30 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         );
         let gpindex = Error::InstructionException(
             Exception::GENERAL_PROTECTION_FAULT,
-            Some(segment_index as u32),
+            Some((segment_value.selector & !0b111).into()),
             ExceptionCause::SegmentValidity,
         );
 
         // CS is treated differently from data segments. The segment type is treated as a code segment, and
         // writes are forbidden in protected mode. It also can't be expand-down and will always be present.
-        if segment_index == Register::CS.number() {
+        if matches!(segment, Segment::CS) {
             // Forbid writes in protected mode
             if bitness == Bitness::Bit32 && op == OperationKind::Write {
                 return Err(gp0);
             }
 
             // If we're reading, check for the segment not being readable
-            if op == OperationKind::Read && segment.attributes.segment_type() & 0b0010 == 0 {
+            if op == OperationKind::Read && segment_value.attributes.segment_type() & 0b0010 == 0 {
                 return Err(gp0);
             }
 
             // Check that the offset and length are not outside the segment limits
-            if offset_end > segment.limit as u64 {
+            if offset_end > segment_value.limit as u64 {
                 return Err(gp0);
             }
         } else {
             // Check for the segment not being present
-            if !segment.attributes.present() {
+            if !segment_value.attributes.present() {
                 Err(Error::InstructionException(
                     Exception::SEGMENT_NOT_PRESENT,
                     None,
@@ -350,48 +347,48 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             }
 
             // Check for a null selector, ignoring the RPL
-            if bitness == Bitness::Bit32 && segment.selector & !0x3 == 0 {
+            if bitness == Bitness::Bit32 && segment_value.selector & !0x3 == 0 {
                 return Err(gp0);
             }
 
             // Check the RPL (if 32-bit) and CPL against the DPL
             let rpl = if matches!(bitness, Bitness::Bit32) {
-                (segment.selector & 0x3) as u8
+                (segment_value.selector & 0x3) as u8
             } else {
                 0
             };
             let cpl = self.current_privilege_level();
-            let dpl = segment.attributes.descriptor_privilege_level();
+            let dpl = segment_value.attributes.descriptor_privilege_level();
             if rpl > dpl || cpl > dpl {
                 return Err(gpindex);
             }
 
             // Check for the segment not being a data segment
-            if !(segment.attributes.non_system_segment()
-                && segment.attributes.segment_type() & 0b1000 == 0)
+            if !(segment_value.attributes.non_system_segment()
+                && segment_value.attributes.segment_type() & 0b1000 == 0)
             {
                 return Err(gpindex);
             }
 
             // If we're writing, check for the segment not being writable
-            if op == OperationKind::Write && segment.attributes.segment_type() & 0b0010 == 0 {
+            if op == OperationKind::Write && segment_value.attributes.segment_type() & 0b0010 == 0 {
                 return Err(gp0);
             }
 
             // Check that the offset and length are not outside the segment limits
-            if segment.attributes.segment_type() & 0b0100 == 0 {
+            if segment_value.attributes.segment_type() & 0b0100 == 0 {
                 // Segment is not expand-down
-                if offset_end > segment.limit as u64 {
+                if offset_end > segment_value.limit as u64 {
                     return Err(gp0);
                 }
             } else {
                 // Segment is expand-down
-                let max = if segment.attributes.default() {
+                let max = if segment_value.attributes.default() {
                     u32::MAX as u64
                 } else {
                     u16::MAX as u64
                 };
-                if offset <= segment.limit as u64 || offset_end > max {
+                if offset <= segment_value.limit as u64 || offset_end > max {
                     return Err(gp0);
                 }
             };
@@ -440,7 +437,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     /// Reads memory from the given segment:offset.
     pub async fn read_memory(
         &mut self,
-        segment: Register,
+        segment: Segment,
         offset: u64,
         alignment: AlignmentMode,
         data: &mut [u8],
@@ -464,7 +461,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     /// Writes memory to the given segment:offset.
     pub async fn write_memory(
         &mut self,
-        segment: Register,
+        segment: Segment,
         offset: u64,
         alignment: AlignmentMode,
         data: &[u8],
@@ -492,7 +489,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     /// mismatch.
     async fn compare_and_write_memory(
         &mut self,
-        segment: Register,
+        segment: Segment,
         offset: u64,
         alignment: AlignmentMode,
         current: &[u8],
@@ -526,7 +523,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         let offset = self.memory_op_offset(instr, operand);
         let mut data = R::empty_bytes();
         self.read_memory(
-            instr.memory_segment(),
+            instr.memory_segment().into(),
             offset,
             alignment,
             &mut data[..instr.memory_size().size()],
@@ -545,7 +542,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     ) -> Result<(), InternalError<T::Error>> {
         let offset = self.memory_op_offset(instr, operand);
         self.write_memory(
-            instr.memory_segment(),
+            instr.memory_segment().into(),
             offset,
             alignment,
             &data.to_le_bytes()[..instr.memory_size().size()],
@@ -574,7 +571,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         if instr.has_lock_prefix() || instr.mnemonic() == iced_x86::Mnemonic::Xchg {
             if !self
                 .compare_and_write_memory(
-                    instr.memory_segment(),
+                    instr.memory_segment().into(),
                     offset,
                     alignment,
                     &current.to_le_bytes()[..instr.memory_size().size()],
@@ -586,7 +583,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             }
         } else {
             self.write_memory(
-                instr.memory_segment(),
+                instr.memory_segment().into(),
                 offset,
                 alignment,
                 &new.to_le_bytes()[..instr.memory_size().size()],

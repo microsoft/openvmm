@@ -9,7 +9,6 @@ rust-version.workspace = true
 [dependencies]
 guestmem.workspace = true
 hvdef.workspace = true
-iced-x86.workspace = true
 tracelimit.workspace = true
 vm_topology.workspace = true
 virt.workspace = true

@@ -11,7 +11,6 @@ use guestmem::GuestMemoryError;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvInterceptAccessType;
 use hvdef::HvMapGpaFlags;
-use iced_x86::Register;
 use thiserror::Error;
 use virt::VpHaltReason;
 use virt::io::CpuIo;
@@ -485,6 +484,7 @@ pub async fn emulate_insn_memory_op<T: EmulatorSupport>(
     dev: &impl CpuIo,
     gva: u64,
     segment: Segment,
+    alignment: AlignmentMode,
     op: EmulatedMemoryOperation<'_>,
 ) -> Result<(), VpHaltReason<T::Error>> {
     assert!(!support.interruption_pending());
@@ -493,23 +493,10 @@ pub async fn emulate_insn_memory_op<T: EmulatorSupport>(
     let mut cpu = EmulatorCpu::new(gm, dev, support);
     let mut emu = x86emu::Emulator::new(&mut cpu, vendor, &[]);
 
-    let seg_reg = match segment {
-        Segment::CS => Register::CS,
-        Segment::DS => Register::DS,
-        Segment::ES => Register::ES,
-        Segment::FS => Register::FS,
-        Segment::GS => Register::GS,
-        Segment::SS => Register::SS,
-    };
-
     match op {
-        EmulatedMemoryOperation::Read(data) => {
-            emu.read_memory(seg_reg, gva, AlignmentMode::Standard, data)
-                .await
-        }
+        EmulatedMemoryOperation::Read(data) => emu.read_memory(segment, gva, alignment, data).await,
         EmulatedMemoryOperation::Write(data) => {
-            emu.write_memory(seg_reg, gva, AlignmentMode::Standard, data)
-                .await
+            emu.write_memory(segment, gva, alignment, data).await
         }
     }
     .map_err(|e| VpHaltReason::EmulationFailure(e.into()))

@@ -3124,12 +3124,14 @@ impl UhProcessor<'_, TdxBacked> {
                     vtl,
                     cache: TdxEmulationCache::default(),
                 };
+                // TODO: Check alignment for these instructions.
                 emulate_insn_memory_op(
                     &mut emulation_state,
                     gm,
                     dev,
                     gva,
                     segment,
+                    x86emu::AlignmentMode::Unaligned,
                     EmulatedMemoryOperation::Write(&buf[..len]),
                 )
                 .await?;
@@ -3143,12 +3145,14 @@ impl UhProcessor<'_, TdxBacked> {
                     vtl,
                     cache: TdxEmulationCache::default(),
                 };
+                // TODO: Check alignment for these instructions.
                 emulate_insn_memory_op(
                     &mut emulation_state,
                     gm,
                     dev,
                     gva,
                     segment,
+                    x86emu::AlignmentMode::Unaligned,
                     EmulatedMemoryOperation::Read(&mut buf[..len]),
                 )
                 .await?;
