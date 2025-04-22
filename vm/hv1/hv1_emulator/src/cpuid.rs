@@ -4,6 +4,8 @@
 //! Provides the synthetic hypervisor cpuid leaves matching this hv1 emulator's
 //! capabilities.
 
+#![cfg(guest_arch = "x86_64")]
+
 use hvdef::HvEnlightenmentInformation;
 use hvdef::HvFeatures;
 use hvdef::HvHardwareFeatures;
