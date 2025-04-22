@@ -108,7 +108,7 @@ fn null_selector() {
 }
 
 #[test]
-#[should_panic(expected = "GENERAL_PROTECTION_FAULT, Some(4096)")]
+#[should_panic(expected = "GENERAL_PROTECTION_FAULT, Some(4099)")]
 fn rpl() {
     do_data_segment_test(|cpu| {
         let mut emu_ds = cpu.segment(Segment::DS);
@@ -118,7 +118,7 @@ fn rpl() {
 }
 
 #[test]
-#[should_panic(expected = "GENERAL_PROTECTION_FAULT, Some(4096)")]
+#[should_panic(expected = "GENERAL_PROTECTION_FAULT, Some(4098)")]
 fn cpl() {
     do_data_segment_test(|cpu| {
         let mut emu_ss = cpu.segment(Segment::SS);
@@ -128,7 +128,7 @@ fn cpl() {
 }
 
 #[test]
-#[should_panic(expected = "GENERAL_PROTECTION_FAULT, Some(4096)")]
+#[should_panic(expected = "GENERAL_PROTECTION_FAULT, Some(4098)")]
 fn system_segment() {
     do_data_segment_test(|cpu| {
         let mut emu_ds = cpu.segment(Segment::DS);
