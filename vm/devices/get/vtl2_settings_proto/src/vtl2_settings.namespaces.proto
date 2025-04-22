@@ -27,6 +27,7 @@ message Vtl2SettingsFixed {
     optional uint32 io_ring_size = 2;
     // Specify the maximum number of bounce buffer pages allowed per cpu
     optional uint32 max_bounce_buffer_pages = 3;
+    optional Vtl2AttestedSettings attested_settings = 4;
 }
 
 message Vtl2SettingsDynamic {
@@ -174,4 +175,14 @@ message NicAcceleration {
     string instance_id = 1; // GUID
     // An unique instance ID of a paired/teamed networking device exposed directly to VTL0.
     string subordinate_instance_id = 2; // GUID
+}
+
+// Settings used for the 'AttestedSettings' namespace
+message Vtl2AttestedSettings {
+    // Future attested setting fields should be added here
+
+    // Reserve field numbers that would make this start with an ASCII whitespace
+    // character or JSON object opening brace '{', which would conflict with
+    // JSON detection.
+    reserved 9, 10, 12, 13, 32, 123;
 }

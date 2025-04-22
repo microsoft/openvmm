@@ -5,6 +5,7 @@
 //!
 //! Generic schema structs and functions
 
+use self::v1::NAMESPACE_ATTESTED_SETTINGS;
 use self::v1::NAMESPACE_BASE;
 use self::v1::NAMESPACE_NETWORK_ACCELERATION;
 use self::v1::NAMESPACE_NETWORK_DEVICE;
@@ -87,6 +88,7 @@ impl crate::Vtl2Settings {
 
         let mut nic_devices: Option<Vec<crate::NicDevice>> = None;
         let mut nic_acceleration: Option<Vec<crate::NicDevice>> = None;
+        let mut external_attested_settings: Option<crate::Vtl2AttestedSettings> = None;
 
         for chunk in &decoded.namespace_settings {
             if chunk.settings.is_empty() {
@@ -119,6 +121,16 @@ impl crate::Vtl2Settings {
                             .flat_map(|v| v.parse(errors).collect_error(errors))
                             .collect(),
                     );
+                }
+                NAMESPACE_ATTESTED_SETTINGS => {
+                    // Ignore this namespace, it is not used in the current version
+                    // of the schema.
+                    // let raw_bytes = chunk.settings.as_slice();
+                    // if !raw_bytes.is_empty() {
+                    let attested_settings: Vtl2AttestedSettings = Self::read(&chunk.settings)?;
+                    // Future attested settings will be added here.
+                    external_attested_settings =
+                        Some(attested_settings.parse(errors).collect_error(errors));
                 }
                 _ => {
                     errors.push(v1::Error::UnsupportedSchemaNamespace(
@@ -158,6 +170,18 @@ impl crate::Vtl2Settings {
                     }
                 }
             }
+        }
+
+        // NAMESPACE_ATTESTED_SETTINGS
+        // In the future, attested settings need to be added here.
+        // See patterns above for how to add them.
+        if external_attested_settings.is_some() {
+            old_settings.fixed.attested_settings = Some(
+                external_attested_settings
+                    .unwrap()
+                    .parse(errors)
+                    .collect_error(errors),
+            );
         }
 
         Ok(old_settings)
@@ -278,6 +302,20 @@ mod test {
         let mut buf = Vec::new();
         settings.encode(&mut buf).unwrap();
         crate::Vtl2Settings::read_from(&buf, Default::default()).unwrap();
+    }
+
+    #[test]
+    fn smoke_test_attested_settings_namespace() {
+        let settings = crate::Vtl2Settings::read_from(
+            include_bytes!("vtl2s_test_attested_settings_namespaces.json"),
+            Default::default(),
+        )
+        .unwrap();
+        // let settings: Vtl2Settings = crate::Vtl2Settings::read(json).unwrap();
+        // assert_eq!(
+        //     "AttestedSettings",
+        //     &settings.namespace_settings[0].namespace
+        // );
     }
 
     #[test]
