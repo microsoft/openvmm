@@ -1851,6 +1851,10 @@ enum WorkerError {
     Cancelled(task_control::Cancelled),
     #[error("tearing down because send/receive buffer is revoked")]
     BufferRevoked,
+    #[error("tx error: {0}")]
+    EndpointTx(#[source] anyhow::Error),
+    #[error("endpoint requires queue restart: {0}")]
+    EndpointRequiresQueueRestart(#[source] anyhow::Error),
 }
 
 impl From<task_control::Cancelled> for WorkerError {
@@ -4374,33 +4378,16 @@ impl<T: RingMem + 'static> Worker<T> {
                             assert_eq!(self.channel_idx, 0);
                             let _ = self.coordinator_send.try_send(restart);
                         }
-                        Err(WorkerError::Endpoint(err)) => {
-                            // Check Endpoint errors to see if they are restartable TxErrors.
-                            match err.downcast::<TxError>() {
-                                Ok(err) => match err {
-                                    TxError::TryRestart(err) => {
-                                        tracing::warn!(
-                                            "TxError detected attempting to restart queues. err: {:?}",
-                                            err
-                                        );
-                                        if let Err(try_send_err) = self
-                                            .coordinator_send
-                                            .try_send(CoordinatorMessage::Restart)
-                                        {
-                                            tracing::error!(
-                                                try_send_err = %try_send_err,
-                                                "failed to restart queues"
-                                            );
-                                            return Err(WorkerError::Endpoint(err));
-                                        }
-                                    }
-                                    TxError::Fatal(err) => {
-                                        return Err(WorkerError::Endpoint(err));
-                                    }
-                                },
-                                Err(err) => {
-                                    return Err(WorkerError::Endpoint(err));
-                                }
+                        Err(WorkerError::EndpointRequiresQueueRestart(err)) => {
+                            tracing::warn!("Endpoint requires queues to restart. err: {:?}", err);
+                            if let Err(try_send_err) =
+                                self.coordinator_send.try_send(CoordinatorMessage::Restart)
+                            {
+                                tracing::error!(
+                                    try_send_err = %try_send_err,
+                                    "failed to restart queues"
+                                );
+                                return Err(WorkerError::Endpoint(err));
                             }
                         }
                         Err(err) => return Err(err),
@@ -4961,23 +4948,27 @@ impl<T: 'static + RingMem> NetChannel<T> {
             }
             Err(TxError::TryRestart(err)) => {
                 // Complete any pending tx prior to restarting queues.
-                let pending_tx: Vec<_> = state
+                let pending_tx = state
                     .pending_tx_packets
                     .iter_mut()
                     .enumerate()
-                    .filter(|(_id, inflight)| inflight.pending_packet_count > 0)
-                    .collect();
-                for pending_tx_packet in pending_tx {
-                    pending_tx_packet.1.pending_packet_count = 0;
-                    state.pending_tx_completions.push_back(PendingTxCompletion {
-                        transaction_id: pending_tx_packet.1.transaction_id,
-                        tx_id: Some(TxId(pending_tx_packet.0 as u32)),
-                    });
-                }
+                    .filter_map(|(id, inflight)| {
+                        if inflight.pending_packet_count > 0 {
+                            inflight.pending_packet_count = 0;
+                            Some(PendingTxCompletion {
+                                transaction_id: inflight.transaction_id,
+                                tx_id: Some(TxId(id as u32)),
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                state.pending_tx_completions.extend(pending_tx);
                 // TryRestart error indicates the need to restart the queues.
-                Err(WorkerError::Endpoint(TxError::TryRestart(err).into()))
+                Err(WorkerError::EndpointRequiresQueueRestart(err))
             }
-            Err(TxError::Fatal(err)) => Err(WorkerError::Endpoint(err)),
+            Err(TxError::Fatal(err)) => Err(WorkerError::EndpointTx(err)),
         }
     }
 

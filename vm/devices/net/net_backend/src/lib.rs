@@ -24,11 +24,11 @@ use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use null::NullEndpoint;
 use pal_async::driver::Driver;
-use std::fmt;
 use std::future::pending;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use thiserror::Error;
 
 /// Per-queue configuration.
 pub struct QueueConfig<'a> {
@@ -136,28 +136,12 @@ pub struct RssConfig<'a> {
     pub flags: u32, // TODO
 }
 
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum TxError {
-    TryRestart(anyhow::Error),
-    Fatal(anyhow::Error),
-}
-
-impl fmt::Display for TxError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TxError::TryRestart(err) => write!(f, "Try restart: {}", err),
-            TxError::Fatal(err) => write!(f, "Fatal error: {}", err),
-        }
-    }
-}
-
-impl std::error::Error for TxError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            TxError::TryRestart(err) => Some(err.as_ref()),
-            TxError::Fatal(err) => Some(err.as_ref()),
-        }
-    }
+    #[error("error requiring queue restart. {0}")]
+    TryRestart(#[source] anyhow::Error),
+    #[error("unrecoverable error. {0}")]
+    Fatal(#[source] anyhow::Error),
 }
 
 /// A trait for sending and receiving network packets.
