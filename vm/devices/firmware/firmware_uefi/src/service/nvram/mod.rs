@@ -67,7 +67,7 @@ pub struct NvramServices {
 
     // Sub-emulators
     #[inspect(flatten)]
-    services: NvramSpecServices<Box<dyn InspectableNvramStorage>>,
+    pub services: NvramSpecServices<Box<dyn InspectableNvramStorage>>,
 }
 
 impl NvramServices {
@@ -569,12 +569,8 @@ impl UefiDevice {
                         vsm.revoke_guest_vsm()
                     }
                 }
+                self.process_diagnostics(&self.gm);
                 self.service.nvram.services.exit_boot_services();
-
-                // Process efi diagnostics and set the ebs complete flag
-                // to prevent double processing.
-                self.process_diagnostics(self.gm.clone());
-                self.service.diagnostics.set_ebs_complete();
 
                 (EfiStatus::SUCCESS, None)
             }

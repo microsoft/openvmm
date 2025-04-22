@@ -153,23 +153,18 @@ pub enum DiagnosticsError {
 /// Definition of the diagnostics services state
 #[derive(Inspect)]
 pub struct DiagnosticsServices {
-    gpa: Option<u32>,   // The guest physical address of the diagnostics buffer
-    ebs_complete: bool, // Flag indicating if ExitBootServices has been reached
+    gpa: Option<u32>, // The guest physical address of the diagnostics buffer
 }
 
 impl DiagnosticsServices {
     /// Create a new instance of the diagnostics services
     pub fn new() -> DiagnosticsServices {
-        DiagnosticsServices {
-            gpa: None,
-            ebs_complete: false,
-        }
+        DiagnosticsServices { gpa: None }
     }
 
     /// Reset the diagnostics services state
     pub fn reset(&mut self) {
         self.gpa = None;
-        self.ebs_complete = false;
     }
 
     /// Set the GPA of the diagnostics buffer
@@ -180,23 +175,12 @@ impl DiagnosticsServices {
         }
     }
 
-    /// Mark the Exit Boot Services (EBS) event complete
-    pub fn set_ebs_complete(&mut self) {
-        self.ebs_complete = true;
-    }
-
     /// Process the diagnostics buffer into friendly logs
     pub fn process_diagnostics(
         &self,
-        gm: GuestMemory,
+        gm: &GuestMemory,
         logs: &mut Vec<EfiDiagnosticsLog>,
     ) -> Result<(), DiagnosticsError> {
-        // Do not proceed if we have encountered ExitBootServices
-        if self.ebs_complete {
-            tracelimit::warn_ratelimited!("Diagnostics: EBS complete, skipping processing");
-            return Ok(());
-        }
-
         //
         // Step 1: Validate GPA
         //
@@ -427,7 +411,13 @@ impl DiagnosticsServices {
 
 impl UefiDevice {
     /// Process the diagnostics buffer and log the entries to tracing
-    pub(crate) fn process_diagnostics(&mut self, gm: GuestMemory) {
+    pub(crate) fn process_diagnostics(&self, gm: &GuestMemory) {
+        // Do not proceed if we have encountered ExitBootServices
+        if self.service.nvram.services.runtime_state.is_runtime() {
+            tracelimit::warn_ratelimited!("EFI Diagnostics: EBS complete, skipping processing");
+            return;
+        }
+
         // Collect diagnostics logs and send to tracing
         let mut logs = Vec::new();
         match self.service.diagnostics.process_diagnostics(gm, &mut logs) {
@@ -467,8 +457,6 @@ mod save_restore {
         pub struct SavedState {
             #[mesh(1)]
             pub gpa: Option<u32>,
-            #[mesh(2)]
-            pub ebs_complete: bool,
         }
     }
 
@@ -476,16 +464,12 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            Ok(state::SavedState {
-                gpa: self.gpa,
-                ebs_complete: self.ebs_complete,
-            })
+            Ok(state::SavedState { gpa: self.gpa })
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            let state::SavedState { gpa, ebs_complete } = state;
+            let state::SavedState { gpa } = state;
             self.gpa = gpa;
-            self.ebs_complete = ebs_complete;
             Ok(())
         }
     }
