@@ -1,0 +1,12 @@
+{
+    "namespace_settings": [
+        {
+            "namespace": "AttestedSettings",
+            "settings": "ew0KfQ0K"
+        },
+        {
+            "namespace": "NetworkAcceleration",
+            "settings": "ewogICAgIm5pY19hY2NlbGVyYXRpb24iOiBbCiAgICAgICAgewogICAgICAgICAgICAiaW5zdGFuY2VfaWQiOiAiOWUxNGZkMTEtMTljYi00ZGE1LWI2NjctZThlMzhhNDM2Y2I4IiwKICAgICAgICAgICAgInN1Ym9yZGluYXRlX2luc3RhbmNlX2lkIjogIjEyMzQ1Njc4LTE5Y2ItNGRhNS1iNjY3LWU4ZTM4YTQzNmNiOCIKICAgICAgICB9LAogICAgICAgIHsKICAgICAgICAgICAgImluc3RhbmNlX2lkIjogIjllMTRmZDEyLTE5Y2ItNGRhNS1iNjY3LWU4ZTM4YTQzNmNiOCIsCiAgICAgICAgICAgICJzdWJvcmRpbmF0ZV9pbnN0YW5jZV9pZCI6ICIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDAiCiAgICAgICAgfQogICAgXQp9Cg=="
+        }
+    ]
+}
