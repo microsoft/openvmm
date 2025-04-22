@@ -537,6 +537,11 @@ pub fn write_dt(
 
     // Now, report the unified memory map to usermode describing which memory is
     // used by what.
+    //
+    // NOTE: Use a different device type for memory ranges, as the Linux kernel
+    // will treat every device tree node with device type as memory, and attempt
+    // to parse numa information from it.
+    let memory_openhcl_type = "memory-openhcl";
     for (range, result) in walk_ranges(
         partition_info.partition_ram.iter().map(|r| (r.range, r)),
         vtl2_memory_map.iter().map(|r| (r.range, r)),
@@ -547,7 +552,7 @@ pub fn write_dt(
                 let name = format_fixed!(64, "memory@{:x}", range.start());
                 openhcl_builder = openhcl_builder
                     .start_node(&name)?
-                    .add_str(p_device_type, "memory")?
+                    .add_str(p_device_type, memory_openhcl_type)?
                     .add_u64_array(p_reg, &[range.start(), range.len()])?
                     .add_u32(p_numa_node_id, entry.vnode)?
                     .add_u32(p_igvm_type, entry.mem_type.0.into())?
@@ -559,7 +564,7 @@ pub fn write_dt(
                 let name = format_fixed!(64, "memory@{:x}", range.start());
                 openhcl_builder = openhcl_builder
                     .start_node(&name)?
-                    .add_str(p_device_type, "memory")?
+                    .add_str(p_device_type, memory_openhcl_type)?
                     .add_u64_array(p_reg, &[range.start(), range.len()])?
                     .add_u32(p_numa_node_id, partition_entry.vnode)?
                     .add_u32(p_igvm_type, partition_entry.mem_type.0.into())?
@@ -579,7 +584,7 @@ pub fn write_dt(
         let name = format_fixed!(64, "memory@{:x}", entry.start());
         openhcl_builder = openhcl_builder
             .start_node(&name)?
-            .add_str(p_device_type, "memory")?
+            .add_str(p_device_type, memory_openhcl_type)?
             .add_u64_array(p_reg, &[entry.start(), entry.len()])?
             .add_u32(p_openhcl_memory, MemoryVtlType::VTL0_MMIO.0)?
             .end_node()?;
@@ -589,7 +594,7 @@ pub fn write_dt(
         let name = format_fixed!(64, "memory@{:x}", entry.start());
         openhcl_builder = openhcl_builder
             .start_node(&name)?
-            .add_str(p_device_type, "memory")?
+            .add_str(p_device_type, memory_openhcl_type)?
             .add_u64_array(p_reg, &[entry.start(), entry.len()])?
             .add_u32(p_openhcl_memory, MemoryVtlType::VTL2_MMIO.0)?
             .end_node()?;
