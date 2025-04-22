@@ -308,10 +308,10 @@ pub struct GdtrOrIdtrInstructionInfo {
     pub segment_register: u8,
     #[bits(4)]
     pub index_register: u8,
-    pub index_register_valid: bool,
+    pub index_register_invalid: bool,
     #[bits(4)]
     pub base_register: u8,
-    pub base_register_valid: bool,
+    pub base_register_invalid: bool,
     #[bits(2)]
     pub instruction: GdtrOrIdtrInstruction,
     #[bits(2)]
@@ -365,10 +365,10 @@ pub struct LdtrOrTrInstructionInfo {
     pub segment_register: u8,
     #[bits(4)]
     pub index_register: u8,
-    pub index_register_valid: bool,
+    pub index_register_invalid: bool,
     #[bits(4)]
     pub base_register: u8,
-    pub base_register_valid: bool,
+    pub base_register_invalid: bool,
     #[bits(2)]
     pub instruction: LdtrOrTrInstruction,
     #[bits(2)]

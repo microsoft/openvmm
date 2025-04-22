@@ -2041,7 +2041,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     /// intercept.
     #[must_use]
     pub(crate) fn cvm_try_protect_secure_register_write(
-        &mut self,
+        &self,
         vtl: GuestVtl,
         reg: HvX64RegisterName,
         value: u64,

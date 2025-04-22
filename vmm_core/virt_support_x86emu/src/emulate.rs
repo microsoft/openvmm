@@ -11,6 +11,7 @@ use guestmem::GuestMemoryError;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvInterceptAccessType;
 use hvdef::HvMapGpaFlags;
+use iced_x86::Register;
 use thiserror::Error;
 use virt::VpHaltReason;
 use virt::io::CpuIo;
@@ -18,6 +19,7 @@ use vm_topology::processor::VpIndex;
 use x86defs::Exception;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
+use x86emu::AlignmentMode;
 use x86emu::Gp;
 use x86emu::RegisterIndex;
 use x86emu::Segment;
@@ -470,6 +472,54 @@ pub async fn emulate<T: EmulatorSupport>(
     }
 
     Ok(())
+}
+
+/// Performs a memory operation as if it had been performed by an emulated instruction.
+///
+/// "As if it had been performed by an emulated instruction" means that the given
+/// GVA will be translated to a GPA, subject to applicable segmentation, permission,
+/// and alignment checks, may be determined to be MMIO instead of RAM, etc.
+pub async fn emulate_insn_memory_op<T: EmulatorSupport>(
+    support: &mut T,
+    gm: &GuestMemory,
+    dev: &impl CpuIo,
+    gva: u64,
+    segment: Segment,
+    op: EmulatedMemoryOperation<'_>,
+) -> Result<(), VpHaltReason<T::Error>> {
+    assert!(!support.interruption_pending());
+
+    let vendor = support.vendor();
+    let mut cpu = EmulatorCpu::new(gm, dev, support);
+    let mut emu = x86emu::Emulator::new(&mut cpu, vendor, &[]);
+
+    let seg_reg = match segment {
+        Segment::CS => Register::CS,
+        Segment::DS => Register::DS,
+        Segment::ES => Register::ES,
+        Segment::FS => Register::FS,
+        Segment::GS => Register::GS,
+        Segment::SS => Register::SS,
+    };
+
+    match op {
+        EmulatedMemoryOperation::Read(data) => {
+            emu.read_memory(seg_reg, gva, AlignmentMode::Standard, data)
+                .await
+        }
+        EmulatedMemoryOperation::Write(data) => {
+            emu.write_memory(seg_reg, gva, AlignmentMode::Standard, data)
+                .await
+        }
+    }
+    .map_err(|e| VpHaltReason::EmulationFailure(e.into()))
+
+    // No need to flush the cache, we have not modified any registers.
+}
+
+pub enum EmulatedMemoryOperation<'a> {
+    Read(&'a mut [u8]),
+    Write(&'a [u8]),
 }
 
 /// For storing gva to gpa translations in a cache in [`EmulatorCpu`]

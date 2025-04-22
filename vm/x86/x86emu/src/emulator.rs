@@ -184,7 +184,7 @@ pub enum OperationKind {
 }
 
 #[derive(Copy, Clone)]
-enum AlignmentMode {
+pub enum AlignmentMode {
     /// Always check that memory accesses are aligned to the given size. Generates a #GP exception if
     /// the check fails.
     Aligned(u64),
@@ -260,7 +260,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         len: usize,
         op: OperationKind,
         alignment: AlignmentMode,
-    ) -> Result<u64, InternalError<T::Error>> {
+    ) -> Result<u64, Error<T::Error>> {
         assert!(segment.is_segment_register());
 
         let cr0 = self.cpu.cr0();
@@ -296,7 +296,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         op: OperationKind,
         offset: u64,
         len: usize,
-    ) -> Result<(), InternalError<T::Error>> {
+    ) -> Result<(), Error<T::Error>> {
         // All of these conditions are ignored for 64-bit mode, this method should not be called.
         let cr0 = self.cpu.cr0();
         let efer = self.cpu.efer();
@@ -327,17 +327,17 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         if segment_index == Register::CS.number() {
             // Forbid writes in protected mode
             if bitness == Bitness::Bit32 && op == OperationKind::Write {
-                return Err(gp0.into());
+                return Err(gp0);
             }
 
             // If we're reading, check for the segment not being readable
             if op == OperationKind::Read && segment.attributes.segment_type() & 0b0010 == 0 {
-                return Err(gp0.into());
+                return Err(gp0);
             }
 
             // Check that the offset and length are not outside the segment limits
             if offset_end > segment.limit as u64 {
-                return Err(gp0.into());
+                return Err(gp0);
             }
         } else {
             // Check for the segment not being present
@@ -351,7 +351,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
 
             // Check for a null selector, ignoring the RPL
             if bitness == Bitness::Bit32 && segment.selector & !0x3 == 0 {
-                return Err(gp0.into());
+                return Err(gp0);
             }
 
             // Check the RPL (if 32-bit) and CPL against the DPL
@@ -363,26 +363,26 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             let cpl = self.current_privilege_level();
             let dpl = segment.attributes.descriptor_privilege_level();
             if rpl > dpl || cpl > dpl {
-                return Err(gpindex.into());
+                return Err(gpindex);
             }
 
             // Check for the segment not being a data segment
             if !(segment.attributes.non_system_segment()
                 && segment.attributes.segment_type() & 0b1000 == 0)
             {
-                return Err(gpindex.into());
+                return Err(gpindex);
             }
 
             // If we're writing, check for the segment not being writable
             if op == OperationKind::Write && segment.attributes.segment_type() & 0b0010 == 0 {
-                return Err(gp0.into());
+                return Err(gp0);
             }
 
             // Check that the offset and length are not outside the segment limits
             if segment.attributes.segment_type() & 0b0100 == 0 {
                 // Segment is not expand-down
                 if offset_end > segment.limit as u64 {
-                    return Err(gp0.into());
+                    return Err(gp0);
                 }
             } else {
                 // Segment is expand-down
@@ -392,7 +392,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
                     u16::MAX as u64
                 };
                 if offset <= segment.limit as u64 || offset_end > max {
-                    return Err(gp0.into());
+                    return Err(gp0);
                 }
             };
         }
@@ -407,7 +407,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         gva: u64,
         len: usize,
         alignment: AlignmentMode,
-    ) -> Result<(), InternalError<T::Error>> {
+    ) -> Result<(), Error<T::Error>> {
         match alignment {
             AlignmentMode::Aligned(a) => {
                 if gva % a != 0 {
@@ -438,13 +438,13 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     }
 
     /// Reads memory from the given segment:offset.
-    async fn read_memory(
+    pub async fn read_memory(
         &mut self,
         segment: Register,
         offset: u64,
         alignment: AlignmentMode,
         data: &mut [u8],
-    ) -> Result<(), InternalError<T::Error>> {
+    ) -> Result<(), Error<T::Error>> {
         let gva = self.compute_and_validate_gva(
             segment,
             offset,
@@ -462,13 +462,13 @@ impl<'a, T: Cpu> Emulator<'a, T> {
     }
 
     /// Writes memory to the given segment:offset.
-    async fn write_memory(
+    pub async fn write_memory(
         &mut self,
         segment: Register,
         offset: u64,
         alignment: AlignmentMode,
         data: &[u8],
-    ) -> Result<(), InternalError<T::Error>> {
+    ) -> Result<(), Error<T::Error>> {
         let gva = self.compute_and_validate_gva(
             segment,
             offset,
@@ -550,7 +550,8 @@ impl<'a, T: Cpu> Emulator<'a, T> {
             alignment,
             &data.to_le_bytes()[..instr.memory_size().size()],
         )
-        .await
+        .await?;
+        Ok(())
     }
 
     /// Write a value to a memory operand, validating that the current value in
