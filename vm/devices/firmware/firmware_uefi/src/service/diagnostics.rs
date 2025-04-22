@@ -70,12 +70,12 @@ pub enum AdvancedLoggerMessageEntryV2Error {
 //
 // Validation extension trait for the advanced logger spec types
 //
-pub trait Validateable {
+pub trait Validator {
     type Error;
     fn validate(&self) -> Result<(), Self::Error>;
 }
 
-impl Validateable for AdvancedLoggerInfo {
+impl Validator for AdvancedLoggerInfo {
     type Error = AdvancedLoggerInfoError;
 
     fn validate(&self) -> Result<(), Self::Error> {
@@ -94,7 +94,7 @@ impl Validateable for AdvancedLoggerInfo {
     }
 }
 
-impl Validateable for AdvancedLoggerMessageEntryV2 {
+impl Validator for AdvancedLoggerMessageEntryV2 {
     type Error = AdvancedLoggerMessageEntryV2Error;
 
     fn validate(&self) -> Result<(), Self::Error> {
