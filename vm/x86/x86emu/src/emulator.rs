@@ -315,7 +315,7 @@ impl<'a, T: Cpu> Emulator<'a, T> {
         );
         let gpindex = Error::InstructionException(
             Exception::GENERAL_PROTECTION_FAULT,
-            Some((segment_value.selector & !0b111).into()),
+            Some(segment_value.selector.into()),
             ExceptionCause::SegmentValidity,
         );
 
