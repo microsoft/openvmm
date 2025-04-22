@@ -959,8 +959,6 @@ impl BackingPrivate for TdxBacked {
         scan_irr: bool,
     ) -> Result<(), UhRunVpError> {
         if !this.try_poll_apic(vtl, scan_irr)? {
-            // We only offload VTL 0 today.
-            assert_eq!(vtl, GuestVtl::Vtl0);
             tracing::info!("disabling APIC offload due to auto EOI");
             let page = this.runner.tdx_apic_page_mut(vtl);
             let (irr, isr) = pull_apic_offload(page);
@@ -1125,7 +1123,7 @@ impl UhProcessor<'_, TdxBacked> {
             self.backing.vtls[vtl].processor_controls = new_processor_controls;
         }
 
-        // Offloading is only done with VTL 0 today.
+        // Offloading and proxying is only done with VTL 0 today.
         if vtl == GuestVtl::Vtl0 {
             let mut update_rvi = false;
             let r: Result<(), OffloadNotSupported> = self.backing.cvm.lapics[vtl]
@@ -1218,7 +1216,6 @@ impl UhProcessor<'_, TdxBacked> {
     ) -> R {
         let offloaded = self.backing.cvm.lapics[vtl].lapic.is_offloaded();
         if offloaded {
-            assert_eq!(vtl, GuestVtl::Vtl0);
             let (irr, isr) = pull_apic_offload(self.runner.tdx_apic_page_mut(vtl));
             self.backing.cvm.lapics[vtl]
                 .lapic
@@ -3025,7 +3022,6 @@ impl<T: CpuIo> ApicClient for TdxApicClient<'_, T> {
     }
 
     fn pull_offload(&mut self) -> ([u32; 8], [u32; 8]) {
-        assert_eq!(self.vtl, GuestVtl::Vtl0);
         pull_apic_offload(self.apic_page)
     }
 }
