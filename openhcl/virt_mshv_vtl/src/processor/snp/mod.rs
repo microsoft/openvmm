@@ -1021,16 +1021,7 @@ impl UhProcessor<'_, SnpBacked> {
                 })
                 .msr_read(msr)
                 .or_else_if_unknown(|| self.read_msr(msr, entered_from_vtl))
-                .or_else_if_unknown(|| self.read_msr_cvm(dev, msr, entered_from_vtl))
-                .or_else_if_unknown(|| match msr {
-                    hvdef::HV_X64_MSR_GUEST_IDLE => {
-                        self.backing.cvm.lapics[entered_from_vtl].activity = MpState::Idle;
-                        let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
-                        vmsa.v_intr_cntrl_mut().set_intr_shadow(false);
-                        Ok(0)
-                    }
-                    _ => Err(MsrError::Unknown),
-                });
+                .or_else_if_unknown(|| self.read_msr_snp(dev, msr, entered_from_vtl));
 
             let value = match r {
                 Ok(v) => Some(v),
@@ -2215,7 +2206,7 @@ fn advance_to_next_instruction(vmsa: &mut VmsaWrapper<'_, &mut SevVmsa>) {
 }
 
 impl UhProcessor<'_, SnpBacked> {
-    fn read_msr_cvm(
+    fn read_msr_snp(
         &mut self,
         _dev: &impl CpuIo,
         msr: u32,
@@ -2268,6 +2259,13 @@ impl UhProcessor<'_, SnpBacked> {
             x86defs::X86X_AMD_MSR_SYSCFG
             | x86defs::X86X_MSR_MCG_CAP
             | x86defs::X86X_MSR_MCG_STATUS => 0,
+
+            hvdef::HV_X64_MSR_GUEST_IDLE => {
+                self.backing.cvm.lapics[vtl].activity = MpState::Idle;
+                let mut vmsa = self.runner.vmsa_mut(vtl);
+                vmsa.v_intr_cntrl_mut().set_intr_shadow(false);
+                0
+            }
             _ => return Err(MsrError::Unknown),
         };
         Ok(value)

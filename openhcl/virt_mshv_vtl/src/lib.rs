@@ -1988,8 +1988,7 @@ impl UhPartition {
             // trusted.
             let hv_version = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_VERSION, 0);
 
-            // Add the standard hypervisor leaves and version, and filter out
-            // leaves we shouldn't expose if we're hiding isolation.
+            // Perform final processing steps for synthetic leaves.
             hv1_emulator::cpuid::process_hv_cpuid_leaves(
                 &mut cpuid,
                 hide_isolation,

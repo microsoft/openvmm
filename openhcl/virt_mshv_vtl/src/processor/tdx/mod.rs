@@ -1729,16 +1729,7 @@ impl UhProcessor<'_, TdxBacked> {
                     })
                     .msr_read(msr)
                     .or_else_if_unknown(|| self.read_msr(msr, intercepted_vtl))
-                    .or_else_if_unknown(|| self.read_msr_cvm(msr, intercepted_vtl))
-                    .or_else_if_unknown(|| match msr {
-                        hvdef::HV_X64_MSR_GUEST_IDLE => {
-                            self.backing.cvm.lapics[intercepted_vtl].activity = MpState::Idle;
-                            self.clear_interrupt_shadow(intercepted_vtl);
-                            Ok(0)
-                        }
-                        X86X_MSR_EFER => Ok(self.backing.vtls[intercepted_vtl].efer),
-                        _ => Err(MsrError::Unknown),
-                    });
+                    .or_else_if_unknown(|| self.read_msr_tdx(msr, intercepted_vtl));
 
                 let value = match result {
                     Ok(v) => Some(v),
@@ -2407,7 +2398,7 @@ impl UhProcessor<'_, TdxBacked> {
         Ok(())
     }
 
-    fn read_msr_cvm(&self, msr: u32, vtl: GuestVtl) -> Result<u64, MsrError> {
+    fn read_msr_tdx(&mut self, msr: u32, vtl: GuestVtl) -> Result<u64, MsrError> {
         // TODO TDX: port remaining tdx and common values
         //
         // TODO TDX: consider if this can be shared with SnpBacked's
@@ -2466,6 +2457,13 @@ impl UhProcessor<'_, TdxBacked> {
             | x86defs::X86X_IA32_MSR_PKG_ENERGY_STATUS
             | x86defs::X86X_IA32_MSR_DRAM_ENERGY_STATUS
             | x86defs::X86X_IA32_MSR_PP0_ENERGY_STATUS => Ok(0),
+
+            hvdef::HV_X64_MSR_GUEST_IDLE => {
+                self.backing.cvm.lapics[vtl].activity = MpState::Idle;
+                self.clear_interrupt_shadow(vtl);
+                Ok(0)
+            }
+            X86X_MSR_EFER => Ok(self.backing.vtls[vtl].efer),
 
             _ => Err(MsrError::Unknown),
         }

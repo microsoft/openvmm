@@ -32,6 +32,7 @@ use hv1_emulator::message_queues::MessageQueues;
 use hv1_structs::VtlArray;
 use hv1_structs::VtlSet;
 use hvdef::HvDeliverabilityNotificationsRegister;
+use hvdef::HvEnlightenmentInformation;
 use hvdef::HvMessage;
 use hvdef::HvMessageType;
 use hvdef::Vtl;
@@ -901,9 +902,9 @@ impl WhpPartitionInner {
             // hypervisor will do this automatically, but it doesn't hurt to do this
             // again.
             let mask = [0, 0, 1 << 21, 0];
-            let value = match proto_config.processor_topology.apic_mode() {
-                ApicMode::XApic => [0; 4],
-                ApicMode::X2ApicSupported | ApicMode::X2ApicEnabled => mask,
+            let (value, use_apic_msrs) = match proto_config.processor_topology.apic_mode() {
+                ApicMode::XApic => ([0; 4], true),
+                ApicMode::X2ApicSupported | ApicMode::X2ApicEnabled => (mask, false),
             };
             cpuid.push(
                 virt::CpuidLeaf::new(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, value)
@@ -913,6 +914,20 @@ impl WhpPartitionInner {
             // Add in the synthetic hv leaves if necessary.
             if let Some(hv_config) = &proto_config.hv_config {
                 if !hv_config.offload_enlightenments || proto_config.user_mode_apic {
+                    let enlightenments = HvEnlightenmentInformation::new()
+                        .with_deprecate_auto_eoi(true)
+                        .with_use_relaxed_timing(true)
+                        .with_use_ex_processor_masks(true)
+                        .with_use_apic_msrs(use_apic_msrs);
+                    const MAX_CPUS: u32 = 2048;
+                    cpuid.extend_from_slice(
+                        &hv1_emulator::cpuid::make_hv_cpuid_leaves(
+                            hv1_emulator::cpuid::SUPPORTED_FEATURES,
+                            enlightenments,
+                            MAX_CPUS,
+                        )
+                        .map(|(f, v)| virt::CpuidLeaf::new(f.0, [v.eax, v.ebx, v.ecx, v.edx])),
+                    );
                     hv1_emulator::cpuid::process_hv_cpuid_leaves(&mut cpuid, false, [0; 4]);
                 }
             }
