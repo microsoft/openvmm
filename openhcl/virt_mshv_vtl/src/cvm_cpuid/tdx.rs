@@ -34,14 +34,14 @@ pub const TDX_REQUIRED_LEAVES: &[(CpuidFunction, Option<u32>)] = &[
 ];
 
 /// Implements [`CpuidArchSupport`] for TDX-isolation support
-pub struct TdxCpuidInitializer {
-    topology: ProcessorTopology<X86Topology>,
+pub struct TdxCpuidInitializer<'a> {
+    topology: &'a ProcessorTopology<X86Topology>,
     access_vsm: bool,
     vtom: u64,
 }
 
-impl TdxCpuidInitializer {
-    pub fn new(topology: ProcessorTopology<X86Topology>, access_vsm: bool, vtom: u64) -> Self {
+impl<'a> TdxCpuidInitializer<'a> {
+    pub fn new(topology: &'a ProcessorTopology<X86Topology>, access_vsm: bool, vtom: u64) -> Self {
         Self {
             topology,
             access_vsm,
@@ -54,7 +54,7 @@ impl TdxCpuidInitializer {
     }
 }
 
-impl CpuidArchInitializer for TdxCpuidInitializer {
+impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
     fn vendor(&self) -> cpuid::Vendor {
         cpuid::Vendor::INTEL
     }

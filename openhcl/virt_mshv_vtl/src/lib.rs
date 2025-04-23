@@ -1496,7 +1496,7 @@ impl<'a> UhProtoPartition<'a> {
             .map_err(Error::CvmCpuid)?,
 
             IsolationType::Tdx => cvm_cpuid::CpuidResultsIsolationType::Tdx {
-                topology: params.topology.clone(),
+                topology: params.topology,
                 vtom: params.vtom.unwrap(),
                 access_vsm: guest_vsm_available,
             }

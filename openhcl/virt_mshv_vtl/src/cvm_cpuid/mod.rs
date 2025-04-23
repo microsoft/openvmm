@@ -96,7 +96,7 @@ pub enum CpuidResultsIsolationType<'a> {
         vtom: u64,
     },
     Tdx {
-        topology: ProcessorTopology<X86Topology>,
+        topology: &'a ProcessorTopology<X86Topology>,
         access_vsm: bool,
         vtom: u64,
     },
