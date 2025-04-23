@@ -353,8 +353,13 @@ impl PetriVmConfigHyperV {
             vm.set_secure_boot_template(secure_boot_template)?;
         }
 
-        for vhds in &self.vhd_paths {
-            let controller_number = vm.add_scsi_controller()?;
+        for (i, vhds) in self.vhd_paths.iter().enumerate() {
+            let (controller_type, controller_number) = match self.generation {
+                powershell::HyperVGeneration::One => (powershell::ControllerType::Ide, i as u32),
+                powershell::HyperVGeneration::Two => {
+                    (powershell::ControllerType::Scsi, vm.add_scsi_controller(0)?)
+                }
+            };
             for (controller_location, vhd) in vhds.iter().enumerate() {
                 let diff_disk_path = self.temp_dir.path().join(format!(
                     "{}_{}_{}",
@@ -368,6 +373,7 @@ impl PetriVmConfigHyperV {
                 powershell::create_child_vhd(&diff_disk_path, vhd)?;
                 vm.add_vhd(
                     &diff_disk_path,
+                    controller_type,
                     Some(controller_location as u32),
                     Some(controller_number),
                 )?;
@@ -402,8 +408,13 @@ impl PetriVmConfigHyperV {
                 vm.set_imc(&imc_hive)?;
             }
 
-            let controller_number = vm.add_scsi_controller()?;
-            vm.add_vhd(&agent_disk_path, Some(0), Some(controller_number))?;
+            let controller_number = vm.add_scsi_controller(0)?;
+            vm.add_vhd(
+                &agent_disk_path,
+                powershell::ControllerType::Scsi,
+                Some(0),
+                Some(controller_number),
+            )?;
         }
 
         if let Some(src_igvm_file) = &self.openhcl_igvm {
@@ -446,9 +457,13 @@ impl PetriVmConfigHyperV {
                 agent_disk.persist(&agent_disk_path)?;
             }
 
-            let controller_number = vm.add_scsi_controller()?;
-            vm.set_scsi_controller_target_vtl(controller_number, 2)?;
-            vm.add_vhd(&agent_disk_path, Some(0), Some(controller_number))?;
+            let controller_number = vm.add_scsi_controller(2)?;
+            vm.add_vhd(
+                &agent_disk_path,
+                powershell::ControllerType::Scsi,
+                Some(0),
+                Some(controller_number),
+            )?;
         }
 
         let mut log_tasks = Vec::new();

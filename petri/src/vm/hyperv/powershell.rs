@@ -205,6 +205,9 @@ pub struct HyperVAddVMHardDiskDriveArgs<'a> {
     /// Specifies the ID of the virtual machine to which the hard disk
     /// drive is to be added.
     pub vmid: &'a Guid,
+    /// Specifies the type of controller to which the hard disk drive is
+    /// to be added.
+    pub controller_type: ControllerType,
     /// Specifies the number of the location on the controller at which the
     /// hard disk drive is to be added. If not specified, the first available
     /// location in the controller specified with the ControllerNumber parameter
@@ -219,6 +222,27 @@ pub struct HyperVAddVMHardDiskDriveArgs<'a> {
     pub path: Option<&'a Path>,
 }
 
+/// The type of controller to which a hard disk drive is to be added.
+#[derive(Copy, Clone, Debug)]
+pub enum ControllerType {
+    /// IDE controller
+    Ide,
+    /// SCSI controller
+    Scsi,
+    /// Persistent memory controller
+    Pmem,
+}
+
+impl AsRef<OsStr> for ControllerType {
+    fn as_ref(&self) -> &OsStr {
+        OsStr::new(match self {
+            ControllerType::Ide => "IDE",
+            ControllerType::Scsi => "SCSI",
+            ControllerType::Pmem => "PMem",
+        })
+    }
+}
+
 /// Runs Add-VMHardDiskDrive with the given arguments.
 pub fn run_add_vm_hard_disk_drive(args: HyperVAddVMHardDiskDriveArgs<'_>) -> anyhow::Result<()> {
     PowerShellBuilder::new()
@@ -226,6 +250,7 @@ pub fn run_add_vm_hard_disk_drive(args: HyperVAddVMHardDiskDriveArgs<'_>) -> any
         .arg_string("Id", args.vmid)
         .pipeline()
         .cmdlet("Add-VMHardDiskDrive")
+        .arg("ControllerType", args.controller_type)
         .arg_opt_string("ControllerLocation", args.controller_location)
         .arg_opt_string("ControllerNumber", args.controller_number)
         .arg_opt("Path", args.path)
@@ -659,6 +684,20 @@ pub fn run_remove_vm_network_adapter(vmid: &Guid) -> anyhow::Result<()> {
         .output(true)
         .map(|_| ())
         .context("remove_vm_network_adapters")
+}
+
+/// Runs Remove-VMScsiController with the given arguments.
+pub fn run_remove_vm_scsi_controller(vmid: &Guid, controller_number: u32) -> anyhow::Result<()> {
+    PowerShellBuilder::new()
+        .cmdlet("Get-VM")
+        .arg_string("Id", vmid)
+        .pipeline()
+        .cmdlet("Remove-VMScsiController")
+        .arg_string("ControllerNumber", controller_number)
+        .finish()
+        .output(true)
+        .map(|_| ())
+        .context("remove_vm_scsi_controller")
 }
 
 /// A PowerShell script builder

@@ -92,6 +92,10 @@ impl HyperVVM {
         powershell::run_remove_vm_network_adapter(&vmid)
             .context("remove default network adapter")?;
 
+        // Remove the default SCSI controller
+        powershell::run_remove_vm_scsi_controller(&vmid, 0)
+            .context("remove default SCSI controller")?;
+
         Ok(Self {
             name,
             vmid,
@@ -208,33 +212,30 @@ impl HyperVVM {
     }
 
     /// Add a SCSI controller
-    pub fn add_scsi_controller(&mut self) -> anyhow::Result<u32> {
-        powershell::run_add_vm_scsi_controller(&self.vmid)
-    }
-
-    /// Sets the SCSI controller target VTL
-    pub fn set_scsi_controller_target_vtl(
-        &mut self,
-        controller_number: u32,
-        target_vtl: u32,
-    ) -> anyhow::Result<()> {
-        powershell::run_set_vm_scsi_controller_target_vtl(
-            &self.ps_mod,
-            &self.vmid,
-            controller_number,
-            target_vtl,
-        )
+    pub fn add_scsi_controller(&mut self, target_vtl: u32) -> anyhow::Result<u32> {
+        let controller_number = powershell::run_add_vm_scsi_controller(&self.vmid)?;
+        if target_vtl != 0 {
+            powershell::run_set_vm_scsi_controller_target_vtl(
+                &self.ps_mod,
+                &self.vmid,
+                controller_number,
+                target_vtl,
+            )?;
+        }
+        Ok(controller_number)
     }
 
     /// Add a VHD
     pub fn add_vhd(
         &mut self,
         path: &Path,
+        controller_type: powershell::ControllerType,
         controller_location: Option<u32>,
         controller_number: Option<u32>,
     ) -> anyhow::Result<()> {
         powershell::run_add_vm_hard_disk_drive(powershell::HyperVAddVMHardDiskDriveArgs {
             vmid: &self.vmid,
+            controller_type,
             controller_location,
             controller_number,
             path: Some(path),
