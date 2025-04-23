@@ -1851,8 +1851,6 @@ enum WorkerError {
     Cancelled(task_control::Cancelled),
     #[error("tearing down because send/receive buffer is revoked")]
     BufferRevoked,
-    #[error("tx error: {0}")]
-    EndpointTx(#[source] anyhow::Error),
     #[error("endpoint requires queue restart: {0}")]
     EndpointRequiresQueueRestart(#[source] anyhow::Error),
 }
@@ -4965,10 +4963,9 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     })
                     .collect::<Vec<_>>();
                 state.pending_tx_completions.extend(pending_tx);
-                // TryRestart error indicates the need to restart the queues.
                 Err(WorkerError::EndpointRequiresQueueRestart(err))
             }
-            Err(TxError::Fatal(err)) => Err(WorkerError::EndpointTx(err)),
+            Err(TxError::Fatal(err)) => Err(WorkerError::Endpoint(err)),
         }
     }
 
