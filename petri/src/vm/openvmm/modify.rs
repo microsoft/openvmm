@@ -21,6 +21,7 @@ use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use hvlite_helpers::disk::open_disk_type;
+use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ResolvedArtifact;
 use std::path::Path;
 use tpm_resources::TpmDeviceHandle;
@@ -99,34 +100,30 @@ impl PetriVmConfigOpenVmm {
         self.config.processor_topology.proc_count = vp_count;
         self.config.processor_topology.enable_smt = enable_smt;
         self.config.processor_topology.vps_per_socket = vps_per_socket;
-        if cfg!(guest_arch = "x86_64") {
-            self.config.processor_topology.arch =
-                Some(hvlite_defs::config::ArchTopologyConfig::X86(
-                    hvlite_defs::config::X86TopologyConfig {
-                        x2apic: match apic_mode {
-                            None => hvlite_defs::config::X2ApicConfig::Auto,
-                            Some(x) => match x {
-                                crate::ApicMode::Xapic => {
-                                    hvlite_defs::config::X2ApicConfig::Unsupported
-                                }
-                                crate::ApicMode::X2apicSupported => {
-                                    hvlite_defs::config::X2ApicConfig::Supported
-                                }
-                                crate::ApicMode::X2apicEnabled => {
-                                    hvlite_defs::config::X2ApicConfig::Enabled
-                                }
-                            },
+        self.config.processor_topology.arch = Some(match self.arch {
+            MachineArch::X86_64 => hvlite_defs::config::ArchTopologyConfig::X86(
+                hvlite_defs::config::X86TopologyConfig {
+                    x2apic: match apic_mode {
+                        None => hvlite_defs::config::X2ApicConfig::Auto,
+                        Some(x) => match x {
+                            crate::ApicMode::Xapic => {
+                                hvlite_defs::config::X2ApicConfig::Unsupported
+                            }
+                            crate::ApicMode::X2apicSupported => {
+                                hvlite_defs::config::X2ApicConfig::Supported
+                            }
+                            crate::ApicMode::X2apicEnabled => {
+                                hvlite_defs::config::X2ApicConfig::Enabled
+                            }
                         },
-                        ..Default::default()
                     },
-                ));
-        } else {
-            assert!(apic_mode.is_none());
-            self.config.processor_topology.arch =
-                Some(hvlite_defs::config::ArchTopologyConfig::Aarch64(
-                    hvlite_defs::config::Aarch64TopologyConfig::default(),
-                ));
-        }
+                    ..Default::default()
+                },
+            ),
+            MachineArch::Aarch64 => hvlite_defs::config::ArchTopologyConfig::Aarch64(
+                hvlite_defs::config::Aarch64TopologyConfig::default(),
+            ),
+        });
         self
     }
 

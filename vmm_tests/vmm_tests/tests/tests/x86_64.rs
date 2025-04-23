@@ -246,7 +246,6 @@ fn configure_for_sidecar(
                 } else {
                     None
                 },
-                ..Default::default()
             }
         })
 }
