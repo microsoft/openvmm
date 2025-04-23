@@ -34,13 +34,15 @@ use user_driver::interrupt::DeviceInterrupt;
 use user_driver::interrupt::DeviceInterruptSource;
 use user_driver::memory::PAGE_SIZE;
 use user_driver::memory::PAGE_SIZE64;
+use vmcore::save_restore::ProtobufSaveRestore;
+use vmcore::save_restore::SavedStateBlob;
 
 /// A wrapper around any user_driver device T. It provides device emulation by providing access to the memory shared with the device and thus
 /// allowing the user to control device behaviour to a certain extent. Can be used with devices such as the `NvmeController`
 pub struct EmulatedDevice<T, U> {
     device: Arc<Mutex<T>>,
-    controller: MsiController,
-    dma_client: Arc<U>,
+    controller: Arc<MsiController>,
+    dma_client: Option<Arc<U>>,
     bar0_len: usize,
 }
 
@@ -77,6 +79,17 @@ impl MsiInterruptTarget for MsiController {
     }
 }
 
+impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> Clone for EmulatedDevice<T, U> {
+    fn clone(&self) -> Self {
+        Self {
+            device: self.device.clone(),
+            controller: self.controller.clone(),
+            dma_client: None,
+            bar0_len: self.bar0_len,
+        }
+    }
+}
+
 impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
     /// Creates a new emulated device, wrapping `device` of type T, using the provided MSI Interrupt Set. Dma_client should point to memory
     /// shared with the device.
@@ -84,6 +97,7 @@ impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
         // Connect an interrupt controller.
         let controller = MsiController::new(msi_set.len());
         msi_set.connect(&controller);
+        let controller = Arc::new(controller);
 
         let bars = device.probe_bar_masks();
         let bar0_len = !(bars[0] & !0xf) as usize + 1;
@@ -114,9 +128,19 @@ impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
         Self {
             device: Arc::new(Mutex::new(device)),
             controller,
-            dma_client,
+            dma_client: Some(dma_client),
             bar0_len,
         }
+    }
+
+    /// Remove the dma client from the device.
+    pub fn remove_dma_client(&mut self) -> Arc<U> {
+        self.dma_client.take().unwrap()
+    }
+
+    /// Restore a given dma client to the device.
+    pub fn restore_dma_client(&mut self, client: Arc<U>) {
+        self.dma_client = Some(client);
     }
 }
 
@@ -159,7 +183,7 @@ impl<T: 'static + Send + InspectMut + MmioIntercept, U: 'static + Send + DmaClie
     }
 
     fn dma_client(&self) -> Arc<dyn DmaClient> {
-        self.dma_client.clone()
+        self.dma_client.clone().unwrap().clone()
     }
 
     fn max_interrupt_count(&self) -> u32 {
@@ -220,7 +244,7 @@ pub struct DeviceTestMemory {
     guest_mem: GuestMemory,
     payload_mem: GuestMemory,
     _pool: PagePool,
-    allocator: Arc<PagePoolAllocator>,
+    allocator: Option<Arc<PagePoolAllocator>>,
 }
 
 impl DeviceTestMemory {
@@ -246,7 +270,7 @@ impl DeviceTestMemory {
             guest_mem: guest_mem.clone(),
             payload_mem: guest_mem.subrange(range_half, range_half, false).unwrap(),
             _pool: pool,
-            allocator: Arc::new(allocator),
+            allocator: Some(Arc::new(allocator)),
         }
     }
 
@@ -260,8 +284,28 @@ impl DeviceTestMemory {
         self.payload_mem.clone()
     }
 
+    /// Restore an allocator.
+    pub fn restore_allocator(&mut self, pool_name: &str) {
+        self.allocator = Some(Arc::new(self._pool.allocator(pool_name.into()).unwrap()));
+    }
+
     /// Returns [`PagePoolAllocator`] with access to the first half of the underlying memory.
     pub fn dma_client(&self) -> Arc<PagePoolAllocator> {
-        self.allocator.clone()
+        self.allocator.clone().unwrap().clone()
+    }
+
+    /// Returns the [`PagePoolAllocator`].
+    pub fn remove_allocator(&mut self) -> Arc<PagePoolAllocator> {
+        self.allocator.take().unwrap()
+    }
+
+    /// Save the state of the underlying memory for restoration later.
+    pub fn save(&mut self) -> SavedStateBlob {
+        self._pool.save().unwrap()
+    }
+
+    /// Restore the state of the underlying memory from a previously saved state.
+    pub fn restore(&mut self, state: SavedStateBlob) {
+        self._pool.restore(state).unwrap();
     }
 }

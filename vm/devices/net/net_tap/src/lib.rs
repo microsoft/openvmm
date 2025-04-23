@@ -83,7 +83,7 @@ impl Endpoint for TapEndpoint {
         Ok(())
     }
 
-    async fn stop(&mut self) {
+    async fn stop(&mut self, _keepalive: bool) {
         assert!(self.tap.lock().is_some(), "queue has not been dropped");
     }
 

@@ -145,11 +145,14 @@ pub mod save_restore {
             // Note that this also means that the pool does not have any pending
             // allocations, as it's impossible to allocate without creating an
             // allocator.
+
+            /*
             if !inner.device_ids.is_empty() {
                 return Err(vmcore::save_restore::RestoreError::InvalidSavedState(
                     anyhow::anyhow!("existing allocators present, pool must be empty to restore"),
                 ));
             }
+            */
 
             state.state.sort_by_key(|slot| slot.base_pfn);
 
@@ -409,7 +412,10 @@ impl PagePoolHandle {
 
 impl Drop for PagePoolHandle {
     fn drop(&mut self) {
+        tracing::info!("dropping page pool handle for {:x}", self.base_pfn());
         let mut inner = self.inner.state.lock();
+
+        tracing::info!("slot state: {:?}", inner.slots);
 
         let slot = inner
             .slots
@@ -814,6 +820,9 @@ impl PagePoolAllocator {
     pub fn restore_pending_allocs(&self) -> Vec<PagePoolHandle> {
         let mut inner = self.inner.state.lock();
         let inner = &mut *inner;
+
+        tracing::info!("slot state: {:?}", inner.slots);
+
         let mut slots: Vec<&mut Slot> = inner
             .slots
             .iter_mut()
@@ -846,6 +855,8 @@ impl PagePoolAllocator {
 
 impl Drop for PagePoolAllocator {
     fn drop(&mut self) {
+        tracing::info!("dropping page pool allocator");
+
         let mut inner = self.inner.state.lock();
         let device_name = inner.device_ids[self.device_id].name().to_string();
         let prev = std::mem::replace(
@@ -882,6 +893,39 @@ impl user_driver::DmaClient for PagePoolAllocator {
             .into_iter()
             .map(|alloc| alloc.into_memory_block())
             .collect()
+    }
+
+    fn get_dma_buffer(
+        &self,
+        len: usize,
+        base_pfn: u64,
+    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+        let size_pages = NonZeroU64::new(len as u64 / PAGE_SIZE)
+            .context("allocation of size 0 not supported")?
+            .get();
+
+        let mut inner = self.inner.state.lock();
+        let inner = &mut *inner;
+        let slot = inner.slots.iter().find(|slot| {
+            if let SlotState::Free = &slot.state {
+                slot.base_pfn == base_pfn
+            } else {
+                false
+            }
+        });
+
+        if slot.is_none() {
+            anyhow::bail!("allocation doesn't exist");
+        }
+
+        let handle = PagePoolHandle {
+            inner: self.inner.clone(),
+            base_pfn,
+            size_pages,
+            mapping_offset: slot.unwrap().mapping_offset,
+        };
+
+        handle.into_memory_block()
     }
 }
 

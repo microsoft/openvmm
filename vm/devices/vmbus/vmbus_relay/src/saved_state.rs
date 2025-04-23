@@ -44,6 +44,7 @@ impl RelayTask {
     }
 
     pub async fn handle_restore(&mut self, state: SavedState) -> Result<()> {
+        tracing::info!("restoring vmbus relay state");
         let SavedState {
             use_interrupt_relay,
             channels,
@@ -147,12 +148,16 @@ impl RelayChannelTask {
 
     pub(crate) async fn handle_restore(&mut self, state: Channel) -> Result<()> {
         let Channel {
-            channel_id: _,
+            channel_id,
             event_flag,
             intercepted,
             intercepted_save_state: _,
             is_open,
         } = state;
+
+        tracing::info!(
+            "restoring vmbus relay channel state - channel_id: {channel_id} is_open: {is_open}"
+        );
 
         if intercepted {
             anyhow::bail!("cannot restore an intercepted channel");

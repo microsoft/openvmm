@@ -3,6 +3,7 @@
 
 //! Saved state definitions.
 
+use mana_save_restore::save_restore::QueueSavedState;
 use mesh::payload::Protobuf;
 use vmbus_channel::gpadl::GpadlId;
 use vmcore::save_restore::SavedStateRoot;

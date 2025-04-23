@@ -20,6 +20,8 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::InspectMut;
+use mana_save_restore::save_restore::EndpointSavedState;
+use mana_save_restore::save_restore::QueueSavedState;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use null::NullEndpoint;
@@ -56,7 +58,7 @@ pub trait Endpoint: Send + Sync + InspectMut {
     /// Stops the endpoint.
     ///
     /// All queues returned via `get_queues` must have been dropped.
-    async fn stop(&mut self);
+    async fn stop(&mut self, keepalive: bool);
 
     /// Specifies whether packets are always completed in order.
     fn is_ordered(&self) -> bool {
@@ -103,6 +105,23 @@ pub trait Endpoint: Send + Sync + InspectMut {
         // Reporting a reasonable default value (10Gbps) here that the individual endpoints
         // can overwrite.
         10 * 1000 * 1000 * 1000
+    }
+
+    /// Restore the endpoint state from saved state.
+    async fn restore_queues(
+        &mut self,
+        _queue_configs: Vec<QueueConfig<'_>>,
+        _saved_state: Vec<QueueSavedState>,
+        _queues: &mut Vec<Box<dyn Queue>>,
+    ) -> anyhow::Result<()> {
+        anyhow::bail!("Endpoint does not support restoring queues")
+    }
+
+    fn save(&mut self) -> anyhow::Result<EndpointSavedState> {
+        anyhow::bail!(
+            "{} endpoint does not support saving state",
+            self.endpoint_type()
+        )
     }
 }
 
@@ -162,6 +181,11 @@ pub trait Queue: Send + InspectMut {
 
     /// Get the buffer access.
     fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess>;
+
+    /// Save the state of the queue for restoration after servicing.
+    fn save(&self) -> anyhow::Result<QueueSavedState> {
+        anyhow::bail!("Saving queue state not supported for this queue type")
+    }
 }
 
 /// A trait for providing access to guest memory buffers.
@@ -494,8 +518,8 @@ impl Endpoint for DisconnectableEndpoint {
         self.current_mut().get_queues(config, rss, queues).await
     }
 
-    async fn stop(&mut self) {
-        self.current_mut().stop().await
+    async fn stop(&mut self, keepalive: bool) {
+        self.current_mut().stop(keepalive).await
     }
 
     fn is_ordered(&self) -> bool {
@@ -588,5 +612,20 @@ impl Endpoint for DisconnectableEndpoint {
             .as_ref()
             .expect("Endpoint needs connected at least once before use")
             .link_speed
+    }
+
+    async fn restore_queues(
+        &mut self,
+        queue_configs: Vec<QueueConfig<'_>>,
+        saved_state: Vec<QueueSavedState>,
+        queues: &mut Vec<Box<dyn Queue>>,
+    ) -> anyhow::Result<()> {
+        self.current_mut()
+            .restore_queues(queue_configs, saved_state, queues)
+            .await
+    }
+
+    fn save(&mut self) -> anyhow::Result<EndpointSavedState> {
+        self.current_mut().save()
     }
 }

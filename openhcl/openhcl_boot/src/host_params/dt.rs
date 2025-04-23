@@ -528,6 +528,7 @@ impl PartitionInfo {
             entropy,
             vtl0_alias_map: _,
             nvme_keepalive,
+            mana_keepalive,
         } = storage;
 
         assert!(!vtl2_used_ranges.is_empty());
@@ -550,6 +551,7 @@ impl PartitionInfo {
         *gic = parsed.gic.clone();
         *entropy = parsed.entropy.clone();
         *nvme_keepalive = parsed.nvme_keepalive;
+        *mana_keepalive = parsed.mana_keepalive;
 
         Ok(Some(storage))
     }

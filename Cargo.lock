@@ -3865,6 +3865,7 @@ dependencies = [
  "gdma_defs",
  "getrandom 0.3.2",
  "inspect",
+ "mana_save_restore",
  "mesh",
  "net_backend",
  "net_backend_resources",
@@ -3878,6 +3879,13 @@ dependencies = [
  "user_driver_emulated_mock",
  "vmcore",
  "zerocopy 0.8.24",
+]
+
+[[package]]
+name = "mana_save_restore"
+version = "0.0.0"
+dependencies = [
+ "mesh",
 ]
 
 [[package]]
@@ -4309,6 +4317,7 @@ dependencies = [
  "futures-concurrency",
  "guestmem",
  "inspect",
+ "mana_save_restore",
  "memory_range",
  "mesh",
  "net_backend_resources",
@@ -4378,6 +4387,7 @@ dependencies = [
  "guestmem",
  "inspect",
  "mana_driver",
+ "mana_save_restore",
  "mesh",
  "net_backend",
  "pal_async",
@@ -4403,6 +4413,7 @@ dependencies = [
  "futures-concurrency",
  "guestmem",
  "inspect",
+ "mana_save_restore",
  "mesh",
  "net_backend",
  "parking_lot",
@@ -4445,6 +4456,7 @@ dependencies = [
  "hvdef",
  "inspect",
  "inspect_counters",
+ "mana_save_restore",
  "mesh",
  "net_backend",
  "net_backend_resources",
@@ -7698,6 +7710,7 @@ dependencies = [
  "pci_core",
  "tracing",
  "user_driver",
+ "vmcore",
 ]
 
 [[package]]
