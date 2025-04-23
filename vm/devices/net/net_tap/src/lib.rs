@@ -19,6 +19,7 @@ use net_backend::QueueConfig;
 use net_backend::RssConfig;
 use net_backend::RxId;
 use net_backend::RxMetadata;
+use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxSegment;
 use pal_async::driver::Driver;
@@ -233,7 +234,7 @@ impl Queue for TapQueue {
         Ok((completed_synchronously, n))
     }
 
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> anyhow::Result<usize> {
+    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
         // Packets are sent synchronously so there is no no need to check here if
         // sending has been completed.
         Ok(0)

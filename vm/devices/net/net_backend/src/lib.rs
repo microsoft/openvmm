@@ -26,6 +26,7 @@ use std::future::pending;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use thiserror::Error;
 
 /// Per-queue configuration.
 pub struct QueueConfig<'a> {
@@ -133,6 +134,14 @@ pub struct RssConfig<'a> {
     pub flags: u32, // TODO
 }
 
+#[derive(Error, Debug)]
+pub enum TxError {
+    #[error("error requiring queue restart. {0}")]
+    TryRestart(#[source] anyhow::Error),
+    #[error("unrecoverable error. {0}")]
+    Fatal(#[source] anyhow::Error),
+}
+
 /// A trait for sending and receiving network packets.
 #[async_trait]
 pub trait Queue: Send + InspectMut {
@@ -156,7 +165,7 @@ pub trait Queue: Send + InspectMut {
     fn tx_avail(&mut self, segments: &[TxSegment]) -> anyhow::Result<(bool, usize)>;
 
     /// Polls the device for transmit completions.
-    fn tx_poll(&mut self, done: &mut [TxId]) -> anyhow::Result<usize>;
+    fn tx_poll(&mut self, done: &mut [TxId]) -> Result<usize, TxError>;
 
     /// Get the buffer access.
     fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess>;

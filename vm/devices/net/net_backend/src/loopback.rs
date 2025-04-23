@@ -16,6 +16,7 @@ use crate::QueueConfig;
 use crate::RssConfig;
 use crate::RxId;
 use crate::RxMetadata;
+use crate::TxError;
 use crate::TxId;
 use crate::TxSegment;
 use async_trait::async_trait;
@@ -125,7 +126,7 @@ impl Queue for LoopbackQueue {
         Ok((true, sent))
     }
 
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> anyhow::Result<usize> {
+    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
         Ok(0)
     }
 

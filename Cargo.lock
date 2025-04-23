@@ -3925,6 +3925,7 @@ dependencies = [
  "net_backend_resources",
  "pal_async",
  "parking_lot",
+ "thiserror 2.0.0",
  "tracing",
  "vm_resource",
  "vm_topology",

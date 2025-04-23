@@ -12,6 +12,7 @@ use crate::Queue;
 use crate::QueueConfig;
 use crate::RssConfig;
 use crate::RxId;
+use crate::TxError;
 use crate::TxId;
 use crate::TxOffloadSupport;
 use crate::TxSegment;
@@ -114,7 +115,7 @@ impl Queue for NullQueue {
         Ok((true, packets.len()))
     }
 
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> anyhow::Result<usize> {
+    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
         Ok(0)
     }
 
