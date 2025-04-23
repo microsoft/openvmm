@@ -5,6 +5,7 @@ use crate::bnic_driver::BnicDriver;
 use crate::gdma_driver::GdmaDriver;
 use gdma_defs::GdmaDevId;
 use gdma_defs::GdmaQueueType;
+use std::fmt::Debug;
 use std::mem::ManuallyDrop;
 use user_driver::DeviceBacking;
 use user_driver::memory::MemoryBlock;
@@ -36,6 +37,45 @@ pub(crate) enum Resource {
         wq_type: GdmaQueueType,
         wq_obj: u64,
     },
+}
+
+impl Debug for Resource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Resource::MemoryBlock(_) => f.debug_tuple("MemoryBlock").finish(),
+            Resource::DmaRegion {
+                dev_id,
+                gdma_region,
+            } => f
+                .debug_struct("DmaRegion")
+                .field("dev_id", dev_id)
+                .field("gdma_region", gdma_region)
+                .finish(),
+            Resource::Eq { dev_id, eq_id } => f
+                .debug_struct("Eq")
+                .field("dev_id", dev_id)
+                .field("eq_id", eq_id)
+                .finish(),
+            Resource::BnicQueue {
+                dev_id,
+                wq_type,
+                wq_obj,
+            } => f
+                .debug_struct("BnicQueue")
+                .field("dev_id", dev_id)
+                .field("wq_type", wq_type)
+                .field("wq_obj", wq_obj)
+                .finish(),
+        }
+    }
+}
+
+impl Debug for ResourceArena {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResourceArena")
+            .field("resources", &self.resources)
+            .finish()
+    }
 }
 
 impl ResourceArena {
