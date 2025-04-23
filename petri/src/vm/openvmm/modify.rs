@@ -99,22 +99,33 @@ impl PetriVmConfigOpenVmm {
         self.config.processor_topology.proc_count = vp_count;
         self.config.processor_topology.enable_smt = enable_smt;
         self.config.processor_topology.vps_per_socket = vps_per_socket;
-        #[cfg(guest_arch = "x86_64")]
-        {
-            self.config.processor_topology.arch.x2apic = match apic_mode {
-                None => hvlite_defs::config::X2ApicConfig::Auto,
-                Some(x) => match x {
-                    crate::ApicMode::Xapic => hvlite_defs::config::X2ApicConfig::Unsupported,
-                    crate::ApicMode::X2apicSupported => {
-                        hvlite_defs::config::X2ApicConfig::Supported
-                    }
-                    crate::ApicMode::X2apicEnabled => hvlite_defs::config::X2ApicConfig::Enabled,
-                },
-            };
-        }
-        #[cfg(not(guest_arch = "x86_64"))]
-        {
+        if cfg!(guest_arch = "x86_64") {
+            self.config.processor_topology.arch =
+                Some(hvlite_defs::config::ArchTopologyConfig::X86(
+                    hvlite_defs::config::X86TopologyConfig {
+                        x2apic: match apic_mode {
+                            None => hvlite_defs::config::X2ApicConfig::Auto,
+                            Some(x) => match x {
+                                crate::ApicMode::Xapic => {
+                                    hvlite_defs::config::X2ApicConfig::Unsupported
+                                }
+                                crate::ApicMode::X2apicSupported => {
+                                    hvlite_defs::config::X2ApicConfig::Supported
+                                }
+                                crate::ApicMode::X2apicEnabled => {
+                                    hvlite_defs::config::X2ApicConfig::Enabled
+                                }
+                            },
+                        },
+                        ..Default::default()
+                    },
+                ));
+        } else {
             assert!(apic_mode.is_none());
+            self.config.processor_topology.arch =
+                Some(hvlite_defs::config::ArchTopologyConfig::Aarch64(
+                    hvlite_defs::config::Aarch64TopologyConfig::default(),
+                ));
         }
         self
     }

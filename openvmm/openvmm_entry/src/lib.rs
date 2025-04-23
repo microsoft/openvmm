@@ -55,8 +55,10 @@ use gdma_resources::VportDefinition;
 use get_resources::ged::GuestServicingFlags;
 use guid::Guid;
 use hvlite_defs::config::Config;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_WITH_VTL2;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
@@ -1098,9 +1100,15 @@ fn vm_config_from_command_line(
             opt.igvm_vtl2_relocation_type,
             Vtl2BaseAddressType::Vtl2Allocate { .. },
         ) {
-        DEFAULT_MMIO_GAPS_WITH_VTL2.into()
+        if is_x86 {
+            DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into()
+        } else {
+            DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into()
+        }
+    } else if is_x86 {
+        DEFAULT_MMIO_GAPS_X86.into()
     } else {
-        DEFAULT_MMIO_GAPS.into()
+        DEFAULT_MMIO_GAPS_AARCH64.into()
     };
 
     if let Some(path) = &opt.openhcl_dump_path {
@@ -1110,15 +1118,18 @@ fn vm_config_from_command_line(
     }
 
     #[cfg(guest_arch = "aarch64")]
-    let topology_arch = hvlite_defs::config::Aarch64TopologyConfig {
-        // TODO: allow this to be configured from the command line
-        gic_config: None,
-    };
+    let topology_arch = hvlite_defs::config::ArchTopologyConfig::Aarch64(
+        hvlite_defs::config::Aarch64TopologyConfig {
+            // TODO: allow this to be configured from the command line
+            gic_config: None,
+        },
+    );
     #[cfg(guest_arch = "x86_64")]
-    let topology_arch = hvlite_defs::config::X86TopologyConfig {
-        apic_id_offset: opt.apic_id_offset,
-        x2apic: opt.x2apic,
-    };
+    let topology_arch =
+        hvlite_defs::config::ArchTopologyConfig::X86(hvlite_defs::config::X86TopologyConfig {
+            apic_id_offset: opt.apic_id_offset,
+            x2apic: opt.x2apic,
+        });
 
     let with_isolation = if let Some(isolation) = &opt.isolation {
         // TODO: For now, isolation is only supported with VTL2.
@@ -1293,7 +1304,7 @@ fn vm_config_from_command_line(
                 cli_args::SmtConfigCli::Force => Some(true),
                 cli_args::SmtConfigCli::Off => Some(false),
             },
-            arch: topology_arch,
+            arch: Some(topology_arch),
         },
         hypervisor: HypervisorConfig {
             with_hv,
