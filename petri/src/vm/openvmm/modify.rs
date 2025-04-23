@@ -99,14 +99,23 @@ impl PetriVmConfigOpenVmm {
         self.config.processor_topology.proc_count = vp_count;
         self.config.processor_topology.enable_smt = enable_smt;
         self.config.processor_topology.vps_per_socket = vps_per_socket;
-        self.config.processor_topology.arch.x2apic = match apic_mode {
-            None => hvlite_defs::config::X2ApicConfig::Auto,
-            Some(x) => match x {
-                crate::ApicMode::Xapic => hvlite_defs::config::X2ApicConfig::Unsupported,
-                crate::ApicMode::X2apicSupported => hvlite_defs::config::X2ApicConfig::Supported,
-                crate::ApicMode::X2apicEnabled => hvlite_defs::config::X2ApicConfig::Enabled,
-            },
-        };
+        #[cfg(guest_arch = "x86_64")]
+        {
+            self.config.processor_topology.arch.x2apic = match apic_mode {
+                None => hvlite_defs::config::X2ApicConfig::Auto,
+                Some(x) => match x {
+                    crate::ApicMode::Xapic => hvlite_defs::config::X2ApicConfig::Unsupported,
+                    crate::ApicMode::X2apicSupported => {
+                        hvlite_defs::config::X2ApicConfig::Supported
+                    }
+                    crate::ApicMode::X2apicEnabled => hvlite_defs::config::X2ApicConfig::Enabled,
+                },
+            };
+        }
+        #[cfg(not(guest_arch = "x86_64"))]
+        {
+            assert!(apic_mode.is_none());
+        }
         self
     }
 

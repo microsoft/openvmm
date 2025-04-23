@@ -5322,6 +5322,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "build_rs_guest_arch",
  "chipset_resources",
  "clap",
  "diag_client",
