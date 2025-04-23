@@ -1053,6 +1053,8 @@ impl UhPartitionInner {
         vp_index: VpIndex,
         vtl: GuestVtl,
     ) -> impl '_ + hv1_emulator::RequestInterrupt {
+        // TODO CVM: optimize for SNP with secure avic to avoid internal wake
+        // and for TDX to avoid trip to user mode
         move |vector, auto_eoi| {
             self.lapic(vtl).unwrap().synic_interrupt(
                 vp_index,
