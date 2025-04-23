@@ -409,9 +409,8 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
             .with_enable_extended_gva_ranges_flush_va_list(true)
             .with_access_guest_idle_msr(true)
             .with_access_vsm(self.access_vsm)
-            .with_isolation(true);
-        // TODO SNP
-        //     .with_fast_hypercall_output(true);
+            .with_isolation(true)
+            .with_fast_hypercall_output(true);
 
         let features = hv1_emulator::cpuid::SUPPORTED_FEATURES
             .with_privileges(privileges)
@@ -420,9 +419,8 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
             .with_extended_gva_ranges_for_flush_virtual_address_list_available(true)
             .with_guest_idle_available(true)
             .with_xmm_registers_for_fast_hypercall_available(true)
-            .with_register_pat_available(true);
-        // TODO SNP
-        //    .with_fast_hypercall_output_available(true);
+            .with_register_pat_available(true)
+            .with_fast_hypercall_output_available(true);
 
         let enlightenments = hvdef::HvEnlightenmentInformation::new()
             .with_deprecate_auto_eoi(true)
