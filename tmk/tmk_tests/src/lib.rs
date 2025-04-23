@@ -106,6 +106,7 @@ async fn openhcl_tmks(
         .arg("/cidata/simple_tmk")
         .arg("--hv")
         .arg("mshv-vtl")
+        .env("TMK_LOG", "trace")
         .stdout(petri::pipette::process::Stdio::piped())
         .stderr(petri::pipette::process::Stdio::piped())
         .spawn()
