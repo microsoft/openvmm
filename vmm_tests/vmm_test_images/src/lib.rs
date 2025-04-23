@@ -23,23 +23,25 @@ use petri_artifacts_vmm_test::tags::IsHostedOnHvliteAzureBlobStore;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[expect(missing_docs)] // Self-describing names
-pub enum KnownVhd {
-    Gen1WindowsDataCenterCore2022,
-    Gen2WindowsDataCenterCore2022,
-    Gen2WindowsDataCenterCore2025,
-    FreeBsd13_2,
-    Ubuntu2204Server,
-    Ubuntu2404ServerAarch64,
+pub enum KnownTestArtifacts {
+    Gen1WindowsDataCenterCore2022X64Vhd,
+    Gen2WindowsDataCenterCore2022X64Vhd,
+    Gen2WindowsDataCenterCore2025X64Vhd,
+    FreeBsd13_2X64Vhd,
+    FreeBsd13_2X64Iso,
+    Ubuntu2204ServerX64Vhd,
+    Ubuntu2404ServerAarch64Vhd,
+    VmgsWithBootEntry,
 }
 
-struct KnownVhdMeta {
-    variant: KnownVhd,
+struct KnownTestArtifactMeta {
+    variant: KnownTestArtifacts,
     filename: &'static str,
     size: u64,
 }
 
-impl KnownVhdMeta {
-    const fn new(variant: KnownVhd, filename: &'static str, size: u64) -> Self {
+impl KnownTestArtifactMeta {
+    const fn new(variant: KnownTestArtifacts, filename: &'static str, size: u64) -> Self {
         Self {
             variant,
             filename,
@@ -49,40 +51,50 @@ impl KnownVhdMeta {
 }
 
 // linear scan to find entries is OK, given how few entries there are
-const KNOWN_VHD_METADATA: &[KnownVhdMeta] = &[
-    KnownVhdMeta::new(
-        KnownVhd::Gen1WindowsDataCenterCore2022,
+const KNOWN_TEST_ARTIFACT_METADATA: &[KnownTestArtifactMeta] = &[
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::Gen1WindowsDataCenterCore2022X64Vhd,
         petri_artifacts_vmm_test::artifacts::test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64::FILENAME,
         petri_artifacts_vmm_test::artifacts::test_vhd::GEN1_WINDOWS_DATA_CENTER_CORE2022_X64::SIZE,
     ),
-    KnownVhdMeta::new(
-        KnownVhd::Gen2WindowsDataCenterCore2022,
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::Gen2WindowsDataCenterCore2022X64Vhd,
         petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::FILENAME,
         petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64::SIZE,
     ),
-    KnownVhdMeta::new(
-        KnownVhd::Gen2WindowsDataCenterCore2025,
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::Gen2WindowsDataCenterCore2025X64Vhd,
         petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::FILENAME,
         petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64::SIZE,
     ),
-    KnownVhdMeta::new(
-        KnownVhd::FreeBsd13_2,
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::FreeBsd13_2X64Vhd,
         petri_artifacts_vmm_test::artifacts::test_vhd::FREE_BSD_13_2_X64::FILENAME,
         petri_artifacts_vmm_test::artifacts::test_vhd::FREE_BSD_13_2_X64::SIZE,
     ),
-    KnownVhdMeta::new(
-        KnownVhd::Ubuntu2204Server,
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::FreeBsd13_2X64Iso,
+        petri_artifacts_vmm_test::artifacts::test_iso::FREE_BSD_13_2_X64::FILENAME,
+        petri_artifacts_vmm_test::artifacts::test_iso::FREE_BSD_13_2_X64::SIZE,
+    ),
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::Ubuntu2204ServerX64Vhd,
         petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2204_SERVER_X64::FILENAME,
         petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2204_SERVER_X64::SIZE,
     ),
-    KnownVhdMeta::new(
-        KnownVhd::Ubuntu2404ServerAarch64,
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::Ubuntu2404ServerAarch64Vhd,
         petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64::FILENAME,
         petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64::SIZE,
     ),
+    KnownTestArtifactMeta::new(
+        KnownTestArtifacts::VmgsWithBootEntry,
+        petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY::FILENAME,
+        petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY::SIZE,
+    ),
 ];
 
-impl KnownVhd {
+impl KnownTestArtifacts {
     /// Get the name of the image.
     pub fn name(self) -> String {
         format!("{:?}", self)
@@ -90,9 +102,9 @@ impl KnownVhd {
 
     /// Get the filename of the image.
     pub fn filename(self) -> &'static str {
-        KNOWN_VHD_METADATA
+        KNOWN_TEST_ARTIFACT_METADATA
             .iter()
-            .find(|KnownVhdMeta { variant, .. }| *variant == self)
+            .find(|KnownTestArtifactMeta { variant, .. }| *variant == self)
             .unwrap()
             .filename
     }
@@ -100,86 +112,18 @@ impl KnownVhd {
     /// Get the image from its filename.
     pub fn from_filename(filename: &str) -> Option<Self> {
         Some(
-            KNOWN_VHD_METADATA
+            KNOWN_TEST_ARTIFACT_METADATA
                 .iter()
-                .find(|KnownVhdMeta { filename: s, .. }| *s == filename)?
+                .find(|KnownTestArtifactMeta { filename: s, .. }| *s == filename)?
                 .variant,
         )
     }
 
     /// Get the expected file size of the image.
     pub fn file_size(self) -> u64 {
-        KNOWN_VHD_METADATA
+        KNOWN_TEST_ARTIFACT_METADATA
             .iter()
-            .find(|KnownVhdMeta { variant, .. }| *variant == self)
-            .unwrap()
-            .size
-    }
-}
-
-/// The ISOs currently stored in Azure Blob Storage.
-#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
-#[cfg_attr(feature = "clap", clap(rename_all = "verbatim"))]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[expect(missing_docs)] // Self-describing names
-pub enum KnownIso {
-    FreeBsd13_2,
-}
-
-struct KnownIsoMeta {
-    variant: KnownIso,
-    filename: &'static str,
-    size: u64,
-}
-
-impl KnownIsoMeta {
-    const fn new(variant: KnownIso, filename: &'static str, size: u64) -> Self {
-        Self {
-            variant,
-            filename,
-            size,
-        }
-    }
-}
-
-// linear scan to find entries is OK, given how few entries there are
-const KNOWN_ISO_METADATA: &[KnownIsoMeta] = &[KnownIsoMeta::new(
-    KnownIso::FreeBsd13_2,
-    petri_artifacts_vmm_test::artifacts::test_iso::FREE_BSD_13_2_X64::FILENAME,
-    petri_artifacts_vmm_test::artifacts::test_iso::FREE_BSD_13_2_X64::SIZE,
-)];
-
-impl KnownIso {
-    /// Get the name of the image.
-    pub fn name(self) -> String {
-        format!("{:?}", self)
-    }
-
-    /// Get the filename of the image.
-    pub fn filename(self) -> &'static str {
-        KNOWN_ISO_METADATA
-            .iter()
-            .find(|KnownIsoMeta { variant, .. }| *variant == self)
-            .unwrap()
-            .filename
-    }
-
-    /// Get the image from its filename.
-    pub fn from_filename(filename: &str) -> Option<Self> {
-        Some(
-            KNOWN_ISO_METADATA
-                .iter()
-                .find(|KnownIsoMeta { filename: s, .. }| *s == filename)?
-                .variant,
-        )
-    }
-
-    /// Get the expected file size of the image.
-    pub fn file_size(self) -> u64 {
-        KNOWN_ISO_METADATA
-            .iter()
-            .find(|KnownIsoMeta { variant, .. }| *variant == self)
+            .find(|KnownTestArtifactMeta { variant, .. }| *variant == self)
             .unwrap()
             .size
     }

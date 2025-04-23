@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use super::MnfUsage;
+use super::Notifier;
 use super::OfferError;
 use super::OfferParamsInternal;
 use super::OfferedInfo;
@@ -21,52 +22,6 @@ use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::monitor::MonitorId;
 
 impl super::Server {
-    /// Restores state.
-    ///
-    /// This may be called before or after channels have been offered. After
-    /// calling this routine, [`ServerWithNotifier::restore_channel`] should be
-    /// called for each channel to be restored, possibly interleaved with
-    /// additional calls to offer or revoke channels.
-    ///
-    /// Once all channels are in the appropriate state,
-    /// [`ServerWithNotifier::post_restore`] should be called. This will revoke
-    /// any channels that were in the saved state but were not restored via
-    /// `restore_channel`.
-    pub fn restore(&mut self, saved: SavedState) -> Result<(), RestoreError> {
-        tracing::trace!(?saved, "restoring channel state");
-
-        if let Some(saved) = saved.state {
-            self.state = saved.connection.restore()?;
-
-            for saved_channel in saved.channels {
-                self.restore_one_channel(saved_channel)?;
-            }
-
-            for saved_gpadl in saved.gpadls {
-                self.restore_one_gpadl(saved_gpadl)?;
-            }
-        } else if let Some(saved) = saved.disconnected_state {
-            self.state = super::ConnectionState::Disconnected;
-            for saved_channel in saved.reserved_channels {
-                self.restore_one_channel(saved_channel)?;
-            }
-
-            for saved_gpadl in saved.reserved_gpadls {
-                self.restore_one_gpadl(saved_gpadl)?;
-            }
-        }
-
-        self.pending_messages
-            .0
-            .reserve(saved.pending_messages.len());
-
-        for message in saved.pending_messages {
-            self.pending_messages.0.push_back(message.restore()?);
-        }
-
-        Ok(())
-    }
-
     fn restore_one_channel(&mut self, saved_channel: Channel) -> Result<(), RestoreError> {
         let (info, stub_offer, state) = saved_channel.restore()?;
         if let Some((offer_id, channel)) = self.channels.get_by_key_mut(&saved_channel.key) {
@@ -208,6 +163,88 @@ impl super::Server {
             .iter()
             .map(OutgoingMessage::save)
             .collect()
+    }
+}
+
+impl<'a, N: 'a + Notifier> super::ServerWithNotifier<'a, N> {
+    /// Restores state.
+    ///
+    /// This may be called before or after channels have been offered. After
+    /// calling this routine, [`super::ServerWithNotifier::restore_channel`] should be
+    /// called for each channel to be restored, possibly interleaved with
+    /// additional calls to offer or revoke channels.
+    ///
+    /// Once all channels are in the appropriate state,
+    /// [`super::ServerWithNotifier::revoke_unclaimed_channels`] should be called. This will revoke
+    /// any channels that were in the saved state but were not restored via
+    /// `restore_channel`.
+    pub fn restore(&mut self, saved: SavedState) -> Result<(), RestoreError> {
+        tracing::trace!(?saved, "restoring channel state");
+
+        if let Some(saved) = saved.state {
+            self.inner.state = saved.connection.restore()?;
+
+            // Restore server state, and resend server notifications if needed. If these notifications
+            // were processed before the save, it's harmless as the values will be the same.
+            let request = match self.inner.state {
+                super::ConnectionState::Connecting {
+                    info,
+                    next_action: _,
+                } => Some(super::ModifyConnectionRequest {
+                    version: Some(info.version.version as u32),
+                    interrupt_page: info.interrupt_page.into(),
+                    monitor_page: info.monitor_page.into(),
+                    target_message_vp: Some(info.target_message_vp),
+                    notify_relay: true,
+                }),
+                super::ConnectionState::Connected(info) => Some(super::ModifyConnectionRequest {
+                    version: None,
+                    monitor_page: info.monitor_page.into(),
+                    interrupt_page: info.interrupt_page.into(),
+                    target_message_vp: Some(info.target_message_vp),
+                    // If the save didn't happen while modifying, the relay doesn't need to be notified
+                    // of this info as it doesn't constitute a change, we're just restoring existing
+                    // connection state.
+                    notify_relay: info.modifying,
+                }),
+                // No action needed for these states; if disconnecting, check_disconnected will resend
+                // the reset request if needed.
+                super::ConnectionState::Disconnected
+                | super::ConnectionState::Disconnecting { .. } => None,
+            };
+
+            if let Some(request) = request {
+                self.notifier.modify_connection(request)?;
+            }
+
+            for saved_channel in saved.channels {
+                self.inner.restore_one_channel(saved_channel)?;
+            }
+
+            for saved_gpadl in saved.gpadls {
+                self.inner.restore_one_gpadl(saved_gpadl)?;
+            }
+        } else if let Some(saved) = saved.disconnected_state {
+            self.inner.state = super::ConnectionState::Disconnected;
+            for saved_channel in saved.reserved_channels {
+                self.inner.restore_one_channel(saved_channel)?;
+            }
+
+            for saved_gpadl in saved.reserved_gpadls {
+                self.inner.restore_one_gpadl(saved_gpadl)?;
+            }
+        }
+
+        self.inner
+            .pending_messages
+            .0
+            .reserve(saved.pending_messages.len());
+
+        for message in saved.pending_messages {
+            self.inner.pending_messages.0.push_back(message.restore()?);
+        }
+
+        Ok(())
     }
 }
 

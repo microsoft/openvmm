@@ -2041,7 +2041,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     /// intercept.
     #[must_use]
     pub(crate) fn cvm_try_protect_secure_register_write(
-        &mut self,
+        &self,
         vtl: GuestVtl,
         reg: HvX64RegisterName,
         value: u64,
@@ -2130,6 +2130,28 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             }
         }
         false
+    }
+
+    fn cvm_send_synthetic_cluster_ipi(
+        &mut self,
+        vtl: GuestVtl,
+        vector: u32,
+        processors: ProcessorSet<'_>,
+    ) -> HvResult<()> {
+        if vtl != GuestVtl::Vtl0 {
+            return Err(HvError::InvalidVtlState);
+        }
+
+        if !(16..=255).contains(&vector) {
+            return Err(HvError::InvalidParameter);
+        }
+
+        for vp_index in processors {
+            self.partition
+                .synic_interrupt(virt::VpIndex::new(vp_index), vtl)
+                .request_interrupt(vector, false)
+        }
+        Ok(())
     }
 
     fn get_vsm_vp_secure_config_vtl(
@@ -2268,5 +2290,49 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> TranslateGvaSupport for UhEmulationSt
 
     fn registers(&mut self) -> Result<TranslationRegisters, Self::Error> {
         Ok(self.vp.backing.translation_registers(self.vp, self.vtl))
+    }
+}
+
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SendSyntheticClusterIpi
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn send_synthetic_cluster_ipi(
+        &mut self,
+        target_vtl: Option<Vtl>,
+        vector: u32,
+        flags: u8,
+        processor_set: ProcessorSet<'_>,
+    ) -> HvResult<()> {
+        if flags != 0 {
+            return Err(HvError::InvalidParameter);
+        }
+
+        let target_vtl =
+            self.target_vtl_no_higher(target_vtl.unwrap_or_else(|| self.intercepted_vtl.into()))?;
+
+        self.vp
+            .cvm_send_synthetic_cluster_ipi(target_vtl, vector, processor_set)
+    }
+}
+
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SendSyntheticClusterIpiEx
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn send_synthetic_cluster_ipi_ex(
+        &mut self,
+        target_vtl: Option<Vtl>,
+        vector: u32,
+        flags: u8,
+        processor_set: ProcessorSet<'_>,
+    ) -> HvResult<()> {
+        if flags != 0 {
+            return Err(HvError::InvalidParameter);
+        }
+
+        let target_vtl =
+            self.target_vtl_no_higher(target_vtl.unwrap_or_else(|| self.intercepted_vtl.into()))?;
+
+        self.vp
+            .cvm_send_synthetic_cluster_ipi(target_vtl, vector, processor_set)
     }
 }

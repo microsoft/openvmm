@@ -797,7 +797,7 @@ mod tests {
 
             let node_builder = openhcl_builder
                 .start_node(&name)?
-                .add_str(p_device_type, "memory")?
+                .add_str(p_device_type, "memory-openhcl")?
                 .add_u64_list(p_reg, [range.range().start(), range.range().len()])?
                 .add_u32(p_openhcl_memory, range.vtl_usage().0)?;
 
@@ -822,7 +822,7 @@ mod tests {
 
             openhcl_builder = openhcl_builder
                 .start_node(&name)?
-                .add_str(p_device_type, "memory")?
+                .add_str(p_device_type, "memory-openhcl")?
                 .add_u64_list(p_reg, [range.start(), range.len()])?
                 .end_node()?;
         }

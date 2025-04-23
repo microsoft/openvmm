@@ -49,6 +49,8 @@ fn extended_state_enumeration_wrong_page() {
 
     let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
     }
     .build()
     .unwrap();
@@ -164,6 +166,8 @@ fn real_xfem() {
 
     let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
     }
     .build()
     .unwrap();
@@ -335,6 +339,8 @@ fn run_fake_xfem_test(
 
     let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
     }
     .build()
     .unwrap();
@@ -940,6 +946,8 @@ fn xfem_bounds() {
 
     let cpuid = CpuidResultsIsolationType::Snp {
         cpuid_pages: pages.as_slice().as_bytes(),
+        access_vsm: false,
+        vtom: 0x80000000,
     }
     .build()
     .unwrap();
@@ -1034,6 +1042,8 @@ fn xfem_missing_subleaf0() {
     assert!(matches!(
         CpuidResultsIsolationType::Snp {
             cpuid_pages: pages.as_slice().as_bytes(),
+            access_vsm: false,
+            vtom: 0x80000000,
         }
         .build(),
         Err(CpuidResultsError::MissingRequiredResult(
@@ -1082,6 +1092,8 @@ fn xfem_missing_subleaf1() {
     assert!(matches!(
         CpuidResultsIsolationType::Snp {
             cpuid_pages: pages.as_slice().as_bytes(),
+            access_vsm: false,
+            vtom: 0x80000000,
         }
         .build(),
         Err(CpuidResultsError::MissingRequiredResult(
@@ -1144,6 +1156,8 @@ fn xfem_missing_additional_subleaf() {
     assert!(matches!(
         CpuidResultsIsolationType::Snp {
             cpuid_pages: pages.as_slice().as_bytes(),
+            access_vsm: false,
+            vtom: 0x80000000,
         }
         .build(),
         Err(CpuidResultsError::MissingRequiredResult(

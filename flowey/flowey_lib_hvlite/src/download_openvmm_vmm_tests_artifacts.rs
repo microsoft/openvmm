@@ -1,15 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Download OpenVMM VMM test images from Azure Blob Storage.
+//! Download OpenVMM VMM test artifacts from Azure Blob Storage.
 //!
-//! If persistent storage is available, caches downloaded disk images locally.
+//! If persistent storage is available, caches downloaded artifacts locally.
 
 use flowey::node::prelude::*;
-use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use vmm_test_images::KnownIso;
-use vmm_test_images::KnownVhd;
+use vmm_test_images::KnownTestArtifacts;
 
 const STORAGE_ACCOUNT: &str = "hvlitetestvhds";
 const CONTAINER: &str = "vhds";
@@ -33,21 +31,9 @@ flowey_request! {
         /// Specify a custom cache directory. By default, VHDs are cloned
         /// into a job-local temp directory.
         CustomCacheDir(PathBuf),
-        /// Download a specific VHD to the download folder
-        DownloadVhd {
-            vhd: KnownVhd,
-            get_path: WriteVar<PathBuf>,
-        },
-        /// Download a specific ISO to the download folder
-        DownloadIso {
-            iso: KnownIso,
-            get_path: WriteVar<PathBuf>,
-        },
-        /// Download multiple VHDs into the download folder
-        DownloadVhds(Vec<KnownVhd>),
-        /// Download multiple VHDs into the download folder
-        DownloadIsos(Vec<KnownIso>),
-        /// Get path to folder containing all downloaded VHDs
+        /// Download test artifacts into the download folder
+        Download(Vec<KnownTestArtifacts>),
+        /// Get path to folder containing all downloaded artifacts
         GetDownloadFolder(WriteVar<PathBuf>),
     }
 }
@@ -65,8 +51,7 @@ impl FlowNode for Node {
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let mut skip_prompt = None;
         let mut custom_disk_policy = None;
-        let mut vhds = BTreeMap::<_, Vec<_>>::new();
-        let mut isos = BTreeMap::<_, Vec<_>>::new();
+        let mut test_artifacts = BTreeSet::<_>::new();
         let mut custom_cache_dir = None;
         let mut get_download_folder = Vec::new();
 
@@ -81,19 +66,8 @@ impl FlowNode for Node {
                 Request::CustomCacheDir(v) => {
                     same_across_all_reqs("CustomCacheDir", &mut custom_cache_dir, v)?
                 }
-                Request::DownloadVhd {
-                    vhd,
-                    get_path: path,
-                } => vhds.entry(vhd).or_default().push(path),
-                Request::DownloadIso {
-                    iso,
-                    get_path: path,
-                } => isos.entry(iso).or_default().push(path),
-                Request::DownloadVhds(v) => v.into_iter().for_each(|v| {
-                    vhds.entry(v).or_default();
-                }),
-                Request::DownloadIsos(v) => v.into_iter().for_each(|v| {
-                    isos.entry(v).or_default();
+                Request::Download(v) => v.into_iter().for_each(|v| {
+                    test_artifacts.insert(v);
                 }),
                 Request::GetDownloadFolder(path) => get_download_folder.push(path),
             }
@@ -117,8 +91,7 @@ impl FlowNode for Node {
 
         ctx.emit_rust_step("calculating required VMM tests disk images", |ctx| {
             let persistent_dir = persistent_dir.clone().claim(ctx);
-            let vhds = vhds.keys().cloned().collect::<Vec<_>>();
-            let isos = isos.keys().cloned().collect::<Vec<_>>();
+            let test_artifacts = test_artifacts.into_iter().collect::<Vec<_>>();
             let write_files_to_download = write_files_to_download.claim(ctx);
             let write_output_folder = write_output_folder.claim(ctx);
             move |rt| {
@@ -136,10 +109,8 @@ impl FlowNode for Node {
                 // Check for VHDs that have already been downloaded, to see if
                 // we can skip invoking azure-cli and `azcopy` entirely.
                 //
-                let mut skip_vhds = BTreeSet::new();
-                let mut skip_isos = BTreeSet::new();
-                let mut unexpected_vhds = BTreeSet::new();
-                let mut unexpected_isos = BTreeSet::new();
+                let mut skip_artifacts = BTreeSet::new();
+                let mut unexpected_artifacts = BTreeSet::new();
 
                 for e in fs_err::read_dir(&output_folder)? {
                     let e = e?;
@@ -151,7 +122,7 @@ impl FlowNode for Node {
                         continue;
                     };
 
-                    if let Some(vhd) = KnownVhd::from_filename(filename) {
+                    if let Some(vhd) = KnownTestArtifacts::from_filename(filename) {
                         let size = e.metadata()?.len();
                         let expected_size = vhd.file_size();
                         if size != expected_size {
@@ -161,30 +132,16 @@ impl FlowNode for Node {
                                 expected_size,
                                 size
                             );
-                            unexpected_vhds.insert(vhd);
+                            unexpected_artifacts.insert(vhd);
                         } else {
-                            skip_vhds.insert(vhd);
-                        }
-                    } else if let Some(iso) = KnownIso::from_filename(filename) {
-                        let size = e.metadata()?.len();
-                        let expected_size = iso.file_size();
-                        if size != expected_size {
-                            log::warn!(
-                                "unexpected size for {}: expected {}, found {}",
-                                filename,
-                                expected_size,
-                                size
-                            );
-                            unexpected_isos.insert(iso);
-                        } else {
-                            skip_isos.insert(iso);
+                            skip_artifacts.insert(vhd);
                         }
                     } else {
                         continue;
                     }
                 }
 
-                if !unexpected_vhds.is_empty() || !unexpected_isos.is_empty() {
+                if !unexpected_artifacts.is_empty() {
                     if custom_disk_policy.is_none() && matches!(rt.backend(), FlowBackend::Local) {
                         log::warn!(
                             r#"
@@ -206,10 +163,8 @@ Detected inconsistencies between expected and cached VMM test images.
 
                     match custom_disk_policy {
                         Some(CustomDiskPolicy::Loose) => {
-                            skip_vhds.extend(unexpected_vhds.iter().copied());
-                            skip_isos.extend(unexpected_isos.iter().copied());
-                            unexpected_vhds.clear();
-                            unexpected_isos.clear();
+                            skip_artifacts.extend(unexpected_artifacts.iter().copied());
+                            unexpected_artifacts.clear();
                         }
                         Some(CustomDiskPolicy::Strict) => {
                             log::warn!("detected inconsistent disks. will re-download them");
@@ -223,15 +178,11 @@ Detected inconsistencies between expected and cached VMM test images.
                 let files_to_download = {
                     let mut files = Vec::new();
 
-                    for vhd in vhds {
-                        if !skip_vhds.contains(&vhd) || unexpected_vhds.contains(&vhd) {
-                            files.push((vhd.filename().to_string(), vhd.file_size()));
-                        }
-                    }
-
-                    for iso in isos {
-                        if !skip_isos.contains(&iso) || unexpected_isos.contains(&iso) {
-                            files.push((iso.filename().to_string(), iso.file_size()));
+                    for artifact in test_artifacts {
+                        if !skip_artifacts.contains(&artifact)
+                            || unexpected_artifacts.contains(&artifact)
+                        {
+                            files.push((artifact.filename().to_string(), artifact.file_size()));
                         }
                     }
 
@@ -312,24 +263,12 @@ Otherwise, press `ctrl-c` to cancel the run.
 
         ctx.emit_minor_rust_step("report downloaded VMM test disk images", |ctx| {
             did_download.claim(ctx);
-            let vhds = vhds.claim(ctx);
-            let isos = isos.claim(ctx);
             let output_folder = output_folder.claim(ctx);
             let get_download_folder = get_download_folder.claim(ctx);
             |rt| {
                 let output_folder = rt.read(output_folder);
                 for path in get_download_folder {
                     rt.write(path, &output_folder)
-                }
-                for (vhd, paths) in vhds {
-                    for path in paths {
-                        rt.write(path, &output_folder.join(vhd.filename()))
-                    }
-                }
-                for (iso, paths) in isos {
-                    for path in paths {
-                        rt.write(path, &output_folder.join(iso.filename()))
-                    }
                 }
             }
         });

@@ -18,7 +18,7 @@ use std::process::Stdio;
 use std::str::FromStr;
 
 /// Hyper-V VM Generation
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum HyperVGeneration {
     /// Generation 1 (with emulated legacy devices and PCAT BIOS)
     One,
@@ -288,16 +288,24 @@ pub struct HyperVSetVMFirmwareArgs<'a> {
 
 /// Runs Set-VMFirmware with the given arguments.
 pub fn run_set_vm_firmware(args: HyperVSetVMFirmwareArgs<'_>) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
+    let mut builder = PowerShellBuilder::new()
         .cmdlet("Get-VM")
         .arg_string("Id", args.vmid)
-        .pipeline()
-        .cmdlet("Set-VMFirmware")
-        .arg_opt("SecureBootTemplate", args.secure_boot_template)
-        .finish()
-        .output(true)
-        .map(|_| ())
-        .context("set_vm_firmware")
+        .pipeline();
+
+    builder = match args.secure_boot_template {
+        Some(HyperVSecureBootTemplate::SecureBootDisabled) | None => builder
+            .cmdlet("Set-VMFirmware")
+            .arg("EnableSecureBoot", "Off")
+            .finish(),
+        Some(template) => builder
+            .cmdlet("Set-VMFirmware")
+            .arg("EnableSecureBoot", "On")
+            .arg("SecureBootTemplate", template)
+            .finish(),
+    };
+
+    builder.output(true).map(|_| ()).context("set_vm_firmware")
 }
 
 /// Runs Set-VMFirmware with the given arguments.
@@ -321,6 +329,27 @@ pub fn run_set_openhcl_firmware(
         .output(true)
         .map(|_| ())
         .context("set_openhcl_firmware")
+}
+
+/// Runs Set-VmCommandLine with the given arguments.
+pub fn run_set_vm_command_line(
+    vmid: &Guid,
+    ps_mod: &Path,
+    command_line: &str,
+) -> anyhow::Result<()> {
+    PowerShellBuilder::new()
+        .cmdlet("Import-Module")
+        .positional(ps_mod)
+        .next()
+        .cmdlet("Get-VM")
+        .arg_string("Id", vmid)
+        .pipeline()
+        .cmdlet("Set-VmCommandLine")
+        .arg("CommandLine", command_line)
+        .finish()
+        .output(true)
+        .map(|_| ())
+        .context("set_vm_command_line")
 }
 
 /// Sets the initial machine configuration for a VM
@@ -568,7 +597,7 @@ pub fn run_remove_vm_network_adapter(vmid: &Guid) -> anyhow::Result<()> {
         .finish()
         .output(true)
         .map(|_| ())
-        .context("remove_vm_network_adapter")
+        .context("remove_vm_network_adapters")
 }
 
 /// A PowerShell script builder

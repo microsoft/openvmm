@@ -181,6 +181,7 @@ virt_mshv_vtl = { path = "openhcl/virt_mshv_vtl" }
 tmk_core = { path = "tmk/tmk_core" }
 tmk_macros = { path = "tmk/tmk_macros" }
 tmk_protocol = { path = "tmk/tmk_protocol" }
+tmk_tests = { path = "tmk/tmk_tests" }
 
 aarch64defs = { path = "vm/aarch64/aarch64defs" }
 aarch64emu = { path = "vm/aarch64/aarch64emu" }
