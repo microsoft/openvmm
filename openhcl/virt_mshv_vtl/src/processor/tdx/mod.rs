@@ -403,6 +403,7 @@ pub struct TdxBacked {
     #[inspect(skip)]
     flush_page: user_driver::memory::MemoryBlock,
 
+    #[inspect(flatten)]
     cvm: UhCvmVpState,
 }
 

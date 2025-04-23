@@ -85,6 +85,7 @@ pub struct SnpBacked {
     hv_sint_notifications: u16,
     general_stats: VtlArray<GeneralStats, 2>,
     exit_stats: VtlArray<ExitStats, 2>,
+    #[inspect(flatten)]
     cvm: UhCvmVpState,
 }
 
