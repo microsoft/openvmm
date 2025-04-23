@@ -8,7 +8,29 @@ use pal_async::DefaultPool;
 use pal_async::task::Spawn as _;
 use petri::ResolvedArtifact;
 
-petri::test!(host_tmks, |resolver| {
+petri::test!(host_tmks, resolve_host_tmks);
+
+fn host_tmks(
+    params: petri::PetriTestParams<'_>,
+    artifacts: (ResolvedArtifact, ResolvedArtifact),
+) -> anyhow::Result<()> {
+    host_tmks_core(params, false, artifacts)
+}
+
+#[cfg(windows)] // only useful on virt_whp for now
+petri::test!(host_tmks_emulated_apic, resolve_host_tmks);
+
+#[cfg(windows)] // only useful on virt_whp for now
+fn host_tmks_emulated_apic(
+    params: petri::PetriTestParams<'_>,
+    artifacts: (ResolvedArtifact, ResolvedArtifact),
+) -> anyhow::Result<()> {
+    host_tmks_core(params, true, artifacts)
+}
+
+fn resolve_host_tmks(
+    resolver: &petri::ArtifactResolver<'_>,
+) -> (ResolvedArtifact, ResolvedArtifact) {
     let tmk_vmm = resolver
         .require(petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_NATIVE)
         .erase();
@@ -24,10 +46,11 @@ petri::test!(host_tmks, |resolver| {
         panic!("Unsupported guest architecture");
     };
     (tmk_vmm, tmk)
-});
+}
 
-fn host_tmks(
+fn host_tmks_core(
     params: petri::PetriTestParams<'_>,
+    disable_offloads: bool,
     (tmk_vmm, tmk): (ResolvedArtifact, ResolvedArtifact),
 ) -> anyhow::Result<()> {
     let (_, driver) = DefaultPool::spawn_on_thread("pool");
@@ -39,7 +62,12 @@ fn host_tmks(
         )
         .detach();
 
-    let output = std::process::Command::new(tmk_vmm)
+    let mut cmd = std::process::Command::new(tmk_vmm);
+    if disable_offloads {
+        cmd.arg("--disable-offloads");
+    }
+
+    let output = cmd
         .arg("--tmk")
         .arg(tmk)
         .stdout(stdout_write.into_inner())
