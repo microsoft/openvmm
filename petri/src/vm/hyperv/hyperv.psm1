@@ -100,6 +100,19 @@ function Set-VmSystemSettings {
     }
 }
 
+function Set-VmResourceSettings {
+    param(
+        [ValidateNotNullOrEmpty()]
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [Microsoft.Management.Infrastructure.CimInstance]$Rasd
+    )
+
+    $vmms = Get-Vmms
+    $vmms | Invoke-CimMethod -Name "ModifyResourceSettings" -Arguments @{
+        "ResourceSettings" = @($Rasd | ConvertTo-CimEmbeddedString)
+    }
+}
+
 function Set-OpenHCLFirmware
 {
     [CmdletBinding()]
@@ -141,6 +154,7 @@ function Set-VmCommandLine
         $Vm,
 
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string] $CommandLine
     )
 
@@ -162,3 +176,24 @@ function Get-VmCommandLine
     [System.Text.Encoding]::UTF8.GetString($vssd.FirmwareParameters)
 }
 
+function Set-VmScsiControllerTargetVtl
+{
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm,
+
+        [Parameter(Mandatory = $true)]
+        [int] $ControllerNumber,
+
+        [Parameter(Mandatory = $true)]
+        [int] $TargetVtl
+    )
+
+    $vssd = Get-Vssd $Vm
+    $rasds = $vssd | Get-CimAssociatedInstance -ResultClassName "Msvm_ResourceAllocationSettingData" | Where-Object { $_.ResourceSubType -eq "Microsoft:Hyper-V:Synthetic SCSI Controller" }
+    $rasd = $rasds[$ControllerNumber]
+    $rasd.TargetVtl = $TargetVtl
+    $rasd | Set-VmResourceSettings
+}

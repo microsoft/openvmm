@@ -15,6 +15,7 @@ mod start;
 
 pub use runtime::PetriVmOpenVmm;
 
+use super::ProcessorTopology;
 use crate::Firmware;
 use crate::PetriLogFile;
 use crate::PetriLogSource;
@@ -132,8 +133,39 @@ impl PetriVmConfig for PetriVmConfigOpenVmm {
         Box::new(Self::with_windows_secure_boot_template(*self))
     }
 
-    fn with_processors(self: Box<Self>, count: u32) -> Box<dyn PetriVmConfig> {
-        Box::new(Self::with_processors(*self, count))
+    fn with_processor_topology(
+        self: Box<Self>,
+        topology: ProcessorTopology,
+    ) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_processor_topology(*self, topology))
+    }
+
+    fn with_custom_openhcl(self: Box<Self>, artifact: ResolvedArtifact) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_custom_openhcl(*self, artifact))
+    }
+
+    fn with_openhcl_command_line(self: Box<Self>, command_line: &str) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_openhcl_command_line(*self, command_line))
+    }
+
+    fn with_agent_file(
+        self: Box<Self>,
+        name: &str,
+        artifact: ResolvedArtifact,
+    ) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_agent_file(*self, name, artifact))
+    }
+
+    fn with_openhcl_agent_file(
+        self: Box<Self>,
+        name: &str,
+        artifact: ResolvedArtifact,
+    ) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_openhcl_agent_file(*self, name, artifact))
+    }
+
+    fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_uefi_frontpage(*self, enable))
     }
 }
 

@@ -9,6 +9,7 @@ use hyperv_ic_resources::kvp::KvpRpc;
 use jiff::SignedDuration;
 use mesh::rpc::RpcSend;
 use petri::PetriVmConfig;
+use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::SIZE_1_GB;
 use petri::ShutdownKind;
@@ -255,7 +256,13 @@ async fn boot_no_agent(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
 )]
 async fn boot_no_agent_single_proc(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
-    let mut vm = config.with_processors(1).run_without_agent().await?;
+    let mut vm = config
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 1,
+            ..Default::default()
+        })
+        .run_without_agent()
+        .await?;
     vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);

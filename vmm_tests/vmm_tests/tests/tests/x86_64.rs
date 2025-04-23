@@ -8,6 +8,9 @@ mod openhcl_servicing;
 mod openhcl_uefi;
 
 use anyhow::Context;
+use petri::ApicMode;
+use petri::PetriVmConfig;
+use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::ShutdownKind;
 use petri::openvmm::PetriVmConfigOpenVmm;
@@ -16,6 +19,7 @@ use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
+use vmm_test_macros::vmm_test;
 
 /// Basic boot test with the VTL 0 alias map.
 // TODO: Remove once #73 is fixed.
@@ -223,22 +227,28 @@ async fn battery_capacity(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Er
 }
 
 fn configure_for_sidecar(
-    config: PetriVmConfigOpenVmm,
+    config: Box<dyn PetriVmConfig>,
     igvm: ResolvedArtifact<LATEST_STANDARD_DEV_KERNEL_X64>,
     proc_count: u32,
-) -> PetriVmConfigOpenVmm {
-    config.with_custom_openhcl(igvm).with_custom_config(|c| {
-        c.processor_topology.proc_count = proc_count;
-        // Sidecar will start one VP per socket. For this test, use just one
-        // socket.
-        c.processor_topology.vps_per_socket = Some(proc_count);
-        c.processor_topology.enable_smt = Some(false);
-        // Sidecar currently requires x2APIC.
-        #[cfg(guest_arch = "x86_64")]
-        {
-            c.processor_topology.arch.x2apic = hvlite_defs::config::X2ApicConfig::Supported;
-        }
-    })
+) -> Box<dyn PetriVmConfig> {
+    config
+        .with_custom_openhcl(igvm.erase())
+        .with_processor_topology({
+            ProcessorTopology {
+                vp_count: proc_count,
+                // Sidecar will start one VP per socket. For this test, use just one
+                // socket.
+                vps_per_socket: Some(proc_count),
+                enable_smt: Some(false),
+                // Sidecar currently requires x2APIC.
+                apic_mode: if cfg!(guest_arch = "x86_64") {
+                    Some(ApicMode::X2apicSupported)
+                } else {
+                    None
+                },
+                ..Default::default()
+            }
+        })
 }
 
 // Sidecar currently requires the dev kernel build.
@@ -247,9 +257,12 @@ fn configure_for_sidecar(
 // into VTL2 Linux.
 //
 // Sidecar isn't supported on aarch64 yet.
-#[openvmm_test(openhcl_uefi_x64(none) [LATEST_STANDARD_DEV_KERNEL_X64])]
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(none) [LATEST_STANDARD_DEV_KERNEL_X64],
+    // TODO: debug why boot is failing  hyperv_openhcl_uefi_x64(none) [LATEST_STANDARD_DEV_KERNEL_X64],
+)]
 async fn sidecar_aps_unused(
-    config: PetriVmConfigOpenVmm,
+    config: Box<dyn PetriVmConfig>,
     (igvm,): (ResolvedArtifact<LATEST_STANDARD_DEV_KERNEL_X64>,),
 ) -> Result<(), anyhow::Error> {
     let proc_count = 4;
@@ -281,9 +294,12 @@ async fn sidecar_aps_unused(
     Ok(())
 }
 
-#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)) [LATEST_STANDARD_DEV_KERNEL_X64])]
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)) [LATEST_STANDARD_DEV_KERNEL_X64],
+    // TODO: debug why boot is failing hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)) [LATEST_STANDARD_DEV_KERNEL_X64],
+)]
 async fn sidecar_boot(
-    config: PetriVmConfigOpenVmm,
+    config: Box<dyn PetriVmConfig>,
     (igvm,): (ResolvedArtifact<LATEST_STANDARD_DEV_KERNEL_X64>,),
 ) -> Result<(), anyhow::Error> {
     let (vm, agent) = configure_for_sidecar(config, igvm, 4).run().await?;

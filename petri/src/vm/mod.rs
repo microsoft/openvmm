@@ -36,8 +36,64 @@ pub trait PetriVmConfig: Send {
 
     /// Inject Windows secure boot templates into the VM's UEFI.
     fn with_windows_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig>;
-    /// Set the VM to use the specified number of virtual processors.
-    fn with_processors(self: Box<Self>, count: u32) -> Box<dyn PetriVmConfig>;
+    /// Set the VM to use the specified processor topology.
+    fn with_processor_topology(
+        self: Box<Self>,
+        topology: ProcessorTopology,
+    ) -> Box<dyn PetriVmConfig>;
+
+    /// Sets a custom OpenHCL IGVM file to use.
+    fn with_custom_openhcl(self: Box<Self>, artifact: ResolvedArtifact) -> Box<dyn PetriVmConfig>;
+    /// Sets the command line for the paravisor.
+    fn with_openhcl_command_line(self: Box<Self>, command_line: &str) -> Box<dyn PetriVmConfig>;
+    /// Adds a file to the VM's pipette agent image.
+    fn with_agent_file(
+        self: Box<Self>,
+        name: &str,
+        artifact: ResolvedArtifact,
+    ) -> Box<dyn PetriVmConfig>;
+    /// Adds a file to the paravisor's pipette agent image.
+    fn with_openhcl_agent_file(
+        self: Box<Self>,
+        name: &str,
+        artifact: ResolvedArtifact,
+    ) -> Box<dyn PetriVmConfig>;
+    /// Sets whether UEFI frontpage is enabled.
+    fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig>;
+}
+
+/// Common processor topology information for the VM.
+pub struct ProcessorTopology {
+    /// The number of virtual processors.
+    pub vp_count: u32,
+    /// Whether SMT (hyperthreading) is enabled.
+    pub enable_smt: Option<bool>,
+    /// The number of virtual processors per socket.
+    pub vps_per_socket: Option<u32>,
+    /// The APIC configuration (x86-64 only).
+    pub apic_mode: Option<ApicMode>,
+}
+
+impl Default for ProcessorTopology {
+    fn default() -> Self {
+        Self {
+            vp_count: 2,
+            enable_smt: None,
+            vps_per_socket: None,
+            apic_mode: None,
+        }
+    }
+}
+
+/// The APIC mode for the VM.
+#[derive(Debug, Clone, Copy)]
+pub enum ApicMode {
+    /// xAPIC mode only.
+    Xapic,
+    /// x2APIC mode supported but not enabled at boot.
+    X2apicSupported,
+    /// x2APIC mode enabled at boot.
+    X2apicEnabled,
 }
 
 /// A running VM that tests can interact with.
@@ -53,6 +109,10 @@ pub trait PetriVm: Send {
     /// Wait for a connection from a pipette agent running in the guest.
     /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
     async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient>;
+    /// Wait for a connection from a pipette agent running in VTL 2.
+    /// Useful if you've reset VTL 2 or are otherwise expecting a fresh connection.
+    /// Will fail if the VM is not running OpenHCL.
+    async fn wait_for_vtl2_agent(&mut self) -> anyhow::Result<PipetteClient>;
     /// Wait for VTL 2 to report that it is ready to respond to commands.
     /// Will fail if the VM is not running OpenHCL.
     ///
