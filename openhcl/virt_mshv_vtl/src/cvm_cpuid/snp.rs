@@ -454,17 +454,12 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
             .with_shared_gpa_boundary_active(true)
             .with_shared_gpa_boundary_bits(self.vtom.trailing_zeros() as u8);
 
-        let leaves = hv1_emulator::cpuid::make_hv_cpuid_leaves(features, enlightenments, MAX_CPUS);
-        let isolated_leaves =
+        let [l0, l1, l2] =
+            hv1_emulator::cpuid::make_hv_cpuid_leaves(features, enlightenments, MAX_CPUS);
+        let [l3, l4] =
             hv1_emulator::cpuid::make_isolated_hv_cpuid_leaves(hardware_features, isolation_config);
 
-        [
-            leaves[0],
-            leaves[1],
-            leaves[2],
-            isolated_leaves[0],
-            isolated_leaves[1],
-        ]
+        [l0, l1, l2, l3, l4]
     }
 }
 
