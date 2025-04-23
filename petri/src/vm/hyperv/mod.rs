@@ -369,7 +369,7 @@ impl PetriVmConfigHyperV {
                 vm.add_vhd(
                     &diff_disk_path,
                     Some(controller_location as u32),
-                    Some(controller_number as u32),
+                    Some(controller_number),
                 )?;
             }
         }
