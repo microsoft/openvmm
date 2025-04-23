@@ -688,7 +688,7 @@ impl PetriVmHyperV {
         let res = self
             .openhcl_diag()?
             .run_vtl2_command(
-                "/bin/sh",
+                "sh",
                 &[
                     "-c",
                     "mkdir /cidata && mount LABEL=cidata /cidata && sh -c '/cidata/pipette &'",

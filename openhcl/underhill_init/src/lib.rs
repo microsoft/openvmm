@@ -582,14 +582,6 @@ fn do_main() -> anyhow::Result<()> {
         }
     });
 
-    // Log the contents of /bin.
-    for entry in fs_err::read_dir("/bin")? {
-        let entry = entry?;
-        if let Some(name) = entry.file_name().to_str() {
-            log::info!("found binary: {}", name);
-        }
-    }
-
     run(&options, new_env)
 }
 

@@ -106,7 +106,6 @@ async fn openhcl_tmks(
         .arg("/cidata/simple_tmk")
         .arg("--hv")
         .arg("mshv-vtl")
-        .env("TMK_LOG", "trace")
         .stdout(petri::pipette::process::Stdio::piped())
         .stderr(petri::pipette::process::Stdio::piped())
         .spawn()
@@ -193,6 +192,7 @@ fn openvmm_openhcl_tmks(
 }
 
 #[cfg(windows)]
+#[cfg(target_arch = "x86_64")] // TODO: aarch64 currently hangs, fix
 mod hyperv {
     use crate::openhcl_tmks;
     use crate::resolve_paravisor_tmk_artifacts;
