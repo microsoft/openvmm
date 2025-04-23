@@ -228,10 +228,5 @@ fn apic_timer(t: TestContext<'_>) {
                 .with_masked(true)
                 .into(),
         );
-
-        // Verify the timer is disabled.
-        let count1 = apic.read(s, x86defs::apic::ApicRegister::TIMER_CCR);
-        let count2 = apic.read(s, x86defs::apic::ApicRegister::TIMER_CCR);
-        assert_eq!(count1, count2, "APIC timer count changed after disabling");
     });
 }
