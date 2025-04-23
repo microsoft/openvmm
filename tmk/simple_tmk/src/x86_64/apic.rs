@@ -75,8 +75,7 @@ impl ApicMode {
                 x86defs::apic::Svr::new()
                     .with_enable(true)
                     .with_vector(0xff),
-            )
-            .into(),
+            ),
         );
     }
 
@@ -84,6 +83,8 @@ impl ApicMode {
         match self {
             &ApicMode::XApic(base) => {
                 let p = (base + reg.0 as u32 * 0x10) as *const u32;
+                // SAFETY: this address is identity mapped and points to the
+                // APIC registers.
                 unsafe { p.read_volatile() }
             }
             ApicMode::X2Apic => s.read_msr(reg.x2apic_msr()).unwrap() as u32,
@@ -94,6 +95,8 @@ impl ApicMode {
         match self {
             &ApicMode::XApic(base) => {
                 let p = (base + reg.0 as u32 * 0x10) as *mut u32;
+                // SAFETY: this address is identity mapped and points to the
+                // APIC registers.
                 unsafe { p.write_volatile(value) }
             }
             ApicMode::X2Apic => s.write_msr(reg.x2apic_msr(), value.into()).unwrap(),
