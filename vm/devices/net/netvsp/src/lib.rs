@@ -4378,8 +4378,8 @@ impl<T: RingMem + 'static> Worker<T> {
                         }
                         Err(WorkerError::EndpointRequiresQueueRestart(err)) => {
                             tracelimit::warn_ratelimited!(
-                                "Endpoint requires queues to restart. err: {:?}",
-                                err
+                                err = %err,
+                                "Endpoint requires queues to restart",
                             );
                             if let Err(try_send_err) =
                                 self.coordinator_send.try_send(CoordinatorMessage::Restart)
