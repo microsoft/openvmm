@@ -327,7 +327,7 @@ pub enum GdtrOrIdtrInstruction {
 }
 
 impl GdtrOrIdtrInstruction {
-    pub const fn from_bits(value: u8) -> Self {
+    const fn from_bits(value: u8) -> Self {
         match value {
             0 => GdtrOrIdtrInstruction::Sgdt,
             1 => GdtrOrIdtrInstruction::Sidt,
@@ -337,7 +337,7 @@ impl GdtrOrIdtrInstruction {
         }
     }
 
-    pub const fn into_bits(self) -> u8 {
+    const fn into_bits(self) -> u8 {
         self as u8
     }
 
@@ -384,7 +384,7 @@ pub enum LdtrOrTrInstruction {
 }
 
 impl LdtrOrTrInstruction {
-    pub const fn from_bits(value: u8) -> Self {
+    const fn from_bits(value: u8) -> Self {
         match value {
             0 => LdtrOrTrInstruction::Sldt,
             1 => LdtrOrTrInstruction::Str,
@@ -394,7 +394,7 @@ impl LdtrOrTrInstruction {
         }
     }
 
-    pub const fn into_bits(self) -> u8 {
+    const fn into_bits(self) -> u8 {
         self as u8
     }
 
