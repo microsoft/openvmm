@@ -437,8 +437,9 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
             // Hyper-V MSRs to function. Enable it here always.
             .with_use_apic_msrs(true)
             .with_long_spin_wait_count(!0)
-            .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
-            .with_use_synthetic_cluster_ipi(true);
+            .with_use_hypercall_for_remote_flush_and_local_flush_entire(true);
+        // TODO SNP
+        //  .with_use_synthetic_cluster_ipi(true);
 
         let hardware_features = hvdef::HvHardwareFeatures::new()
             .with_apic_overlay_assist_in_use(true)
