@@ -118,7 +118,7 @@ impl OpenhclIgvmRecipe {
         // Debug builds include --interactive by default, for busybox, gdbserver, and perf.
         let with_interactive = matches!(profile, OpenvmmHclBuildProfile::Debug);
 
-        match self {
+        let mut a = match self {
             Self::LocalOnlyCustom(details) => details.clone(),
             Self::X64 => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -226,7 +226,15 @@ impl OpenhclIgvmRecipe {
                 with_interactive,
                 with_sidecar: false,
             },
+        };
+        // BUGBUG: remove--is this broken on aarch64?
+        if matches!(
+            a.target.as_triple().architecture,
+            target_lexicon::Architecture::Aarch64(_)
+        ) {
+            a.with_interactive = false;
         }
+        a
     }
 
     pub fn to_custom_mut(&mut self, profile: OpenvmmHclBuildProfile) {
