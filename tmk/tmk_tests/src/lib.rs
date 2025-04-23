@@ -192,7 +192,7 @@ fn openvmm_openhcl_tmks(
 }
 
 #[cfg(windows)]
-#[cfg(target_arch = "x86_64")] // TODO: aarch64 currently hangs, fix
+#[cfg(guest_arch = "x86_64")] // TODO: aarch64 currently hangs, fix
 mod hyperv {
     use crate::openhcl_tmks;
     use crate::resolve_paravisor_tmk_artifacts;
