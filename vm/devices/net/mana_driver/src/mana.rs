@@ -88,7 +88,7 @@ impl<T: DeviceBacking> ManaDevice<T> {
         device: T,
         num_vps: u32,
         max_queues_per_vport: u16,
-        mana_state: Option<ManaSavedState>,
+        mana_state: Option<ManaDeviceSavedState>,
         mana_keepalive: bool,
     ) -> anyhow::Result<Self> {
         let dma_client = device.dma_client();
@@ -110,15 +110,16 @@ impl<T: DeviceBacking> ManaDevice<T> {
             let dma_buffer = mem
                 .iter()
                 .find(|s| {
-                    mana_state.mana_device.gdma.mem.len == s.len()
-                        && mana_state.mana_device.gdma.mem.base_pfn == s.pfns()[0]
+                    mana_state.gdma.mem.len == s.len()
+                        && mana_state.gdma.mem.base_pfn == s.pfns()[0]
                 })
                 .expect("failed to find matching memory block")
                 .to_owned();
 
-            GdmaDriver::restore(mana_state.mana_device.gdma.clone(), device, dma_buffer).await?
+            GdmaDriver::restore(mana_state.gdma.clone(), device, dma_buffer).await?
         } else {
-            GdmaDriver::new(driver, device, num_vps, mana_keepalive).await?
+            let buffer = dma_client.allocate_dma_buffer(6 * PAGE_SIZE)?;
+            GdmaDriver::new(driver, device, num_vps, mana_keepalive, buffer).await?
         };
 
         gdma.test_eq().await?;
@@ -135,9 +136,9 @@ impl<T: DeviceBacking> ManaDevice<T> {
 
         let dev_data = if let Some(mana_state) = mana_state {
             GdmaRegisterDeviceResp {
-                pdid: mana_state.mana_device.gdma.pdid,
-                gpa_mkey: mana_state.mana_device.gdma.gpa_mkey,
-                db_id: mana_state.mana_device.gdma.db_id as u32,
+                pdid: mana_state.gdma.pdid,
+                gpa_mkey: mana_state.gdma.gpa_mkey,
+                db_id: mana_state.gdma.db_id as u32,
             }
         } else {
             gdma.register_device(dev_id).await?
@@ -293,15 +294,19 @@ impl<T: DeviceBacking> ManaDevice<T> {
     }
 
     /// Shuts the device down.
-    pub async fn shutdown(self) -> (anyhow::Result<()>, T) {
+    pub async fn shutdown(self, keepalive: bool) -> (anyhow::Result<()>, T) {
         self.inspect_task.cancel().await;
         if let Some(hwc_task) = self.hwc_task {
             hwc_task.cancel().await;
         }
         let inner = Arc::into_inner(self.inner).unwrap();
         let mut driver = inner.gdma.into_inner();
-        let result = driver.deregister_device(inner.dev_id).await;
-        (result, driver.into_device())
+        if !keepalive {
+            let result = driver.deregister_device(inner.dev_id).await;
+            (result, driver.into_device())
+        } else {
+            (Ok(()), driver.into_device())
+        }
     }
     /// Queries the configuration of a specific vport.
     pub async fn query_vport_config(&self, vport: u32) -> anyhow::Result<ManaQueryVportCfgResp> {

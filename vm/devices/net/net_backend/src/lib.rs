@@ -58,7 +58,7 @@ pub trait Endpoint: Send + Sync + InspectMut {
     /// Stops the endpoint.
     ///
     /// All queues returned via `get_queues` must have been dropped.
-    async fn stop(&mut self);
+    async fn stop(&mut self, keepalive: bool);
 
     /// Specifies whether packets are always completed in order.
     fn is_ordered(&self) -> bool {
@@ -518,8 +518,8 @@ impl Endpoint for DisconnectableEndpoint {
         self.current_mut().get_queues(config, rss, queues).await
     }
 
-    async fn stop(&mut self) {
-        self.current_mut().stop().await
+    async fn stop(&mut self, keepalive: bool) {
+        self.current_mut().stop(keepalive).await
     }
 
     fn is_ordered(&self) -> bool {

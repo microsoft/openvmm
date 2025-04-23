@@ -259,8 +259,8 @@ impl Endpoint for PacketCaptureEndpoint {
         Ok(())
     }
 
-    async fn stop(&mut self) {
-        self.current_mut().stop().await
+    async fn stop(&mut self, keepalive: bool) {
+        self.current_mut().stop(keepalive).await
     }
 
     fn is_ordered(&self) -> bool {

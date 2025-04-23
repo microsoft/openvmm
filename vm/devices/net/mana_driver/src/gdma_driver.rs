@@ -176,6 +176,8 @@ const RWQE_SIZE: u32 = 32;
 
 impl<T: DeviceBacking> Drop for GdmaDriver<T> {
     fn drop(&mut self) {
+        tracing::info!("dropping GdmaDriver");
+
         if self.hwc_failure {
             return;
         }
@@ -251,7 +253,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         mut device: T,
         num_vps: u32,
         keepalive: bool,
+        dma_buffer: MemoryBlock,
     ) -> anyhow::Result<Self> {
+        tracing::info!("new gdma driver");
+
         let bar0_mapping = device.map_bar(0)?;
         let bar0_len = bar0_mapping.len();
         if bar0_len < size_of::<RegMap>() {
@@ -300,12 +305,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 map.vf_gdma_sriov_shared_reg_start
             );
         }
-
-        let dma_client = device.dma_client();
-
-        let dma_buffer = dma_client
-            .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
-            .context("failed to allocate DMA buffer")?;
 
         let pages = dma_buffer.pfns();
 
@@ -563,6 +562,8 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         mut device: T,
         dma_buffer: MemoryBlock,
     ) -> anyhow::Result<Self> {
+        tracing::info!("restoring gdma driver");
+
         let bar0_mapping = device.map_bar(0)?;
         let bar0_len = bar0_mapping.len();
         if bar0_len < size_of::<RegMap>() {
@@ -1210,6 +1211,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 )
             })?;
         }
+
+        tracing::info!("test eq successful");
+
         Ok(())
     }
 
@@ -1254,11 +1258,13 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         &mut self,
         dev_id: GdmaDevId,
     ) -> anyhow::Result<GdmaRegisterDeviceResp> {
+        tracing::info!("registering device");
         self.request(GdmaRequestType::GDMA_REGISTER_DEVICE.0, dev_id, ())
             .await
     }
 
     pub async fn deregister_device(&mut self, dev_id: GdmaDevId) -> anyhow::Result<()> {
+        tracing::info!("deregistering device");
         self.hwc_timeout_in_ms = HWC_TIMEOUT_FOR_SHUTDOWN_IN_MS;
         self.request(GdmaRequestType::GDMA_DEREGISTER_DEVICE.0, dev_id, ())
             .await

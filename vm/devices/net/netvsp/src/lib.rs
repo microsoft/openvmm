@@ -1219,7 +1219,7 @@ impl VmbusDevice for Nic {
             }
 
             // Note that this await is not restartable.
-            self.coordinator.task_mut().endpoint.stop().await;
+            self.coordinator.task_mut().endpoint.stop(false).await;
 
             // Keep any VF's added to the guest. This is required to keep guest compat as
             // some apps (such as DPDK) relies on the VF sticking around even after vmbus
@@ -4097,7 +4097,7 @@ impl Coordinator {
             })
             .collect::<Vec<_>>();
 
-        c_state.endpoint.stop().await;
+        c_state.endpoint.stop(false).await;
 
         let (primary_worker, subworkers) = if let [primary, sub @ ..] = self.workers.as_mut_slice()
         {
@@ -4378,6 +4378,7 @@ impl<T: RingMem + 'static> Worker<T> {
                         stop.until_stopped(pending()).await?
                     };
 
+                    tracing::info!("starting queue");
                     let restart = self.channel.main_loop(stop, state, queue_state).await?;
 
                     assert_eq!(self.channel_idx, 0);
@@ -4655,6 +4656,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
         ready_state: &mut ReadyState,
         queue_state: &mut QueueState,
     ) -> Result<CoordinatorMessage, WorkerError> {
+        tracing::info!("starting NetChannel main_loop");
+
         let buffers = &ready_state.buffers;
         let state = &mut ready_state.state;
         let data = &mut ready_state.data;

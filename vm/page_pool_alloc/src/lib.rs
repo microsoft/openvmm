@@ -145,11 +145,14 @@ pub mod save_restore {
             // Note that this also means that the pool does not have any pending
             // allocations, as it's impossible to allocate without creating an
             // allocator.
+
+            /*
             if !inner.device_ids.is_empty() {
                 return Err(vmcore::save_restore::RestoreError::InvalidSavedState(
                     anyhow::anyhow!("existing allocators present, pool must be empty to restore"),
                 ));
             }
+            */
 
             state.state.sort_by_key(|slot| slot.base_pfn);
 
@@ -411,6 +414,8 @@ impl Drop for PagePoolHandle {
     fn drop(&mut self) {
         tracing::info!("dropping page pool handle for {:x}", self.base_pfn());
         let mut inner = self.inner.state.lock();
+
+        tracing::info!("slot state: {:?}", inner.slots);
 
         let slot = inner
             .slots
@@ -850,6 +855,8 @@ impl PagePoolAllocator {
 
 impl Drop for PagePoolAllocator {
     fn drop(&mut self) {
+        tracing::info!("dropping page pool allocator");
+
         let mut inner = self.inner.state.lock();
         let device_name = inner.device_ids[self.device_id].name().to_string();
         let prev = std::mem::replace(

@@ -349,7 +349,7 @@ impl BasicNic {
                     Tristate::FALSE if vport.task.is_running() => {
                         vport.task.stop().await;
                         vport.task.remove();
-                        vport.endpoint.stop().await;
+                        vport.endpoint.stop(false).await;
                     }
                     Tristate::TRUE if !vport.task.is_running() => {
                         if let (Some((sq_id, sq_cq_id)), Some((rq_id, rq_cq_id))) =

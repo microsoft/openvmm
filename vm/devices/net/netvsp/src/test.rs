@@ -243,7 +243,7 @@ impl net_backend::Endpoint for TestNicEndpoint {
         Ok(())
     }
 
-    async fn stop(&mut self) {
+    async fn stop(&mut self, _keepalive: bool) {
         let inner = self.inner.lock().await;
         if let Some(endpoint_state) = &inner.endpoint_state {
             let mut locked_data = endpoint_state.lock();

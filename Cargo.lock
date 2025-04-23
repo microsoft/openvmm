@@ -7665,6 +7665,7 @@ dependencies = [
  "pci_core",
  "tracing",
  "user_driver",
+ "vmcore",
 ]
 
 [[package]]

@@ -17,6 +17,7 @@ parking_lot.workspace = true
 pci_core.workspace = true
 tracing.workspace = true
 user_driver.workspace = true
+vmcore.workspace = true
 
 [lints]
 workspace = true

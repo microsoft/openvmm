@@ -59,7 +59,7 @@ impl Endpoint for LoopbackEndpoint {
         Ok(())
     }
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self, _keepalive: bool) {}
 
     fn is_ordered(&self) -> bool {
         true

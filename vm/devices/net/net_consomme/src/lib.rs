@@ -99,7 +99,7 @@ impl net_backend::Endpoint for ConsommeEndpoint {
         Ok(())
     }
 
-    async fn stop(&mut self) {
+    async fn stop(&mut self, _keepalive: bool) {
         assert!(self.consomme.lock().is_some());
     }
 

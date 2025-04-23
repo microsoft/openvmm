@@ -152,6 +152,8 @@ async fn try_create_mana_device(
             .context("failed to open device")?
     };
 
+    let mana_state = mana_state.map(|m| m.mana_device);
+
     ManaDevice::new(
         &driver_source.simple(),
         device,
@@ -317,7 +319,6 @@ impl HclNetworkVFManagerWorker {
                                 self.driver_source.simple(),
                                 vport,
                                 self.dma_mode,
-                                device.keepalive,
                                 saved_state
                                     .clone()
                                     .map(|state| state.endpoints[(*index) as usize].clone()),
@@ -450,7 +451,7 @@ impl HclNetworkVFManagerWorker {
             match control.disconnect().await {
                 Ok(Some(mut endpoint)) => {
                     tracing::info!("Network endpoint disconnected");
-                    endpoint.stop().await;
+                    endpoint.stop(false).await;
                 }
                 Ok(None) => (),
                 Err(err) => {
@@ -463,7 +464,7 @@ impl HclNetworkVFManagerWorker {
         }))
         .await;
         if let Some(device) = self.mana_device.take() {
-            let (result, device) = device.shutdown().await;
+            let (result, device) = device.shutdown(false).await;
             // Closing the VFIO device handle can take a long time. Leak the handle by
             // stashing it away.
             if keep_vf_alive {
@@ -736,10 +737,7 @@ impl HclNetworkVFManagerWorker {
 
                         let saved_endpoints = endpoints
                             .into_iter()
-                            .filter_map(|endpoint| match endpoint {
-                                Ok(endpoint) => Some(endpoint),
-                                _ => None,
-                            })
+                            .filter_map(|endpoint| endpoint.ok())
                             .collect::<Vec<_>>();
 
                         ManaSavedState {

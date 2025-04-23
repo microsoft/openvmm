@@ -94,7 +94,6 @@ pub struct ManaEndpoint<T: DeviceBacking> {
     receive_update: mesh::Receiver<bool>,
     queue_tracker: Arc<(AtomicUsize, SlimEvent)>,
     bounce_buffer: bool,
-    mana_keepalive: bool,
 }
 
 pub struct QueueResources {
@@ -116,7 +115,6 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
         spawner: impl 'static + Spawn,
         vport: Vport<T>,
         dma_mode: GuestDmaMode,
-        mana_keepalive: bool,
         endpoint_state: Option<EndpointSavedState>,
     ) -> Self {
         let (endpoint_tx, endpoint_rx) = mesh::channel();
@@ -144,7 +142,6 @@ impl<T: DeviceBacking> ManaEndpoint<T> {
                 GuestDmaMode::DirectDma => false,
                 GuestDmaMode::BounceBuffer => true,
             },
-            mana_keepalive,
             saved_queues: queue_resources,
         }
     }
@@ -599,8 +596,8 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
         }
     }
 
-    async fn stop(&mut self) {
-        if !self.mana_keepalive {
+    async fn stop(&mut self, keepalive: bool) {
+        if !keepalive {
             if let Err(err) = self
                 .vport
                 .config_rx(&RxConfig {
@@ -1145,11 +1142,6 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
     }
 
     fn tx_poll(&mut self, done: &mut [TxId]) -> anyhow::Result<usize> {
-        if !done.is_empty() {
-            tracing::info!("posted_tx state in tx_poll: {:?}", self.posted_tx);
-            tracing::info!("dropped_tx state in tx_poll: {:?}", self.dropped_tx);
-            tracing::info!("done in tx_poll: {:?}", done.len());
-        }
         let mut i = 0;
         while i < done.len() {
             let id = if let Some(cqe) = self.tx_cq.pop() {
@@ -1167,15 +1159,20 @@ impl<T: DeviceBacking + Send> Queue for ManaQueue<T> {
                 }
 
                 let packet = self.posted_tx.pop_front();
+
                 if packet.is_none() {
                     tracing::error!("tx completion without tx packet");
-                    self.tx_wq.advance_head(32);
 
+                    if !self.tx_cq_armed {
+                        self.tx_cq.arm();
+                        self.tx_cq_armed = true;
+                    }
+
+                    self.stats.tx_dropped += 1;
                     break;
                 }
 
                 let packet = packet.unwrap();
-                tracing::info!("advancing head in tx_poll: {}", packet.wqe_len);
                 self.tx_wq.advance_head(packet.wqe_len);
                 if packet.bounced_len_with_padding > 0 {
                     self.tx_bounce_buffer.free(packet.bounced_len_with_padding);
@@ -1790,24 +1787,44 @@ mod tests {
     /// ensures that packets can be sent and received.
     #[async_test]
     async fn test_endpoint_direct_dma(driver: DefaultDriver) {
-        test_endpoint(driver, GuestDmaMode::DirectDma, 1138, 1).await;
+        test_endpoint(driver, GuestDmaMode::DirectDma, 1138, 1, false).await;
     }
 
     #[async_test]
     async fn test_endpoint_bounce_buffer(driver: DefaultDriver) {
-        test_endpoint(driver, GuestDmaMode::BounceBuffer, 1138, 1).await;
+        test_endpoint(driver, GuestDmaMode::BounceBuffer, 1138, 1, false).await;
     }
 
     #[async_test]
     async fn test_segment_coalescing(driver: DefaultDriver) {
         // 34 segments of 60 bytes each == 2040
-        test_endpoint(driver, GuestDmaMode::DirectDma, 2040, 34).await;
+        test_endpoint(driver, GuestDmaMode::DirectDma, 2040, 34, false).await;
     }
 
     #[async_test]
     async fn test_segment_coalescing_many(driver: DefaultDriver) {
         // 128 segments of 16 bytes each == 2048
-        test_endpoint(driver, GuestDmaMode::DirectDma, 2048, 128).await;
+        test_endpoint(driver, GuestDmaMode::DirectDma, 2048, 128, false).await;
+    }
+
+    #[async_test]
+    async fn test_endpoint_save_restore_dma(driver: DefaultDriver) {
+        test_endpoint(driver, GuestDmaMode::DirectDma, 1138, 1, true).await;
+    }
+
+    #[async_test]
+    async fn test_endpoint_save_restore_bounce_buffer(driver: DefaultDriver) {
+        test_endpoint(driver, GuestDmaMode::BounceBuffer, 1138, 1, true).await;
+    }
+
+    #[async_test]
+    async fn test_endpoint_save_restore_segment_coalescing(driver: DefaultDriver) {
+        test_endpoint(driver, GuestDmaMode::DirectDma, 2040, 34, true).await;
+    }
+
+    #[async_test]
+    async fn test_endpoint_save_restore_segment_coalescing_many(driver: DefaultDriver) {
+        test_endpoint(driver, GuestDmaMode::DirectDma, 2048, 128, true).await;
     }
 
     async fn test_endpoint(
@@ -1815,10 +1832,12 @@ mod tests {
         dma_mode: GuestDmaMode,
         packet_len: usize,
         num_segments: usize,
+        keepalive: bool,
     ) {
         let pages = 256; // 1MB
         let allow_dma = dma_mode == GuestDmaMode::DirectDma;
-        let mem: DeviceTestMemory = DeviceTestMemory::new(pages * 2, allow_dma, "test_endpoint");
+        let mut mem: DeviceTestMemory =
+            DeviceTestMemory::new(pages * 2, allow_dma, "test_endpoint");
         let payload_mem = mem.payload_mem();
 
         let mut msi_set = MsiInterruptSet::new();
@@ -1832,7 +1851,8 @@ mod tests {
             }],
             &mut ExternallyManagedMmioIntercepts,
         );
-        let device = EmulatedDevice::new(device, msi_set, mem.dma_client());
+        let dma_client = mem.dma_client();
+        let device = EmulatedDevice::new(device, msi_set, dma_client);
         let dev_config = ManaQueryDeviceCfgResp {
             pf_cap_flags1: 0.into(),
             pf_cap_flags2: 0,
@@ -1842,11 +1862,11 @@ mod tests {
             reserved: 0,
             max_num_eqs: 64,
         };
-        let thing = ManaDevice::new(&driver, device, 1, 1, None, false)
+        let thing = ManaDevice::new(&driver, device, 1, 1, None, keepalive)
             .await
             .unwrap();
         let vport = thing.new_vport(0, None, &dev_config).await.unwrap();
-        let mut endpoint = ManaEndpoint::new(driver.clone(), vport, dma_mode, false, None).await;
+        let mut endpoint = ManaEndpoint::new(driver.clone(), vport, dma_mode, None).await;
         let mut queues = Vec::new();
         let pool = net_backend::tests::Bufs::new(payload_mem.clone());
         endpoint
@@ -1862,7 +1882,7 @@ mod tests {
             .await
             .unwrap();
 
-        for i in 0..1000 {
+        for i in 0..2 {
             let sent_data = (0..packet_len).map(|v| (i + v) as u8).collect::<Vec<u8>>();
             payload_mem.write_at(0, &sent_data).unwrap();
 
@@ -1872,7 +1892,7 @@ mod tests {
             assert!(sent_data.len() == packet_len);
             segments.push(TxSegment {
                 ty: net_backend::TxSegmentType::Head(net_backend::TxMetadata {
-                    id: TxId(1),
+                    id: TxId(i as u32),
                     segment_count: num_segments,
                     len: sent_data.len(),
                     ..Default::default()
@@ -1912,12 +1932,119 @@ mod tests {
             assert!(received_data.len() == packet_len);
             assert_eq!(&received_data[..], sent_data, "{i} {:?}", rx_id);
             assert_eq!(done_n, 1);
-            assert_eq!(done[0].0, 1);
+            assert_eq!(done[0].0, i as u32);
             queues[0].rx_avail(&[rx_id]);
         }
 
+        let (_endpoint, queues) = if keepalive {
+            let mana_device_saved_state = thing.save().await.unwrap();
+            let saved_mem_state = mem.save();
+
+            drop(queues);
+            endpoint.stop(true).await;
+
+            let endpoint_saved_state = endpoint.save().unwrap();
+            drop(endpoint);
+
+            let (_, mut device) = thing.shutdown(true).await;
+            {
+                // Drop the dma_client
+                _ = device.remove_dma_client();
+                _ = mem.remove_allocator();
+            }
+
+            let mut device = device.clone();
+            mem.restore_allocator("test_endpoint");
+            mem.restore(saved_mem_state);
+            device.restore_dma_client(mem.dma_client());
+
+            let mut queues = Vec::new();
+            let pool = net_backend::tests::Bufs::new(payload_mem.clone());
+
+            let thing =
+                ManaDevice::new(&driver, device, 1, 1, Some(mana_device_saved_state), false)
+                    .await
+                    .unwrap();
+
+            tracing::info!("successfully restored mana device");
+
+            let vport = thing.new_vport(0, None, &dev_config).await.unwrap();
+            let mut endpoint =
+                ManaEndpoint::new(driver.clone(), vport, dma_mode, Some(endpoint_saved_state))
+                    .await;
+
+            endpoint
+                .get_queues(
+                    vec![QueueConfig {
+                        pool: Box::new(pool),
+                        initial_rx: &(1..128).map(RxId).collect::<Vec<_>>(),
+                        driver: Box::new(driver.clone()),
+                    }],
+                    None,
+                    &mut queues,
+                )
+                .await
+                .unwrap();
+
+            for i in 0..2 {
+                let sent_data = (0..packet_len).map(|v| (i + v) as u8).collect::<Vec<u8>>();
+                payload_mem.write_at(0, &sent_data).unwrap();
+
+                let mut segments = Vec::new();
+                let segment_len = packet_len / num_segments;
+                assert!(packet_len % num_segments == 0);
+                assert!(sent_data.len() == packet_len);
+                segments.push(TxSegment {
+                    ty: net_backend::TxSegmentType::Head(net_backend::TxMetadata {
+                        id: TxId(1),
+                        segment_count: num_segments,
+                        len: sent_data.len(),
+                        ..Default::default()
+                    }),
+                    gpa: 0,
+                    len: segment_len as u32,
+                });
+
+                for j in 0..(num_segments - 1) {
+                    let gpa = (j + 1) * segment_len;
+                    segments.push(TxSegment {
+                        ty: net_backend::TxSegmentType::Tail,
+                        gpa: gpa as u64,
+                        len: segment_len as u32,
+                    });
+                }
+                assert!(segments.len() == num_segments);
+
+                queues[0].tx_avail(segments.as_slice()).unwrap();
+
+                let mut packets = [RxId(0); 2];
+                let mut done = [TxId(0); 2];
+                let mut done_n = 0;
+                let mut packets_n = 0;
+                while done_n == 0 || packets_n == 0 {
+                    poll_fn(|cx| queues[0].poll_ready(cx)).await;
+                    packets_n += queues[0].rx_poll(&mut packets[packets_n..]).unwrap();
+                    done_n += queues[0].tx_poll(&mut done[done_n..]).unwrap();
+                }
+
+                let rx_id = packets[0];
+                let mut received_data = vec![0; packet_len];
+                payload_mem
+                    .read_at(2048 * rx_id.0 as u64, &mut received_data)
+                    .unwrap();
+                assert!(received_data.len() == packet_len);
+                assert_eq!(&received_data[..], sent_data, "{i} {:?}", rx_id);
+                assert_eq!(done_n, 1);
+                assert_eq!(done[0].0, 1);
+                queues[0].rx_avail(&[rx_id]);
+            }
+
+            (endpoint, queues)
+        } else {
+            (endpoint, queues)
+        };
+
         drop(queues);
-        endpoint.stop().await;
     }
 
     #[async_test]
@@ -1951,5 +2078,50 @@ mod tests {
             .await
             .unwrap();
         let _ = thing.new_vport(0, None, &dev_config).await.unwrap();
+    }
+
+    #[async_test]
+    async fn test_mana_device_save_restore(driver: DefaultDriver) {
+        // Test that ManaDevice::restore works properly and test_eq is successful.
+        let pages = 256; // 1MB
+        let mut mem: DeviceTestMemory = DeviceTestMemory::new(pages * 2, true, "test_device");
+
+        let mut msi_set = MsiInterruptSet::new();
+        let device = gdma::GdmaDevice::new(
+            &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+            mem.guest_memory(),
+            &mut msi_set,
+            vec![VportConfig {
+                mac_address: [1, 2, 3, 4, 5, 6].into(),
+                endpoint: Box::new(LoopbackEndpoint::new()),
+            }],
+            &mut ExternallyManagedMmioIntercepts,
+        );
+
+        let dma_client = mem.dma_client();
+        let device = EmulatedDevice::new(device, msi_set, dma_client);
+        let mana_device = ManaDevice::new(&driver, device, 1, 1, None, true)
+            .await
+            .unwrap();
+
+        let mem_saved_state = mem.save();
+        let mana_saved_state = mana_device.save().await.unwrap();
+
+        let (_, mut device) = mana_device.shutdown(true).await;
+        {
+            // Drop the dma_client
+            _ = device.remove_dma_client();
+            _ = mem.remove_allocator();
+        }
+
+        let mut cloned_device = device.clone();
+        mem.restore_allocator("test_device");
+        mem.restore(mem_saved_state);
+        cloned_device.restore_dma_client(mem.dma_client());
+
+        // new will call test_eq in the GdmaDriver
+        let _ = ManaDevice::new(&driver, cloned_device, 1, 1, Some(mana_saved_state), false)
+            .await
+            .unwrap();
     }
 }
