@@ -335,10 +335,12 @@ impl PetriVmConfigHyperV {
                     super::ApicMode::X2apicSupported => powershell::HyperVApicMode::X2Apic,
                     super::ApicMode::X2apicEnabled => powershell::HyperVApicMode::X2Apic,
                 })
-                .or((self.arch == MachineArch::X86_64).then_some({
-                    // This is necessary for some tests to pass. TODO: fix.
-                    powershell::HyperVApicMode::X2Apic
-                }));
+                .or((self.arch == MachineArch::X86_64
+                    && self.generation == powershell::HyperVGeneration::Two)
+                    .then_some({
+                        // This is necessary for some tests to pass. TODO: fix.
+                        powershell::HyperVApicMode::X2Apic
+                    }));
             vm.set_processor(&powershell::HyperVSetVMProcessorArgs {
                 count: Some(vp_count),
                 apic_mode,
