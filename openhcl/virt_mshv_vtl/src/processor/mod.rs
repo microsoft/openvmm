@@ -24,6 +24,8 @@ cfg_if::cfg_if! {
         use virt_support_apic::LocalApic;
         use virt_support_x86emu::translate::TranslationRegisters;
         use virt::vp::AccessVpState;
+        use zerocopy::IntoBytes;
+        use hvdef::HvRegisterCrInterceptControl;
     } else if #[cfg(guest_arch = "aarch64")] {
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
@@ -39,6 +41,7 @@ use crate::ExitActivity;
 use crate::GuestVtl;
 use crate::WakeReason;
 use guestmem::GuestMemory;
+use hcl::ioctl::Hcl;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_hypercall::HvRepResult;
@@ -270,15 +273,97 @@ pub trait Backing: BackingPrivate {}
 
 impl<T: BackingPrivate> Backing for T {}
 
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 pub(crate) struct BackingSharedParams<'a> {
     pub cvm_state: Option<crate::UhCvmPartitionState>,
-    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     pub guest_memory: VtlArray<GuestMemory, 2>,
     #[cfg(guest_arch = "x86_64")]
     pub cpuid: &'a virt::CpuidLeafSet,
+    pub hcl: &'a Hcl,
     pub guest_vsm_available: bool,
-    /// Not all arches reference 'a.
-    pub _phantom: PhantomData<&'a ()>,
+}
+
+/// Supported intercept message types.
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+enum InterceptMessageType {
+    #[cfg(guest_arch = "x86_64")]
+    Register {
+        reg: HvX64RegisterName,
+        value: u64,
+    },
+    Msr {
+        msr: u32,
+    },
+}
+
+/// Per-arch state required to generate an intercept message.
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+struct InterceptMessageState {
+    instruction_length_and_cr8: u8,
+    cpl: u8,
+    efer_lma: bool,
+    cs_segment: hvdef::HvX64SegmentRegister,
+    rip: u64,
+    rflags: u64,
+    rax: u64,
+    rdx: u64,
+}
+
+impl InterceptMessageType {
+    #[cfg(guest_arch = "x86_64")]
+    fn generate_hv_message(
+        &self,
+        vp_index: VpIndex,
+        vtl: GuestVtl,
+        state: InterceptMessageState,
+    ) -> HvMessage {
+        let write_header = hvdef::HvX64InterceptMessageHeader {
+            vp_index: vp_index.index(),
+            instruction_length_and_cr8: state.instruction_length_and_cr8,
+            intercept_access_type: hvdef::HvInterceptAccessType::WRITE,
+            execution_state: hvdef::HvX64VpExecutionState::new()
+                .with_cpl(state.cpl)
+                .with_vtl(vtl.into())
+                .with_efer_lma(state.efer_lma),
+            cs_segment: state.cs_segment,
+            rip: state.rip,
+            rflags: state.rflags,
+        };
+        match self {
+            InterceptMessageType::Register { reg, value } => {
+                let intercept_message = hvdef::HvX64RegisterInterceptMessage {
+                    header: write_header,
+                    flags: hvdef::HvX64RegisterInterceptMessageFlags::new(),
+                    rsvd: 0,
+                    rsvd2: 0,
+                    register_name: *reg,
+                    access_info: hvdef::HvX64RegisterAccessInfo::new_source_value(
+                        hvdef::HvRegisterValue::from(*value),
+                    ),
+                };
+                HvMessage::new(
+                    hvdef::HvMessageType::HvMessageTypeRegisterIntercept,
+                    0,
+                    intercept_message.as_bytes(),
+                )
+            }
+            InterceptMessageType::Msr { msr } => {
+                let intercept_message = hvdef::HvX64MsrInterceptMessage {
+                    header: write_header,
+                    msr_number: *msr,
+                    rax: state.rax,
+                    rdx: state.rdx,
+                    reserved: 0,
+                };
+
+                HvMessage::new(
+                    hvdef::HvMessageType::HvMessageTypeMsrIntercept,
+                    0,
+                    intercept_message.as_bytes(),
+                )
+            }
+        }
+    }
 }
 
 /// Trait for processor backings that have hardware isolation support.
@@ -318,9 +403,21 @@ trait HardwareIsolatedBacking: Backing {
         vtl: GuestVtl,
         event: hvdef::HvX64PendingExceptionEvent,
     );
-    /// Individual register for CPUID, since AccessVpState::registers is
-    /// relatively slow on TDX.
-    fn cr4_for_cpuid(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
+
+    fn intercept_message_state(
+        this: &UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+    ) -> InterceptMessageState;
+
+    /// Individual register for CPUID and crx intercept handling, since
+    /// AccessVpState::registers is relatively slow on TDX.
+    fn cr0(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
+    fn cr4(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
+
+    fn cr_intercept_registration(
+        this: &mut UhProcessor<'_, Self>,
+        intercept_control: HvRegisterCrInterceptControl,
+    );
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -457,6 +554,8 @@ pub enum UhRunVpError {
     /// Handling an intercept on behalf of an invalid Lower VTL
     #[error("invalid intercepted vtl {0:?}")]
     InvalidInterceptedVtl(u8),
+    #[error("access to state blocked by another vtl")]
+    StateAccessDenied,
 }
 
 /// Underhill processor run error

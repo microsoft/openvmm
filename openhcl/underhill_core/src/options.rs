@@ -41,6 +41,12 @@ pub struct Options {
     ///  wait for a diagnostics start request before initializing and starting the VM
     pub wait_for_start: bool,
 
+    /// (OPENHCL_SIGNAL_VTL0_STARTED=1)
+    /// immediately signal that VTL0 has started, before doing any
+    /// initialization. This allows VM boot to proceed even if initialization
+    /// may hang (e.g., because you specified OPENHCL_WAIT_FOR_START=1).
+    pub signal_vtl0_started: bool,
+
     /// (OPENHCL_REFORMAT_VMGS=1 | --reformat-vmgs)
     /// reformat the VMGS file on boot. useful for running potentially destructive VMGS tests.
     pub reformat_vmgs: bool,
@@ -143,6 +149,11 @@ pub struct Options {
     /// Test configurations are designed to replicate specific behaviors and
     /// conditions in order to simulate various test scenarios.
     pub test_configuration: Option<TestScenarioConfig>,
+
+    /// (OPENHCL_DISABLE_UEFI_FRONTPAGE=1) Disable the frontpage in UEFI which
+    /// will result in UEFI terminating, shutting down the guest instead of
+    /// showing the frontpage.
+    pub disable_uefi_frontpage: bool,
 }
 
 impl Options {
@@ -242,6 +253,8 @@ impl Options {
                 })
                 .ok()
         });
+        let disable_uefi_frontpage = parse_env_bool("OPENHCL_DISABLE_UEFI_FRONTPAGE");
+        let signal_vtl0_started = parse_env_bool("OPENHCL_SIGNAL_VTL0_STARTED");
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -274,6 +287,7 @@ impl Options {
 
         Ok(Self {
             wait_for_start,
+            signal_vtl0_started,
             reformat_vmgs,
             pid,
             vmbus_max_version,
@@ -297,6 +311,7 @@ impl Options {
             nvme_keep_alive,
             mana_keep_alive,
             test_configuration,
+            disable_uefi_frontpage,
         })
     }
 

@@ -89,7 +89,21 @@ impl HyperVVM {
         tracing::info!(name, vmid = vmid.to_string(), "Created Hyper-V VM");
 
         // Remove the default network adapter
-        powershell::run_remove_vm_network_adapter(&vmid)?;
+        powershell::run_remove_vm_network_adapter(&vmid)
+            .context("remove default network adapter")?;
+
+        // TODO: Fix vm config so that we get more information at this layer
+        // what kind of VM it is. For now, if it's UEFI, assume that it's
+        // OpenHCL and set the default behavior to disable the UEFI frontpage,
+        // via OpenHCL cmdline, since Hyper-V doesn't support setting this
+        // option thru WMI.
+        if generation == powershell::HyperVGeneration::Two {
+            powershell::run_set_vm_command_line(
+                &vmid,
+                &ps_mod,
+                "OPENHCL_DISABLE_UEFI_FRONTPAGE=1",
+            )?;
+        }
 
         Ok(Self {
             name,
@@ -138,40 +152,39 @@ impl HyperVVM {
     /// verifies that it is the expected success value.
     pub async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()> {
         if let Some(expected_boot_event) = self.expected_boot_event {
-            let expected_id = match expected_boot_event {
-                FirmwareEvent::BootSuccess => powershell::EVENT_ID_BOOT_SUCCESS,
-                FirmwareEvent::BootFailed => powershell::EVENT_ID_BOOT_FAILURE,
-                FirmwareEvent::NoBootDevice => powershell::EVENT_ID_NO_BOOT_DEVICE,
-                FirmwareEvent::BootAttempt => powershell::EVENT_ID_BOOT_ATTEMPT,
-            };
-            let boot_timeout = 240.seconds();
-            let start = Timestamp::now();
-            loop {
-                let events = powershell::hyperv_boot_events(&self.vmid, &self.create_time)?;
-
-                if events.len() > 1 {
-                    anyhow::bail!("Got more than one boot event");
-                }
-                if let Some(event) = events.first() {
-                    if event.id == expected_id {
-                        break;
-                    } else {
-                        anyhow::bail!("VM boot failed ({}): {}", event.id, event.message)
-                    }
-                }
-
-                if boot_timeout.compare(Timestamp::now() - start)? == std::cmp::Ordering::Less {
-                    anyhow::bail!("VM boot timed out")
-                }
-                PolledTimer::new(&self.driver)
-                    .sleep(Duration::from_secs(1))
-                    .await;
-            }
+            self.wait_for(Self::boot_event, Some(expected_boot_event), 240.seconds())
+                .await
+                .context("wait_for_successful_boot_event")?;
         } else {
             tracing::warn!("Configured firmware does not emit a boot event, skipping");
         }
 
         Ok(())
+    }
+
+    /// Waits for an event emitted by the firmware about its boot status, and
+    /// returns that status.
+    pub async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent> {
+        self.wait_for_some(Self::boot_event, 240.seconds()).await
+    }
+
+    fn boot_event(&self) -> anyhow::Result<Option<FirmwareEvent>> {
+        let events = powershell::hyperv_boot_events(&self.vmid, &self.create_time)?;
+
+        if events.len() > 1 {
+            anyhow::bail!("Got more than one boot event");
+        }
+
+        events
+            .first()
+            .map(|e| match e.id {
+                powershell::EVENT_ID_BOOT_SUCCESS => Ok(FirmwareEvent::BootSuccess),
+                powershell::EVENT_ID_BOOT_FAILURE => Ok(FirmwareEvent::BootFailed),
+                powershell::EVENT_ID_NO_BOOT_DEVICE => Ok(FirmwareEvent::NoBootDevice),
+                powershell::EVENT_ID_BOOT_ATTEMPT => Ok(FirmwareEvent::BootAttempt),
+                id => anyhow::bail!("Unexpected event id: {id}"),
+            })
+            .transpose()
     }
 
     /// Set the VM processor count.
@@ -248,7 +261,7 @@ impl HyperVVM {
     pub async fn start(&self) -> anyhow::Result<()> {
         self.check_state(VmState::Off)?;
         hvc::hvc_start(&self.vmid)?;
-        self.wait_for_state(VmState::Running).await
+        Ok(())
     }
 
     /// Attempt to gracefully shut down the VM
@@ -256,7 +269,7 @@ impl HyperVVM {
         self.wait_for_shutdown_ic().await?;
         self.check_state(VmState::Running)?;
         hvc::hvc_stop(&self.vmid)?;
-        self.wait_for_state(VmState::Off).await
+        Ok(())
     }
 
     /// Attempt to gracefully restart the VM
@@ -264,7 +277,6 @@ impl HyperVVM {
         self.wait_for_shutdown_ic().await?;
         self.check_state(VmState::Running)?;
         hvc::hvc_restart(&self.vmid)?;
-        tracing::warn!("end state checking on restart not yet implemented for hyper-v vms");
         Ok(())
     }
 
@@ -334,6 +346,26 @@ impl HyperVVM {
         }
 
         Ok(())
+    }
+
+    async fn wait_for_some<T: std::fmt::Debug + PartialEq>(
+        &self,
+        f: fn(&Self) -> anyhow::Result<Option<T>>,
+        timeout: jiff::Span,
+    ) -> anyhow::Result<T> {
+        let start = Timestamp::now();
+        loop {
+            let state = f(self)?;
+            if let Some(state) = state {
+                return Ok(state);
+            }
+            if timeout.compare(Timestamp::now() - start)? == std::cmp::Ordering::Less {
+                anyhow::bail!("timed out waiting for Some");
+            }
+            PolledTimer::new(&self.driver)
+                .sleep(Duration::from_secs(1))
+                .await;
+        }
     }
 
     /// Remove the VM

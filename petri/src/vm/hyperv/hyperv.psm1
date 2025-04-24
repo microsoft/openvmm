@@ -87,6 +87,19 @@ function Set-InitialMachineConfiguration
     }
 }
 
+function Set-VmSystemSettings {
+    param(
+        [ValidateNotNullOrEmpty()]
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [Microsoft.Management.Infrastructure.CimInstance] $Vssd
+    )
+
+    $vmms = Get-Vmms
+    $vmms | Invoke-CimMethod -Name "ModifySystemSettings" -Arguments @{
+        "SystemSettings" = ($Vssd | ConvertTo-CimEmbeddedString)
+    }
+}
+
 function Set-OpenHCLFirmware
 {
     [CmdletBinding()]
@@ -104,7 +117,7 @@ function Set-OpenHCLFirmware
     $vssd = Get-Vssd $Vm
     # Enable OpenHCL by feature
     $vssd.GuestFeatureSet = 0x00000201
-    # Set the OpenHCL image file path 
+    # Set the OpenHCL image file path
     $vssd.FirmwareFile = $IgvmFile
 
     if ($IncreaseVtl2Memory) {
@@ -116,9 +129,36 @@ function Set-OpenHCLFirmware
         $vssd.Vtl2MmioAddressRangeSize = 512
     }
 
-    $vmms = Get-Vmms
-    $vmms | Invoke-CimMethod -Name "ModifySystemSettings" -Arguments @{
-        "SystemSettings" = ($vssd | ConvertTo-CimEmbeddedString)
-    }
+    Set-VmSystemSettings $vssd
+}
+
+function Set-VmCommandLine
+{
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm,
+
+        [Parameter(Mandatory = $true)]
+        [string] $CommandLine
+    )
+
+    $vssd = Get-Vssd $Vm
+    $vssd.FirmwareParameters = [System.Text.Encoding]::UTF8.GetBytes($CommandLine)
+    Set-VmSystemSettings $vssd
+}
+
+function Get-VmCommandLine
+{
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm
+    )
+
+    $vssd = Get-Vssd $Vm
+    [System.Text.Encoding]::UTF8.GetString($vssd.FirmwareParameters)
 }
 

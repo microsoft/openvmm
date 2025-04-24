@@ -85,7 +85,6 @@ use parking_lot::RwLock;
 use processor::BackingSharedParams;
 use processor::SidecarExitReason;
 use sidecar_client::NewSidecarClientError;
-use std::marker::PhantomData;
 use std::ops::RangeInclusive;
 use std::os::fd::AsRawFd;
 use std::sync::Arc;
@@ -350,6 +349,17 @@ struct GuestVsmVpState {
     /// next exit to VTL 0.
     #[inspect(with = "|x| x.as_ref().map(inspect::AsDebug)")]
     vtl0_exit_pending_event: Option<hvdef::HvX64PendingExceptionEvent>,
+    reg_intercept: SecureRegisterInterceptState,
+}
+
+#[cfg(guest_arch = "x86_64")]
+impl GuestVsmVpState {
+    fn new() -> Self {
+        GuestVsmVpState {
+            vtl0_exit_pending_event: None,
+            reg_intercept: Default::default(),
+        }
+    }
 }
 
 #[cfg(guest_arch = "x86_64")]
@@ -386,7 +396,10 @@ impl UhCvmVpState {
         let apic_base = virt::vp::Apic::at_reset(&inner.caps, vp_info).apic_base;
         let lapics = VtlArray::from_fn(|vtl| {
             let apic_set = &cvm_partition.lapic[vtl];
-            let mut lapic = apic_set.add_apic(vp_info);
+
+            // The APIC is software-enabled after reset for secure VTLs, to
+            // maintain compatibility with released versions of secure kernel
+            let mut lapic = apic_set.add_apic(vp_info, vtl == Vtl::Vtl1);
             // Initialize APIC base to match the reset VM state.
             lapic.set_apic_base(apic_base).unwrap();
             // Only the VTL 0 non-BSP LAPICs should be in the WaitForSipi state.
@@ -408,6 +421,19 @@ impl UhCvmVpState {
             vtl1: None,
         })
     }
+}
+
+#[cfg(guest_arch = "x86_64")]
+#[derive(Inspect, Default)]
+/// Configuration of VTL 1 registration for intercepts on certain registers
+pub struct SecureRegisterInterceptState {
+    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    intercept_control: hvdef::HvRegisterCrInterceptControl,
+    cr0_mask: u64,
+    cr4_mask: u64,
+    // Writes to X86X_IA32_MSR_MISC_ENABLE are dropped, so this is only used so
+    // that get_vp_register returns the correct value from a set_vp_register
+    ia32_misc_enable_mask: u64,
 }
 
 #[derive(Inspect)]
@@ -1027,6 +1053,8 @@ impl UhPartitionInner {
         vp_index: VpIndex,
         vtl: GuestVtl,
     ) -> impl '_ + hv1_emulator::RequestInterrupt {
+        // TODO CVM: optimize for SNP with secure avic to avoid internal wake
+        // and for TDX to avoid trip to user mode
         move |vector, auto_eoi| {
             self.lapic(vtl).unwrap().synic_interrupt(
                 vp_index,
@@ -1457,26 +1485,27 @@ impl<'a> UhProtoPartition<'a> {
 
         set_vtl2_vsm_partition_config(&hcl)?;
 
+        let guest_vsm_available = Self::check_guest_vsm_support(&hcl, &params)?;
+
         #[cfg(guest_arch = "x86_64")]
         let cpuid = match params.isolation {
             IsolationType::Snp => cvm_cpuid::CpuidResultsIsolationType::Snp {
                 cpuid_pages: params.cvm_cpuid_info.unwrap(),
+                vtom: params.vtom.unwrap(),
+                access_vsm: guest_vsm_available,
             }
             .build()
             .map_err(Error::CvmCpuid)?,
 
-            IsolationType::Tdx => cvm_cpuid::CpuidResultsIsolationType::Tdx
-                .build()
-                .map_err(Error::CvmCpuid)?,
+            IsolationType::Tdx => cvm_cpuid::CpuidResultsIsolationType::Tdx {
+                topology: params.topology,
+                vtom: params.vtom.unwrap(),
+                access_vsm: guest_vsm_available,
+            }
+            .build()
+            .map_err(Error::CvmCpuid)?,
             IsolationType::Vbs | IsolationType::None => Default::default(),
         };
-
-        let guest_vsm_available = Self::check_guest_vsm_support(
-            &hcl,
-            &params,
-            #[cfg(guest_arch = "x86_64")]
-            &cpuid,
-        )?;
 
         Ok(UhProtoPartition {
             hcl,
@@ -1640,12 +1669,6 @@ impl<'a> UhProtoPartition<'a> {
             cpuid,
             &late_params.cpuid,
             params.topology,
-            // Note: currently, guest_vsm_available can only set to true for
-            // hardware-isolated VMs. There aren't any other scenarios at the
-            // moment that will require underhill to expose vsm support through
-            // the cpuid results.
-            guest_vsm_available,
-            params.vtom,
             isolation,
             params.hide_isolation,
         );
@@ -1697,8 +1720,8 @@ impl<'a> UhProtoPartition<'a> {
                 guest_memory: late_params.gm.clone(),
                 #[cfg(guest_arch = "x86_64")]
                 cpuid: &cpuid,
+                hcl: &hcl,
                 guest_vsm_available,
-                _phantom: PhantomData,
             },
         )?;
 
@@ -1812,7 +1835,6 @@ impl UhProtoPartition<'_> {
     fn check_guest_vsm_support(
         hcl: &Hcl,
         params: &UhPartitionNewParams<'_>,
-        #[cfg(guest_arch = "x86_64")] cvm_cpuid: &virt::CpuidLeafSet,
     ) -> Result<bool, Error> {
         match params.isolation {
             IsolationType::None | IsolationType::Vbs => {}
@@ -1829,11 +1851,8 @@ impl UhProtoPartition<'_> {
                 }
                 // Require RMP Query
                 let rmp_query = x86defs::cpuid::ExtendedSevFeaturesEax::from(
-                    cvm_cpuid.result(
-                        x86defs::cpuid::CpuidFunction::ExtendedSevFeatures.0,
-                        0,
-                        &[0; 4],
-                    )[0],
+                    safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::ExtendedSevFeatures.0, 0)
+                        .eax,
                 )
                 .rmp_query();
 
@@ -1945,51 +1964,43 @@ impl UhPartition {
         cpuid: virt::CpuidLeafSet,
         initial_cpuid: &[CpuidLeaf],
         topology: &ProcessorTopology<vm_topology::processor::x86::X86Topology>,
-        access_vsm: bool,
-        vtom: Option<u64>,
         isolation: IsolationType,
         hide_isolation: bool,
     ) -> virt::CpuidLeafSet {
         let mut cpuid = cpuid.into_leaves();
         if isolation.is_hardware_isolated() {
             // Update the x2apic leaf based on the topology.
-            {
-                let x2apic = match topology.apic_mode() {
-                    vm_topology::processor::x86::ApicMode::XApic => false,
-                    vm_topology::processor::x86::ApicMode::X2ApicSupported => true,
-                    vm_topology::processor::x86::ApicMode::X2ApicEnabled => true,
-                };
-                let ecx = x86defs::cpuid::VersionAndFeaturesEcx::new().with_x2_apic(x2apic);
-                let ecx_mask = x86defs::cpuid::VersionAndFeaturesEcx::new().with_x2_apic(true);
-                cpuid.push(
-                    CpuidLeaf::new(
-                        x86defs::cpuid::CpuidFunction::VersionAndFeatures.0,
-                        [0, 0, ecx.into(), 0],
-                    )
-                    .masked([0, 0, ecx_mask.into(), 0]),
-                );
-            }
+            let x2apic = match topology.apic_mode() {
+                vm_topology::processor::x86::ApicMode::XApic => false,
+                vm_topology::processor::x86::ApicMode::X2ApicSupported => true,
+                vm_topology::processor::x86::ApicMode::X2ApicEnabled => true,
+            };
+            let ecx = x86defs::cpuid::VersionAndFeaturesEcx::new().with_x2_apic(x2apic);
+            let ecx_mask = x86defs::cpuid::VersionAndFeaturesEcx::new().with_x2_apic(true);
+            cpuid.push(
+                CpuidLeaf::new(
+                    x86defs::cpuid::CpuidFunction::VersionAndFeatures.0,
+                    [0, 0, ecx.into(), 0],
+                )
+                .masked([0, 0, ecx_mask.into(), 0]),
+            );
 
             // Get the hypervisor version from the host. This is just for
             // reporting purposes, so it is safe even if the hypervisor is not
             // trusted.
             let hv_version = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_VERSION, 0);
-            cpuid.extend(hv1_emulator::cpuid::hv_cpuid_leaves(
-                topology,
-                if hide_isolation {
-                    IsolationType::None
-                } else {
-                    isolation
-                },
-                access_vsm,
+
+            // Perform final processing steps for synthetic leaves.
+            hv1_emulator::cpuid::process_hv_cpuid_leaves(
+                &mut cpuid,
+                hide_isolation,
                 [
                     hv_version.eax,
                     hv_version.ebx,
                     hv_version.ecx,
                     hv_version.edx,
                 ],
-                vtom,
-            ));
+            );
         }
         cpuid.extend(initial_cpuid);
         virt::CpuidLeafSet::new(cpuid)

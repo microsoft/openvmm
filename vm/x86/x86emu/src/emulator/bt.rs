@@ -34,7 +34,7 @@ impl<T: Cpu> Emulator<'_, T> {
 
         let mut data = [0; 8];
         self.read_memory(
-            instr.memory_segment(),
+            instr.memory_segment().into(),
             address,
             AlignmentMode::Standard,
             &mut data[..op_size as usize],
@@ -50,7 +50,7 @@ impl<T: Cpu> Emulator<'_, T> {
             if instr.has_lock_prefix() {
                 if !self
                     .compare_and_write_memory(
-                        instr.memory_segment(),
+                        instr.memory_segment().into(),
                         address,
                         AlignmentMode::Standard,
                         &val.to_le_bytes()[..op_size as usize],
@@ -62,7 +62,7 @@ impl<T: Cpu> Emulator<'_, T> {
                 }
             } else {
                 self.write_memory(
-                    instr.memory_segment(),
+                    instr.memory_segment().into(),
                     address,
                     AlignmentMode::Standard,
                     &new_val.to_le_bytes()[..op_size as usize],

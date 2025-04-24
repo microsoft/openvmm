@@ -12,7 +12,7 @@ use zerocopy::TryFromBytes;
 
 /// Start input from the VMM to the TMK.
 #[repr(C)]
-#[derive(IntoBytes, Immutable)]
+#[derive(Debug, IntoBytes, Immutable)]
 pub struct StartInput {
     /// The address to write commands to.
     pub command: u64,

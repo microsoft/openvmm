@@ -36,6 +36,7 @@ pub struct UefiLoadSettings {
     pub vpci_boot: bool,
     pub serial: bool,
     pub uefi_console_mode: Option<UefiConsoleMode>,
+    pub default_boot_always_attempt: bool,
 }
 
 /// Loads the UEFI firmware.
@@ -111,7 +112,8 @@ pub fn load_uefi(
                 UefiConsoleMode::Com2 => config::ConsolePort::Com2,
                 UefiConsoleMode::None => config::ConsolePort::None,
             },
-        );
+        )
+        .with_default_boot_always_attempt(load_settings.default_boot_always_attempt);
 
     let mut cfg = config::Blob::new();
     cfg.add(&config::BiosInformation {

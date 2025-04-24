@@ -14,6 +14,8 @@ use std::collections::HashMap;
 use thiserror::Error;
 use virt::CpuidLeaf;
 use virt::CpuidLeafSet;
+use vm_topology::processor::ProcessorTopology;
+use vm_topology::processor::x86::X86Topology;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::snp::HvPspCpuidPage;
@@ -57,9 +59,6 @@ trait CpuidArchInitializer {
 
     /// Processes extended state enumeration subleaves 2+. result is a helper
     /// for retrieving the result of a given subleaf.
-    //
-    // (TODO TDX: This will be to populate them, will need to update the
-    // signature to pass CpuidResults as a mutable reference)
     fn process_extended_state_subleaves(
         &self,
         results: &mut CpuidSubtable,
@@ -84,12 +83,23 @@ trait CpuidArchInitializer {
 
     /// Whether TSC aux virtualization is supported
     fn supports_tsc_aux_virtualization(&self, results: &CpuidResults) -> bool;
+
+    /// Returns the synthetic hypervisor cpuid leafs for the architecture.
+    fn hv_cpuid_leaves(&self) -> [(CpuidFunction, CpuidResult); 5];
 }
 
 /// Initialization parameters per isolation type for parsing cpuid results
 pub enum CpuidResultsIsolationType<'a> {
-    Snp { cpuid_pages: &'a [u8] },
-    Tdx,
+    Snp {
+        cpuid_pages: &'a [u8],
+        access_vsm: bool,
+        vtom: u64,
+    },
+    Tdx {
+        topology: &'a ProcessorTopology<X86Topology>,
+        access_vsm: bool,
+        vtom: u64,
+    },
 }
 
 impl CpuidResultsIsolationType<'_> {
@@ -197,16 +207,24 @@ impl CpuidResults {
         let snp_init;
         let tdx_init;
         let arch_initializer = match params {
-            CpuidResultsIsolationType::Snp { cpuid_pages } => {
+            CpuidResultsIsolationType::Snp {
+                cpuid_pages,
+                access_vsm,
+                vtom,
+            } => {
                 assert!(
                     cpuid_pages.len() % size_of::<HvPspCpuidPage>() == 0 && !cpuid_pages.is_empty()
                 );
 
-                snp_init = SnpCpuidInitializer::new(cpuid_pages);
+                snp_init = SnpCpuidInitializer::new(cpuid_pages, access_vsm, vtom);
                 &snp_init as &dyn CpuidArchInitializer
             }
-            CpuidResultsIsolationType::Tdx => {
-                tdx_init = TdxCpuidInitializer {};
+            CpuidResultsIsolationType::Tdx {
+                topology,
+                access_vsm,
+                vtom,
+            } => {
+                tdx_init = TdxCpuidInitializer::new(topology, access_vsm, vtom);
                 &tdx_init as &dyn CpuidArchInitializer
             }
         };
@@ -289,6 +307,10 @@ impl CpuidResults {
             } else {
                 tracing::trace!("Filtering out leaf {:x} subleaf {:x}", leaf.0, subleaf);
             }
+        }
+
+        for (function, result) in arch_initializer.hv_cpuid_leaves() {
+            results.insert(function, CpuidEntry::Leaf(result));
         }
 
         let mut cached_results = Self {

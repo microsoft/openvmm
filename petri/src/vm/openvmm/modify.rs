@@ -8,6 +8,9 @@ use super::NIC_MAC_ADDRESS;
 use super::PetriVmConfigOpenVmm;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
+use disk_backend_resources::LayeredDiskHandle;
+use disk_backend_resources::layer::DiskLayerHandle;
+use disk_backend_resources::layer::RamDiskLayerHandle;
 use fs_err::File;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
@@ -16,8 +19,10 @@ use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
+use hvlite_helpers::disk::open_disk_type;
 use petri_artifacts_common::tags::IsOpenhclIgvm;
 use petri_artifacts_core::ResolvedArtifact;
+use std::path::Path;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
 use vm_resource::IntoResource;
@@ -233,6 +238,56 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Specifies whether the UEFI will always attempt a default boot
+    pub fn with_default_boot_always_attempt(mut self, val: bool) -> Self {
+        match self.config.load_mode {
+            LoadMode::Uefi {
+                ref mut default_boot_always_attempt,
+                ..
+            } => {
+                *default_boot_always_attempt = val;
+            }
+            LoadMode::Igvm { .. } => {
+                let ged = self.ged.as_mut().expect("no GED to configure DPS");
+                match ged.firmware {
+                    get_resources::ged::GuestFirmwareConfig::Uefi {
+                        ref mut default_boot_always_attempt,
+                        ..
+                    } => {
+                        *default_boot_always_attempt = val;
+                    }
+                    _ => {
+                        panic!("not a UEFI boot");
+                    }
+                }
+            }
+            _ => panic!("not a UEFI boot"),
+        }
+        self
+    }
+
+    /// Specifies an existing VMGS file to use
+    pub fn with_vmgs(mut self, vmgs_path: impl AsRef<Path>) -> Self {
+        let vmgs_disk = LayeredDiskHandle {
+            layers: vec![
+                RamDiskLayerHandle { len: None }.into_resource().into(),
+                DiskLayerHandle(
+                    open_disk_type(vmgs_path.as_ref(), true).expect("failed to open VMGS file"),
+                )
+                .into_resource()
+                .into(),
+            ],
+        }
+        .into_resource();
+
+        if self.firmware.is_openhcl() {
+            self.ged.as_mut().unwrap().vmgs_disk = Some(vmgs_disk);
+        } else {
+            self.config.vmgs_disk = Some(vmgs_disk);
+        }
+        self
+    }
+
     /// Add custom command line arguments to OpenHCL.
     pub fn with_openhcl_command_line(mut self, additional_cmdline: &str) -> Self {
         if !self.firmware.is_openhcl() {
@@ -297,6 +352,39 @@ impl PetriVmConfigOpenVmm {
     /// pattern.
     pub fn with_custom_config(mut self, f: impl FnOnce(&mut Config)) -> Self {
         f(&mut self.config);
+        self
+    }
+
+    /// Adds a file to the agent image.
+    pub fn with_agent_file(mut self, name: &str, artifact: ResolvedArtifact) -> Self {
+        self.resources.agent_image.add_file(name, artifact);
+        self
+    }
+
+    /// Adds a file to the OpenHCL agent image.
+    pub fn with_openhcl_agent_file(mut self, name: &str, artifact: ResolvedArtifact) -> Self {
+        self.resources
+            .openhcl_agent_image
+            .as_mut()
+            .unwrap()
+            .add_file(name, artifact);
+        self
+    }
+
+    /// Specifies whether VTL2 should be allowed to access VTL0 memory before it
+    /// sets any VTL protections.
+    ///
+    /// This is needed just for the TMK VMM, and only until it gains support for
+    /// setting VTL protections.
+    pub fn with_allow_early_vtl0_access(mut self, allow: bool) -> Self {
+        self.config
+            .hypervisor
+            .with_vtl2
+            .as_mut()
+            .unwrap()
+            .late_map_vtl0_memory =
+            (!allow).then_some(hvlite_defs::config::LateMapVtl0MemoryPolicy::InjectException);
+
         self
     }
 }

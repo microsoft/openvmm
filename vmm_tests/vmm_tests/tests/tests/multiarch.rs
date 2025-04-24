@@ -4,22 +4,31 @@
 //! Integration tests that run on more than one architecture.
 
 use anyhow::Context;
+use get_resources::ged::FirmwareEvent;
 use hyperv_ic_resources::kvp::KvpRpc;
 use jiff::SignedDuration;
 use mesh::rpc::RpcSend;
 use petri::PetriVmConfig;
+use petri::ResolvedArtifact;
 use petri::SIZE_1_GB;
 use petri::ShutdownKind;
 use petri::openvmm::NIC_MAC_ADDRESS;
 use petri::openvmm::PetriVmConfigOpenVmm;
+use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
 use std::time::Duration;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
 
 /// Boot through the UEFI firmware, it will shut itself down after booting.
-#[openvmm_test(uefi_x64(none), openhcl_uefi_x64(none), uefi_aarch64(none))]
-async fn frontpage(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+#[vmm_test(
+    openvmm_uefi_x64(none),
+    openvmm_openhcl_uefi_x64(none),
+    openvmm_uefi_aarch64(none),
+    hyperv_openhcl_uefi_aarch64(none),
+    hyperv_openhcl_uefi_x64(none)
+)]
+async fn frontpage(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
     vm.wait_for_successful_boot_event().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
@@ -364,6 +373,54 @@ async fn five_gb(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     );
 
     agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+
+    Ok(())
+}
+
+/// Verify that UEFI default boots even if invalid boot entries exist
+/// when `default_boot_always_attempt` is enabled.
+#[openvmm_test(
+    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY]
+)]
+async fn default_boot(
+    config: PetriVmConfigOpenVmm,
+    (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),
+) -> Result<(), anyhow::Error> {
+    let (vm, agent) = config
+        .with_vmgs(initial_vmgs)
+        .with_default_boot_always_attempt(true)
+        .run()
+        .await?;
+
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+
+    Ok(())
+}
+
+/// Verify that UEFI fails to boot if invalid boot entries exist
+///
+/// This test exists to ensure we are not getting a false positive for
+/// the `default_boot` test above.
+#[openvmm_test(
+    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))[VMGS_WITH_BOOT_ENTRY],
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))[VMGS_WITH_BOOT_ENTRY]
+)]
+async fn no_default_boot(
+    config: PetriVmConfigOpenVmm,
+    (initial_vmgs,): (ResolvedArtifact<VMGS_WITH_BOOT_ENTRY>,),
+) -> Result<(), anyhow::Error> {
+    let mut vm = config.with_vmgs(initial_vmgs).run_without_agent().await?;
+
+    assert_eq!(vm.wait_for_boot_event().await?, FirmwareEvent::BootFailed);
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
 
     Ok(())

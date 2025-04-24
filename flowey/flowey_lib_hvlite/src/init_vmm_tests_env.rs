@@ -40,6 +40,12 @@ flowey_request! {
                 )>,
             >,
         >,
+        /// Register TMK VMM binaries.
+        pub register_tmks: Option<ReadVar<crate::build_tmks::TmksOutput>>,
+        /// Register a TMK VMM native binary
+        pub register_tmk_vmm: Option<ReadVar<crate::build_tmk_vmm::TmkVmmOutput>>,
+        /// Register a TMK VMM Linux musl binary
+        pub register_tmk_vmm_linux_musl: Option<ReadVar<crate::build_tmk_vmm::TmkVmmOutput>>,
 
         /// Get the path to the folder containing various logs emitted VMM tests.
         pub get_test_log_path: Option<WriteVar<PathBuf>>,
@@ -66,6 +72,9 @@ impl SimpleFlowNode for Node {
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,
+            register_tmks,
+            register_tmk_vmm,
+            register_tmk_vmm_linux_musl,
             disk_images_dir,
             register_openhcl_igvm_files,
             get_test_log_path,
@@ -95,6 +104,9 @@ impl SimpleFlowNode for Node {
             let pipette_win = register_pipette_windows.claim(ctx);
             let pipette_linux = register_pipette_linux_musl.claim(ctx);
             let guest_test_uefi = register_guest_test_uefi.claim(ctx);
+            let tmks = register_tmks.claim(ctx);
+            let tmk_vmm = register_tmk_vmm.claim(ctx);
+            let tmk_vmm_linux_musl = register_tmk_vmm_linux_musl.claim(ctx);
             let disk_image_dir = disk_images_dir.claim(ctx);
             let openhcl_igvm_files = register_openhcl_igvm_files.claim(ctx);
             let test_linux_initrd = test_linux_initrd.claim(ctx);
@@ -203,6 +215,45 @@ impl SimpleFlowNode for Node {
                         img,
                     } = rt.read(guest_test_uefi);
                     fs_err::copy(img, test_content_dir.join("guest_test_uefi.img"))?;
+                }
+
+                if let Some(tmks) = tmks {
+                    let crate::build_tmks::TmksOutput { bin, dbg: _ } = rt.read(tmks);
+                    fs_err::copy(bin, test_content_dir.join("simple_tmk"))?;
+                }
+
+                if let Some(tmk_vmm) = tmk_vmm {
+                    match rt.read(tmk_vmm) {
+                        crate::build_tmk_vmm::TmkVmmOutput::WindowsBin { exe, .. } => {
+                            fs_err::copy(exe, test_content_dir.join("tmk_vmm.exe"))?;
+                        }
+                        crate::build_tmk_vmm::TmkVmmOutput::LinuxBin { bin, .. } => {
+                            let dst = test_content_dir.join("tmk_vmm");
+                            fs_err::copy(bin, &dst)?;
+                            // make sure tmk_vmm is executable
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::PermissionsExt;
+                                let old_mode = dst.metadata()?.permissions().mode();
+                                fs_err::set_permissions(
+                                    dst,
+                                    std::fs::Permissions::from_mode(old_mode | 0o111),
+                                )?;
+                            }
+                        }
+                    }
+                }
+
+                if let Some(tmk_vmm_linux_musl) = tmk_vmm_linux_musl {
+                    let crate::build_tmk_vmm::TmkVmmOutput::LinuxBin { bin, dbg: _ } =
+                        rt.read(tmk_vmm_linux_musl)
+                    else {
+                        anyhow::bail!("invalid tmk_vmm output")
+                    };
+                    // Note that this overwrites the previous tmk_vmm. That's
+                    // OK, they should be the same. Fix this when the resolver
+                    // can handle multiple different outputs with the same name.
+                    fs_err::copy(bin, test_content_dir.join("tmk_vmm"))?;
                 }
 
                 if let Some(openhcl_igvm_files) = openhcl_igvm_files {

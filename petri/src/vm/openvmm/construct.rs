@@ -569,6 +569,7 @@ impl PetriVmConfigSetupCore<'_> {
                     enable_serial: true,
                     enable_vpci_boot: false,
                     uefi_console_mode: Some(hvlite_defs::config::UefiConsoleMode::Com1),
+                    default_boot_always_attempt: false,
                 }
             }
             (
@@ -692,9 +693,12 @@ impl PetriVmConfigSetupCore<'_> {
                                 disk: LayeredDiskHandle {
                                     layers: vec![
                                         RamDiskLayerHandle { len: None }.into_resource().into(),
-                                        DiskLayerHandle(open_disk_type(disk_path.as_ref(), true)?)
-                                            .into_resource()
-                                            .into(),
+                                        DiskLayerHandle(open_disk_type(
+                                            disk_path.expect("not uefi guest none").as_ref(),
+                                            true,
+                                        )?)
+                                        .into_resource()
+                                        .into(),
                                     ],
                                 }
                                 .into_resource(),
@@ -724,9 +728,12 @@ impl PetriVmConfigSetupCore<'_> {
                             disk: LayeredDiskHandle {
                                 layers: vec![
                                     RamDiskLayerHandle { len: None }.into_resource().into(),
-                                    DiskLayerHandle(open_disk_type(disk_path.as_ref(), true)?)
-                                        .into_resource()
-                                        .into(),
+                                    DiskLayerHandle(open_disk_type(
+                                        disk_path.expect("not uefi guest none").as_ref(),
+                                        true,
+                                    )?)
+                                    .into_resource()
+                                    .into(),
                                 ],
                             }
                             .into_resource(),
@@ -822,6 +829,7 @@ impl PetriVmConfigSetupCore<'_> {
                 disable_frontpage: true,
                 enable_vpci_boot: false,
                 console_mode: get_resources::ged::UefiConsoleMode::COM1,
+                default_boot_always_attempt: false,
             },
             com1: true,
             com2: true,

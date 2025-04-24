@@ -68,8 +68,10 @@ use virt::x86::SegmentRegister;
 use virt::x86::TableRegister;
 use virt_support_apic::ApicClient;
 use virt_support_apic::OffloadNotSupported;
+use virt_support_x86emu::emulate::EmulatedMemoryOperation;
 use virt_support_x86emu::emulate::EmulatorSupport as X86EmulatorSupport;
 use virt_support_x86emu::emulate::TranslateMode;
+use virt_support_x86emu::emulate::emulate_insn_memory_op;
 use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
@@ -80,6 +82,7 @@ use x86defs::X64_CR0_NE;
 use x86defs::X64_CR0_PE;
 use x86defs::X64_CR0_PG;
 use x86defs::X64_CR4_MCE;
+use x86defs::X64_CR4_UMIP;
 use x86defs::X64_CR4_VMXE;
 use x86defs::X64_EFER_FFXSR;
 use x86defs::X64_EFER_LMA;
@@ -100,6 +103,8 @@ use x86defs::vmx::CR_ACCESS_TYPE_LMSW;
 use x86defs::vmx::CR_ACCESS_TYPE_MOV_TO_CR;
 use x86defs::vmx::CrAccessQualification;
 use x86defs::vmx::ExitQualificationIo;
+use x86defs::vmx::GdtrOrIdtrInstruction;
+use x86defs::vmx::GdtrOrIdtrInstructionInfo;
 use x86defs::vmx::INTERRUPT_TYPE_EXTERNAL;
 use x86defs::vmx::INTERRUPT_TYPE_HARDWARE_EXCEPTION;
 use x86defs::vmx::INTERRUPT_TYPE_NMI;
@@ -108,6 +113,8 @@ use x86defs::vmx::IO_SIZE_16_BIT;
 use x86defs::vmx::IO_SIZE_32_BIT;
 use x86defs::vmx::Interruptibility;
 use x86defs::vmx::InterruptionInformation;
+use x86defs::vmx::LdtrOrTrInstruction;
+use x86defs::vmx::LdtrOrTrInstructionInfo;
 use x86defs::vmx::ProcessorControls;
 use x86defs::vmx::SecondaryProcessorControls;
 use x86defs::vmx::VMX_ENTRY_CONTROL_LONG_MODE_GUEST;
@@ -218,7 +225,7 @@ impl ShadowedRegister {
                     | x86defs::X64_CR4_PCE
                     | x86defs::X64_CR4_FXSR
                     | x86defs::X64_CR4_XMMEXCPT
-                    | x86defs::X64_CR4_UMIP
+                    | X64_CR4_UMIP
                     | x86defs::X64_CR4_LA57
                     | x86defs::X64_CR4_RWFSGS
                     | x86defs::X64_CR4_PCIDE
@@ -244,16 +251,11 @@ struct VirtualRegister {
     /// The value the guest sees.
     shadow_value: u64,
     /// Additional constraints on bits.
-    allowed_bits: Option<u64>,
+    allowed_bits: u64,
 }
 
 impl VirtualRegister {
-    fn new(
-        reg: ShadowedRegister,
-        vtl: GuestVtl,
-        initial_value: u64,
-        allowed_bits: Option<u64>,
-    ) -> Self {
+    fn new(reg: ShadowedRegister, vtl: GuestVtl, initial_value: u64, allowed_bits: u64) -> Self {
         Self {
             register: reg,
             vtl,
@@ -272,7 +274,7 @@ impl VirtualRegister {
     ) -> Result<(), vp_state::Error> {
         tracing::trace!(?self.register, value, "write virtual register");
 
-        if value & !self.allowed_bits.unwrap_or(u64::MAX) != 0 {
+        if value & !self.allowed_bits != 0 {
             return Err(vp_state::Error::InvalidValue(
                 value,
                 self.register.name(),
@@ -417,8 +419,6 @@ struct TdxVtl {
     #[inspect(skip)]
     processor_controls: ProcessorControls,
     #[inspect(skip)]
-    secondary_processor_controls: SecondaryProcessorControls,
-    #[inspect(skip)]
     interruption_information: InterruptionInformation,
     exception_error_code: u32,
     interruption_set: bool,
@@ -469,6 +469,7 @@ struct ExitStats {
     pause: Counter,
     needs_interrupt_reinject: Counter,
     exception: Counter,
+    descriptor_table: Counter,
 }
 
 enum UhDirectOverlay {
@@ -559,8 +560,89 @@ impl HardwareIsolatedBacking for TdxBacked {
         this.backing.vtls[vtl].exception_error_code = event.error_code();
     }
 
-    fn cr4_for_cpuid(this: &mut UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
-        this.backing.vtls[vtl].cr4.read(&this.runner)
+    fn cr0(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
+        this.read_cr0(vtl)
+    }
+
+    fn cr4(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64 {
+        this.read_cr4(vtl)
+    }
+
+    fn intercept_message_state(
+        this: &UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+    ) -> super::InterceptMessageState {
+        let exit = TdxExit(this.runner.tdx_vp_enter_exit_info());
+        let backing_vtl = &this.backing.vtls[vtl];
+        let shared_gps = this.runner.tdx_enter_guest_gps();
+
+        super::InterceptMessageState {
+            instruction_length_and_cr8: exit.instr_info().length() as u8,
+            cpl: exit.cpl(),
+            efer_lma: backing_vtl.efer & X64_EFER_LMA != 0,
+            cs_segment: exit.cs().into(),
+            rip: backing_vtl.private_regs.rip,
+            rflags: backing_vtl.private_regs.rflags,
+            rax: shared_gps[TdxGp::RAX],
+            rdx: shared_gps[TdxGp::RDX],
+        }
+    }
+
+    fn cr_intercept_registration(
+        this: &mut UhProcessor<'_, Self>,
+        intercept_control: hvdef::HvRegisterCrInterceptControl,
+    ) {
+        // Today we only support intercepting VTL 0 on behalf of VTL 1.
+        let vtl = GuestVtl::Vtl0;
+        let intercept_masks = &this
+            .backing
+            .cvm_state()
+            .vtl1
+            .as_ref()
+            .unwrap()
+            .reg_intercept;
+
+        // Update CR0 and CR4 intercept masks in the VMCS.
+        this.runner.write_vmcs64(
+            vtl,
+            VmcsField::VMX_VMCS_CR0_GUEST_HOST_MASK,
+            !0,
+            this.shared.cr_guest_host_mask(ShadowedRegister::Cr0)
+                | if intercept_control.cr0_write() {
+                    intercept_masks.cr0_mask
+                } else {
+                    0
+                },
+        );
+        this.runner.write_vmcs64(
+            vtl,
+            VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK,
+            !0,
+            this.shared.cr_guest_host_mask(ShadowedRegister::Cr4)
+                | if intercept_control.cr4_write() {
+                    intercept_masks.cr4_mask
+                } else {
+                    0
+                },
+        );
+
+        // Update descriptor table intercepts.
+        let intercept_tables = intercept_control.gdtr_write()
+            | intercept_control.idtr_write()
+            | intercept_control.ldtr_write()
+            | intercept_control.tr_write();
+        this.runner.write_vmcs32(
+            vtl,
+            VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS,
+            SecondaryProcessorControls::new()
+                .with_descriptor_table_exiting(true)
+                .into_bits(),
+            SecondaryProcessorControls::new()
+                .with_descriptor_table_exiting(intercept_tables)
+                .into_bits(),
+        );
+
+        // TODO Update MSR bitmaps
     }
 }
 
@@ -575,6 +657,8 @@ pub struct TdxBackedShared {
     flush_state: VtlArray<RwLock<TdxPartitionFlushState>, 2>,
     #[inspect(iter_by_index)]
     active_vtl: Vec<AtomicU8>,
+    /// CR4 bits that the guest is allowed to set to 1.
+    cr4_allowed_bits: u64,
 }
 
 impl TdxBackedShared {
@@ -594,6 +678,12 @@ impl TdxBackedShared {
                     partition_params.topology.vp_count(),
                 )
             });
+
+        // TODO TDX: Consider just using MSR kernel module instead of explicit ioctl.
+        let cr4_fixed1 = params.hcl.read_vmx_cr4_fixed1();
+        let cr4_allowed_bits =
+            (ShadowedRegister::Cr4.guest_owned_mask() | X64_CR4_MCE) & cr4_fixed1;
+
         Ok(Self {
             untrusted_synic,
             flush_state: VtlArray::from_fn(|_| RwLock::new(TdxPartitionFlushState::new())),
@@ -602,7 +692,20 @@ impl TdxBackedShared {
             active_vtl: std::iter::repeat_n(2, partition_params.topology.vp_count() as usize)
                 .map(AtomicU8::new)
                 .collect(),
+            cr4_allowed_bits,
         })
+    }
+
+    /// Get the default guest host mask for the specified register.
+    fn cr_guest_host_mask(&self, reg: ShadowedRegister) -> u64 {
+        match reg {
+            ShadowedRegister::Cr0 => {
+                !ShadowedRegister::Cr0.guest_owned_mask() | X64_CR0_PE | X64_CR0_PG
+            }
+            ShadowedRegister::Cr4 => {
+                !(ShadowedRegister::Cr4.guest_owned_mask() & self.cr4_allowed_bits)
+            }
+        }
     }
 }
 
@@ -636,13 +739,6 @@ impl BackingPrivate for TdxBacked {
         // TODO TDX: lapic / APIC setup?
         // TODO TDX: see ValInitializeVplc
         // TODO TDX: XCR_XFMEM setup?
-
-        // Allowed cr4 bits depend on the values allowed by the SEAM.
-        //
-        // TODO TDX: Consider just using MSR kernel module instead of explicit
-        // ioctl.
-        let read_cr4 = params.partition.hcl.read_vmx_cr4_fixed1();
-        let allowed_cr4_bits = (ShadowedRegister::Cr4.guest_owned_mask() | X64_CR4_MCE) & read_cr4;
 
         for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
             let controls = TdxL2Ctls::new()
@@ -678,7 +774,7 @@ impl BackingPrivate for TdxBacked {
                 vtl,
                 VmcsField::VMX_VMCS_CR0_GUEST_HOST_MASK,
                 !0,
-                !ShadowedRegister::Cr0.guest_owned_mask() | X64_CR0_PE | X64_CR0_PG,
+                shared.cr_guest_host_mask(ShadowedRegister::Cr0),
             );
 
             let initial_cr4 = params
@@ -693,7 +789,7 @@ impl BackingPrivate for TdxBacked {
                 vtl,
                 VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK,
                 !0,
-                !(ShadowedRegister::Cr4.guest_owned_mask() & allowed_cr4_bits),
+                shared.cr_guest_host_mask(ShadowedRegister::Cr4),
             );
 
             // Configure the MSR bitmap for this VP.  Since the default MSR bitmap
@@ -752,7 +848,7 @@ impl BackingPrivate for TdxBacked {
                         params
                             .runner
                             .read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR0),
-                        None,
+                        !0,
                     ),
                     cr4: VirtualRegister::new(
                         ShadowedRegister::Cr4,
@@ -760,16 +856,12 @@ impl BackingPrivate for TdxBacked {
                         params
                             .runner
                             .read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR4),
-                        Some(allowed_cr4_bits),
+                        shared.cr4_allowed_bits,
                     ),
                     tpr_threshold: 0,
                     processor_controls: params
                         .runner
                         .read_vmcs32(vtl, VmcsField::VMX_VMCS_PROCESSOR_CONTROLS)
-                        .into(),
-                    secondary_processor_controls: params
-                        .runner
-                        .read_vmcs32(vtl, VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS)
                         .into(),
                     interruption_information: Default::default(),
                     exception_error_code: 0,
@@ -829,8 +921,12 @@ impl BackingPrivate for TdxBacked {
         ];
 
         let reg_count = if let Some(synic) = &mut this.backing.untrusted_synic {
-            synic.set_simp(reg(pfns[UhDirectOverlay::Sipp as usize]));
-            synic.set_siefp(reg(pfns[UhDirectOverlay::Sifp as usize]));
+            synic
+                .set_simp(reg(pfns[UhDirectOverlay::Sipp as usize]))
+                .unwrap();
+            synic
+                .set_siefp(reg(pfns[UhDirectOverlay::Sifp as usize]))
+                .unwrap();
             // Set the SIEFP in the hypervisor so that the hypervisor can
             // directly signal synic events. Don't set the SIMP, since the
             // message page is owned by the paravisor.
@@ -848,6 +944,9 @@ impl BackingPrivate for TdxBacked {
         this.backing.cvm.lapics[GuestVtl::Vtl0]
             .lapic
             .enable_offload();
+
+        // But disable it for VTL 1.
+        this.set_apic_offload(GuestVtl::Vtl1, false);
 
         // Initialize registers to the reset state, since this may be different
         // than what's on the VMCS and is certainly different than what's in the
@@ -884,8 +983,6 @@ impl BackingPrivate for TdxBacked {
         scan_irr: bool,
     ) -> Result<(), UhRunVpError> {
         if !this.try_poll_apic(vtl, scan_irr)? {
-            // We only offload VTL 0 today.
-            assert_eq!(vtl, GuestVtl::Vtl0);
             tracing::info!("disabling APIC offload due to auto EOI");
             let page = this.runner.tdx_apic_page_mut(vtl);
             let (irr, isr) = pull_apic_offload(page);
@@ -1040,7 +1137,7 @@ impl UhProcessor<'_, TdxBacked> {
         }
 
         if self.backing.vtls[vtl].processor_controls != new_processor_controls {
-            tracing::debug!(?new_processor_controls, "requesting window change");
+            tracing::debug!(?new_processor_controls, ?vtl, "requesting window change");
             self.runner.write_vmcs32(
                 vtl,
                 VmcsField::VMX_VMCS_PROCESSOR_CONTROLS,
@@ -1050,7 +1147,7 @@ impl UhProcessor<'_, TdxBacked> {
             self.backing.vtls[vtl].processor_controls = new_processor_controls;
         }
 
-        // Offloading is only done with VTL 0 today.
+        // Offloading and proxying is only done with VTL 0 today.
         if vtl == GuestVtl::Vtl0 {
             let mut update_rvi = false;
             let r: Result<(), OffloadNotSupported> = self.backing.cvm.lapics[vtl]
@@ -1143,7 +1240,6 @@ impl UhProcessor<'_, TdxBacked> {
     ) -> R {
         let offloaded = self.backing.cvm.lapics[vtl].lapic.is_offloaded();
         if offloaded {
-            assert_eq!(vtl, GuestVtl::Vtl0);
             let (irr, isr) = pull_apic_offload(self.runner.tdx_apic_page_mut(vtl));
             self.backing.cvm.lapics[vtl]
                 .lapic
@@ -1172,21 +1268,16 @@ impl UhProcessor<'_, TdxBacked> {
         }
 
         // Update virtual-interrupt delivery.
-        if self.backing.vtls[vtl]
-            .secondary_processor_controls
-            .virtual_interrupt_delivery()
-            != offload
-        {
-            self.backing.vtls[vtl]
-                .secondary_processor_controls
-                .set_virtual_interrupt_delivery(offload);
-            self.runner.write_vmcs32(
-                vtl,
-                VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS,
-                !0,
-                self.backing.vtls[vtl].secondary_processor_controls.into(),
-            );
-        }
+        self.runner.write_vmcs32(
+            vtl,
+            VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS,
+            SecondaryProcessorControls::new()
+                .with_virtual_interrupt_delivery(true)
+                .into(),
+            SecondaryProcessorControls::new()
+                .with_virtual_interrupt_delivery(offload)
+                .into(),
+        );
 
         // Clear any pending external interrupt when enabling the APIC offload.
         if offload
@@ -1390,11 +1481,7 @@ impl UhProcessor<'_, TdxBacked> {
         // Do not do this if there is a pending interruption, since we need to
         // run code on the next exit to clear it. If we miss this opportunity,
         // we will probably double-inject the interruption, wreaking havoc.
-        let offload_enabled = next_vtl == GuestVtl::Vtl0
-            && self.backing.vtls[next_vtl]
-                .secondary_processor_controls
-                .virtual_interrupt_delivery()
-            && self.backing.cvm.lapics[next_vtl].lapic.can_offload_irr()
+        let offload_enabled = self.backing.cvm.lapics[next_vtl].lapic.can_offload_irr()
             && !self.backing.vtls[next_vtl].interruption_information.valid();
         let x2apic_enabled = self.backing.cvm.lapics[next_vtl].lapic.x2apic_enabled();
 
@@ -1663,16 +1750,7 @@ impl UhProcessor<'_, TdxBacked> {
                     })
                     .msr_read(msr)
                     .or_else_if_unknown(|| self.read_msr(msr, intercepted_vtl))
-                    .or_else_if_unknown(|| self.read_msr_cvm(msr, intercepted_vtl))
-                    .or_else_if_unknown(|| match msr {
-                        hvdef::HV_X64_MSR_GUEST_IDLE => {
-                            self.backing.cvm.lapics[intercepted_vtl].activity = MpState::Idle;
-                            self.clear_interrupt_shadow(intercepted_vtl);
-                            Ok(0)
-                        }
-                        X86X_MSR_EFER => Ok(self.backing.vtls[intercepted_vtl].efer),
-                        _ => Err(MsrError::Unknown),
-                    });
+                    .or_else_if_unknown(|| self.read_msr_tdx(msr, intercepted_vtl));
 
                 let value = match result {
                     Ok(v) => Some(v),
@@ -1705,33 +1783,35 @@ impl UhProcessor<'_, TdxBacked> {
                 let value =
                     (gps[TdxGp::RAX] as u32 as u64) | ((gps[TdxGp::RDX] as u32 as u64) << 32);
 
-                let result = self.backing.cvm.lapics[intercepted_vtl]
-                    .lapic
-                    .access(&mut TdxApicClient {
-                        partition: self.partition,
-                        vmtime: &self.vmtime,
-                        apic_page: self.runner.tdx_apic_page_mut(intercepted_vtl),
-                        dev,
-                        vtl: intercepted_vtl,
-                    })
-                    .msr_write(msr, value)
-                    .or_else_if_unknown(|| self.write_msr_cvm(msr, value, intercepted_vtl))
-                    .or_else_if_unknown(|| self.write_msr(msr, value, intercepted_vtl))
-                    .or_else_if_unknown(|| self.write_msr_tdx(msr, value, intercepted_vtl));
+                if !self.cvm_try_protect_msr_write(intercepted_vtl, msr) {
+                    let result = self.backing.cvm.lapics[intercepted_vtl]
+                        .lapic
+                        .access(&mut TdxApicClient {
+                            partition: self.partition,
+                            vmtime: &self.vmtime,
+                            apic_page: self.runner.tdx_apic_page_mut(intercepted_vtl),
+                            dev,
+                            vtl: intercepted_vtl,
+                        })
+                        .msr_write(msr, value)
+                        .or_else_if_unknown(|| self.write_msr_cvm(msr, value, intercepted_vtl))
+                        .or_else_if_unknown(|| self.write_msr(msr, value, intercepted_vtl))
+                        .or_else_if_unknown(|| self.write_msr_tdx(msr, value, intercepted_vtl));
 
-                let inject_gp = match result {
-                    Ok(()) => false,
-                    Err(MsrError::Unknown) => {
-                        tracelimit::warn_ratelimited!(msr, value, "unknown tdx vm msr write");
-                        false
+                    let inject_gp = match result {
+                        Ok(()) => false,
+                        Err(MsrError::Unknown) => {
+                            tracelimit::warn_ratelimited!(msr, value, "unknown tdx vm msr write");
+                            false
+                        }
+                        Err(MsrError::InvalidAccess) => true,
+                    };
+
+                    if inject_gp {
+                        self.inject_gpf(intercepted_vtl);
+                    } else {
+                        self.advance_to_next_instruction(intercepted_vtl);
                     }
-                    Err(MsrError::InvalidAccess) => true,
-                };
-
-                if inject_gp {
-                    self.inject_gpf(intercepted_vtl);
-                } else {
-                    self.advance_to_next_instruction(intercepted_vtl);
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.msr_write
             }
@@ -1791,21 +1871,30 @@ impl UhProcessor<'_, TdxBacked> {
                     }
                     access_type => unreachable!("not registered for cr access type {access_type}"),
                 }
-                let r = match cr {
-                    0 => self.backing.vtls[intercepted_vtl]
-                        .cr0
-                        .write(value, &mut self.runner),
-                    4 => self.backing.vtls[intercepted_vtl]
-                        .cr4
-                        .write(value, &mut self.runner),
-                    cr => unreachable!("not registered for cr{cr} accesses"),
+
+                let cr = match cr {
+                    0 => HvX64RegisterName::Cr0,
+                    4 => HvX64RegisterName::Cr4,
+                    _ => unreachable!("not registered for cr{cr} accesses"),
                 };
-                if r.is_ok() {
-                    self.update_execution_mode(intercepted_vtl);
-                    self.advance_to_next_instruction(intercepted_vtl);
-                } else {
-                    tracelimit::warn_ratelimited!(cr, value, "failed to write cr");
-                    self.inject_gpf(intercepted_vtl);
+
+                if !self.cvm_try_protect_secure_register_write(intercepted_vtl, cr, value) {
+                    let r = match cr {
+                        HvX64RegisterName::Cr0 => self.backing.vtls[intercepted_vtl]
+                            .cr0
+                            .write(value, &mut self.runner),
+                        HvX64RegisterName::Cr4 => self.backing.vtls[intercepted_vtl]
+                            .cr4
+                            .write(value, &mut self.runner),
+                        _ => unreachable!(),
+                    };
+                    if r.is_ok() {
+                        self.update_execution_mode(intercepted_vtl);
+                        self.advance_to_next_instruction(intercepted_vtl);
+                    } else {
+                        tracelimit::warn_ratelimited!(?cr, value, "failed to write cr");
+                        self.inject_gpf(intercepted_vtl);
+                    }
                 }
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.cr_access
             }
@@ -1820,12 +1909,18 @@ impl UhProcessor<'_, TdxBacked> {
                         cpl: exit_info.cpl(),
                     })
                 {
-                    self.runner
-                        .set_vp_register(intercepted_vtl, HvX64RegisterName::Xfem, value.into())
-                        .map_err(|err| {
-                            VpHaltReason::Hypervisor(UhRunVpError::EmulationState(err))
-                        })?;
-                    self.advance_to_next_instruction(intercepted_vtl);
+                    if !self.cvm_try_protect_secure_register_write(
+                        intercepted_vtl,
+                        HvX64RegisterName::Xfem,
+                        value,
+                    ) {
+                        self.runner
+                            .set_vp_register(intercepted_vtl, HvX64RegisterName::Xfem, value.into())
+                            .map_err(|err| {
+                                VpHaltReason::Hypervisor(UhRunVpError::EmulationState(err))
+                            })?;
+                        self.advance_to_next_instruction(intercepted_vtl);
+                    }
                 } else {
                     self.inject_gpf(intercepted_vtl);
                 }
@@ -1964,6 +2059,48 @@ impl UhProcessor<'_, TdxBacked> {
                     vtl: intercepted_vtl.into(),
                 });
             }
+            VmxExitBasic::GDTR_OR_IDTR => {
+                let info = GdtrOrIdtrInstructionInfo::from(exit_info.instr_info().info());
+                tracing::trace!("Intercepted GDT or IDT instruction: {:?}", info);
+                let reg = match info.instruction() {
+                    GdtrOrIdtrInstruction::Sidt | GdtrOrIdtrInstruction::Lidt => {
+                        HvX64RegisterName::Idtr
+                    }
+                    GdtrOrIdtrInstruction::Sgdt | GdtrOrIdtrInstruction::Lgdt => {
+                        HvX64RegisterName::Gdtr
+                    }
+                };
+                // We only support fowarding intercepts for descriptor table writes today.
+                if (info.instruction().is_write()
+                    && !self.cvm_try_protect_secure_register_write(intercepted_vtl, reg, 0))
+                    || !info.instruction().is_write()
+                {
+                    self.emulate_gdtr_or_idtr(intercepted_vtl, dev).await?;
+                }
+                &mut self.backing.vtls[intercepted_vtl]
+                    .exit_stats
+                    .descriptor_table
+            }
+            VmxExitBasic::LDTR_OR_TR => {
+                let info = LdtrOrTrInstructionInfo::from(exit_info.instr_info().info());
+                tracing::trace!("Intercepted LDT or TR instruction: {:?}", info);
+                let reg = match info.instruction() {
+                    LdtrOrTrInstruction::Sldt | LdtrOrTrInstruction::Lldt => {
+                        HvX64RegisterName::Ldtr
+                    }
+                    LdtrOrTrInstruction::Str | LdtrOrTrInstruction::Ltr => HvX64RegisterName::Tr,
+                };
+                // We only support fowarding intercepts for descriptor table writes today.
+                if (info.instruction().is_write()
+                    && !self.cvm_try_protect_secure_register_write(intercepted_vtl, reg, 0))
+                    || !info.instruction().is_write()
+                {
+                    self.emulate_ldtr_or_tr(intercepted_vtl, dev).await?;
+                }
+                &mut self.backing.vtls[intercepted_vtl]
+                    .exit_stats
+                    .descriptor_table
+            }
             _ => {
                 return Err(VpHaltReason::Hypervisor(UhRunVpError::UnknownVmxExit(
                     exit_info.code().vmx_exit(),
@@ -2067,21 +2204,24 @@ impl UhProcessor<'_, TdxBacked> {
         tracing::error!(exception_bitmap, "exception bitmap");
 
         let cached_processor_controls = self.backing.vtls[vtl].processor_controls;
-        let cached_secondary_processor_controls =
-            self.backing.vtls[vtl].secondary_processor_controls;
-        let vmcs_processor_controls = self
-            .runner
-            .read_vmcs32(vtl, VmcsField::VMX_VMCS_PROCESSOR_CONTROLS);
-        let vmcs_secondary_processor_controls = self
-            .runner
-            .read_vmcs32(vtl, VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS);
+        let vmcs_processor_controls = ProcessorControls::from(
+            self.runner
+                .read_vmcs32(vtl, VmcsField::VMX_VMCS_PROCESSOR_CONTROLS),
+        );
+        let vmcs_secondary_processor_controls = SecondaryProcessorControls::from(
+            self.runner
+                .read_vmcs32(vtl, VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS),
+        );
         tracing::error!(
             ?cached_processor_controls,
-            ?cached_secondary_processor_controls,
-            vmcs_processor_controls,
-            vmcs_secondary_processor_controls,
+            ?vmcs_processor_controls,
+            ?vmcs_secondary_processor_controls,
             "processor controls"
         );
+
+        if cached_processor_controls != vmcs_processor_controls {
+            tracing::error!("BUGBUG: processor controls mismatch");
+        }
 
         let cached_tpr_threshold = self.backing.vtls[vtl].tpr_threshold;
         let vmcs_tpr_threshold = self
@@ -2321,7 +2461,7 @@ impl UhProcessor<'_, TdxBacked> {
         Ok(())
     }
 
-    fn read_msr_cvm(&self, msr: u32, vtl: GuestVtl) -> Result<u64, MsrError> {
+    fn read_msr_tdx(&mut self, msr: u32, vtl: GuestVtl) -> Result<u64, MsrError> {
         // TODO TDX: port remaining tdx and common values
         //
         // TODO TDX: consider if this can be shared with SnpBacked's
@@ -2380,6 +2520,13 @@ impl UhProcessor<'_, TdxBacked> {
             | x86defs::X86X_IA32_MSR_PKG_ENERGY_STATUS
             | x86defs::X86X_IA32_MSR_DRAM_ENERGY_STATUS
             | x86defs::X86X_IA32_MSR_PP0_ENERGY_STATUS => Ok(0),
+
+            hvdef::HV_X64_MSR_GUEST_IDLE => {
+                self.backing.cvm.lapics[vtl].activity = MpState::Idle;
+                self.clear_interrupt_shadow(vtl);
+                Ok(0)
+            }
+            X86X_MSR_EFER => Ok(self.backing.vtls[vtl].efer),
 
             _ => Err(MsrError::Unknown),
         }
@@ -2855,17 +3002,11 @@ impl UhProcessor<'_, TdxBacked> {
         self.backing.vtls[vtl].cr4.write(value, &mut self.runner)
     }
 
-    fn write_table_register(
-        &mut self,
-        vtl: GuestVtl,
-        table: TdxTableReg,
-        reg: TableRegister,
-    ) -> Result<(), vp_state::Error> {
+    fn write_table_register(&mut self, vtl: GuestVtl, table: TdxTableReg, reg: TableRegister) {
         self.runner
             .write_vmcs64(vtl, table.base_code(), !0, reg.base);
         self.runner
             .write_vmcs32(vtl, table.limit_code(), !0, reg.limit.into());
-        Ok(())
     }
 
     fn read_table_register(&self, vtl: GuestVtl, table: TdxTableReg) -> TableRegister {
@@ -2903,6 +3044,138 @@ impl UhProcessor<'_, TdxBacked> {
             },
         );
     }
+
+    async fn emulate_gdtr_or_idtr(
+        &mut self,
+        vtl: GuestVtl,
+        dev: &impl CpuIo,
+    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+        let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
+        assert_eq!(
+            exit_info.code().vmx_exit().basic_reason(),
+            VmxExitBasic::GDTR_OR_IDTR
+        );
+        let instr_info = GdtrOrIdtrInstructionInfo::from(exit_info.instr_info().info());
+        let gps = self.runner.tdx_enter_guest_gps();
+
+        // Check if read instructions are blocked by UMIP.
+        if !instr_info.instruction().is_write()
+            && exit_info.cpl() > 0
+            && self.read_cr4(vtl) & X64_CR4_UMIP != 0
+        {
+            self.inject_gpf(vtl);
+            return Ok(());
+        }
+
+        // Displacement is stored in the qualification field for these instructions.
+        let mut gva = exit_info.qualification();
+        if !instr_info.base_register_invalid() {
+            gva += gps[instr_info.base_register() as usize];
+        }
+        if !instr_info.index_register_invalid() {
+            gva += gps[instr_info.index_register() as usize] << instr_info.scaling();
+        }
+        match instr_info.address_size() {
+            // 16-bit address size
+            0 => gva &= 0xFFFF,
+            // 32-bit address size
+            1 => gva &= 0xFFFFFFFF,
+            // 64-bit address size
+            2 => {}
+            _ => unreachable!(),
+        }
+
+        let segment = match instr_info.segment_register() {
+            0 => Segment::ES,
+            1 => Segment::CS,
+            2 => Segment::SS,
+            3 => Segment::DS,
+            4 => Segment::FS,
+            5 => Segment::GS,
+            _ => unreachable!(),
+        };
+
+        let gm = &self.partition.gm[vtl];
+        let interruption_pending = self.backing.vtls[vtl].interruption_information.valid();
+        let len = 2 + if self.long_mode(vtl) { 8 } else { 4 };
+        let mut buf = [0u8; 10];
+
+        match instr_info.instruction() {
+            GdtrOrIdtrInstruction::Sidt | GdtrOrIdtrInstruction::Sgdt => {
+                let table = self.read_table_register(
+                    vtl,
+                    if matches!(instr_info.instruction(), GdtrOrIdtrInstruction::Sidt) {
+                        TdxTableReg::Idtr
+                    } else {
+                        TdxTableReg::Gdtr
+                    },
+                );
+                buf[..2].copy_from_slice(&table.limit.to_le_bytes());
+                buf[2..].copy_from_slice(&table.base.to_le_bytes());
+                let mut emulation_state = UhEmulationState {
+                    vp: &mut *self,
+                    interruption_pending,
+                    devices: dev,
+                    vtl,
+                    cache: TdxEmulationCache::default(),
+                };
+                emulate_insn_memory_op(
+                    &mut emulation_state,
+                    gm,
+                    dev,
+                    gva,
+                    segment,
+                    x86emu::AlignmentMode::Unaligned,
+                    EmulatedMemoryOperation::Write(&buf[..len]),
+                )
+                .await?;
+            }
+
+            GdtrOrIdtrInstruction::Lgdt | GdtrOrIdtrInstruction::Lidt => {
+                let mut emulation_state = UhEmulationState {
+                    vp: &mut *self,
+                    interruption_pending,
+                    devices: dev,
+                    vtl,
+                    cache: TdxEmulationCache::default(),
+                };
+                emulate_insn_memory_op(
+                    &mut emulation_state,
+                    gm,
+                    dev,
+                    gva,
+                    segment,
+                    x86emu::AlignmentMode::Unaligned,
+                    EmulatedMemoryOperation::Read(&mut buf[..len]),
+                )
+                .await?;
+                let table = TableRegister {
+                    limit: u16::from_le_bytes(buf[..2].try_into().unwrap()),
+                    base: u64::from_le_bytes(buf[2..len].try_into().unwrap()),
+                };
+                self.write_table_register(
+                    vtl,
+                    if matches!(instr_info.instruction(), GdtrOrIdtrInstruction::Lidt) {
+                        TdxTableReg::Idtr
+                    } else {
+                        TdxTableReg::Gdtr
+                    },
+                    table,
+                );
+            }
+        }
+
+        self.advance_to_next_instruction(vtl);
+        Ok(())
+    }
+
+    async fn emulate_ldtr_or_tr(
+        &mut self,
+        _vtl: GuestVtl,
+        _dev: &impl CpuIo,
+    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+        todo!()
+    }
 }
 
 struct TdxApicClient<'a, T> {
@@ -2939,7 +3212,6 @@ impl<T: CpuIo> ApicClient for TdxApicClient<'_, T> {
     }
 
     fn pull_offload(&mut self) -> ([u32; 8], [u32; 8]) {
-        assert_eq!(self.vtl, GuestVtl::Vtl0);
         pull_apic_offload(self.apic_page)
     }
 }
@@ -3028,6 +3300,8 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
             hv1_hypercall::HvVtlReturn,
             hv1_hypercall::HvModifyVtlProtectionMask,
             hv1_hypercall::HvX64TranslateVirtualAddress,
+            hv1_hypercall::HvSendSyntheticClusterIpi,
+            hv1_hypercall::HvSendSyntheticClusterIpiEx,
         ]
     );
 
@@ -3188,9 +3462,9 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
 
         // Set table registers
         self.vp
-            .write_table_register(self.vtl, TdxTableReg::Gdtr, *gdtr)?;
+            .write_table_register(self.vtl, TdxTableReg::Gdtr, *gdtr);
         self.vp
-            .write_table_register(self.vtl, TdxTableReg::Idtr, *idtr)?;
+            .write_table_register(self.vtl, TdxTableReg::Idtr, *idtr);
 
         self.vp.write_cr0(self.vtl, *cr0)?;
 

@@ -802,6 +802,7 @@ fn vm_config_from_command_line(
                 UefiConsoleModeCli::Com2 => UefiConsoleMode::Com2,
                 UefiConsoleModeCli::None => UefiConsoleMode::None,
             }),
+            default_boot_always_attempt: opt.default_boot_always_attempt,
         };
     } else {
         // Linux Direct
@@ -917,6 +918,7 @@ fn vm_config_from_command_line(
                                 UefiConsoleModeCli::Com2 => UefiConsoleMode::COM2,
                                 UefiConsoleModeCli::None => UefiConsoleMode::None,
                             },
+                            default_boot_always_attempt: opt.default_boot_always_attempt,
                         }
                     },
                     com1: with_vmbus_com1_serial,

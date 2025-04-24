@@ -85,5 +85,5 @@ You can pick any existing image that you have or download one from the web, such
 as from Ubuntu, or any other distro that is currently supported in Hyper-V.
 
 ```powershell
-`Add-VMHardDiskDrive -VMName $VmName -Path "<VHDX path>"-ControllerType SCSI -ControllerNumber 0 -ControllerLocation 1`
+Add-VMHardDiskDrive -VMName $VmName -Path "<VHDX path>" -ControllerType SCSI -ControllerNumber 0 -ControllerLocation 1
 ```

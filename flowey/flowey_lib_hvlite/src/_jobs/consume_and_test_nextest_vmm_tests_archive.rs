@@ -7,11 +7,12 @@ use crate::build_guest_test_uefi::GuestTestUefiOutput;
 use crate::build_nextest_vmm_tests::NextestVmmTestsArchive;
 use crate::build_openvmm::OpenvmmOutput;
 use crate::build_pipette::PipetteOutput;
+use crate::build_tmk_vmm::TmkVmmOutput;
+use crate::build_tmks::TmksOutput;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
-use vmm_test_images::KnownIso;
-use vmm_test_images::KnownVhd;
+use vmm_test_images::KnownTestArtifacts;
 
 #[derive(Serialize, Deserialize)]
 pub struct VmmTestsDepArtifacts {
@@ -20,6 +21,9 @@ pub struct VmmTestsDepArtifacts {
     pub pipette_linux_musl: Option<ReadVar<PipetteOutput>>,
     pub guest_test_uefi: Option<ReadVar<GuestTestUefiOutput>>,
     pub artifact_dir_openhcl_igvm_files: Option<ReadVar<PathBuf>>,
+    pub tmks: Option<ReadVar<TmksOutput>>,
+    pub tmk_vmm: Option<ReadVar<TmkVmmOutput>>,
+    pub tmk_vmm_linux_musl: Option<ReadVar<TmkVmmOutput>>,
 }
 
 flowey_request! {
@@ -36,10 +40,8 @@ flowey_request! {
         pub nextest_filter_expr: Option<String>,
         /// Artifacts corresponding to required test dependencies
         pub dep_artifact_dirs: VmmTestsDepArtifacts,
-        /// VHDs to download
-        pub vhds: Vec<KnownVhd>,
-        /// ISOs to download
-        pub isos: Vec<KnownIso>,
+        /// Test artifacts to download
+        pub test_artifacts: Vec<KnownTestArtifacts>,
 
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
@@ -57,7 +59,7 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe_extras::resolve::Node>();
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe::resolve::Node>();
-        ctx.import::<crate::download_openvmm_vmm_tests_vhds::Node>();
+        ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
         ctx.import::<crate::init_hyperv_tests::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
@@ -73,8 +75,7 @@ impl SimpleFlowNode for Node {
             nextest_profile,
             nextest_filter_expr,
             dep_artifact_dirs,
-            vhds,
-            isos,
+            test_artifacts,
             fail_job_on_test_fail,
             artifact_dir,
             done,
@@ -91,6 +92,9 @@ impl SimpleFlowNode for Node {
             pipette_linux_musl: register_pipette_linux_musl,
             guest_test_uefi: register_guest_test_uefi,
             artifact_dir_openhcl_igvm_files,
+            tmks: register_tmks,
+            tmk_vmm: register_tmk_vmm,
+            tmk_vmm_linux_musl: register_tmk_vmm_linux_musl,
         } = dep_artifact_dirs;
 
         let register_openhcl_igvm_files = artifact_dir_openhcl_igvm_files.map(|artifact_dir| {
@@ -102,13 +106,10 @@ impl SimpleFlowNode for Node {
             )
         });
 
-        ctx.requests::<crate::download_openvmm_vmm_tests_vhds::Node>([
-            crate::download_openvmm_vmm_tests_vhds::Request::DownloadVhds(vhds),
-            crate::download_openvmm_vmm_tests_vhds::Request::DownloadIsos(isos),
-        ]);
+        ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(test_artifacts));
 
         let disk_images_dir =
-            ctx.reqv(crate::download_openvmm_vmm_tests_vhds::Request::GetDownloadFolder);
+            ctx.reqv(crate::download_openvmm_vmm_tests_artifacts::Request::GetDownloadFolder);
 
         // FUTURE: once we move away from the known_paths resolver, this will no
         // longer be an ambient pre-run dependency.
@@ -138,6 +139,9 @@ impl SimpleFlowNode for Node {
             register_pipette_windows,
             register_pipette_linux_musl,
             register_guest_test_uefi,
+            register_tmks,
+            register_tmk_vmm,
+            register_tmk_vmm_linux_musl,
             disk_images_dir: Some(disk_images_dir),
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),

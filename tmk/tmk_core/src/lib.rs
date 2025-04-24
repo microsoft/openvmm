@@ -111,6 +111,13 @@ fn entry(input: &tmk_protocol::StartInput) -> ! {
         panic!("invalid test index {}", input.test_index);
     }
     let test = &tests[input.test_index as usize];
+
+    let test_name = core::str::from_utf8(test.name).expect("test name in UTF-8");
+    log!(
+        "running test {test_name}, entrypoint {:#x?}, with input {input:#x?}",
+        test.entrypoint
+    );
+
     (test.entrypoint)(TestContext {
         scope: &mut Scope {
             arch: Scope::arch_init(),
@@ -118,6 +125,8 @@ fn entry(input: &tmk_protocol::StartInput) -> ! {
             _env: PhantomData,
         },
     });
+
+    log!("test {test_name} completed");
 
     // SAFETY: the command is valid.
     unsafe { command(&tmk_protocol::Command::Complete { success: true }) };
