@@ -5,7 +5,6 @@ use crate::bnic_driver::BnicDriver;
 use crate::gdma_driver::GdmaDriver;
 use gdma_defs::GdmaDevId;
 use gdma_defs::GdmaQueueType;
-use std::fmt::Debug;
 use std::mem::ManuallyDrop;
 use user_driver::DeviceBacking;
 use user_driver::memory::MemoryBlock;
