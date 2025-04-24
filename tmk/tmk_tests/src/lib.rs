@@ -122,6 +122,14 @@ fn resolve_paravisor_tmk_artifacts(
     (igvm_path, tmk_vmm, tmk)
 }
 
+/// The OpenHCL command line to use for the TMK VMM. This is used to:
+/// 1. Suspend launching the OpenHCL VMM so that the TMK VMM can be launched instead.
+/// 2. Report to the host that VTL0 has been started so that Hyper-V VM start does not hang.
+/// 3. Wait for modules to be loaded before lauching the diagnostics service (used to launch the TMK VMM),
+///    so that the virtual disk that the TMK VMM is launched from finishes initializing.
+const OPENHCL_COMMAND_LINE: &str =
+    "OPENHCL_WAIT_FOR_START=1 OPENHCL_SIGNAL_VTL0_STARTED=1 OPENHCL_WAIT_FOR_MODULES=1";
+
 async fn openhcl_tmks(
     driver: &DefaultDriver,
     params: &petri::PetriTestParams<'_>,
@@ -202,7 +210,7 @@ fn openvmm_openhcl_tmks(
 ) -> anyhow::Result<()> {
     DefaultPool::run_with(async |driver| {
         let mut vm = petri::openvmm::PetriVmConfigOpenVmm::new(&params, artifacts.vm, &driver)?
-            .with_openhcl_command_line("OPENHCL_WAIT_FOR_START=1")
+            .with_openhcl_command_line(OPENHCL_COMMAND_LINE)
             .with_openhcl_agent_file("tmk_vmm", artifacts.tmk_vmm)
             .with_openhcl_agent_file("simple_tmk", artifacts.tmk)
             .with_processor_topology(ProcessorTopology {
@@ -222,6 +230,7 @@ fn openvmm_openhcl_tmks(
 #[cfg(windows)]
 #[cfg(guest_arch = "x86_64")] // TODO: aarch64 currently hangs, fix
 mod hyperv {
+    use super::OPENHCL_COMMAND_LINE;
     use crate::openhcl_tmks;
     use crate::resolve_paravisor_tmk_artifacts;
     use pal_async::DefaultPool;
@@ -268,7 +277,7 @@ mod hyperv {
     ) -> anyhow::Result<()> {
         DefaultPool::run_with(async |driver| {
             let mut vm = petri::hyperv::PetriVmConfigHyperV::new(&params, artifacts.vm, &driver)?
-                .with_openhcl_command_line("OPENHCL_WAIT_FOR_START=1 OPENHCL_SIGNAL_VTL0_STARTED=1")
+                .with_openhcl_command_line(OPENHCL_COMMAND_LINE)
                 .with_openhcl_agent_file("tmk_vmm", artifacts.tmk_vmm)
                 .with_openhcl_agent_file("simple_tmk", artifacts.tmk)
                 .with_processor_topology(ProcessorTopology {
