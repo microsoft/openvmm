@@ -24,6 +24,8 @@ const SUPPRESS_REASON_ONEOFF_VIRT_HVF: &str = "oneoff-virt-hvf";
 const SUPPRESS_REASON_ONEOFF_FLOWEY: &str = "oneoff-flowey";
 /// One off - used by petri to select native test dependencies
 const SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_TEST_DEPS: &str = "oneoff-petri-native-test-deps";
+/// Onee off - used by petri to return the host architecture for test filtering
+const SUPPRESS_REASON_ONEOFF_PETRI_HOST_ARCH: &str = "oneoff-petri-host-arch";
 
 fn has_suppress(s: &str) -> bool {
     let Some((_, after)) = s.split_once(SUPPRESS) else {
@@ -41,6 +43,7 @@ fn has_suppress(s: &str) -> bool {
             | SUPPRESS_REASON_ONEOFF_VIRT_HVF
             | SUPPRESS_REASON_ONEOFF_FLOWEY
             | SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_TEST_DEPS
+            | SUPPRESS_REASON_ONEOFF_PETRI_HOST_ARCH
     );
 
     if !ok {

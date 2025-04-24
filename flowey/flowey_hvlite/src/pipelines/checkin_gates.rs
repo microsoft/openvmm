@@ -1006,11 +1006,8 @@ impl IntoPipeline for CheckinGatesCli {
                 label: "x64-linux",
                 target: CommonTriple::X86_64_LINUX_GNU,
                 resolve_vmm_tests_artifacts: vmm_tests_artifacts_linux_x86,
-                // - OpenHCL is not supported on KVM
                 // - No legal way to obtain gen1 pcat blobs on non-msft linux machines
-                nextest_filter_expr: format!(
-                    "{standard_filter} & !test(openhcl) & !test(pcat_x64)"
-                ),
+                nextest_filter_expr: format!("{standard_filter} & !test(pcat_x64)"),
                 test_artifacts: standard_x64_test_artifacts,
             },
             VmmTestJobParams {

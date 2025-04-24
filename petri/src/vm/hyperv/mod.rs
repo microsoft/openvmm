@@ -140,6 +140,10 @@ pub struct PetriVmHyperV {
 
 #[async_trait]
 impl PetriVm for PetriVmHyperV {
+    fn arch(&self) -> MachineArch {
+        self.config.arch
+    }
+
     async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
         Self::wait_for_halt(self).await
     }
@@ -187,8 +191,17 @@ pub struct PetriVmArtifactsHyperV {
 
 impl PetriVmArtifactsHyperV {
     /// Resolves the artifacts needed to instantiate a [`PetriVmConfigHyperV`].
-    pub fn new(resolver: &ArtifactResolver<'_>, firmware: Firmware, arch: MachineArch) -> Self {
-        Self {
+    ///
+    /// Returns `None` if the supplied configuration is not supported on this platform.
+    pub fn new(
+        resolver: &ArtifactResolver<'_>,
+        firmware: Firmware,
+        arch: MachineArch,
+    ) -> Option<Self> {
+        if arch != MachineArch::host() {
+            return None;
+        }
+        Some(Self {
             arch,
             agent_image: AgentImage::new(resolver, arch, firmware.os_flavor()),
             openhcl_agent_image: if firmware.is_openhcl() {
@@ -197,7 +210,7 @@ impl PetriVmArtifactsHyperV {
                 None
             },
             firmware,
-        }
+        })
     }
 }
 

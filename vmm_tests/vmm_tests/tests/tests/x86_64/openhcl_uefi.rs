@@ -9,7 +9,6 @@ use petri::OpenHclServicingFlags;
 use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::openvmm::PetriVmConfigOpenVmm;
-#[cfg(guest_arch = "x86_64")]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;

@@ -99,6 +99,8 @@ pub enum ApicMode {
 /// A running VM that tests can interact with.
 #[async_trait]
 pub trait PetriVm: Send {
+    /// Returns the guest architecture.
+    fn arch(&self) -> MachineArch;
     /// Wait for the VM to halt, returning the reason for the halt.
     async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason>;
     /// Wait for the VM to halt, returning the reason for the halt,

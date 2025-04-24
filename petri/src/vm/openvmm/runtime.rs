@@ -28,6 +28,7 @@ use pal_async::socket::PolledSocket;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
 use petri_artifacts_common::tags::GuestQuirks;
+use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
 use std::future::Future;
@@ -48,6 +49,10 @@ pub struct PetriVmOpenVmm {
 
 #[async_trait]
 impl PetriVm for PetriVmOpenVmm {
+    fn arch(&self) -> MachineArch {
+        self.inner.arch
+    }
+
     async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason> {
         Self::wait_for_halt(self).await
     }
@@ -86,6 +91,7 @@ impl PetriVm for PetriVmOpenVmm {
 }
 
 pub(super) struct PetriVmInner {
+    pub(super) arch: MachineArch,
     pub(super) resources: PetriVmResourcesOpenVmm,
     pub(super) mesh: Mesh,
     pub(super) worker: Arc<Worker>,

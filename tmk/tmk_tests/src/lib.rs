@@ -9,8 +9,9 @@ use pal_async::DefaultPool;
 use pal_async::task::Spawn as _;
 use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
+use petri_artifacts_common::tags::MachineArch;
 
-petri::test!(host_tmks, resolve_host_tmks);
+petri::test!(host_tmks, |resolver| resolve_host_tmks(resolver, false));
 
 fn host_tmks(
     params: petri::PetriTestParams<'_>,
@@ -19,10 +20,10 @@ fn host_tmks(
     host_tmks_core(params, false, artifacts)
 }
 
-#[cfg(windows)] // only useful on virt_whp for now
-petri::test!(host_tmks_emulated_apic, resolve_host_tmks);
+petri::test!(host_tmks_emulated_apic, |resolver| resolve_host_tmks(
+    resolver, true
+));
 
-#[cfg(windows)] // only useful on virt_whp for now
 fn host_tmks_emulated_apic(
     params: petri::PetriTestParams<'_>,
     artifacts: (ResolvedArtifact, ResolvedArtifact),
@@ -30,24 +31,32 @@ fn host_tmks_emulated_apic(
     host_tmks_core(params, true, artifacts)
 }
 
+fn resolve_simple_tmk(
+    resolver: &petri::ArtifactResolver<'_>,
+    arch: MachineArch,
+) -> ResolvedArtifact {
+    match arch {
+        MachineArch::X86_64 => resolver
+            .require(petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_X64)
+            .erase(),
+        MachineArch::Aarch64 => resolver
+            .require(petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_AARCH64)
+            .erase(),
+    }
+}
+
 fn resolve_host_tmks(
     resolver: &petri::ArtifactResolver<'_>,
-) -> (ResolvedArtifact, ResolvedArtifact) {
+    emulated_apic: bool,
+) -> Option<(ResolvedArtifact, ResolvedArtifact)> {
+    // Only useful on virt_whp x64 for now.
+    if emulated_apic && (MachineArch::host() != MachineArch::X86_64 || !cfg!(windows)) {
+        return None;
+    }
     let tmk_vmm = resolver
         .require(petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_NATIVE)
         .erase();
-    let tmk = if cfg!(guest_arch = "x86_64") {
-        resolver
-            .require(petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_X64)
-            .erase()
-    } else if cfg!(guest_arch = "aarch64") {
-        resolver
-            .require(petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_AARCH64)
-            .erase()
-    } else {
-        panic!("Unsupported guest architecture");
-    };
-    (tmk_vmm, tmk)
+    Some((tmk_vmm, resolve_simple_tmk(resolver, MachineArch::host())))
 }
 
 fn host_tmks_core(
@@ -90,36 +99,31 @@ fn host_tmks_core(
 
 fn resolve_paravisor_tmk_artifacts(
     resolver: &petri::ArtifactResolver<'_>,
+    arch: MachineArch,
 ) -> (ResolvedArtifact, ResolvedArtifact, ResolvedArtifact) {
     let igvm_path;
     let tmk_vmm;
-    let tmk;
 
-    if cfg!(guest_arch = "x86_64") {
-        igvm_path = resolver
-            .require(petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64)
-            .erase();
-        tmk_vmm = resolver
-            .require(petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_X64_MUSL)
-            .erase();
-        tmk = resolver
-            .require(petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_X64)
-            .erase();
-    } else if cfg!(guest_arch = "aarch64") {
-        igvm_path = resolver
-            .require(petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64)
-            .erase();
-        tmk_vmm = resolver
-            .require(petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_AARCH64_MUSL)
-            .erase();
-        tmk = resolver
-            .require(petri_artifacts_vmm_test::artifacts::tmks::SIMPLE_TMK_AARCH64)
-            .erase();
-    } else {
-        panic!("Unsupported guest architecture");
-    };
+    match arch {
+        MachineArch::X86_64 => {
+            igvm_path = resolver
+                .require(petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64)
+                .erase();
+            tmk_vmm = resolver
+                .require(petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_X64_MUSL)
+                .erase();
+        }
+        MachineArch::Aarch64 => {
+            igvm_path = resolver
+                .require(petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_AARCH64)
+                .erase();
+            tmk_vmm = resolver
+                .require(petri_artifacts_vmm_test::artifacts::tmks::TMK_VMM_LINUX_AARCH64_MUSL)
+                .erase();
+        }
+    }
 
-    (igvm_path, tmk_vmm, tmk)
+    (igvm_path, tmk_vmm, resolve_simple_tmk(resolver, arch))
 }
 
 async fn openhcl_tmks(
@@ -161,7 +165,6 @@ async fn openhcl_tmks(
     Ok(())
 }
 
-#[cfg(guest_arch = "x86_64")] // We don't support openvmm+openhcl tests on aarch64 yet
 petri::test!(openvmm_openhcl_tmks, resolve_openvmm_openhcl_tmks);
 
 struct OpenvmmOpenhclArtifacts {
@@ -170,17 +173,11 @@ struct OpenvmmOpenhclArtifacts {
     tmk: ResolvedArtifact,
 }
 
-#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
-fn resolve_openvmm_openhcl_tmks(resolver: &petri::ArtifactResolver<'_>) -> OpenvmmOpenhclArtifacts {
-    let (igvm_path, tmk_vmm, tmk) = resolve_paravisor_tmk_artifacts(resolver);
-
-    let arch = if cfg!(guest_arch = "x86_64") {
-        petri_artifacts_common::tags::MachineArch::X86_64
-    } else if cfg!(guest_arch = "aarch64") {
-        petri_artifacts_common::tags::MachineArch::Aarch64
-    } else {
-        panic!("Unsupported guest architecture");
-    };
+fn resolve_openvmm_openhcl_tmks(
+    resolver: &petri::ArtifactResolver<'_>,
+) -> Option<OpenvmmOpenhclArtifacts> {
+    let arch = MachineArch::host();
+    let (igvm_path, tmk_vmm, tmk) = resolve_paravisor_tmk_artifacts(resolver, arch);
 
     let vm = petri::openvmm::PetriVmArtifactsOpenVmm::new(
         resolver,
@@ -191,11 +188,10 @@ fn resolve_openvmm_openhcl_tmks(resolver: &petri::ArtifactResolver<'_>) -> Openv
             igvm_path,
         },
         arch,
-    );
-    OpenvmmOpenhclArtifacts { vm, tmk_vmm, tmk }
+    )?;
+    Some(OpenvmmOpenhclArtifacts { vm, tmk_vmm, tmk })
 }
 
-#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn openvmm_openhcl_tmks(
     params: petri::PetriTestParams<'_>,
     artifacts: OpenvmmOpenhclArtifacts,
@@ -220,13 +216,13 @@ fn openvmm_openhcl_tmks(
 }
 
 #[cfg(windows)]
-#[cfg(guest_arch = "x86_64")] // TODO: aarch64 currently hangs, fix
 mod hyperv {
     use crate::openhcl_tmks;
     use crate::resolve_paravisor_tmk_artifacts;
     use pal_async::DefaultPool;
     use petri::ProcessorTopology;
     use petri::ResolvedArtifact;
+    use petri_artifacts_common::tags::MachineArch;
 
     petri::test!(hyperv_openhcl_tmks, resolve_hyperv_openhcl_tmks);
 
@@ -238,16 +234,14 @@ mod hyperv {
 
     fn resolve_hyperv_openhcl_tmks(
         resolver: &petri::ArtifactResolver<'_>,
-    ) -> HypervOpenhclArtifacts {
-        let (igvm_path, tmk_vmm, tmk) = resolve_paravisor_tmk_artifacts(resolver);
+    ) -> Option<HypervOpenhclArtifacts> {
+        let arch = MachineArch::host();
+        if MachineArch::host() != MachineArch::X86_64 {
+            // TODO: aarch64 currently hangs, fix
+            return None;
+        }
 
-        let arch = if cfg!(guest_arch = "x86_64") {
-            petri_artifacts_common::tags::MachineArch::X86_64
-        } else if cfg!(guest_arch = "aarch64") {
-            petri_artifacts_common::tags::MachineArch::Aarch64
-        } else {
-            panic!("Unsupported guest architecture");
-        };
+        let (igvm_path, tmk_vmm, tmk) = resolve_paravisor_tmk_artifacts(resolver, arch);
 
         let vm = petri::hyperv::PetriVmArtifactsHyperV::new(
             resolver,
@@ -258,8 +252,8 @@ mod hyperv {
                 igvm_path,
             },
             arch,
-        );
-        HypervOpenhclArtifacts { vm, tmk_vmm, tmk }
+        )?;
+        Some(HypervOpenhclArtifacts { vm, tmk_vmm, tmk })
     }
 
     fn hyperv_openhcl_tmks(

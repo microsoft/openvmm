@@ -15,6 +15,7 @@ use petri::SIZE_1_GB;
 use petri::ShutdownKind;
 use petri::openvmm::NIC_MAC_ADDRESS;
 use petri::openvmm::PetriVmConfigOpenVmm;
+use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
 use std::time::Duration;
 use vmm_core_defs::HaltReason;
@@ -309,13 +310,14 @@ async fn guest_test_uefi(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
         .with_windows_secure_boot_template()
         .run_without_agent()
         .await?;
+    let arch = vm.arch();
     // No boot event check, UEFI watchdog gets fired before ExitBootServices
     let halt_reason = vm.wait_for_teardown().await?;
     tracing::debug!("vm halt reason: {halt_reason:?}");
-    #[cfg(guest_arch = "x86_64")]
-    assert!(matches!(halt_reason, HaltReason::TripleFault { .. }));
-    #[cfg(guest_arch = "aarch64")]
-    assert!(matches!(halt_reason, HaltReason::Reset));
+    match arch {
+        MachineArch::X86_64 => assert!(matches!(halt_reason, HaltReason::TripleFault { .. })),
+        MachineArch::Aarch64 => assert!(matches!(halt_reason, HaltReason::Reset)),
+    }
     Ok(())
 }
 

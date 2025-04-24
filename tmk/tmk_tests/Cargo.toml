@@ -16,8 +16,5 @@ pal_async.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 
-[build-dependencies]
-build_rs_guest_arch.workspace = true
-
 [lints]
 workspace = true

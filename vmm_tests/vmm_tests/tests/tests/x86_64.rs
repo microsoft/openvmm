@@ -241,11 +241,7 @@ fn configure_for_sidecar(
                 vps_per_socket: Some(proc_count),
                 enable_smt: Some(false),
                 // Sidecar currently requires x2APIC.
-                apic_mode: if cfg!(guest_arch = "x86_64") {
-                    Some(ApicMode::X2apicSupported)
-                } else {
-                    None
-                },
+                apic_mode: Some(ApicMode::X2apicSupported),
             }
         })
 }

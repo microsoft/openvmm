@@ -69,6 +69,7 @@ impl<T: 'static + RunTest> From<T> for TestCase {
 struct Test {
     module: &'static str,
     test: TestCase,
+    requirements: TestArtifactRequirements,
 }
 
 impl Test {
@@ -76,7 +77,16 @@ impl Test {
     fn all() -> impl Iterator<Item = Self> {
         TESTS.iter().flat_map(|f| {
             let (module, tests) = f();
-            tests.into_iter().map(move |test| Self { module, test })
+            tests.into_iter().filter_map(move |test| {
+                let mut requirements = test.0.requirements()?;
+                // All tests require the log directory.
+                requirements.require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
+                Some(Self {
+                    module,
+                    requirements,
+                    test,
+                })
+            })
         })
     }
 
@@ -89,21 +99,13 @@ impl Test {
         }
     }
 
-    /// Returns the artifact requirements for the test.
-    fn requirements(&self) -> TestArtifactRequirements {
-        let mut requirements = self.test.0.requirements();
-        // All tests require the log directory.
-        requirements.require(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
-        requirements
-    }
-
     fn run(
         &self,
         resolve: fn(&str, TestArtifactRequirements) -> anyhow::Result<TestArtifacts>,
     ) -> anyhow::Result<()> {
         let name = self.name();
         let artifacts =
-            resolve(&name, self.requirements()).context("failed to resolve artifacts")?;
+            resolve(&name, self.requirements.clone()).context("failed to resolve artifacts")?;
         let output_dir = artifacts.get(petri_artifacts_common::artifacts::TEST_LOG_DIRECTORY);
         let logger = try_init_tracing(output_dir).context("failed to initialize tracing")?;
 
@@ -178,7 +180,11 @@ pub trait RunTest: Send {
     /// name where the test is defined.
     fn leaf_name(&self) -> &str;
     /// Returns the artifacts required by the test.
-    fn resolve(&self, resolver: &ArtifactResolver<'_>) -> Self::Artifacts;
+    ///
+    /// Returns `None` if this test makes no sense for this host environment
+    /// (e.g., an x86_64 test on an aarch64 host) and should be left out of the
+    /// test list.
+    fn resolve(&self, resolver: &ArtifactResolver<'_>) -> Option<Self::Artifacts>;
     /// Runs the test, which has been assigned `name`, with the given
     /// `artifacts`.
     fn run(&self, params: PetriTestParams<'_>, artifacts: Self::Artifacts) -> anyhow::Result<()>;
@@ -186,7 +192,7 @@ pub trait RunTest: Send {
 
 trait DynRunTest: Send {
     fn leaf_name(&self) -> &str;
-    fn requirements(&self) -> TestArtifactRequirements;
+    fn requirements(&self) -> Option<TestArtifactRequirements>;
     fn run(&self, params: PetriTestParams<'_>, artifacts: &TestArtifacts) -> anyhow::Result<()>;
 }
 
@@ -195,14 +201,16 @@ impl<T: RunTest> DynRunTest for T {
         self.leaf_name()
     }
 
-    fn requirements(&self) -> TestArtifactRequirements {
+    fn requirements(&self) -> Option<TestArtifactRequirements> {
         let mut requirements = TestArtifactRequirements::new();
-        self.resolve(&ArtifactResolver::collector(&mut requirements));
-        requirements
+        self.resolve(&ArtifactResolver::collector(&mut requirements))?;
+        Some(requirements)
     }
 
     fn run(&self, params: PetriTestParams<'_>, artifacts: &TestArtifacts) -> anyhow::Result<()> {
-        let artifacts = self.resolve(&ArtifactResolver::resolver(artifacts));
+        let artifacts = self
+            .resolve(&ArtifactResolver::resolver(artifacts))
+            .context("test should have been skipped")?;
         self.run(params, artifacts)
     }
 }
@@ -227,7 +235,7 @@ pub struct SimpleTest<A, F> {
 
 impl<A, AR, F, E> SimpleTest<A, F>
 where
-    A: 'static + Send + Fn(&ArtifactResolver<'_>) -> AR,
+    A: 'static + Send + Fn(&ArtifactResolver<'_>) -> Option<AR>,
     F: 'static + Send + Fn(PetriTestParams<'_>, AR) -> Result<(), E>,
     E: Into<anyhow::Error>,
 {
@@ -244,7 +252,7 @@ where
 
 impl<A, AR, F, E> RunTest for SimpleTest<A, F>
 where
-    A: 'static + Send + Fn(&ArtifactResolver<'_>) -> AR,
+    A: 'static + Send + Fn(&ArtifactResolver<'_>) -> Option<AR>,
     F: 'static + Send + Fn(PetriTestParams<'_>, AR) -> Result<(), E>,
     E: Into<anyhow::Error>,
 {
@@ -254,7 +262,7 @@ where
         self.leaf_name
     }
 
-    fn resolve(&self, resolver: &ArtifactResolver<'_>) -> Self::Artifacts {
+    fn resolve(&self, resolver: &ArtifactResolver<'_>) -> Option<Self::Artifacts> {
         (self.resolve)(resolver)
     }
 
@@ -280,12 +288,11 @@ pub fn test_main(
     if args.list_required_artifacts {
         // FUTURE: write this in a machine readable format.
         for test in Test::all() {
-            let requirements = test.requirements();
             println!("{}:", test.name());
-            for artifact in requirements.required_artifacts() {
+            for artifact in test.requirements.required_artifacts() {
                 println!("required: {artifact:?}");
             }
-            for artifact in requirements.optional_artifacts() {
+            for artifact in test.requirements.optional_artifacts() {
                 println!("optional: {artifact:?}");
             }
             println!();

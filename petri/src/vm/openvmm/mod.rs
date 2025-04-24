@@ -76,14 +76,29 @@ pub struct PetriVmArtifactsOpenVmm {
 
 impl PetriVmArtifactsOpenVmm {
     /// Resolves the artifacts needed to instantiate a [`PetriVmConfigOpenVmm`].
-    pub fn new(resolver: &ArtifactResolver<'_>, firmware: Firmware, arch: MachineArch) -> Self {
+    ///
+    /// Returns `None` if the supplied configuration is not supported on this platform.
+    pub fn new(
+        resolver: &ArtifactResolver<'_>,
+        firmware: Firmware,
+        arch: MachineArch,
+    ) -> Option<Self> {
+        if arch != MachineArch::host() {
+            return None;
+        }
+        if firmware.is_openhcl() {
+            // Only limited support for using OpenHCL on OpenVMM.
+            if !cfg!(windows) || arch != MachineArch::X86_64 {
+                return None;
+            }
+        }
         let agent_image = AgentImage::new(resolver, arch, firmware.os_flavor());
         let openhcl_agent_image = if firmware.is_openhcl() {
             Some(AgentImage::new(resolver, arch, OsFlavor::Linux))
         } else {
             None
         };
-        Self {
+        Some(Self {
             firmware,
             arch,
             agent_image,
@@ -91,7 +106,7 @@ impl PetriVmArtifactsOpenVmm {
             openvmm_path: resolver
                 .require(petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE)
                 .erase(),
-        }
+        })
     }
 }
 
