@@ -1138,7 +1138,7 @@ impl UhProcessor<'_, TdxBacked> {
         }
 
         if self.backing.vtls[vtl].processor_controls != new_processor_controls {
-            tracing::debug!(?new_processor_controls, ?vtl, "requesting window change");
+            tracing::trace!(?new_processor_controls, ?vtl, "requesting window change");
             self.runner.write_vmcs32(
                 vtl,
                 VmcsField::VMX_VMCS_PROCESSOR_CONTROLS,
