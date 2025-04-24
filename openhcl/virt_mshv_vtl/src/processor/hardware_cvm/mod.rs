@@ -2041,7 +2041,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     /// intercept.
     #[must_use]
     pub(crate) fn cvm_try_protect_secure_register_write(
-        &self,
+        &mut self,
         vtl: GuestVtl,
         reg: HvX64RegisterName,
         value: u64,
@@ -2050,15 +2050,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         if send_intercept {
             let message_state = B::intercept_message_state(self, vtl);
 
-            tracing::debug!(
-                ?reg,
-                ?value,
-                "sending intercept to vtl 1 for secure register write"
-            );
-
-            self.inner.post_message(
+            self.send_intercept_message(
                 GuestVtl::Vtl1,
-                hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX,
                 &crate::processor::InterceptMessageType::Register { reg, value }
                     .generate_hv_message(self.vp_index(), vtl, message_state),
             );
@@ -2075,7 +2068,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     /// pointer must continue to point to the instruction that generated the
     /// intercept.
     #[must_use]
-    pub(crate) fn cvm_try_protect_msr_write(&self, vtl: GuestVtl, msr: u32) -> bool {
+    pub(crate) fn cvm_try_protect_msr_write(&mut self, vtl: GuestVtl, msr: u32) -> bool {
         if vtl == GuestVtl::Vtl0 && self.backing.cvm_state().vtl1.is_some() {
             let configured_intercepts = self
                 .backing
@@ -2114,11 +2107,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             if generate_intercept {
                 let message_state = B::intercept_message_state(self, vtl);
 
-                tracing::debug!(?msr, "sending intercept to vtl 1 for secure msr write");
-
-                self.inner.post_message(
+                self.send_intercept_message(
                     GuestVtl::Vtl1,
-                    hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX,
                     &crate::processor::InterceptMessageType::Msr { msr }.generate_hv_message(
                         self.vp_index(),
                         vtl,
@@ -2229,6 +2219,35 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         assert!(source_vtl < target_vtl);
         B::switch_vtl(self, source_vtl, target_vtl);
         self.backing.cvm_state_mut().hv[target_vtl].set_return_reason(entry_reason);
+    }
+
+    fn send_intercept_message(&mut self, vtl: GuestVtl, message: &hvdef::HvMessage) {
+        tracing::trace!(?message, "sending intercept to {:?}", vtl);
+
+        match self
+            .backing
+            .hv_mut(vtl)
+            .as_mut()
+            .unwrap()
+            .synic
+            .post_intercept_message(
+                message,
+                &mut self
+                    .partition
+                    .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
+            ) {
+            Ok(_) => (),
+            Err(e) => {
+                // Dropping this allows us to try to deliver the existing interrupt
+                // to VTL 1. Since the instruction pointer is not advanced, the VTL
+                // 0 guest will exit on the same instruction again, providing
+                // another opportunity to deliver the intercept.
+                assert!(
+                    e == HvError::ObjectInUse,
+                    "unexpected error sending intercept",
+                )
+            }
+        };
     }
 }
 
