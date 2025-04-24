@@ -2596,6 +2596,10 @@ impl UhProcessor<'_, TdxBacked> {
 
             x86defs::X86X_MSR_MTRR_DEF_TYPE => {} // Ignore writes to this MSR
 
+            // Following MSRs are sometimes written by Windows guests.
+            // These are not virtualized and unsupported for L2-VMs
+            x86defs::X86X_MSR_BIOS_UPDT_TRIG => {}
+
             // Following MSRs are unconditionally written by Linux guests.
             // These are not virtualized and unsupported for L2-VMs
             x86defs::X86X_MSR_MISC_FEATURE_ENABLES

@@ -179,6 +179,7 @@ pub const X86X_MSR_EBL_CR_POWERON: u32 = 0x2a;
 pub const X86X_IA32_MSR_SMI_COUNT: u32 = 0x34;
 pub const X86X_IA32_MSR_FEATURE_CONTROL: u32 = 0x3a;
 pub const X86X_MSR_PPIN_CTL: u32 = 0x4e;
+pub const X86X_MSR_BIOS_UPDT_TRIG: u32 = 0x79;
 pub const X86X_MSR_MC_UPDATE_PATCH_LEVEL: u32 = 0x8b;
 pub const X86X_MSR_PLATFORM_INFO: u32 = 0xce;
 pub const X86X_MSR_UMWAIT_CONTROL: u32 = 0xe1;
