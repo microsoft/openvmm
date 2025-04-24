@@ -2072,9 +2072,9 @@ impl UhProcessor<'_, TdxBacked> {
                     }
                 };
                 // We only support fowarding intercepts for descriptor table writes today.
-                if (info.instruction().is_write()
+                if (info.instruction().is_load()
                     && !self.cvm_try_protect_secure_register_write(intercepted_vtl, reg, 0))
-                    || !info.instruction().is_write()
+                    || !info.instruction().is_load()
                 {
                     self.emulate_gdtr_or_idtr(intercepted_vtl, dev).await?;
                 }
@@ -2092,9 +2092,9 @@ impl UhProcessor<'_, TdxBacked> {
                     LdtrOrTrInstruction::Str | LdtrOrTrInstruction::Ltr => HvX64RegisterName::Tr,
                 };
                 // We only support fowarding intercepts for descriptor table writes today.
-                if (info.instruction().is_write()
+                if (info.instruction().is_load()
                     && !self.cvm_try_protect_secure_register_write(intercepted_vtl, reg, 0))
-                    || !info.instruction().is_write()
+                    || !info.instruction().is_load()
                 {
                     self.emulate_ldtr_or_tr(intercepted_vtl, dev).await?;
                 }
@@ -3061,44 +3061,26 @@ impl UhProcessor<'_, TdxBacked> {
             VmxExitBasic::GDTR_OR_IDTR
         );
         let instr_info = GdtrOrIdtrInstructionInfo::from(exit_info.instr_info().info());
-        let gps = self.runner.tdx_enter_guest_gps();
 
-        // Check if read instructions are blocked by UMIP.
-        if !instr_info.instruction().is_write()
-            && exit_info.cpl() > 0
-            && self.read_cr4(vtl) & X64_CR4_UMIP != 0
+        // Check if load instructions are executed outside of kernel mode.
+        // Check if store instructions are blocked by UMIP.
+        if (instr_info.instruction().is_load() && exit_info.cpl() != 0)
+            || (!instr_info.instruction().is_load()
+                && exit_info.cpl() > 0
+                && self.read_cr4(vtl) & X64_CR4_UMIP != 0)
         {
             self.inject_gpf(vtl);
             return Ok(());
         }
 
-        // Displacement is stored in the qualification field for these instructions.
-        let mut gva = exit_info.qualification();
-        if !instr_info.base_register_invalid() {
-            gva += gps[instr_info.base_register() as usize];
-        }
-        if !instr_info.index_register_invalid() {
-            gva += gps[instr_info.index_register() as usize] << instr_info.scaling();
-        }
-        match instr_info.address_size() {
-            // 16-bit address size
-            0 => gva &= 0xFFFF,
-            // 32-bit address size
-            1 => gva &= 0xFFFFFFFF,
-            // 64-bit address size
-            2 => {}
-            _ => unreachable!(),
-        }
-
-        let segment = match instr_info.segment_register() {
-            0 => Segment::ES,
-            1 => Segment::CS,
-            2 => Segment::SS,
-            3 => Segment::DS,
-            4 => Segment::FS,
-            5 => Segment::GS,
-            _ => unreachable!(),
-        };
+        let (gva, segment) = self.compute_address_for_table_access_emulation(
+            exit_info.qualification(),
+            (!instr_info.base_register_invalid()).then_some(instr_info.base_register()),
+            (!instr_info.index_register_invalid()).then_some(instr_info.index_register()),
+            instr_info.scaling(),
+            instr_info.address_size(),
+            instr_info.segment_register(),
+        );
 
         let gm = &self.partition.gm[vtl];
         let interruption_pending = self.backing.vtls[vtl].interruption_information.valid();
@@ -3176,10 +3158,166 @@ impl UhProcessor<'_, TdxBacked> {
 
     async fn emulate_ldtr_or_tr(
         &mut self,
-        _vtl: GuestVtl,
-        _dev: &impl CpuIo,
+        vtl: GuestVtl,
+        dev: &impl CpuIo,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
-        todo!()
+        let exit_info = TdxExit(self.runner.tdx_vp_enter_exit_info());
+        assert_eq!(
+            exit_info.code().vmx_exit().basic_reason(),
+            VmxExitBasic::LDTR_OR_TR
+        );
+        let instr_info = LdtrOrTrInstructionInfo::from(exit_info.instr_info().info());
+
+        // Check if load instructions are executed outside of kernel mode.
+        // Check if store instructions are blocked by UMIP.
+        if (instr_info.instruction().is_load() && exit_info.cpl() != 0)
+            || (!instr_info.instruction().is_load()
+                && exit_info.cpl() > 0
+                && self.read_cr4(vtl) & X64_CR4_UMIP != 0)
+        {
+            self.inject_gpf(vtl);
+            return Ok(());
+        }
+
+        let gm = &self.partition.gm[vtl];
+        let interruption_pending = self.backing.vtls[vtl].interruption_information.valid();
+
+        match instr_info.instruction() {
+            LdtrOrTrInstruction::Sldt | LdtrOrTrInstruction::Str => {
+                let value = self.read_segment(
+                    vtl,
+                    if matches!(instr_info.instruction(), LdtrOrTrInstruction::Sldt) {
+                        TdxSegmentReg::Ldtr
+                    } else {
+                        TdxSegmentReg::Tr
+                    },
+                );
+
+                if instr_info.memory_or_register() {
+                    let gps = self.runner.tdx_enter_guest_gps_mut();
+                    gps[instr_info.register_1() as usize] = value.selector as u64;
+                } else {
+                    let (gva, segment) = self.compute_address_for_table_access_emulation(
+                        exit_info.qualification(),
+                        (!instr_info.base_register_invalid()).then_some(instr_info.base_register()),
+                        (!instr_info.index_register_invalid())
+                            .then_some(instr_info.index_register()),
+                        instr_info.scaling(),
+                        instr_info.address_size(),
+                        instr_info.segment_register(),
+                    );
+                    let mut emulation_state = UhEmulationState {
+                        vp: &mut *self,
+                        interruption_pending,
+                        devices: dev,
+                        vtl,
+                        cache: TdxEmulationCache::default(),
+                    };
+                    emulate_insn_memory_op(
+                        &mut emulation_state,
+                        gm,
+                        dev,
+                        gva,
+                        segment,
+                        x86emu::AlignmentMode::Standard,
+                        EmulatedMemoryOperation::Write(&value.selector.to_le_bytes()),
+                    )
+                    .await?;
+                }
+            }
+
+            LdtrOrTrInstruction::Lldt | LdtrOrTrInstruction::Ltr => {
+                let value = if instr_info.memory_or_register() {
+                    let gps = self.runner.tdx_enter_guest_gps();
+                    gps[instr_info.register_1() as usize] as u16
+                } else {
+                    let (gva, segment) = self.compute_address_for_table_access_emulation(
+                        exit_info.qualification(),
+                        (!instr_info.base_register_invalid()).then_some(instr_info.base_register()),
+                        (!instr_info.index_register_invalid())
+                            .then_some(instr_info.index_register()),
+                        instr_info.scaling(),
+                        instr_info.address_size(),
+                        instr_info.segment_register(),
+                    );
+                    let mut emulation_state = UhEmulationState {
+                        vp: &mut *self,
+                        interruption_pending,
+                        devices: dev,
+                        vtl,
+                        cache: TdxEmulationCache::default(),
+                    };
+                    let mut buf = [0u8; 2];
+                    emulate_insn_memory_op(
+                        &mut emulation_state,
+                        gm,
+                        dev,
+                        gva,
+                        segment,
+                        x86emu::AlignmentMode::Standard,
+                        EmulatedMemoryOperation::Read(&mut buf),
+                    )
+                    .await?;
+                    u16::from_le_bytes(buf)
+                };
+                self.runner.write_vmcs16(
+                    vtl,
+                    if matches!(instr_info.instruction(), LdtrOrTrInstruction::Lldt) {
+                        TdxSegmentReg::Ldtr
+                    } else {
+                        TdxSegmentReg::Tr
+                    }
+                    .selector(),
+                    !0,
+                    value,
+                );
+            }
+        }
+
+        self.advance_to_next_instruction(vtl);
+        Ok(())
+    }
+
+    fn compute_address_for_table_access_emulation(
+        &self,
+        qualification: u64,
+        base_reg: Option<u8>,
+        index_reg: Option<u8>,
+        scaling: u8,
+        address_size: u8,
+        segment_register: u8,
+    ) -> (u64, Segment) {
+        let gps = self.runner.tdx_enter_guest_gps();
+
+        // Displacement is stored in the qualification field for these instructions.
+        let mut gva = qualification;
+        if let Some(base_register) = base_reg {
+            gva += gps[base_register as usize];
+        }
+        if let Some(index_register) = index_reg {
+            gva += gps[index_register as usize] << scaling;
+        }
+        match address_size {
+            // 16-bit address size
+            0 => gva &= 0xFFFF,
+            // 32-bit address size
+            1 => gva &= 0xFFFFFFFF,
+            // 64-bit address size
+            2 => {}
+            _ => unreachable!(),
+        }
+
+        let segment = match segment_register {
+            0 => Segment::ES,
+            1 => Segment::CS,
+            2 => Segment::SS,
+            3 => Segment::DS,
+            4 => Segment::FS,
+            5 => Segment::GS,
+            _ => unreachable!(),
+        };
+
+        (gva, segment)
     }
 }
 
