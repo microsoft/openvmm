@@ -313,7 +313,6 @@ async fn launch_workers(
         nvme_vfio: opt.nvme_vfio,
         mcr: opt.mcr,
         enable_shared_visibility_pool: opt.enable_shared_visibility_pool,
-        cvm_guest_vsm: opt.cvm_guest_vsm,
         halt_on_guest_halt: opt.halt_on_guest_halt,
         no_sidecar_hotplug: opt.no_sidecar_hotplug,
         gdbstub: opt.gdbstub,

@@ -263,15 +263,11 @@ pub struct UnderhillEnvCfg {
     pub force_load_vtl0_image: Option<String>,
     /// Use the user-mode NVMe driver.
     pub nvme_vfio: bool,
-
     // TODO MCR: support closed-source configuration logic for MCR device
     pub mcr: bool,
-
     /// Enable the shared visibility pool. This is enabled by default on
     /// hardware isolated platforms, but can be enabled for testing.
     pub enable_shared_visibility_pool: bool,
-    /// Enable support for guest vsm in CVMs. This is disabled by default.
-    pub cvm_guest_vsm: bool,
     /// Halt on a guest halt request instead of forwarding to the host.
     pub halt_on_guest_halt: bool,
     /// Leave sidecar VPs remote even if they hit exits.
@@ -282,10 +278,8 @@ pub struct UnderhillEnvCfg {
     pub hide_isolation: bool,
     /// Enable nvme keep alive.
     pub nvme_keep_alive: bool,
-
     /// test configuration
     pub test_configuration: Option<TestScenarioConfig>,
-
     /// Disable the UEFI front page.
     pub disable_uefi_frontpage: bool,
 }
@@ -1442,7 +1436,6 @@ async fn new_underhill_vm(
         topology: &processor_topology,
         cvm_cpuid_info: runtime_params.cvm_cpuid_info(),
         snp_secrets: runtime_params.snp_secrets(),
-        env_cvm_guest_vsm: env_cfg.cvm_guest_vsm,
         vtom,
         handle_synic: with_vmbus,
         no_sidecar_hotplug: env_cfg.no_sidecar_hotplug,
