@@ -3,6 +3,9 @@
 
 //! Types to access work, completion, and event queues.
 
+use crate::save_restore::CqEqSavedState;
+use crate::save_restore::DoorbellSavedState;
+use crate::save_restore::WqSavedState;
 use gdma_defs::CLIENT_OOB_8;
 use gdma_defs::CLIENT_OOB_24;
 use gdma_defs::CLIENT_OOB_32;
@@ -22,9 +25,6 @@ use gdma_defs::WqDoorbellValue;
 use gdma_defs::WqeHeader;
 use gdma_defs::WqeParams;
 use inspect::Inspect;
-use mana_save_restore::save_restore::CqEqSavedState;
-use mana_save_restore::save_restore::DoorbellSavedState;
-use mana_save_restore::save_restore::WqSavedState;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::Ordering::Acquire;

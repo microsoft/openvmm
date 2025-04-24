@@ -10,7 +10,6 @@ rust-version.workspace = true
 gdma_defs.workspace = true
 net_backend.workspace = true
 net_backend_resources.workspace = true
-mana_save_restore.workspace = true
 
 chipset_device.workspace = true
 user_driver.workspace = true
