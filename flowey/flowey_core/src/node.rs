@@ -332,11 +332,11 @@ impl<T: Serialize + DeserializeOwned> ReadVarValue for ClaimedReadVar<T> {
         match self.backing_var {
             ReadVarBacking::RuntimeVar {
                 var,
-                is_side_effect: side_effect,
+                is_side_effect,
             } => {
                 // Always get the data to validate that the variable is actually there.
                 let data = rt.get_var(&var);
-                if side_effect {
+                if is_side_effect {
                     serde_json::from_slice(b"null").expect("should be deserializing into ()")
                 } else {
                     serde_json::from_slice(&data).expect("improve this error path")
@@ -519,10 +519,10 @@ impl<T: Serialize + DeserializeOwned> Clone for ReadVarBacking<T> {
         match self {
             Self::RuntimeVar {
                 var,
-                is_side_effect: side_effect,
+                is_side_effect,
             } => Self::RuntimeVar {
                 var: var.clone(),
-                is_side_effect: *side_effect,
+                is_side_effect: *is_side_effect,
             },
             Self::Inline(v) => {
                 Self::Inline(serde_json::from_value(serde_json::to_value(v).unwrap()).unwrap())
@@ -733,11 +733,11 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
         match self.backing_var {
             ReadVarBacking::RuntimeVar {
                 var,
-                is_side_effect: side_effect,
+                is_side_effect,
             } => ReadVar {
                 backing_var: ReadVarBacking::RuntimeVar {
                     var,
-                    is_side_effect: side_effect,
+                    is_side_effect,
                 },
                 is_secret: self.is_secret,
                 _kind: std::marker::PhantomData,
@@ -800,8 +800,8 @@ pub fn read_var_internals<T: Serialize + DeserializeOwned, C>(
     match var.backing_var {
         ReadVarBacking::RuntimeVar {
             var: ref s,
-            is_side_effect: side_effect,
-        } => (Some(s.clone()), var.is_secret, side_effect),
+            is_side_effect,
+        } => (Some(s.clone()), var.is_secret, is_side_effect),
         ReadVarBacking::Inline(_) => (None, var.is_secret, false),
     }
 }
@@ -1319,9 +1319,9 @@ impl<'ctx> NodeCtx<'ctx> {
             }
             Some(ReadVarBacking::RuntimeVar {
                 var,
-                is_side_effect: side_effect,
+                is_side_effect,
             }) => {
-                assert!(!side_effect);
+                assert!(!is_side_effect);
                 self.backend.borrow_mut().on_claimed_runtime_var(&var, true);
                 Some(var)
             }
@@ -1385,9 +1385,9 @@ impl<'ctx> NodeCtx<'ctx> {
             }
             Some(ReadVarBacking::RuntimeVar {
                 var,
-                is_side_effect: side_effect,
+                is_side_effect,
             }) => {
-                assert!(!side_effect);
+                assert!(!is_side_effect);
                 self.backend.borrow_mut().on_claimed_runtime_var(&var, true);
                 Some(var)
             }
@@ -1891,10 +1891,10 @@ pub mod steps {
             pub fn get_var(&mut self, var: ClaimedReadVar<String>) -> AdoRuntimeVar {
                 let backing_var = if let ReadVarBacking::RuntimeVar {
                     var,
-                    is_side_effect: side_effect,
+                    is_side_effect,
                 } = &var.backing_var
                 {
-                    assert!(!side_effect);
+                    assert!(!is_side_effect);
                     var
                 } else {
                     todo!("support inline ado read vars")
@@ -2095,11 +2095,8 @@ pub mod steps {
                 match self {
                     GhParam::Static(s) => ClaimedGhParam::Static(s),
                     GhParam::FloweyVar(var) => match &var.backing_var {
-                        ReadVarBacking::RuntimeVar {
-                            is_side_effect: side_effect,
-                            ..
-                        } => {
-                            assert!(!side_effect);
+                        ReadVarBacking::RuntimeVar { is_side_effect, .. } => {
+                            assert!(!is_side_effect);
                             ClaimedGhParam::FloweyVar(var.claim(ctx))
                         }
                         ReadVarBacking::Inline(var) => ClaimedGhParam::Static(var.clone()),
