@@ -12,9 +12,9 @@
 //! specification within the uefi_specs crate.
 //!
 //! TODO:
-//!  - Add more doc comments
 //!  - Add unit tests
 use crate::UefiDevice;
+use anyhow::anyhow;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
@@ -27,17 +27,13 @@ use uefi_specs::hyperv::advanced_logger::SIG_ENTRY;
 use uefi_specs::hyperv::advanced_logger::SIG_HEADER;
 use zerocopy::FromBytes;
 
-//
-// Constants for parsing
-//
-const ALIGNMENT: usize = 8;
-const ALIGNMENT_MASK: usize = ALIGNMENT - 1;
+// Constants for processing the efi diagnostics buffer
+const ALIGNMENT: usize = 8; // 8-byte alignment
+const ALIGNMENT_MASK: usize = ALIGNMENT - 1; // Mask for alignment
 pub const MAX_LOG_BUFFER_SIZE: u32 = 0x400000; // 4MB
 pub const MAX_MESSAGE_LENGTH: u16 = 0x1000; // 4KB
 
-//
-// Represents a processed log entry from the EFI diagnostics buffer
-//
+/// Represents a processed log entry from the EFI diagnostics buffer
 #[derive(Debug, Clone)]
 pub struct EfiDiagnosticsLog {
     pub debug_level: u32,    // The debug level of the log entry
@@ -46,108 +42,151 @@ pub struct EfiDiagnosticsLog {
     pub description: String, // The log message itself
 }
 
-//
-// Validation error types for the advanced logger spec types
-//
+/// Errors that occur when parsing entries
 #[derive(Debug, Error)]
-pub enum AdvancedLoggerInfoError {
-    #[error("Invalid header signature: {0:#x}, expected: {1:#x}")]
-    Signature(u32, u32),
-    #[error("Invalid log buffer size: {0:#x}, max: {1:#x}")]
-    LogBufferSize(u32, u32),
-}
+pub enum EntryParseError {
+    #[error("Expected: {0:#x}, got: {1:#x}")]
+    SignatureMismatch(u32, u32),
 
-#[derive(Debug, Error)]
-pub enum AdvancedLoggerMessageEntryV2Error {
-    #[error("Invalid entry signature: {0:#x}, expected: {1:#x}")]
-    Signature(u32, u32),
-    #[error("Invalid timestamp: {0:#x}")]
+    #[error("Expected non-zero timestamp, got: {0:#x}")]
     Timestamp(u64),
-    #[error("Invalid message length: {0:#x}, max: {1:#x}")]
+
+    #[error("Expected message length < {0:#x}, got: {1:#x}")]
     MessageLength(u16, u16),
+
+    #[error("Failed to read from buffer slice")]
+    SliceRead,
+
+    #[error("Encountered arithmetic overflow: {0}")]
+    Overflow(#[from] anyhow::Error),
+
+    #[error("Failed to read UTF-8 string: {0}")]
+    Utf8Error(#[from] std::str::Utf8Error),
+
+    #[error("message_end ({0:#x}) exceeds buffer slice length ({1:#x})")]
+    BadMessageEnd(usize, usize),
 }
 
-//
-// Validation extension trait for the advanced logger spec types
-//
-pub trait Validator {
-    type Error;
-    fn validate(&self) -> Result<(), Self::Error>;
+/// Represents a single parsed entry from the EFI diagnostics buffer
+struct EntryData<'a> {
+    debug_level: u32,  // The debug level of the log entry
+    time_stamp: u64,   // Timestamp of when the log entry was created
+    phase: u16,        // The boot phase that produced this log entry
+    message: &'a str,  // The log message itself
+    entry_size: usize, // Size of the entry in bytes (including alignment)
 }
 
-impl Validator for AdvancedLoggerInfo {
-    type Error = AdvancedLoggerInfoError;
+/// Parse a single entry from a buffer slice
+fn parse_entry(buffer_slice: &[u8]) -> Result<EntryData<'_>, EntryParseError> {
+    // Try to parse an entry from the buffer slice
+    let (entry, _) = AdvancedLoggerMessageEntryV2::read_from_prefix(buffer_slice)
+        .map_err(|_| EntryParseError::SliceRead)?;
 
-    fn validate(&self) -> Result<(), Self::Error> {
-        let signature = self.signature.to_le();
-        if signature != SIG_HEADER {
-            return Err(AdvancedLoggerInfoError::Signature(signature, SIG_HEADER));
-        }
-
-        if self.log_buffer_size > MAX_LOG_BUFFER_SIZE {
-            return Err(AdvancedLoggerInfoError::LogBufferSize(
-                self.log_buffer_size,
-                MAX_LOG_BUFFER_SIZE,
-            ));
-        }
-        Ok(())
+    // Validate the entry signature
+    let signature = entry.signature.to_le();
+    if signature != SIG_ENTRY {
+        return Err(EntryParseError::SignatureMismatch(SIG_ENTRY, signature));
     }
-}
 
-impl Validator for AdvancedLoggerMessageEntryV2 {
-    type Error = AdvancedLoggerMessageEntryV2Error;
-
-    fn validate(&self) -> Result<(), Self::Error> {
-        let signature = self.signature.to_le();
-        if signature != SIG_ENTRY {
-            return Err(AdvancedLoggerMessageEntryV2Error::Signature(
-                signature, SIG_ENTRY,
-            ));
-        }
-
-        if self.time_stamp == 0 {
-            return Err(AdvancedLoggerMessageEntryV2Error::Timestamp(
-                self.time_stamp,
-            ));
-        }
-
-        if self.message_len > MAX_MESSAGE_LENGTH {
-            return Err(AdvancedLoggerMessageEntryV2Error::MessageLength(
-                self.message_len,
-                MAX_MESSAGE_LENGTH,
-            ));
-        }
-        Ok(())
+    // Validate the entry timestamp
+    if entry.time_stamp == 0 {
+        return Err(EntryParseError::Timestamp(entry.time_stamp));
     }
+
+    // Validate the message length
+    if entry.message_len > MAX_MESSAGE_LENGTH {
+        return Err(EntryParseError::MessageLength(
+            MAX_MESSAGE_LENGTH,
+            entry.message_len,
+        ));
+    }
+
+    // Copy packed fields to local variables to avoid unaligned access
+    let message_offset = entry.message_offset;
+    let message_len = entry.message_len;
+
+    // Calculate message start and end offsets
+    let message_start = message_offset as usize;
+    let message_end = message_start
+        .checked_add(message_len as usize)
+        .ok_or_else(|| {
+            EntryParseError::Overflow(anyhow!(
+                "message_start ({}) + message_len ({})",
+                message_start,
+                message_len
+            ))
+        })?;
+
+    // Validate message end fits within the buffer slice
+    if message_end > buffer_slice.len() {
+        return Err(EntryParseError::BadMessageEnd(
+            message_end,
+            buffer_slice.len(),
+        ));
+    }
+
+    // Get the message
+    let message = std::str::from_utf8(&buffer_slice[message_start..message_end])?;
+
+    // Calculate base offset (entry header size + message length)
+    let base_offset = size_of::<AdvancedLoggerMessageEntryV2>()
+        .checked_add(message_len as usize)
+        .ok_or_else(|| {
+            EntryParseError::Overflow(anyhow!(
+                "size_of::<AdvancedLoggerMessageEntryV2> ({}) + message_len ({})",
+                size_of::<AdvancedLoggerMessageEntryV2>(),
+                message_len
+            ))
+        })?;
+
+    // Add padding for 8-byte alignment
+    let aligned_offset = base_offset.checked_add(ALIGNMENT_MASK).ok_or_else(|| {
+        EntryParseError::Overflow(anyhow!(
+            "base_offset ({}) + ALIGNMENT_MASK ({})",
+            base_offset,
+            ALIGNMENT_MASK
+        ))
+    })?;
+    let entry_size = aligned_offset & !ALIGNMENT_MASK;
+
+    Ok(EntryData {
+        debug_level: entry.debug_level,
+        time_stamp: entry.time_stamp,
+        phase: entry.phase,
+        message,
+        entry_size,
+    })
 }
 
 /// Errors that occur during processing
-/// TODO: Add more specific error types
 #[derive(Debug, Error)]
 pub enum DiagnosticsError {
+    #[error("Failed to parse entry: {0}")]
+    EntryParse(#[from] EntryParseError),
+
+    #[error("Expected: {0:#x}, got: {1:#x}")]
+    HeaderSignatureMismatch(u32, u32),
+
+    #[error("Expected log buffer size < {0:#x}, got: {1:#x}")]
+    HeaderBufferSize(u32, u32),
+
     #[error("Bad GPA value: {0:#x}")]
     BadGpa(u32),
+
+    #[error("No GPA set")]
+    NoGpa,
 
     #[error("Failed to read from guest memory: {0}")]
     GuestMemoryRead(#[from] GuestMemoryError),
 
-    #[error("Invalid UTF-8 in message: {0}")]
-    Utf8Error(#[from] std::str::Utf8Error),
-
     #[error("Encountered arithmetic overflow: {0}")]
-    Overflow(String),
+    Overflow(#[from] anyhow::Error),
 
-    #[error("Failed to validate AdvancedLoggerInfo: {0}")]
-    HeaderValidation(#[from] AdvancedLoggerInfoError),
+    #[error("Expected used log buffer size < {0:#x}, got: {1:#x}")]
+    BadUsedBufferSize(u32, u32),
 
-    #[error("Failed to validate AdvancedLoggerMessageEntryV2: {0}")]
-    EntryValidation(#[from] AdvancedLoggerMessageEntryV2Error),
-
-    #[error("Failed to read buffer data: {0}")]
-    BoundsError(#[from] std::io::Error),
-
-    #[error("General error: {0}")]
-    GeneralError(String),
+    #[error("Expected accumulated message length < {0:#x}, got: {1:#x}")]
+    BadAccumulatedMessageLength(u16, u16),
 }
 
 /// Definition of the diagnostics services state
@@ -175,7 +214,7 @@ impl DiagnosticsServices {
         }
     }
 
-    /// Process the diagnostics buffer into friendly logs
+    /// Process the diagnostics buffer
     pub fn process_diagnostics<F>(
         &self,
         gm: &GuestMemory,
@@ -190,38 +229,48 @@ impl DiagnosticsServices {
         let gpa = match self.gpa {
             Some(gpa) if gpa != 0 && gpa != u32::MAX => gpa,
             Some(invalid_gpa) => return Err(DiagnosticsError::BadGpa(invalid_gpa)),
-            None => {
-                return Err(DiagnosticsError::GeneralError(
-                    "No diagnostics GPA set".to_string(),
-                ));
-            }
+            None => return Err(DiagnosticsError::NoGpa),
         };
 
         //
-        // Step 2: Read and validate the advanced logger header
+        // Step 2: Get the advanced logger info header
         //
+
+        // Read the header from the guest memory
         let header: AdvancedLoggerInfo = gm.read_plain(gpa as u64)?;
-        header.validate()?;
+
+        // Validate the header signature
+        let signature = header.signature.to_le();
+        if signature != SIG_HEADER {
+            return Err(DiagnosticsError::HeaderSignatureMismatch(
+                SIG_HEADER, signature,
+            ));
+        }
+
+        // Validate the log buffer size
+        if header.log_buffer_size > MAX_LOG_BUFFER_SIZE {
+            return Err(DiagnosticsError::HeaderBufferSize(
+                MAX_LOG_BUFFER_SIZE,
+                header.log_buffer_size,
+            ));
+        }
 
         //
-        // Step 3: Prepare processing variables
+        // Step 3: Read the rest of the used log buffer
         //
-
-        // Used for summary statistics
-        let mut bytes_read: usize = 0;
-        let mut entries_processed: usize = 0;
 
         // Copy packed fields to local variables to avoid unaligned access
         let log_current_offset = header.log_current_offset;
         let log_buffer_offset = header.log_buffer_offset;
 
-        // Calculate used log buffer size using the local variables
+        // Calculate used log buffer size
         let used_log_buffer_size = log_current_offset
             .checked_sub(log_buffer_offset)
             .ok_or_else(|| {
-                DiagnosticsError::Overflow(format!(
+                DiagnosticsError::Overflow(anyhow!(
                     "log_current_offset ({:#x}) - log_buffer_offset ({:#x})",
-                    log_current_offset, log_buffer_offset
+                    log_current_offset,
+                    log_buffer_offset
                 ))
             })?;
 
@@ -230,89 +279,53 @@ impl DiagnosticsServices {
             || used_log_buffer_size > header.log_buffer_size
             || used_log_buffer_size > MAX_LOG_BUFFER_SIZE
         {
-            return Err(DiagnosticsError::GeneralError(format!(
-                "Invalid used log buffer size: {:#x}, max: {:#x}",
-                used_log_buffer_size, MAX_LOG_BUFFER_SIZE
-            )));
+            return Err(DiagnosticsError::BadUsedBufferSize(
+                MAX_LOG_BUFFER_SIZE,
+                used_log_buffer_size,
+            ));
         }
-
-        // Used for accumulating multiple messages
-        let mut accumulated_message = String::with_capacity(MAX_MESSAGE_LENGTH as usize);
-        let mut debug_level = 0;
-        let mut time_stamp = 0;
-        let mut phase = 0;
-        let mut is_accumulating = false;
-
-        //
-        // Step 4: Read the used portions of the log buffer
-        //
 
         // Calculate start address of the log buffer
         let buffer_start_addr = gpa.checked_add(log_buffer_offset).ok_or_else(|| {
-            DiagnosticsError::Overflow(format!(
+            DiagnosticsError::Overflow(anyhow!(
                 "gpa ({:#x}) + log_buffer_offset ({:#x})",
-                gpa, log_buffer_offset
+                gpa,
+                log_buffer_offset
             ))
         })?;
 
+        // Now read the used log buffer into a vector
         let mut buffer_data = vec![0u8; used_log_buffer_size as usize];
         gm.read_at(buffer_start_addr as u64, &mut buffer_data)?;
-
-        // Empty buffer data should early exit
         if buffer_data.is_empty() {
             tracelimit::info_ratelimited!("buffer_data is empty, ending processing");
             return Ok(());
         }
 
         //
-        // Step 5: Parse the log buffer
+        // Step 4: Parse the log buffer
         //
+
+        // Maintain a slice of the buffer that needs to be processed
         let mut buffer_slice = &buffer_data[..];
+
+        // Message accumulation state
+        let mut accumulated_message = String::with_capacity(MAX_MESSAGE_LENGTH as usize);
+        let mut debug_level = 0;
+        let mut time_stamp = 0;
+        let mut phase = 0;
+        let mut is_accumulating = false;
+
+        // Used for tracking what has been processed
+        let mut bytes_read: usize = 0;
+        let mut entries_processed: usize = 0;
+
+        // Process the buffer slice until all entries are processed
         while !buffer_slice.is_empty() {
-            // Parse and validate the entry header
-            let (entry, _) =
-                AdvancedLoggerMessageEntryV2::read_from_prefix(buffer_slice).map_err(|error| {
-                    DiagnosticsError::GeneralError(format!(
-                        "Failed to parse entry from buffer_slice: {}",
-                        error
-                    ))
-                })?;
-            entry.validate()?;
+            // Parse the current etnry
+            let entry = parse_entry(buffer_slice)?;
 
-            //
-            // Step 5a: Validate message boundaries
-            //
-
-            // Copy packed fields to local variables to avoid unaligned access
-            let message_offset = entry.message_offset;
-            let message_len = entry.message_len;
-
-            // Calculate message start and end offsets
-            let message_start = message_offset as usize;
-            let message_end = message_start
-                .checked_add(message_len as usize)
-                .ok_or_else(|| {
-                    DiagnosticsError::Overflow(format!(
-                        "message_start ({}) + message_len ({})",
-                        message_start, message_len
-                    ))
-                })?;
-
-            // Validate message end fits within the buffer slice
-            if message_end > buffer_slice.len() {
-                return Err(DiagnosticsError::GeneralError(format!(
-                    "message_end ({}) exceeds buffer slice length ({})",
-                    message_end,
-                    buffer_slice.len()
-                )));
-            }
-
-            // Get the message
-            let message = std::str::from_utf8(&buffer_slice[message_start..message_end])?;
-
-            //
-            // Step 5b: Handle message accumulation
-            //
+            // Handle message accumulation
             if !is_accumulating {
                 debug_level = entry.debug_level;
                 time_stamp = entry.time_stamp;
@@ -320,19 +333,20 @@ impl DiagnosticsServices {
                 accumulated_message.clear();
                 is_accumulating = true;
             }
-            accumulated_message.push_str(message);
 
-            // Validate that the accumulated message is not too long
+            // Append the message
+            accumulated_message.push_str(entry.message);
+
+            // Check message length
             if accumulated_message.len() > MAX_MESSAGE_LENGTH as usize {
-                return Err(DiagnosticsError::GeneralError(format!(
-                    "Accumulated message length ({}) exceeds max length ({})",
-                    accumulated_message.len(),
-                    MAX_MESSAGE_LENGTH
-                )));
+                return Err(DiagnosticsError::BadAccumulatedMessageLength(
+                    MAX_MESSAGE_LENGTH,
+                    accumulated_message.len() as u16,
+                ));
             }
 
             // Handle completed messages (ending with '\n')
-            if !message.is_empty() && message.ends_with('\n') {
+            if !entry.message.is_empty() && entry.message.ends_with('\n') {
                 log_handler(EfiDiagnosticsLog {
                     debug_level,
                     time_stamp,
@@ -345,57 +359,21 @@ impl DiagnosticsServices {
                 is_accumulating = false;
             }
 
-            //
-            // Step 5c: Move to the next entry
-            //
-
-            // Calculate base offset (entry header size + message length)
-            let base_offset = size_of::<AdvancedLoggerMessageEntryV2>()
-                .checked_add(message_len as usize)
-                .ok_or_else(|| {
-                    DiagnosticsError::Overflow(format!(
-                        "size_of::<AdvancedLoggerMessageEntryV2> ({}) + message_len ({})",
-                        size_of::<AdvancedLoggerMessageEntryV2>(),
-                        message_len
-                    ))
-                })?;
-
-            // Add padding for 8-byte alignment
-            let aligned_offset = base_offset.checked_add(ALIGNMENT_MASK).ok_or_else(|| {
-                DiagnosticsError::Overflow(format!(
-                    "base_offset ({}) + ALIGNMENT_MASK ({})",
-                    base_offset, ALIGNMENT_MASK
-                ))
-            })?;
-            let next_offset = aligned_offset & !ALIGNMENT_MASK;
-
-            // Update overall bytes read counter
-            bytes_read = bytes_read.checked_add(next_offset).ok_or_else(|| {
-                DiagnosticsError::Overflow(format!(
-                    "bytes_read ({}) + next_offset ({})",
-                    bytes_read, next_offset
+            // Update bytes read and move to the next entry
+            bytes_read = bytes_read.checked_add(entry.entry_size).ok_or_else(|| {
+                DiagnosticsError::Overflow(anyhow!(
+                    "bytes_read ({}) + entry_size ({})",
+                    bytes_read,
+                    entry.entry_size
                 ))
             })?;
 
-            // Advanced to the next entry with boundary checks
-            if next_offset >= buffer_slice.len() {
-                // We have reached the end of the buffer
-                break;
+            // Advance the buffer to the next entry
+            if entry.entry_size >= buffer_slice.len() {
+                break; // End of buffer
+            } else {
+                buffer_slice = &buffer_slice[entry.entry_size..];
             }
-            buffer_slice = &buffer_slice[next_offset..];
-        }
-
-        // Process remaining messages
-        if is_accumulating {
-            log_handler(EfiDiagnosticsLog {
-                debug_level,
-                time_stamp,
-                phase,
-                description: std::mem::take(&mut accumulated_message)
-                    .trim_end_matches(&['\r', '\n'][..])
-                    .to_string(),
-            });
-            entries_processed += 1;
         }
 
         // Print summary statistics
@@ -412,7 +390,7 @@ impl DiagnosticsServices {
 impl UefiDevice {
     /// Process the diagnostics buffer and log the entries to tracing
     pub(crate) fn process_diagnostics(&self, gm: &GuestMemory) {
-        // Do not proceed if we have encountered ExitBootServices
+        // Do not proceed if we hit ExitBootServices
         if self.service.nvram.services.runtime_state.is_runtime() {
             tracelimit::warn_ratelimited!("EFI Diagnostics: EBS complete, skipping processing");
             return;
