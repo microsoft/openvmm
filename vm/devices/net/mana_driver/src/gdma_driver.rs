@@ -703,7 +703,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             this.cq.arm();
         }
 
-        tracing::info!("exiting restore");
         Ok(this)
     }
 
@@ -1225,7 +1224,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 )
             })?;
         }
-
         Ok(())
     }
 
@@ -1270,13 +1268,11 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         &mut self,
         dev_id: GdmaDevId,
     ) -> anyhow::Result<GdmaRegisterDeviceResp> {
-        tracing::info!("registering device");
         self.request(GdmaRequestType::GDMA_REGISTER_DEVICE.0, dev_id, ())
             .await
     }
 
     pub async fn deregister_device(&mut self, dev_id: GdmaDevId) -> anyhow::Result<()> {
-        tracing::info!("deregistering device");
         self.hwc_timeout_in_ms = HWC_TIMEOUT_FOR_SHUTDOWN_IN_MS;
         self.request(GdmaRequestType::GDMA_DEREGISTER_DEVICE.0, dev_id, ())
             .await
