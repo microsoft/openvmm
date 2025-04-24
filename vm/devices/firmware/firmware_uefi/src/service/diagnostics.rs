@@ -40,10 +40,10 @@ pub const MAX_MESSAGE_LENGTH: u16 = 0x1000; // 4KB
 //
 #[derive(Debug, Clone)]
 pub struct EfiDiagnosticsLog {
-    pub debug_level: u32, // The debug level of the log entry
-    pub time_stamp: u64,  // Timestamp of when the log entry was created
-    pub phase: u16,       // The boot phase that produced this log entry
-    pub message: String,  // The log message itself
+    pub debug_level: u32,    // The debug level of the log entry
+    pub time_stamp: u64,     // Timestamp of when the log entry was created
+    pub phase: u16,          // The boot phase that produced this log entry
+    pub description: String, // The log message itself
 }
 
 //
@@ -176,11 +176,14 @@ impl DiagnosticsServices {
     }
 
     /// Process the diagnostics buffer into friendly logs
-    pub fn process_diagnostics(
+    pub fn process_diagnostics<F>(
         &self,
         gm: &GuestMemory,
-        logs: &mut Vec<EfiDiagnosticsLog>,
-    ) -> Result<(), DiagnosticsError> {
+        mut log_handler: F,
+    ) -> Result<(), DiagnosticsError>
+    where
+        F: FnMut(EfiDiagnosticsLog),
+    {
         //
         // Step 1: Validate GPA
         //
@@ -203,9 +206,6 @@ impl DiagnosticsServices {
         //
         // Step 3: Prepare processing variables
         //
-
-        // Force clear the logs
-        logs.clear();
 
         // Used for summary statistics
         let mut bytes_read: usize = 0;
@@ -331,13 +331,13 @@ impl DiagnosticsServices {
                 )));
             }
 
-            // Completed messages (ending with '\n') become log entries
+            // Handle completed messages (ending with '\n')
             if !message.is_empty() && message.ends_with('\n') {
-                logs.push(EfiDiagnosticsLog {
+                log_handler(EfiDiagnosticsLog {
                     debug_level,
                     time_stamp,
                     phase,
-                    message: std::mem::take(&mut accumulated_message)
+                    description: std::mem::take(&mut accumulated_message)
                         .trim_end_matches(&['\r', '\n'][..])
                         .to_string(),
                 });
@@ -387,11 +387,11 @@ impl DiagnosticsServices {
 
         // Process remaining messages
         if is_accumulating {
-            logs.push(EfiDiagnosticsLog {
+            log_handler(EfiDiagnosticsLog {
                 debug_level,
                 time_stamp,
                 phase,
-                message: std::mem::take(&mut accumulated_message)
+                description: std::mem::take(&mut accumulated_message)
                     .trim_end_matches(&['\r', '\n'][..])
                     .to_string(),
             });
@@ -418,20 +418,17 @@ impl UefiDevice {
             return;
         }
 
-        // Collect diagnostics logs and send to tracing
-        let mut logs = Vec::new();
-        match self.service.diagnostics.process_diagnostics(gm, &mut logs) {
-            Ok(_) => {
-                for log in logs.iter() {
-                    tracing::info!(
-                        debug_level = log.debug_level,
-                        timestamp = log.time_stamp,
-                        phase = log.phase,
-                        description = %log.message,
-                        "EFI Diagnostics:"
-                    );
-                }
-            }
+        // Process diagnostics logs and send each directly to tracing
+        match self.service.diagnostics.process_diagnostics(gm, |log| {
+            tracing::info!(
+                debug_level = log.debug_level,
+                time_stamp_ticks = log.time_stamp,
+                phase = log.phase,
+                description = %log.description,
+                "EFI Diagnostics:"
+            );
+        }) {
+            Ok(_) => {}
             Err(error) => {
                 tracelimit::error_ratelimited!(
                     error = &error as &dyn std::error::Error,
