@@ -808,7 +808,8 @@ impl flowey_core::node::NodeCtxBackend for EmitFlowCtx<'_> {
             .map(|(k, v)| match v {
                 ClaimedGhParam::Static(v) => (k, v),
                 ClaimedGhParam::FloweyVar(v) => {
-                    let (backing_var, is_secret) = read_var_internals(&v);
+                    let (backing_var, is_secret, is_side_effect) = read_var_internals(&v);
+                    assert!(!is_side_effect);
                     let backing_var = backing_var.unwrap();
                     let new_gh_var_name = fresh_yaml_var();
                     rust_to_gh.push(GhVarState {

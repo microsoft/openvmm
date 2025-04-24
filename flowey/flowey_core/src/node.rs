@@ -160,14 +160,13 @@ where
     }
 }
 
-/// Uninhabited type corresponding to a step which performs a side-effect,
+/// Type corresponding to a step which performs a side-effect,
 /// without returning a specific value.
 ///
 /// e.g: A step responsible for installing a package from `apt` might claim a
 /// `WriteVar<SideEffect>`, with any step requiring the package to have been
 /// installed prior being able to claim the corresponding `ReadVar<SideEffect>.`
-#[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Copy)]
-pub enum SideEffect {}
+pub type SideEffect = ();
 
 /// Uninhabited type used to denote that a particular [`WriteVar`] / [`ReadVar`]
 /// is not currently claimed by any step, and cannot be directly accessed.
@@ -202,6 +201,9 @@ pub enum VarClaimed {}
 pub struct WriteVar<T: Serialize + DeserializeOwned, C = VarNotClaimed> {
     backing_var: String,
     is_secret: bool,
+    /// If true, then readers on this var expect to read a side effect (`()`)
+    /// and not `T`.
+    is_side_effect: bool,
 
     #[serde(skip)]
     _kind: core::marker::PhantomData<(T, C)>,
@@ -217,22 +219,14 @@ impl<T: Serialize + DeserializeOwned> WriteVar<T, VarNotClaimed> {
         let Self {
             backing_var,
             is_secret,
+            is_side_effect,
             _kind,
         } = self;
 
         WriteVar {
             backing_var,
             is_secret,
-            _kind: std::marker::PhantomData,
-        }
-    }
-
-    /// Create a new [`ReadVar`] from this [`WriteVar`] handle.
-    #[must_use]
-    pub fn new_reader(&self) -> ReadVar<T> {
-        ReadVar {
-            backing_var: ReadVarBacking::RuntimeVar(self.backing_var.clone()),
-            is_secret: self.is_secret,
+            is_side_effect,
             _kind: std::marker::PhantomData,
         }
     }
@@ -251,6 +245,22 @@ impl<T: Serialize + DeserializeOwned> WriteVar<T, VarNotClaimed> {
         WriteVar {
             backing_var: self.backing_var,
             is_secret: self.is_secret,
+            is_side_effect: self.is_side_effect,
+            _kind: std::marker::PhantomData,
+        }
+    }
+}
+
+impl WriteVar<SideEffect, VarNotClaimed> {
+    /// Transforms this writer into one that can be used to write a `T`.
+    ///
+    /// This is useful when a reader only cares about the side effect of an
+    /// operation, but the writer wants to provide output as well.
+    pub fn discard_result<T: Serialize + DeserializeOwned>(self) -> WriteVar<T> {
+        WriteVar {
+            backing_var: self.backing_var,
+            is_secret: self.is_secret,
+            is_side_effect: true,
             _kind: std::marker::PhantomData,
         }
     }
@@ -277,11 +287,27 @@ pub trait ClaimVar {
     fn claim(self, ctx: &mut StepCtx<'_>) -> Self::Claimed;
 }
 
+/// Read the value of one or more flowey Vars.
+///
+/// By having this be a trait, it is possible to `read` both single
+/// instances of `ReadVar` / `WriteVar`, as well as whole _collections_ of
+/// Vars.
+pub trait ReadVarValue {
+    /// The read value of Self.
+    type Value;
+    /// Read the value of the Var at runtime.
+    fn read_value(self, rt: &mut RustRuntimeServices<'_>) -> Self::Value;
+}
+
 impl<T: Serialize + DeserializeOwned> ClaimVar for ReadVar<T> {
     type Claimed = ClaimedReadVar<T>;
 
     fn claim(self, ctx: &mut StepCtx<'_>) -> ClaimedReadVar<T> {
-        if let ReadVarBacking::RuntimeVar(var) = &self.backing_var {
+        if let ReadVarBacking::RuntimeVar {
+            var,
+            is_side_effect: _,
+        } = &self.backing_var
+        {
             ctx.backend.borrow_mut().on_claimed_runtime_var(var, true);
         }
         self.into_claimed()
@@ -299,11 +325,41 @@ impl<T: Serialize + DeserializeOwned> ClaimVar for WriteVar<T> {
     }
 }
 
+impl<T: Serialize + DeserializeOwned> ReadVarValue for ClaimedReadVar<T> {
+    type Value = T;
+
+    fn read_value(self, rt: &mut RustRuntimeServices<'_>) -> Self::Value {
+        match self.backing_var {
+            ReadVarBacking::RuntimeVar {
+                var,
+                is_side_effect: side_effect,
+            } => {
+                // Always get the data to validate that the variable is actually there.
+                let data = rt.get_var(&var);
+                if side_effect {
+                    serde_json::from_slice(b"null").expect("should be deserializing into ()")
+                } else {
+                    serde_json::from_slice(&data).expect("improve this error path")
+                }
+            }
+            ReadVarBacking::Inline(val) => val,
+        }
+    }
+}
+
 impl<T: ClaimVar> ClaimVar for Vec<T> {
     type Claimed = Vec<T::Claimed>;
 
     fn claim(self, ctx: &mut StepCtx<'_>) -> Vec<T::Claimed> {
         self.into_iter().map(|v| v.claim(ctx)).collect()
+    }
+}
+
+impl<T: ReadVarValue> ReadVarValue for Vec<T> {
+    type Value = Vec<T::Value>;
+
+    fn read_value(self, rt: &mut RustRuntimeServices<'_>) -> Self::Value {
+        self.into_iter().map(|v| v.read_value(rt)).collect()
     }
 }
 
@@ -315,11 +371,29 @@ impl<T: ClaimVar> ClaimVar for Option<T> {
     }
 }
 
+impl<T: ReadVarValue> ReadVarValue for Option<T> {
+    type Value = Option<T::Value>;
+
+    fn read_value(self, rt: &mut RustRuntimeServices<'_>) -> Self::Value {
+        self.map(|x| x.read_value(rt))
+    }
+}
+
 impl<U: Ord, T: ClaimVar> ClaimVar for BTreeMap<U, T> {
     type Claimed = BTreeMap<U, T::Claimed>;
 
     fn claim(self, ctx: &mut StepCtx<'_>) -> BTreeMap<U, T::Claimed> {
         self.into_iter().map(|(k, v)| (k, v.claim(ctx))).collect()
+    }
+}
+
+impl<U: Ord, T: ReadVarValue> ReadVarValue for BTreeMap<U, T> {
+    type Value = BTreeMap<U, T::Value>;
+
+    fn read_value(self, rt: &mut RustRuntimeServices<'_>) -> Self::Value {
+        self.into_iter()
+            .map(|(k, v)| (k, v.read_value(rt)))
+            .collect()
     }
 }
 
@@ -337,6 +411,19 @@ macro_rules! impl_tuple_claim {
                 ($($T.claim(ctx),)*)
             }
         }
+
+        impl<$($T,)*> $crate::node::ReadVarValue for ($($T,)*)
+        where
+            $($T: $crate::node::ReadVarValue,)*
+        {
+            type Value = ($($T::Value,)*);
+
+            #[expect(non_snake_case)]
+            fn read_value(self, rt: &mut $crate::node::RustRuntimeServices<'_>) -> Self::Value {
+                let ($($T,)*) = self;
+                ($($T.read_value(rt),)*)
+            }
+        }
     };
 }
 
@@ -350,6 +437,18 @@ impl_tuple_claim!(A B C D);
 impl_tuple_claim!(A B C);
 impl_tuple_claim!(A B);
 impl_tuple_claim!(A);
+
+impl ClaimVar for () {
+    type Claimed = ();
+
+    fn claim(self, _ctx: &mut StepCtx<'_>) -> Self::Claimed {}
+}
+
+impl ReadVarValue for () {
+    type Value = ();
+
+    fn read_value(self, _rt: &mut RustRuntimeServices<'_>) -> Self::Value {}
+}
 
 /// Read a custom, user-defined secret by passing in the secret name.
 ///
@@ -401,20 +500,33 @@ impl<T: Serialize + DeserializeOwned, C> Clone for ReadVar<T, C> {
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 enum ReadVarBacking<T> {
-    RuntimeVar(String),
+    RuntimeVar {
+        var: String,
+        /// If true, then don't try to parse this variable--it was converted
+        /// into a side effect (of type `()`) from another type, so the
+        /// serialization will not match.
+        ///
+        /// If false, it may still be a "side effect" variable, but type `T`
+        /// matches its serialization.
+        is_side_effect: bool,
+    },
     Inline(T),
-    InlineSideEffect,
 }
 
 // avoid requiring types to include an explicit clone bound
 impl<T: Serialize + DeserializeOwned> Clone for ReadVarBacking<T> {
     fn clone(&self) -> Self {
         match self {
-            Self::RuntimeVar(v) => Self::RuntimeVar(v.clone()),
+            Self::RuntimeVar {
+                var,
+                is_side_effect: side_effect,
+            } => Self::RuntimeVar {
+                var: var.clone(),
+                is_side_effect: *side_effect,
+            },
             Self::Inline(v) => {
                 Self::Inline(serde_json::from_value(serde_json::to_value(v).unwrap()).unwrap())
             }
-            Self::InlineSideEffect => Self::InlineSideEffect,
         }
     }
 }
@@ -447,9 +559,14 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
     pub fn into_side_effect(self) -> ReadVar<SideEffect> {
         ReadVar {
             backing_var: match self.backing_var {
-                ReadVarBacking::RuntimeVar(var) => ReadVarBacking::RuntimeVar(var),
-                ReadVarBacking::Inline(_) => ReadVarBacking::InlineSideEffect,
-                ReadVarBacking::InlineSideEffect => ReadVarBacking::InlineSideEffect,
+                ReadVarBacking::RuntimeVar {
+                    var,
+                    is_side_effect: _,
+                } => ReadVarBacking::RuntimeVar {
+                    var,
+                    is_side_effect: true,
+                },
+                ReadVarBacking::Inline(_) => ReadVarBacking::Inline(()),
             },
             is_secret: self.is_secret,
             _kind: std::marker::PhantomData,
@@ -604,26 +721,29 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
     /// won't be used.
     pub fn claim_unused(self, ctx: &mut NodeCtx<'_>) {
         match self.backing_var {
-            ReadVarBacking::RuntimeVar(s) => ctx.backend.borrow_mut().on_unused_read_var(&s),
+            ReadVarBacking::RuntimeVar {
+                var,
+                is_side_effect: _,
+            } => ctx.backend.borrow_mut().on_unused_read_var(&var),
             ReadVarBacking::Inline(_) => {}
-            ReadVarBacking::InlineSideEffect => {}
         }
     }
 
     pub(crate) fn into_json(self) -> ReadVar<serde_json::Value> {
         match self.backing_var {
-            ReadVarBacking::RuntimeVar(s) => ReadVar {
-                backing_var: ReadVarBacking::RuntimeVar(s),
+            ReadVarBacking::RuntimeVar {
+                var,
+                is_side_effect: side_effect,
+            } => ReadVar {
+                backing_var: ReadVarBacking::RuntimeVar {
+                    var,
+                    is_side_effect: side_effect,
+                },
                 is_secret: self.is_secret,
                 _kind: std::marker::PhantomData,
             },
             ReadVarBacking::Inline(v) => ReadVar {
                 backing_var: ReadVarBacking::Inline(serde_json::to_value(v).unwrap()),
-                is_secret: self.is_secret,
-                _kind: std::marker::PhantomData,
-            },
-            ReadVarBacking::InlineSideEffect => ReadVar {
-                backing_var: ReadVarBacking::InlineSideEffect,
                 is_secret: self.is_secret,
                 _kind: std::marker::PhantomData,
             },
@@ -642,7 +762,10 @@ where
     T: Serialize + DeserializeOwned,
 {
     ReadVar {
-        backing_var: ReadVarBacking::RuntimeVar(backing_var),
+        backing_var: ReadVarBacking::RuntimeVar {
+            var: backing_var,
+            is_side_effect: false,
+        },
         is_secret,
         _kind: std::marker::PhantomData,
     }
@@ -661,6 +784,7 @@ where
     WriteVar {
         backing_var,
         is_secret,
+        is_side_effect: false,
         _kind: std::marker::PhantomData,
     }
 }
@@ -672,11 +796,13 @@ where
 /// implementing flow / pipeline resolution logic.
 pub fn read_var_internals<T: Serialize + DeserializeOwned, C>(
     var: &ReadVar<T, C>,
-) -> (Option<String>, bool) {
-    match &var.backing_var {
-        ReadVarBacking::RuntimeVar(s) => (Some(s.clone()), var.is_secret),
-        ReadVarBacking::Inline(_) => (None, var.is_secret),
-        ReadVarBacking::InlineSideEffect => (None, var.is_secret),
+) -> (Option<String>, bool, bool) {
+    match var.backing_var {
+        ReadVarBacking::RuntimeVar {
+            var: ref s,
+            is_side_effect: side_effect,
+        } => (Some(s.clone()), var.is_secret, side_effect),
+        ReadVarBacking::Inline(_) => (None, var.is_secret, false),
     }
 }
 
@@ -1191,11 +1317,14 @@ impl<'ctx> NodeCtx<'ctx> {
                     None
                 }
             }
-            Some(ReadVarBacking::RuntimeVar(var)) => {
+            Some(ReadVarBacking::RuntimeVar {
+                var,
+                is_side_effect: side_effect,
+            }) => {
+                assert!(!side_effect);
                 self.backend.borrow_mut().on_claimed_runtime_var(&var, true);
                 Some(var)
             }
-            Some(ReadVarBacking::InlineSideEffect) => unreachable!(),
             None => None,
         };
 
@@ -1254,11 +1383,14 @@ impl<'ctx> NodeCtx<'ctx> {
                     None
                 }
             }
-            Some(ReadVarBacking::RuntimeVar(var)) => {
+            Some(ReadVarBacking::RuntimeVar {
+                var,
+                is_side_effect: side_effect,
+            }) => {
+                assert!(!side_effect);
                 self.backend.borrow_mut().on_claimed_runtime_var(&var, true);
                 Some(var)
             }
-            Some(ReadVarBacking::InlineSideEffect) => unreachable!(),
             None => None,
         };
 
@@ -1329,7 +1461,11 @@ impl<'ctx> NodeCtx<'ctx> {
     ) {
         let mut backend = self.backend.borrow_mut();
         for var in use_side_effects.into_iter() {
-            if let ReadVarBacking::RuntimeVar(var) = &var.backing_var {
+            if let ReadVarBacking::RuntimeVar {
+                var,
+                is_side_effect: _,
+            } = &var.backing_var
+            {
                 backend.on_claimed_runtime_var(var, true);
             }
         }
@@ -1468,13 +1604,17 @@ impl<'ctx> NodeCtx<'ctx> {
 
         (
             ReadVar {
-                backing_var: ReadVarBacking::RuntimeVar(backing_var.clone()),
+                backing_var: ReadVarBacking::RuntimeVar {
+                    var: backing_var.clone(),
+                    is_side_effect: false,
+                },
                 is_secret,
                 _kind: std::marker::PhantomData,
             },
             WriteVar {
                 backing_var,
                 is_secret,
+                is_side_effect: false,
                 _kind: std::marker::PhantomData,
             },
         )
@@ -1512,9 +1652,10 @@ impl<'ctx> NodeCtx<'ctx> {
     #[must_use]
     pub fn persistent_dir(&mut self) -> Option<ReadVar<PathBuf>> {
         let path: ReadVar<PathBuf> = ReadVar {
-            backing_var: ReadVarBacking::RuntimeVar(
-                self.backend.borrow_mut().persistent_dir_path_var()?,
-            ),
+            backing_var: ReadVarBacking::RuntimeVar {
+                var: self.backend.borrow_mut().persistent_dir_path_var()?,
+                is_side_effect: false,
+            },
             is_secret: false,
             _kind: std::marker::PhantomData,
         };
@@ -1748,7 +1889,12 @@ pub mod steps {
 
             /// Get the value of a flowey Var as a ADO runtime variable.
             pub fn get_var(&mut self, var: ClaimedReadVar<String>) -> AdoRuntimeVar {
-                let backing_var = if let ReadVarBacking::RuntimeVar(var) = &var.backing_var {
+                let backing_var = if let ReadVarBacking::RuntimeVar {
+                    var,
+                    is_side_effect: side_effect,
+                } = &var.backing_var
+                {
+                    assert!(!side_effect);
                     var
                 } else {
                     todo!("support inline ado read vars")
@@ -1949,11 +2095,14 @@ pub mod steps {
                 match self {
                     GhParam::Static(s) => ClaimedGhParam::Static(s),
                     GhParam::FloweyVar(var) => match &var.backing_var {
-                        ReadVarBacking::RuntimeVar(_) => ClaimedGhParam::FloweyVar(var.claim(ctx)),
-                        ReadVarBacking::Inline(var) => ClaimedGhParam::Static(var.clone()),
-                        ReadVarBacking::InlineSideEffect => {
-                            panic!("inline side-effect vars are not supported")
+                        ReadVarBacking::RuntimeVar {
+                            is_side_effect: side_effect,
+                            ..
+                        } => {
+                            assert!(!side_effect);
+                            ClaimedGhParam::FloweyVar(var.claim(ctx))
                         }
+                        ReadVarBacking::Inline(var) => ClaimedGhParam::Static(var.clone()),
                     },
                 }
             }
@@ -1995,11 +2144,11 @@ pub mod steps {
     }
 
     pub mod rust {
-        use crate::node::ClaimedReadVar;
         use crate::node::ClaimedWriteVar;
         use crate::node::FlowArch;
         use crate::node::FlowBackend;
         use crate::node::FlowPlatform;
+        use crate::node::ReadVarValue;
         use crate::node::RuntimeVarDb;
         use serde::Serialize;
         use serde::de::DeserializeOwned;
@@ -2047,11 +2196,13 @@ pub mod steps {
             where
                 T: Serialize + DeserializeOwned,
             {
-                self.runtime_var_db.set_var(
-                    &var.backing_var,
-                    var.is_secret,
-                    serde_json::to_vec(val).expect("improve this error path"),
-                );
+                let val = if var.is_side_effect {
+                    b"null".to_vec()
+                } else {
+                    serde_json::to_vec(val).expect("improve this error path")
+                };
+                self.runtime_var_db
+                    .set_var(&var.backing_var, var.is_secret, val);
             }
 
             pub fn write_all<T>(
@@ -2066,18 +2217,12 @@ pub mod steps {
                 }
             }
 
-            pub fn read<T>(&mut self, var: ClaimedReadVar<T>) -> T
-            where
-                T: Serialize + DeserializeOwned,
-            {
-                match var.backing_var {
-                    crate::node::ReadVarBacking::RuntimeVar(var) => {
-                        let data = self.runtime_var_db.get_var(&var);
-                        serde_json::from_slice(&data).expect("improve this error path")
-                    }
-                    crate::node::ReadVarBacking::Inline(val) => val,
-                    crate::node::ReadVarBacking::InlineSideEffect => unreachable!(),
-                }
+            pub fn read<T: ReadVarValue>(&mut self, var: T) -> T::Value {
+                var.read_value(self)
+            }
+
+            pub(crate) fn get_var(&mut self, var: &str) -> Vec<u8> {
+                self.runtime_var_db.get_var(var)
             }
 
             /// DANGEROUS: Set the value of _Global_ Environment Variable (GitHub Actions only).

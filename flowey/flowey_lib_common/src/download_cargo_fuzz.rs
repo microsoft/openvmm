@@ -4,7 +4,6 @@
 //! Download (and optionally, install) a copy of `cargo-fuzz`.
 
 use crate::cache::CacheHit;
-use crate::cache::CacheResult;
 use flowey::node::prelude::*;
 
 flowey_request! {
@@ -60,7 +59,7 @@ impl FlowNode for Node {
                 dir: cache_dir.clone(),
                 key: cache_key,
                 restore_keys: None, // we want an exact hit
-                hitvar: CacheResult::HitVar(v),
+                hitvar: v,
             }
         });
 
