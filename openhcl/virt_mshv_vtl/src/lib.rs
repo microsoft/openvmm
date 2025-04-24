@@ -1928,12 +1928,6 @@ impl UhProtoPartition<'_> {
             guest_memory,
         });
 
-        if guest_vsm_available {
-            tracing::warn!(
-                "Advertising guest vsm as being supported to the guest. This feature is in development, so the guest might crash."
-            );
-        }
-
         Ok(UhCvmPartitionState {
             vps_per_socket: params.topology.reserved_vps_per_socket(),
             tlb_locked_vps,
