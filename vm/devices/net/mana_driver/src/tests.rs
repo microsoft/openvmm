@@ -45,7 +45,7 @@ async fn test_gdma(driver: DefaultDriver) {
     let dma_client = device.dma_client();
     let buffer = dma_client.allocate_dma_buffer(6 * PAGE_SIZE).unwrap();
 
-    let mut gdma = GdmaDriver::new(&driver, device, 1, false, buffer)
+    let mut gdma = GdmaDriver::new(&driver, device, 1, Some(buffer))
         .await
         .unwrap();
     gdma.test_eq().await.unwrap();
@@ -187,7 +187,7 @@ async fn test_gdma_save_restore(driver: DefaultDriver) {
     let gdma_buffer = dma_client.allocate_dma_buffer(6 * PAGE_SIZE).unwrap();
 
     let saved_state = {
-        let mut gdma = GdmaDriver::new(&driver, device, 1, true, gdma_buffer.clone())
+        let mut gdma = GdmaDriver::new(&driver, device, 1, Some(gdma_buffer.clone()))
             .await
             .unwrap();
 

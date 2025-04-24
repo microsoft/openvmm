@@ -358,17 +358,6 @@ impl Endpoint for PacketCaptureEndpoint {
         self.current().link_speed()
     }
 
-    async fn restore_queues(
-        &mut self,
-        queue_config: Vec<QueueConfig<'_>>,
-        saved_state: Vec<QueueSavedState>,
-        queues: &mut Vec<Box<dyn Queue>>,
-    ) -> anyhow::Result<()> {
-        self.current_mut()
-            .restore_queues(queue_config, saved_state, queues)
-            .await
-    }
-
     fn save(&mut self) -> anyhow::Result<EndpointSavedState> {
         self.current_mut().save()
     }

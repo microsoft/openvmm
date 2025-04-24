@@ -10,6 +10,7 @@ rust-version.workspace = true
 gdma_defs.workspace = true
 net_backend.workspace = true
 net_backend_resources.workspace = true
+mana_save_restore.workspace = true
 
 chipset_device.workspace = true
 user_driver.workspace = true
@@ -26,8 +27,6 @@ parking_lot.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
 safe_intrinsics.workspace = true
-
-mana_save_restore.workspace = true
 
 [dev-dependencies]
 gdma.workspace = true

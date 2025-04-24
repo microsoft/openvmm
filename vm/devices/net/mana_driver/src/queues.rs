@@ -24,7 +24,6 @@ use gdma_defs::WqeParams;
 use inspect::Inspect;
 use mana_save_restore::save_restore::CqEqSavedState;
 use mana_save_restore::save_restore::DoorbellSavedState;
-use mana_save_restore::save_restore::MemoryBlockSavedState;
 use mana_save_restore::save_restore::WqSavedState;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -200,25 +199,17 @@ impl<T: IntoBytes + FromBytes + Immutable + KnownLayout> CqEq<T> {
 
     /// Save the state of the queue for restoration after servicing.
     pub fn save(&self) -> CqEqSavedState {
-        let state = CqEqSavedState {
+        CqEqSavedState {
             doorbell: DoorbellSavedState {
                 doorbell_id: self.doorbell.doorbell_id as u64,
                 page_count: self.doorbell.doorbell.page_count(),
             },
             doorbell_addr: self.doorbell_addr,
-            mem: MemoryBlockSavedState {
-                base: self.mem.pfns()[0],
-                len: self.mem.len(),
-                pfns: self.mem.pfns().to_vec(),
-                pfn_bias: self.mem.pfn_bias(),
-            },
             id: self.id,
             next: self.next,
             size: self.size,
             shift: self.shift,
-        };
-
-        state
+        }
     }
 
     /// Updates the queue ID.
@@ -366,12 +357,6 @@ impl Wq {
                 page_count: self.doorbell.doorbell.page_count(),
             },
             doorbell_addr: self.doorbell_addr,
-            mem: MemoryBlockSavedState {
-                base: self.mem.pfns()[0],
-                len: self.mem.len(),
-                pfns: self.mem.pfns().to_vec(),
-                pfn_bias: self.mem.pfn_bias(),
-            },
             id: self.id,
             head: self.head,
             tail: self.tail,

@@ -681,7 +681,6 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
     }
 
     fn save(&mut self) -> anyhow::Result<EndpointSavedState> {
-        tracing::info!("saving mana endpoint");
         Ok(EndpointSavedState::ManaEndpoint(ManaEndpointSavedState {
             queue_resources: self
                 .queues
@@ -695,81 +694,6 @@ impl<T: DeviceBacking> Endpoint for ManaEndpoint<T> {
                 })
                 .collect(),
         }))
-    }
-
-    async fn restore_queues(
-        &mut self,
-        mut queue_configs: Vec<QueueConfig<'_>>,
-        saved_state: Vec<QueueSavedState>,
-        queues: &mut Vec<Box<dyn Queue>>,
-    ) -> anyhow::Result<()> {
-        for (i, saved_queue) in saved_state.iter().enumerate() {
-            match saved_queue {
-                QueueSavedState::ManaQueue(mana_queue) => {
-                    let dma_client = self.vport.dma_client().await;
-                    let doorbell = self.vport.doorbell().await;
-                    let doorbell_page = DoorbellPage::new(doorbell, self.vport.db_id())?;
-                    let interrupt = self.vport.get_interrupt(mana_queue.eq.id).await;
-
-                    if interrupt.is_none() {
-                        anyhow::bail!("no interrupt for eq");
-                    }
-
-                    let eq =
-                        dma_client.get_dma_buffer(mana_queue.eq.mem.len, mana_queue.eq.mem.base)?;
-                    let txq_mem = dma_client.get_dma_buffer(
-                        mana_queue.tx_wq.mem.len + mana_queue.tx_cq.mem.len,
-                        mana_queue.tx_wq.mem.base,
-                    )?;
-
-                    let tx_wq = txq_mem.subblock(0, mana_queue.tx_wq.mem.len);
-                    let tx_cq =
-                        txq_mem.subblock(mana_queue.tx_wq.mem.len, mana_queue.tx_cq.mem.len);
-
-                    let rxq_mem = dma_client.get_dma_buffer(
-                        mana_queue.rx_wq.mem.len + mana_queue.rx_cq.mem.len,
-                        mana_queue.rx_wq.mem.base,
-                    )?;
-                    let rx_wq = rxq_mem.subblock(0, mana_queue.rx_wq.mem.len);
-                    let rx_cq =
-                        rxq_mem.subblock(mana_queue.rx_wq.mem.len, mana_queue.rx_cq.mem.len);
-
-                    let rx_bounce_buffer =
-                        mana_queue.rx_bounce_buffer.as_ref().and_then(|buffer| {
-                            dma_client
-                                .get_dma_buffer(buffer.mem.len, buffer.mem.base)
-                                .ok()
-                        });
-
-                    let tx_bounce_buffer = dma_client.get_dma_buffer(
-                        mana_queue.tx_bounce_buffer.mem.len,
-                        mana_queue.tx_bounce_buffer.mem.base,
-                    )?;
-
-                    let queue: ManaQueue<T> = ManaQueue::restore(
-                        Arc::downgrade(&self.vport),
-                        doorbell_page,
-                        queue_configs.remove(i),
-                        mana_queue.clone(),
-                        ManaQueueRestoredMemory {
-                            eq,
-                            tx_wq,
-                            tx_cq,
-                            rx_wq,
-                            rx_cq,
-                            rx_bounce_buffer,
-                            tx_bounce_buffer,
-                        },
-                        self.queue_tracker.clone(),
-                        interrupt.unwrap(),
-                    )?;
-
-                    queues.push(Box::new(queue));
-                }
-            }
-        }
-
-        Ok(())
     }
 }
 

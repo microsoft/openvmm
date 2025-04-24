@@ -118,8 +118,7 @@ impl<T: DeviceBacking> ManaDevice<T> {
 
             GdmaDriver::restore(mana_state.gdma.clone(), device, dma_buffer).await?
         } else {
-            let buffer = dma_client.allocate_dma_buffer(6 * PAGE_SIZE)?;
-            GdmaDriver::new(driver, device, num_vps, mana_keepalive, buffer).await?
+            GdmaDriver::new(driver, device, num_vps, None).await?
         };
 
         gdma.test_eq().await?;

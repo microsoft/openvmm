@@ -160,7 +160,7 @@ pub struct GdmaDriver<T: DeviceBacking> {
     hwc_timeout_in_ms: u32,
     hwc_failure: bool,
     db_id: u32,
-    keepalive: bool,
+    saving: bool,
 }
 
 const EQ_PAGE: usize = 0;
@@ -176,13 +176,39 @@ const RWQE_SIZE: u32 = 32;
 
 impl<T: DeviceBacking> Drop for GdmaDriver<T> {
     fn drop(&mut self) {
-        tracing::info!("dropping GdmaDriver");
+        tracing::debug!(?self.saving, ?self.hwc_failure, "dropping gdma driver");
+
+        // Don't destroy anything if we're saving its state for restoration.
+        if self.saving {
+            return;
+        }
 
         if self.hwc_failure {
             return;
         }
 
-        if !self.keepalive {
+        let data = self
+            .bar0
+            .mem
+            .read_u32(self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28);
+        if data == u32::MAX {
+            tracing::error!("Device no longer present");
+            return;
+        }
+
+        let hdr = SmcProtoHdr::new()
+            .with_msg_type(SmcMessageType::SMC_MSG_TYPE_DESTROY_HWC.0)
+            .with_msg_version(SMC_MSG_TYPE_DESTROY_HWC_VERSION);
+
+        let hdr = u32::from_le_bytes(hdr.as_bytes().try_into().expect("known size"));
+        self.bar0.mem.write_u32(
+            self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28,
+            hdr,
+        );
+        // Wait for the device to respond.
+        let max_wait_time =
+            std::time::Instant::now() + Duration::from_millis(HWC_POLL_TIMEOUT_IN_MS);
+        let header = loop {
             let data = self
                 .bar0
                 .mem
@@ -191,45 +217,22 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
                 tracing::error!("Device no longer present");
                 return;
             }
-
-            let hdr = SmcProtoHdr::new()
-                .with_msg_type(SmcMessageType::SMC_MSG_TYPE_DESTROY_HWC.0)
-                .with_msg_version(SMC_MSG_TYPE_DESTROY_HWC_VERSION);
-
-            let hdr = u32::from_le_bytes(hdr.as_bytes().try_into().expect("known size"));
-            self.bar0.mem.write_u32(
-                self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28,
-                hdr,
-            );
-            // Wait for the device to respond.
-            let max_wait_time =
-                std::time::Instant::now() + Duration::from_millis(HWC_POLL_TIMEOUT_IN_MS);
-            let header = loop {
-                let data = self
-                    .bar0
-                    .mem
-                    .read_u32(self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28);
-                if data == u32::MAX {
-                    tracing::error!("Device no longer present");
-                    return;
-                }
-                let header = SmcProtoHdr::from(data);
-                if !header.owner_is_pf() {
-                    break header;
-                }
-                if std::time::Instant::now() > max_wait_time {
-                    tracing::error!("MANA request timed out. SMC_MSG_TYPE_DESTROY_HWC");
-                    return;
-                }
-                std::hint::spin_loop();
-            };
-
-            if !header.is_response() {
-                tracing::error!("expected response");
+            let header = SmcProtoHdr::from(data);
+            if !header.owner_is_pf() {
+                break header;
             }
-            if header.status() != 0 {
-                tracing::error!("DESTROY_HWC failed: {}", header.status());
+            if std::time::Instant::now() > max_wait_time {
+                tracing::error!("MANA request timed out. SMC_MSG_TYPE_DESTROY_HWC");
+                return;
             }
+            std::hint::spin_loop();
+        };
+
+        if !header.is_response() {
+            tracing::error!("expected response");
+        }
+        if header.status() != 0 {
+            tracing::error!("DESTROY_HWC failed: {}", header.status());
         }
     }
 }
@@ -252,11 +255,8 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         driver: &impl Driver,
         mut device: T,
         num_vps: u32,
-        keepalive: bool,
-        dma_buffer: MemoryBlock,
+        dma_buffer: Option<MemoryBlock>,
     ) -> anyhow::Result<Self> {
-        tracing::info!("new gdma driver");
-
         let bar0_mapping = device.map_bar(0)?;
         let bar0_len = bar0_mapping.len();
         if bar0_len < size_of::<RegMap>() {
@@ -305,6 +305,15 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                 map.vf_gdma_sriov_shared_reg_start
             );
         }
+
+        let dma_buffer = if let Some(dma_buffer) = dma_buffer {
+            dma_buffer
+        } else {
+            let dma_client = device.dma_client();
+            dma_client
+                .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
+                .context("failed to allocate DMA buffer")?
+        };
 
         let pages = dma_buffer.pfns();
 
@@ -495,8 +504,8 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_warning_time_in_ms: HWC_WARNING_TIME_IN_MS,
             hwc_timeout_in_ms: HWC_TIMEOUT_DEFAULT_IN_MS,
             hwc_failure: false,
+            saving: false,
             db_id,
-            keepalive,
         };
 
         this.push_rqe();
@@ -522,6 +531,8 @@ impl<T: DeviceBacking> GdmaDriver<T> {
     }
 
     pub async fn save(&mut self) -> anyhow::Result<GdmaDriverSavedState> {
+        self.saving = true;
+
         let doorbell = self.bar0.save(Some(self.db_id as u64));
 
         let mut interrupt_config = Vec::new();
@@ -553,6 +564,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_activity_id: self.hwc_activity_id,
             num_msix: self.num_msix,
             min_queue_avail: self.min_queue_avail,
+            link_toggle: self.link_toggle.clone(),
             interrupt_config,
         })
     }
@@ -654,7 +666,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             device: Some(device),
             bar0,
             dma_buffer,
-            interrupts, // Revisit: is this right?
+            interrupts,
             eq,
             cq,
             rq,
@@ -668,13 +680,13 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             num_msix: saved_state.num_msix,
             min_queue_avail: saved_state.min_queue_avail,
             hwc_activity_id: saved_state.hwc_activity_id,
-            link_toggle: Vec::new(), // Revisit: is this right?
+            link_toggle: saved_state.link_toggle,
             hwc_subscribed: saved_state.hwc_subscribed,
             hwc_warning_time_in_ms: HWC_WARNING_TIME_IN_MS,
             hwc_timeout_in_ms: HWC_TIMEOUT_DEFAULT_IN_MS,
             hwc_failure: false,
+            saving: false,
             db_id: db_id as u32,
-            keepalive: true,
         };
 
         if saved_state.hwc_subscribed {
@@ -689,7 +701,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             this.cq.arm();
         }
 
-        tracing::info!("exiting restore");
         Ok(this)
     }
 

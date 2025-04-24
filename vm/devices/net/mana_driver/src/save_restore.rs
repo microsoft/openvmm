@@ -104,6 +104,10 @@ pub struct GdmaDriverSavedState {
     /// Saved interrupts for restoration
     #[mesh(16)]
     pub interrupt_config: Vec<InterruptSavedState>,
+
+    /// Link status by vport index
+    #[mesh(17)]
+    pub link_toggle: Vec<(u32, bool)>,
 }
 
 /// Saved state of an interrupt for restoration during servicing
