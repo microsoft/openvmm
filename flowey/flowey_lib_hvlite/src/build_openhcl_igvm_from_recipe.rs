@@ -350,8 +350,8 @@ impl SimpleFlowNode for Node {
                         |v| crate::download_openhcl_kernel_package::Request::GetPackage {
                             kind,
                             arch,
-                            version_override: None,
-                            pkg: v,
+                            pkg: Some(v),
+                            artifact: None,
                         },
                     )
                 }

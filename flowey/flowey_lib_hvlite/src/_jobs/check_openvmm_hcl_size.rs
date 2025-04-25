@@ -3,7 +3,6 @@
 
 //! Compares the size of the OpenHCL binary in the current PR with the size of the binary from the last successful merge to main.
 
-use super::cfg_versions::OPENHCL_KERNEL_PREVIOUS_STABLE_VERSION;
 use crate::artifact_openhcl_igvm_from_recipe_extras;
 use crate::build_openhcl_igvm_from_recipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
@@ -96,8 +95,8 @@ impl SimpleFlowNode for Node {
             repo_name: "openvmm".into(),
             file_name: file_name.into(),
             path: old_openhcl,
-            run_id,
-            gh_token,
+            run_id: run_id.clone(),
+            gh_token: gh_token.clone(),
         });
 
         // Publish the built binary as an artifact for offline analysis.
@@ -180,23 +179,22 @@ impl SimpleFlowNode for Node {
             }
         });
 
-        let old_openhcl_kernel =
-            ctx.reqv(
-                |v| crate::download_openhcl_kernel_package::Request::GetPackage {
-                    kind: OpenhclKernelPackageKind::Main,
-                    arch: OpenhclKernelPackageArch::X86_64,
-                    version_override: Some(OPENHCL_KERNEL_PREVIOUS_STABLE_VERSION.into()),
-                    pkg: v,
-                },
-            );
+        let old_openhcl_kernel = ctx.reqv(|old_openhcl_kernel| download_gh_artifact::Request {
+            repo_owner: "microsoft".into(),
+            repo_name: "openvmm".into(),
+            file_name: "x64-kernel-baseline".into(),
+            path: old_openhcl_kernel,
+            run_id,
+            gh_token,
+        });
 
         let current_openhcl_kernel =
             ctx.reqv(
                 |v| crate::download_openhcl_kernel_package::Request::GetPackage {
                     kind: OpenhclKernelPackageKind::Main,
                     arch: OpenhclKernelPackageArch::X86_64,
-                    version_override: None,
-                    pkg: v,
+                    pkg: Some(v),
+                    artifact: None,
                 },
             );
 

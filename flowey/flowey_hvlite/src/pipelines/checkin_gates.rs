@@ -12,6 +12,8 @@ use flowey_lib_common::git_checkout::RepoSource;
 use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmBuildParams;
 use flowey_lib_hvlite::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use flowey_lib_hvlite::build_openvmm_hcl::OpenvmmHclBuildProfile;
+use flowey_lib_hvlite::download_openhcl_kernel_package::OpenhclKernelPackageArch;
+use flowey_lib_hvlite::download_openhcl_kernel_package::OpenhclKernelPackageKind;
 use flowey_lib_hvlite::run_cargo_build::common::CommonArch;
 use flowey_lib_hvlite::run_cargo_build::common::CommonPlatform;
 use flowey_lib_hvlite::run_cargo_build::common::CommonProfile;
@@ -643,6 +645,14 @@ impl IntoPipeline for CheckinGatesCli {
                     (None, None)
                 };
 
+            let (pub_kernel_baseline, _use_kernel_baseline) =
+                if matches!(config, PipelineConfig::Pr) {
+                    let (p, u) = pipeline.new_typed_artifact(format!("{arch_tag}-kernel-baseline"));
+                    (Some(p), Some(u))
+                } else {
+                    (None, None)
+                };
+
             // also build pipette musl on this job, as until we land the
             // refactor that allows building musl without the full openhcl
             // toolchain, it would require pulling in all the openhcl
@@ -741,6 +751,17 @@ impl IntoPipeline for CheckinGatesCli {
                 job = job.dep_on(|ctx| {
                     flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline::Request {
                         output: ctx.publish_typed_artifact(pub_openhcl_baseline),
+                    }
+                });
+            }
+
+            if let Some(pub_kernel_baseline) = pub_kernel_baseline {
+                job = job.dep_on(|ctx| {
+                    flowey_lib_hvlite::download_openhcl_kernel_package::Request::GetPackage {
+                        kind: OpenhclKernelPackageKind::Main,
+                        arch: OpenhclKernelPackageArch::X86_64,
+                        pkg: None,
+                        artifact: Some(ctx.publish_typed_artifact(pub_kernel_baseline)),
                     }
                 });
             }
