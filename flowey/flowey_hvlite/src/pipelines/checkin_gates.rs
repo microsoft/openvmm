@@ -757,11 +757,10 @@ impl IntoPipeline for CheckinGatesCli {
 
             if let Some(pub_kernel_baseline) = pub_kernel_baseline {
                 job = job.dep_on(|ctx| {
-                    flowey_lib_hvlite::download_openhcl_kernel_package::Request::GetPackage {
+                    flowey_lib_hvlite::download_openhcl_kernel_package::Request::PublishBaseline {
                         kind: OpenhclKernelPackageKind::Main,
                         arch: OpenhclKernelPackageArch::X86_64,
-                        pkg: None,
-                        artifact: Some(ctx.publish_typed_artifact(pub_kernel_baseline)),
+                        artifact: ctx.publish_typed_artifact(pub_kernel_baseline),
                     }
                 });
             }

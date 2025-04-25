@@ -193,8 +193,7 @@ impl SimpleFlowNode for Node {
                 |v| crate::download_openhcl_kernel_package::Request::GetPackage {
                     kind: OpenhclKernelPackageKind::Main,
                     arch: OpenhclKernelPackageArch::X86_64,
-                    pkg: Some(v),
-                    artifact: None,
+                    pkg: v,
                 },
             );
 
