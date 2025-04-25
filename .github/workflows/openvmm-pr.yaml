@@ -1617,14 +1617,14 @@ jobs:
         flowey e 13 flowey_lib_hvlite::build_xtask 0
       shell: bash
     - name: unpack kernel package
-      run: flowey e 13 flowey_lib_hvlite::download_openhcl_kernel_package 0
+      run: flowey e 13 flowey_lib_hvlite::download_openhcl_kernel_package 1
       shell: bash
     - name: unpack kernel package
-      run: flowey e 13 flowey_lib_hvlite::download_openhcl_kernel_package 1
+      run: flowey e 13 flowey_lib_hvlite::download_openhcl_kernel_package 0
       shell: bash
     - name: kernel size comparison
       run: |-
-        flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 2
+        flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 3
         flowey e 13 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build openvmm_hcl
@@ -1660,7 +1660,7 @@ jobs:
         EOF
         flowey e 13 flowey_lib_common::cache 2
         flowey e 13 flowey_lib_common::download_gh_cli 1
-        flowey v 13 'flowey_lib_hvlite::_jobs::cfg_common:0:flowey_core/src/node/github_context.rs:42:41' --is-secret --update-from-stdin --is-raw-string <<EOF
+        flowey v 13 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:2:flowey_core/src/node/github_context.rs:42:41' --is-secret --update-from-stdin --is-raw-string <<EOF
         ${{ github.token }}
         EOF
       shell: bash
@@ -1673,13 +1673,13 @@ jobs:
     - name: get action id
       run: |-
         flowey e 13 flowey_lib_common::gh_workflow_id 0
-        flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 0
+        flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
       shell: bash
     - name: download artifacts from github actions run
       run: flowey e 13 flowey_lib_common::download_gh_artifact 0
       shell: bash
     - name: usermode binary size comparison
-      run: flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 1
+      run: flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 2
       shell: bash
     - name: 'validate cache entry: gh-cli'
       run: flowey e 13 flowey_lib_common::cache 3

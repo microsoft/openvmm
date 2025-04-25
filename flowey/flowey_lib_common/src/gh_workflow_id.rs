@@ -10,6 +10,7 @@ flowey_request! {
         pub github_commit_hash: ReadVar<String>,
         pub repo_path: ReadVar<PathBuf>,
         pub pipeline_name: String,
+        pub gh_token: ReadVar<String>,
         pub gh_workflow: WriteVar<GithubWorkflow>,
     }
 }
@@ -34,10 +35,15 @@ impl SimpleFlowNode for Node {
             repo_path,
             github_commit_hash,
             gh_workflow,
+            gh_token,
             pipeline_name,
         } = request;
 
         let pipeline_name = pipeline_name.clone();
+
+        ctx.req(crate::use_gh_cli::Request::WithAuth(
+            crate::use_gh_cli::GhCliAuth::AuthToken(gh_token),
+        ));
         let gh_cli = ctx.reqv(crate::use_gh_cli::Request::Get);
 
         ctx.emit_rust_step("get action id", |ctx| {

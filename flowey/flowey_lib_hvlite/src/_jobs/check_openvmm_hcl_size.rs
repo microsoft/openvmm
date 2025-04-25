@@ -57,6 +57,8 @@ impl SimpleFlowNode for Node {
         });
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
+        let gh_token = ctx.get_gh_context_var().global().token();
+
         let built_openvmm_hcl = ctx.reqv(|v| build_openvmm_hcl::Request {
             build_params: OpenvmmHclBuildParams {
                 target: target.clone(),
@@ -85,6 +87,7 @@ impl SimpleFlowNode for Node {
             github_commit_hash: merge_commit,
             gh_workflow: v,
             pipeline_name,
+            gh_token: gh_token.clone(),
         });
 
         let run_id = merge_run.map(ctx, |r| r.id);
@@ -94,6 +97,7 @@ impl SimpleFlowNode for Node {
             file_name: file_name.into(),
             path: old_openhcl,
             run_id,
+            gh_token,
         });
 
         let comparison = ctx.emit_rust_step("usermode binary size comparison", |ctx| {
