@@ -1259,27 +1259,8 @@ jobs:
         flowey e 12 flowey_lib_hvlite::artifact_openhcl_igvm_from_recipe_extras::publish 0
       shell: bash
     - name: copying OpenHCL igvm extras to artifact dir
-      run: flowey e 12 flowey_lib_common::copy_to_artifact_dir 0
-      shell: bash
-    - name: extract X64 sysroot.tar.gz
       run: |-
-        flowey e 12 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 1
-        flowey e 12 flowey_lib_hvlite::init_cross_build 5
-      shell: bash
-    - name: cargo build openvmm_hcl
-      run: |-
-        flowey e 12 flowey_lib_common::run_cargo_build 3
-        flowey e 12 flowey_lib_hvlite::run_cargo_build 7
-      shell: bash
-    - name: split debug symbols
-      run: |-
-        flowey e 12 flowey_lib_hvlite::run_split_debug_info 5
-        flowey e 12 flowey_lib_hvlite::run_cargo_build 8
-        flowey e 12 flowey_lib_hvlite::build_openvmm_hcl 1
-      shell: bash
-    - name: copying openhcl build to publish dir
-      run: |-
-        flowey e 12 flowey_lib_hvlite::artifact_openvmm_hcl_sizecheck::publish 0
+        flowey e 12 flowey_lib_common::copy_to_artifact_dir 0
         flowey e 12 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build pipette
@@ -1306,6 +1287,24 @@ jobs:
         flowey e 12 flowey_lib_hvlite::run_cargo_build 12
         flowey e 12 flowey_lib_hvlite::build_tmk_vmm 0
         flowey e 12 flowey_core::pipeline::artifact::publish 1
+      shell: bash
+    - name: extract X64 sysroot.tar.gz
+      run: |-
+        flowey e 12 flowey_lib_hvlite::init_openvmm_magicpath_openhcl_sysroot 1
+        flowey e 12 flowey_lib_hvlite::init_cross_build 5
+      shell: bash
+    - name: cargo build openvmm_hcl
+      run: |-
+        flowey e 12 flowey_lib_common::run_cargo_build 3
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 7
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 12 flowey_lib_hvlite::run_split_debug_info 5
+        flowey e 12 flowey_lib_hvlite::run_cargo_build 8
+        flowey e 12 flowey_lib_hvlite::build_openvmm_hcl 1
+        flowey e 12 flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline 0
+        flowey e 12 flowey_core::pipeline::artifact::publish 2
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 12 flowey_lib_common::cache 3
@@ -1704,22 +1703,6 @@ jobs:
     - name: copying OpenHCL igvm extras to artifact dir
       run: |-
         flowey e 13 flowey_lib_common::copy_to_artifact_dir 0
-        flowey e 13 flowey_lib_hvlite::init_cross_build 1
-      shell: bash
-    - name: cargo build openvmm_hcl
-      run: |-
-        flowey e 13 flowey_lib_common::run_cargo_build 2
-        flowey e 13 flowey_lib_hvlite::run_cargo_build 6
-      shell: bash
-    - name: split debug symbols
-      run: |-
-        flowey e 13 flowey_lib_hvlite::run_split_debug_info 6
-        flowey e 13 flowey_lib_hvlite::run_cargo_build 7
-        flowey e 13 flowey_lib_hvlite::build_openvmm_hcl 0
-      shell: bash
-    - name: copying openhcl build to publish dir
-      run: |-
-        flowey e 13 flowey_lib_hvlite::artifact_openvmm_hcl_sizecheck::publish 0
         flowey e 13 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build pipette
@@ -1746,6 +1729,20 @@ jobs:
         flowey e 13 flowey_lib_hvlite::run_cargo_build 16
         flowey e 13 flowey_lib_hvlite::build_tmk_vmm 0
         flowey e 13 flowey_core::pipeline::artifact::publish 1
+        flowey e 13 flowey_lib_hvlite::init_cross_build 1
+      shell: bash
+    - name: cargo build openvmm_hcl
+      run: |-
+        flowey e 13 flowey_lib_common::run_cargo_build 2
+        flowey e 13 flowey_lib_hvlite::run_cargo_build 6
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 13 flowey_lib_hvlite::run_split_debug_info 6
+        flowey e 13 flowey_lib_hvlite::run_cargo_build 7
+        flowey e 13 flowey_lib_hvlite::build_openvmm_hcl 0
+        flowey e 13 flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline 0
+        flowey e 13 flowey_core::pipeline::artifact::publish 2
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 13 flowey_lib_common::cache 3

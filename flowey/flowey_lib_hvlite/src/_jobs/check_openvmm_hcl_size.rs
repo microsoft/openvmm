@@ -3,12 +3,15 @@
 
 //! Compares the size of the OpenHCL binary in the current PR with the size of the binary from the last successful merge to main.
 
+use super::cfg_versions::OPENHCL_KERNEL_PREVIOUS_STABLE_VERSION;
 use crate::artifact_openhcl_igvm_from_recipe_extras;
 use crate::build_openhcl_igvm_from_recipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl;
 use crate::build_openvmm_hcl::OpenvmmHclBuildParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile::OpenvmmHclShip;
+use crate::download_openhcl_kernel_package::OpenhclKernelPackageArch;
+use crate::download_openhcl_kernel_package::OpenhclKernelPackageKind;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
@@ -38,6 +41,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<build_openvmm_hcl::Node>();
         ctx.import::<artifact_openhcl_igvm_from_recipe_extras::publish::Node>();
+        ctx.import::<crate::download_openhcl_kernel_package::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -52,8 +56,6 @@ impl SimpleFlowNode for Node {
             xtask: v,
         });
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
-
-        let gh_token = ctx.get_gh_context_var().global().token();
 
         let built_openvmm_hcl = ctx.reqv(|v| build_openvmm_hcl::Request {
             build_params: OpenvmmHclBuildParams {
@@ -83,7 +85,6 @@ impl SimpleFlowNode for Node {
             github_commit_hash: merge_commit,
             gh_workflow: v,
             pipeline_name,
-            gh_token: gh_token.clone(),
         });
 
         let run_id = merge_run.map(ctx, |r| r.id);
@@ -93,12 +94,11 @@ impl SimpleFlowNode for Node {
             file_name: file_name.into(),
             path: old_openhcl,
             run_id,
-            gh_token: gh_token.clone(),
         });
 
-        let comparison = ctx.emit_rust_step("binary size comparison", |ctx| {
-            let xtask = xtask.claim(ctx);
-            let openvmm_repo_path = openvmm_repo_path.claim(ctx);
+        let comparison = ctx.emit_rust_step("usermode binary size comparison", |ctx| {
+            let xtask = xtask.clone().claim(ctx);
+            let openvmm_repo_path = openvmm_repo_path.clone().claim(ctx);
             let old_openhcl = merge_head_artifact.claim(ctx);
             let new_openhcl = built_openvmm_hcl.claim(ctx);
             let merge_run = merge_run.claim(ctx);
@@ -133,7 +133,53 @@ impl SimpleFlowNode for Node {
             }
         });
 
-        ctx.emit_side_effect_step(vec![comparison], [done]);
+        let old_openhcl_kernel =
+            ctx.reqv(
+                |v| crate::download_openhcl_kernel_package::Request::GetPackage {
+                    kind: OpenhclKernelPackageKind::Main,
+                    arch: OpenhclKernelPackageArch::X86_64,
+                    version_override: Some(OPENHCL_KERNEL_PREVIOUS_STABLE_VERSION.into()),
+                    pkg: v,
+                },
+            );
+
+        let current_openhcl_kernel =
+            ctx.reqv(
+                |v| crate::download_openhcl_kernel_package::Request::GetPackage {
+                    kind: OpenhclKernelPackageKind::Main,
+                    arch: OpenhclKernelPackageArch::X86_64,
+                    version_override: None,
+                    pkg: v,
+                },
+            );
+
+        let kernel_size_comparison = ctx.emit_rust_step("kernel size comparison", |ctx| {
+            let old_openhcl_kernel = old_openhcl_kernel.claim(ctx);
+            let current_openhcl_kernel = current_openhcl_kernel.claim(ctx);
+            let openvmm_repo_path = openvmm_repo_path.claim(ctx);
+            let xtask = xtask.claim(ctx);
+            |rt| {
+                let old_openhcl_kernel = rt.read(old_openhcl_kernel).join("build/native/bin/x64/vmlinux.dbg");
+                let current_openhcl_kernel = rt.read(current_openhcl_kernel).join("build/native/bin/x64/vmlinux.dbg");
+                let openvmm_repo_path = rt.read(openvmm_repo_path);
+                let xtask = match rt.read(xtask) {
+                    crate::build_xtask::XtaskOutput::LinuxBin { bin, .. } => bin,
+                    crate::build_xtask::XtaskOutput::WindowsBin { exe, .. } => exe,
+                };
+
+                let sh = xshell::Shell::new()?;
+                sh.change_dir(openvmm_repo_path);
+                xshell::cmd!(
+                    sh,
+                    "{xtask} verify-size --original {old_openhcl_kernel} --new {current_openhcl_kernel}"
+                )
+                .run()?;
+
+            Ok(())
+            }
+        });
+
+        ctx.emit_side_effect_step(vec![comparison, kernel_size_comparison], [done]);
 
         Ok(())
     }
