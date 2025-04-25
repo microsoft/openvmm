@@ -778,6 +778,8 @@ jobs:
         cat <<'EOF' | flowey v 11 'verbose' --update-from-stdin
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-kernel-baseline"
+        echo "$AgentTempDirNormal/publish_artifacts/aarch64-kernel-baseline" | flowey v 11 'artifact_publish_from_aarch64-kernel-baseline' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-pipette"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-pipette" | flowey v 11 'artifact_publish_from_aarch64-linux-musl-pipette' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-tmk_vmm"
@@ -998,9 +1000,19 @@ jobs:
         flowey e 11 flowey_lib_hvlite::build_tmk_vmm 0
         flowey e 11 flowey_core::pipeline::artifact::publish 1
       shell: bash
+    - name: unpack kernel package
+      run: |-
+        flowey e 11 flowey_lib_hvlite::download_openhcl_kernel_package 2
+        flowey e 11 flowey_core::pipeline::artifact::publish 2
+      shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 11 flowey_lib_common::cache 3
       shell: bash
+    - name: 🌼📦 Publish aarch64-kernel-baseline
+      uses: actions/upload-artifact@v4
+      with:
+        name: aarch64-kernel-baseline
+        path: ${{ runner.temp }}/publish_artifacts/aarch64-kernel-baseline/
     - name: 🌼📦 Publish aarch64-linux-musl-pipette
       uses: actions/upload-artifact@v4
       with:
@@ -1098,6 +1110,8 @@ jobs:
         cat <<'EOF' | flowey v 12 'verbose' --update-from-stdin
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-kernel-baseline"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-kernel-baseline" | flowey v 12 'artifact_publish_from_x64-kernel-baseline' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-pipette"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-pipette" | flowey v 12 'artifact_publish_from_x64-linux-musl-pipette' --update-from-stdin --is-raw-string
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-tmk_vmm"
@@ -1415,9 +1429,19 @@ jobs:
         flowey e 12 flowey_lib_hvlite::build_tmk_vmm 0
         flowey e 12 flowey_core::pipeline::artifact::publish 1
       shell: bash
+    - name: unpack kernel package
+      run: |-
+        flowey e 12 flowey_lib_hvlite::download_openhcl_kernel_package 3
+        flowey e 12 flowey_core::pipeline::artifact::publish 2
+      shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 12 flowey_lib_common::cache 3
       shell: bash
+    - name: 🌼📦 Publish x64-kernel-baseline
+      uses: actions/upload-artifact@v4
+      with:
+        name: x64-kernel-baseline
+        path: ${{ runner.temp }}/publish_artifacts/x64-kernel-baseline/
     - name: 🌼📦 Publish x64-linux-musl-pipette
       uses: actions/upload-artifact@v4
       with:
@@ -1615,18 +1639,6 @@ jobs:
         flowey e 13 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 13 flowey_lib_hvlite::run_cargo_build 3
         flowey e 13 flowey_lib_hvlite::build_xtask 0
-        flowey e 13 flowey_lib_hvlite::init_cross_build 1
-      shell: bash
-    - name: cargo build openvmm_hcl
-      run: |-
-        flowey e 13 flowey_lib_common::run_cargo_build 0
-        flowey e 13 flowey_lib_hvlite::run_cargo_build 0
-      shell: bash
-    - name: split debug symbols
-      run: |-
-        flowey e 13 flowey_lib_hvlite::run_split_debug_info 1
-        flowey e 13 flowey_lib_hvlite::run_cargo_build 1
-        flowey e 13 flowey_lib_hvlite::build_openvmm_hcl 0
       shell: bash
     - name: create gh cache dir
       run: flowey e 13 flowey_lib_common::download_gh_cli 0
@@ -1668,7 +1680,29 @@ jobs:
     - name: download artifacts from github actions run
       run: flowey e 13 flowey_lib_common::download_gh_artifact 0
       shell: bash
-    - name: binary size comparison
+    - name: unpack kernel package
+      run: flowey e 13 flowey_lib_hvlite::download_openhcl_kernel_package 0
+      shell: bash
+    - name: kernel size comparison
+      run: |-
+        flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 3
+        flowey e 13 flowey_lib_hvlite::init_cross_build 1
+      shell: bash
+    - name: cargo build openvmm_hcl
+      run: |-
+        flowey e 13 flowey_lib_common::run_cargo_build 0
+        flowey e 13 flowey_lib_hvlite::run_cargo_build 0
+      shell: bash
+    - name: split debug symbols
+      run: |-
+        flowey e 13 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 13 flowey_lib_hvlite::run_cargo_build 1
+        flowey e 13 flowey_lib_hvlite::build_openvmm_hcl 0
+      shell: bash
+    - name: download artifacts from github actions run
+      run: flowey e 13 flowey_lib_common::download_gh_artifact 1
+      shell: bash
+    - name: usermode binary size comparison
       run: flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 2
       shell: bash
     - name: 'validate cache entry: gh-cli'

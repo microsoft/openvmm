@@ -30,6 +30,8 @@ pub struct OpenvmmHclOutput {
     pub dbg: Option<PathBuf>,
 }
 
+impl Artifact for OpenvmmHclOutput {}
+
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OpenvmmHclBuildParams {
     pub target: CommonTriple,
