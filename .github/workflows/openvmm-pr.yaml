@@ -1618,7 +1618,7 @@ jobs:
     - name: collect openvmm_hcl files for analysis
       run: |-
         flowey e 13 flowey_lib_hvlite::_jobs::check_openvmm_hcl_size 2
-        flowey v 13 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:9:flowey_core/src/node.rs:997:34' --write-to-gh-env floweyvar1 --is-raw-string
+        flowey v 13 'flowey_lib_hvlite::_jobs::check_openvmm_hcl_size:9:flowey_core/src/node.rs:1054:34' --write-to-gh-env floweyvar1 --is-raw-string
       shell: bash
     - id: flowey_lib_hvlite___jobs__check_openvmm_hcl_size__3
       uses: actions/upload-artifact@v4
