@@ -2071,7 +2071,7 @@ impl UhProcessor<'_, TdxBacked> {
                         HvX64RegisterName::Gdtr
                     }
                 };
-                // We only support fowarding intercepts for descriptor table writes today.
+                // We only support fowarding intercepts for descriptor table loads today.
                 if (info.instruction().is_load()
                     && !self.cvm_try_protect_secure_register_write(intercepted_vtl, reg, 0))
                     || !info.instruction().is_load()
@@ -2091,7 +2091,7 @@ impl UhProcessor<'_, TdxBacked> {
                     }
                     LdtrOrTrInstruction::Str | LdtrOrTrInstruction::Ltr => HvX64RegisterName::Tr,
                 };
-                // We only support fowarding intercepts for descriptor table writes today.
+                // We only support fowarding intercepts for descriptor table loads today.
                 if (info.instruction().is_load()
                     && !self.cvm_try_protect_secure_register_write(intercepted_vtl, reg, 0))
                     || !info.instruction().is_load()
@@ -3073,7 +3073,7 @@ impl UhProcessor<'_, TdxBacked> {
             return Ok(());
         }
 
-        let (gva, segment) = self.compute_address_for_table_access_emulation(
+        let (gva, segment) = self.compute_gva_for_table_access_emulation(
             exit_info.qualification(),
             (!instr_info.base_register_invalid()).then_some(instr_info.base_register()),
             (!instr_info.index_register_invalid()).then_some(instr_info.index_register()),
@@ -3184,20 +3184,21 @@ impl UhProcessor<'_, TdxBacked> {
 
         match instr_info.instruction() {
             LdtrOrTrInstruction::Sldt | LdtrOrTrInstruction::Str => {
-                let value = self.read_segment(
+                let value = self.runner.read_vmcs16(
                     vtl,
                     if matches!(instr_info.instruction(), LdtrOrTrInstruction::Sldt) {
                         TdxSegmentReg::Ldtr
                     } else {
                         TdxSegmentReg::Tr
-                    },
+                    }
+                    .selector(),
                 );
 
                 if instr_info.memory_or_register() {
                     let gps = self.runner.tdx_enter_guest_gps_mut();
-                    gps[instr_info.register_1() as usize] = value.selector as u64;
+                    gps[instr_info.register_1() as usize] = value.into();
                 } else {
-                    let (gva, segment) = self.compute_address_for_table_access_emulation(
+                    let (gva, segment) = self.compute_gva_for_table_access_emulation(
                         exit_info.qualification(),
                         (!instr_info.base_register_invalid()).then_some(instr_info.base_register()),
                         (!instr_info.index_register_invalid())
@@ -3220,7 +3221,7 @@ impl UhProcessor<'_, TdxBacked> {
                         gva,
                         segment,
                         x86emu::AlignmentMode::Standard,
-                        EmulatedMemoryOperation::Write(&value.selector.to_le_bytes()),
+                        EmulatedMemoryOperation::Write(&value.to_le_bytes()),
                     )
                     .await?;
                 }
@@ -3231,7 +3232,7 @@ impl UhProcessor<'_, TdxBacked> {
                     let gps = self.runner.tdx_enter_guest_gps();
                     gps[instr_info.register_1() as usize] as u16
                 } else {
-                    let (gva, segment) = self.compute_address_for_table_access_emulation(
+                    let (gva, segment) = self.compute_gva_for_table_access_emulation(
                         exit_info.qualification(),
                         (!instr_info.base_register_invalid()).then_some(instr_info.base_register()),
                         (!instr_info.index_register_invalid())
@@ -3278,7 +3279,7 @@ impl UhProcessor<'_, TdxBacked> {
         Ok(())
     }
 
-    fn compute_address_for_table_access_emulation(
+    fn compute_gva_for_table_access_emulation(
         &self,
         qualification: u64,
         base_reg: Option<u8>,
