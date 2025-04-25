@@ -2752,7 +2752,9 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
         let exit_info = TdxExit(self.vp.runner.tdx_vp_enter_exit_info());
         let ept_info = VmxEptExitQualification::from(exit_info.qualification());
 
-        if ept_info.gva_valid() {
+        if exit_info.code().vmx_exit().basic_reason() == VmxExitBasic::EPT_VIOLATION
+            && ept_info.gva_valid()
+        {
             Some(virt_support_x86emu::emulate::InitialTranslation {
                 gva: exit_info.gla(),
                 gpa: exit_info.gpa(),
