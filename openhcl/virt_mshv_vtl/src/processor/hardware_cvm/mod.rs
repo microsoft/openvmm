@@ -1626,6 +1626,18 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 ecx = 0;
                 edx = 0;
             }
+            CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION) => {
+                // If VSM has been revoked (or just isn't available) then don't
+                // recommend the use of TLB flush hypercalls. They are only needed
+                // for synchronization between VTLs, and the non-hypercall direct
+                // path is always more efficient.
+                if matches!(
+                    *self.cvm_partition().guest_vsm.read(),
+                    GuestVsmState::NotPlatformSupported
+                ) {
+                    eax &= !0b100;
+                }
+            }
 
             _ => {}
         }

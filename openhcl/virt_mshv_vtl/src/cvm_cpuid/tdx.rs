@@ -306,9 +306,8 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
             .with_use_ex_processor_masks(true)
             .with_use_apic_msrs(use_apic_msrs)
             .with_long_spin_wait_count(!0)
-            .with_use_synthetic_cluster_ipi(true);
-        // TODO TDX
-        //  .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
+            .with_use_synthetic_cluster_ipi(true)
+            .with_use_hypercall_for_remote_flush_and_local_flush_entire(true);
 
         let hardware_features = hvdef::HvHardwareFeatures::new()
             .with_apic_overlay_assist_in_use(true)
