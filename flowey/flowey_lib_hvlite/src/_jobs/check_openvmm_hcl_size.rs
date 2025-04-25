@@ -100,7 +100,50 @@ impl SimpleFlowNode for Node {
             gh_token,
         });
 
+        // Publish the built binary as an artifact for offline analysis.
+        //
+        // FUTURE: Flowey should have a general mechanism for this. We cannot
+        // use the existing artifact support because all artifacts are only
+        // published at the end of the job, if everything else succeeds.
+        let publish_artifact = if ctx.backend() == FlowBackend::Github {
+            let dir = ctx.emit_rust_stepv("collect openvmm_hcl files for analysis", |ctx| {
+                let built_openvmm_hcl = built_openvmm_hcl.clone().claim(ctx);
+                move |rt| {
+                    let built_openvmm_hcl = rt.read(built_openvmm_hcl);
+                    let path = Path::new("artifact");
+                    fs_err::create_dir_all(path)?;
+                    fs_err::copy(built_openvmm_hcl.bin, path.join("openvmm_hcl"))?;
+                    if let Some(dbg) = built_openvmm_hcl.dbg {
+                        fs_err::copy(dbg, path.join("openvmm_hcl.dbg"))?;
+                    }
+                    Ok(path
+                        .absolute()?
+                        .into_os_string()
+                        .into_string()
+                        .ok()
+                        .unwrap())
+                }
+            });
+            let name = format!(
+                "{}_openvmm_hcl_for_size_analysis",
+                target.common_arch().unwrap().as_arch()
+            );
+            Some(
+                ctx.emit_gh_step(
+                    "publish openvmm_hcl for analysis",
+                    "actions/upload-artifact@v4",
+                )
+                .with("name", name)
+                .with("path", dir)
+                .finish(ctx),
+            )
+        } else {
+            None
+        };
+
         let comparison = ctx.emit_rust_step("usermode binary size comparison", |ctx| {
+            // Ensure the artifact is published before the analysis since this step may fail.
+            let _publish_artifact = publish_artifact.claim(ctx);
             let xtask = xtask.clone().claim(ctx);
             let openvmm_repo_path = openvmm_repo_path.clone().claim(ctx);
             let old_openhcl = merge_head_artifact.claim(ctx);
