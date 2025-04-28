@@ -2224,7 +2224,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     fn send_intercept_message(&mut self, vtl: GuestVtl, message: &hvdef::HvMessage) {
         tracing::trace!(?message, "sending intercept to {:?}", vtl);
 
-        match self
+        if let Err(e) = self
             .backing
             .hv_mut(vtl)
             .as_mut()
@@ -2235,23 +2235,21 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 &mut self
                     .partition
                     .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
-            ) {
-            Ok(_) => (),
-            Err(e) => {
-                // Dropping this allows us to try to deliver any existing
-                // interrupt. In the case of sending an intercept to VTL 1
-                // because of VTL 0 behavior, since the VTL 0 instruction
-                // pointer is not advanced, the VTL 0 guest will exit on the
-                // same instruction again, providing another opportunity to
-                // deliver the intercept.
-                tracelimit::warn_ratelimited!(
-                    error = &e as &dyn std::error::Error,
-                    ?vtl,
-                    ?message,
-                    "error sending intercept"
-                );
-            }
-        };
+            )
+        {
+            // Dropping this allows us to try to deliver any existing
+            // interrupt. In the case of sending an intercept to VTL 1
+            // because of VTL 0 behavior, since the VTL 0 instruction
+            // pointer is not advanced, the VTL 0 guest will exit on the
+            // same instruction again, providing another opportunity to
+            // deliver the intercept.
+            tracelimit::warn_ratelimited!(
+                error = &e as &dyn std::error::Error,
+                ?vtl,
+                ?message,
+                "error sending intercept"
+            );
+        }
     }
 }
 
