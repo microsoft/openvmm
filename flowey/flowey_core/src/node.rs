@@ -337,8 +337,12 @@ impl<T: Serialize + DeserializeOwned> ReadVarValue for ClaimedReadVar<T> {
                 // Always get the data to validate that the variable is actually there.
                 let data = rt.get_var(&var);
                 if is_side_effect {
+                    // This was converted into a `ReadVar<SideEffect>` from
+                    // another type, so parse the value that a
+                    // `WriteVar<SideEffect>` would have written.
                     serde_json::from_slice(b"null").expect("should be deserializing into ()")
                 } else {
+                    // This is a normal variable.
                     serde_json::from_slice(&data).expect("improve this error path")
                 }
             }
