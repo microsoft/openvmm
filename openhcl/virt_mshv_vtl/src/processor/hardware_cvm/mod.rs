@@ -718,6 +718,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         &mut self,
         intercept_control: hvdef::HvRegisterCrInterceptControl,
     ) -> HvResult<()> {
+        // We support intercepting all writes except msr_sgx_launch_control_write, but no reads.
         let supported_controls = hvdef::HvRegisterCrInterceptControl::new()
             .with_cr0_write(true)
             .with_cr4_write(true)

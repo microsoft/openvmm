@@ -126,6 +126,36 @@ use x86defs::vmx::VmxExitBasic;
 use x86emu::Gp;
 use x86emu::Segment;
 
+/// MSRs that are allowed to be read by the guest without interception.
+const MSR_ALLOWED_READ: &[u32] = &[
+    x86defs::X86X_MSR_TSC,
+    X86X_MSR_EFER,
+    x86defs::X86X_MSR_STAR,
+    x86defs::X86X_MSR_LSTAR,
+    x86defs::X86X_MSR_SFMASK,
+    x86defs::X86X_MSR_SYSENTER_CS,
+    x86defs::X86X_MSR_SYSENTER_ESP,
+    x86defs::X86X_MSR_SYSENTER_EIP,
+];
+
+/// MSRs that are allowed to be read and written by the guest without interception.
+const MSR_ALLOWED_READ_WRITE: &[u32] = &[
+    x86defs::X64_MSR_FS_BASE,
+    x86defs::X64_MSR_GS_BASE,
+    x86defs::X64_MSR_KERNEL_GS_BASE,
+    x86defs::X86X_MSR_SPEC_CTRL,
+    x86defs::X86X_MSR_U_CET,
+    x86defs::X86X_MSR_S_CET,
+    x86defs::X86X_MSR_PL0_SSP,
+    x86defs::X86X_MSR_PL1_SSP,
+    x86defs::X86X_MSR_PL2_SSP,
+    x86defs::X86X_MSR_PL3_SSP,
+    x86defs::X86X_MSR_TSC_AUX,
+    x86defs::X86X_MSR_INTERRUPT_SSP_TABLE_ADDR,
+    x86defs::X86X_IA32_MSR_XFD,
+    x86defs::X86X_IA32_MSR_XFD_ERR,
+];
+
 #[derive(Debug)]
 struct TdxExit<'a>(&'a tdx_tdg_vp_enter_exit_info);
 
@@ -315,77 +345,6 @@ impl VirtualRegister {
         // guest from the physical value.
         let guest_owned_mask = self.register.guest_owned_mask();
         (self.shadow_value & !self.register.guest_owned_mask()) | (physical_reg & guest_owned_mask)
-    }
-}
-
-const BITMAP_SIZE: usize = HV_PAGE_SIZE as usize / 8;
-/// Bitmap used to control MSR intercepts.
-struct MsrBitmap {
-    bitmap: [u64; BITMAP_SIZE],
-}
-
-impl MsrBitmap {
-    fn new() -> Self {
-        // Initialize the bitmap with the default behavior of all 1s, which
-        // means intercept.
-        let mut bitmap = [u64::MAX; BITMAP_SIZE];
-
-        let mut clear_msr_bit = |msr_index: u32, write: bool| {
-            let mut word_index = ((msr_index & 0xFFFF) / 64) as usize;
-
-            if msr_index & 0x80000000 == 0x80000000 {
-                assert!((0xC0000000..=0xC0001FFF).contains(&msr_index));
-                word_index += 0x80;
-            } else {
-                assert!(msr_index <= 0x00001FFF);
-            }
-
-            if write {
-                word_index += 0x100;
-            }
-
-            // Clear the specified bit
-            bitmap[word_index] &= !(1 << (msr_index as u64 & 0x3F));
-        };
-
-        const ALLOWED_READ: &[u32] = &[
-            x86defs::X86X_MSR_TSC,
-            X86X_MSR_EFER,
-            x86defs::X86X_MSR_STAR,
-            x86defs::X86X_MSR_LSTAR,
-            x86defs::X86X_MSR_SFMASK,
-            x86defs::X86X_MSR_SYSENTER_CS,
-            x86defs::X86X_MSR_SYSENTER_ESP,
-            x86defs::X86X_MSR_SYSENTER_EIP,
-        ];
-
-        const ALLOWED_READ_WRITE: &[u32] = &[
-            x86defs::X64_MSR_FS_BASE,
-            x86defs::X64_MSR_GS_BASE,
-            x86defs::X64_MSR_KERNEL_GS_BASE,
-            x86defs::X86X_MSR_SPEC_CTRL,
-            x86defs::X86X_MSR_U_CET,
-            x86defs::X86X_MSR_S_CET,
-            x86defs::X86X_MSR_PL0_SSP,
-            x86defs::X86X_MSR_PL1_SSP,
-            x86defs::X86X_MSR_PL2_SSP,
-            x86defs::X86X_MSR_PL3_SSP,
-            x86defs::X86X_MSR_TSC_AUX,
-            x86defs::X86X_MSR_INTERRUPT_SSP_TABLE_ADDR,
-            x86defs::X86X_IA32_MSR_XFD,
-            x86defs::X86X_IA32_MSR_XFD_ERR,
-        ];
-
-        for &msr in ALLOWED_READ {
-            clear_msr_bit(msr, false);
-        }
-
-        for &msr in ALLOWED_READ_WRITE {
-            clear_msr_bit(msr, false);
-            clear_msr_bit(msr, true);
-        }
-
-        Self { bitmap }
     }
 }
 
@@ -643,7 +602,51 @@ impl HardwareIsolatedBacking for TdxBacked {
                 .into_bits(),
         );
 
-        // TODO Update MSR bitmaps
+        // Update MSR intercepts. We only need to update those that are allowed
+        // to be passed through, as the default otherwise is to always intercept.
+        // See [`MSR_ALLOWED_READ_WRITE`].
+        this.runner.set_msr_bit(
+            vtl,
+            x86defs::X86X_MSR_TSC_AUX,
+            true,
+            intercept_control.msr_tsc_aux_write(),
+        );
+        this.runner.set_msr_bit(
+            vtl,
+            x86defs::X86X_MSR_S_CET,
+            true,
+            intercept_control.msr_scet_write(),
+        );
+        this.runner.set_msr_bit(
+            vtl,
+            x86defs::X86X_MSR_PL0_SSP,
+            true,
+            intercept_control.msr_pls_ssp_write(),
+        );
+        this.runner.set_msr_bit(
+            vtl,
+            x86defs::X86X_MSR_PL1_SSP,
+            true,
+            intercept_control.msr_pls_ssp_write(),
+        );
+        this.runner.set_msr_bit(
+            vtl,
+            x86defs::X86X_MSR_PL2_SSP,
+            true,
+            intercept_control.msr_pls_ssp_write(),
+        );
+        this.runner.set_msr_bit(
+            vtl,
+            x86defs::X86X_MSR_PL3_SSP,
+            true,
+            intercept_control.msr_pls_ssp_write(),
+        );
+        this.runner.set_msr_bit(
+            vtl,
+            x86defs::X86X_MSR_INTERRUPT_SSP_TABLE_ADDR,
+            true,
+            intercept_control.msr_pls_ssp_write(),
+        );
     }
 }
 
@@ -793,14 +796,15 @@ impl BackingPrivate for TdxBacked {
                 shared.cr_guest_host_mask(ShadowedRegister::Cr4),
             );
 
-            // Configure the MSR bitmap for this VP.  Since the default MSR bitmap
-            // is all ones, only those values that are not all ones need to be set in
-            // the TDX module.
-            let bitmap = MsrBitmap::new();
-            for (i, &word) in bitmap.bitmap.iter().enumerate() {
-                if word != u64::MAX {
-                    params.runner.write_msr_bitmap(vtl, i as u32, !0, word);
-                }
+            // Configure the MSR bitmap for this VP. Since the default MSR bitmap
+            // is set to intercept everything only the MSRs that we want to allow
+            // to passthrough need to be set.
+            for msr in MSR_ALLOWED_READ {
+                params.runner.set_msr_bit(vtl, *msr, false, false);
+            }
+            for msr in MSR_ALLOWED_READ_WRITE {
+                params.runner.set_msr_bit(vtl, *msr, false, false);
+                params.runner.set_msr_bit(vtl, *msr, true, false);
             }
 
             // Set the exception bitmap.
@@ -1797,7 +1801,14 @@ impl UhProcessor<'_, TdxBacked> {
                         .msr_write(msr, value)
                         .or_else_if_unknown(|| self.write_msr_cvm(msr, value, intercepted_vtl))
                         .or_else_if_unknown(|| self.write_msr(msr, value, intercepted_vtl))
-                        .or_else_if_unknown(|| self.write_msr_tdx(msr, value, intercepted_vtl));
+                        .or_else_if_unknown(|| self.write_msr_tdx(msr, value, intercepted_vtl))
+                        .or_else_if_unknown(|| {
+                            // Sanity check
+                            if MSR_ALLOWED_READ_WRITE.contains(&msr) {
+                                unreachable!("intercepted a write to MSR {msr}, configured for passthrough by default, that wasn't registered for intercepts by a higher VTL");
+                            }
+                            Err(MsrError::Unknown)
+                        });
 
                     let inject_gp = match result {
                         Ok(()) => false,
