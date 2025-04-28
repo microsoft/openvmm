@@ -1635,6 +1635,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     *self.cvm_partition().guest_vsm.read(),
                     GuestVsmState::NotPlatformSupported
                 ) {
+                    // The only bit we care about here is within the first 32 bits,
+                    // so just truncating is fine.
                     let eax_bit = hvdef::HvEnlightenmentInformation::new()
                         .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
                         .into_bits() as u32;
