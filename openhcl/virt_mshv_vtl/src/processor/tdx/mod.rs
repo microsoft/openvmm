@@ -1482,8 +1482,17 @@ impl UhProcessor<'_, TdxBacked> {
         // Do not do this if there is a pending interruption, since we need to
         // run code on the next exit to clear it. If we miss this opportunity,
         // we will probably double-inject the interruption, wreaking havoc.
+        //
+        // Also do not do this if there is a pending TLB flush, since we need to
+        // run code on the next exit to clear it. If we miss this opportunity,
+        // we could double-inject the TLB flush unnecessarily.
         let offload_enabled = self.backing.cvm.lapics[next_vtl].lapic.can_offload_irr()
-            && !self.backing.vtls[next_vtl].interruption_information.valid();
+            && !self.backing.vtls[next_vtl].interruption_information.valid()
+            && self.backing.vtls[next_vtl]
+                .private_regs
+                .vp_entry_flags
+                .invd_translations()
+                != 0;
         let x2apic_enabled = self.backing.cvm.lapics[next_vtl].lapic.x2apic_enabled();
 
         let offload_flags = hcl_intr_offload_flags::new()
@@ -1511,11 +1520,6 @@ impl UhProcessor<'_, TdxBacked> {
         let entered_from_vtl = next_vtl;
         self.runner
             .read_private_regs(&mut self.backing.vtls[entered_from_vtl].private_regs);
-        // TODO: Remove this line once the kernel does it for us
-        self.backing.vtls[entered_from_vtl]
-            .private_regs
-            .vp_entry_flags
-            .set_invd_translations(0);
 
         // Kernel offload may have set or cleared the halt/idle states
         if offload_enabled && kernel_known_state {
@@ -1549,6 +1553,12 @@ impl UhProcessor<'_, TdxBacked> {
                 .increment();
             return Ok(());
         }
+
+        // Since the L2 was entered we can clear any TLB flush requests
+        self.backing.vtls[entered_from_vtl]
+            .private_regs
+            .vp_entry_flags
+            .set_invd_translations(0);
 
         // The L2 was entered, so process the exit.
         let stat = match exit_info.code().tdx_exit() {
