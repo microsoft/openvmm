@@ -2224,11 +2224,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     fn send_intercept_message(&mut self, vtl: GuestVtl, message: &hvdef::HvMessage) {
         tracing::trace!(?message, "sending intercept to {:?}", vtl);
 
-        if let Err(e) = self
-            .backing
-            .hv_mut(vtl)
-            .as_mut()
-            .unwrap()
+        if let Err(e) = self.backing.cvm_state_mut().hv[vtl]
             .synic
             .post_intercept_message(
                 message,

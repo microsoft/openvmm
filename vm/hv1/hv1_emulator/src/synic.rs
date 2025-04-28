@@ -438,7 +438,9 @@ impl ProcessorSynic {
         Ok(())
     }
 
-    /// Writes an intercept message to the message page.
+    /// Writes an intercept message to the message page. Meant to be used on
+    /// paths where the message can be written directly without using the
+    /// message queues, as it marks the intercept sint as ready.
     ///
     /// Returns `Err(HvError::ObjectInUse)` if the message slot is full.
     pub fn post_intercept_message(
