@@ -2238,14 +2238,18 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             ) {
             Ok(_) => (),
             Err(e) => {
-                // Dropping this allows us to try to deliver the existing interrupt
-                // to VTL 1. Since the instruction pointer is not advanced, the VTL
-                // 0 guest will exit on the same instruction again, providing
-                // another opportunity to deliver the intercept.
-                assert!(
-                    e == HvError::ObjectInUse,
-                    "unexpected error sending intercept",
-                )
+                // Dropping this allows us to try to deliver any existing
+                // interrupt. In the case of sending an intercept to VTL 1
+                // because of VTL 0 behavior, since the VTL 0 instruction
+                // pointer is not advanced, the VTL 0 guest will exit on the
+                // same instruction again, providing another opportunity to
+                // deliver the intercept.
+                tracelimit::warn_ratelimited!(
+                    error = &e as &dyn std::error::Error,
+                    ?vtl,
+                    ?message,
+                    "error sending intercept"
+                );
             }
         };
     }
