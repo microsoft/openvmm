@@ -67,17 +67,31 @@ impl RunContext<'_> {
 
         let partition = Arc::new(partition);
 
-        self.run(m.vtl0(), partition.caps(), test, async |_this, runner| {
-            let [vp] = vps.try_into().ok().unwrap();
-            start_vp(vp, runner).await?;
-            Ok(())
-        })
-        .await
+        let mut threads = Vec::new();
+        let r = self
+            .run(m.vtl0(), partition.caps(), test, async |_this, runner| {
+                let [vp] = vps.try_into().ok().unwrap();
+                threads.push(start_vp(vp, runner).await?);
+                Ok(())
+            })
+            .await?;
+
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        // Ensure the partition has not leaked.
+        Arc::into_inner(partition).expect("partition is no longer referenced");
+
+        Ok(r)
     }
 }
 
-async fn start_vp(mut vp: UhProcessorBox, mut runner: RunnerBuilder) -> anyhow::Result<()> {
-    std::thread::spawn(move || {
+async fn start_vp(
+    mut vp: UhProcessorBox,
+    mut runner: RunnerBuilder,
+) -> anyhow::Result<std::thread::JoinHandle<()>> {
+    let vp_thread = std::thread::spawn(move || {
         let pool = pal_uring::IoUringPool::new("vp", 256).unwrap();
         let driver = pool.client().initiator().clone();
         pool.client().set_idle_task(async move |mut control| {
@@ -89,5 +103,5 @@ async fn start_vp(mut vp: UhProcessorBox, mut runner: RunnerBuilder) -> anyhow::
         });
         pool.run()
     });
-    Ok(())
+    Ok(vp_thread)
 }
