@@ -1635,7 +1635,10 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                     *self.cvm_partition().guest_vsm.read(),
                     GuestVsmState::NotPlatformSupported
                 ) {
-                    eax &= !0b100;
+                    let eax_bit = hvdef::HvEnlightenmentInformation::new()
+                        .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
+                        .into_bits() as u32;
+                    eax &= !eax_bit;
                 }
             }
 
