@@ -179,7 +179,12 @@ message NicAcceleration {
 
 // Settings used for the 'AttestedSettings' namespace
 message Vtl2AttestedSettings {
+    enum Version {
+        UNKNOWN = 0;
+        V1 = 1;
+    }
     // Future attested setting fields should be added here
+    Version version = 1;
 
     // Reserve field numbers that would make this start with an ASCII whitespace
     // character or JSON object opening brace '{', which would conflict with
