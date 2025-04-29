@@ -628,6 +628,11 @@ impl<T, Init: Borrow<IoInitiator>> Drop for Io<T, Init> {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::disallowed_methods,
+        reason = "test code using futures channels"
+    )]
+
     use super::Io;
     use super::IoRing;
     use crate::IoUringPool;
