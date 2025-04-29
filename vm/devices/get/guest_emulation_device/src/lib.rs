@@ -110,6 +110,8 @@ enum Error {
     UnsupportedIgvmAttestRequestType(u32),
     #[error("failed to write to shared memory")]
     SharedMemoryWriteFailed(#[source] guestmem::GuestMemoryError),
+    #[error("invalid igvm attest state: {0:?}")]
+    InvalidIgvmAttestState(IgvmAttestState),
 }
 
 impl From<task_control::Cancelled> for Error {
@@ -188,10 +190,12 @@ pub enum GuestEvent {
 
 /// Simple state machine to support AK cert preserving test.
 // TODO: add more states to cover other test scenarios.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum IgvmAttestState {
     Init,
+    Ready,
     SendingAkCert,
+    SendingAkCertDone,
 }
 
 /// VMBUS device that implements the host side of the Guest Emulation Transport protocol.
@@ -868,6 +872,30 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             IgvmAttestRequestType::AK_CERT_REQUEST
                 if matches!(state.igvm_attest_state, IgvmAttestState::Init) =>
             {
+                tracing::info!("Send an empty response for first AK_CERT_REQEUST");
+
+                state.igvm_attest_state = IgvmAttestState::Ready;
+
+                get_protocol::IgvmAttestResponse {
+                    message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
+                    length: 0,
+                }
+            }
+            IgvmAttestRequestType::AK_CERT_REQUEST
+                if matches!(state.igvm_attest_state, IgvmAttestState::Ready) =>
+            {
+                tracing::info!("Return an invalid response for AK_CERT_REQUEST");
+
+                state.igvm_attest_state = IgvmAttestState::SendingAkCert;
+
+                get_protocol::IgvmAttestResponse {
+                    message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
+                    length: get_protocol::IGVM_ATTEST_VMWP_GENERIC_ERROR_CODE as u32,
+                }
+            }
+            IgvmAttestRequestType::AK_CERT_REQUEST
+                if matches!(state.igvm_attest_state, IgvmAttestState::SendingAkCert) =>
+            {
                 let data = vec![0xab; 2500];
                 let header = IgvmAttestAkCertResponseHeader {
                     data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>()) as u32,
@@ -879,20 +907,29 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     .write_at(request.shared_gpa[0], &payload)
                     .map_err(Error::SharedMemoryWriteFailed)?;
 
-                state.igvm_attest_state = IgvmAttestState::SendingAkCert;
+                state.igvm_attest_state = IgvmAttestState::SendingAkCertDone;
 
-                tracing::info!("Sending AK_CERT_REQEUST");
+                tracing::info!("Send a response for AK_CERT_REQEUST");
 
                 get_protocol::IgvmAttestResponse {
                     message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
                     length: payload.len() as u32,
                 }
             }
+            IgvmAttestRequestType::AK_CERT_REQUEST
+                if matches!(state.igvm_attest_state, IgvmAttestState::SendingAkCertDone) =>
+            {
+                // Send an empty response if the state is SendingAkCertDone to support
+                // sending-response-once behavior for testing AK cert preserving behavior
+                tracing::info!("Send an empty response for AK_CERT_REQEUST");
+
+                get_protocol::IgvmAttestResponse {
+                    message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
+                    length: 0,
+                }
+            }
             IgvmAttestRequestType::AK_CERT_REQUEST => {
-                // Skip if the state is not Init to support sending-response-once behavior
-                // allows for testing AK cert preserving behavior
-                tracing::info!("Skip AK_CERT_REQEUST");
-                return Ok(());
+                return Err(Error::InvalidIgvmAttestState(state.igvm_attest_state));
             }
             ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
         };

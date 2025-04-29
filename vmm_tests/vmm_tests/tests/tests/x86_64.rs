@@ -52,12 +52,12 @@ async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
             config.run().await?
         }
         OsFlavor::Linux => {
-            // First boot - AK cert request will be served by GED
+            // First boot - expect no AK cert from GED
             let mut vm = config.run_with_lazy_pipette().await?;
             // Workaround to https://github.com/microsoft/openvmm/issues/379
             assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
 
-            // Second boot - Ak cert request will be bypassed by GED
+            // Second boot - except get AK cert from GED on the second attempts
             vm.reset().await?;
             let agent = vm.wait_for_agent().await?;
             vm.wait_for_successful_boot_event().await?;
@@ -71,10 +71,39 @@ async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
             agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
             assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
 
+            // The first AK cert request made during boot is expected to
+            // get invalid response from GED such that no data is set
+            // to nv index. The script should return failure. Also, the nv
+            // read made by the script is expected to trigger another AK cert
+            // request.
             let sh = agent.unix_shell();
             let output = cmd!(sh, "python3 tpm.py").read().await?;
 
-            // Check if the content is as expected
+            // Check if there is no content yet
+            assert!(!output.contains("succeeded"));
+
+            // Run the script again to test if the AK cert triggered by nv read
+            // succeeds and the data is written into the nv index.
+            let sh = agent.unix_shell();
+            let output = cmd!(sh, "python3 tpm.py").read().await?;
+
+            // Check if the content is now available
+            assert!(output.contains("succeeded"));
+
+            // Third boot - Ak cert request will be bypassed by GED
+            vm.reset().await?;
+            let agent = vm.wait_for_agent().await?;
+            vm.wait_for_successful_boot_event().await?;
+
+            agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
+            assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
+
+            // Run the script after boot to verify that the previous
+            // data in the nv index preserves.
+            let sh = agent.unix_shell();
+            let output = cmd!(sh, "python3 tpm.py").read().await?;
+
+            // Check if the content the same across boots
             assert!(output.contains("succeeded"));
 
             (vm, agent)
