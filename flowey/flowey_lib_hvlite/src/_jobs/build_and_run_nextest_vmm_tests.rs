@@ -236,25 +236,15 @@ impl SimpleFlowNode for Node {
 
         let mut side_effects = Vec::new();
 
-        // TODO: Get correct path on linux and more reliably on windows
-        let crash_dumps_path = ReadVar::from_static(PathBuf::from(match ctx.platform().kind() {
-            FlowPlatformKind::Windows => r#"C:\Users\cloudtest\AppData\Local\CrashDumps"#,
-            FlowPlatformKind::Unix => "/will/not/exist",
-        }));
-
         // Bind the externally generated output paths together with the results
         // to create a dependency on the VMM tests having actually run.
         let test_log_path = test_log_path.depending_on(ctx, &results);
-        let crash_dumps_path = crash_dumps_path.depending_on(ctx, &results);
 
         let junit_xml = results.map(ctx, |r| r.junit_xml);
         let reported_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
             junit_xml,
             test_label: junit_test_label,
-            attachments: BTreeMap::from([
-                ("logs".to_string(), (test_log_path, false)),
-                ("crash-dumps".to_string(), (crash_dumps_path, true)),
-            ]),
+            attachments: BTreeMap::from([("logs".to_string(), (test_log_path, false))]),
             output_dir: artifact_dir,
             done: v,
         });
