@@ -12,7 +12,6 @@ use guid::Guid;
 use inspect::Inspect;
 use mesh::MeshPayload;
 use serde::Serialize;
-use tee_call::{TeeCall, TeeType};
 
 mod errors;
 pub mod schema;
@@ -176,61 +175,9 @@ pub struct NicDevice {
 
 #[derive(Default, Debug, Clone, Eq, PartialEq, MeshPayload, Inspect)]
 pub struct Vtl2AttestedSettings {
+    pub version: i32,
     // Reserved for future use
-}
-
-impl Vtl2AttestedSettings {
-    pub fn verify(&self, tee_call: &dyn TeeCall) -> Result<(), Vtl2SettingsErrorInfo> {
-        // TODO: Implement the attested settings verification
-        // This is a placeholder for the actual implementation.
-        // First serialize back to JSON
-        let json = serde_json::to_string(&self).map_err(|e| {
-            Vtl2SettingsErrorInfo::new(
-                Vtl2SettingsErrorCode::JsonFormatError,
-                format!("Failed to serialize settings: {}", e),
-            )
-        })?;
-
-        // Then base64 encode
-        let encoded = base64::encode(json);
-
-        // Does this belong in underhill_attestation?
-        match tee_call.tee_type() {
-            TeeType::Snp => {
-                let report = teecall
-                    .get_attestation_report(&encoded.as_bytes())
-                    .map_err(|e| {
-                        Vtl2SettingsErrorInfo::new(
-                            Vtl2SettingsErrorCode::InternalFailure,
-                            format!("Failed to get attestation report: {}", e),
-                        )
-                    })?;
-                // let host_data = report.host_data;
-                // compare hash of the encoded settings with the host data
-                return Ok(());
-            }
-            TeeType::Tdx => {
-                let report = teecall
-                    .get_attestation_report(&encoded.as_bytes())
-                    .map_err(|e| {
-                        Vtl2SettingsErrorInfo::new(
-                            Vtl2SettingsErrorCode::InternalFailure,
-                            format!("Failed to get attestation report: {}", e),
-                        )
-                    })?;
-                // let mr_config = report.mr_config;
-                // compare hash of the encoded settings with the mr_config
-                return Ok(());
-            }
-            _ => {
-                return Err(Vtl2SettingsErrorInfo::new(
-                    Vtl2SettingsErrorCode::InternalFailure,
-                    "Unsupported attestation type".to_string(),
-                ));
-            }
-        }
-        Ok(())
-    }
+    init_data_hash: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, MeshPayload, Inspect)]

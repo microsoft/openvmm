@@ -16,7 +16,7 @@ prost.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
-tee_call.workspace = true
+openssl.workspace = true
 
 [lints]
 workspace = true
