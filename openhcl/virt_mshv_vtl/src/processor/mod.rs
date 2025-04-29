@@ -41,6 +41,7 @@ use crate::ExitActivity;
 use crate::GuestVtl;
 use crate::WakeReason;
 use guestmem::GuestMemory;
+use hcl::ioctl::Hcl;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_hypercall::HvRepResult;
@@ -272,15 +273,14 @@ pub trait Backing: BackingPrivate {}
 
 impl<T: BackingPrivate> Backing for T {}
 
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 pub(crate) struct BackingSharedParams<'a> {
     pub cvm_state: Option<crate::UhCvmPartitionState>,
-    #[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
     pub guest_memory: VtlArray<GuestMemory, 2>,
     #[cfg(guest_arch = "x86_64")]
     pub cpuid: &'a virt::CpuidLeafSet,
+    pub hcl: &'a Hcl,
     pub guest_vsm_available: bool,
-    /// Not all arches reference 'a.
-    pub _phantom: PhantomData<&'a ()>,
 }
 
 /// Supported intercept message types.

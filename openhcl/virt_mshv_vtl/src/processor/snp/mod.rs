@@ -85,6 +85,7 @@ pub struct SnpBacked {
     hv_sint_notifications: u16,
     general_stats: VtlArray<GeneralStats, 2>,
     exit_stats: VtlArray<ExitStats, 2>,
+    #[inspect(flatten)]
     cvm: UhCvmVpState,
 }
 
@@ -729,6 +730,8 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, SnpBacked> {
             hv1_hypercall::HvSetVpRegisters,
             hv1_hypercall::HvModifyVtlProtectionMask,
             hv1_hypercall::HvX64TranslateVirtualAddress,
+            hv1_hypercall::HvSendSyntheticClusterIpi,
+            hv1_hypercall::HvSendSyntheticClusterIpiEx,
         ],
     );
 
@@ -979,11 +982,7 @@ impl UhProcessor<'_, SnpBacked> {
         msr: u32,
         is_write: bool,
     ) {
-        if is_write && self.cvm_protect_msr_write(entered_from_vtl, msr) {
-            // An intercept message has been posted, no further processing is
-            // required. Return without advancing instruction pointer, it must
-            // continue to point to the instruction that generated the
-            // intercept.
+        if is_write && self.cvm_try_protect_msr_write(entered_from_vtl, msr) {
             return;
         }
 
@@ -1025,16 +1024,7 @@ impl UhProcessor<'_, SnpBacked> {
                 })
                 .msr_read(msr)
                 .or_else_if_unknown(|| self.read_msr(msr, entered_from_vtl))
-                .or_else_if_unknown(|| self.read_msr_cvm(dev, msr, entered_from_vtl))
-                .or_else_if_unknown(|| match msr {
-                    hvdef::HV_X64_MSR_GUEST_IDLE => {
-                        self.backing.cvm.lapics[entered_from_vtl].activity = MpState::Idle;
-                        let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
-                        vmsa.v_intr_cntrl_mut().set_intr_shadow(false);
-                        Ok(0)
-                    }
-                    _ => Err(MsrError::Unknown),
-                });
+                .or_else_if_unknown(|| self.read_msr_snp(dev, msr, entered_from_vtl));
 
             let value = match r {
                 Ok(v) => Some(v),
@@ -1078,16 +1068,11 @@ impl UhProcessor<'_, SnpBacked> {
             cr4: vmsa.cr4(),
             cpl: vmsa.cpl(),
         }) {
-            if self.cvm_protect_secure_register_write(
+            if !self.cvm_try_protect_secure_register_write(
                 entered_from_vtl,
                 HvX64RegisterName::Xfem,
                 value,
             ) {
-                // Once the intercept message has been posted, no further
-                // processing is required. Do not advance the instruction
-                // pointer here, since the instruction pointer must continue to
-                // point to the instruction that generated the intercept.
-            } else {
                 let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
                 vmsa.set_xcr0(value);
                 advance_to_next_instruction(&mut vmsa);
@@ -1143,12 +1128,7 @@ impl UhProcessor<'_, SnpBacked> {
             return;
         }
 
-        if self.cvm_protect_secure_register_write(entered_from_vtl, reg, reg_value) {
-            // Once the intercept message has been posted, no further
-            // processing is required.  Do not advance the instruction
-            // pointer here, since the instruction pointer must continue to
-            // point to the instruction that generated the intercept.
-        } else {
+        if !self.cvm_try_protect_secure_register_write(entered_from_vtl, reg, reg_value) {
             let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
             match reg {
                 HvX64RegisterName::Cr0 => vmsa.set_cr0(reg_value),
@@ -1502,7 +1482,7 @@ impl UhProcessor<'_, SnpBacked> {
                     _ => unreachable!(),
                 };
 
-                if !self.cvm_protect_secure_register_write(entered_from_vtl, reg, 0) {
+                if !self.cvm_try_protect_secure_register_write(entered_from_vtl, reg, 0) {
                     // This is an unexpected intercept: should only have received an
                     // intercept for these registers if a VTL (i.e. VTL 1) requested
                     // it. If an unexpected intercept has been received, then the
@@ -2229,7 +2209,7 @@ fn advance_to_next_instruction(vmsa: &mut VmsaWrapper<'_, &mut SevVmsa>) {
 }
 
 impl UhProcessor<'_, SnpBacked> {
-    fn read_msr_cvm(
+    fn read_msr_snp(
         &mut self,
         _dev: &impl CpuIo,
         msr: u32,
@@ -2282,6 +2262,13 @@ impl UhProcessor<'_, SnpBacked> {
             x86defs::X86X_AMD_MSR_SYSCFG
             | x86defs::X86X_MSR_MCG_CAP
             | x86defs::X86X_MSR_MCG_STATUS => 0,
+
+            hvdef::HV_X64_MSR_GUEST_IDLE => {
+                self.backing.cvm.lapics[vtl].activity = MpState::Idle;
+                let mut vmsa = self.runner.vmsa_mut(vtl);
+                vmsa.v_intr_cntrl_mut().set_intr_shadow(false);
+                0
+            }
             _ => return Err(MsrError::Unknown),
         };
         Ok(value)

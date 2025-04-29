@@ -4,6 +4,7 @@
 use anyhow::Context;
 use diag_client::DiagClient;
 use diag_client::ExitStatus;
+use diag_client::kmsg_stream::KmsgStream;
 use futures::io::AllowStdIo;
 use std::io::Read;
 
@@ -98,6 +99,10 @@ impl OpenHclDiagHandler {
             .inspect("", None, None)
             .await
             .map(|_| ())
+    }
+
+    pub(crate) async fn kmsg(&self) -> anyhow::Result<KmsgStream> {
+        self.diag_client().await?.kmsg(false).await
     }
 
     async fn diag_client(&self) -> anyhow::Result<&DiagClient> {

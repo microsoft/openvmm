@@ -12,6 +12,8 @@ use super::CpuidSubtable;
 use super::ParsedCpuidEntry;
 use super::TopologyError;
 use core::arch::x86_64::CpuidResult;
+use vm_topology::processor::ProcessorTopology;
+use vm_topology::processor::x86::X86Topology;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::xsave;
@@ -32,15 +34,27 @@ pub const TDX_REQUIRED_LEAVES: &[(CpuidFunction, Option<u32>)] = &[
 ];
 
 /// Implements [`CpuidArchSupport`] for TDX-isolation support
-pub struct TdxCpuidInitializer {}
+pub struct TdxCpuidInitializer<'a> {
+    topology: &'a ProcessorTopology<X86Topology>,
+    access_vsm: bool,
+    vtom: u64,
+}
 
-impl TdxCpuidInitializer {
+impl<'a> TdxCpuidInitializer<'a> {
+    pub fn new(topology: &'a ProcessorTopology<X86Topology>, access_vsm: bool, vtom: u64) -> Self {
+        Self {
+            topology,
+            access_vsm,
+            vtom,
+        }
+    }
+
     fn cpuid(leaf: u32, subleaf: u32) -> CpuidResult {
         safe_intrinsics::cpuid(leaf, subleaf)
     }
 }
 
-impl CpuidArchInitializer for TdxCpuidInitializer {
+impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
     fn vendor(&self) -> cpuid::Vendor {
         cpuid::Vendor::INTEL
     }
@@ -247,5 +261,72 @@ impl CpuidArchInitializer for TdxCpuidInitializer {
 
     fn supports_tsc_aux_virtualization(&self, _results: &CpuidResults) -> bool {
         true
+    }
+
+    fn hv_cpuid_leaves(&self) -> [(CpuidFunction, CpuidResult); 5] {
+        const MAX_CPUS: u32 = 2048;
+
+        let privileges = hv1_emulator::cpuid::SUPPORTED_PRIVILEGES
+            .with_access_frequency_msrs(true)
+            .with_access_apic_msrs(true)
+            .with_start_virtual_processor(true)
+            .with_enable_extended_gva_ranges_flush_va_list(true)
+            .with_access_guest_idle_msr(true)
+            .with_access_vsm(self.access_vsm)
+            .with_isolation(true)
+            .with_fast_hypercall_output(true);
+
+        let features = hv1_emulator::cpuid::SUPPORTED_FEATURES
+            .with_privileges(privileges)
+            .with_frequency_regs_available(true)
+            .with_extended_gva_ranges_for_flush_virtual_address_list_available(true)
+            .with_guest_idle_available(true)
+            .with_xmm_registers_for_fast_hypercall_available(true)
+            .with_register_pat_available(true)
+            .with_fast_hypercall_output_available(true);
+
+        let use_apic_msrs = match self.topology.apic_mode() {
+            vm_topology::processor::x86::ApicMode::XApic => {
+                // If only xAPIC is supported, then the Hyper-V MSRs are
+                // more efficient for EOIs.
+                true
+            }
+            vm_topology::processor::x86::ApicMode::X2ApicSupported
+            | vm_topology::processor::x86::ApicMode::X2ApicEnabled => {
+                // If X2APIC is supported, then use the X2APIC MSRs. These
+                // are as efficient as the Hyper-V MSRs, and they are
+                // compatible with APIC hardware offloads.
+                false
+            }
+        };
+
+        let enlightenments = hvdef::HvEnlightenmentInformation::new()
+            .with_deprecate_auto_eoi(true)
+            .with_use_relaxed_timing(true)
+            .with_use_ex_processor_masks(true)
+            .with_use_apic_msrs(use_apic_msrs)
+            .with_long_spin_wait_count(!0)
+            .with_use_synthetic_cluster_ipi(true)
+            .with_use_hypercall_for_remote_flush_and_local_flush_entire(true);
+
+        let hardware_features = hvdef::HvHardwareFeatures::new()
+            .with_apic_overlay_assist_in_use(true)
+            .with_msr_bitmaps_in_use(true)
+            .with_second_level_address_translation_in_use(true)
+            .with_dma_remapping_in_use(false)
+            .with_interrupt_remapping_in_use(false);
+
+        let isolation_config = hvdef::HvIsolationConfiguration::new()
+            .with_paravisor_present(true)
+            .with_isolation_type(virt::IsolationType::Tdx.to_hv().0)
+            .with_shared_gpa_boundary_active(true)
+            .with_shared_gpa_boundary_bits(self.vtom.trailing_zeros() as u8);
+
+        let [l0, l1, l2] =
+            hv1_emulator::cpuid::make_hv_cpuid_leaves(features, enlightenments, MAX_CPUS);
+        let [l3, l4] =
+            hv1_emulator::cpuid::make_isolated_hv_cpuid_leaves(hardware_features, isolation_config);
+
+        [l0, l1, l2, l3, l4]
     }
 }

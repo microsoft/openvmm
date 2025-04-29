@@ -25,6 +25,7 @@ use guid::Guid;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::Vtl;
 use hvlite_defs::config::Aarch64TopologyConfig;
+use hvlite_defs::config::ArchTopologyConfig;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::GicConfig;
@@ -382,19 +383,16 @@ trait BuildTopology<T: ArchTopology + Inspect> {
 }
 
 trait ExtractTopologyConfig {
-    type Config;
-    fn to_config(&self) -> ProcessorTopologyConfig<Self::Config>;
+    fn to_config(&self) -> ProcessorTopologyConfig;
 }
 
 impl ExtractTopologyConfig for ProcessorTopology<X86Topology> {
-    type Config = X86TopologyConfig;
-
-    fn to_config(&self) -> ProcessorTopologyConfig<X86TopologyConfig> {
+    fn to_config(&self) -> ProcessorTopologyConfig {
         ProcessorTopologyConfig {
             proc_count: self.vp_count(),
             vps_per_socket: Some(self.reserved_vps_per_socket()),
             enable_smt: Some(self.smt_enabled()),
-            arch: X86TopologyConfig {
+            arch: Some(ArchTopologyConfig::X86(X86TopologyConfig {
                 apic_id_offset: self.vp_arch(VpIndex::BSP).apic_id,
                 x2apic: match self.apic_mode() {
                     vm_topology::processor::x86::ApicMode::XApic => X2ApicConfig::Unsupported,
@@ -403,22 +401,27 @@ impl ExtractTopologyConfig for ProcessorTopology<X86Topology> {
                     }
                     vm_topology::processor::x86::ApicMode::X2ApicEnabled => X2ApicConfig::Enabled,
                 },
-            },
+            })),
         }
     }
 }
 
-impl BuildTopology<X86Topology> for ProcessorTopologyConfig<X86TopologyConfig> {
+impl BuildTopology<X86Topology> for ProcessorTopologyConfig {
     fn to_topology(&self) -> anyhow::Result<ProcessorTopology<X86Topology>> {
+        let arch = match &self.arch {
+            None => Default::default(),
+            Some(ArchTopologyConfig::X86(arch)) => arch.clone(),
+            _ => anyhow::bail!("invalid architecture config"),
+        };
         let mut builder = TopologyBuilder::from_host_topology()?;
-        builder.apic_id_offset(self.arch.apic_id_offset);
+        builder.apic_id_offset(arch.apic_id_offset);
         if let Some(smt) = self.enable_smt {
             builder.smt_enabled(smt);
         }
         if let Some(count) = self.vps_per_socket {
             builder.vps_per_socket(count);
         }
-        let x2apic = match self.arch.x2apic {
+        let x2apic = match arch.x2apic {
             X2ApicConfig::Auto => {
                 // FUTURE: query the hypervisor for a recommendation.
                 X2ApicState::Supported
@@ -433,25 +436,29 @@ impl BuildTopology<X86Topology> for ProcessorTopologyConfig<X86TopologyConfig> {
 }
 
 impl ExtractTopologyConfig for ProcessorTopology<Aarch64Topology> {
-    type Config = Aarch64TopologyConfig;
-    fn to_config(&self) -> ProcessorTopologyConfig<Aarch64TopologyConfig> {
+    fn to_config(&self) -> ProcessorTopologyConfig {
         ProcessorTopologyConfig {
             proc_count: self.vp_count(),
             vps_per_socket: Some(self.reserved_vps_per_socket()),
             enable_smt: Some(self.smt_enabled()),
-            arch: Aarch64TopologyConfig {
+            arch: Some(ArchTopologyConfig::Aarch64(Aarch64TopologyConfig {
                 gic_config: Some(GicConfig {
                     gic_distributor_base: self.gic_distributor_base(),
                     gic_redistributors_base: self.gic_redistributors_base(),
                 }),
-            },
+            })),
         }
     }
 }
 
-impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig<Aarch64TopologyConfig> {
+impl BuildTopology<Aarch64Topology> for ProcessorTopologyConfig {
     fn to_topology(&self) -> anyhow::Result<ProcessorTopology<Aarch64Topology>> {
-        let gic = if let Some(gic_config) = &self.arch.gic_config {
+        let arch = match &self.arch {
+            None => Default::default(),
+            Some(ArchTopologyConfig::Aarch64(arch)) => arch.clone(),
+            _ => anyhow::bail!("invalid architecture config"),
+        };
+        let gic = if let Some(gic_config) = &arch.gic_config {
             GicInfo {
                 gic_distributor_base: gic_config.gic_distributor_base,
                 gic_redistributors_base: gic_config.gic_redistributors_base,

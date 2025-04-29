@@ -717,6 +717,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         &mut self,
         intercept_control: hvdef::HvRegisterCrInterceptControl,
     ) -> HvResult<()> {
+        // We support intercepting all writes except msr_sgx_launch_control_write, but no reads.
         let supported_controls = hvdef::HvRegisterCrInterceptControl::new()
             .with_cr0_write(true)
             .with_cr4_write(true)
@@ -745,10 +746,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             return Err(HvError::InvalidRegisterValue);
         }
 
-        // TODO TDX GUEST VSM
-        if let virt::IsolationType::Snp = self.vp.partition.isolation {
-            B::cr_intercept_registration(self.vp, intercept_control);
-        }
+        B::cr_intercept_registration(self.vp, intercept_control);
 
         self.vp
             .backing
@@ -959,8 +957,6 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
 
 impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandler<'_, '_, T, B> {
     fn is_vtl_call_allowed(&self) -> bool {
-        tracing::trace!("checking if vtl call is allowed");
-
         // Only allowed from VTL 0
         if self.intercepted_vtl != GuestVtl::Vtl0 {
             tracelimit::warn_ratelimited!(
@@ -978,7 +974,6 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
     }
 
     fn vtl_call(&mut self) {
-        tracing::trace!("handling vtl call");
         self.vp.raise_vtl(
             self.intercepted_vtl,
             GuestVtl::Vtl1,
@@ -989,8 +984,6 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
 
 impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHandler<'_, '_, T, B> {
     fn is_vtl_return_allowed(&self) -> bool {
-        tracing::trace!("checking if vtl return is allowed");
-
         if self.intercepted_vtl != GuestVtl::Vtl1 {
             tracelimit::warn_ratelimited!(
                 "vtl return not allowed from vtl {:?}",
@@ -1003,8 +996,6 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
     }
 
     fn vtl_return(&mut self, fast: bool) {
-        tracing::trace!("handling vtl return");
-
         self.vp.unlock_tlb_lock(Vtl::Vtl1);
 
         let hv = &mut self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
@@ -1618,6 +1609,23 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 ecx = 0;
                 edx = 0;
             }
+            CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION) => {
+                // If VSM has been revoked (or just isn't available) then don't
+                // recommend the use of TLB flush hypercalls. They are only needed
+                // for synchronization between VTLs, and the non-hypercall direct
+                // path is always more efficient.
+                if matches!(
+                    *self.cvm_partition().guest_vsm.read(),
+                    GuestVsmState::NotPlatformSupported
+                ) {
+                    // The only bit we care about here is within the first 32 bits,
+                    // so just truncating is fine.
+                    let eax_bit = hvdef::HvEnlightenmentInformation::new()
+                        .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
+                        .into_bits() as u32;
+                    eax &= !eax_bit;
+                }
+            }
 
             _ => {}
         }
@@ -1983,7 +1991,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
     /// Returns whether a higher VTL has registered for write intercepts on the
     /// register.
-    pub(crate) fn cvm_is_protected_register_write(
+    fn cvm_is_protected_register_write(
         &self,
         vtl: GuestVtl,
         reg: HvX64RegisterName,
@@ -2026,7 +2034,13 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
     /// Checks if a higher VTL registered for write intercepts on the register,
     /// and sends the intercept as required.
-    pub(crate) fn cvm_protect_secure_register_write(
+    ///
+    /// If an intercept message is posted then no further processing is required.
+    /// The instruction pointer should not be advanced, since the instruction
+    /// pointer must continue to point to the instruction that generated the
+    /// intercept.
+    #[must_use]
+    pub(crate) fn cvm_try_protect_secure_register_write(
         &mut self,
         vtl: GuestVtl,
         reg: HvX64RegisterName,
@@ -2036,15 +2050,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         if send_intercept {
             let message_state = B::intercept_message_state(self, vtl);
 
-            tracing::debug!(
-                ?reg,
-                ?value,
-                "sending intercept to vtl 1 for secure register write"
-            );
-
-            self.inner.post_message(
+            self.send_intercept_message(
                 GuestVtl::Vtl1,
-                hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX,
                 &crate::processor::InterceptMessageType::Register { reg, value }
                     .generate_hv_message(self.vp_index(), vtl, message_state),
             );
@@ -2055,7 +2062,13 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
     /// Checks if a higher VTL registered for write intercepts on the MSR, and
     /// sends the intercept as required.
-    pub(crate) fn cvm_protect_msr_write(&self, vtl: GuestVtl, msr: u32) -> bool {
+    ///
+    /// If an intercept message is posted then no further processing is required.
+    /// The instruction pointer should not be advanced, since the instruction
+    /// pointer must continue to point to the instruction that generated the
+    /// intercept.
+    #[must_use]
+    pub(crate) fn cvm_try_protect_msr_write(&mut self, vtl: GuestVtl, msr: u32) -> bool {
         if vtl == GuestVtl::Vtl0 && self.backing.cvm_state().vtl1.is_some() {
             let configured_intercepts = self
                 .backing
@@ -2094,11 +2107,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             if generate_intercept {
                 let message_state = B::intercept_message_state(self, vtl);
 
-                tracing::debug!(?msr, "sending intercept to vtl 1 for secure msr write");
-
-                self.inner.post_message(
+                self.send_intercept_message(
                     GuestVtl::Vtl1,
-                    hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX,
                     &crate::processor::InterceptMessageType::Msr { msr }.generate_hv_message(
                         self.vp_index(),
                         vtl,
@@ -2110,6 +2120,28 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             }
         }
         false
+    }
+
+    fn cvm_send_synthetic_cluster_ipi(
+        &mut self,
+        vtl: GuestVtl,
+        vector: u32,
+        processors: ProcessorSet<'_>,
+    ) -> HvResult<()> {
+        if vtl != GuestVtl::Vtl0 {
+            return Err(HvError::InvalidVtlState);
+        }
+
+        if !(16..=255).contains(&vector) {
+            return Err(HvError::InvalidParameter);
+        }
+
+        for vp_index in processors {
+            self.partition
+                .synic_interrupt(virt::VpIndex::new(vp_index), vtl)
+                .request_interrupt(vector, false)
+        }
+        Ok(())
     }
 
     fn get_vsm_vp_secure_config_vtl(
@@ -2188,6 +2220,33 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         B::switch_vtl(self, source_vtl, target_vtl);
         self.backing.cvm_state_mut().hv[target_vtl].set_return_reason(entry_reason);
     }
+
+    fn send_intercept_message(&mut self, vtl: GuestVtl, message: &hvdef::HvMessage) {
+        tracing::trace!(?message, "sending intercept to {:?}", vtl);
+
+        if let Err(e) = self.backing.cvm_state_mut().hv[vtl]
+            .synic
+            .post_intercept_message(
+                message,
+                &mut self
+                    .partition
+                    .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
+            )
+        {
+            // Dropping this allows us to try to deliver any existing
+            // interrupt. In the case of sending an intercept to VTL 1
+            // because of VTL 0 behavior, since the VTL 0 instruction
+            // pointer is not advanced, the VTL 0 guest will exit on the
+            // same instruction again, providing another opportunity to
+            // deliver the intercept.
+            tracelimit::warn_ratelimited!(
+                error = &e as &dyn std::error::Error,
+                ?vtl,
+                ?message,
+                "error sending intercept"
+            );
+        }
+    }
 }
 
 pub(crate) struct XsetbvExitInput {
@@ -2248,5 +2307,49 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> TranslateGvaSupport for UhEmulationSt
 
     fn registers(&mut self) -> Result<TranslationRegisters, Self::Error> {
         Ok(self.vp.backing.translation_registers(self.vp, self.vtl))
+    }
+}
+
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SendSyntheticClusterIpi
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn send_synthetic_cluster_ipi(
+        &mut self,
+        target_vtl: Option<Vtl>,
+        vector: u32,
+        flags: u8,
+        processor_set: ProcessorSet<'_>,
+    ) -> HvResult<()> {
+        if flags != 0 {
+            return Err(HvError::InvalidParameter);
+        }
+
+        let target_vtl =
+            self.target_vtl_no_higher(target_vtl.unwrap_or_else(|| self.intercepted_vtl.into()))?;
+
+        self.vp
+            .cvm_send_synthetic_cluster_ipi(target_vtl, vector, processor_set)
+    }
+}
+
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SendSyntheticClusterIpiEx
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn send_synthetic_cluster_ipi_ex(
+        &mut self,
+        target_vtl: Option<Vtl>,
+        vector: u32,
+        flags: u8,
+        processor_set: ProcessorSet<'_>,
+    ) -> HvResult<()> {
+        if flags != 0 {
+            return Err(HvError::InvalidParameter);
+        }
+
+        let target_vtl =
+            self.target_vtl_no_higher(target_vtl.unwrap_or_else(|| self.intercepted_vtl.into()))?;
+
+        self.vp
+            .cvm_send_synthetic_cluster_ipi(target_vtl, vector, processor_set)
     }
 }

@@ -306,6 +306,7 @@ impl FlowNode for Node {
         ctx.import::<crate::run_split_debug_info::Node>();
         ctx.import::<crate::init_cross_build::Node>();
         ctx.import::<flowey_lib_common::run_cargo_build::Node>();
+        ctx.import::<flowey_lib_common::install_rust::Node>();
     }
 
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -320,7 +321,7 @@ impl FlowNode for Node {
             profile,
             features,
             crate_type,
-            target,
+            mut target,
             no_split_dbg_info,
             extra_env,
             pre_build_deps: user_pre_build_deps,
@@ -372,6 +373,35 @@ impl FlowNode for Node {
                 injected_env
             };
 
+            let mut config = Vec::new();
+
+            // If the target vendor is specified as `minimal_rt`, then this is
+            // our custom target triple for the minimal_rt toolchain. Include the appropriate
+            // config file.
+            let passed_target = if target.vendor.as_str() == "minimal_rt" {
+                config.push(format!(
+                    "openhcl/minimal_rt/{arch}-config.toml",
+                    arch = target.architecture.into_str()
+                ));
+                if target.architecture == target_lexicon::Architecture::X86_64 {
+                    // x86-64 doesn't actually use a custom target currently,
+                    // since the x86_64-unknown-none target is stage 2 and has
+                    // reasonable defaults.
+                    target.vendor = target_lexicon::Vendor::Unknown;
+                    Some(target.clone())
+                } else {
+                    // We are building the target from source, so don't try to
+                    // install it via rustup. But do make sure the rust-src
+                    // component is available.
+                    ctx.req(flowey_lib_common::install_rust::Request::InstallComponent(
+                        "rust-src".into(),
+                    ));
+                    None
+                }
+            } else {
+                Some(target.clone())
+            };
+
             let base_output = ctx.reqv(|v| flowey_lib_common::run_cargo_build::Request {
                 in_folder: openvmm_repo_path.clone(),
                 crate_name,
@@ -388,8 +418,9 @@ impl FlowNode for Node {
                 },
                 features,
                 output_kind: crate_type,
-                target: target.clone(),
+                target: passed_target,
                 extra_env: Some(extra_env),
+                config,
                 pre_build_deps,
                 output: v,
             });

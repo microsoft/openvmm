@@ -444,6 +444,12 @@ async fn run_control(
     let (control_send, mut control_recv) = mesh::channel();
     let mut control_send = Some(control_send);
 
+    if opt.signal_vtl0_started {
+        signal_vtl0_started(&driver)
+            .await
+            .context("failed to signal vtl0 started")?;
+    }
+
     let mut diag = DiagState::new().await?;
 
     let (diag_reinspect_send, mut diag_reinspect_recv) = mesh::channel();
@@ -733,6 +739,19 @@ async fn run_control(
         }
     }
 
+    Ok(())
+}
+
+async fn signal_vtl0_started(driver: &DefaultDriver) -> anyhow::Result<()> {
+    tracing::info!("signaling vtl0 started early");
+    let (client, task) = guest_emulation_transport::spawn_get_worker(driver.clone())
+        .await
+        .context("failed to spawn GET")?;
+    client.complete_start_vtl0(None).await;
+    // Disconnect the GET so that it can be reused.
+    drop(client);
+    task.await.unwrap();
+    tracing::info!("signaled vtl0 start");
     Ok(())
 }
 

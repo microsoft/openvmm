@@ -27,7 +27,7 @@ pub const MU_MSVM: &str = "24.0.4";
 pub const NEXTEST: &str = "0.9.74";
 pub const NODEJS: &str = "18.x";
 pub const OPENHCL_KERNEL_DEV_VERSION: &str = "6.6.63.2";
-pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.6.63.1";
+pub const OPENHCL_KERNEL_STABLE_VERSION: &str = "6.12.9.2";
 pub const OPENVMM_DEPS: &str = "0.1.0-20250403.3";
 pub const PROTOC: &str = "27.1";
 

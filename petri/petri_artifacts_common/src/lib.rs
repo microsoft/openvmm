@@ -47,6 +47,22 @@ pub mod tags {
         Aarch64,
     }
 
+    impl MachineArch {
+        /// Returns the host's architecture.
+        pub fn host() -> Self {
+            // xtask-fmt allow-target-arch oneoff-petri-host-arch
+            if cfg!(target_arch = "x86_64") {
+                Self::X86_64
+            }
+            // xtask-fmt allow-target-arch oneoff-petri-host-arch
+            else if cfg!(target_arch = "aarch64") {
+                Self::Aarch64
+            } else {
+                panic!("unsupported host architecture")
+            }
+        }
+    }
+
     /// Quirks needed to boot a guest.
     #[derive(Default, Copy, Clone, Debug)]
     pub struct GuestQuirks {

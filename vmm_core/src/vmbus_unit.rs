@@ -100,11 +100,6 @@ impl StateUnit for &'_ VmbusServerUnit {
             .await
             .map_err(|err| RestoreError::Other(err.into()))
     }
-
-    async fn post_restore(&mut self) -> anyhow::Result<()> {
-        self.0.post_restore().await?;
-        Ok(())
-    }
 }
 
 /// A type wrapping a [`ChannelHandle`] and implementing [`StateUnit`].

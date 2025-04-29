@@ -36,8 +36,5 @@ thiserror.workspace = true
 virt_whp.workspace = true
 vmbus_proxy.workspace = true
 
-[build-dependencies]
-build_rs_guest_arch.workspace = true
-
 [lints]
 workspace = true

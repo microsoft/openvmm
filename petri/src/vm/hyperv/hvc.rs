@@ -6,6 +6,7 @@
 use super::CommandError;
 use anyhow::Context;
 use guid::Guid;
+use jiff::Timestamp;
 use std::ffi::OsStr;
 use std::process::Stdio;
 
@@ -97,8 +98,6 @@ fn hvc_output(
     cmd.stderr(Stdio::piped()).stdin(Stdio::null());
     f(&mut cmd);
 
-    let output = cmd.output()?;
-
     let hvc_cmd = format!(
         "{} {}",
         cmd.get_program().to_string_lossy(),
@@ -107,10 +106,23 @@ fn hvc_output(
             .join(OsStr::new(" "))
             .to_string_lossy()
     );
+    tracing::debug!(hvc_cmd, "executing hvc command");
+
+    let start = Timestamp::now();
+    let output = cmd.output()?;
+    let time_elapsed = Timestamp::now() - start;
+
     let hvc_stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let hvc_stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    tracing::debug!(
+        hvc_cmd,
+        hvc_stdout,
+        hvc_stderr,
+        "hvc command exited in {:.3}s with status {}",
+        time_elapsed.total(jiff::Unit::Second).unwrap_or(-1.0),
+        output.status
+    );
 
-    tracing::debug!(hvc_cmd, hvc_stdout, hvc_stderr);
     if !output.status.success() {
         return Err(CommandError::Command(output.status, hvc_stderr));
     }

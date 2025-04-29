@@ -87,8 +87,9 @@ flowey_request! {
         pub profile: CargoBuildProfile,
         pub features: BTreeSet<String>,
         pub output_kind: CargoCrateType,
-        pub target: target_lexicon::Triple,
+        pub target: Option<target_lexicon::Triple>,
         pub extra_env: Option<ReadVar<BTreeMap<String, String>>>,
+        pub config: Vec<String>,
         /// Wait for specified side-effects to resolve before running cargo-run.
         ///
         /// (e.g: to allow for some ambient packages / dependencies to get
@@ -121,13 +122,16 @@ impl FlowNode for Node {
             output_kind,
             target,
             extra_env,
+            config,
             pre_build_deps,
             output,
         } in requests
         {
-            ctx.req(crate::install_rust::Request::InstallTargetTriple(
-                target.clone(),
-            ));
+            if let Some(target) = &target {
+                ctx.req(crate::install_rust::Request::InstallTargetTriple(
+                    target.clone(),
+                ));
+            }
 
             ctx.emit_rust_step(format!("cargo build {crate_name}"), |ctx| {
                 pre_build_deps.claim(ctx);
@@ -188,10 +192,13 @@ impl FlowNode for Node {
                                 v.push("--features".into());
                                 v.push(features);
                             }
-                            v.push("--target".into());
-                            v.push(target.to_string());
+                            if let Some(target) = &target {
+                                v.push("--target".into());
+                                v.push(target.to_string());
+                            }
                             v.push("--profile".into());
                             v.push(cargo_profile.into());
+                            v.extend(config.iter().flat_map(|x| ["--config", x]).map(Into::into));
                             match output_kind {
                                 CargoCrateType::Bin => {
                                     v.push("--bin".into());

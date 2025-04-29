@@ -1758,13 +1758,37 @@ pub mod hypercall {
     pub struct FlushVirtualAddressSpaceEx {
         pub address_space: u64,
         pub flags: HvFlushFlags,
-        // Followed by an HvVpSet
+        pub vp_set_format: u64,
+        pub vp_set_valid_banks_mask: u64,
+        // Followed by the variable-sized part of an HvVpSet
     }
 
     #[repr(C)]
     #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct PinUnpinGpaPageRangesHeader {
         pub reserved: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct SendSyntheticClusterIpi {
+        pub vector: u32,
+        pub target_vtl: HvInputVtl,
+        pub flags: u8,
+        pub reserved: u16,
+        pub processor_mask: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct SendSyntheticClusterIpiEx {
+        pub vector: u32,
+        pub target_vtl: HvInputVtl,
+        pub flags: u8,
+        pub reserved: u16,
+        pub vp_set_format: u64,
+        pub vp_set_valid_banks_mask: u64,
+        // Followed by the variable-sized part of an HvVpSet
     }
 
     #[bitfield(u64)]

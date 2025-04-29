@@ -32,6 +32,7 @@ use net_backend::EndpointAction;
 use net_backend::MultiQueueSupport;
 use net_backend::Queue as NetQueue;
 use net_backend::QueueConfig;
+use net_backend::TxError;
 use net_backend::TxOffloadSupport;
 use net_backend::null::NullEndpoint;
 use pal_async::DefaultDriver;
@@ -380,7 +381,7 @@ impl NetQueue for TestNicQueue {
         Ok((true, packets.len()))
     }
 
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> anyhow::Result<usize> {
+    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
         Ok(0)
     }
 
