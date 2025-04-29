@@ -1190,8 +1190,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 let hv_sint = HvSynicSint::from(sint_msr);
                 // When vmbus relay is active, then SINT will not be proxied
                 // in case of non-relay, guest will setup proxied sint
-                if (hv_sint.proxy() || self.partition.is_vmbus_relay_enabled()) && !hv_sint.masked()
-                {
+                if (hv_sint.proxy() || self.partition.vmbus_relay) && !hv_sint.masked() {
                     irr_bits.set(hv_sint.vector() as usize, true);
                 }
             }

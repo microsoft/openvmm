@@ -902,12 +902,6 @@ impl UhPartitionInner {
         }
     }
 
-    /// Check if vmbus_relay is enabled and active
-    #[cfg(guest_arch = "x86_64")]
-    fn is_vmbus_relay_enabled(&self) -> bool {
-        self.vmbus_relay
-    }
-
     fn inspect_extra(&self, resp: &mut inspect::Response<'_>) {
         let mut wake_vps = false;
         resp.field_mut(
