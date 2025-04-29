@@ -46,6 +46,16 @@ impl From<ParsingStopped> for ParseErrorInner {
     }
 }
 
+impl From<Vtl2AttestedSettings> for crate::Vtl2AttestedSettings {
+    fn from(settings: Vtl2AttestedSettings) -> crate::Vtl2AttestedSettings {
+        // Reserved for future use
+        crate::Vtl2AttestedSettings {
+            version: settings.version,
+            init_data_hash: None,
+        }
+    }
+}
+
 impl crate::Vtl2Settings {
     /// Reads the settings from either a JSON- or protobuf-encoded schema.
     pub fn read_from(
@@ -125,12 +135,15 @@ impl crate::Vtl2Settings {
                 NAMESPACE_ATTESTED_SETTINGS => {
                     // Ignore this namespace, it is not used in the current version
                     // of the schema.
-                    // let raw_bytes = chunk.settings.as_slice();
-                    // if !raw_bytes.is_empty() {
-                    let attested_settings: Vtl2AttestedSettings = Self::read(&chunk.settings)?;
-                    // Future attested settings will be added here.
-                    external_attested_settings =
-                        Some(attested_settings.parse(errors).collect_error(errors));
+                    let raw_bytes = chunk.settings.as_slice();
+                    if !raw_bytes.is_empty() {
+                        let mut hasher = openssl::sha::Sha256::new();
+                        hasher.update(raw_bytes);
+                        let attested_settings: Vtl2AttestedSettings = Self::read(raw_bytes)?;
+                        let mut settings: crate::Vtl2AttestedSettings = attested_settings.into();
+                        settings.init_data_hash = Some(hasher.finish().to_vec());
+                        external_attested_settings = Some(settings);
+                    }
                 }
                 _ => {
                     errors.push(v1::Error::UnsupportedSchemaNamespace(
@@ -175,13 +188,8 @@ impl crate::Vtl2Settings {
         // NAMESPACE_ATTESTED_SETTINGS
         // In the future, attested settings need to be added here.
         // See patterns above for how to add them.
-        if external_attested_settings.is_some() {
-            old_settings.fixed.attested_settings = Some(
-                external_attested_settings
-                    .unwrap()
-                    .parse(errors)
-                    .collect_error(errors),
-            );
+        if let Some(external_attested_settings) = external_attested_settings {
+            old_settings.fixed.attested_settings = Some(external_attested_settings);
         }
 
         Ok(old_settings)
@@ -311,11 +319,19 @@ mod test {
             Default::default(),
         )
         .unwrap();
-        // let settings: Vtl2Settings = crate::Vtl2Settings::read(json).unwrap();
-        // assert_eq!(
-        //     "AttestedSettings",
-        //     &settings.namespace_settings[0].namespace
-        // );
+        assert_eq!(1, settings.fixed.attested_settings.unwrap().version)
+    }
+
+    #[test]
+    fn smoke_test_attested_settings_namespace_pb() {
+        let json = include_bytes!("vtl2s_test_attested_settings_namespaces.json");
+        let settings: Vtl2Settings = crate::Vtl2Settings::read(json).unwrap();
+        assert_eq!("AttestedSettings", settings.namespace_settings[0].namespace);
+        let mut buf = Vec::new();
+        settings.encode(&mut buf).unwrap();
+        print!("{:?}", buf);
+        let settings = crate::Vtl2Settings::read_from(&buf, Default::default()).unwrap();
+        assert_eq!(1, settings.fixed.attested_settings.unwrap().version)
     }
 
     #[test]

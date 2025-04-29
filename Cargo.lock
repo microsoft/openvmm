@@ -8191,10 +8191,10 @@ dependencies = [
  "guid",
  "inspect",
  "mesh",
+ "openssl",
  "prost",
  "serde",
  "serde_json",
- "tee_call",
  "thiserror 2.0.16",
  "vtl2_settings_proto",
 ]
