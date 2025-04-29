@@ -1411,7 +1411,7 @@ impl UhProcessor<'_, TdxBacked> {
         let next_vtl = self.backing.cvm.exit_vtl;
 
         if self.backing.vtls[next_vtl].interruption_information.valid() {
-            tracing::debug!(
+            tracing::trace!(
                 vector = self.backing.vtls[next_vtl]
                     .interruption_information
                     .vector(),
@@ -1632,7 +1632,7 @@ impl UhProcessor<'_, TdxBacked> {
                         .is_offloaded() =>
                 {
                     // This must be a pending APIC interrupt. Acknowledge it.
-                    tracing::debug!(
+                    tracing::trace!(
                         vector = self.backing.vtls[intercepted_vtl]
                             .interruption_information
                             .vector(),
