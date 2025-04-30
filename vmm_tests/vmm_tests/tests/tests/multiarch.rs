@@ -92,24 +92,36 @@ async fn boot_reset_expected(config: PetriVmConfigOpenVmm) -> anyhow::Result<()>
 #[openvmm_test(openhcl_uefi_x64(none))]
 async fn efi_diagnostics_no_boot(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     let mut vm = config.run_without_agent().await?;
+
+    // Boot the VM
     vm.wait_for_successful_boot_event().await?;
 
     // Expected no-boot message.
     const NO_BOOT_MSG: &str = "[Bds] Unable to boot!";
 
-    // Search kmsg for the expected message.
+    // Get kmsg before waiting for teardown
     let mut kmsg = vm.kmsg().await?;
+
+    // Search for the message
+    let mut found_message = false;
     while let Some(data) = kmsg.next().await {
         let data = data.context("reading kmsg")?;
         let msg = kmsg::KmsgParsedEntry::new(&data)?;
         let raw = msg.message.as_raw();
         if raw.contains(NO_BOOT_MSG) {
-            assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
-            return Ok(());
+            found_message = true;
+            break;
         }
     }
 
-    anyhow::bail!("Did not find expected message in kmsg");
+    // Now wait for VM to shut down
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+
+    if found_message {
+        return Ok(());
+    }
+
+    anyhow::bail!("did not find expected message in kmsg");
 }
 
 /// Test the KVP IC.
