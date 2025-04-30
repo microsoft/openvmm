@@ -196,7 +196,7 @@ impl PetriVmConfigOpenVmm {
     /// Set test config for the GED's IGVM attest request handler
     pub fn with_igvm_attest_test_config(mut self, config: IgvmAttestTestConfig) -> Self {
         if !self.firmware.is_openhcl() {
-            panic!("TPM state persistence is only supported for OpenHCL.")
+            panic!("IGVM Attest test config is only supported for OpenHCL.")
         };
 
         let ged = self.ged.as_mut().expect("No GED to configure TPM");
