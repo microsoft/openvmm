@@ -518,7 +518,6 @@ impl<T: Inspect> GuestVsmState<T> {
     }
 }
 
-#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 #[derive(Inspect)]
 struct CvmVtl1State {
     /// Whether VTL 1 has been enabled on any vp
