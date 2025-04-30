@@ -147,7 +147,6 @@ fn try_main() -> anyhow::Result<()> {
             Ok(())
         }
 
-        Commands::BuildIgvm(task) => task.run(ctx),
         Commands::Fmt(task) => task.run(ctx),
         Commands::Fuzz(task) => task.run(ctx),
         Commands::GuestTest(task) => task.run(ctx),
