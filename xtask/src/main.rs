@@ -83,10 +83,6 @@ enum Commands {
     Complete(clap_dyn_complete::Complete),
     Completions(completions::Completions),
 
-    // deprecated
-    #[clap(hide = true)]
-    BuildIgvm(tasks::BuildIgvm),
-
     Fmt(tasks::Fmt),
     Fuzz(tasks::Fuzz),
     GuestTest(tasks::GuestTest),
