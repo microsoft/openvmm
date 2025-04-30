@@ -157,12 +157,18 @@ pub struct AdoPrTriggers {
 /// Trigger ADO pipelines per PR
 #[derive(Debug, Default)]
 pub struct AdoCiTriggers {
-    /// Run the pipeline whenever there is a PR to these specified branches
+    /// Run the pipeline whenever there is a change to these specified branches
     /// (supports glob syntax)
     pub branches: Vec<String>,
     /// Specify any branches which should be filtered out from the list of
     /// `branches` (supports glob syntax)
     pub exclude_branches: Vec<String>,
+    /// Run the pipeline whenever a matching tag is created (supports glob
+    /// syntax)
+    pub tags: Vec<String>,
+    /// Specify any tags which should be filtered out from the list of `tags`
+    /// (supports glob syntax)
+    pub exclude_tags: Vec<String>,
     /// Whether to batch changes per branch.
     pub batch: bool,
 }
@@ -238,14 +244,14 @@ pub struct GhPrTriggers {
 /// Trigger Github Actions pipelines per PR
 #[derive(Debug, Default)]
 pub struct GhCiTriggers {
-    /// Run the pipeline whenever there is a PR to these specified branches
+    /// Run the pipeline whenever there is a change to these specified branches
     /// (supports glob syntax)
     pub branches: Vec<String>,
     /// Specify any branches which should be filtered out from the list of
     /// `branches` (supports glob syntax)
     pub exclude_branches: Vec<String>,
-    /// Run the pipeline whenever there is a PR to these specified tags
-    /// (supports glob syntax)
+    /// Run the pipeline whenever a matching tag is created (supports glob
+    /// syntax)
     pub tags: Vec<String>,
     /// Specify any tags which should be filtered out from the list of `tags`
     /// (supports glob syntax)

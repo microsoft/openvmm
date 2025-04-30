@@ -567,18 +567,44 @@ EOF
                 let flowey_core::pipeline::AdoCiTriggers {
                     branches,
                     exclude_branches,
+                    tags,
+                    exclude_tags,
                     batch,
                 } = t;
 
                 schema_ado_yaml::CiTrigger::Some {
                     batch,
-                    branches: schema_ado_yaml::TriggerBranches {
-                        include: branches,
-                        exclude: if exclude_branches.is_empty() {
-                            None
-                        } else {
-                            Some(exclude_branches)
-                        },
+                    branches: if branches.is_empty() {
+                        if !exclude_branches.is_empty() {
+                            anyhow::bail!("empty branch trigger with non-empty exclude")
+                        }
+
+                        None
+                    } else {
+                        Some(schema_ado_yaml::TriggerBranches {
+                            include: branches,
+                            exclude: if exclude_branches.is_empty() {
+                                None
+                            } else {
+                                Some(exclude_branches)
+                            },
+                        })
+                    },
+                    tags: if tags.is_empty() {
+                        if !exclude_tags.is_empty() {
+                            anyhow::bail!("empty tags trigger with non-empty exclude")
+                        }
+
+                        None
+                    } else {
+                        Some(schema_ado_yaml::TriggerTags {
+                            include: tags,
+                            exclude: if exclude_tags.is_empty() {
+                                None
+                            } else {
+                                Some(exclude_tags)
+                            },
+                        })
                     },
                 }
             }
