@@ -67,7 +67,7 @@ pub struct NvramServices {
 
     // Sub-emulators
     #[inspect(flatten)]
-    pub services: NvramSpecServices<Box<dyn InspectableNvramStorage>>,
+    services: NvramSpecServices<Box<dyn InspectableNvramStorage>>,
 }
 
 impl NvramServices {
