@@ -74,7 +74,6 @@ struct Cli {
     run_on_save: bool,
 }
 
-#[expect(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Commands {
     #[clap(hide = true)]
