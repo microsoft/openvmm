@@ -16,6 +16,7 @@ use crate::IsolationType;
 use crate::PcatGuest;
 use crate::PetriLogSource;
 use crate::PetriTestParams;
+use crate::ProcessorTopology;
 use crate::SIZE_1_GB;
 use crate::UefiGuest;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
@@ -33,8 +34,10 @@ use get_resources::crash::GuestCrashDeviceHandle;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use hvlite_defs::config::Config;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_WITH_VTL2;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
@@ -276,9 +279,15 @@ impl PetriVmConfigOpenVmm {
                     SIZE_1_GB
                 },
                 mmio_gaps: if firmware.is_openhcl() {
-                    DEFAULT_MMIO_GAPS_WITH_VTL2.into()
+                    match arch {
+                        MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
+                        MachineArch::Aarch64 => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
+                    }
                 } else {
-                    DEFAULT_MMIO_GAPS.into()
+                    match arch {
+                        MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86.into(),
+                        MachineArch::Aarch64 => DEFAULT_MMIO_GAPS_AARCH64.into(),
+                    }
                 },
                 prefetch_memory: false,
             },
@@ -286,7 +295,7 @@ impl PetriVmConfigOpenVmm {
                 proc_count: 2,
                 vps_per_socket: None,
                 enable_smt: None,
-                arch: Default::default(),
+                arch: None,
             },
 
             // Base chipset
@@ -397,7 +406,8 @@ impl PetriVmConfigOpenVmm {
             ged,
             vtl2_settings,
             framebuffer_access,
-        })
+        }
+        .with_processor_topology(ProcessorTopology::default()))
     }
 }
 

@@ -225,6 +225,7 @@ struct UhPartitionInner {
     // N.B For now, only one device vector table i.e. for VTL0 only
     #[inspect(with = "|x| inspect::iter_by_index(x.read().into_inner().map(inspect::AsHex))")]
     device_vector_table: RwLock<IrrBitmap>,
+    vmbus_relay: bool,
 }
 
 #[derive(Inspect)]
@@ -1333,6 +1334,8 @@ pub struct UhLateParams<'a> {
     pub vmtime: &'a VmTimeSource,
     /// Parameters for CVMs only.
     pub cvm_params: Option<CvmLateParams>,
+    /// vmbus_relay is enabled and active for partition
+    pub vmbus_relay: bool,
 }
 
 /// CVM-only parameters to [`UhProtoPartition::build`].
@@ -1749,6 +1752,7 @@ impl<'a> UhProtoPartition<'a> {
             #[cfg(guest_arch = "x86_64")]
             device_vector_table: RwLock::new(IrrBitmap::new(Default::default())),
             intercept_debug_exceptions: params.intercept_debug_exceptions,
+            vmbus_relay: late_params.vmbus_relay,
         });
 
         if cfg!(guest_arch = "x86_64") {

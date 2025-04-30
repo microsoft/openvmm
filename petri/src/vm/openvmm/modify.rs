@@ -6,6 +6,7 @@
 use super::MANA_INSTANCE;
 use super::NIC_MAC_ADDRESS;
 use super::PetriVmConfigOpenVmm;
+use crate::ProcessorTopology;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
 use disk_backend_resources::LayeredDiskHandle;
@@ -20,7 +21,7 @@ use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use hvlite_helpers::disk::open_disk_type;
-use petri_artifacts_common::tags::IsOpenhclIgvm;
+use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ResolvedArtifact;
 use std::path::Path;
 use tpm_resources::TpmDeviceHandle;
@@ -89,8 +90,40 @@ impl PetriVmConfigOpenVmm {
     ///
     /// Using 1 CPU is useful for heavier OpenHCL tests, as our WHP emulation
     /// layer is rather slow when dealing with cross-cpu communication.
-    pub fn with_processors(mut self, count: u32) -> Self {
-        self.config.processor_topology.proc_count = count;
+    pub fn with_processor_topology(mut self, topology: ProcessorTopology) -> Self {
+        let ProcessorTopology {
+            vp_count,
+            enable_smt,
+            vps_per_socket,
+            apic_mode,
+        } = topology;
+        self.config.processor_topology.proc_count = vp_count;
+        self.config.processor_topology.enable_smt = enable_smt;
+        self.config.processor_topology.vps_per_socket = vps_per_socket;
+        self.config.processor_topology.arch = Some(match self.arch {
+            MachineArch::X86_64 => hvlite_defs::config::ArchTopologyConfig::X86(
+                hvlite_defs::config::X86TopologyConfig {
+                    x2apic: match apic_mode {
+                        None => hvlite_defs::config::X2ApicConfig::Auto,
+                        Some(x) => match x {
+                            crate::ApicMode::Xapic => {
+                                hvlite_defs::config::X2ApicConfig::Unsupported
+                            }
+                            crate::ApicMode::X2apicSupported => {
+                                hvlite_defs::config::X2ApicConfig::Supported
+                            }
+                            crate::ApicMode::X2apicEnabled => {
+                                hvlite_defs::config::X2ApicConfig::Enabled
+                            }
+                        },
+                    },
+                    ..Default::default()
+                },
+            ),
+            MachineArch::Aarch64 => hvlite_defs::config::ArchTopologyConfig::Aarch64(
+                hvlite_defs::config::Aarch64TopologyConfig::default(),
+            ),
+        });
         self
     }
 
@@ -314,7 +347,7 @@ impl PetriVmConfigOpenVmm {
     }
 
     /// Load a custom OpenHCL firmware file.
-    pub fn with_custom_openhcl<A: IsOpenhclIgvm>(mut self, artifact: ResolvedArtifact<A>) -> Self {
+    pub fn with_custom_openhcl(mut self, artifact: ResolvedArtifact) -> Self {
         let LoadMode::Igvm { file, .. } = &mut self.config.load_mode else {
             panic!("Custom OpenHCL is only supported for OpenHCL firmware.")
         };

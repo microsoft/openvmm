@@ -110,10 +110,13 @@ class CpioEntry(object):
     def __repr__(self) -> str:
         return None
 
-    def write(self, buffer: BinaryIO) -> None:
-        def align_on_dword(buffer):
+    def write(self, buffer: BinaryIO) -> int:
+        def align_on_dword(buffer) -> int:
+            aligned = 0
             while buffer.tell() & 3 != 0:
+                aligned += 1
                 buffer.write(b'\x00')
+            return aligned
 
         name_bytes = bytearray(self.name, 'ascii')
         name_bytes.append(0)
@@ -144,9 +147,15 @@ class CpioEntry(object):
 
         assert(len(header_bytes) == 110)
 
+        written = 0
+
         buffer.write(header_bytes)
+        written += len(header_bytes)
+
         buffer.write(name_bytes)
-        align_on_dword(buffer)
+        written += len(name_bytes)
+
+        written += align_on_dword(buffer)
 
         self.content.seek(0);
         while True:
@@ -154,8 +163,12 @@ class CpioEntry(object):
             if len(data) == 0:
                 break
             buffer.write(data)
+            written += len(data)
 
-        align_on_dword(buffer)
+        written += align_on_dword(buffer)
+
+        # Return the number of bytes written to the buffer
+        return written
 
 class FileEntry(CpioEntry):
     def __init__(self, inode, name, location, mode, uid, gid, hard_links) -> None:
@@ -341,6 +354,7 @@ class TrailerEntry(CpioEntry):
 
 class CpioRamFs:
     def __init__(self, buffer_obj: BinaryIO):
+        self.written = 0
         self.buffer_obj = buffer_obj
         self.opened = False
 
@@ -350,13 +364,18 @@ class CpioRamFs:
 
     def write(self, cpio_entry: CpioEntry):
         assert(self.opened)
-        cpio_entry.write(self.buffer_obj)
+        self.written += cpio_entry.write(self.buffer_obj)
+
+    def written_bytes(self) -> int:
+        assert(self.opened)
+        return self.written
 
     def __exit__(self, type, value, traceback):
         trailer = TrailerEntry()
         trailer.write(self.buffer_obj)
 
         while self.buffer_obj.tell() & 511 != 0:
+            self.written += 1
             self.buffer_obj.write(b'\x00')
 
         self.buffer_obj.close()
@@ -632,16 +651,34 @@ def __open_output_stream(file_name: str, compression: str):
     else:
         raise Exception("Unknown compression algorithm")
 
+class CpioStat:
+    def __init__(self, uncompressed, compressed):
+        self.uncompressed = uncompressed
+        self.compressed = compressed
 
-def create_cpio_from_config(config_files: List[str], output_file: str, compression: str):
+    def __repr__(self):
+        return f"uncompressed: {self.uncompressed}, compressed: {self.compressed}"
+
+def create_cpio_from_config(config_files: List[str], output_file: str, compression: str) -> CpioStat:
+    written_uncompressed = 0
+    written_compressed = 0
+
     with __open_output_stream(output_file, compression) as ostream:
         with CpioRamFs(ostream) as cpio:
             config = InitRamFsConfig(config_files)
             for entry in config.entries():
                 cpio.write(entry)
+            written_uncompressed = cpio.written_bytes()
+    # tell() is not reliable for the compressed stream
+    # so we need to use the size of the file
+    written_compressed = os.path.getsize(output_file)
 
+    return CpioStat(written_uncompressed, written_compressed)
 
 def create_cpio_from_dir(top_dir: str, output_file: str, compression: str):
+    written_uncompressed = 0
+    written_compressed = 0
+
     if not os.path.isdir(top_dir):
         raise Exception(f"{top_dir} is not a directory")
     with __open_output_stream(output_file, compression) as ostream:
@@ -668,6 +705,13 @@ def create_cpio_from_dir(top_dir: str, output_file: str, compression: str):
                     file_entry = FileEntry(name, location, mode=stat_info.st_mode, uid=0, gid=0, hard_links=[])
                     # print(file_entry)
                     cpio.write(file_entry)
+            written_uncompressed = cpio.written_bytes()
+    # tell() is not reliable for the compressed stream
+    # so we need to use the size of the file
+    written_compressed = os.path.getsize(output_file)
+
+    return CpioStat(written_uncompressed, written_compressed)
+
 
 if __name__ == '__main__':
     import argparse

@@ -15,6 +15,7 @@ mod start;
 
 pub use runtime::PetriVmOpenVmm;
 
+use super::ProcessorTopology;
 use crate::Firmware;
 use crate::PetriLogFile;
 use crate::PetriLogSource;
@@ -75,14 +76,29 @@ pub struct PetriVmArtifactsOpenVmm {
 
 impl PetriVmArtifactsOpenVmm {
     /// Resolves the artifacts needed to instantiate a [`PetriVmConfigOpenVmm`].
-    pub fn new(resolver: &ArtifactResolver<'_>, firmware: Firmware, arch: MachineArch) -> Self {
+    ///
+    /// Returns `None` if the supplied configuration is not supported on this platform.
+    pub fn new(
+        resolver: &ArtifactResolver<'_>,
+        firmware: Firmware,
+        arch: MachineArch,
+    ) -> Option<Self> {
+        if arch != MachineArch::host() {
+            return None;
+        }
+        if firmware.is_openhcl() {
+            // Only limited support for using OpenHCL on OpenVMM.
+            if !cfg!(windows) || arch != MachineArch::X86_64 {
+                return None;
+            }
+        }
         let agent_image = AgentImage::new(resolver, arch, firmware.os_flavor());
         let openhcl_agent_image = if firmware.is_openhcl() {
             Some(AgentImage::new(resolver, arch, OsFlavor::Linux))
         } else {
             None
         };
-        Self {
+        Some(Self {
             firmware,
             arch,
             agent_image,
@@ -90,7 +106,7 @@ impl PetriVmArtifactsOpenVmm {
             openvmm_path: resolver
                 .require(petri_artifacts_vmm_test::artifacts::OPENVMM_NATIVE)
                 .erase(),
-        }
+        })
     }
 }
 
@@ -132,8 +148,39 @@ impl PetriVmConfig for PetriVmConfigOpenVmm {
         Box::new(Self::with_windows_secure_boot_template(*self))
     }
 
-    fn with_processors(self: Box<Self>, count: u32) -> Box<dyn PetriVmConfig> {
-        Box::new(Self::with_processors(*self, count))
+    fn with_processor_topology(
+        self: Box<Self>,
+        topology: ProcessorTopology,
+    ) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_processor_topology(*self, topology))
+    }
+
+    fn with_custom_openhcl(self: Box<Self>, artifact: ResolvedArtifact) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_custom_openhcl(*self, artifact))
+    }
+
+    fn with_openhcl_command_line(self: Box<Self>, command_line: &str) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_openhcl_command_line(*self, command_line))
+    }
+
+    fn with_agent_file(
+        self: Box<Self>,
+        name: &str,
+        artifact: ResolvedArtifact,
+    ) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_agent_file(*self, name, artifact))
+    }
+
+    fn with_openhcl_agent_file(
+        self: Box<Self>,
+        name: &str,
+        artifact: ResolvedArtifact,
+    ) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_openhcl_agent_file(*self, name, artifact))
+    }
+
+    fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_uefi_frontpage(*self, enable))
     }
 }
 

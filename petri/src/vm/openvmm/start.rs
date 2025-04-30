@@ -126,6 +126,7 @@ impl PetriVmConfigOpenVmm {
 
         let mut vm = PetriVmOpenVmm::new(
             super::runtime::PetriVmInner {
+                arch,
                 resources,
                 mesh,
                 worker,

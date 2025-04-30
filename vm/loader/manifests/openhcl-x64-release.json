@@ -9,7 +9,7 @@
                 "openhcl": {
                     "initrd_path": "./underhill.cpio.gz",
                     "command_line": "",
-                    "memory_page_count": 16384,
+                    "memory_page_count": 17920,
                     "uefi": true
                 }
             }

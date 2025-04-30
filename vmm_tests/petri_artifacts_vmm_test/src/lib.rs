@@ -323,6 +323,22 @@ pub mod artifacts {
             const FILENAME: &'static str = "ubuntu-24.04-server-cloudimg-arm64.vhd";
             const SIZE: u64 = 3758211584;
         }
+
+        declare_artifacts! {
+            /// Windows 11 Enterprise ARM64 24H2
+            WINDOWS_11_ENTERPRISE_AARCH64
+        }
+
+        impl IsTestVhd for WINDOWS_11_ENTERPRISE_AARCH64 {
+            const OS_FLAVOR: OsFlavor = OsFlavor::Windows;
+            const ARCH: MachineArch = MachineArch::Aarch64;
+        }
+
+        impl IsHostedOnHvliteAzureBlobStore for WINDOWS_11_ENTERPRISE_AARCH64 {
+            const FILENAME: &'static str =
+                "windows11preview-arm64-win11-24h2-ent-26100.3775.250406-1.vhdx";
+            const SIZE: u64 = 24398266368;
+        }
     }
 
     /// Test ISO artifacts

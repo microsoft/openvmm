@@ -3029,7 +3029,6 @@ name = "hvlite_defs"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "build_rs_guest_arch",
  "firmware_uefi_custom_vars",
  "floppy_resources",
  "framebuffer",
@@ -6889,11 +6888,11 @@ name = "tmk_tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "build_rs_guest_arch",
  "pal_async",
  "petri",
  "petri_artifacts_common",
  "petri_artifacts_vmm_test",
+ "tracing",
 ]
 
 [[package]]
@@ -8822,7 +8821,6 @@ name = "vmm_tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "build_rs_guest_arch",
  "disk_backend_resources",
  "futures",
  "get_resources",

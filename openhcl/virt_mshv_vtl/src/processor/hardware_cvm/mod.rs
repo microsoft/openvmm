@@ -29,7 +29,6 @@ use hvdef::HvMapGpaFlags;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmVpSecureVtlConfig;
 use hvdef::HvResult;
-use hvdef::HvSynicSint;
 use hvdef::HvVtlEntryReason;
 use hvdef::HvX64PendingExceptionEvent;
 use hvdef::HvX64RegisterName;
@@ -718,6 +717,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
         &mut self,
         intercept_control: hvdef::HvRegisterCrInterceptControl,
     ) -> HvResult<()> {
+        // We support intercepting all writes except msr_sgx_launch_control_write, but no reads.
         let supported_controls = hvdef::HvRegisterCrInterceptControl::new()
             .with_cr0_write(true)
             .with_cr4_write(true)
@@ -957,8 +957,6 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::SetVpRegisters
 
 impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandler<'_, '_, T, B> {
     fn is_vtl_call_allowed(&self) -> bool {
-        tracing::trace!("checking if vtl call is allowed");
-
         // Only allowed from VTL 0
         if self.intercepted_vtl != GuestVtl::Vtl0 {
             tracelimit::warn_ratelimited!(
@@ -976,7 +974,6 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
     }
 
     fn vtl_call(&mut self) {
-        tracing::trace!("handling vtl call");
         self.vp.raise_vtl(
             self.intercepted_vtl,
             GuestVtl::Vtl1,
@@ -987,8 +984,6 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
 
 impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHandler<'_, '_, T, B> {
     fn is_vtl_return_allowed(&self) -> bool {
-        tracing::trace!("checking if vtl return is allowed");
-
         if self.intercepted_vtl != GuestVtl::Vtl1 {
             tracelimit::warn_ratelimited!(
                 "vtl return not allowed from vtl {:?}",
@@ -1001,8 +996,6 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
     }
 
     fn vtl_return(&mut self, fast: bool) {
-        tracing::trace!("handling vtl return");
-
         self.vp.unlock_tlb_lock(Vtl::Vtl1);
 
         let hv = &mut self.vp.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
@@ -1505,16 +1498,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     ) -> Result<(), MsrError> {
         let self_index = self.vp_index();
         let hv = &mut self.backing.cvm_state_mut().hv[vtl];
-        // If updated is Synic MSR, then check if its proxy or previous was proxy
-        // in either case, we need to update the `proxy_irr_blocked`
-        let mut irr_filter_update = false;
-        if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
-            let sint_curr = HvSynicSint::from(hv.synic.sint((msr - hvdef::HV_X64_MSR_SINT0) as u8));
-            let sint_new = HvSynicSint::from(value);
-            if sint_curr.proxy() || sint_new.proxy() {
-                irr_filter_update = true;
-            }
-        }
 
         let mut access = HypercallOverlayAccess {
             vtl,
@@ -1528,8 +1511,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         let r = hv.msr_write(msr, value, &mut access);
 
         if !matches!(r, Err(MsrError::Unknown)) {
-            // Check if proxy filter update was required (in case of SINT writes)
-            if irr_filter_update {
+            // If updated is Synic MSR, then update the `proxy_irr_blocked`
+            if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
                 self.update_proxy_irr_filter(vtl);
             }
         }
@@ -1625,6 +1608,23 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 ebx = 0;
                 ecx = 0;
                 edx = 0;
+            }
+            CpuidFunction(hvdef::HV_CPUID_FUNCTION_MS_HV_ENLIGHTENMENT_INFORMATION) => {
+                // If VSM has been revoked (or just isn't available) then don't
+                // recommend the use of TLB flush hypercalls. They are only needed
+                // for synchronization between VTLs, and the non-hypercall direct
+                // path is always more efficient.
+                if matches!(
+                    *self.cvm_partition().guest_vsm.read(),
+                    GuestVsmState::NotPlatformSupported
+                ) {
+                    // The only bit we care about here is within the first 32 bits,
+                    // so just truncating is fine.
+                    let eax_bit = hvdef::HvEnlightenmentInformation::new()
+                        .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
+                        .into_bits() as u32;
+                    eax &= !eax_bit;
+                }
             }
 
             _ => {}
@@ -2041,7 +2041,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     /// intercept.
     #[must_use]
     pub(crate) fn cvm_try_protect_secure_register_write(
-        &self,
+        &mut self,
         vtl: GuestVtl,
         reg: HvX64RegisterName,
         value: u64,
@@ -2050,15 +2050,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         if send_intercept {
             let message_state = B::intercept_message_state(self, vtl);
 
-            tracing::debug!(
-                ?reg,
-                ?value,
-                "sending intercept to vtl 1 for secure register write"
-            );
-
-            self.inner.post_message(
+            self.send_intercept_message(
                 GuestVtl::Vtl1,
-                hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX,
                 &crate::processor::InterceptMessageType::Register { reg, value }
                     .generate_hv_message(self.vp_index(), vtl, message_state),
             );
@@ -2075,7 +2068,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     /// pointer must continue to point to the instruction that generated the
     /// intercept.
     #[must_use]
-    pub(crate) fn cvm_try_protect_msr_write(&self, vtl: GuestVtl, msr: u32) -> bool {
+    pub(crate) fn cvm_try_protect_msr_write(&mut self, vtl: GuestVtl, msr: u32) -> bool {
         if vtl == GuestVtl::Vtl0 && self.backing.cvm_state().vtl1.is_some() {
             let configured_intercepts = self
                 .backing
@@ -2114,11 +2107,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             if generate_intercept {
                 let message_state = B::intercept_message_state(self, vtl);
 
-                tracing::debug!(?msr, "sending intercept to vtl 1 for secure msr write");
-
-                self.inner.post_message(
+                self.send_intercept_message(
                     GuestVtl::Vtl1,
-                    hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX,
                     &crate::processor::InterceptMessageType::Msr { msr }.generate_hv_message(
                         self.vp_index(),
                         vtl,
@@ -2229,6 +2219,33 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         assert!(source_vtl < target_vtl);
         B::switch_vtl(self, source_vtl, target_vtl);
         self.backing.cvm_state_mut().hv[target_vtl].set_return_reason(entry_reason);
+    }
+
+    fn send_intercept_message(&mut self, vtl: GuestVtl, message: &hvdef::HvMessage) {
+        tracing::trace!(?message, "sending intercept to {:?}", vtl);
+
+        if let Err(e) = self.backing.cvm_state_mut().hv[vtl]
+            .synic
+            .post_intercept_message(
+                message,
+                &mut self
+                    .partition
+                    .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
+            )
+        {
+            // Dropping this allows us to try to deliver any existing
+            // interrupt. In the case of sending an intercept to VTL 1
+            // because of VTL 0 behavior, since the VTL 0 instruction
+            // pointer is not advanced, the VTL 0 guest will exit on the
+            // same instruction again, providing another opportunity to
+            // deliver the intercept.
+            tracelimit::warn_ratelimited!(
+                error = &e as &dyn std::error::Error,
+                ?vtl,
+                ?message,
+                "error sending intercept"
+            );
+        }
     }
 }
 

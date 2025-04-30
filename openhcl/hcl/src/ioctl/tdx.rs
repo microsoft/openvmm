@@ -335,6 +335,31 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
         self.read_vmcs(vtl, field) as u16
     }
 
+    /// Sets the MSR bitmap intercept bit for the given MSR index.
+    ///
+    /// Panics if there is an error in the TDX module when writing the bit.
+    pub fn set_msr_bit(&self, vtl: GuestVtl, msr_index: u32, write: bool, intercept: bool) {
+        let mut word_index = (msr_index & 0xFFFF) / 64;
+
+        if msr_index & 0x80000000 == 0x80000000 {
+            assert!((0xC0000000..=0xC0001FFF).contains(&msr_index));
+            word_index += 0x80;
+        } else {
+            assert!(msr_index <= 0x00001FFF);
+        }
+
+        if write {
+            word_index += 0x100;
+        }
+
+        self.write_msr_bitmap(
+            vtl,
+            word_index,
+            1 << (msr_index as u64 & 0x3F),
+            if intercept { !0 } else { 0 },
+        );
+    }
+
     /// Writes 64-bit word with index `i` of the MSR bitmap.
     ///
     /// Only updates the bits that are set in `mask`. Returns the old value of

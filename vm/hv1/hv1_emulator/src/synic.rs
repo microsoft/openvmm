@@ -438,6 +438,26 @@ impl ProcessorSynic {
         Ok(())
     }
 
+    /// Writes an intercept message to the message page. Meant to be used on
+    /// paths where the message can be written directly without using the
+    /// message queues, as it marks the intercept sint as ready.
+    ///
+    /// Returns `Err(HvError::ObjectInUse)` if the message slot is full.
+    pub fn post_intercept_message(
+        &mut self,
+        message: &HvMessage,
+        interrupt: &mut dyn RequestInterrupt,
+    ) -> Result<(), HvError> {
+        if self
+            .sints
+            .check_sint_ready(hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX)
+        {
+            self.post_message(hvdef::HV_SYNIC_INTERCEPTION_SINT_INDEX, message, interrupt)
+        } else {
+            Err(HvError::ObjectInUse)
+        }
+    }
+
     fn reg_to_msr(reg: HvRegisterName) -> HvResult<u32> {
         Ok(match HvAllArchRegisterName(reg.0) {
             HvAllArchRegisterName::Sint0

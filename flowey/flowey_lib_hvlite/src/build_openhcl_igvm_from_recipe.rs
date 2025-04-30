@@ -209,7 +209,7 @@ impl OpenhclIgvmRecipe {
                 target: CommonTriple::AARCH64_LINUX_MUSL,
                 vtl0_kernel_type: None,
                 with_uefi: true,
-                with_interactive,
+                with_interactive: false, // #1234
                 with_sidecar: false,
             },
             Self::Aarch64Devkern => OpenhclIgvmRecipeDetails {
@@ -223,7 +223,7 @@ impl OpenhclIgvmRecipe {
                 target: CommonTriple::AARCH64_LINUX_MUSL,
                 vtl0_kernel_type: None,
                 with_uefi: true,
-                with_interactive,
+                with_interactive: false, // #1234
                 with_sidecar: false,
             },
         }

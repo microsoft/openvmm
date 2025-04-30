@@ -92,18 +92,9 @@ impl HyperVVM {
         powershell::run_remove_vm_network_adapter(&vmid)
             .context("remove default network adapter")?;
 
-        // TODO: Fix vm config so that we get more information at this layer
-        // what kind of VM it is. For now, if it's UEFI, assume that it's
-        // OpenHCL and set the default behavior to disable the UEFI frontpage,
-        // via OpenHCL cmdline, since Hyper-V doesn't support setting this
-        // option thru WMI.
-        if generation == powershell::HyperVGeneration::Two {
-            powershell::run_set_vm_command_line(
-                &vmid,
-                &ps_mod,
-                "OPENHCL_DISABLE_UEFI_FRONTPAGE=1",
-            )?;
-        }
+        // Remove the default SCSI controller
+        powershell::run_remove_vm_scsi_controller(&vmid, 0)
+            .context("remove default SCSI controller")?;
 
         Ok(Self {
             name,
@@ -187,12 +178,12 @@ impl HyperVVM {
             .transpose()
     }
 
-    /// Set the VM processor count.
-    pub fn set_processor_count(&mut self, count: u32) -> anyhow::Result<()> {
-        powershell::run_set_vm_processor(powershell::HyperVSetVMProcessorArgs {
-            vmid: &self.vmid,
-            count: Some(count),
-        })
+    /// Set the VM processor topology.
+    pub fn set_processor(
+        &mut self,
+        args: &powershell::HyperVSetVMProcessorArgs,
+    ) -> anyhow::Result<()> {
+        powershell::run_set_vm_processor(&self.vmid, args)
     }
 
     /// Set the OpenHCL firmware file
@@ -221,19 +212,30 @@ impl HyperVVM {
     }
 
     /// Add a SCSI controller
-    pub fn add_scsi_controller(&mut self) -> anyhow::Result<()> {
-        powershell::run_add_vm_scsi_controller(&self.vmid)
+    pub fn add_scsi_controller(&mut self, target_vtl: u32) -> anyhow::Result<u32> {
+        let controller_number = powershell::run_add_vm_scsi_controller(&self.vmid)?;
+        if target_vtl != 0 {
+            powershell::run_set_vm_scsi_controller_target_vtl(
+                &self.ps_mod,
+                &self.vmid,
+                controller_number,
+                target_vtl,
+            )?;
+        }
+        Ok(controller_number)
     }
 
     /// Add a VHD
     pub fn add_vhd(
         &mut self,
         path: &Path,
+        controller_type: powershell::ControllerType,
         controller_location: Option<u32>,
         controller_number: Option<u32>,
     ) -> anyhow::Result<()> {
         powershell::run_add_vm_hard_disk_drive(powershell::HyperVAddVMHardDiskDriveArgs {
             vmid: &self.vmid,
+            controller_type,
             controller_location,
             controller_number,
             path: Some(path),
@@ -387,10 +389,20 @@ impl HyperVVM {
 
         Ok(())
     }
+
+    /// Sets the VM firmware  command line.
+    pub fn set_vm_firmware_command_line(&self, openhcl_command_line: &str) -> anyhow::Result<()> {
+        powershell::run_set_vm_command_line(&self.vmid, &self.ps_mod, openhcl_command_line)
+    }
 }
 
 impl Drop for HyperVVM {
     fn drop(&mut self) {
-        let _ = self.remove_inner();
+        if std::env::var("PETRI_PRESERVE_VM")
+            .ok()
+            .is_none_or(|v| v.is_empty() || v == "0")
+        {
+            let _ = self.remove_inner();
+        }
     }
 }

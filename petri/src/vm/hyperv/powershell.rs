@@ -146,24 +146,54 @@ pub fn run_remove_vm(vmid: &Guid) -> anyhow::Result<()> {
 }
 
 /// Arguments for the Set-VMProcessor powershell cmdlet
-pub struct HyperVSetVMProcessorArgs<'a> {
-    /// Specifies the ID of the virtual machine for which you want to set the
-    /// number of virtual processors.
-    pub vmid: &'a Guid,
+pub struct HyperVSetVMProcessorArgs {
     /// Specifies the number of virtual processors to assign to the virtual
     /// machine. If not specified, the number of virtual processors is not
     /// changed.
     pub count: Option<u32>,
+    /// Specifies the Hyper-V APIC mode to use for the virtual machine.
+    pub apic_mode: Option<HyperVApicMode>,
+    /// Specifies the number of hardware threads per core to assign to the
+    /// VM.
+    pub hw_thread_count_per_core: Option<u32>,
+    /// The maximum number of virtual processors that can be assigned to a
+    /// NUMA node.
+    pub maximum_count_per_numa_node: Option<u32>,
+}
+
+/// The Hyper-V APIC mode
+#[derive(Clone, Copy)]
+pub enum HyperVApicMode {
+    /// Default APIC mode (what is this, exactly? It seems to not always include
+    /// x2apic support).
+    Default,
+    /// Legacy APIC mode (no x2apic support).
+    Legacy,
+    /// x2apic mode (enabled by default? or just supported? unclear)
+    X2Apic,
+}
+
+impl AsRef<OsStr> for HyperVApicMode {
+    fn as_ref(&self) -> &OsStr {
+        OsStr::new(match self {
+            HyperVApicMode::Default => "Default",
+            HyperVApicMode::Legacy => "Legacy",
+            HyperVApicMode::X2Apic => "x2Apic",
+        })
+    }
 }
 
 /// Runs Set-VMProcessor with the given arguments.
-pub fn run_set_vm_processor(args: HyperVSetVMProcessorArgs<'_>) -> anyhow::Result<()> {
+pub fn run_set_vm_processor(vmid: &Guid, args: &HyperVSetVMProcessorArgs) -> anyhow::Result<()> {
     PowerShellBuilder::new()
         .cmdlet("Get-VM")
-        .arg_string("Id", args.vmid)
+        .arg_string("Id", vmid)
         .pipeline()
         .cmdlet("Set-VMProcessor")
         .arg_opt_string("Count", args.count)
+        .arg_opt("ApicMode", args.apic_mode)
+        .arg_opt_string("HwThreadCountPerCore", args.hw_thread_count_per_core)
+        .arg_opt_string("MaximumCountPerNumaNode", args.maximum_count_per_numa_node)
         .finish()
         .output(true)
         .map(|_| ())
@@ -175,6 +205,9 @@ pub struct HyperVAddVMHardDiskDriveArgs<'a> {
     /// Specifies the ID of the virtual machine to which the hard disk
     /// drive is to be added.
     pub vmid: &'a Guid,
+    /// Specifies the type of controller to which the hard disk drive is
+    /// to be added.
+    pub controller_type: ControllerType,
     /// Specifies the number of the location on the controller at which the
     /// hard disk drive is to be added. If not specified, the first available
     /// location in the controller specified with the ControllerNumber parameter
@@ -189,6 +222,27 @@ pub struct HyperVAddVMHardDiskDriveArgs<'a> {
     pub path: Option<&'a Path>,
 }
 
+/// The type of controller to which a hard disk drive is to be added.
+#[derive(Copy, Clone, Debug)]
+pub enum ControllerType {
+    /// IDE controller
+    Ide,
+    /// SCSI controller
+    Scsi,
+    /// Persistent memory controller
+    Pmem,
+}
+
+impl AsRef<OsStr> for ControllerType {
+    fn as_ref(&self) -> &OsStr {
+        OsStr::new(match self {
+            ControllerType::Ide => "IDE",
+            ControllerType::Scsi => "SCSI",
+            ControllerType::Pmem => "PMem",
+        })
+    }
+}
+
 /// Runs Add-VMHardDiskDrive with the given arguments.
 pub fn run_add_vm_hard_disk_drive(args: HyperVAddVMHardDiskDriveArgs<'_>) -> anyhow::Result<()> {
     PowerShellBuilder::new()
@@ -196,6 +250,7 @@ pub fn run_add_vm_hard_disk_drive(args: HyperVAddVMHardDiskDriveArgs<'_>) -> any
         .arg_string("Id", args.vmid)
         .pipeline()
         .cmdlet("Add-VMHardDiskDrive")
+        .arg("ControllerType", args.controller_type)
         .arg_opt_string("ControllerLocation", args.controller_location)
         .arg_opt_string("ControllerNumber", args.controller_number)
         .arg_opt("Path", args.path)
@@ -239,16 +294,45 @@ pub fn run_add_vm_dvd_drive(args: HyperVAddVMDvdDriveArgs<'_>) -> anyhow::Result
 }
 
 /// Runs Add-VMScsiController with the given arguments.
-pub fn run_add_vm_scsi_controller(vmid: &Guid) -> anyhow::Result<()> {
-    PowerShellBuilder::new()
+///
+/// Returns the controller number.
+pub fn run_add_vm_scsi_controller(vmid: &Guid) -> anyhow::Result<u32> {
+    let output = PowerShellBuilder::new()
         .cmdlet("Get-VM")
         .arg_string("Id", vmid)
         .pipeline()
         .cmdlet("Add-VMScsiController")
+        .flag("Passthru")
+        .pipeline()
+        .cmdlet("Select-Object")
+        .arg("ExpandProperty", "ControllerNumber")
+        .finish()
+        .output(true)
+        .context("add_vm_scsi_controller")?;
+    Ok(output.trim().parse::<u32>()?)
+}
+
+/// Sets the target VTL for a SCSI controller.
+pub fn run_set_vm_scsi_controller_target_vtl(
+    ps_mod: &Path,
+    vmid: &Guid,
+    controller_number: u32,
+    target_vtl: u32,
+) -> anyhow::Result<()> {
+    PowerShellBuilder::new()
+        .cmdlet("Import-Module")
+        .positional(ps_mod)
+        .next()
+        .cmdlet("Get-VM")
+        .arg_string("Id", vmid)
+        .pipeline()
+        .cmdlet("Set-VMScsiControllerTargetVtl")
+        .arg_string("ControllerNumber", controller_number)
+        .arg_string("TargetVtl", target_vtl)
         .finish()
         .output(true)
         .map(|_| ())
-        .context("add_vm_scsi_controller")
+        .context("set_vm_scsi_controller_target_vtl")
 }
 
 /// Create a new differencing VHD with the provided parent.
@@ -337,6 +421,8 @@ pub fn run_set_vm_command_line(
     ps_mod: &Path,
     command_line: &str,
 ) -> anyhow::Result<()> {
+    // TODO: make this generic, add escaping.
+    let command_line = format!(r#""{command_line}""#);
     PowerShellBuilder::new()
         .cmdlet("Import-Module")
         .positional(ps_mod)
@@ -598,6 +684,22 @@ pub fn run_remove_vm_network_adapter(vmid: &Guid) -> anyhow::Result<()> {
         .output(true)
         .map(|_| ())
         .context("remove_vm_network_adapters")
+}
+
+/// Runs Remove-VMScsiController with the given arguments.
+pub fn run_remove_vm_scsi_controller(vmid: &Guid, controller_number: u32) -> anyhow::Result<()> {
+    PowerShellBuilder::new()
+        .cmdlet("Get-VM")
+        .arg_string("Id", vmid)
+        .pipeline()
+        .cmdlet("Get-VMScsiController")
+        .arg_string("ControllerNumber", controller_number)
+        .pipeline()
+        .cmdlet("Remove-VMScsiController")
+        .finish()
+        .output(true)
+        .map(|_| ())
+        .context("remove_vm_scsi_controller")
 }
 
 /// A PowerShell script builder

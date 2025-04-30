@@ -6,9 +6,9 @@
 use anyhow::Context;
 use futures::StreamExt;
 use petri::OpenHclServicingFlags;
+use petri::ProcessorTopology;
 use petri::ResolvedArtifact;
 use petri::openvmm::PetriVmConfigOpenVmm;
-#[cfg(guest_arch = "x86_64")]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
@@ -20,7 +20,10 @@ async fn nvme_relay_test_core(
     let (mut vm, agent) = config
         .with_openhcl_command_line(openhcl_cmdline)
         .with_vmbus_redirect()
-        .with_processors(1)
+        .with_processor_topology(ProcessorTopology {
+            vp_count: 1,
+            ..Default::default()
+        })
         .run()
         .await?;
 
