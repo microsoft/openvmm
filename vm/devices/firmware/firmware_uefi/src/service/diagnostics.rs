@@ -193,17 +193,22 @@ pub enum DiagnosticsError {
 #[derive(Inspect)]
 pub struct DiagnosticsServices {
     gpa: Option<u32>, // The guest physical address of the diagnostics buffer
+    did_flush: bool,  // Flag to indicate if we have already processed the buffer
 }
 
 impl DiagnosticsServices {
     /// Create a new instance of the diagnostics services
     pub fn new() -> DiagnosticsServices {
-        DiagnosticsServices { gpa: None }
+        DiagnosticsServices {
+            gpa: None,
+            did_flush: false,
+        }
     }
 
     /// Reset the diagnostics services state
     pub fn reset(&mut self) {
         self.gpa = None;
+        self.did_flush = false;
     }
 
     /// Set the GPA of the diagnostics buffer
@@ -405,15 +410,16 @@ impl DiagnosticsServices {
 
 impl UefiDevice {
     /// Process the diagnostics buffer and log the entries to tracing
-    pub(crate) fn process_diagnostics(&self, gm: &GuestMemory) {
-        // Do not proceed if we hit ExitBootServices
-        if self.service.nvram.services.runtime_state.is_runtime() {
-            tracelimit::warn_ratelimited!("EFI Diagnostics: EBS complete, skipping processing");
+    pub(crate) fn process_diagnostics(&mut self, gm: GuestMemory) {
+        // Do not proceed if we have already processed before
+        if self.service.diagnostics.did_flush {
+            tracelimit::warn_ratelimited!("EFI Diagnostics: Already processed, skipping");
             return;
         }
+        self.service.diagnostics.did_flush = true;
 
         // Process diagnostics logs and send each directly to tracing
-        match self.service.diagnostics.process_diagnostics(gm, |log| {
+        match self.service.diagnostics.process_diagnostics(&gm, |log| {
             tracing::info!(
                 debug_level = log.debug_level,
                 ticks = log.ticks,
@@ -448,6 +454,8 @@ mod save_restore {
         pub struct SavedState {
             #[mesh(1)]
             pub gpa: Option<u32>,
+            #[mesh(2)]
+            pub did_flush: bool,
         }
     }
 
@@ -455,12 +463,16 @@ mod save_restore {
         type SavedState = state::SavedState;
 
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
-            Ok(state::SavedState { gpa: self.gpa })
+            Ok(state::SavedState {
+                gpa: self.gpa,
+                did_flush: self.did_flush,
+            })
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
-            let state::SavedState { gpa } = state;
+            let state::SavedState { gpa, did_flush } = state;
             self.gpa = gpa;
+            self.did_flush = did_flush;
             Ok(())
         }
     }

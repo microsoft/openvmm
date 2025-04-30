@@ -255,7 +255,7 @@ impl UefiDevice {
                 }
             }
             UefiCommand::SET_EFI_DIAGNOSTICS_GPA => self.service.diagnostics.set_gpa(data),
-            UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.process_diagnostics(&self.gm),
+            UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.process_diagnostics(self.gm.clone()),
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
     }

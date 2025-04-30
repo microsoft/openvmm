@@ -180,7 +180,7 @@ where
 }
 
 #[derive(Clone, Copy, Debug, Protobuf, Inspect)]
-pub enum RuntimeState {
+enum RuntimeState {
     /// Implementation-specific state, whereby certain read-only and
     /// authenticated variable checks are bypassed.
     ///
@@ -194,15 +194,15 @@ pub enum RuntimeState {
 }
 
 impl RuntimeState {
-    pub fn is_pre_boot(&self) -> bool {
+    fn is_pre_boot(&self) -> bool {
         matches!(&self, RuntimeState::PreBoot)
     }
 
-    pub fn is_boot(&self) -> bool {
+    fn is_boot(&self) -> bool {
         matches!(&self, RuntimeState::Boot)
     }
 
-    pub fn is_runtime(&self) -> bool {
+    fn is_runtime(&self) -> bool {
         matches!(&self, RuntimeState::Runtime)
     }
 }
@@ -226,7 +226,7 @@ impl RuntimeState {
 #[derive(Debug, Inspect)]
 pub struct NvramSpecServices<S: InspectableNvramStorage> {
     storage: S,
-    pub runtime_state: RuntimeState,
+    runtime_state: RuntimeState,
 }
 
 impl<S: InspectableNvramStorage> NvramSpecServices<S> {
