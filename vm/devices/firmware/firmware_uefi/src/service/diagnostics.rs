@@ -36,10 +36,10 @@ pub const MAX_MESSAGE_LENGTH: u16 = 0x1000; // 4KB
 /// Represents a processed log entry from the EFI diagnostics buffer
 #[derive(Debug, Clone)]
 pub struct EfiDiagnosticsLog {
-    pub debug_level: u32,    // The debug level of the log entry
-    pub time_stamp: u64,     // Timestamp of when the log entry was created
-    pub phase: u16,          // The boot phase that produced this log entry
-    pub description: String, // The log message itself
+    pub debug_level: u32, // The debug level of the log entry
+    pub ticks: u64,       // Hypervisor reference ticks elapsed from UEFI
+    pub phase: u16,       // The boot phase that produced this log entry
+    pub message: String,  // The log message itself
 }
 
 /// Errors that occur when parsing entries
@@ -274,9 +274,16 @@ impl DiagnosticsServices {
                 ))
             })?;
 
+        // If used log buffer size is zero, return early
+        if used_log_buffer_size == 0 {
+            tracelimit::info_ratelimited!(
+                "EFI Diagnostics: Used log buffer size is zero, ending processing"
+            );
+            return Ok(());
+        }
+
         // Validate used log buffer size
-        if used_log_buffer_size == 0
-            || used_log_buffer_size > header.log_buffer_size
+        if used_log_buffer_size > header.log_buffer_size
             || used_log_buffer_size > MAX_LOG_BUFFER_SIZE
         {
             return Err(DiagnosticsError::BadUsedBufferSize(
@@ -297,10 +304,6 @@ impl DiagnosticsServices {
         // Now read the used log buffer into a vector
         let mut buffer_data = vec![0u8; used_log_buffer_size as usize];
         gm.read_at(buffer_start_addr as u64, &mut buffer_data)?;
-        if buffer_data.is_empty() {
-            tracelimit::info_ratelimited!("buffer_data is empty, ending processing");
-            return Ok(());
-        }
 
         //
         // Step 4: Parse the log buffer
@@ -349,9 +352,9 @@ impl DiagnosticsServices {
             if !entry.message.is_empty() && entry.message.ends_with('\n') {
                 log_handler(EfiDiagnosticsLog {
                     debug_level,
-                    time_stamp,
+                    ticks: time_stamp,
                     phase,
-                    description: std::mem::take(&mut accumulated_message)
+                    message: std::mem::take(&mut accumulated_message)
                         .trim_end_matches(&['\r', '\n'][..])
                         .to_string(),
                 });
@@ -374,6 +377,19 @@ impl DiagnosticsServices {
             } else {
                 buffer_slice = &buffer_slice[entry.entry_size..];
             }
+        }
+
+        // Process any remaining accumulated message
+        if is_accumulating && !accumulated_message.is_empty() {
+            log_handler(EfiDiagnosticsLog {
+                debug_level,
+                ticks: time_stamp,
+                phase,
+                message: std::mem::take(&mut accumulated_message)
+                    .trim_end_matches(&['\r', '\n'][..])
+                    .to_string(),
+            });
+            entries_processed += 1;
         }
 
         // Print summary statistics
@@ -400,9 +416,9 @@ impl UefiDevice {
         match self.service.diagnostics.process_diagnostics(gm, |log| {
             tracing::info!(
                 debug_level = log.debug_level,
-                time_stamp_ticks = log.time_stamp,
+                ticks = log.ticks,
                 phase = log.phase,
-                description = %log.description,
+                message = %log.message,
                 "EFI Diagnostics:"
             );
         }) {
