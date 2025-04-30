@@ -518,6 +518,7 @@ impl<T: Inspect> GuestVsmState<T> {
     }
 }
 
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 #[derive(Default, Inspect)]
 struct CvmVtl1State {
     /// Whether VTL 1 has been enabled on any vp
@@ -531,21 +532,23 @@ struct CvmVtl1State {
     /// Whether shadow supervisor stack is enabled.
     pub shadow_supervisor_stack_enabled: bool,
     #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    #[inspect(skip)]
+    #[inspect(with = "|bb| inspect::iter_by_index(bb.iter().map(|v| *v))")]
     io_read_intercepts: BitBox<u64>,
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    #[inspect(skip)]
+    #[inspect(with = "|bb| inspect::iter_by_index(bb.iter().map(|v| *v))")]
     io_write_intercepts: BitBox<u64>,
 }
 
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 impl CvmVtl1State {
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     fn new(mbec_enabled: bool) -> Self {
         Self {
+            enabled_on_any_vp: false,
+            zero_memory_on_reset: false,
+            deny_lower_vtl_startup: false,
             mbec_enabled,
+            shadow_supervisor_stack_enabled: false,
             io_read_intercepts: BitVec::repeat(false, u16::MAX as usize + 1).into_boxed_bitslice(),
             io_write_intercepts: BitVec::repeat(false, u16::MAX as usize + 1).into_boxed_bitslice(),
-            ..Default::default()
         }
     }
 }
