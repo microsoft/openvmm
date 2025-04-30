@@ -276,6 +276,7 @@ impl GuestEmulationDevice {
         }
     }
 
+    /// Update IGVM Attest state machine based on IGVM Attest test config.
     fn update_igvm_attest_state(&mut self) -> Result<(), Error> {
         match (self.igvm_attest_state, self.igvm_attest_test_config) {
             // No test config set, default to sending valid AK cert for now.
@@ -309,6 +310,8 @@ impl GuestEmulationDevice {
                 IgvmAttestState::SendEmptyAkCert,
                 Some(IgvmAttestTestConfig::AkCertPersistentAcrossBoot),
             ) => self.igvm_attest_state = IgvmAttestState::Done,
+
+            // Unhandled scenarios
             (_, _) => {
                 return Err(Error::InvalidIgvmAttestState {
                     state: self.igvm_attest_state,

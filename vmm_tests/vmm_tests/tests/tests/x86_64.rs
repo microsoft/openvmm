@@ -45,12 +45,7 @@ async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     let config = config.with_tpm();
 
     let (vm, agent) = match os_flavor {
-        OsFlavor::Windows => {
-            // TODO: Add in-guest TPM tests for Windows as we currently
-            // do have an easy way to interact with TPM without a private
-            // or custom tool.
-            config.run().await?
-        }
+        OsFlavor::Windows => config.run().await?,
         OsFlavor::Linux => {
             let mut vm = config.run_with_lazy_pipette().await?;
             // Workaround to https://github.com/microsoft/openvmm/issues/379
