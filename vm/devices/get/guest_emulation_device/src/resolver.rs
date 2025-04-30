@@ -151,6 +151,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
             resource.guest_request_recv,
             framebuffer_control,
             vmgs_disk,
+            resource.igvm_attest_test_config,
         );
         Ok(SimpleDeviceWrapper::new(input.driver_source.simple(), device).into())
     }

@@ -948,6 +948,7 @@ fn vm_config_from_command_line(
                     },
                     enable_battery: opt.battery,
                     no_persistent_secrets: true,
+                    igvm_attest_test_config: None,
                 }
                 .into_resource(),
             ),

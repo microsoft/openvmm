@@ -88,6 +88,8 @@ pub mod ged {
         pub enable_battery: bool,
         /// Suppress attestation and disable TPM state persistence.
         pub no_persistent_secrets: bool,
+        /// Test configuration for IGVM Attest message.
+        pub igvm_attest_test_config: Option<IgvmAttestTestConfig>,
     }
 
     /// The firmware and chipset configuration for the guest.
@@ -219,5 +221,15 @@ pub mod ged {
         NoBootDevice,
         /// A boot attempt was made.
         BootAttempt,
+    }
+
+    /// Configuration to the GED's IGVM Attest request handler
+    /// for test scenarios.
+    #[derive(Debug, MeshPayload, Copy, Clone)]
+    pub enum IgvmAttestTestConfig {
+        /// Config for testing AK cert retry after failure.
+        AkCertRequestFailureAndRetry,
+        /// Config for testing AK cert persistency across boots.
+        AkCertPersistentAcrossBoot,
     }
 }

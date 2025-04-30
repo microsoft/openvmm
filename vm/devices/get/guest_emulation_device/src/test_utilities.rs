@@ -275,6 +275,7 @@ pub fn create_host_channel(
         recv,
         None,
         Some(disklayer_ram::ram_disk(TEST_VMGS_CAPACITY as u64, false).unwrap()),
+        None,
     );
 
     if let Some(ged_responses) = ged_responses {

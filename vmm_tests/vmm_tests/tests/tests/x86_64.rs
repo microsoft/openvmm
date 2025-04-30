@@ -42,7 +42,7 @@ async fn boot_alias_map(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
 )]
 async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    let config = config.with_tpm().with_tpm_state_persistence();
+    let config = config.with_tpm();
 
     let (vm, agent) = match os_flavor {
         OsFlavor::Windows => {
@@ -52,64 +52,117 @@ async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
             config.run().await?
         }
         OsFlavor::Linux => {
-            // First boot - expect no AK cert from GED
             let mut vm = config.run_with_lazy_pipette().await?;
             // Workaround to https://github.com/microsoft/openvmm/issues/379
             assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
 
-            // Second boot - except get AK cert from GED on the second attempts
             vm.reset().await?;
             let agent = vm.wait_for_agent().await?;
             vm.wait_for_successful_boot_event().await?;
-
-            // Use the python script to read AK cert from TPM nv index
-            // and verify that the AK cert preserves across boot.
-            // TODO: Replace the script with tpm2-tools
-            const TEST_FILE: &str = "tpm.py";
-            const TEST_CONTENT: &str = include_str!("../../test_data/tpm.py");
-
-            agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
-            assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
-
-            // The first AK cert request made during boot is expected to
-            // get invalid response from GED such that no data is set
-            // to nv index. The script should return failure. Also, the nv
-            // read made by the script is expected to trigger another AK cert
-            // request.
-            let sh = agent.unix_shell();
-            let output = cmd!(sh, "python3 tpm.py").read().await?;
-
-            // Check if there is no content yet
-            assert!(!output.contains("succeeded"));
-
-            // Run the script again to test if the AK cert triggered by nv read
-            // succeeds and the data is written into the nv index.
-            let sh = agent.unix_shell();
-            let output = cmd!(sh, "python3 tpm.py").read().await?;
-
-            // Check if the content is now available
-            assert!(output.contains("succeeded"));
-
-            // Third boot - Ak cert request will be bypassed by GED
-            vm.reset().await?;
-            let agent = vm.wait_for_agent().await?;
-            vm.wait_for_successful_boot_event().await?;
-
-            agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
-            assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
-
-            // Run the script after boot to verify that the previous
-            // data in the nv index preserves.
-            let sh = agent.unix_shell();
-            let output = cmd!(sh, "python3 tpm.py").read().await?;
-
-            // Check if the content the same across boots
-            assert!(output.contains("succeeded"));
 
             (vm, agent)
         }
         _ => unreachable!(),
     };
+
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+/// Test AK cert is persistent across boots on Linux.
+// TODO: Add in-guest TPM tests for Windows as we currently
+// do have an easy way to interact with TPM without a private
+// or custom tool.
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
+async fn tpm_ak_cert_persisted(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+    let config = config
+        .with_tpm()
+        .with_tpm_state_persistence()
+        .with_igvm_attest_test_config(
+            get_resources::ged::IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
+        );
+
+    // First boot - AK cert request will be served by GED
+    let mut vm = config.run_with_lazy_pipette().await?;
+    // Workaround to https://github.com/microsoft/openvmm/issues/379
+    assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+
+    // Second boot - Ak cert request will be bypassed by GED
+    vm.reset().await?;
+    let agent = vm.wait_for_agent().await?;
+    vm.wait_for_successful_boot_event().await?;
+
+    // Use the python script to read AK cert from TPM nv index
+    // and verify that the AK cert preserves across boot.
+    // TODO: Replace the script with tpm2-tools
+    const TEST_FILE: &str = "tpm.py";
+    const TEST_CONTENT: &str = include_str!("../../test_data/tpm.py");
+
+    agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
+    assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
+
+    let sh = agent.unix_shell();
+    let output = cmd!(sh, "python3 tpm.py").read().await?;
+
+    // Check if the content preserves as expected
+    assert!(output.contains("succeeded"));
+
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+/// Test AK cert retry logic on Linux.
+// TODO: Add in-guest TPM tests for Windows as we currently
+// do have an easy way to interact with TPM without a private
+// or custom tool.
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
+async fn tpm_ak_cert_retry(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+    let config = config
+        .with_tpm()
+        .with_tpm_state_persistence()
+        .with_igvm_attest_test_config(
+            get_resources::ged::IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+        );
+
+    // First boot - expect no AK cert from GED
+    let mut vm = config.run_with_lazy_pipette().await?;
+    // Workaround to https://github.com/microsoft/openvmm/issues/379
+    assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+
+    // Second boot - except get AK cert from GED on the second attempts
+    vm.reset().await?;
+    let agent = vm.wait_for_agent().await?;
+    vm.wait_for_successful_boot_event().await?;
+
+    // Use the python script to read AK cert from TPM nv index
+    // and verify that the AK cert preserves across boot.
+    // TODO: Replace the script with tpm2-tools
+    const TEST_FILE: &str = "tpm.py";
+    const TEST_CONTENT: &str = include_str!("../../test_data/tpm.py");
+
+    agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
+    assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
+
+    // The first AK cert request made during boot is expected to
+    // get invalid response from GED such that no data is set
+    // to nv index. The script should return failure. Also, the nv
+    // read made by the script is expected to trigger another AK cert
+    // request.
+    let sh = agent.unix_shell();
+    let output = cmd!(sh, "python3 tpm.py").read().await?;
+
+    // Check if there is no content yet
+    assert!(!output.contains("succeeded"));
+
+    // Run the script again to test if the AK cert triggered by nv read
+    // succeeds and the data is written into the nv index.
+    let sh = agent.unix_shell();
+    let output = cmd!(sh, "python3 tpm.py").read().await?;
+
+    // Check if the content is now available
+    assert!(output.contains("succeeded"));
 
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);

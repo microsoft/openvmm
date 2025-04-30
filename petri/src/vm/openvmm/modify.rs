@@ -15,6 +15,7 @@ use disk_backend_resources::layer::RamDiskLayerHandle;
 use fs_err::File;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
+use get_resources::ged::IgvmAttestTestConfig;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::LoadMode;
@@ -188,6 +189,19 @@ impl PetriVmConfigOpenVmm {
         // Disable no_persistent_secrets implies preserving TPM states
         // across boots
         ged.no_persistent_secrets = false;
+
+        self
+    }
+
+    /// Set test config for the GED's IGVM attest request handler
+    pub fn with_igvm_attest_test_config(mut self, config: IgvmAttestTestConfig) -> Self {
+        if !self.firmware.is_openhcl() {
+            panic!("TPM state persistence is only supported for OpenHCL.")
+        };
+
+        let ged = self.ged.as_mut().expect("No GED to configure TPM");
+
+        ged.igvm_attest_test_config = Some(config);
 
         self
     }
