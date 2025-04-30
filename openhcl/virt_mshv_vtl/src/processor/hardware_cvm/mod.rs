@@ -2468,8 +2468,10 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::InstallIntercept
                     access_type_mask & HV_INTERCEPT_ACCESS_MASK_READ != 0,
                 );
 
-                vtl1.io_write_intercepts
-                    .set(io_port, HV_INTERCEPT_ACCESS_MASK_WRITE != 0);
+                vtl1.io_write_intercepts.set(
+                    io_port,
+                    access_type_mask & HV_INTERCEPT_ACCESS_MASK_WRITE != 0,
+                );
             }
             _ => return Err(HvError::InvalidParameter),
         }

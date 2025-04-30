@@ -519,7 +519,7 @@ impl<T: Inspect> GuestVsmState<T> {
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-#[derive(Default, Inspect)]
+#[derive(Inspect)]
 struct CvmVtl1State {
     /// Whether VTL 1 has been enabled on any vp
     enabled_on_any_vp: bool,
@@ -531,7 +531,6 @@ struct CvmVtl1State {
     pub mbec_enabled: bool,
     /// Whether shadow supervisor stack is enabled.
     pub shadow_supervisor_stack_enabled: bool,
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     #[inspect(with = "|bb| inspect::iter_by_index(bb.iter().map(|v| *v))")]
     io_read_intercepts: BitBox<u64>,
     #[inspect(with = "|bb| inspect::iter_by_index(bb.iter().map(|v| *v))")]
