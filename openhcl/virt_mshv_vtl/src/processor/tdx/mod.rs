@@ -1747,6 +1747,10 @@ impl UhProcessor<'_, TdxBacked> {
 
                 if !port_access_protected {
                     if io_qual.is_string() || io_qual.rep_prefix() {
+                        // TODO GUEST VSM: consider changing the emulation path
+                        // to also check for io port installation, mainly for
+                        // handling rep instructions.
+
                         self.emulate(
                             dev,
                             self.backing.vtls[intercepted_vtl]
