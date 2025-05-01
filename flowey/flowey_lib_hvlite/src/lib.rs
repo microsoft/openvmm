@@ -8,11 +8,9 @@
 // #![warn(missing_docs)] // TODO: lots to do here
 
 pub mod _jobs;
-pub mod artifact_guide;
 pub mod artifact_openhcl_igvm_from_recipe;
 pub mod artifact_openhcl_igvm_from_recipe_extras;
 pub mod artifact_openvmm_hcl_sizecheck;
-pub mod artifact_rustdoc;
 pub mod build_and_test_vmgs_lib;
 pub mod build_guest_test_uefi;
 pub mod build_guide;

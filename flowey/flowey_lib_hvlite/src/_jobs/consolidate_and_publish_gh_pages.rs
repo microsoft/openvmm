@@ -5,20 +5,25 @@
 //! them together into a single HTML bundle which can be published to
 //! `openvmm.dev` via gh pages.
 
+use crate::build_guide::GuideOutput;
+use crate::build_rustdoc::RustdocOutput;
 use flowey::node::prelude::*;
 
 flowey_request! {
     pub struct Params {
-        pub rustdoc_linux: ReadVar<PathBuf>,
-        pub rustdoc_windows: ReadVar<PathBuf>,
-        pub guide: ReadVar<PathBuf>,
-
-        // optionally pass in an artifact_dir publish the gh pages output to an
-        // artifact (e.g: useful for local testing).
-        pub artifact_dir: Option<ReadVar<PathBuf>>,
-        pub done: WriteVar<SideEffect>,
+        pub rustdoc_linux: ReadVar<RustdocOutput>,
+        pub rustdoc_windows: ReadVar<RustdocOutput>,
+        pub guide: ReadVar<GuideOutput>,
+        pub output: WriteVar<GhPagesOutput>,
     }
 }
+
+#[derive(Serialize, Deserialize)]
+pub struct GhPagesOutput {
+    pub gh_pages: PathBuf,
+}
+
+impl Artifact for GhPagesOutput {}
 
 new_simple_flow_node!(struct Node);
 
@@ -26,8 +31,6 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::artifact_guide::resolve::Node>();
-        ctx.import::<crate::artifact_rustdoc::resolve::Node>();
         ctx.import::<flowey_lib_common::copy_to_artifact_dir::Node>();
     }
 
@@ -35,25 +38,9 @@ impl SimpleFlowNode for Node {
         let Params {
             rustdoc_linux,
             rustdoc_windows,
-            guide,
-            artifact_dir,
-            done,
+            guide: rendered_guide,
+            output,
         } = request;
-
-        let rendered_guide = ctx.reqv(|v| crate::artifact_guide::resolve::Request {
-            artifact_dir: guide,
-            rendered_guide: v,
-        });
-
-        let rustdoc_windows = ctx.reqv(|v| crate::artifact_rustdoc::resolve::Request {
-            artifact_dir: rustdoc_windows,
-            rustdocs_dir: v,
-        });
-
-        let rustdoc_linux = ctx.reqv(|v| crate::artifact_rustdoc::resolve::Request {
-            artifact_dir: rustdoc_linux,
-            rustdocs_dir: v,
-        });
 
         let consolidated_html = ctx.emit_rust_stepv("generate consolidated gh pages html", |ctx| {
             let rendered_guide = rendered_guide.claim(ctx);
@@ -77,17 +64,17 @@ impl SimpleFlowNode for Node {
 
                 // Make the OpenVMM Guide accessible under `openvmm.dev/guide/`
                 flowey_lib_common::_util::copy_dir_all(
-                    rendered_guide,
+                    rendered_guide.guide,
                     consolidated_html.join("guide"),
                 )?;
 
                 // Make rustdocs accessible under `openvmm.dev/rustdoc/{platform}`
                 flowey_lib_common::_util::copy_dir_all(
-                    rustdoc_windows,
+                    rustdoc_windows.docs,
                     consolidated_html.join("rustdoc/windows"),
                 )?;
                 flowey_lib_common::_util::copy_dir_all(
-                    rustdoc_linux,
+                    rustdoc_linux.docs,
                     consolidated_html.join("rustdoc/linux"),
                 )?;
 
@@ -99,7 +86,7 @@ impl SimpleFlowNode for Node {
             }
         });
 
-        if matches!(ctx.backend(), FlowBackend::Github) {
+        let consolidated_html = if matches!(ctx.backend(), FlowBackend::Github) {
             let did_upload = ctx
                 .emit_gh_step("Upload pages artifact", "actions/upload-pages-artifact@v3")
                 .with(
@@ -115,21 +102,12 @@ impl SimpleFlowNode for Node {
                 .run_after(did_upload)
                 .finish(ctx);
 
-            ctx.emit_side_effect_step([did_deploy], [done]);
+            consolidated_html.depending_on(ctx, &did_deploy)
         } else {
-            if let Some(artifact_dir) = artifact_dir {
-                let files = consolidated_html.map(ctx, |p| vec![("gh_pages".into(), p)]);
-                ctx.req(flowey_lib_common::copy_to_artifact_dir::Request {
-                    debug_label: "gh pages artifact".into(),
-                    artifact_dir,
-                    files,
-                    done,
-                })
-            } else {
-                ctx.emit_side_effect_step([consolidated_html.into_side_effect()], [done]);
-            }
-        }
+            consolidated_html
+        };
 
+        consolidated_html.write_into(ctx, output, |p| GhPagesOutput { gh_pages: p });
         Ok(())
     }
 }

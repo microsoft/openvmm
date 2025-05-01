@@ -162,10 +162,7 @@ jobs:
     - name: build OpenVMM guide (mdbook)
       run: |-
         flowey e 0 flowey_lib_hvlite::build_guide 1
-        flowey e 0 flowey_lib_hvlite::artifact_guide::publish 0
-      shell: bash
-    - name: copying guide to artifact dir
-      run: flowey e 0 flowey_lib_common::copy_to_artifact_dir 0
+        flowey e 0 flowey_core::pipeline::artifact::publish 0
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 0 flowey_lib_common::cache 3
@@ -255,7 +252,7 @@ jobs:
     - name: check if openvmm needs to be cloned
       run: |-
         flowey.exe e 1 flowey_lib_common::git_checkout 0
-        flowey.exe v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar3 --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46
+        flowey.exe v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar1 --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46
         flowey.exe v 1 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' --write-to-gh-env FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
@@ -263,7 +260,7 @@ jobs:
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar3 }}
+        persist-credentials: ${{ env.floweyvar1 }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -283,14 +280,14 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 1 flowey_lib_common::cache 0
-        flowey.exe v 1 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --write-to-gh-env floweyvar1 --is-raw-string
-        flowey.exe v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey.exe v 1 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey.exe v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar1 }}
-        path: ${{ env.floweyvar2 }}
+        key: ${{ env.floweyvar2 }}
+        path: ${{ env.floweyvar3 }}
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
@@ -327,15 +324,9 @@ jobs:
         flowey.exe e 1 flowey_lib_common::run_cargo_doc 0
       shell: bash
     - name: document repo for target x86_64-pc-windows-msvc
-      run: flowey.exe e 1 flowey_lib_hvlite::build_rustdoc 0
-      shell: bash
-    - name: archive rustdoc dir
       run: |-
-        flowey.exe e 1 flowey_lib_hvlite::artifact_rustdoc::publish 0
-        flowey.exe e 1 flowey_lib_hvlite::artifact_rustdoc::publish 1
-      shell: bash
-    - name: copying rustdoc to artifact dir
-      run: flowey.exe e 1 flowey_lib_common::copy_to_artifact_dir 0
+        flowey.exe e 1 flowey_lib_hvlite::build_rustdoc 0
+        flowey.exe e 1 flowey_core::pipeline::artifact::publish 0
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey.exe e 1 flowey_lib_common::cache 3
@@ -425,7 +416,7 @@ jobs:
     - name: check if openvmm needs to be cloned
       run: |-
         flowey e 2 flowey_lib_common::git_checkout 0
-        flowey v 2 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar3 --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46
+        flowey v 2 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar1 --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46
         flowey v 2 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' --write-to-gh-env FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
@@ -433,7 +424,7 @@ jobs:
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar3 }}
+        persist-credentials: ${{ env.floweyvar1 }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -453,14 +444,14 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 2 flowey_lib_common::cache 0
-        flowey v 2 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --write-to-gh-env floweyvar1 --is-raw-string
-        flowey v 2 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey v 2 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey v 2 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar1 }}
-        path: ${{ env.floweyvar2 }}
+        key: ${{ env.floweyvar2 }}
+        path: ${{ env.floweyvar3 }}
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
@@ -503,15 +494,9 @@ jobs:
         flowey e 2 flowey_lib_common::run_cargo_doc 0
       shell: bash
     - name: document repo for target x86_64-unknown-linux-gnu
-      run: flowey e 2 flowey_lib_hvlite::build_rustdoc 0
-      shell: bash
-    - name: archive rustdoc dir
       run: |-
-        flowey e 2 flowey_lib_hvlite::artifact_rustdoc::publish 0
-        flowey e 2 flowey_lib_hvlite::artifact_rustdoc::publish 1
-      shell: bash
-    - name: copying rustdoc to artifact dir
-      run: flowey e 2 flowey_lib_common::copy_to_artifact_dir 0
+        flowey e 2 flowey_lib_hvlite::build_rustdoc 0
+        flowey e 2 flowey_core::pipeline::artifact::publish 0
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 2 flowey_lib_common::cache 3
@@ -568,20 +553,14 @@ jobs:
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-rustdoc" | flowey v 3 'artifact_use_from_x64-linux-rustdoc' --update-from-stdin --is-raw-string
         echo "$AgentTempDirNormal/used_artifacts/x64-windows-rustdoc" | flowey v 3 'artifact_use_from_x64-windows-rustdoc' --update-from-stdin --is-raw-string
       shell: bash
-    - name: resolve guide artifact
-      run: flowey e 3 flowey_lib_hvlite::artifact_guide::resolve 0
-      shell: bash
-    - name: resolve rustdocs artifact
-      run: flowey e 3 flowey_lib_hvlite::artifact_rustdoc::resolve 1
-      shell: bash
-    - name: resolve rustdocs artifact
-      run: flowey e 3 flowey_lib_hvlite::artifact_rustdoc::resolve 0
-      shell: bash
     - name: generate consolidated gh pages html
       run: |-
+        flowey e 3 flowey_core::pipeline::artifact::resolve 1
+        flowey e 3 flowey_core::pipeline::artifact::resolve 2
+        flowey e 3 flowey_core::pipeline::artifact::resolve 0
         flowey e 3 flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages 0
         flowey e 3 flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages 1
-        flowey v 3 'flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages:4:flowey_lib_hvlite/src/_jobs/consolidate_and_publish_gh_pages.rs:107:39' --write-to-gh-env floweyvar1 --is-raw-string
+        flowey v 3 'flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages:1:flowey_lib_hvlite/src/_jobs/consolidate_and_publish_gh_pages.rs:94:39' --write-to-gh-env floweyvar1 --is-raw-string
       shell: bash
     - id: flowey_lib_hvlite___jobs__consolidate_and_publish_gh_pages__2
       uses: actions/upload-pages-artifact@v3
@@ -591,3 +570,8 @@ jobs:
     - id: flowey_lib_hvlite___jobs__consolidate_and_publish_gh_pages__3
       uses: actions/deploy-pages@v4
       name: Deploy to GitHub Pages
+    - name: 🦀 flowey rust steps
+      run: |-
+        flowey e 3 flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages 4
+        flowey e 3 flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages 5
+      shell: bash
