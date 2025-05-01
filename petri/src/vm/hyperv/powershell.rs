@@ -449,8 +449,6 @@ pub fn run_set_vm_command_line(
     ps_mod: &Path,
     command_line: &str,
 ) -> anyhow::Result<()> {
-    // TODO: make this generic, add escaping.
-    let command_line = format!(r#""{command_line}""#);
     PowerShellBuilder::new()
         .cmdlet("Import-Module")
         .positional(ps_mod)
