@@ -1510,11 +1510,12 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         };
         let r = hv.msr_write(msr, value, &mut access);
 
-        if !matches!(r, Err(MsrError::Unknown)) {
-            // If updated is Synic MSR, then update the `proxy_irr_blocked`
-            if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
-                self.update_proxy_irr_filter(vtl);
-            }
+        // If the MSR is a synic MSR, then update the `proxy_irr_blocked`
+        if vtl == GuestVtl::Vtl0
+            && !matches!(r, Err(MsrError::Unknown))
+            && matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15)
+        {
+            self.update_proxy_irr_filter(vtl);
         }
         r
     }
