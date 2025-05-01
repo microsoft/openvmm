@@ -278,45 +278,47 @@ impl GuestEmulationDevice {
 
     /// Update IGVM Attest state machine based on IGVM Attest test config.
     fn update_igvm_attest_state(&mut self) -> Result<(), Error> {
-        match (self.igvm_attest_state, self.igvm_attest_test_config) {
+        match self.igvm_attest_test_config {
             // No test config set, default to sending valid AK cert for now.
-            (_, None) => self.igvm_attest_state = IgvmAttestState::SendValidAkCert,
+            None => self.igvm_attest_state = IgvmAttestState::SendValidAkCert,
             // State machine for testing retrying AK cert request after failing attempt.
-            (IgvmAttestState::Init, Some(IgvmAttestTestConfig::AkCertRequestFailureAndRetry)) => {
-                self.igvm_attest_state = IgvmAttestState::SendEmptyAkCert
+            Some(IgvmAttestTestConfig::AkCertRequestFailureAndRetry) => {
+                match self.igvm_attest_state {
+                    IgvmAttestState::Init => {
+                        self.igvm_attest_state = IgvmAttestState::SendEmptyAkCert
+                    }
+                    IgvmAttestState::SendEmptyAkCert => {
+                        self.igvm_attest_state = IgvmAttestState::SendInvalidAkCert
+                    }
+                    IgvmAttestState::SendInvalidAkCert => {
+                        self.igvm_attest_state = IgvmAttestState::SendValidAkCert
+                    }
+                    IgvmAttestState::SendValidAkCert => {
+                        self.igvm_attest_state = IgvmAttestState::Done
+                    }
+                    IgvmAttestState::Done => {}
+                }
             }
-            (
-                IgvmAttestState::SendEmptyAkCert,
-                Some(IgvmAttestTestConfig::AkCertRequestFailureAndRetry),
-            ) => self.igvm_attest_state = IgvmAttestState::SendInvalidAkCert,
-            (
-                IgvmAttestState::SendInvalidAkCert,
-                Some(IgvmAttestTestConfig::AkCertRequestFailureAndRetry),
-            ) => self.igvm_attest_state = IgvmAttestState::SendValidAkCert,
-            (
-                IgvmAttestState::SendValidAkCert,
-                Some(IgvmAttestTestConfig::AkCertRequestFailureAndRetry),
-            ) => self.igvm_attest_state = IgvmAttestState::Done,
-
             // State machine for testing AK cert persistency across boots.
-            (IgvmAttestState::Init, Some(IgvmAttestTestConfig::AkCertPersistentAcrossBoot)) => {
-                self.igvm_attest_state = IgvmAttestState::SendValidAkCert
-            }
-            (
-                IgvmAttestState::SendValidAkCert,
-                Some(IgvmAttestTestConfig::AkCertPersistentAcrossBoot),
-            ) => self.igvm_attest_state = IgvmAttestState::SendEmptyAkCert,
-            (
-                IgvmAttestState::SendEmptyAkCert,
-                Some(IgvmAttestTestConfig::AkCertPersistentAcrossBoot),
-            ) => self.igvm_attest_state = IgvmAttestState::Done,
-
-            // Unhandled scenarios
-            (_, _) => {
-                return Err(Error::InvalidIgvmAttestState {
-                    state: self.igvm_attest_state,
-                    test_config: self.igvm_attest_test_config,
-                });
+            Some(IgvmAttestTestConfig::AkCertPersistentAcrossBoot) => {
+                match self.igvm_attest_state {
+                    IgvmAttestState::Init => {
+                        self.igvm_attest_state = IgvmAttestState::SendValidAkCert
+                    }
+                    IgvmAttestState::SendValidAkCert => {
+                        self.igvm_attest_state = IgvmAttestState::SendEmptyAkCert
+                    }
+                    IgvmAttestState::SendEmptyAkCert => {
+                        self.igvm_attest_state = IgvmAttestState::Done
+                    }
+                    IgvmAttestState::Done => {}
+                    _ => {
+                        return Err(Error::InvalidIgvmAttestState {
+                            state: self.igvm_attest_state,
+                            test_config: self.igvm_attest_test_config,
+                        });
+                    }
+                }
             }
         }
 
@@ -932,68 +934,60 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         }
 
         let response = match request_payload.request_type {
-            IgvmAttestRequestType::AK_CERT_REQUEST
-                if matches!(state.igvm_attest_state, IgvmAttestState::SendEmptyAkCert) =>
-            {
-                tracing::info!("Send an empty response for AK_CERT_REQEUST");
-
-                state.update_igvm_attest_state()?;
-
-                get_protocol::IgvmAttestResponse {
-                    message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
-                    length: 0,
+            IgvmAttestRequestType::AK_CERT_REQUEST => match state.igvm_attest_state {
+                IgvmAttestState::SendEmptyAkCert => {
+                    tracing::info!("Send an empty response for AK_CERT_REQEUST");
+                    get_protocol::IgvmAttestResponse {
+                        message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
+                        length: 0,
+                    }
                 }
-            }
-            IgvmAttestRequestType::AK_CERT_REQUEST
-                if matches!(state.igvm_attest_state, IgvmAttestState::SendInvalidAkCert) =>
-            {
-                tracing::info!("Return an invalid response for AK_CERT_REQUEST");
-
-                state.update_igvm_attest_state()?;
-
-                get_protocol::IgvmAttestResponse {
-                    message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
-                    length: get_protocol::IGVM_ATTEST_VMWP_GENERIC_ERROR_CODE as u32,
+                IgvmAttestState::SendInvalidAkCert => {
+                    tracing::info!("Return an invalid response for AK_CERT_REQUEST");
+                    get_protocol::IgvmAttestResponse {
+                        message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
+                        length: get_protocol::IGVM_ATTEST_VMWP_GENERIC_ERROR_CODE as u32,
+                    }
                 }
-            }
-            IgvmAttestRequestType::AK_CERT_REQUEST
-                if matches!(state.igvm_attest_state, IgvmAttestState::SendValidAkCert) =>
-            {
-                let data = vec![0xab; 2500];
-                let header = IgvmAttestAkCertResponseHeader {
-                    data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>()) as u32,
-                    version: AK_CERT_RESPONSE_HEADER_VERSION,
-                };
-                let payload = [header.as_bytes(), &data].concat();
+                IgvmAttestState::SendValidAkCert => {
+                    let data = vec![0xab; 2500];
+                    let header = IgvmAttestAkCertResponseHeader {
+                        data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>())
+                            as u32,
+                        version: AK_CERT_RESPONSE_HEADER_VERSION,
+                    };
+                    let payload = [header.as_bytes(), &data].concat();
 
-                self.gm
-                    .write_at(request.shared_gpa[0], &payload)
-                    .map_err(Error::SharedMemoryWriteFailed)?;
+                    self.gm
+                        .write_at(request.shared_gpa[0], &payload)
+                        .map_err(Error::SharedMemoryWriteFailed)?;
 
-                tracing::info!("Send a response for AK_CERT_REQEUST");
+                    tracing::info!("Send a response for AK_CERT_REQEUST");
 
-                state.update_igvm_attest_state()?;
-
-                get_protocol::IgvmAttestResponse {
-                    message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
-                    length: payload.len() as u32,
+                    get_protocol::IgvmAttestResponse {
+                        message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
+                        length: payload.len() as u32,
+                    }
                 }
-            }
-            IgvmAttestRequestType::AK_CERT_REQUEST
-                if matches!(state.igvm_attest_state, IgvmAttestState::Done) =>
-            {
-                tracing::info!("Bypass AK_CERT_REQEUST");
+                IgvmAttestState::Done => {
+                    tracing::info!("Bypass AK_CERT_REQEUST");
 
-                return Ok(());
-            }
-            IgvmAttestRequestType::AK_CERT_REQUEST => {
-                return Err(Error::InvalidIgvmAttestState {
-                    state: state.igvm_attest_state,
-                    test_config: state.igvm_attest_test_config,
-                });
-            }
+                    return Ok(());
+                }
+                _ => {
+                    return Err(Error::InvalidIgvmAttestState {
+                        state: state.igvm_attest_state,
+                        test_config: state.igvm_attest_test_config,
+                    });
+                }
+            },
             ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
         };
+
+        // Update state
+        state.update_igvm_attest_state()?;
+
+        tracing::info!(state = ?state.igvm_attest_state, test_config = ?state.igvm_attest_test_config, "Update init state");
 
         self.channel
             .try_send(response.as_bytes())
