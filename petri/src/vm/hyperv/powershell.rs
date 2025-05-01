@@ -553,8 +553,23 @@ pub fn run_get_winevent(
             .pipeline();
     }
 
-    let output = builder.cmdlet("Select-Object")
-        .positional(r#"@{label="TimeCreated";expression={Get-Date $_.TimeCreated -Format o}}, ProviderName, Level, Id, Message"#)
+    let props = ps::Array::new([
+        ps::Value::new(ps::HashTable::new([
+            ("label", ps::Value::new("TimeCreated")),
+            (
+                "expression",
+                ps::Value::new(ps::Script::new("Get-Date $_.TimeCreated -Format o")),
+            ),
+        ])),
+        ps::Value::new("ProviderName"),
+        ps::Value::new("Level"),
+        ps::Value::new("Id"),
+        ps::Value::new("Message"),
+    ]);
+
+    let output = builder
+        .cmdlet("Select-Object")
+        .positional(props)
         .next()
         .cmdlet("ConvertTo-Json")
         .arg("InputObject", ps::Array::new([&output_var]))
@@ -1026,6 +1041,20 @@ mod ps {
             }
             args.push("}");
             args
+        }
+    }
+
+    pub struct Script(String);
+
+    impl Script {
+        pub fn new(script: impl AsRef<str>) -> Self {
+            Self(format!("{{ {} }}", script.as_ref()))
+        }
+    }
+
+    impl AsVal for Script {
+        fn as_val(&self) -> impl '_ + AsRef<OsStr> {
+            &self.0
         }
     }
 }
