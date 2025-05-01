@@ -1307,9 +1307,9 @@ impl UhProcessor<'_, SnpBacked> {
                         let interruption_pending = vmsa.event_inject().valid()
                             || SevEventInjectInfo::from(vmsa.exit_int_info()).valid();
 
-                        // TODO GUEST VSM: figure out whether emulation will
-                        // involve additional io port accesses that need to be
-                        // intercepted as well.
+                        // TODO GUEST VSM: consider changing the emulation path
+                        // to also check for io port installation, mainly for
+                        // handling rep instructions.
 
                         self.emulate(dev, interruption_pending, entered_from_vtl, ())
                             .await?;

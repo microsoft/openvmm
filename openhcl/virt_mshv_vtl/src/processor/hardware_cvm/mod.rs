@@ -2472,6 +2472,9 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::InstallIntercept
                     io_port,
                     access_type_mask & HV_INTERCEPT_ACCESS_MASK_WRITE != 0,
                 );
+
+                // TODO GUEST VSM: flush io port accesses on other VPs before
+                // returning back to VTL 0
             }
             _ => return Err(HvError::InvalidParameter),
         }
