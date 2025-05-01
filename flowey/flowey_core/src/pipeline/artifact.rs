@@ -11,6 +11,7 @@ use anyhow::Context as _;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::path::Path;
+use std::path::PathBuf;
 
 /// A trait representing a collection of files that can be published to or
 /// resolved from a pipeline artifact.
@@ -58,7 +59,12 @@ use std::path::Path;
 /// - subdir/
 ///   - file2.exe
 /// ```
-pub trait Artifact: Serialize + DeserializeOwned {}
+pub trait Artifact: Serialize + DeserializeOwned {
+    /// If present, the artifact should consist of a tar.gz file containing the
+    /// contents of the artifact. This is used when the artifact contents are
+    /// too large for Azure DevOps to handle directly.
+    const TAR_GZ_NAME: Option<&'static str> = None;
+}
 
 fn json_to_fs(value: serde_json::Value, path: &Path) -> anyhow::Result<()> {
     if let serde_json::Value::Object(map) = value {
@@ -80,7 +86,15 @@ fn json_to_fs_inner(
                 json_to_fs_inner(map, &path)?;
             }
             serde_json::Value::String(src_path) => {
-                fs_err::copy(src_path, &path)?;
+                let src_path = Path::new(&src_path);
+                if src_path.is_dir() {
+                    crate::util::copy_dir_all(src_path, &path)?;
+                    // Write a tag file so that `fs_to_json` knows that this is
+                    // an opaque directory.
+                    fs_err::File::create(tag_path(path))?;
+                } else {
+                    fs_err::copy(src_path, &path)?;
+                }
             }
             _ => {
                 anyhow::bail!("unsupported JSON value type");
@@ -100,20 +114,39 @@ fn fs_to_json(root: &Path) -> anyhow::Result<serde_json::Value> {
             .into_string()
             .ok()
             .context("non-utf8 filename")?;
-        if path.is_dir() {
-            let value = fs_to_json(&path)?;
-            map.insert(file_name, value);
-        } else if path.is_file() {
+        let recurse = if path.is_dir() {
+            !tag_path(path.clone()).exists()
+        } else if is_tag_path(&path) {
+            continue;
+        } else {
+            true
+        };
+
+        let value = if recurse {
+            fs_to_json(&path)?
+        } else {
             let path = path
                 .into_os_string()
                 .into_string()
                 .ok()
                 .context("non-utf8 path")?;
-            let value = serde_json::Value::String(path);
-            map.insert(file_name, value);
-        }
+            serde_json::Value::String(path)
+        };
+        map.insert(file_name, value);
     }
     Ok(serde_json::Value::Object(map))
+}
+
+fn is_tag_path(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(".artifact-dir."))
+}
+
+fn tag_path(mut path: PathBuf) -> PathBuf {
+    let file_name = path.file_name().unwrap().to_str().unwrap();
+    path.set_file_name(format!(".artifact-dir.{file_name}"));
+    path
 }
 
 pub mod publish {
@@ -133,6 +166,7 @@ pub mod publish {
         pub struct Request {
             value: ReadVar<serde_json::Value>,
             path: ReadVar<PathBuf>,
+            tar_gz_name: Option<String>,
             done: WriteVar<SideEffect>,
         }
     }
@@ -146,6 +180,7 @@ pub mod publish {
             Self {
                 value: value.into_json(),
                 path,
+                tar_gz_name: T::TAR_GZ_NAME.map(ToOwned::to_owned),
                 done,
             }
         }
@@ -160,7 +195,12 @@ pub mod publish {
             request: Self::Request,
             ctx: &mut crate::node::NodeCtx<'_>,
         ) -> anyhow::Result<()> {
-            let Request { value, path, done } = request;
+            let Request {
+                value,
+                path,
+                tar_gz_name,
+                done,
+            } = request;
 
             ctx.emit_minor_rust_step("🌼 copy artifact contents", |ctx| {
                 let path = path.claim(ctx);
@@ -169,7 +209,22 @@ pub mod publish {
                 |rt| {
                     let path = rt.read(path);
                     let value = rt.read(value);
-                    super::json_to_fs(value, &path).expect("failed to copy artifact contents")
+                    if let Some(tar_gz_name) = tar_gz_name {
+                        super::json_to_fs(value, ".".as_ref())
+                            .expect("failed to copy artifact contents");
+                        let tar_gz_path = path.join(tar_gz_name);
+                        let r = std::process::Command::new("tar")
+                            .arg("-acf")
+                            .arg(&tar_gz_path)
+                            .arg(".")
+                            .output()
+                            .expect("failed to launch tar");
+                        if !r.status.success() {
+                            panic!("failed to archive artifact contents: {r:?}");
+                        }
+                    } else {
+                        super::json_to_fs(value, &path).expect("failed to copy artifact contents");
+                    }
                 }
             });
             Ok(())
@@ -192,6 +247,7 @@ pub mod resolve {
     flowey_request! {
         pub struct Request {
             path: ReadVar<PathBuf>,
+            tar_gz_name: Option<String>,
             result: WriteVar<serde_json::Value>,
         }
     }
@@ -200,6 +256,7 @@ pub mod resolve {
         pub fn new<T: Artifact>(path: ReadVar<PathBuf>, result: WriteVar<T>) -> Self {
             Self {
                 path,
+                tar_gz_name: T::TAR_GZ_NAME.map(ToOwned::to_owned),
                 result: result.into_json(),
             }
         }
@@ -214,14 +271,32 @@ pub mod resolve {
             request: Self::Request,
             ctx: &mut crate::node::NodeCtx<'_>,
         ) -> anyhow::Result<()> {
-            let Request { path, result } = request;
+            let Request {
+                path,
+                tar_gz_name,
+                result,
+            } = request;
 
             ctx.emit_minor_rust_step("🌼 resolve artifact", |ctx| {
                 let path = path.claim(ctx);
                 let result = result.claim(ctx);
                 |rt| {
                     let path = rt.read(path);
-                    let value = super::fs_to_json(&path).expect("failed to read artifact contents");
+                    let path = if let Some(tar_gz_name) = tar_gz_name {
+                        let tar_gz_path = path.join(tar_gz_name);
+                        let r = std::process::Command::new("tar")
+                            .arg("-xf")
+                            .arg(&tar_gz_path)
+                            .output()
+                            .expect("failed to launch tar");
+                        if !r.status.success() {
+                            panic!("failed to extract artifact contents: {r:?}");
+                        }
+                        ".".as_ref()
+                    } else {
+                        path.as_ref()
+                    };
+                    let value = super::fs_to_json(path).expect("failed to read artifact contents");
                     rt.write(result, &value);
                 }
             });
