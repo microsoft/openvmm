@@ -408,11 +408,11 @@ pub fn run_set_vm_firmware(args: HyperVSetVMFirmwareArgs<'_>) -> anyhow::Result<
     builder = match args.secure_boot_template {
         Some(HyperVSecureBootTemplate::SecureBootDisabled) | None => builder
             .cmdlet("Set-VMFirmware")
-            .arg("EnableSecureBoot", ps::RawArg::new("Off"))
+            .arg("EnableSecureBoot", ps::RawVal::new("Off"))
             .finish(),
         Some(template) => builder
             .cmdlet("Set-VMFirmware")
-            .arg("EnableSecureBoot", ps::RawArg::new("On"))
+            .arg("EnableSecureBoot", ps::RawVal::new("On"))
             .arg("SecureBootTemplate", template)
             .finish(),
     };
@@ -739,7 +739,7 @@ mod ps {
 
         /// Start a new Cmdlet
         pub fn cmdlet<S: AsRef<str>>(self, cmdlet: S) -> PowerShellCmdletBuilder {
-            PowerShellCmdletBuilder(self.0).positional(RawArg::new(cmdlet.as_ref()))
+            PowerShellCmdletBuilder(self.0).positional(RawVal::new(cmdlet.as_ref()))
         }
 
         /// Assign the output of the cmdlet to a variable
@@ -750,7 +750,7 @@ mod ps {
         ) -> PowerShellCmdletBuilder {
             PowerShellCmdletBuilder(self.0)
                 .positional(varname)
-                .positional("=")
+                .positional(RawVal::new("="))
                 .finish()
                 .cmdlet(cmdlet)
         }
@@ -949,15 +949,15 @@ mod ps {
 
     disp!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 
-    pub struct RawArg<T>(T);
+    pub struct RawVal<T>(T);
 
-    impl<T: AsRef<OsStr>> RawArg<T> {
+    impl<T: AsRef<OsStr>> RawVal<T> {
         pub fn new(arg: T) -> Self {
             Self(arg)
         }
     }
 
-    impl<T: AsRef<OsStr>> AsVal for RawArg<T> {
+    impl<T: AsRef<OsStr>> AsVal for RawVal<T> {
         fn as_val(&self) -> impl '_ + AsRef<OsStr> {
             &self.0
         }
