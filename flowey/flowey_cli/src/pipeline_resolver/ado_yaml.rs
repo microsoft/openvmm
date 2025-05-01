@@ -572,6 +572,10 @@ EOF
                     batch,
                 } = t;
 
+                if branches.is_empty() && tags.is_empty() {
+                    anyhow::bail!("branches and tags cannot both be empty")
+                }
+
                 schema_ado_yaml::CiTrigger::Some {
                     batch,
                     branches: if branches.is_empty() {
