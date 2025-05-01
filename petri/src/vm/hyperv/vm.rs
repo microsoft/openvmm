@@ -96,6 +96,15 @@ impl HyperVVM {
         powershell::run_remove_vm_scsi_controller(&vmid, 0)
             .context("remove default SCSI controller")?;
 
+        // Disable dynamic memory
+        powershell::run_set_vm_memory(
+            &vmid,
+            &powershell::HyperVSetVMMemoryArgs {
+                dynamic_memory_enabled: Some(false),
+                ..Default::default()
+            },
+        )?;
+
         Ok(Self {
             name,
             vmid,
