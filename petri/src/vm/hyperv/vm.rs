@@ -88,6 +88,20 @@ impl HyperVVM {
 
         tracing::info!(name, vmid = vmid.to_string(), "Created Hyper-V VM");
 
+        // Instantiate this now so that its drop runs if there's a failure
+        // below.
+        let this = Self {
+            name,
+            vmid,
+            destroyed: false,
+            _temp_dir: temp_dir,
+            ps_mod,
+            create_time,
+            log_file,
+            expected_boot_event,
+            driver,
+        };
+
         // Remove the default network adapter
         powershell::run_remove_vm_network_adapter(&vmid)
             .context("remove default network adapter")?;
@@ -105,17 +119,7 @@ impl HyperVVM {
             },
         )?;
 
-        Ok(Self {
-            name,
-            vmid,
-            destroyed: false,
-            _temp_dir: temp_dir,
-            ps_mod,
-            create_time,
-            log_file,
-            expected_boot_event,
-            driver,
-        })
+        Ok(this)
     }
 
     /// Get the name of the VM
