@@ -813,11 +813,32 @@ impl PrimaryChannelState {
             .collect();
 
         let rss_state = rss_state
-            .map(|rss| {
+            .map(|mut rss| {
                 if rss.indirection_table.len() != indirection_table_size as usize {
-                    return Err(NetRestoreError::MismatchedIndirectionTableSize);
+                    // Dynamic reduction of indirection table can cause unexpected and hard to investigate issues
+                    // with performance and processor overloading. Nic should not reduce the indirection table during restore.
+                    // Logging a warning and continuing with the restore.
+                    tracing::warn!(
+                        saved_indirection_table_size = rss.indirection_table.len(),
+                        adapter_indirection_table_size = indirection_table_size,
+                        "missmatched indirection table size",
+                    );
+
+                    // Dynamic increase of indirection table is done by duplicating the existing entries until
+                    // the desired size is reached.
+                    if indirection_table_size > rss.indirection_table.len() as u16 {
+                        while rss.indirection_table.len() < indirection_table_size as usize {
+                            let table_clone = rss.indirection_table.clone();
+                            let current_len = rss.indirection_table.len();
+                            rss.indirection_table.extend(
+                                table_clone[..current_len
+                                    .min(indirection_table_size as usize - current_len)]
+                                    .iter(),
+                            );
+                        }
+                    }
                 }
-                Ok(RssState {
+                Ok::<RssState, NetRestoreError>(RssState {
                     key: rss
                         .key
                         .try_into()
@@ -1417,8 +1438,6 @@ enum NetRestoreError {
     Open(#[from] OpenError),
     #[error("invalid rss key size")]
     InvalidRssKeySize,
-    #[error("mismatched indirection table size")]
-    MismatchedIndirectionTableSize,
 }
 
 impl From<NetRestoreError> for RestoreError {
