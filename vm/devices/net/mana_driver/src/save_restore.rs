@@ -42,40 +42,28 @@ pub struct GdmaDriverSavedState {
     #[mesh(8)]
     pub pdid: u32,
 
-    /// Whether the driver is subscribed to hwc
-    #[mesh(9)]
-    pub hwc_subscribed: bool,
-
-    /// Whether the eq is armed or not
-    #[mesh(10)]
-    pub eq_armed: bool,
-
-    /// Whether the cq is armed or not
-    #[mesh(11)]
-    pub cq_armed: bool,
-
     /// Event queue id to msix mapping
-    #[mesh(12)]
+    #[mesh(9)]
     pub eq_id_msix: HashMap<u32, u32>,
 
     /// The id of the hwc activity
-    #[mesh(13)]
+    #[mesh(10)]
     pub hwc_activity_id: u32,
 
     /// How many msix vectors are available
-    #[mesh(14)]
+    #[mesh(11)]
     pub num_msix: u32,
 
     /// Minimum number of queues available
-    #[mesh(15)]
+    #[mesh(12)]
     pub min_queue_avail: u32,
 
     /// Saved interrupts for restoration
-    #[mesh(16)]
+    #[mesh(13)]
     pub interrupt_config: Vec<InterruptSavedState>,
 
     /// Link status by vport index
-    #[mesh(17)]
+    #[mesh(14)]
     pub link_toggle: Vec<(u32, bool)>,
 }
 

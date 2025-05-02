@@ -567,9 +567,6 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             db_id: doorbell.doorbell_id,
             gpa_mkey: self.gpa_mkey,
             pdid: self._pdid,
-            cq_armed: self.cq_armed,
-            eq_armed: self.eq_armed,
-            hwc_subscribed: self.hwc_subscribed,
             eq_id_msix: self.eq_id_msix.clone(),
             hwc_activity_id: self.hwc_activity_id,
             num_msix: self.num_msix,
@@ -683,8 +680,8 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             rq,
             sq,
             test_events: 0,
-            eq_armed: saved_state.eq_armed,
-            cq_armed: saved_state.cq_armed,
+            eq_armed: true,
+            cq_armed: true,
             gpa_mkey: saved_state.gpa_mkey,
             _pdid: saved_state.pdid,
             eq_id_msix: saved_state.eq_id_msix,
@@ -692,7 +689,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             min_queue_avail: saved_state.min_queue_avail,
             hwc_activity_id: saved_state.hwc_activity_id,
             link_toggle: saved_state.link_toggle,
-            hwc_subscribed: saved_state.hwc_subscribed,
+            hwc_subscribed: false,
             hwc_warning_time_in_ms: HWC_WARNING_TIME_IN_MS,
             hwc_timeout_in_ms: HWC_TIMEOUT_DEFAULT_IN_MS,
             hwc_failure: false,
@@ -700,17 +697,8 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             db_id: db_id as u32,
         };
 
-        if saved_state.hwc_subscribed {
-            this.hwc_subscribe();
-        }
-
-        if saved_state.eq_armed {
-            this.eq.arm();
-        }
-
-        if saved_state.cq_armed {
-            this.cq.arm();
-        }
+        this.eq.arm();
+        this.cq.arm();
 
         Ok(this)
     }
