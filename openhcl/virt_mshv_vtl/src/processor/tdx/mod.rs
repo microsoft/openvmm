@@ -375,6 +375,9 @@ struct TdxVtl {
     /// Virtual cr4.
     cr4: VirtualRegister,
 
+    // CSTAR doesn't exist on TDX, but Windows likes to verify that values are sticky.
+    msr_cstar: u64,
+
     tpr_threshold: u8,
     #[inspect(skip)]
     processor_controls: ProcessorControls,
@@ -875,6 +878,7 @@ impl BackingPrivate for TdxBacked {
                             .read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR4),
                         shared.cr4_allowed_bits,
                     ),
+                    msr_cstar: 0,
                     tpr_threshold: 0,
                     processor_controls: params
                         .runner
@@ -2542,11 +2546,7 @@ impl UhProcessor<'_, TdxBacked> {
                 // zero/write ignore.
                 Ok(0)
             }
-            x86defs::X86X_MSR_CSTAR => {
-                // CSTAR doesn't exist on TDX, but Windows likes to read it.
-                // Just return 0 to silence the error message.
-                Ok(0)
-            }
+            x86defs::X86X_MSR_CSTAR => Ok(self.backing.vtls[vtl].msr_cstar),
             x86defs::X86X_MSR_MCG_CAP => Ok(0),
             x86defs::X86X_MSR_MCG_STATUS => Ok(0),
             x86defs::X86X_MSR_MC_UPDATE_PATCH_LEVEL => Ok(0xFFFFFFFF),
@@ -2592,9 +2592,7 @@ impl UhProcessor<'_, TdxBacked> {
                 self.update_execution_mode(vtl);
             }
             x86defs::X86X_MSR_STAR => state.msr_star = value,
-            x86defs::X86X_MSR_CSTAR => {
-                // CSTAR writes are ignored.
-            }
+            x86defs::X86X_MSR_CSTAR => self.backing.vtls[vtl].msr_cstar = value,
             x86defs::X86X_MSR_LSTAR => state.msr_lstar = value,
             x86defs::X86X_MSR_SFMASK => state.msr_sfmask = value,
             x86defs::X86X_MSR_SYSENTER_CS => {
@@ -2621,16 +2619,14 @@ impl UhProcessor<'_, TdxBacked> {
                     value,
                 );
             }
-            x86defs::X86X_MSR_XSS => {
-                state.msr_xss = value;
-            }
+            x86defs::X86X_MSR_XSS => state.msr_xss = value,
             x86defs::X86X_MSR_MC_UPDATE_PATCH_LEVEL => {
                 // Writing zero on intel platforms is allowed and ignored.
                 if value != 0 {
                     return Err(MsrError::InvalidAccess);
                 }
             }
-            x86defs::X86X_IA32_MSR_MISC_ENABLE => return Ok(()),
+            x86defs::X86X_IA32_MSR_MISC_ENABLE => {}
             x86defs::X86X_MSR_CR_PAT => {
                 self.runner
                     .write_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_PAT, !0, value);
@@ -2643,7 +2639,8 @@ impl UhProcessor<'_, TdxBacked> {
                 }
             }
 
-            x86defs::X86X_MSR_MTRR_DEF_TYPE => {} // Ignore writes to this MSR
+            // Ignore writes to this MSR
+            x86defs::X86X_MSR_MTRR_DEF_TYPE => {}
 
             // Following MSRs are sometimes written by Windows guests.
             // These are not virtualized and unsupported for L2-VMs
@@ -3830,7 +3827,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             sysenter_esp,
             star: state.msr_star,
             lstar: state.msr_lstar,
-            cstar: 0, // CSTAR is ignored on intel platforms
+            cstar: self.vp.backing.vtls[self.vtl].msr_cstar,
             sfmask: state.msr_sfmask,
         })
     }
@@ -3843,7 +3840,7 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             sysenter_esp,
             star,
             lstar,
-            cstar: _,
+            cstar,
             sfmask,
         } = value;
 
@@ -3871,6 +3868,8 @@ impl AccessVpState for UhVpStateAccess<'_, '_, TdxBacked> {
             !0,
             sysenter_esp,
         );
+
+        self.vp.backing.vtls[self.vtl].msr_cstar = cstar;
 
         Ok(())
     }
