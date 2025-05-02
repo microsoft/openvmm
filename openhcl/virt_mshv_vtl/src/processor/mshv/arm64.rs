@@ -373,7 +373,7 @@ impl UhProcessor<'_, HypervisorBackedArm64> {
                     if let Some(connection_id) =
                         self.partition.monitor_page.write_bit(bit_offset + bit)
                     {
-                        signal_mnf(dev, connection_id);
+                        signal_mnf(intercepted_vtl, dev, connection_id);
                     }
                 }
                 return Ok(());
@@ -767,7 +767,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
             .partition
             .monitor_page
             .check_write(gpa, bytes, |connection_id| {
-                signal_mnf(self.devices, connection_id)
+                signal_mnf(self.vtl, self.devices, connection_id)
             })
     }
 
