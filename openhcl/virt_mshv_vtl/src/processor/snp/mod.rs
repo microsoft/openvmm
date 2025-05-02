@@ -325,6 +325,7 @@ impl HardwareIsolatedBacking for SnpBacked {
 /// Partition-wide shared data for SNP VPs.
 #[derive(Inspect)]
 pub struct SnpBackedShared {
+    #[inspect(flatten)]
     pub(crate) cvm: UhCvmPartitionState,
     invlpgb_count_max: u16,
     tsc_aux_virtualized: bool,

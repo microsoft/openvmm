@@ -229,7 +229,7 @@ struct UhPartitionInner {
 }
 
 #[derive(Inspect)]
-#[inspect(external_tag)]
+#[inspect(untagged)]
 enum BackingShared {
     Hypervisor(#[inspect(flatten)] HypervisorBackedShared),
     #[cfg(guest_arch = "x86_64")]
@@ -506,7 +506,10 @@ struct UhCvmVpInner {
 enum GuestVsmState<T: Inspect> {
     NotPlatformSupported,
     NotGuestEnabled,
-    Enabled { vtl1: T },
+    Enabled {
+        #[inspect(flatten)]
+        vtl1: T,
+    },
 }
 
 impl<T: Inspect> GuestVsmState<T> {
