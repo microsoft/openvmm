@@ -5,7 +5,6 @@
 
 use mana_save_restore::save_restore::CqEqSavedState;
 use mana_save_restore::save_restore::EndpointSavedState;
-use mana_save_restore::save_restore::QueueSavedState;
 use mana_save_restore::save_restore::SavedMemoryState;
 use mana_save_restore::save_restore::WqSavedState;
 use mesh::payload::Protobuf;

@@ -107,16 +107,6 @@ pub trait Endpoint: Send + Sync + InspectMut {
         10 * 1000 * 1000 * 1000
     }
 
-    /// Restore the endpoint state from saved state.
-    async fn restore_queues(
-        &mut self,
-        _queue_configs: Vec<QueueConfig<'_>>,
-        _saved_state: Vec<QueueSavedState>,
-        _queues: &mut Vec<Box<dyn Queue>>,
-    ) -> anyhow::Result<()> {
-        anyhow::bail!("Endpoint does not support restoring queues")
-    }
-
     fn save(&mut self) -> anyhow::Result<EndpointSavedState> {
         anyhow::bail!(
             "{} endpoint does not support saving state",
@@ -182,9 +172,8 @@ pub trait Queue: Send + InspectMut {
     /// Get the buffer access.
     fn buffer_access(&mut self) -> Option<&mut dyn BufferAccess>;
 
-    /// Save the state of the queue for restoration after servicing.
-    fn save(&self) -> anyhow::Result<QueueSavedState> {
-        anyhow::bail!("Saving queue state not supported for this queue type")
+    fn save(&self) -> QueueSavedState {
+        unimplemented!()
     }
 }
 

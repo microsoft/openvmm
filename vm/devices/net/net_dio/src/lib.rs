@@ -72,7 +72,7 @@ impl Endpoint for DioEndpoint {
         Ok(())
     }
 
-    async fn stop(&mut self) {
+    async fn stop(&mut self, _keepalive: bool) {
         assert!(self.nic.lock().is_some(), "the queue has not been dropped");
     }
 }

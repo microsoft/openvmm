@@ -24,6 +24,7 @@ use gdma_defs::WqeParams;
 use inspect::Inspect;
 use mana_save_restore::save_restore::CqEqSavedState;
 use mana_save_restore::save_restore::DoorbellSavedState;
+use mana_save_restore::save_restore::MemoryBlockSavedState;
 use mana_save_restore::save_restore::WqSavedState;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -209,6 +210,12 @@ impl<T: IntoBytes + FromBytes + Immutable + KnownLayout> CqEq<T> {
             next: self.next,
             size: self.size,
             shift: self.shift,
+            mem: MemoryBlockSavedState {
+                base: self.mem.pfns()[0],
+                len: self.mem.len(),
+                pfns: self.mem.pfns().to_vec(),
+                pfn_bias: self.mem.pfn_bias(),
+            },
         }
     }
 
@@ -287,6 +294,7 @@ pub type Cq = CqEq<Cqe>;
 /// An event queue.
 pub type Eq = CqEq<Eqe>;
 
+#[derive(Clone)]
 /// A work queue (send or receive).
 pub struct Wq {
     doorbell: DoorbellPage,
@@ -351,6 +359,8 @@ impl Wq {
 
     /// Save the state of the Wq for restoration after servicing
     pub fn save(&self) -> WqSavedState {
+        tracing::info!(head=?self.head, tail = ?self.tail, "saving wq state");
+
         WqSavedState {
             doorbell: DoorbellSavedState {
                 doorbell_id: self.doorbell.doorbell_id as u64,
@@ -361,6 +371,12 @@ impl Wq {
             head: self.head,
             tail: self.tail,
             mask: self.mask,
+            mem: MemoryBlockSavedState {
+                base: self.mem.pfns()[0],
+                len: self.mem.len(),
+                pfns: self.mem.pfns().to_vec(),
+                pfn_bias: self.mem.pfn_bias(),
+            },
         }
     }
 
@@ -410,7 +426,9 @@ impl Wq {
     /// Advances the head, indicating that `n` more bytes are available in the ring.
     pub fn advance_head(&mut self, n: u32) {
         assert!(n % WQE_ALIGNMENT as u32 == 0);
+        tracing::info!(before_head = ?self.head, n = ?n, "advancing wq head");
         self.head = self.head.wrapping_add(n);
+        tracing::info!(after_head = ?self.head, "wq head advanced");
     }
 
     fn write_tail(&self, offset: u32, data: &[u8]) {
@@ -418,6 +436,7 @@ impl Wq {
             offset as usize % WQE_ALIGNMENT + data.len() <= WQE_ALIGNMENT,
             "can't write more than one queue segment at a time to avoid wrapping"
         );
+        tracing::info!(tail=?self.tail, "writing to wq tail");
         self.mem
             .write_at((self.tail.wrapping_add(offset) & self.mask) as usize, data);
     }
@@ -516,5 +535,10 @@ impl Wq {
     /// Reports tail value for diagnostics
     pub fn get_tail(&mut self) -> u32 {
         self.tail
+    }
+
+    /// Reports head value for diagnostics
+    pub fn get_head(&mut self) -> u32 {
+        self.head
     }
 }

@@ -542,22 +542,6 @@ impl<T: DeviceBacking> Vport<T> {
         }
 
         let mem = self.restored_mem.clone().unwrap();
-
-        tracing::info!(
-            "looking for wq_memory: {:x}, {}",
-            saved_state.wq_mem.base,
-            saved_state.wq_mem.len
-        );
-        tracing::info!(
-            "looking for cq_memory: {:x}, {}",
-            saved_state.cq_mem.base,
-            saved_state.cq_mem.len
-        );
-
-        mem.iter().for_each(|m| {
-            tracing::info!("restored_mem: {:x}, {}", m.pfns()[0], m.len());
-        });
-
         let wq_memory = mem.iter().find(|m| {
             saved_state.wq_mem.base == m.pfns()[0]
                 && (saved_state.wq_mem.len + saved_state.cq_mem.len) == m.len()
@@ -571,9 +555,6 @@ impl<T: DeviceBacking> Vport<T> {
 
         let wq_memory = wq_memory.subblock(0, saved_state.wq_mem.len);
         let cq_memory = wq_memory.subblock(saved_state.wq_mem.len, saved_state.cq_mem.len);
-
-        tracing::info!("wq_memory: {:x}, {}", wq_memory.pfns()[0], wq_memory.len());
-        tracing::info!("cq_memory: {:x}, {}", cq_memory.pfns()[0], cq_memory.len());
 
         Ok(BnicWq {
             doorbell: DoorbellPage::new(self.inner.doorbell.clone(), self.inner.dev_data.db_id)?,

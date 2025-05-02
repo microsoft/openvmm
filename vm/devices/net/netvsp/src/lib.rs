@@ -46,7 +46,6 @@ use inspect::InspectMut;
 use inspect::SensitivityLevel;
 use inspect_counters::Counter;
 use inspect_counters::Histogram;
-use mana_save_restore::save_restore::QueueSavedState;
 use mesh::rpc::Rpc;
 use net_backend::Endpoint;
 use net_backend::EndpointAction;
@@ -1219,7 +1218,7 @@ impl VmbusDevice for Nic {
             }
 
             // Note that this await is not restartable.
-            self.coordinator.task_mut().endpoint.stop(false).await;
+            self.coordinator.task_mut().endpoint.stop(true).await;
 
             // Keep any VF's added to the guest. This is required to keep guest compat as
             // some apps (such as DPDK) relies on the VF sticking around even after vmbus
@@ -4928,10 +4927,15 @@ impl<T: 'static + RingMem> NetChannel<T> {
 
         for &id in &data.tx_done[..n] {
             let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
-            assert!(tx_packet.pending_packet_count > 0);
-            tx_packet.pending_packet_count -= 1;
-            if tx_packet.pending_packet_count == 0 {
-                self.complete_tx_packet(state, id)?;
+            if tx_packet.pending_packet_count < 1 {
+                tracing::warn!("received a completed packet without a pending packet");
+                state.free_tx_packets.push(id);
+                continue;
+            } else {
+                tx_packet.pending_packet_count -= 1;
+                if tx_packet.pending_packet_count == 0 {
+                    self.complete_tx_packet(state, id)?;
+                }
             }
         }
 
@@ -5015,6 +5019,8 @@ impl<T: 'static + RingMem> NetChannel<T> {
             } else {
                 break;
             };
+
+            tracing::trace!("got a packet from the ring buffer");
 
             did_some_work = true;
             match packet.data {
@@ -5189,7 +5195,16 @@ impl<T: 'static + RingMem> NetChannel<T> {
     ) -> Result<usize, WorkerError> {
         let mut num_packets = 0;
         let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
-        assert!(tx_packet.pending_packet_count == 0);
+        tracing::info!(
+            pending_packet_count = ?tx_packet.pending_packet_count,
+            id = ?id.0,
+            "handle_rndis tx packet",
+        );
+
+        if tx_packet.pending_packet_count > 0 {
+            return Ok(0);
+        }
+
         tx_packet.transaction_id = packet
             .transaction_id
             .ok_or(WorkerError::MissingTransactionId)?;
@@ -5270,7 +5285,6 @@ impl<T: 'static + RingMem> NetChannel<T> {
 
     fn complete_tx_packet(&mut self, state: &mut ActiveState, id: TxId) -> Result<(), WorkerError> {
         let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
-        assert_eq!(tx_packet.pending_packet_count, 0);
         if self.pending_send_size == 0 && self.try_send_tx_packet(tx_packet.transaction_id)? {
             tracing::trace!(id = id.0, "sent tx completion");
             state.free_tx_packets.push(id);

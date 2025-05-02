@@ -451,7 +451,7 @@ impl HclNetworkVFManagerWorker {
             match control.disconnect().await {
                 Ok(Some(mut endpoint)) => {
                     tracing::info!("Network endpoint disconnected");
-                    endpoint.stop(false).await;
+                    endpoint.stop(true).await;
                 }
                 Ok(None) => (),
                 Err(err) => {

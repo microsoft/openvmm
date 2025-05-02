@@ -13,7 +13,6 @@ use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use inspect::InspectMut;
 use mana_save_restore::save_restore::EndpointSavedState;
-use mana_save_restore::save_restore::QueueSavedState;
 use mesh::error::RemoteError;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::RpcSend;

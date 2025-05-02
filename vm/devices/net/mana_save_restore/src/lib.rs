@@ -35,6 +35,9 @@ pub mod save_restore {
         /// The bit shift value for the queue
         #[mesh(6)]
         pub shift: u32,
+
+        #[mesh(7)]
+        pub mem: MemoryBlockSavedState,
     }
 
     /// Saved state of a doorbell for restoration during servicing
@@ -77,6 +80,9 @@ pub mod save_restore {
         /// The bitmask for wrapping queue indices
         #[mesh(6)]
         pub mask: u32,
+
+        #[mesh(7)]
+        pub mem: MemoryBlockSavedState,
     }
 
     /// Saved state of a memory region allocated for queues
