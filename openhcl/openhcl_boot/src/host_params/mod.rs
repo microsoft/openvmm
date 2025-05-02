@@ -33,7 +33,7 @@ pub const COMMAND_LINE_SIZE: usize = 0x2000;
 ///
 /// Today, Hyper-V has a max limit of 64 NUMA nodes, so we should only ever see
 /// 64 ram ranges.
-const MAX_VTL2_RAM_RANGES: usize = 64;
+pub const MAX_VTL2_RAM_RANGES: usize = 64;
 
 /// The maximum number of ram ranges that can be read from the host.
 const MAX_PARTITION_RAM_RANGES: usize = 1024;
