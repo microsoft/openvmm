@@ -60,9 +60,16 @@ use std::path::PathBuf;
 ///   - file2.exe
 /// ```
 pub trait Artifact: Serialize + DeserializeOwned {
-    /// If present, the artifact should consist of a tar.gz file containing the
-    /// contents of the artifact. This is used when the artifact contents are
-    /// too large for Azure DevOps to handle directly.
+    /// If present, the published artifact should consist of a tar.gz file
+    /// containing the contents of the artifact.
+    ///
+    /// This is mostly useful for artifacts with lots of files. Some backends
+    /// (specifically Azure DevOps) apparently cannot cope with this.
+    ///
+    /// An alternate approach would be to detect this automatically, and/or to
+    /// only do it for the affected backends. Currently, we don't bother with
+    /// this complexity, preferring instead a predictable and consistent
+    /// approach.
     const TAR_GZ_NAME: Option<&'static str> = None;
 }
 
@@ -119,7 +126,7 @@ fn fs_to_json(root: &Path) -> anyhow::Result<serde_json::Value> {
         } else if is_tag_path(&path) {
             continue;
         } else {
-            true
+            false
         };
 
         let value = if recurse {
