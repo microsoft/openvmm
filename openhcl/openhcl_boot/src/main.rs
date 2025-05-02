@@ -15,6 +15,7 @@ mod cmdline;
 mod dt;
 mod host_params;
 mod hypercall;
+mod memory;
 mod rt;
 mod sidecar;
 mod single_threaded;
