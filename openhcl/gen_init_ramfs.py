@@ -86,6 +86,9 @@ class CpioEntry(object):
         if len(name) > 255:
             raise Exception(f"The entry name '{name}' is too long")
 
+        if mtime != 0:
+            raise Exception("mtime != 0 is not supported to ensure reproducible builds")
+
         if name.startswith('/'):
             name = name[1:]
 
@@ -183,7 +186,7 @@ class FileEntry(CpioEntry):
             'uid': uid,
             'gid': gid,
             'nlink': 1 + len(hard_links),
-            'mtime': int(os.path.getmtime(location)),
+            'mtime': 0,
             'major': 3,
             'minor': 1,
             'rmajor': 0,
@@ -207,7 +210,7 @@ class DirEntry(CpioEntry):
             'uid': uid,
             'gid': gid,
             'nlink': 2,
-            'mtime': int(time.time()),
+            'mtime': 0,
             'major': 3,
             'minor': 1,
             'rmajor': 0,
@@ -238,7 +241,7 @@ class DeviceNodeEntry(CpioEntry):
             'uid': uid,
             'gid': gid,
             'nlink': 1,
-            'mtime': int(time.time()),
+            'mtime': 0,
             'major': 3,
             'minor': 1,
             'rmajor': dev_maj,
@@ -265,7 +268,7 @@ class SymLinkEntry(CpioEntry):
             'uid': uid,
             'gid': gid,
             'nlink': 1,
-            'mtime': int(time.time()),
+            'mtime': 0,
             'major': 3,
             'minor': 1,
             'rmajor': 0,
@@ -289,7 +292,7 @@ class PipeEntry(CpioEntry):
             'uid': uid,
             'gid': gid,
             'nlink': 2,
-            'mtime': int(time.time()),
+            'mtime': 0,
             'major': 3,
             'minor': 1,
             'rmajor': 0,
@@ -313,7 +316,7 @@ class SocketEntry(CpioEntry):
             'uid': uid,
             'gid': gid,
             'nlink': 2,
-            'mtime': int(time.time()),
+            'mtime': 0,
             'major': 3,
             'minor': 1,
             'rmajor': 0,
@@ -644,7 +647,8 @@ def __open_output_stream(file_name: str, compression: str):
         return bz2.open(file_name, mode)
     elif compression == 'gzip':
         import gzip
-        return gzip.open(file_name, mode, compresslevel=6)
+        # Disable modification time for reproducible builds.
+        return gzip.GzipFile(file_name, mode, compresslevel=6, mtime=0)
     elif compression == 'lzma':
         import lzma
         return lzma.open(file_name, mode)
