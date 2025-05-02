@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 pub struct OpenhclBootOutput {
+    #[serde(rename = "openhcl_boot")]
     pub bin: PathBuf,
+    #[serde(rename = "openhcl_boot.dbg")]
     pub dbg: PathBuf,
 }
 

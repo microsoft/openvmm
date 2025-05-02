@@ -129,29 +129,22 @@ impl SimpleFlowNode for Node {
         });
 
         let mut register_openhcl_igvm_files = Vec::new();
-        for recipe in targets.openhcl_recipies {
-            let (_read_built_openvmm_hcl, built_openvmm_hcl) = ctx.new_var();
-            let (read_built_openhcl_igvm, built_openhcl_igvm) = ctx.new_var();
-            let (_read_built_openhcl_boot, built_openhcl_boot) = ctx.new_var();
-            let (_read_built_sidecar, built_sidecar) = ctx.new_var();
-            ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
+        for &recipe in targets.openhcl_recipies {
+            let output = ctx.reqv(|v| crate::build_openhcl_igvm_from_recipe::Request {
                 profile: match profile {
                     CommonProfile::Release => {
                         crate::build_openvmm_hcl::OpenvmmHclBuildProfile::OpenvmmHclShip
                     }
                     CommonProfile::Debug => crate::build_openvmm_hcl::OpenvmmHclBuildProfile::Debug,
                 },
-                recipe: recipe.clone(),
+                recipe: recipe.into(),
                 custom_target: openhcl_custom_target.clone(),
-                built_openvmm_hcl,
-                built_openhcl_boot,
-                built_openhcl_igvm,
-                built_sidecar,
+                output: v,
             });
 
-            register_openhcl_igvm_files.push(read_built_openhcl_igvm.map(ctx, {
+            register_openhcl_igvm_files.push(output.map(ctx, {
                 let recipe = recipe.clone();
-                |x| (recipe, x)
+                move |x| (recipe, x.igvm)
             }));
         }
 

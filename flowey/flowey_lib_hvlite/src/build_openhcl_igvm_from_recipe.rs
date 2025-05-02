@@ -80,20 +80,39 @@ pub struct OpenhclIgvmRecipeDetailsLocalOnly {
     pub custom_extra_rootfs: Vec<PathBuf>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum OpenhclIgvmRecipe {
-    LocalOnlyCustom(OpenhclIgvmRecipeDetails),
+    #[serde(rename = "openhcl")]
     X64,
+    #[serde(rename = "openhcl-dev")]
     X64Devkern,
+    #[serde(rename = "openhcl-direct")]
     X64TestLinuxDirect,
+    #[serde(rename = "openhcl-direct-dev")]
     X64TestLinuxDirectDevkern,
+    #[serde(rename = "openhcl-cvm")]
     X64Cvm,
+    #[serde(rename = "openhcl-cvm-dev")]
     X64CvmDevkern,
+    #[serde(rename = "openhcl-aarch64")]
     Aarch64,
+    #[serde(rename = "openhcl-aarch64-dev")]
     Aarch64Devkern,
 }
 
-impl OpenhclIgvmRecipe {
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub enum RecipeOrCustom {
+    Recipe(OpenhclIgvmRecipe),
+    LocalOnlyCustom(OpenhclIgvmRecipeDetails),
+}
+
+impl From<OpenhclIgvmRecipe> for RecipeOrCustom {
+    fn from(recipe: OpenhclIgvmRecipe) -> Self {
+        Self::Recipe(recipe)
+    }
+}
+
+impl RecipeOrCustom {
     pub fn recipe_details(&self, profile: OpenvmmHclBuildProfile) -> OpenhclIgvmRecipeDetails {
         let base_openvmm_hcl_features = || {
             let mut m = BTreeSet::new();
@@ -118,9 +137,12 @@ impl OpenhclIgvmRecipe {
         // Debug builds include --interactive by default, for busybox, gdbserver, and perf.
         let with_interactive = matches!(profile, OpenvmmHclBuildProfile::Debug);
 
-        match self {
-            Self::LocalOnlyCustom(details) => details.clone(),
-            Self::X64 => OpenhclIgvmRecipeDetails {
+        let recipe = match self {
+            Self::LocalOnlyCustom(details) => return details.clone(),
+            Self::Recipe(recipe) => recipe,
+        };
+        match recipe {
+            OpenhclIgvmRecipe::X64 => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template("openhcl-x64-dev.json", "openhcl-x64-release.json"),
                 openhcl_kernel_package: OpenhclKernelPackage::Main,
@@ -131,7 +153,7 @@ impl OpenhclIgvmRecipe {
                 with_interactive,
                 with_sidecar: false,
             },
-            Self::X64Devkern => OpenhclIgvmRecipeDetails {
+            OpenhclIgvmRecipe::X64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template("openhcl-x64-dev.json", "openhcl-x64-release.json"),
                 openhcl_kernel_package: OpenhclKernelPackage::Dev,
@@ -142,7 +164,7 @@ impl OpenhclIgvmRecipe {
                 with_interactive,
                 with_sidecar: true,
             },
-            Self::X64CvmDevkern => OpenhclIgvmRecipeDetails {
+            OpenhclIgvmRecipe::X64CvmDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
                     "openhcl-x64-cvm-dev.json",
@@ -156,7 +178,7 @@ impl OpenhclIgvmRecipe {
                 with_interactive,
                 with_sidecar: false,
             },
-            Self::X64TestLinuxDirect => OpenhclIgvmRecipeDetails {
+            OpenhclIgvmRecipe::X64TestLinuxDirect => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
                     "openhcl-x64-direct-dev.json",
@@ -170,7 +192,7 @@ impl OpenhclIgvmRecipe {
                 with_interactive,
                 with_sidecar: false,
             },
-            Self::X64TestLinuxDirectDevkern => OpenhclIgvmRecipeDetails {
+            OpenhclIgvmRecipe::X64TestLinuxDirectDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
                     "openhcl-x64-direct-dev.json",
@@ -184,7 +206,7 @@ impl OpenhclIgvmRecipe {
                 with_interactive,
                 with_sidecar: false,
             },
-            Self::X64Cvm => OpenhclIgvmRecipeDetails {
+            OpenhclIgvmRecipe::X64Cvm => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
                     "openhcl-x64-cvm-dev.json",
@@ -198,7 +220,7 @@ impl OpenhclIgvmRecipe {
                 with_interactive,
                 with_sidecar: false,
             },
-            Self::Aarch64 => OpenhclIgvmRecipeDetails {
+            OpenhclIgvmRecipe::Aarch64 => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
                     "openhcl-aarch64-dev.json",
@@ -212,7 +234,7 @@ impl OpenhclIgvmRecipe {
                 with_interactive: false, // #1234
                 with_sidecar: false,
             },
-            Self::Aarch64Devkern => OpenhclIgvmRecipeDetails {
+            OpenhclIgvmRecipe::Aarch64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
                 igvm_manifest: in_repo_template(
                     "openhcl-aarch64-dev.json",
@@ -238,14 +260,18 @@ impl OpenhclIgvmRecipe {
 flowey_request! {
     pub struct Request {
         pub profile: OpenvmmHclBuildProfile,
-        pub recipe: OpenhclIgvmRecipe,
+        pub recipe: RecipeOrCustom,
         pub custom_target: Option<CommonTriple>,
-
-        pub built_openvmm_hcl: WriteVar<crate::build_openvmm_hcl::OpenvmmHclOutput>,
-        pub built_openhcl_boot: WriteVar<crate::build_openhcl_boot::OpenhclBootOutput>,
-        pub built_openhcl_igvm: WriteVar<crate::run_igvmfilegen::IgvmOutput>,
-        pub built_sidecar: WriteVar<Option<crate::build_sidecar::SidecarOutput>>,
+        pub output: WriteVar<OpenhclIgvmOutput>,
     }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct OpenhclIgvmOutput {
+    pub openvmm_hcl: crate::build_openvmm_hcl::OpenvmmHclOutput,
+    pub openhcl_boot: crate::build_openhcl_boot::OpenhclBootOutput,
+    pub igvm: crate::run_igvmfilegen::IgvmOutput,
+    pub sidecar: Option<crate::build_sidecar::SidecarOutput>,
 }
 
 new_simple_flow_node!(struct Node);
@@ -272,10 +298,7 @@ impl SimpleFlowNode for Node {
             profile,
             recipe,
             custom_target,
-            built_openvmm_hcl,
-            built_openhcl_boot,
-            built_openhcl_igvm,
-            built_sidecar,
+            output,
         } = request;
 
         let OpenhclIgvmRecipeDetails {
@@ -435,10 +458,8 @@ impl SimpleFlowNode for Node {
                     sidecar: v,
                 })
             };
-            sidecar_bin.write_into(ctx, built_sidecar, Some);
             Some(sidecar_bin)
         } else {
-            built_sidecar.write_static(ctx, None);
             None
         };
 
@@ -506,7 +527,6 @@ impl SimpleFlowNode for Node {
                 openhcl_boot: v,
             })
         };
-        openhcl_boot_bin.write_into(ctx, built_openhcl_boot, |x| x);
 
         let use_stripped_openvmm_hcl = {
             if custom_openvmm_hcl.is_some() {
@@ -540,9 +560,6 @@ impl SimpleFlowNode for Node {
         } else {
             openvmm_hcl_bin
         };
-
-        // report the built openvmm_hcl
-        openvmm_hcl_bin.write_into(ctx, built_openvmm_hcl, |x| x);
 
         let initrd = {
             let rootfs_config = [openvmm_repo_path.map(ctx, |p| p.join("openhcl/rootfs.config"))]
@@ -582,8 +599,8 @@ impl SimpleFlowNode for Node {
         let resources = ctx.emit_minor_rust_stepv("enumerate igvm resources", |ctx| {
             let initrd = initrd.claim(ctx);
             let kernel = kernel.claim(ctx);
-            let openhcl_boot_bin = openhcl_boot_bin.claim(ctx);
-            let sidecar_bin = sidecar_bin.claim(ctx);
+            let openhcl_boot_bin = openhcl_boot_bin.clone().claim(ctx);
+            let sidecar_bin = sidecar_bin.clone().claim(ctx);
             let uefi_resource = uefi_resource.claim(ctx);
             let vtl0_kernel_resource = vtl0_kernel_resource.claim(ctx);
             |rt| {
@@ -616,11 +633,28 @@ impl SimpleFlowNode for Node {
             IgvmManifestPath::LocalOnlyCustom(p) => ReadVar::from_static(p),
         };
 
-        ctx.req(crate::run_igvmfilegen::Request {
+        let openhcl_igvm = ctx.reqv(|v| crate::run_igvmfilegen::Request {
             igvmfilegen,
             manifest,
             resources,
-            igvm: built_openhcl_igvm,
+            igvm: v,
+        });
+
+        ctx.emit_minor_rust_step("collect components", |ctx| {
+            let output = output.claim(ctx);
+            let openvmm_hcl = openvmm_hcl_bin.claim(ctx);
+            let openhcl_boot = openhcl_boot_bin.claim(ctx);
+            let igvm = openhcl_igvm.claim(ctx);
+            let sidecar = sidecar_bin.claim(ctx);
+            move |rt| {
+                let v = OpenhclIgvmOutput {
+                    openvmm_hcl: rt.read(openvmm_hcl),
+                    openhcl_boot: rt.read(openhcl_boot),
+                    igvm: rt.read(igvm),
+                    sidecar: rt.read(sidecar),
+                };
+                rt.write(output, &v);
+            }
         });
 
         Ok(())

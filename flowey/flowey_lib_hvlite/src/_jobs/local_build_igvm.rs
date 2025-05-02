@@ -11,6 +11,7 @@ use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetails;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipeDetailsLocalOnly;
 use crate::build_openhcl_igvm_from_recipe::OpenhclKernelPackage;
+use crate::build_openhcl_igvm_from_recipe::RecipeOrCustom;
 use crate::build_openhcl_igvm_from_recipe::Vtl0KernelType;
 use crate::build_openhcl_initrd::OpenhclInitrdExtraParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
@@ -103,7 +104,7 @@ impl SimpleFlowNode for Node {
             OpenvmmHclBuildProfile::Debug
         };
 
-        let mut recipe_details = base_recipe.recipe_details(profile);
+        let mut recipe_details = RecipeOrCustom::Recipe(base_recipe).recipe_details(profile);
         {
             let OpenhclIgvmRecipeDetails {
                 local_only,
@@ -206,29 +207,19 @@ impl SimpleFlowNode for Node {
             }
         };
 
-        let (built_openvmm_hcl, write_built_openvmm_hcl) = ctx.new_var();
-        let (built_openhcl_boot, write_built_openhcl_boot) = ctx.new_var();
-        let (built_openhcl_igvm, write_built_openhcl_igvm) = ctx.new_var();
-        let (built_sidecar, write_built_sidecar) = ctx.new_var();
-
-        ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
+        let output = ctx.reqv(|v| crate::build_openhcl_igvm_from_recipe::Request {
             profile,
-            recipe: OpenhclIgvmRecipe::LocalOnlyCustom(recipe_details.clone()),
+            recipe: RecipeOrCustom::LocalOnlyCustom(recipe_details.clone()),
             custom_target: None,
-            built_openvmm_hcl: write_built_openvmm_hcl,
-            built_openhcl_boot: write_built_openhcl_boot,
-            built_openhcl_igvm: write_built_openhcl_igvm,
-            built_sidecar: write_built_sidecar,
+            output: v,
         });
 
         ctx.emit_rust_step("copy to output directory", |ctx| {
             done.claim(ctx);
             let artifact_dir = artifact_dir.claim(ctx);
-            let built_openvmm_hcl = built_openvmm_hcl.claim(ctx);
-            let built_openhcl_boot = built_openhcl_boot.claim(ctx);
-            let built_openhcl_igvm = built_openhcl_igvm.claim(ctx);
-            let built_sidecar = built_sidecar.claim(ctx);
+            let output = output.claim(ctx);
             move |rt| {
+                let output = rt.read(output);
                 let output_dir = rt
                     .read(artifact_dir)
                     .join(match profile {
@@ -239,17 +230,17 @@ impl SimpleFlowNode for Node {
                     .join(&build_label);
                 fs_err::create_dir_all(&output_dir)?;
 
-                let OpenvmmHclOutput { bin, dbg } = rt.read(built_openvmm_hcl);
+                let OpenvmmHclOutput { bin, dbg } = output.openvmm_hcl;
                 fs_err::copy(bin, output_dir.join("openvmm_hcl"))?;
                 if let Some(dbg) = dbg {
                     fs_err::copy(dbg, output_dir.join("openvmm_hcl.dbg"))?;
                 }
 
-                let OpenhclBootOutput { bin, dbg } = rt.read(built_openhcl_boot);
+                let OpenhclBootOutput { bin, dbg } = output.openhcl_boot;
                 fs_err::copy(bin, output_dir.join("openhcl_boot"))?;
                 fs_err::copy(dbg, output_dir.join("openhcl_boot.dbg"))?;
 
-                if let Some(built_sidecar) = rt.read(built_sidecar) {
+                if let Some(built_sidecar) = output.sidecar {
                     let crate::build_sidecar::SidecarOutput { bin, dbg } = built_sidecar;
                     fs_err::copy(bin, output_dir.join("sidecar"))?;
                     fs_err::copy(dbg, output_dir.join("sidecar.dbg"))?;
@@ -261,7 +252,7 @@ impl SimpleFlowNode for Node {
                     igvm_tdx_json,
                     igvm_snp_json,
                     igvm_vbs_json,
-                } = rt.read(built_openhcl_igvm);
+                } = output.igvm;
                 fs_err::copy(
                     igvm_bin,
                     output_dir.join(format!("openhcl-{build_label}.bin")),
@@ -304,6 +295,5 @@ pub fn non_production_build_igvm_tool_out_name(recipe: &OpenhclIgvmRecipe) -> &'
         OpenhclIgvmRecipe::X64CvmDevkern => "x64-cvm-devkern",
         OpenhclIgvmRecipe::Aarch64 => "aarch64",
         OpenhclIgvmRecipe::Aarch64Devkern => "aarch64-devkern",
-        OpenhclIgvmRecipe::LocalOnlyCustom(_) => unreachable!(),
     }
 }

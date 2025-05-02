@@ -6,6 +6,7 @@
 
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::download_openvmm_deps::OpenvmmDepsArch;
+use crate::run_igvmfilegen::IgvmOutput;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -32,14 +33,7 @@ flowey_request! {
         pub register_guest_test_uefi:
             Option<ReadVar<crate::build_guest_test_uefi::GuestTestUefiOutput>>,
         /// Register OpenHCL IGVM files
-        pub register_openhcl_igvm_files: Option<
-            ReadVar<
-                Vec<(
-                    OpenhclIgvmRecipe,
-                    crate::run_igvmfilegen::IgvmOutput,
-                )>,
-            >,
-        >,
+        pub register_openhcl_igvm_files: Option<ReadVar<Vec<(OpenhclIgvmRecipe, IgvmOutput)>>>,
         /// Register TMK VMM binaries.
         pub register_tmks: Option<ReadVar<crate::build_tmks::TmksOutput>>,
         /// Register a TMK VMM native binary
@@ -258,7 +252,7 @@ impl SimpleFlowNode for Node {
 
                 if let Some(openhcl_igvm_files) = openhcl_igvm_files {
                     for (recipe, openhcl_igvm) in rt.read(openhcl_igvm_files) {
-                        let crate::run_igvmfilegen::IgvmOutput { igvm_bin, .. } = openhcl_igvm;
+                        let IgvmOutput { igvm_bin, .. } = openhcl_igvm;
 
                         let filename = match recipe {
                             OpenhclIgvmRecipe::X64 => "openhcl-x64.bin",
