@@ -4951,7 +4951,7 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 3
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 4
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 27
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 28
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 31
@@ -4985,7 +4985,7 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 4
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 0
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 39
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 40
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 43
@@ -5010,7 +5010,7 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 1
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 2
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 51
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 52
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 55
@@ -5036,7 +5036,7 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 2
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 3
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 15
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 16
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 19
@@ -5058,7 +5058,7 @@ jobs:
       shell: bash
     - name: split debug symbols
       run: |-
-        flowey e 9 flowey_lib_hvlite::run_split_debug_info 0
+        flowey e 9 flowey_lib_hvlite::run_split_debug_info 1
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 3
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 4
         flowey e 9 flowey_lib_hvlite::build_openhcl_igvm_from_recipe 7
