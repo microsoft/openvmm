@@ -532,19 +532,28 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
     #[allow(dead_code)]
     pub async fn save(mut self) -> anyhow::Result<GdmaDriverSavedState> {
+        if self.hwc_failure {
+            anyhow::bail!("can't save after hwc failure");
+        }
+
         self.saving = true;
 
         let doorbell = self.bar0.save(Some(self.db_id as u64));
-
-        let mut interrupt_config = Vec::new();
-        for (index, interrupt) in self.interrupts.iter().enumerate() {
-            if interrupt.is_some() {
-                interrupt_config.push(InterruptSavedState {
-                    msix_index: index as u32,
-                    cpu: index as u32,
-                });
-            }
-        }
+        let interrupt_config = self
+            .interrupts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, interrupt)| {
+                if interrupt.is_some() {
+                    Some(InterruptSavedState {
+                        msix_index: index as u32,
+                        cpu: index as u32,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         Ok(GdmaDriverSavedState {
             mem: SavedMemoryState {
@@ -632,18 +641,18 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             doorbell_shift,
         });
 
-        let eq = Eq::restore(
+        let eq = Eq::restore_eq(
             dma_buffer.subblock(0, PAGE_SIZE),
             saved_state.eq,
             DoorbellPage::new(bar0.clone(), saved_state.db_id as u32)?,
-        )?;
+        );
 
         let db_id = saved_state.db_id;
-        let cq = Cq::restore(
+        let cq = Cq::restore_cq(
             dma_buffer.subblock(CQ_PAGE * PAGE_SIZE, PAGE_SIZE),
             saved_state.cq,
             DoorbellPage::new(bar0.clone(), saved_state.db_id as u32)?,
-        )?;
+        );
 
         let rq = Wq::restore_rq(
             dma_buffer.subblock(RQ_PAGE * PAGE_SIZE, PAGE_SIZE),

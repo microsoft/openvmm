@@ -128,22 +128,8 @@ impl CqEq<Cqe> {
     }
 
     /// Restores an existing completion queue.
-    pub fn restore(
-        mem: MemoryBlock,
-        state: CqEqSavedState,
-        doorbell: DoorbellPage,
-    ) -> anyhow::Result<Self> {
-        Ok(Self {
-            doorbell,
-            doorbell_addr: state.doorbell_addr,
-            queue_type: GdmaQueueType::GDMA_CQ,
-            mem,
-            id: state.id,
-            next: state.next,
-            size: state.size,
-            shift: state.shift,
-            _phantom: PhantomData,
-        })
+    pub fn restore_cq(mem: MemoryBlock, state: CqEqSavedState, doorbell: DoorbellPage) -> Self {
+        Self::restore(GdmaQueueType::GDMA_CQ, mem, doorbell, state)
     }
 }
 
@@ -154,22 +140,8 @@ impl CqEq<Eqe> {
     }
 
     /// Restores an existing event queue.
-    pub fn restore(
-        mem: MemoryBlock,
-        state: CqEqSavedState,
-        doorbell: DoorbellPage,
-    ) -> anyhow::Result<Self> {
-        Ok(Self {
-            doorbell,
-            doorbell_addr: state.doorbell_addr,
-            queue_type: GdmaQueueType::GDMA_EQ,
-            mem,
-            id: state.id,
-            next: state.next,
-            size: state.size,
-            shift: state.shift,
-            _phantom: PhantomData,
-        })
+    pub fn restore_eq(mem: MemoryBlock, state: CqEqSavedState, doorbell: DoorbellPage) -> Self {
+        Self::restore(GdmaQueueType::GDMA_EQ, mem, doorbell, state)
     }
 }
 
@@ -209,6 +181,26 @@ impl<T: IntoBytes + FromBytes + Immutable + KnownLayout> CqEq<T> {
             next: self.next,
             size: self.size,
             shift: self.shift,
+        }
+    }
+
+    /// Restore a queue from saved state.
+    pub fn restore(
+        queue_type: GdmaQueueType,
+        mem: MemoryBlock,
+        doorbell: DoorbellPage,
+        state: CqEqSavedState,
+    ) -> Self {
+        Self {
+            doorbell,
+            doorbell_addr: state.doorbell_addr,
+            queue_type,
+            mem,
+            id: state.id,
+            next: state.next,
+            size: state.size,
+            shift: state.shift,
+            _phantom: PhantomData,
         }
     }
 
