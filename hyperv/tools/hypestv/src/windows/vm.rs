@@ -211,7 +211,7 @@ impl Vm {
             }
             VmCommand::Paravisor(cmd) => self.handle_paravisor_command(cmd).await?,
             VmCommand::Nmi { vtl } => {
-                let r = powershell_script(
+                powershell_script(
                     r#"
                     param([string]$id, [int]$vtl)
                     $ErrorActionPreference = "Stop"
