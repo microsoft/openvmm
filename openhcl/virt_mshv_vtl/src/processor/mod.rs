@@ -1260,8 +1260,9 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 }
 
-fn signal_mnf(dev: &impl CpuIo, connection_id: u32) {
-    if let Err(err) = dev.signal_synic_event(Vtl::Vtl0, connection_id, 0) {
+fn signal_mnf(vtl: GuestVtl, dev: &impl CpuIo, connection_id: u32) {
+    assert_eq!(vtl, GuestVtl::Vtl0);
+    if let Err(err) = dev.signal_synic_event(vtl.into(), connection_id, 0) {
         tracelimit::warn_ratelimited!(
             error = &err as &dyn std::error::Error,
             connection_id,

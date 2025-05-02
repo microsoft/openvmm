@@ -671,7 +671,7 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
                 tlb_lock_held,
             )? {
                 if let Some(connection_id) = self.vp.partition.monitor_page.write_bit(bit) {
-                    signal_mnf(dev, connection_id);
+                    signal_mnf(self.intercepted_vtl, dev, connection_id);
                 }
                 return Ok(());
             }
@@ -1349,7 +1349,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             .partition
             .monitor_page
             .check_write(gpa, bytes, |connection_id| {
-                signal_mnf(self.devices, connection_id)
+                signal_mnf(self.vtl, self.devices, connection_id)
             })
     }
 
