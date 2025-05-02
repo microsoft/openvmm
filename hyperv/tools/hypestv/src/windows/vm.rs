@@ -210,6 +210,17 @@ impl Vm {
                 }
             }
             VmCommand::Paravisor(cmd) => self.handle_paravisor_command(cmd).await?,
+            VmCommand::Nmi { vtl } => {
+                let r = powershell_script(
+                    r#"
+                    param([string]$id, [int]$vtl)
+                    $ErrorActionPreference = "Stop"
+                    $vm = Get-CimInstance -namespace "root\virtualization\v2" -query "select * from Msvm_ComputerSystem where Name = '$id'"
+                    $vm | Invoke-CimMethod -Name "InjectNonMaskableInterruptEx" -Arguments @{"Vtl" = $vtl}
+                    "#,
+                    &[&self.inner.id.to_string(), &vtl.to_string()],
+                )?;
+            }
         }
         Ok(())
     }
