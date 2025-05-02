@@ -74,12 +74,7 @@ impl FlowNode for Node {
                     .env("SHIM_MDBOOK_MERMAID", mdbook_mermaid_bin)
                     .run()?;
 
-                    let guide = out_path.join("Guide");
-                    if !guide.is_dir() {
-                        anyhow::bail!("guide did not get built");
-                    }
-
-                    rt.write(built_guide, &GuideOutput { guide });
+                    rt.write(built_guide, &GuideOutput { guide: out_path });
 
                     Ok(())
                 }

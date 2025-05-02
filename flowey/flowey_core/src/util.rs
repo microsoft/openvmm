@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 //! Utilities used by flowey_core and made avaiable for higher-level crates.
 
 use std::path::Path;
