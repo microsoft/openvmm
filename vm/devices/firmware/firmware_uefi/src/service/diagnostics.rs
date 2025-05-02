@@ -10,9 +10,9 @@
 //! The EFI diagnostics buffer follows the specification of Project Mu's
 //! Advanced Logger package, whose relevant types are defined in the Hyper-V
 //! specification within the uefi_specs crate.
-//!
-//! TODO:
-//!  - Add unit tests
+
+#![warn(missing_docs)]
+
 use crate::UefiDevice;
 use anyhow::anyhow;
 use guestmem::GuestMemory;
@@ -27,53 +27,63 @@ use uefi_specs::hyperv::advanced_logger::SIG_ENTRY;
 use uefi_specs::hyperv::advanced_logger::SIG_HEADER;
 use zerocopy::FromBytes;
 
-// Constants for processing the efi diagnostics buffer
-const ALIGNMENT: usize = 8; // 8-byte alignment
-const ALIGNMENT_MASK: usize = ALIGNMENT - 1; // Mask for alignment
+/// 8-byte alignment for every entry
+const ALIGNMENT: usize = 8;
+
+/// Alignment mask for the entry
+const ALIGNMENT_MASK: usize = ALIGNMENT - 1;
+
+/// Maximum allowed size of the log buffer
 pub const MAX_LOG_BUFFER_SIZE: u32 = 0x400000; // 4MB
+
+/// Maximum allowed size of a single message
 pub const MAX_MESSAGE_LENGTH: u16 = 0x1000; // 4KB
 
 /// Represents a processed log entry from the EFI diagnostics buffer
 #[derive(Debug, Clone)]
 pub struct EfiDiagnosticsLog {
-    pub debug_level: u32, // The debug level of the log entry
-    pub ticks: u64,       // Hypervisor reference ticks elapsed from UEFI
-    pub phase: u16,       // The boot phase that produced this log entry
-    pub message: String,  // The log message itself
+    /// The debug level of the log entry
+    pub debug_level: u32,
+    /// Hypervisor reference ticks elapsed from UEFI
+    pub ticks: u64,
+    /// The boot phase that produced this log entry
+    pub phase: u16,
+    /// The log message itself
+    pub message: String,
 }
 
 /// Errors that occur when parsing entries
 #[derive(Debug, Error)]
+#[allow(missing_docs)]
 pub enum EntryParseError {
     #[error("Expected: {0:#x}, got: {1:#x}")]
     SignatureMismatch(u32, u32),
-
     #[error("Expected non-zero timestamp, got: {0:#x}")]
     Timestamp(u64),
-
     #[error("Expected message length < {0:#x}, got: {1:#x}")]
     MessageLength(u16, u16),
-
     #[error("Failed to read from buffer slice")]
     SliceRead,
-
     #[error("Encountered arithmetic overflow: {0}")]
     Overflow(#[from] anyhow::Error),
-
     #[error("Failed to read UTF-8 string: {0}")]
     Utf8Error(#[from] std::str::Utf8Error),
-
     #[error("message_end ({0:#x}) exceeds buffer slice length ({1:#x})")]
     BadMessageEnd(usize, usize),
 }
 
 /// Represents a single parsed entry from the EFI diagnostics buffer
 struct EntryData<'a> {
-    debug_level: u32,  // The debug level of the log entry
-    time_stamp: u64,   // Timestamp of when the log entry was created
-    phase: u16,        // The boot phase that produced this log entry
-    message: &'a str,  // The log message itself
-    entry_size: usize, // Size of the entry in bytes (including alignment)
+    /// The debug level of the log entry
+    debug_level: u32,
+    /// Timestamp of when the log entry was created
+    time_stamp: u64,
+    /// The boot phase that produced this log entry
+    phase: u16,
+    /// The log message itself
+    message: &'a str,
+    /// The size of the entry in bytes (including alignment)
+    entry_size: usize,
 }
 
 /// Parse a single entry from a buffer slice
@@ -160,31 +170,24 @@ fn parse_entry(buffer_slice: &[u8]) -> Result<EntryData<'_>, EntryParseError> {
 
 /// Errors that occur during processing
 #[derive(Debug, Error)]
+#[allow(missing_docs)]
 pub enum DiagnosticsError {
     #[error("Failed to parse entry: {0}")]
     EntryParse(#[from] EntryParseError),
-
     #[error("Expected: {0:#x}, got: {1:#x}")]
     HeaderSignatureMismatch(u32, u32),
-
     #[error("Expected log buffer size < {0:#x}, got: {1:#x}")]
     HeaderBufferSize(u32, u32),
-
     #[error("Bad GPA value: {0:#x}")]
     BadGpa(u32),
-
     #[error("No GPA set")]
     NoGpa,
-
     #[error("Failed to read from guest memory: {0}")]
     GuestMemoryRead(#[from] GuestMemoryError),
-
     #[error("Encountered arithmetic overflow: {0}")]
     Overflow(#[from] anyhow::Error),
-
     #[error("Expected used log buffer size < {0:#x}, got: {1:#x}")]
     BadUsedBufferSize(u32, u32),
-
     #[error("Expected accumulated message length < {0:#x}, got: {1:#x}")]
     BadAccumulatedMessageLength(u16, u16),
 }
@@ -192,8 +195,10 @@ pub enum DiagnosticsError {
 /// Definition of the diagnostics services state
 #[derive(Inspect)]
 pub struct DiagnosticsServices {
-    gpa: Option<u32>, // The guest physical address of the diagnostics buffer
-    did_flush: bool,  // Flag to indicate if we have already processed the buffer
+    /// The guest physical address of the diagnostics buffer
+    gpa: Option<u32>,
+    /// Flag to indicate if we have already processed the buffer
+    did_process: bool,
 }
 
 impl DiagnosticsServices {
@@ -201,14 +206,14 @@ impl DiagnosticsServices {
     pub fn new() -> DiagnosticsServices {
         DiagnosticsServices {
             gpa: None,
-            did_flush: false,
+            did_process: false,
         }
     }
 
     /// Reset the diagnostics services state
     pub fn reset(&mut self) {
         self.gpa = None;
-        self.did_flush = false;
+        self.did_process = false;
     }
 
     /// Set the GPA of the diagnostics buffer
@@ -228,18 +233,14 @@ impl DiagnosticsServices {
     where
         F: FnMut(EfiDiagnosticsLog),
     {
-        //
         // Step 1: Validate GPA
-        //
         let gpa = match self.gpa {
             Some(gpa) if gpa != 0 && gpa != u32::MAX => gpa,
             Some(invalid_gpa) => return Err(DiagnosticsError::BadGpa(invalid_gpa)),
             None => return Err(DiagnosticsError::NoGpa),
         };
 
-        //
         // Step 2: Get the advanced logger info header
-        //
 
         // Read the header from the guest memory
         let header: AdvancedLoggerInfo = gm.read_plain(gpa as u64)?;
@@ -260,9 +261,7 @@ impl DiagnosticsServices {
             ));
         }
 
-        //
         // Step 3: Read the rest of the used log buffer
-        //
 
         // Copy packed fields to local variables to avoid unaligned access
         let log_current_offset = header.log_current_offset;
@@ -310,9 +309,7 @@ impl DiagnosticsServices {
         let mut buffer_data = vec![0u8; used_log_buffer_size as usize];
         gm.read_at(buffer_start_addr as u64, &mut buffer_data)?;
 
-        //
         // Step 4: Parse the log buffer
-        //
 
         // Maintain a slice of the buffer that needs to be processed
         let mut buffer_slice = &buffer_data[..];
@@ -412,11 +409,11 @@ impl UefiDevice {
     /// Process the diagnostics buffer and log the entries to tracing
     pub(crate) fn process_diagnostics(&mut self, gm: GuestMemory) {
         // Do not proceed if we have already processed before
-        if self.service.diagnostics.did_flush {
+        if self.service.diagnostics.did_process {
             tracelimit::warn_ratelimited!("EFI Diagnostics: Already processed, skipping");
             return;
         }
-        self.service.diagnostics.did_flush = true;
+        self.service.diagnostics.did_process = true;
 
         // Process diagnostics logs and send each directly to tracing
         match self.service.diagnostics.process_diagnostics(&gm, |log| {
@@ -465,14 +462,14 @@ mod save_restore {
         fn save(&mut self) -> Result<Self::SavedState, SaveError> {
             Ok(state::SavedState {
                 gpa: self.gpa,
-                did_flush: self.did_flush,
+                did_flush: self.did_process,
             })
         }
 
         fn restore(&mut self, state: Self::SavedState) -> Result<(), RestoreError> {
             let state::SavedState { gpa, did_flush } = state;
             self.gpa = gpa;
-            self.did_flush = did_flush;
+            self.did_process = did_flush;
             Ok(())
         }
     }
