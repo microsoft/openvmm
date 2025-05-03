@@ -956,6 +956,7 @@ mod test {
             entropy: None,
             vtl0_alias_map: None,
             nvme_keepalive: false,
+            dma_hint_self: false,
         }
     }
 

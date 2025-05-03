@@ -6,6 +6,7 @@
 use crate::memory::MappedDmaTarget;
 use anyhow::Context;
 use inspect::Inspect;
+use parking_lot::Mutex;
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::Read;
@@ -123,15 +124,43 @@ unsafe impl MappedDmaTarget for LockedMemory {
     }
 }
 
-#[derive(Clone, Inspect)]
-pub struct LockedMemorySpawner;
+#[derive(Inspect)]
+pub struct LockedMemorySpawner {
+    alloc_size: Mutex<u64>,
+}
+
+impl LockedMemorySpawner {
+    /// Create a new [`LockedMemorySpawner`].
+    pub fn new() -> Self {
+        Self {
+            alloc_size: Mutex::new(0),
+        }
+    }
+}
 
 impl crate::DmaClient for LockedMemorySpawner {
     fn allocate_dma_buffer(&self, len: usize) -> anyhow::Result<crate::memory::MemoryBlock> {
-        Ok(crate::memory::MemoryBlock::new(LockedMemory::new(len)?))
+        let mem_block = crate::memory::MemoryBlock::new(LockedMemory::new(len)?);
+        *self.alloc_size.lock() += len as u64;
+        Ok(mem_block)
     }
 
     fn attach_pending_buffers(&self) -> anyhow::Result<Vec<crate::memory::MemoryBlock>> {
         anyhow::bail!("restore not supported for lockmem")
+    }
+
+    /// Query if this client supports persistent allocations.
+    fn is_persistent(&self) -> bool {
+        false
+    }
+
+    /// How much memory was allocated during session.
+    fn alloc_size(&self) -> u64 {
+        *self.alloc_size.lock()
+    }
+
+    /// Not supported for this allocator.
+    fn fallback_alloc_size(&self) -> u64 {
+        0
     }
 }

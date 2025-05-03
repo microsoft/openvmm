@@ -13,6 +13,7 @@ pub use device_dma::LowerVtlDmaBuffer;
 use anyhow::Context;
 use anyhow::Result;
 use inspect::Inspect;
+use parking_lot::Mutex;
 use std::sync::Arc;
 use user_driver::DmaClient;
 use user_driver::memory::MemoryBlock;
@@ -79,6 +80,7 @@ pub struct LowerVtlMemorySpawner<T: DmaClient> {
     spawner: T,
     #[inspect(skip)]
     vtl_protect: Arc<dyn VtlMemoryProtection + Send + Sync>,
+    alloc_size: Mutex<u64>,
 }
 
 impl<T: DmaClient> LowerVtlMemorySpawner<T> {
@@ -88,6 +90,7 @@ impl<T: DmaClient> LowerVtlMemorySpawner<T> {
         Self {
             spawner,
             vtl_protect,
+            alloc_size: Mutex::new(0),
         }
     }
 }
@@ -98,6 +101,7 @@ impl<T: DmaClient> DmaClient for LowerVtlMemorySpawner<T> {
         let vtl_guard =
             PagesAccessibleToLowerVtl::new_from_pages(self.vtl_protect.clone(), mem.pfns())
                 .context("failed to lower VTL permissions on memory block")?;
+        *self.alloc_size.lock() += len as u64;
 
         Ok(MemoryBlock::new(LowerVtlDmaBuffer {
             block: mem,
@@ -107,5 +111,20 @@ impl<T: DmaClient> DmaClient for LowerVtlMemorySpawner<T> {
 
     fn attach_pending_buffers(&self) -> Result<Vec<MemoryBlock>> {
         anyhow::bail!("restore is not supported for LowerVtlMemorySpawner")
+    }
+
+    /// Query if this client supports persistent allocations.
+    fn is_persistent(&self) -> bool {
+        false
+    }
+
+    /// How much memory was allocated during session.
+    fn alloc_size(&self) -> u64 {
+        *self.alloc_size.lock()
+    }
+
+    /// Not supported for this allocator.
+    fn fallback_alloc_size(&self) -> u64 {
+        0
     }
 }

@@ -13,6 +13,7 @@ use crate::host_params::MAX_ENTROPY_SIZE;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::MAX_PARTITION_RAM_RANGES;
 use crate::host_params::MAX_VTL2_USED_RANGES;
+use crate::host_params::dma_hint::vtl2_calculate_dma_hint;
 use crate::single_threaded::OffStackRef;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayVec;
@@ -455,6 +456,7 @@ impl PartitionInfo {
             .vtl2_used_ranges
             .extend(flatten_ranges(used_ranges.iter().copied()));
 
+        let mut vtl2_dma_hint_self = false;
         // Decide if we will reserve memory for a VTL2 private pool. Parse this
         // from the final command line, or the host provided device tree value.
         let vtl2_gpa_pool_size = {
@@ -463,7 +465,19 @@ impl PartitionInfo {
                 crate::cmdline::parse_boot_command_line(storage.cmdline.as_str())
                     .enable_vtl2_gpa_pool;
 
-            max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0))
+            let hostval = max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0));
+            if hostval == 0
+                && parsed.nvme_keepalive
+                && params.isolation_type == IsolationType::None
+                && storage.memory_allocation_mode == MemoryAllocationMode::Host
+            {
+                // If host did not provide the DMA hint value, re-evaluate
+                // it internally if conditions satisfy.
+                vtl2_dma_hint_self = true;
+                vtl2_calculate_dma_hint(parsed.cpu_count(), storage)
+            } else {
+                hostval
+            }
         };
         if vtl2_gpa_pool_size != 0 {
             // Reserve the specified number of pages for the pool. Use the used
@@ -500,6 +514,7 @@ impl PartitionInfo {
                 .extend(flatten_ranges(used_ranges.iter().copied()));
 
             storage.vtl2_pool_memory = pool;
+            storage.dma_hint_self = vtl2_dma_hint_self;
         }
 
         // If we can trust the host, use the provided alias map
@@ -528,6 +543,7 @@ impl PartitionInfo {
             entropy,
             vtl0_alias_map: _,
             nvme_keepalive,
+            dma_hint_self,
         } = storage;
 
         assert!(!vtl2_used_ranges.is_empty());
@@ -550,6 +566,7 @@ impl PartitionInfo {
         *gic = parsed.gic.clone();
         *entropy = parsed.entropy.clone();
         *nvme_keepalive = parsed.nvme_keepalive;
+        *dma_hint_self = vtl2_dma_hint_self;
 
         Ok(Some(storage))
     }

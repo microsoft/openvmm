@@ -15,6 +15,7 @@ use memory_range::MemoryRange;
 use memory_range::subtract_ranges;
 use shim_params::IsolationType;
 
+mod dma_hint;
 mod dt;
 mod mmio;
 pub mod shim_params;
@@ -94,6 +95,8 @@ pub struct PartitionInfo {
     pub vtl0_alias_map: Option<u64>,
     /// Host is compatible with DMA preservation / NVMe keep-alive.
     pub nvme_keepalive: bool,
+    /// DMA hint was calculated in boot-shim instead of host.
+    pub dma_hint_self: bool,
 }
 
 impl PartitionInfo {
@@ -125,6 +128,7 @@ impl PartitionInfo {
             entropy: None,
             vtl0_alias_map: None,
             nvme_keepalive: false,
+            dma_hint_self: false,
         }
     }
 

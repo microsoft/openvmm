@@ -169,6 +169,8 @@ pub struct ParsedBootDtInfo {
     /// VTL2 range for private pool memory.
     #[inspect(iter_by_index)]
     pub private_pool_ranges: Vec<MemoryRangeWithNode>,
+    /// Source of DMA hint calculation.
+    pub dma_hint_self: bool,
 }
 
 fn err_to_owned(e: fdt::parser::Error<'_>) -> anyhow::Error {
@@ -207,6 +209,7 @@ struct OpenhclInfo {
     memory_allocation_mode: MemoryAllocationMode,
     isolation: IsolationType,
     private_pool_ranges: Vec<MemoryRangeWithNode>,
+    dma_hint_self: bool,
 }
 
 fn parse_memory_openhcl(node: &Node<'_>) -> anyhow::Result<AddressRange> {
@@ -394,6 +397,11 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         .transpose()
         .context("unable to read vtl0-alias-map")?;
 
+    let dma_hint_self = matches!(
+        try_find_property(node, "dma-hint").and_then(|p| p.read_str().ok()),
+        Some("self")
+    );
+
     // Extract vmbus mmio information from the overall memory map.
     let vtl0_mmio = memory
         .iter()
@@ -416,6 +424,7 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         memory_allocation_mode,
         isolation,
         private_pool_ranges,
+        dma_hint_self,
     })
 }
 
@@ -509,6 +518,7 @@ impl ParsedBootDtInfo {
         let mut isolation = IsolationType::None;
         let mut vtl2_reserved_range = MemoryRange::EMPTY;
         let mut private_pool_ranges = Vec::new();
+        let mut dma_hint_self = false;
 
         let parser = Parser::new(raw)
             .map_err(err_to_owned)
@@ -538,6 +548,7 @@ impl ParsedBootDtInfo {
                         memory_allocation_mode: n_memory_allocation_mode,
                         isolation: n_isolation,
                         private_pool_ranges: n_private_pool_ranges,
+                        dma_hint_self: n_dma_hint_self,
                     } = parse_openhcl(&child)?;
                     vtl0_mmio = n_vtl0_mmio;
                     config_ranges = n_config_ranges;
@@ -548,6 +559,7 @@ impl ParsedBootDtInfo {
                     isolation = n_isolation;
                     vtl2_reserved_range = n_vtl2_reserved_range;
                     private_pool_ranges = n_private_pool_ranges;
+                    dma_hint_self = n_dma_hint_self;
                 }
 
                 _ if child.name.starts_with("memory@") => {
@@ -580,6 +592,7 @@ impl ParsedBootDtInfo {
             isolation,
             vtl2_reserved_range,
             private_pool_ranges,
+            dma_hint_self,
         })
     }
 }
@@ -945,6 +958,7 @@ mod tests {
                 range: MemoryRange::new(0x60000..0x70000),
                 vnode: 0,
             }],
+            dma_hint_self: false,
         };
 
         let dt = build_dt(&orig_info).unwrap();
