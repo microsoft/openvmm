@@ -195,26 +195,10 @@ mod artifact {
                 let recipe: OpenhclIgvmRecipe =
                     serde_json::from_value(Value::String(v.to_string()))
                         .map_err(serde::de::Error::custom)?;
-                let igvm_map = if let Some(p) = map.get(&format!("{}.bin.map", v)) {
-                    Some(p.clone())
-                } else {
-                    None
-                };
-                let igvm_tdx_json = if let Some(p) = map.get(&format!("{}-tdx.json", v)) {
-                    Some(p.clone())
-                } else {
-                    None
-                };
-                let igvm_snp_json = if let Some(p) = map.get(&format!("{}-snp.json", v)) {
-                    Some(p.clone())
-                } else {
-                    None
-                };
-                let igvm_vbs_json = if let Some(p) = map.get(&format!("{}-vbs.json", v)) {
-                    Some(p.clone())
-                } else {
-                    None
-                };
+                let igvm_map = map.get(&format!("{}.bin.map", v)).cloned();
+                let igvm_tdx_json = map.get(&format!("{}-tdx.json", v)).cloned();
+                let igvm_snp_json = map.get(&format!("{}-snp.json", v)).cloned();
+                let igvm_vbs_json = map.get(&format!("{}-vbs.json", v)).cloned();
                 let igvm = IgvmOutput {
                     igvm_bin: igvm_bin.clone(),
                     igvm_map,

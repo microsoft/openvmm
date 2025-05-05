@@ -142,10 +142,7 @@ impl SimpleFlowNode for Node {
                 output: v,
             });
 
-            register_openhcl_igvm_files.push(output.map(ctx, {
-                let recipe = recipe.clone();
-                move |x| (recipe, x.igvm)
-            }));
+            register_openhcl_igvm_files.push(output.map(ctx, move |x| (recipe, x.igvm)));
         }
 
         let register_openhcl_igvm_files = ReadVar::transpose_vec(ctx, register_openhcl_igvm_files);
