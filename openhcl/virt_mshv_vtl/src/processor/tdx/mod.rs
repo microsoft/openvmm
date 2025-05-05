@@ -760,6 +760,18 @@ impl BackingPrivate for TdxBacked {
         // TODO TDX: see ValInitializeVplc
         // TODO TDX: XCR_XFMEM setup?
 
+        // Turn on MBEC for just VTL 0.
+        params.runner.write_vmcs32(
+            GuestVtl::Vtl0,
+            VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS,
+            SecondaryProcessorControls::new()
+                .with_mode_based_execute_control(true)
+                .into(),
+            SecondaryProcessorControls::new()
+                .with_mode_based_execute_control(true)
+                .into(),
+        );
+
         for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
             let controls = TdxL2Ctls::new()
                 // Configure L2 controls to permit shared memory.
