@@ -21,7 +21,7 @@ on:
     - reopened
     - ready_for_review
 concurrency:
-  group: ${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   job0:

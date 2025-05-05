@@ -631,8 +631,8 @@ EOF
             Some(gh_pr_triggers) => {
                 if gh_pr_triggers.auto_cancel {
                     concurrency = Some(github_yaml_defs::Concurrency {
-                        // only cancel in-progress jobs or runs for the same branch
-                        group: Some("${{ github.ref }}".to_string()),
+                        // only cancel in-progress jobs for the same workflow and branch
+                        group: Some("${{ github.workflow }}-${{ github.ref }}".to_string()),
                         cancel_in_progress: Some(true),
                     })
                 };
