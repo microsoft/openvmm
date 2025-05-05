@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+use address_filter::AddressFilter;
 use bitfield_struct::bitfield;
 use inspect::Inspect;
 use inspect_counters::Counter;
@@ -211,6 +212,7 @@ impl IsrStack {
 }
 
 #[derive(Debug, Inspect)]
+#[inspect(extra = "inspect_address_filter")]
 struct SharedState {
     vp_index: VpIndex,
     #[inspect(hex, iter_by_index)]
@@ -221,6 +223,14 @@ struct SharedState {
     auto_eoi: [AtomicU32; 8],
     work: AtomicU32,
     software_enabled_on_reset: bool,
+
+    // Handled in inspect_address_filter
+    #[inspect(skip)]
+    vector_filter: RwLock<AddressFilter<u8>>,
+}
+
+fn inspect_address_filter(this: &SharedState, resp: &mut inspect::Response<'_>) {
+    resp.field_mut("vector_filter", &mut *this.vector_filter.write());
 }
 
 #[bitfield(u32)]
@@ -339,6 +349,7 @@ impl LocalApicSet {
             auto_eoi: Default::default(),
             work: 0.into(),
             software_enabled_on_reset,
+            vector_filter: RwLock::new(AddressFilter::new(false)),
         });
 
         {
@@ -1065,7 +1076,17 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
     }
 
     fn handle_ipi(&mut self, icr: Icr) {
-        tracing::trace!(?icr, vp = self.apic.shared.vp_index.index(), "ipi");
+        if tracing::enabled!(tracing::Level::TRACE) {
+            if !self
+                .apic
+                .shared
+                .vector_filter
+                .read()
+                .filtered(&icr.vector(), false)
+            {
+                tracing::trace!(?icr, vp = self.apic.shared.vp_index.index(), "ipi");
+            }
+        }
 
         let delivery_mode = DeliveryMode(icr.delivery_mode());
         match delivery_mode {
@@ -1156,14 +1177,18 @@ impl SharedState {
         level_triggered: bool,
         auto_eoi: bool,
     ) -> bool {
-        tracing::trace!(
-            software_enabled,
-            ?delivery_mode,
-            vector,
-            level_triggered,
-            vp = self.vp_index.index(),
-            "interrupt"
-        );
+        if tracing::enabled!(tracing::Level::TRACE) {
+            if !self.vector_filter.read().filtered(&vector, false) {
+                tracing::trace!(
+                    software_enabled,
+                    ?delivery_mode,
+                    vector,
+                    level_triggered,
+                    vp = self.vp_index.index(),
+                    "interrupt"
+                );
+            }
+        }
 
         match delivery_mode {
             DeliveryMode::FIXED | DeliveryMode::LOWEST_PRIORITY => {

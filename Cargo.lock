@@ -56,6 +56,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "address_filter"
+version = "0.0.0"
+dependencies = [
+ "inspect",
+ "thiserror 2.0.12",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7999,6 +8007,7 @@ dependencies = [
 name = "virt_support_apic"
 version = "0.0.0"
 dependencies = [
+ "address_filter",
  "bitfield-struct 0.10.1",
  "hvdef",
  "inspect",
@@ -8862,6 +8871,7 @@ dependencies = [
 name = "vmotherboard"
 version = "0.0.0"
 dependencies = [
+ "address_filter",
  "anyhow",
  "arc_cyclic_builder",
  "async-trait",
