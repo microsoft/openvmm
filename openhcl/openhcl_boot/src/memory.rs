@@ -7,9 +7,14 @@ use crate::host_params::MAX_VTL2_RAM_RANGES;
 use arrayvec::ArrayVec;
 use core::alloc;
 use core::cell::RefCell;
+use core::panic;
 use host_fdt_parser::MemoryEntry;
 use igvm_defs::MemoryMapEntryType;
+use igvm_defs::PAGE_SIZE_4K;
+use loader_defs::shim::MemoryVtlType;
 use memory_range::MemoryRange;
+use memory_range::RangeWalkResult;
+use memory_range::walk_ranges;
 
 /// The maximum number of reserved memory ranges that we might use.
 /// See ReservedMemoryType definition for details.
@@ -34,28 +39,60 @@ enum ReservedMemoryType {
     Vtl2GpaPool,
 }
 
+impl From<ReservedMemoryType> for MemoryVtlType {
+    fn from(r: ReservedMemoryType) -> Self {
+        match r {
+            ReservedMemoryType::Vtl2Config => MemoryVtlType::VTL2_CONFIG,
+            ReservedMemoryType::SidecarImage => MemoryVtlType::VTL2_SIDECAR_IMAGE,
+            ReservedMemoryType::SidecarNode => MemoryVtlType::VTL2_SIDECAR_NODE,
+            ReservedMemoryType::Vtl2Reserved => MemoryVtlType::VTL2_RESERVED,
+            ReservedMemoryType::Vtl2GpaPool => MemoryVtlType::VTL2_GPA_POOL,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AddressUsage {
+    /// free for allocation
     Free,
+    /// used by the bootshim (usually build time), but free for kernel use
     Used,
+    /// reserved for some reason
     Reserved(ReservedMemoryType),
 }
 
+#[derive(Debug)]
 struct AddressRange {
     range: MemoryRange,
-    mem_type: MemoryMapEntryType,
     vnode: u32,
     usage: AddressUsage,
 }
 
+impl From<AddressUsage> for MemoryVtlType {
+    fn from(usage: AddressUsage) -> Self {
+        match usage {
+            AddressUsage::Free => MemoryVtlType::VTL2_RAM,
+            AddressUsage::Used => MemoryVtlType::VTL2_RAM,
+            AddressUsage::Reserved(r) => r.into(),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct AllocatedRange {
     pub range: MemoryRange,
     pub vnode: u32,
 }
 
+#[derive(Debug)]
 pub struct AddressSpaceManager {
     /// tracks address space, must be sorted
     address_space: ArrayVec<AddressRange, MAX_MEMORY_RANGES>,
+}
+
+pub enum AllocationType {
+    GpaPool,
+    SidecarNode,
 }
 
 impl AddressSpaceManager {
@@ -65,18 +102,69 @@ impl AddressSpaceManager {
     /// are allocated at boot time.
     pub fn new(
         vtl2_ram: &[MemoryEntry],
+        bootshim_used: MemoryRange,
         vtl2_config: &[MemoryRange],
-        reserved_range: MemoryRange,
+        reserved_range: Option<MemoryRange>,
         sidecar_image: Option<MemoryRange>,
     ) -> Self {
         assert!(vtl2_config.len() <= 2);
         assert!(vtl2_ram.len() <= MAX_VTL2_RAM_RANGES);
 
-        todo!()
+        // put all the pre-used ranges into a single arrayvec, and walk thru it with the selected vtl2 ram
+        let mut used_ranges: ArrayVec<(MemoryRange, AddressUsage), 5> = ArrayVec::new();
+        used_ranges.push((bootshim_used, AddressUsage::Used));
+        used_ranges.extend(
+            vtl2_config
+                .iter()
+                .map(|r| (*r, AddressUsage::Reserved(ReservedMemoryType::Vtl2Config))),
+        );
+        used_ranges.extend(
+            reserved_range
+                .into_iter()
+                .map(|r| (r, AddressUsage::Reserved(ReservedMemoryType::Vtl2Reserved))),
+        );
+        used_ranges.extend(
+            sidecar_image
+                .into_iter()
+                .map(|r| (r, AddressUsage::Reserved(ReservedMemoryType::SidecarImage))),
+        );
+        used_ranges.sort_unstable_by_key(|(r, _)| r.start());
+
+        // Construct the initial state of VTL2 address space by walking ram and reserved ranges
+        let mut address_space = ArrayVec::new();
+        for (entry, r) in walk_ranges(
+            vtl2_ram.iter().map(|e| (e.range, e.vnode)),
+            used_ranges.iter().map(|(r, usage)| (*r, usage)),
+        ) {
+            match r {
+                RangeWalkResult::Left(vnode) => {
+                    // VTL2 normal ram, unused by anything.
+                    address_space.push(AddressRange {
+                        range: entry,
+                        vnode,
+                        usage: AddressUsage::Free,
+                    });
+                }
+                RangeWalkResult::Both(vnode, usage) => {
+                    // VTL2 ram, currently in use.
+                    address_space.push(AddressRange {
+                        range: entry,
+                        vnode,
+                        usage: *usage,
+                    });
+                }
+                RangeWalkResult::Right(usage) => {
+                    panic!("vtl2 range {entry:#x?} used by {usage:?} not contained in vtl2 ram");
+                }
+                RangeWalkResult::Neither => {}
+            }
+        }
+
+        Self { address_space }
     }
 
     /// Split a free range into two, with the allocated range coming from the top end of the range.
-    fn split_range(&mut self, index: usize, len: u64, usage: AddressUsage) -> AllocatedRange {
+    fn allocate_range(&mut self, index: usize, len: u64, usage: AddressUsage) -> AllocatedRange {
         assert!(usage != AddressUsage::Free);
         let range = self.address_space.get_mut(index).expect("valid index");
         assert_eq!(range.usage, AddressUsage::Free);
@@ -86,7 +174,6 @@ impl AddressSpaceManager {
         let remainder = if !remainder.is_empty() {
             Some(AddressRange {
                 range: remainder,
-                mem_type: range.mem_type,
                 vnode: range.vnode,
                 usage: AddressUsage::Free,
             })
@@ -107,5 +194,88 @@ impl AddressSpaceManager {
         }
 
         allocated
+    }
+
+    pub fn allocate(
+        &mut self,
+        preferred_vnode: Option<u32>,
+        len: u64,
+        allocation_type: AllocationType,
+    ) -> Option<AllocatedRange> {
+        // len must be page aligned
+        assert_eq!(len % PAGE_SIZE_4K, 0);
+
+        // todo support vnode allocations for sidecar
+        assert!(preferred_vnode.is_none());
+
+        // Walk ranges in reverse order until one is free that has enough space
+        let index = self
+            .address_space
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(index, range)| {
+                if range.usage == AddressUsage::Free && range.range.len() >= len {
+                    Some(index)
+                } else {
+                    None
+                }
+            });
+
+        index.map(|index| {
+            dbg!(index);
+            let range = self.allocate_range(
+                index,
+                len,
+                match allocation_type {
+                    AllocationType::GpaPool => {
+                        AddressUsage::Reserved(ReservedMemoryType::Vtl2GpaPool)
+                    }
+                    AllocationType::SidecarNode => {
+                        AddressUsage::Reserved(ReservedMemoryType::SidecarNode)
+                    }
+                },
+            );
+
+            range
+        })
+    }
+
+    /// Get all of vtl2 address space
+    pub fn vtl2_ranges(&self) -> impl Iterator<Item = (MemoryRange, MemoryVtlType)> + use<'_> {
+        self.address_space.iter().map(|r| (r.range, r.usage.into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_allocate() {
+        let mut address_space = AddressSpaceManager::new(
+            &[MemoryEntry {
+                range: MemoryRange::new(0x0..0x20000),
+                vnode: 0,
+                mem_type: MemoryMapEntryType::MEMORY,
+            }],
+            MemoryRange::new(0x0..0x1000),
+            &[
+                MemoryRange::new(0x3000..0x4000),
+                MemoryRange::new(0x5000..0x6000),
+            ],
+            Some(MemoryRange::new(0x8000..0xA000)),
+            Some(MemoryRange::new(0xA000..0xC000)),
+        );
+
+        let range = address_space
+            .allocate(None, 0x1000, AllocationType::GpaPool)
+            .unwrap();
+        assert_eq!(range.range, MemoryRange::new(0x1F000..0x20000));
+
+        let range = address_space
+            .allocate(None, 0x2000, AllocationType::GpaPool)
+            .unwrap();
+        assert_eq!(range.range, MemoryRange::new(0x1D000..0x1F000));
     }
 }
