@@ -470,7 +470,7 @@ impl ProxyTask {
                 let gpadls = self.gpadls.lock().remove(&proxy_id);
                 if let Some(gpadls) = gpadls {
                     if !gpadls.is_empty() {
-                        tracing::warn!(proxy_id, "closed while some gpadls are still registered");
+                        tracing::info!(proxy_id, "closed while some gpadls are still registered");
                         for gpadl_id in gpadls {
                             if let Err(e) = self.proxy.delete_gpadl(proxy_id, gpadl_id.0).await {
                                 if e.code() == HRESULT::from(ERROR_CANCELLED) {
@@ -486,8 +486,22 @@ impl ProxyTask {
                     }
                 }
 
-                // We cannot release the channel with the driver here because it may be in the wrong
-                // state. We must wait for the driver to revoke it first.
+                // Only release the channel with the driver if the driver has already revoked it.
+                if self
+                    .channels
+                    .lock()
+                    .get(&proxy_id)
+                    .unwrap()
+                    .server_request_send
+                    .is_none()
+                {
+                    self.proxy
+                        .release(proxy_id)
+                        .await
+                        .expect("vmbus proxy state failure");
+
+                    self.channels.lock().remove(&proxy_id);
+                }
             }
         }
     }
