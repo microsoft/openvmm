@@ -83,14 +83,14 @@ jobs:
 
         chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey
 
-        echo '"debug"' | flowey v 0 'FLOWEY_LOG' --update-from-stdin
-        echo "${{ runner.temp }}/work" | flowey v 0 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
+        echo '"debug"' | flowey v 0 'FLOWEY_LOG' update
+        echo "${{ runner.temp }}/work" | flowey v 0 '_internal_WORKING_DIR' --is-raw-string update
 
-        cat <<'EOF' | flowey v 0 'verbose' --update-from-stdin
+        cat <<'EOF' | flowey v 0 'verbose' update
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/guide"
-        echo "$AgentTempDirNormal/publish_artifacts/guide" | flowey v 0 'artifact_publish_from_guide' --update-from-stdin --is-raw-string
+        echo "$AgentTempDirNormal/publish_artifacts/guide" | flowey v 0 'artifact_publish_from_guide' --is-raw-string update
       shell: bash
     - name: create gh-release-download cache dir
       run: flowey e 0 flowey_lib_common::download_gh_release 0
@@ -98,8 +98,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 0 flowey_lib_common::cache 0
-        flowey v 0 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --write-to-gh-env floweyvar2 --is-raw-string
-        flowey v 0 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --write-to-gh-env floweyvar3 --is-raw-string
+        flowey v 0 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar2
+        flowey v 0 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -109,7 +109,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 0 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:462:70' --update-from-stdin --is-raw-string <<EOF
+        flowey v 0 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:462:70' --is-raw-string update --env-source steps.flowey_lib_common__cache__1.outputs.cache-hit <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey e 0 flowey_lib_common::cache 2
@@ -133,8 +133,8 @@ jobs:
     - name: check if openvmm needs to be cloned
       run: |-
         flowey e 0 flowey_lib_common::git_checkout 0
-        flowey v 0 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar1 --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46
-        flowey v 0 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' --write-to-gh-env FLOWEY_CONDITION
+        flowey v 0 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46 write-to-env github floweyvar1
+        flowey v 0 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
@@ -146,7 +146,7 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 0 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        flowey v 0 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.workspace <<EOF
         ${{ github.workspace }}
         EOF
         flowey e 0 flowey_lib_common::git_checkout 3
@@ -241,20 +241,20 @@ jobs:
 
         chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey.exe
 
-        echo '"debug"' | flowey.exe v 1 'FLOWEY_LOG' --update-from-stdin
-        echo "${{ runner.temp }}/work" | flowey.exe v 1 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
+        echo '"debug"' | flowey.exe v 1 'FLOWEY_LOG' update
+        echo "${{ runner.temp }}/work" | flowey.exe v 1 '_internal_WORKING_DIR' --is-raw-string update
 
-        cat <<'EOF' | flowey.exe v 1 'verbose' --update-from-stdin
+        cat <<'EOF' | flowey.exe v 1 'verbose' update
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-windows-rustdoc"
-        echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-rustdoc" | flowey.exe v 1 'artifact_publish_from_x64-windows-rustdoc' --update-from-stdin --is-raw-string
+        echo "${{ runner.temp }}\\publish_artifacts\\x64-windows-rustdoc" | flowey.exe v 1 'artifact_publish_from_x64-windows-rustdoc' --is-raw-string update
       shell: bash
     - name: check if openvmm needs to be cloned
       run: |-
         flowey.exe e 1 flowey_lib_common::git_checkout 0
-        flowey.exe v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar1 --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46
-        flowey.exe v 1 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' --write-to-gh-env FLOWEY_CONDITION
+        flowey.exe v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46 write-to-env github floweyvar1
+        flowey.exe v 1 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
@@ -266,7 +266,7 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey.exe v 1 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 1 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.workspace <<EOF
         ${{ github.workspace }}
         EOF
         flowey.exe e 1 flowey_lib_common::git_checkout 3
@@ -281,8 +281,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 1 flowey_lib_common::cache 0
-        flowey.exe v 1 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --write-to-gh-env floweyvar2 --is-raw-string
-        flowey.exe v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --write-to-gh-env floweyvar3 --is-raw-string
+        flowey.exe v 1 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar2
+        flowey.exe v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -292,7 +292,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey.exe v 1 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:462:70' --update-from-stdin --is-raw-string <<EOF
+        flowey.exe v 1 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:462:70' --is-raw-string update --env-source steps.flowey_lib_common__cache__1.outputs.cache-hit <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey.exe e 1 flowey_lib_common::cache 2
@@ -406,20 +406,20 @@ jobs:
 
         chmod +x $AgentTempDirNormal/bootstrapped-flowey/flowey
 
-        echo '"debug"' | flowey v 2 'FLOWEY_LOG' --update-from-stdin
-        echo "${{ runner.temp }}/work" | flowey v 2 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
+        echo '"debug"' | flowey v 2 'FLOWEY_LOG' update
+        echo "${{ runner.temp }}/work" | flowey v 2 '_internal_WORKING_DIR' --is-raw-string update
 
-        cat <<'EOF' | flowey v 2 'verbose' --update-from-stdin
+        cat <<'EOF' | flowey v 2 'verbose' update
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-rustdoc"
-        echo "$AgentTempDirNormal/publish_artifacts/x64-linux-rustdoc" | flowey v 2 'artifact_publish_from_x64-linux-rustdoc' --update-from-stdin --is-raw-string
+        echo "$AgentTempDirNormal/publish_artifacts/x64-linux-rustdoc" | flowey v 2 'artifact_publish_from_x64-linux-rustdoc' --is-raw-string update
       shell: bash
     - name: check if openvmm needs to be cloned
       run: |-
         flowey e 2 flowey_lib_common::git_checkout 0
-        flowey v 2 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar1 --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46
-        flowey v 2 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' --write-to-gh-env FLOWEY_CONDITION
+        flowey v 2 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46 write-to-env github floweyvar1
+        flowey v 2 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
       uses: actions/checkout@v4
@@ -431,7 +431,7 @@ jobs:
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
       run: |-
-        flowey v 2 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:42:41' --update-from-stdin --is-raw-string <<EOF
+        flowey v 2 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.workspace <<EOF
         ${{ github.workspace }}
         EOF
         flowey e 2 flowey_lib_common::git_checkout 3
@@ -446,8 +446,8 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 2 flowey_lib_common::cache 0
-        flowey v 2 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --write-to-gh-env floweyvar2 --is-raw-string
-        flowey v 2 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --write-to-gh-env floweyvar3 --is-raw-string
+        flowey v 2 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --is-raw-string write-to-env github floweyvar2
+        flowey v 2 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --is-raw-string write-to-env github floweyvar3
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
@@ -457,7 +457,7 @@ jobs:
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
-        flowey v 2 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:462:70' --update-from-stdin --is-raw-string <<EOF
+        flowey v 2 'flowey_lib_common::cache:4:flowey_lib_common/src/cache.rs:462:70' --is-raw-string update --env-source steps.flowey_lib_common__cache__1.outputs.cache-hit <<EOF
         ${{ steps.flowey_lib_common__cache__1.outputs.cache-hit }}
         EOF
         flowey e 2 flowey_lib_common::cache 2
@@ -546,15 +546,15 @@ jobs:
 
         chmod +x $AgentTempDirNormal/used_artifacts/_internal-flowey-bootstrap-x86_64-linux-uid-1/flowey
 
-        echo '"debug"' | flowey v 3 'FLOWEY_LOG' --update-from-stdin
-        echo "${{ runner.temp }}/work" | flowey v 3 '_internal_WORKING_DIR' --update-from-stdin --is-raw-string
+        echo '"debug"' | flowey v 3 'FLOWEY_LOG' update
+        echo "${{ runner.temp }}/work" | flowey v 3 '_internal_WORKING_DIR' --is-raw-string update
 
-        cat <<'EOF' | flowey v 3 'verbose' --update-from-stdin
+        cat <<'EOF' | flowey v 3 'verbose' update
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
-        echo "$AgentTempDirNormal/used_artifacts/guide" | flowey v 3 'artifact_use_from_guide' --update-from-stdin --is-raw-string
-        echo "$AgentTempDirNormal/used_artifacts/x64-linux-rustdoc" | flowey v 3 'artifact_use_from_x64-linux-rustdoc' --update-from-stdin --is-raw-string
-        echo "$AgentTempDirNormal/used_artifacts/x64-windows-rustdoc" | flowey v 3 'artifact_use_from_x64-windows-rustdoc' --update-from-stdin --is-raw-string
+        echo "$AgentTempDirNormal/used_artifacts/guide" | flowey v 3 'artifact_use_from_guide' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/x64-linux-rustdoc" | flowey v 3 'artifact_use_from_x64-linux-rustdoc' --is-raw-string update
+        echo "$AgentTempDirNormal/used_artifacts/x64-windows-rustdoc" | flowey v 3 'artifact_use_from_x64-windows-rustdoc' --is-raw-string update
       shell: bash
     - name: generate consolidated gh pages html
       run: |-
@@ -563,7 +563,7 @@ jobs:
         flowey e 3 flowey_core::pipeline::artifact::resolve 0
         flowey e 3 flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages 0
         flowey e 3 flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages 1
-        flowey v 3 'flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages:1:flowey_lib_hvlite/src/_jobs/consolidate_and_publish_gh_pages.rs:94:39' --write-to-gh-env floweyvar1 --is-raw-string
+        flowey v 3 'flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages:1:flowey_lib_hvlite/src/_jobs/consolidate_and_publish_gh_pages.rs:94:39' --is-raw-string write-to-env github floweyvar1
       shell: bash
     - id: flowey_lib_hvlite___jobs__consolidate_and_publish_gh_pages__2
       uses: actions/upload-pages-artifact@v3

@@ -6,7 +6,9 @@
 mod github_context;
 mod spec;
 
-pub use github_context::GhVarState;
+pub use github_context::GhOutput;
+pub use github_context::GhToRust;
+pub use github_context::RustToGh;
 
 use self::steps::ado::AdoRuntimeVar;
 use self::steps::ado::AdoStepServices;
@@ -136,7 +138,7 @@ where
     T: Serialize + DeserializeOwned,
 {
     fn eq(&self, other: &Self) -> bool {
-        self.backing_var == other.backing_var && self.is_secret == other.is_secret
+        self.backing_var == other.backing_var
     }
 }
 
@@ -145,7 +147,7 @@ where
     T: Serialize + DeserializeOwned + PartialEq + Eq + Clone,
 {
     fn eq(&self, other: &Self) -> bool {
-        self.backing_var == other.backing_var && self.is_secret == other.is_secret
+        self.backing_var == other.backing_var
     }
 }
 
@@ -200,7 +202,6 @@ pub enum VarClaimed {}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WriteVar<T: Serialize + DeserializeOwned, C = VarNotClaimed> {
     backing_var: String,
-    is_secret: bool,
     /// If true, then readers on this var expect to read a side effect (`()`)
     /// and not `T`.
     is_side_effect: bool,
@@ -218,14 +219,12 @@ impl<T: Serialize + DeserializeOwned> WriteVar<T, VarNotClaimed> {
     fn into_claimed(self) -> WriteVar<T, VarClaimed> {
         let Self {
             backing_var,
-            is_secret,
             is_side_effect,
             _kind,
         } = self;
 
         WriteVar {
             backing_var,
-            is_secret,
             is_side_effect,
             _kind: std::marker::PhantomData,
         }
@@ -244,7 +243,6 @@ impl<T: Serialize + DeserializeOwned> WriteVar<T, VarNotClaimed> {
     pub(crate) fn into_json(self) -> WriteVar<serde_json::Value> {
         WriteVar {
             backing_var: self.backing_var,
-            is_secret: self.is_secret,
             is_side_effect: self.is_side_effect,
             _kind: std::marker::PhantomData,
         }
@@ -259,17 +257,9 @@ impl WriteVar<SideEffect, VarNotClaimed> {
     pub fn discard_result<T: Serialize + DeserializeOwned>(self) -> WriteVar<T> {
         WriteVar {
             backing_var: self.backing_var,
-            is_secret: self.is_secret,
             is_side_effect: true,
             _kind: std::marker::PhantomData,
         }
-    }
-}
-
-impl<T: Serialize + DeserializeOwned, C> WriteVar<T, C> {
-    /// Return whether the WriteVar is a secret.
-    pub fn is_secret(&self) -> bool {
-        self.is_secret
     }
 }
 
@@ -335,7 +325,7 @@ impl<T: Serialize + DeserializeOwned> ReadVarValue for ClaimedReadVar<T> {
                 is_side_effect,
             } => {
                 // Always get the data to validate that the variable is actually there.
-                let data = rt.get_var(&var);
+                let data = rt.get_var(&var, is_side_effect);
                 if is_side_effect {
                     // This was converted into a `ReadVar<SideEffect>` from
                     // another type, so parse the value that a
@@ -482,7 +472,6 @@ pub struct GhUserSecretVar(pub(crate) String);
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ReadVar<T, C = VarNotClaimed> {
     backing_var: ReadVarBacking<T>,
-    is_secret: bool,
     #[serde(skip)]
     _kind: std::marker::PhantomData<C>,
 }
@@ -496,7 +485,6 @@ impl<T: Serialize + DeserializeOwned, C> Clone for ReadVar<T, C> {
     fn clone(&self) -> Self {
         ReadVar {
             backing_var: self.backing_var.clone(),
-            is_secret: self.is_secret,
             _kind: std::marker::PhantomData,
         }
     }
@@ -538,15 +526,10 @@ impl<T: Serialize + DeserializeOwned> Clone for ReadVarBacking<T> {
 impl<T: Serialize + DeserializeOwned> ReadVar<T> {
     /// (Internal API) Switch the claim marker to "claimed".
     fn into_claimed(self) -> ReadVar<T, VarClaimed> {
-        let Self {
-            backing_var,
-            is_secret,
-            _kind,
-        } = self;
+        let Self { backing_var, _kind } = self;
 
         ReadVar {
             backing_var,
-            is_secret,
             _kind: std::marker::PhantomData,
         }
     }
@@ -572,7 +555,6 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
                 },
                 ReadVarBacking::Inline(_) => ReadVarBacking::Inline(()),
             },
-            is_secret: self.is_secret,
             _kind: std::marker::PhantomData,
         }
     }
@@ -587,7 +569,7 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
         U: Serialize + DeserializeOwned + 'static,
         F: FnOnce(T) -> U + 'static,
     {
-        let (read_from, write_into) = ctx.new_maybe_secret_var(self.is_secret, "");
+        let (read_from, write_into) = ctx.new_var();
         self.write_into(ctx, write_into, f);
         read_from
     }
@@ -621,8 +603,7 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
         T: 'static,
         U: Serialize + DeserializeOwned + 'static,
     {
-        let (read_from, write_into) =
-            ctx.new_maybe_secret_var(self.is_secret || other.is_secret, "");
+        let (read_from, write_into) = ctx.new_var();
         let this = self.clone();
         ctx.emit_minor_rust_step("🌼 Zip Vars", move |ctx| {
             let this = this.claim(ctx);
@@ -639,7 +620,7 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
 
     /// Create a new `ReadVar` from a static value.
     ///
-    /// **WARNING:** Static vars **CANNOT BE SECRETS**, as they are encoded as
+    /// **WARNING:** Static values **CANNOT BE SECRETS**, as they are encoded as
     /// plain-text in the output flow.
     #[track_caller]
     #[must_use]
@@ -649,7 +630,6 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
     {
         ReadVar {
             backing_var: ReadVarBacking::Inline(val),
-            is_secret: false,
             _kind: std::marker::PhantomData,
         }
     }
@@ -676,7 +656,7 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
     where
         T: 'static,
     {
-        let (read_from, write_into) = ctx.new_maybe_secret_var(vec.iter().any(|v| v.is_secret), "");
+        let (read_from, write_into) = ctx.new_var();
         ctx.emit_minor_rust_step("🌼 Transpose Vec<ReadVar<T>>", move |ctx| {
             let vec = vec.claim(ctx);
             let write_into = write_into.claim(ctx);
@@ -743,12 +723,10 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
                     var,
                     is_side_effect,
                 },
-                is_secret: self.is_secret,
                 _kind: std::marker::PhantomData,
             },
             ReadVarBacking::Inline(v) => ReadVar {
                 backing_var: ReadVarBacking::Inline(serde_json::to_value(v).unwrap()),
-                is_secret: self.is_secret,
                 _kind: std::marker::PhantomData,
             },
         }
@@ -761,7 +739,7 @@ impl<T: Serialize + DeserializeOwned> ReadVar<T> {
 /// and should only be used by code implementing flow / pipeline resolution
 /// logic.
 #[must_use]
-pub fn thin_air_read_runtime_var<T>(backing_var: String, is_secret: bool) -> ReadVar<T>
+pub fn thin_air_read_runtime_var<T>(backing_var: String) -> ReadVar<T>
 where
     T: Serialize + DeserializeOwned,
 {
@@ -770,7 +748,6 @@ where
             var: backing_var,
             is_side_effect: false,
         },
-        is_secret,
         _kind: std::marker::PhantomData,
     }
 }
@@ -781,32 +758,31 @@ where
 /// and should only be used by code implementing flow / pipeline resolution
 /// logic.
 #[must_use]
-pub fn thin_air_write_runtime_var<T>(backing_var: String, is_secret: bool) -> WriteVar<T>
+pub fn thin_air_write_runtime_var<T>(backing_var: String) -> WriteVar<T>
 where
     T: Serialize + DeserializeOwned,
 {
     WriteVar {
         backing_var,
-        is_secret,
         is_side_effect: false,
         _kind: std::marker::PhantomData,
     }
 }
 
-/// DANGER: obtain a [`ReadVar`] backing variable and secret status.
+/// DANGER: obtain a [`ReadVar`] backing variable and side effect status.
 ///
 /// This should NEVER be used from within a flowey node. This relies on
 /// flowey variable implementation details, and should only be used by code
 /// implementing flow / pipeline resolution logic.
 pub fn read_var_internals<T: Serialize + DeserializeOwned, C>(
     var: &ReadVar<T, C>,
-) -> (Option<String>, bool, bool) {
+) -> (Option<String>, bool) {
     match var.backing_var {
         ReadVarBacking::RuntimeVar {
             var: ref s,
             is_side_effect,
-        } => (Some(s.clone()), var.is_secret, is_side_effect),
-        ReadVarBacking::Inline(_) => (None, var.is_secret, false),
+        } => (Some(s.clone()), is_side_effect),
+        ReadVarBacking::Inline(_) => (None, false),
     }
 }
 
@@ -883,10 +859,10 @@ pub trait NodeCtxBackend {
         uses: &str,
         with: BTreeMap<String, ClaimedGhParam>,
         condvar: Option<String>,
-        outputs: BTreeMap<String, Vec<GhVarState>>,
+        outputs: BTreeMap<String, Vec<GhOutput>>,
         permissions: BTreeMap<GhPermission, GhPermissionValue>,
-        gh_to_rust: Vec<GhVarState>,
-        rust_to_gh: Vec<GhVarState>,
+        gh_to_rust: Vec<GhToRust>,
+        rust_to_gh: Vec<RustToGh>,
     );
 
     fn on_emit_side_effect_step(&mut self);
@@ -1076,9 +1052,6 @@ impl<'ctx> NodeCtx<'ctx> {
     /// Emit a Rust-based step, creating a new `ReadVar<T>` from the step's
     /// return value.
     ///
-    /// The var returned by this method is _not secret_. In order to create
-    /// secret variables, use the `ctx.new_var_secret()` method.
-    ///
     /// This is a convenience function that streamlines the following common
     /// flowey pattern:
     ///
@@ -1112,9 +1085,6 @@ impl<'ctx> NodeCtx<'ctx> {
     /// This is equivalent to `emit_rust_stepv`, but it is for steps that cannot
     /// fail and that do not need to be emitted as a separate step in a YAML
     /// pipeline. This simplifies the pipeline logs.
-    ///
-    /// The var returned by this method is _not secret_. In order to create
-    /// secret variables, use the `ctx.new_var_secret()` method.
     ///
     /// This is a convenience function that streamlines the following common
     /// flowey pattern:
@@ -1155,7 +1125,7 @@ impl<'ctx> NodeCtx<'ctx> {
         F: for<'a> FnOnce(&'a mut StepCtx<'_>) -> G,
         G: for<'a> FnOnce(&'a mut RustRuntimeServices<'_>) -> anyhow::Result<()> + 'static,
     {
-        let (read, write) = self.new_maybe_secret_var(false, "auto_se");
+        let (read, write) = self.new_prefixed_var("auto_se");
 
         let ctx = &mut StepCtx {
             backend: self.backend.clone(),
@@ -1205,7 +1175,7 @@ impl<'ctx> NodeCtx<'ctx> {
     #[track_caller]
     #[must_use]
     pub fn get_ado_variable(&mut self, ado_var: AdoRuntimeVar) -> ReadVar<String> {
-        let (var, write_var) = self.new_maybe_secret_var(ado_var.is_secret(), "");
+        let (var, write_var) = self.new_var();
         self.emit_ado_step(format!("🌼 read {}", ado_var.as_raw_var_name()), |ctx| {
             let write_var = write_var.claim(ctx);
             |rt| {
@@ -1427,10 +1397,9 @@ impl<'ctx> NodeCtx<'ctx> {
                             let var = var.claim(&mut StepCtx {
                                 backend: self.backend.clone(),
                             });
-                            GhVarState {
-                                raw_name: None,
+                            GhOutput {
                                 backing_var: var.backing_var,
-                                is_secret: var.is_secret,
+                                is_secret: false,
                                 is_object: false,
                             }
                         })
@@ -1542,38 +1511,18 @@ impl<'ctx> NodeCtx<'ctx> {
 
     /// Allocate a new flowey Var, returning two handles: one for reading the
     /// value, and another for writing the value.
-    ///
-    /// This will return a non-secret Var, and its value may be displayed in
-    /// logs and other output.
     #[track_caller]
     #[must_use]
     pub fn new_var<T>(&self) -> (ReadVar<T>, WriteVar<T>)
     where
         T: Serialize + DeserializeOwned,
     {
-        self.new_maybe_secret_var(false, "")
-    }
-
-    /// Allocate a new secret flowey Var, returning two handles: one for reading
-    /// the value, and another for writing the value.
-    ///
-    /// A secret Var must not be displayed in logs or other output.
-    #[track_caller]
-    #[must_use]
-    pub fn new_secret_var<T>(&self) -> (ReadVar<T>, WriteVar<T>)
-    where
-        T: Serialize + DeserializeOwned,
-    {
-        self.new_maybe_secret_var(true, "")
+        self.new_prefixed_var("")
     }
 
     #[track_caller]
     #[must_use]
-    fn new_maybe_secret_var<T>(
-        &self,
-        is_secret: bool,
-        prefix: &'static str,
-    ) -> (ReadVar<T>, WriteVar<T>)
+    fn new_prefixed_var<T>(&self, prefix: &'static str) -> (ReadVar<T>, WriteVar<T>)
     where
         T: Serialize + DeserializeOwned,
     {
@@ -1612,12 +1561,10 @@ impl<'ctx> NodeCtx<'ctx> {
                     var: backing_var.clone(),
                     is_side_effect: false,
                 },
-                is_secret,
                 _kind: std::marker::PhantomData,
             },
             WriteVar {
                 backing_var,
-                is_secret,
                 is_side_effect: false,
                 _kind: std::marker::PhantomData,
             },
@@ -1637,7 +1584,7 @@ impl<'ctx> NodeCtx<'ctx> {
     #[track_caller]
     #[must_use]
     pub fn new_post_job_side_effect(&self) -> (ReadVar<SideEffect>, WriteVar<SideEffect>) {
-        self.new_maybe_secret_var(false, "post_job")
+        self.new_prefixed_var("post_job")
     }
 
     /// Return a flowey Var pointing to a **node-specific** directory which
@@ -1660,7 +1607,6 @@ impl<'ctx> NodeCtx<'ctx> {
                 var: self.backend.borrow_mut().persistent_dir_path_var()?,
                 is_side_effect: false,
             },
-            is_secret: false,
             _kind: std::marker::PhantomData,
         };
 
@@ -1695,17 +1641,17 @@ impl<'ctx> NodeCtx<'ctx> {
 // FUTURE: explore using type-erased serde here, instead of relying on
 // `serde_json` in `flowey_core`.
 pub trait RuntimeVarDb {
-    fn get_var(&mut self, var_name: &str) -> Vec<u8> {
+    fn get_var(&mut self, var_name: &str) -> (Vec<u8>, bool) {
         self.try_get_var(var_name)
             .unwrap_or_else(|| panic!("db is missing var {}", var_name))
     }
 
-    fn try_get_var(&mut self, var_name: &str) -> Option<Vec<u8>>;
+    fn try_get_var(&mut self, var_name: &str) -> Option<(Vec<u8>, bool)>;
     fn set_var(&mut self, var_name: &str, is_secret: bool, value: Vec<u8>);
 }
 
 impl RuntimeVarDb for Box<dyn RuntimeVarDb> {
-    fn try_get_var(&mut self, var_name: &str) -> Option<Vec<u8>> {
+    fn try_get_var(&mut self, var_name: &str) -> Option<(Vec<u8>, bool)> {
         (**self).try_get_var(var_name)
     }
 
@@ -1850,7 +1796,7 @@ pub mod steps {
 
         pub struct CompletedAdoStepServices {
             pub ado_to_rust: Vec<(String, String, bool)>,
-            pub rust_to_ado: Vec<(String, String, bool)>,
+            pub rust_to_ado: Vec<(String, String)>,
         }
 
         impl CompletedAdoStepServices {
@@ -1871,7 +1817,7 @@ pub mod steps {
         pub struct AdoStepServices<'a> {
             fresh_ado_var: &'a mut dyn FnMut() -> String,
             ado_to_rust: Vec<(String, String, bool)>,
-            rust_to_ado: Vec<(String, String, bool)>,
+            rust_to_ado: Vec<(String, String)>,
         }
 
         impl AdoStepServices<'_> {
@@ -1887,8 +1833,11 @@ pub mod steps {
             // the fact that the ADO var to flowey bridge is handled by the ADO
             // backend, which itself needs to know type info...
             pub fn set_var(&mut self, var: ClaimedWriteVar<String>, from_ado_var: AdoRuntimeVar) {
-                self.ado_to_rust
-                    .push((from_ado_var.ado_var.into(), var.backing_var, var.is_secret))
+                self.ado_to_rust.push((
+                    from_ado_var.ado_var.into(),
+                    var.backing_var,
+                    from_ado_var.is_secret,
+                ))
             }
 
             /// Get the value of a flowey Var as a ADO runtime variable.
@@ -1906,12 +1855,9 @@ pub mod steps {
 
                 let new_ado_var_name = (self.fresh_ado_var)();
 
-                self.rust_to_ado.push((
-                    backing_var.clone(),
-                    new_ado_var_name.clone(),
-                    var.is_secret,
-                ));
-                AdoRuntimeVar::dangerous_from_global(new_ado_var_name, var.is_secret)
+                self.rust_to_ado
+                    .push((backing_var.clone(), new_ado_var_name.clone()));
+                AdoRuntimeVar::dangerous_from_global(new_ado_var_name, false)
             }
         }
     }
@@ -1980,9 +1926,9 @@ pub mod steps {
             /// to the param name and value. For example the following code generates the following yaml:
             ///
             /// ```rust,ignore
-            /// let (client_id, write_client_id) = ctx.new_secret_var();
-            /// let (tenant_id, write_tenant_id) = ctx.new_secret_var();
-            /// let (subscription_id, write_subscription_id) = ctx.new_secret_var();
+            /// let (client_id, write_client_id) = ctx.new_var();
+            /// let (tenant_id, write_tenant_id) = ctx.new_var();
+            /// let (subscription_id, write_subscription_id) = ctx.new_var();
             /// // ... insert rust step writing to each of those secrets ...
             /// GhStepBuilder::new("Azure Login", "Azure/login@v2")
             ///               .with("client-id", client_id)
@@ -2047,7 +1993,7 @@ pub mod steps {
             /// Finish building the step, emitting it to the backend and returning a side-effect.
             #[track_caller]
             pub fn finish(self, ctx: &mut NodeCtx<'_>) -> ReadVar<SideEffect> {
-                let (side_effect, claim_side_effect) = ctx.new_maybe_secret_var(false, "auto_se");
+                let (side_effect, claim_side_effect) = ctx.new_prefixed_var("auto_se");
                 ctx.backend
                     .borrow_mut()
                     .on_claimed_runtime_var(&claim_side_effect.backing_var, false);
@@ -2165,6 +2111,7 @@ pub mod steps {
                 backend,
                 platform,
                 arch,
+                has_read_secret: false,
             }
         }
 
@@ -2173,6 +2120,7 @@ pub mod steps {
             backend: FlowBackend,
             platform: FlowPlatform,
             arch: FlowArch,
+            has_read_secret: bool,
         }
 
         impl RustRuntimeServices<'_> {
@@ -2193,7 +2141,46 @@ pub mod steps {
                 self.arch
             }
 
+            /// Write a value.
+            ///
+            /// If this step has already read a secret value, then this will be
+            /// written as a secret value, as a conservative estimate to avoid
+            /// leaking secrets. Use [`write_secret`](Self::write_secret) or
+            /// [`write_not_secret`](Self::write_not_secret) to override this
+            /// behavior.
             pub fn write<T>(&mut self, var: ClaimedWriteVar<T>, val: &T)
+            where
+                T: Serialize + DeserializeOwned,
+            {
+                self.write_maybe_secret(var, val, self.has_read_secret)
+            }
+
+            /// Write a secret value, such as a key or token.
+            ///
+            /// Flowey will avoid logging this value, and if the value is
+            /// converted to a CI environment variable, the CI system will be
+            /// told not to print the value either.
+            pub fn write_secret<T>(&mut self, var: ClaimedWriteVar<T>, val: &T)
+            where
+                T: Serialize + DeserializeOwned,
+            {
+                self.write_maybe_secret(var, val, true)
+            }
+
+            /// Write a value that is not secret, even if this step has already
+            /// read secret values.
+            ///
+            /// Usually [`write`](Self::write) is preferred--use this only when
+            /// your step reads secret values and you explicitly want to write a
+            /// non-secret value.
+            pub fn write_not_secret<T>(&mut self, var: ClaimedWriteVar<T>, val: &T)
+            where
+                T: Serialize + DeserializeOwned,
+            {
+                self.write_maybe_secret(var, val, false)
+            }
+
+            fn write_maybe_secret<T>(&mut self, var: ClaimedWriteVar<T>, val: &T, is_secret: bool)
             where
                 T: Serialize + DeserializeOwned,
             {
@@ -2203,7 +2190,7 @@ pub mod steps {
                     serde_json::to_vec(val).expect("improve this error path")
                 };
                 self.runtime_var_db
-                    .set_var(&var.backing_var, var.is_secret, val);
+                    .set_var(&var.backing_var, is_secret, val);
             }
 
             pub fn write_all<T>(
@@ -2222,8 +2209,10 @@ pub mod steps {
                 var.read_value(self)
             }
 
-            pub(crate) fn get_var(&mut self, var: &str) -> Vec<u8> {
-                self.runtime_var_db.get_var(var)
+            pub(crate) fn get_var(&mut self, var: &str, is_side_effect: bool) -> Vec<u8> {
+                let (v, is_secret) = self.runtime_var_db.get_var(var);
+                self.has_read_secret |= is_secret && !is_side_effect;
+                v
             }
 
             /// DANGEROUS: Set the value of _Global_ Environment Variable (GitHub Actions only).
