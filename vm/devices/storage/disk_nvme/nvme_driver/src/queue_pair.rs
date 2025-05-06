@@ -261,26 +261,26 @@ impl QueuePair {
             }
         });
 
-        // Page allocator uses remaining part of the buffer for dynamic allocation.
-        let alloc = if bounce_buffer {
+        // Page allocator uses remaining part of the buffer for dynamic
+        // allocation. The length of the page allocator depends on if bounce
+        // buffering / double buffering is needed.
+        let alloc_len = if bounce_buffer {
+            const SIZE: usize = QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER * PAGE_SIZE;
             const _: () = assert!(
-                QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER * PAGE_SIZE >= 128 * 1024 + PAGE_SIZE,
+                SIZE >= 128 * 1024 + PAGE_SIZE,
                 "not enough room for an ATAPI IO plus a PRP list"
             );
-            PageAllocator::new(mem.subblock(
-                data_offset,
-                QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER * PAGE_SIZE,
-            ))
+            SIZE
         } else {
+            const SIZE: usize = QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE;
             const _: () = assert!(
-                QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE >= 128 * 1024 + PAGE_SIZE,
+                SIZE >= 128 * 1024 + PAGE_SIZE,
                 "not enough room for an ATAPI IO plus a PRP list"
             );
-            PageAllocator::new(mem.subblock(
-                data_offset,
-                QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE,
-            ))
+            SIZE
         };
+
+        let alloc = PageAllocator::new(mem.subblock(data_offset, alloc_len));
 
         Ok(Self {
             task,
