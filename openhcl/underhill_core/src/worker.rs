@@ -1168,6 +1168,19 @@ async fn new_underhill_vm(
     let (runtime_params, measured_vtl2_info) =
         crate::loader::vtl2_config::read_vtl2_params().context("failed to read load parameters")?;
 
+    // Log information about VTL2 memory
+    let memory_allocation_mode = runtime_params.parsed_openhcl_boot().memory_allocation_mode;
+    tracing::info!(?memory_allocation_mode, "memory allocation mode");
+    tracing::info!(
+        vtl2_ram = runtime_params
+            .vtl2_memory_map()
+            .iter()
+            .map(|r| r.range.to_string())
+            .collect::<Vec<String>>()
+            .join(", "),
+        "vtl2 ram"
+    );
+
     let isolation = match runtime_params.parsed_openhcl_boot().isolation {
         bootloader_fdt_parser::IsolationType::None => virt::IsolationType::None,
         bootloader_fdt_parser::IsolationType::Vbs => virt::IsolationType::Vbs,
