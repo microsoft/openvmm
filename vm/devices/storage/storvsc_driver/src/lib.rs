@@ -660,25 +660,13 @@ struct StorvscCompletionPacket {
     data: [u8; storvsp_protocol::SCSI_REQUEST_LEN_MAX],
 }
 
-/*#[derive(Debug)]
-struct StorvscDataPacket {
-    transaction_id: u64,
-    request_size: usize,
-    operation: storvsp_protocol::Operation,
-    flags: u32,
-    status: storvsp_protocol::NtStatus,
-    data: [u8; storvsp_protocol::SCSI_REQUEST_LEN_MAX],
-}*/
-
 fn parse_packet<T: RingMem>(packet: &IncomingPacket<'_, T>) -> Result<Packet, StorvscError> {
     match packet {
         IncomingPacket::Completion(completion) => {
             parse_completion(completion).map_err(StorvscError::PacketError)
         }
         IncomingPacket::Data(_) => {
-            // TODO
             Err(StorvscError::PacketError(PacketError::InvalidPacketType))
-            //parse_data(data).map_err(StorvscError::PacketError)
         }
     }
 }
@@ -700,36 +688,6 @@ fn parse_completion<T: RingMem>(packet: &CompletionPacket<'_, T>) -> Result<Pack
         data,
     }))
 }
-
-/*fn parse_data<T: RingMem>(packet: &IncomingPacket<'_, T>) -> Result<Packet, PacketError> {
-    let packet = match packet {
-        IncomingPacket::Completion(_) => return Err(PacketError::InvalidPacketType),
-        IncomingPacket::Data(packet) => packet,
-    };
-    let transaction_id = packet.transaction_id();
-
-    let mut reader = packet.reader();
-    let header: storvsp_protocol::Packet = reader.read_plain().map_err(PacketError::Access)?;
-    // You would expect that this should be limited to the current protocol
-    // version's maximum packet size, but this is not what Hyper-V does, and
-    // Linux 6.1 relies on this behavior during protocol initialization.
-    let request_size = reader.len().min(storvsp_protocol::SCSI_REQUEST_LEN_MAX);
-    let operation = header.operation;
-    let flags = header.flags;
-    let status = header.status;
-
-    let mut data = [0_u8; storvsp_protocol::SCSI_REQUEST_LEN_MAX];
-    reader.read(&mut data).map_err(PacketError::Access)?;
-
-    Ok(Packet {
-        transaction_id,
-        request_size,
-        operation,
-        flags,
-        status,
-        data,
-    })
-}*/
 
 fn expect_success(packet: StorvscCompletionPacket) -> Result<StorvscCompletionPacket, PacketError> {
     if packet.status != storvsp_protocol::NtStatus::SUCCESS {
