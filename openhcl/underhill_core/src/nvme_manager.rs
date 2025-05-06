@@ -314,14 +314,21 @@ impl NvmeManagerWorker {
                     .await
                     .map_err(InnerError::Vfio)?;
 
-                let driver =
-                    nvme_driver::NvmeDriver::new(&self.driver_source, self.vp_count, device)
-                        .instrument(tracing::info_span!(
-                            "nvme_driver_init",
-                            pci_id = entry.key()
-                        ))
-                        .await
-                        .map_err(InnerError::DeviceInitFailed)?;
+                // TODO: For now, any isolation means use bounce buffering. This
+                // needs to change when we have nvme devices that support DMA to
+                // confidential memory.
+                let driver = nvme_driver::NvmeDriver::new(
+                    &self.driver_source,
+                    self.vp_count,
+                    device,
+                    self.is_isolated,
+                )
+                .instrument(tracing::info_span!(
+                    "nvme_driver_init",
+                    pci_id = entry.key()
+                ))
+                .await
+                .map_err(InnerError::DeviceInitFailed)?;
 
                 entry.insert(driver)
             }
@@ -385,11 +392,15 @@ impl NvmeManagerWorker {
                     .instrument(tracing::info_span!("vfio_device_restore", pci_id))
                     .await?;
 
+            // TODO: For now, any isolation means use bounce buffering. This
+            // needs to change when we have nvme devices that support DMA to
+            // confidential memory.
             let nvme_driver = nvme_driver::NvmeDriver::restore(
                 &self.driver_source,
                 saved_state.cpu_count,
                 vfio_device,
                 &disk.driver_state,
+                self.is_isolated,
             )
             .instrument(tracing::info_span!("nvme_driver_restore"))
             .await?;

@@ -166,11 +166,18 @@ impl PendingCommands {
 }
 
 impl QueuePair {
-    pub const MAX_SQ_ENTRIES: u16 = (PAGE_SIZE / 64) as u16; // Maximum SQ size in entries.
-    pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16; // Maximum CQ size in entries.
-    const SQ_SIZE: usize = PAGE_SIZE; // Submission Queue size in bytes.
-    const CQ_SIZE: usize = PAGE_SIZE; // Completion Queue size in bytes.
-    const PER_QUEUE_PAGES: usize = 128;
+    /// Maximum SQ size in entries.
+    pub const MAX_SQ_ENTRIES: u16 = (PAGE_SIZE / 64) as u16;
+    /// Maximum CQ size in entries.
+    pub const MAX_CQ_ENTRIES: u16 = (PAGE_SIZE / 16) as u16;
+    /// Submission Queue size in bytes.
+    const SQ_SIZE: usize = PAGE_SIZE;
+    /// Completion Queue size in bytes.
+    const CQ_SIZE: usize = PAGE_SIZE;
+    /// Number of pages per queue if bounce buffering.
+    const PER_QUEUE_PAGES_BOUNCE_BUFFER: usize = 128;
+    /// Number of pages per queue if not bounce buffering.
+    const PER_QUEUE_PAGES_NO_BOUNCE_BUFFER: usize = 64;
 
     pub fn new(
         spawner: impl SpawnDriver,
@@ -180,9 +187,15 @@ impl QueuePair {
         cq_entries: u16, // Requested CQ size in entries.
         interrupt: DeviceInterrupt,
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
+        bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
-        let total_size =
-            QueuePair::SQ_SIZE + QueuePair::CQ_SIZE + QueuePair::PER_QUEUE_PAGES * PAGE_SIZE;
+        let total_size = QueuePair::SQ_SIZE
+            + QueuePair::CQ_SIZE
+            + if bounce_buffer {
+                QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER * PAGE_SIZE
+            } else {
+                QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE
+            };
         let dma_client = device.dma_client();
         let mem = dma_client
             .allocate_dma_buffer(total_size)
@@ -192,7 +205,15 @@ impl QueuePair {
         assert!(cq_entries <= Self::MAX_CQ_ENTRIES);
 
         QueuePair::new_or_restore(
-            spawner, qid, sq_entries, cq_entries, interrupt, registers, mem, None,
+            spawner,
+            qid,
+            sq_entries,
+            cq_entries,
+            interrupt,
+            registers,
+            mem,
+            None,
+            bounce_buffer,
         )
     }
 
@@ -206,6 +227,7 @@ impl QueuePair {
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
         mem: MemoryBlock,
         saved_state: Option<&QueueHandlerSavedState>,
+        bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
         // MemoryBlock is either allocated or restored prior calling here.
         let sq_mem_block = mem.subblock(0, QueuePair::SQ_SIZE);
@@ -240,12 +262,25 @@ impl QueuePair {
         });
 
         // Page allocator uses remaining part of the buffer for dynamic allocation.
-        const _: () = assert!(
-            QueuePair::PER_QUEUE_PAGES * PAGE_SIZE >= 128 * 1024 + PAGE_SIZE,
-            "not enough room for an ATAPI IO plus a PRP list"
-        );
-        let alloc: PageAllocator =
-            PageAllocator::new(mem.subblock(data_offset, QueuePair::PER_QUEUE_PAGES * PAGE_SIZE));
+        let alloc = if bounce_buffer {
+            const _: () = assert!(
+                QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER * PAGE_SIZE >= 128 * 1024 + PAGE_SIZE,
+                "not enough room for an ATAPI IO plus a PRP list"
+            );
+            PageAllocator::new(mem.subblock(
+                data_offset,
+                QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER * PAGE_SIZE,
+            ))
+        } else {
+            const _: () = assert!(
+                QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE >= 128 * 1024 + PAGE_SIZE,
+                "not enough room for an ATAPI IO plus a PRP list"
+            );
+            PageAllocator::new(mem.subblock(
+                data_offset,
+                QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE,
+            ))
+        };
 
         Ok(Self {
             task,
@@ -302,6 +337,7 @@ impl QueuePair {
         registers: Arc<DeviceRegisters<impl DeviceBacking>>,
         mem: MemoryBlock,
         saved_state: &QueuePairSavedState,
+        bounce_buffer: bool,
     ) -> anyhow::Result<Self> {
         let QueuePairSavedState {
             mem_len: _,  // Used to restore DMA buffer before calling this.
@@ -321,6 +357,7 @@ impl QueuePair {
             registers,
             mem,
             Some(handler_data),
+            bounce_buffer,
         )
     }
 }
