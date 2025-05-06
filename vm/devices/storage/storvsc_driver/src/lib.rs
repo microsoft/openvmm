@@ -665,9 +665,7 @@ fn parse_packet<T: RingMem>(packet: &IncomingPacket<'_, T>) -> Result<Packet, St
         IncomingPacket::Completion(completion) => {
             parse_completion(completion).map_err(StorvscError::PacketError)
         }
-        IncomingPacket::Data(_) => {
-            Err(StorvscError::PacketError(PacketError::InvalidPacketType))
-        }
+        IncomingPacket::Data(_) => Err(StorvscError::PacketError(PacketError::InvalidPacketType)),
     }
 }
 
