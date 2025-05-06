@@ -166,6 +166,8 @@ pub enum GuestFirmwareConfig {
         console_mode: UefiConsoleMode,
         /// Perform a default boot even if boot entries exist and fail
         default_boot_always_attempt: bool,
+        /// Enable the IMC device when isolated
+        enable_imc_when_isolated: bool,
     },
     Pcat {
         #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDebug)")]
@@ -1340,6 +1342,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let pcat_boot_device_order;
         let uefi_console_mode;
         let default_boot_always_attempt;
+        let enable_imc_when_isolated;
         match state.config.firmware {
             GuestFirmwareConfig::Uefi {
                 enable_vpci_boot,
@@ -1347,6 +1350,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 disable_frontpage: v_disable_frontpage,
                 console_mode,
                 default_boot_always_attempt: v_default_boot_always_attempt,
+                enable_imc_when_isolated: v_enable_imc_when_isolated,
             } => {
                 vpci_boot_enabled = enable_vpci_boot;
                 enable_firmware_debugging = firmware_debug;
@@ -1355,6 +1359,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 pcat_boot_device_order = None;
                 uefi_console_mode = Some(console_mode);
                 default_boot_always_attempt = v_default_boot_always_attempt;
+                enable_imc_when_isolated = v_enable_imc_when_isolated;
             }
             GuestFirmwareConfig::Pcat { boot_order } => {
                 vpci_boot_enabled = false;
@@ -1364,6 +1369,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 pcat_boot_device_order = Some(boot_order);
                 uefi_console_mode = None;
                 default_boot_always_attempt = false;
+                enable_imc_when_isolated = false;
             }
         }
 
@@ -1418,7 +1424,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     smbios: Default::default(),
                     watchdog_enabled: false,
                     always_relay_host_mmio: false,
-                    imc_enabled: false,
+                    imc_enabled: enable_imc_when_isolated,
                     cxl_memory_enabled: false,
                 },
                 dynamic: get_protocol::dps_json::HclDevicePlatformSettingsV2Dynamic {

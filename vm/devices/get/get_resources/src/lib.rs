@@ -107,6 +107,8 @@ pub mod ged {
             console_mode: UefiConsoleMode,
             /// Perform a default boot even if boot entries exist and fail
             default_boot_always_attempt: bool,
+            /// Enable the IMC device when the guest is isolated.
+            enable_imc_when_isolated: bool,
         },
         /// Boot from PC/AT BIOS with Hyper-V generation 1 devices.
         Pcat {

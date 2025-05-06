@@ -243,6 +243,7 @@ pub fn create_host_channel(
             disable_frontpage: false,
             console_mode: UefiConsoleMode::DEFAULT,
             default_boot_always_attempt: false,
+            enable_imc_when_isolated: false,
         },
         com1: true,
         com2: true,
