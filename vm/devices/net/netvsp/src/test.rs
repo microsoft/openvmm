@@ -2881,6 +2881,152 @@ async fn save_restore_with_vf_multi_open(driver: DefaultDriver) {
     assert_eq!(endpoint_state.lock().use_vf.take().unwrap_or(false), false);
 }
 
+async fn test_save_restore_with_rss_table(
+    driver: DefaultDriver,
+    restore_indirection_table_size: u16,
+) -> anyhow::Result<()> {
+    let endpoint_state = TestNicEndpointState::new();
+    let endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let builder = Nic::builder();
+    let nic = builder.virtual_function(test_vf).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+
+    // Initialize channel
+    let mut nic = TestNicDevice::new_with_nic(&driver, nic).await;
+    let mock_vmbus = nic.mock_vmbus.clone();
+    nic.start_vmbus_channel();
+    let mut channel = nic.connect_vmbus_channel().await;
+    channel
+        .initialize(0, protocol::NdisConfigCapabilities::new().with_sriov(true))
+        .await;
+
+    // RSS parameters
+    #[repr(C)]
+    #[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+    struct RssParams {
+        params: rndisprot::NdisReceiveScaleParameters,
+        hash_secret_key: [u8; 40],
+        indirection_table: [u32; 4],
+    }
+
+    let rss_params = RssParams {
+        params: rndisprot::NdisReceiveScaleParameters {
+            header: rndisprot::NdisObjectHeader {
+                object_type: rndisprot::NdisObjectType::RSS_PARAMETERS,
+                revision: 1,
+                size: size_of::<RssParams>() as u16,
+            },
+            flags: 0,
+            base_cpu_number: 0,
+            hash_information: rndisprot::NDIS_HASH_FUNCTION_TOEPLITZ,
+            indirection_table_size: 4 * size_of::<u32>() as u16,
+            pad0: 0,
+            indirection_table_offset: offset_of!(RssParams, indirection_table) as u32,
+            hash_secret_key_size: 40,
+            pad1: 0,
+            hash_secret_key_offset: offset_of!(RssParams, hash_secret_key) as u32,
+            processor_masks_offset: 0,
+            number_of_processor_masks: 0,
+            processor_masks_entry_size: 0,
+            default_processor_number: 0,
+        },
+        hash_secret_key: [0; 40],
+        indirection_table: [0, 1, 2, 3],
+    };
+    channel
+        .send_rndis_control_message(
+            rndisprot::MESSAGE_TYPE_SET_MSG,
+            rndisprot::SetRequest {
+                request_id: 0,
+                oid: rndisprot::Oid::OID_GEN_RECEIVE_SCALE_PARAMETERS,
+                information_buffer_length: size_of::<RssParams>() as u32,
+                information_buffer_offset: size_of::<rndisprot::SetRequest>() as u32,
+                device_vc_handle: 0,
+            },
+            rss_params.as_bytes(),
+        )
+        .await;
+    let rndis_parser = channel.rndis_message_parser();
+
+    // Send MESSAGE_TYPE_SET_CMPLT packet
+    let transaction_id = channel
+        .read_with(|packet| match packet {
+            IncomingPacket::Data(packet) => {
+                let (header, external_ranges) = rndis_parser.parse_control_message(packet);
+                assert_eq!(header.message_type, rndisprot::MESSAGE_TYPE_SET_CMPLT);
+                let set_complete: rndisprot::SetComplete = rndis_parser.get(&external_ranges);
+                assert_eq!(set_complete.status, rndisprot::STATUS_SUCCESS);
+                packet.transaction_id().unwrap()
+            }
+            _ => panic!("Unexpected packet"),
+        })
+        .await
+        .expect("RSS completion message");
+
+    // Complete the MESSAGE_TYPE_SET_CMPLT packet
+    channel
+        .write(OutgoingPacket {
+            transaction_id,
+            packet_type: OutgoingPacketType::Completion,
+            payload: &NvspMessage {
+                header: protocol::MessageHeader {
+                    message_type: protocol::MESSAGE1_TYPE_SEND_RNDIS_PACKET_COMPLETE,
+                },
+                data: protocol::Message1SendRndisPacketComplete {
+                    status: protocol::Status::SUCCESS,
+                },
+                padding: &[],
+            }
+            .payload(),
+        })
+        .await;
+
+    // Invoke save/restore
+    channel.stop().await;
+    let restore_state = channel.save().await.unwrap().unwrap();
+    let endpoint_state = TestNicEndpointState::new();
+    let mut endpoint = TestNicEndpoint::new(Some(endpoint_state.clone()));
+    // Change the indirection table size on the endpoint
+    endpoint.multiqueue_support.indirection_table_size = restore_indirection_table_size;
+    let test_vf = Box::new(TestVirtualFunction::new(123));
+    let builder = Nic::builder();
+    let nic = builder.virtual_function(test_vf).build(
+        &VmTaskDriverSource::new(SingleDriverBackend::new(driver.clone())),
+        Guid::new_random(),
+        Box::new(endpoint),
+        [1, 2, 3, 4, 5, 6].into(),
+        0,
+    );
+    let mut nic = TestNicDevice::new_with_nic_and_vmbus(&driver, mock_vmbus.clone(), nic).await;
+    let mut channel = channel.restore(&mut nic, restore_state).await.unwrap();
+    channel.start();
+    Ok(())
+}
+
+#[async_test]
+async fn save_restore_reduced_rss_table_size(driver: DefaultDriver) {
+    // Reduce the RSS table size from 128 to 16.
+    test_save_restore_with_rss_table(driver, 16).await.unwrap();
+}
+
+#[async_test]
+async fn save_restore_same_rss_table_size(driver: DefaultDriver) {
+    // Supply the same RSS table size of 128.
+    test_save_restore_with_rss_table(driver, 128).await.unwrap();
+}
+
+#[async_test]
+async fn save_restore_increased_rss_table_size(driver: DefaultDriver) {
+    // Increase the RSS table size from 128 to 256.
+    test_save_restore_with_rss_table(driver, 256).await.unwrap();
+}
+
 async fn remove_vf_with_async_messages(
     channel: &mut TestNicChannel<'_>,
     test_vf_state: &TestVirtualFunctionState,
