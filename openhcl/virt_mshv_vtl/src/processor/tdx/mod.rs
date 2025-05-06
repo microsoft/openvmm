@@ -2039,9 +2039,9 @@ impl UhProcessor<'_, TdxBacked> {
                 // protected, but we don't yet support MNF/guest VSM so this is
                 // okay enough.
                 else if self.partition.gm[intercepted_vtl].check_gpa_readable(gpa) {
-                    tracelimit::warn_ratelimited!(gpa, "possible spurious EPT violation, ignoring");
-                } else {
-                    // Emulate the access.
+                    tracelimit::warn_ratelimited!(gpa, "probable spurious EPT violation, ignoring");
+                } else if dev.is_mmio(gpa) {
+                    // Emulate the access to MMIO.
                     self.emulate(
                         dev,
                         self.backing.vtls[intercepted_vtl]
@@ -2051,6 +2051,9 @@ impl UhProcessor<'_, TdxBacked> {
                         TdxEmulationCache::default(),
                     )
                     .await?;
+                } else {
+                    tracelimit::error_ratelimited!(gpa, "unknown EPT violation, injecting #GP");
+                    self.inject_gpf(intercepted_vtl);
                 }
 
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.ept_violation
