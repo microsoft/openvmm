@@ -406,6 +406,7 @@ impl PetriVmConfigOpenVmm {
             ged,
             vtl2_settings,
             framebuffer_access,
+            imc_hive: None,
         }
         .with_processor_topology(ProcessorTopology::default()))
     }

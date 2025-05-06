@@ -293,6 +293,19 @@ async fn boot_no_agent_single_proc(config: Box<dyn PetriVmConfig>) -> anyhow::Re
     Ok(())
 }
 
+/// Basic boot test without agent but with VSM enabled.
+#[cfg(windows)]
+#[vmm_test_macros::hyperv_test(
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+)]
+async fn boot_no_agent_vsm(config: petri::hyperv::PetriVmConfigHyperV) -> anyhow::Result<()> {
+    let mut vm = config.with_guest_vsm().run_without_agent().await?;
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
 /// Basic reboot test without agent
 // TODO: Reenable guests that use the framebuffer once #74 is fixed.
 #[openvmm_test(

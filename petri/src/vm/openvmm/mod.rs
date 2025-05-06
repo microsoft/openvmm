@@ -127,6 +127,7 @@ pub struct PetriVmConfigOpenVmm {
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
     vtl2_settings: Option<Vtl2Settings>,
     framebuffer_access: Option<FramebufferAccess>,
+    imc_hive: Option<&'static [u8]>,
 }
 
 #[async_trait]
@@ -181,6 +182,10 @@ impl PetriVmConfig for PetriVmConfigOpenVmm {
 
     fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
         Box::new(Self::with_uefi_frontpage(*self, enable))
+    }
+
+    fn with_guest_vsm(self: Box<Self>) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_guest_vsm(*self))
     }
 }
 

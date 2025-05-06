@@ -52,7 +52,27 @@ impl PetriVmConfigOpenVmm {
             ged,
             vtl2_settings,
             framebuffer_access,
+
+            imc_hive,
         } = self;
+
+        if let Some(imc_hive_contents) = imc_hive {
+            assert!(matches!(firmware.os_flavor(), OsFlavor::Windows));
+            // Make a file for the IMC hive.
+            let mut imc_hive_file = tempfile::tempfile().context("failed to create temp file")?;
+            imc_hive_file
+                .write_all(imc_hive_contents)
+                .context("failed to write imc hive")?;
+
+            // Add the IMC device.
+            config.vmbus_devices.push((
+                DeviceVtl::Vtl0,
+                vmbfs_resources::VmbfsImcDeviceHandle {
+                    file: imc_hive_file,
+                }
+                .into_resource(),
+            ));
+        }
 
         if firmware.is_openhcl() {
             // Add a pipette disk for VTL 2
@@ -158,6 +178,8 @@ impl PetriVmConfigOpenVmm {
     /// Build and boot the requested VM. Does not configure and start pipette.
     /// Should only be used for testing platforms that pipette does not support.
     pub async fn run_without_agent(self) -> anyhow::Result<PetriVmOpenVmm> {
+        // TODO: Once we run pipette with VSM, uncomment this.
+        //assert!(self.imc_hive.is_none());
         self.run_core().await
     }
 
@@ -208,22 +230,9 @@ impl PetriVmConfigOpenVmm {
             .into_resource(),
         ));
 
-        if matches!(self.firmware.os_flavor(), OsFlavor::Windows) {
-            // Make a file for the IMC hive. It's not guaranteed to be at a fixed
-            // location at runtime.
-            let mut imc_hive_file = tempfile::tempfile().context("failed to create temp file")?;
-            imc_hive_file
-                .write_all(include_bytes!("../../../guest-bootstrap/imc-pipette.hiv"))
-                .context("failed to write imc hive")?;
-
-            // Add the IMC device.
-            self.config.vmbus_devices.push((
-                DeviceVtl::Vtl0,
-                vmbfs_resources::VmbfsImcDeviceHandle {
-                    file: imc_hive_file,
-                }
-                .into_resource(),
-            ));
+        // If a pipette IMC hive hasn't been added, add the default one.
+        if self.imc_hive.is_none() && matches!(self.firmware.os_flavor(), OsFlavor::Windows) {
+            self.imc_hive = Some(include_bytes!("../../../guest-bootstrap/imc-pipette.hiv"));
         }
 
         let is_linux_direct = self.firmware.is_linux_direct();

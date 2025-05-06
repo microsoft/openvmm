@@ -33,6 +33,8 @@ use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
 use petri_artifacts_core::ResolvedArtifact;
 use pipette_client::PipetteClient;
+use powershell::HyperVGeneration;
+use powershell::HyperVGuestStateIsolationType;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -48,9 +50,9 @@ pub struct PetriVmConfigHyperV {
     name: String,
     arch: MachineArch,
     // Specifies the generation for the virtual machine.
-    generation: powershell::HyperVGeneration,
+    generation: HyperVGeneration,
     // Specifies the Guest State Isolation Type
-    guest_state_isolation_type: powershell::HyperVGuestStateIsolationType,
+    guest_state_isolation_type: HyperVGuestStateIsolationType,
     // Specifies the amount of memory, in bytes, to assign to the virtual machine.
     memory: u64,
     proc_topology: ProcessorTopology,
@@ -68,6 +70,7 @@ pub struct PetriVmConfigHyperV {
 
     os_flavor: OsFlavor,
     expected_boot_event: Option<FirmwareEvent>,
+    imc_hive: Option<&'static [u8]>,
 
     // Folder to store temporary data for this test
     temp_dir: tempfile::TempDir,
@@ -127,6 +130,10 @@ impl PetriVmConfig for PetriVmConfigHyperV {
 
     fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
         Box::new(Self::with_uefi_frontpage(*self, enable))
+    }
+
+    fn with_guest_vsm(self: Box<Self>) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_guest_vsm(*self))
     }
 }
 
@@ -235,14 +242,14 @@ impl PetriVmConfigHyperV {
                     todo!("linux direct not supported on hyper-v")
                 }
                 Firmware::Pcat { guest, .. } => (
-                    powershell::HyperVGuestStateIsolationType::Disabled,
-                    powershell::HyperVGeneration::One,
+                    HyperVGuestStateIsolationType::Disabled,
+                    HyperVGeneration::One,
                     Some(guest.artifact()),
                     None,
                 ),
                 Firmware::Uefi { guest, .. } => (
-                    powershell::HyperVGuestStateIsolationType::Disabled,
-                    powershell::HyperVGeneration::Two,
+                    HyperVGuestStateIsolationType::Disabled,
+                    HyperVGeneration::Two,
                     guest.artifact(),
                     None,
                 ),
@@ -253,12 +260,12 @@ impl PetriVmConfigHyperV {
                     vtl2_nvme_boot: _, // TODO
                 } => (
                     match isolation {
-                        Some(IsolationType::Vbs) => powershell::HyperVGuestStateIsolationType::Vbs,
-                        Some(IsolationType::Snp) => powershell::HyperVGuestStateIsolationType::Snp,
-                        Some(IsolationType::Tdx) => powershell::HyperVGuestStateIsolationType::Tdx,
-                        None => powershell::HyperVGuestStateIsolationType::TrustedLaunch,
+                        Some(IsolationType::Vbs) => HyperVGuestStateIsolationType::Vbs,
+                        Some(IsolationType::Snp) => HyperVGuestStateIsolationType::Snp,
+                        Some(IsolationType::Tdx) => HyperVGuestStateIsolationType::Tdx,
+                        None => HyperVGuestStateIsolationType::TrustedLaunch,
                     },
-                    powershell::HyperVGeneration::Two,
+                    HyperVGeneration::Two,
                     guest.artifact(),
                     Some(igvm_path),
                 ),
@@ -278,8 +285,8 @@ impl PetriVmConfigHyperV {
             memory: 0x1_0000_0000,
             proc_topology: ProcessorTopology::default(),
             vhd_paths,
-            secure_boot_template: matches!(generation, powershell::HyperVGeneration::Two)
-                .then_some(match firmware.os_flavor() {
+            secure_boot_template: matches!(generation, HyperVGeneration::Two).then_some(
+                match firmware.os_flavor() {
                     OsFlavor::Windows => powershell::HyperVSecureBootTemplate::MicrosoftWindows,
                     OsFlavor::Linux => {
                         powershell::HyperVSecureBootTemplate::MicrosoftUEFICertificateAuthority
@@ -287,7 +294,8 @@ impl PetriVmConfigHyperV {
                     OsFlavor::FreeBsd | OsFlavor::Uefi => {
                         powershell::HyperVSecureBootTemplate::SecureBootDisabled
                     }
-                }),
+                },
+            ),
             openhcl_igvm,
             agent_image,
             openhcl_agent_image,
@@ -298,6 +306,7 @@ impl PetriVmConfigHyperV {
             log_source: params.logger.clone(),
             disable_frontpage: true,
             openhcl_command_line: String::new(),
+            imc_hive: None,
         })
     }
 
@@ -348,12 +357,13 @@ impl PetriVmConfigHyperV {
                     super::ApicMode::X2apicSupported => powershell::HyperVApicMode::X2Apic,
                     super::ApicMode::X2apicEnabled => powershell::HyperVApicMode::X2Apic,
                 })
-                .or((self.arch == MachineArch::X86_64
-                    && self.generation == powershell::HyperVGeneration::Two)
-                    .then_some({
-                        // This is necessary for some tests to pass. TODO: fix.
-                        powershell::HyperVApicMode::X2Apic
-                    }));
+                .or(
+                    (self.arch == MachineArch::X86_64 && self.generation == HyperVGeneration::Two)
+                        .then_some({
+                            // This is necessary for some tests to pass. TODO: fix.
+                            powershell::HyperVApicMode::X2Apic
+                        }),
+                );
             vm.set_processor(&powershell::HyperVSetVMProcessorArgs {
                 count: Some(vp_count),
                 apic_mode,
@@ -368,8 +378,8 @@ impl PetriVmConfigHyperV {
 
         for (i, vhds) in self.vhd_paths.iter().enumerate() {
             let (controller_type, controller_number) = match self.generation {
-                powershell::HyperVGeneration::One => (powershell::ControllerType::Ide, i as u32),
-                powershell::HyperVGeneration::Two => {
+                HyperVGeneration::One => (powershell::ControllerType::Ide, i as u32),
+                HyperVGeneration::Two => {
                     (powershell::ControllerType::Scsi, vm.add_scsi_controller(0)?)
                 }
             };
@@ -407,18 +417,21 @@ impl PetriVmConfigHyperV {
             }
 
             if matches!(self.os_flavor, OsFlavor::Windows) {
+                let imc_hive_contents = self
+                    .imc_hive
+                    .unwrap_or(include_bytes!("../../../guest-bootstrap/imc-pipette.hiv"));
                 // Make a file for the IMC hive. It's not guaranteed to be at a fixed
                 // location at runtime.
-                let imc_hive = self.temp_dir.path().join("imc.hiv");
-                {
-                    let mut imc_hive_file = fs::File::create_new(&imc_hive)?;
-                    imc_hive_file
-                        .write_all(include_bytes!("../../../guest-bootstrap/imc-pipette.hiv"))
-                        .context("failed to write imc hive")?;
-                }
+                let imc_hive_file_path = self.temp_dir.path().join("imc.hiv");
+                let mut imc_hive_file = fs::File::create_new(&imc_hive_file_path)?;
+                imc_hive_file
+                    .write_all(imc_hive_contents)
+                    .context("failed to write imc hive")?;
 
                 // Set the IMC
-                vm.set_imc(&imc_hive)?;
+                vm.set_imc(&imc_hive_file_path)?;
+            } else {
+                assert!(self.imc_hive.is_none());
             }
 
             let controller_number = vm.add_scsi_controller(0)?;
@@ -444,9 +457,9 @@ impl PetriVmConfigHyperV {
                 // don't increase VTL2 memory on CVMs
                 !matches!(
                     self.guest_state_isolation_type,
-                    powershell::HyperVGuestStateIsolationType::Vbs
-                        | powershell::HyperVGuestStateIsolationType::Snp
-                        | powershell::HyperVGuestStateIsolationType::Tdx
+                    HyperVGuestStateIsolationType::Vbs
+                        | HyperVGuestStateIsolationType::Snp
+                        | HyperVGuestStateIsolationType::Tdx
                 ),
             )?;
 
@@ -537,7 +550,7 @@ impl PetriVmConfigHyperV {
 
     /// Inject Windows secure boot templates into the VM's UEFI.
     pub fn with_windows_secure_boot_template(mut self) -> Self {
-        if !matches!(self.generation, powershell::HyperVGeneration::Two) {
+        if !matches!(self.generation, HyperVGeneration::Two) {
             panic!("Secure boot templates are only supported for UEFI firmware.");
         }
         self.secure_boot_template = Some(powershell::HyperVSecureBootTemplate::MicrosoftWindows);
@@ -576,6 +589,28 @@ impl PetriVmConfigHyperV {
     /// Set whether to disable the UEFI frontpage.
     pub fn with_uefi_frontpage(mut self, enable: bool) -> Self {
         self.disable_frontpage = !enable;
+        self
+    }
+
+    /// Enables Guest VSM for the VM.
+    ///
+    /// Note: Currently this disables the ability to run with pipette.
+    /// This will be addressed in the future.
+    pub fn with_guest_vsm(mut self) -> Self {
+        if self.openhcl_igvm.is_none()
+            || !matches!(
+                self.guest_state_isolation_type,
+                HyperVGuestStateIsolationType::Vbs
+                    | HyperVGuestStateIsolationType::Snp
+                    | HyperVGuestStateIsolationType::Tdx
+            )
+        {
+            panic!("Guest VSM is only supported for OpenHCL UEFI with isolation.");
+        }
+        if !matches!(self.os_flavor, OsFlavor::Windows) {
+            panic!("Guest VSM is only supported for Windows.");
+        }
+        self.imc_hive = Some(include_bytes!("../../../guest-bootstrap/imc-vsm.hiv"));
         self
     }
 }
