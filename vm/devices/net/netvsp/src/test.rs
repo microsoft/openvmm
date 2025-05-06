@@ -3004,7 +3004,7 @@ async fn test_save_restore_with_rss_table(
         0,
     );
     let mut nic = TestNicDevice::new_with_nic_and_vmbus(&driver, mock_vmbus.clone(), nic).await;
-    let mut channel = channel.restore(&mut nic, restore_state).await.unwrap();
+    let mut channel = channel.restore(&mut nic, restore_state).await?;
     channel.start();
     Ok(())
 }
@@ -3012,19 +3012,27 @@ async fn test_save_restore_with_rss_table(
 #[async_test]
 async fn save_restore_reduced_rss_table_size(driver: DefaultDriver) {
     // Reduce the RSS table size from 128 to 16.
-    test_save_restore_with_rss_table(driver, 16).await.unwrap();
+    let result = test_save_restore_with_rss_table(driver, 16).await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.to_string(), "saved state is invalid");
+    if let Some(cause) = err.source() {
+        assert_eq!(cause.to_string(), "reduced indirection table size");
+    }
 }
 
 #[async_test]
 async fn save_restore_same_rss_table_size(driver: DefaultDriver) {
     // Supply the same RSS table size of 128.
-    test_save_restore_with_rss_table(driver, 128).await.unwrap();
+    let result = test_save_restore_with_rss_table(driver, 128).await;
+    assert!(result.is_ok());
 }
 
 #[async_test]
 async fn save_restore_increased_rss_table_size(driver: DefaultDriver) {
     // Increase the RSS table size from 128 to 256.
-    test_save_restore_with_rss_table(driver, 256).await.unwrap();
+    let result = test_save_restore_with_rss_table(driver, 256).await;
+    assert!(result.is_ok());
 }
 
 async fn remove_vf_with_async_messages(

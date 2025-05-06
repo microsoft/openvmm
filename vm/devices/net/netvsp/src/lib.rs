@@ -815,30 +815,26 @@ impl PrimaryChannelState {
         let rss_state = rss_state
             .map(|mut rss| {
                 if rss.indirection_table.len() != indirection_table_size as usize {
-                    // Dynamic reduction of indirection table can cause unexpected and hard to investigate issues
-                    // with performance and processor overloading. Nic should not reduce the indirection table during restore.
-                    // Logging a warning and continuing with the restore.
-                    tracing::warn!(
-                        saved_indirection_table_size = rss.indirection_table.len(),
-                        adapter_indirection_table_size = indirection_table_size,
-                        "missmatched indirection table size",
-                    );
-
-                    // Dynamic increase of indirection table is done by duplicating the existing entries until
-                    // the desired size is reached.
                     if indirection_table_size > rss.indirection_table.len() as u16 {
-                        while rss.indirection_table.len() < indirection_table_size as usize {
-                            let table_clone = rss.indirection_table.clone();
-                            let current_len = rss.indirection_table.len();
-                            rss.indirection_table.extend(
-                                table_clone[..current_len
-                                    .min(indirection_table_size as usize - current_len)]
-                                    .iter(),
-                            );
-                        }
+                        tracing::warn!(
+                            saved_indirection_table_size = rss.indirection_table.len(),
+                            adapter_indirection_table_size = indirection_table_size,
+                            "missmatched indirection table size",
+                        );
+                        // Dynamic increase of indirection table is done by duplicating the existing entries until
+                        // the desired size is reached.
+                        let table_clone = rss.indirection_table.clone();
+                        let num_to_add =
+                            indirection_table_size as usize - rss.indirection_table.len();
+                        rss.indirection_table
+                            .extend(table_clone.iter().cycle().take(num_to_add));
+                    } else {
+                        // Dynamic reduction of indirection table can cause unexpected and hard to investigate issues
+                        // with performance and processor overloading.
+                        return Err(NetRestoreError::ReducedIndirectionTableSize);
                     }
                 }
-                Ok::<RssState, NetRestoreError>(RssState {
+                Ok(RssState {
                     key: rss
                         .key
                         .try_into()
@@ -1438,6 +1434,8 @@ enum NetRestoreError {
     Open(#[from] OpenError),
     #[error("invalid rss key size")]
     InvalidRssKeySize,
+    #[error("reduced indirection table size")]
+    ReducedIndirectionTableSize,
 }
 
 impl From<NetRestoreError> for RestoreError {
