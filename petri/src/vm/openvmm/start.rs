@@ -213,7 +213,7 @@ impl PetriVmConfigOpenVmm {
             // location at runtime.
             let mut imc_hive_file = tempfile::tempfile().context("failed to create temp file")?;
             imc_hive_file
-                .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
+                .write_all(include_bytes!("../../../guest-bootstrap/imc-pipette.hiv"))
                 .context("failed to write imc hive")?;
 
             // Add the IMC device.

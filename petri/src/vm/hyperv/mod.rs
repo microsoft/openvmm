@@ -413,7 +413,7 @@ impl PetriVmConfigHyperV {
                 {
                     let mut imc_hive_file = fs::File::create_new(&imc_hive)?;
                     imc_hive_file
-                        .write_all(include_bytes!("../../../guest-bootstrap/imc.hiv"))
+                        .write_all(include_bytes!("../../../guest-bootstrap/imc-pipette.hiv"))
                         .context("failed to write imc hive")?;
                 }
 
