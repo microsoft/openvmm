@@ -8,9 +8,6 @@ use vm_topology::processor::VpIndex;
 /// This trait provides the operations between the VP dispatch loop and the
 /// platform's devices.
 pub trait CpuIo {
-    /// Check if a given address will be handled by a device.
-    fn is_mmio(&self, address: u64) -> bool;
-
     /// Gets the vector of the next interrupt to inject from the legacy
     /// interrupt controller (PIC) and sets the IRQ in service.
     fn acknowledge_pic_interrupt(&self) -> Option<u8>;

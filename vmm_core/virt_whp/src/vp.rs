@@ -802,7 +802,6 @@ mod x86 {
 
             if self.intercept_state().is_some()
                 && self.state.active_vtl == Vtl::Vtl0
-                && !dev.is_mmio(access.Gpa)
                 && self
                     .state
                     .vtls

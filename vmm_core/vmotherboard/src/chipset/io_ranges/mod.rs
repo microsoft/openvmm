@@ -195,10 +195,6 @@ impl<T: RangeKey> IoRanges<T> {
             .take()
             .expect("must only be called once")
     }
-
-    pub fn is_occupied(&self, addr: T) -> bool {
-        self.inner.read().map.contains(&addr)
-    }
 }
 
 pub struct LookupResult {

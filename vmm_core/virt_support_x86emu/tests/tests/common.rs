@@ -49,10 +49,6 @@ pub fn long_protected_mode(user_mode: bool) -> CpuState {
 pub struct MockCpu;
 
 impl CpuIo for MockCpu {
-    fn is_mmio(&self, _address: u64) -> bool {
-        todo!()
-    }
-
     fn acknowledge_pic_interrupt(&self) -> Option<u8> {
         todo!()
     }
