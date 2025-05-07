@@ -55,3 +55,8 @@ pub mod patch {
     pub use flowey_core::patch::*;
     pub use flowey_core::register_patch;
 }
+
+/// Utility functions.
+pub mod util {
+    pub use flowey_core::util::*;
+}

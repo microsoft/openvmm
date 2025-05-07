@@ -171,10 +171,7 @@ jobs:
     - name: build OpenVMM guide (mdbook)
       run: |-
         flowey e 0 flowey_lib_hvlite::build_guide 1
-        flowey e 0 flowey_lib_hvlite::artifact_guide::publish 0
-      shell: bash
-    - name: copying guide to artifact dir
-      run: flowey e 0 flowey_lib_common::copy_to_artifact_dir 0
+        flowey e 0 flowey_core::pipeline::artifact::publish 0
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 0 flowey_lib_common::cache 3
@@ -266,7 +263,7 @@ jobs:
     - name: check if openvmm needs to be cloned
       run: |-
         flowey.exe e 1 flowey_lib_common::git_checkout 0
-        flowey.exe v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar3 --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46
+        flowey.exe v 1 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar1 --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46
         flowey.exe v 1 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' --write-to-gh-env FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
@@ -274,7 +271,7 @@ jobs:
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar3 }}
+        persist-credentials: ${{ env.floweyvar1 }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -294,14 +291,14 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey.exe e 1 flowey_lib_common::cache 0
-        flowey.exe v 1 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --write-to-gh-env floweyvar1 --is-raw-string
-        flowey.exe v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey.exe v 1 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey.exe v 1 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar1 }}
-        path: ${{ env.floweyvar2 }}
+        key: ${{ env.floweyvar2 }}
+        path: ${{ env.floweyvar3 }}
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
@@ -338,15 +335,9 @@ jobs:
         flowey.exe e 1 flowey_lib_common::run_cargo_doc 0
       shell: bash
     - name: document repo for target x86_64-pc-windows-msvc
-      run: flowey.exe e 1 flowey_lib_hvlite::build_rustdoc 0
-      shell: bash
-    - name: archive rustdoc dir
       run: |-
-        flowey.exe e 1 flowey_lib_hvlite::artifact_rustdoc::publish 0
-        flowey.exe e 1 flowey_lib_hvlite::artifact_rustdoc::publish 1
-      shell: bash
-    - name: copying rustdoc to artifact dir
-      run: flowey.exe e 1 flowey_lib_common::copy_to_artifact_dir 0
+        flowey.exe e 1 flowey_lib_hvlite::build_rustdoc 0
+        flowey.exe e 1 flowey_core::pipeline::artifact::publish 0
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey.exe e 1 flowey_lib_common::cache 3
@@ -3332,7 +3323,7 @@ jobs:
     - name: check if openvmm needs to be cloned
       run: |-
         flowey e 2 flowey_lib_common::git_checkout 0
-        flowey v 2 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar3 --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46
+        flowey v 2 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --write-to-gh-env floweyvar1 --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46
         flowey v 2 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' --write-to-gh-env FLOWEY_CONDITION
       shell: bash
     - id: flowey_lib_common__git_checkout__1
@@ -3340,7 +3331,7 @@ jobs:
       with:
         fetch-depth: '1'
         path: repo0
-        persist-credentials: ${{ env.floweyvar3 }}
+        persist-credentials: ${{ env.floweyvar1 }}
       name: checkout repo openvmm
       if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
     - name: report cloned repo directories
@@ -3360,14 +3351,14 @@ jobs:
     - name: Pre-processing cache vars
       run: |-
         flowey e 2 flowey_lib_common::cache 0
-        flowey v 2 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --write-to-gh-env floweyvar1 --is-raw-string
-        flowey v 2 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey v 2 'flowey_lib_common::cache:2:flowey_lib_common/src/cache.rs:407:72' --write-to-gh-env floweyvar2 --is-raw-string
+        flowey v 2 'flowey_lib_common::cache:1:flowey_lib_common/src/cache.rs:406:72' --write-to-gh-env floweyvar3 --is-raw-string
       shell: bash
     - id: flowey_lib_common__cache__1
       uses: actions/cache@v4
       with:
-        key: ${{ env.floweyvar1 }}
-        path: ${{ env.floweyvar2 }}
+        key: ${{ env.floweyvar2 }}
+        path: ${{ env.floweyvar3 }}
       name: 'Restore cache: gh-release-download'
     - name: download artifacts from github releases
       run: |-
@@ -3410,15 +3401,9 @@ jobs:
         flowey e 2 flowey_lib_common::run_cargo_doc 0
       shell: bash
     - name: document repo for target x86_64-unknown-linux-gnu
-      run: flowey e 2 flowey_lib_hvlite::build_rustdoc 0
-      shell: bash
-    - name: archive rustdoc dir
       run: |-
-        flowey e 2 flowey_lib_hvlite::artifact_rustdoc::publish 0
-        flowey e 2 flowey_lib_hvlite::artifact_rustdoc::publish 1
-      shell: bash
-    - name: copying rustdoc to artifact dir
-      run: flowey e 2 flowey_lib_common::copy_to_artifact_dir 0
+        flowey e 2 flowey_lib_hvlite::build_rustdoc 0
+        flowey e 2 flowey_core::pipeline::artifact::publish 0
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 2 flowey_lib_common::cache 3
@@ -5115,7 +5100,7 @@ jobs:
         flowey.exe e 6 flowey_lib_common::run_cargo_build 0
         flowey.exe e 6 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 6 flowey_lib_hvlite::build_openvmm 0
-        flowey.exe e 6 flowey_core::pipeline::artifact::publish 0
+        flowey.exe e 6 flowey_core::pipeline::artifact::publish 2
         flowey.exe e 6 flowey_lib_hvlite::init_cross_build 2
       shell: bash
     - name: cargo build pipette
@@ -5123,7 +5108,7 @@ jobs:
         flowey.exe e 6 flowey_lib_common::run_cargo_build 1
         flowey.exe e 6 flowey_lib_hvlite::run_cargo_build 1
         flowey.exe e 6 flowey_lib_hvlite::build_pipette 0
-        flowey.exe e 6 flowey_core::pipeline::artifact::publish 1
+        flowey.exe e 6 flowey_core::pipeline::artifact::publish 0
       shell: bash
     - name: create cargo-nextest cache dir
       run: flowey.exe e 6 flowey_lib_common::download_cargo_nextest 0
@@ -5158,7 +5143,7 @@ jobs:
       run: |-
         flowey.exe e 6 flowey_lib_common::run_cargo_nextest_archive 0
         flowey.exe e 6 flowey_lib_hvlite::build_nextest_vmm_tests 0
-        flowey.exe e 6 flowey_core::pipeline::artifact::publish 2
+        flowey.exe e 6 flowey_core::pipeline::artifact::publish 1
       shell: bash
     - name: 'validate cache entry: cargo-nextest'
       run: flowey.exe e 6 flowey_lib_common::cache 3
@@ -5344,7 +5329,7 @@ jobs:
         flowey.exe e 7 flowey_lib_common::run_cargo_build 5
         flowey.exe e 7 flowey_lib_hvlite::run_cargo_build 5
         flowey.exe e 7 flowey_lib_hvlite::build_vmgstool 0
-        flowey.exe e 7 flowey_core::pipeline::artifact::publish 5
+        flowey.exe e 7 flowey_core::pipeline::artifact::publish 0
         flowey.exe e 7 flowey_lib_hvlite::init_cross_build 3
       shell: bash
     - name: cargo build hypestv
@@ -5352,7 +5337,7 @@ jobs:
         flowey.exe e 7 flowey_lib_common::run_cargo_build 0
         flowey.exe e 7 flowey_lib_hvlite::run_cargo_build 0
         flowey.exe e 7 flowey_lib_hvlite::build_hypestv 0
-        flowey.exe e 7 flowey_core::pipeline::artifact::publish 0
+        flowey.exe e 7 flowey_core::pipeline::artifact::publish 1
         flowey.exe e 7 flowey_lib_hvlite::init_cross_build 1
       shell: bash
     - name: cargo build vmgs_lib
@@ -5365,7 +5350,7 @@ jobs:
       run: |-
         flowey.exe e 7 flowey_lib_hvlite::build_and_test_vmgs_lib 1
         flowey.exe e 7 flowey_lib_hvlite::build_and_test_vmgs_lib 2
-        flowey.exe e 7 flowey_core::pipeline::artifact::publish 1
+        flowey.exe e 7 flowey_core::pipeline::artifact::publish 2
         flowey.exe e 7 flowey_lib_hvlite::init_cross_build 4
       shell: bash
     - name: cargo build igvmfilegen
@@ -5373,7 +5358,7 @@ jobs:
         flowey.exe e 7 flowey_lib_common::run_cargo_build 1
         flowey.exe e 7 flowey_lib_hvlite::run_cargo_build 1
         flowey.exe e 7 flowey_lib_hvlite::build_igvmfilegen 0
-        flowey.exe e 7 flowey_core::pipeline::artifact::publish 2
+        flowey.exe e 7 flowey_core::pipeline::artifact::publish 3
         flowey.exe e 7 flowey_lib_hvlite::init_cross_build 5
       shell: bash
     - name: cargo build ohcldiag-dev
@@ -5381,7 +5366,7 @@ jobs:
         flowey.exe e 7 flowey_lib_common::run_cargo_build 2
         flowey.exe e 7 flowey_lib_hvlite::run_cargo_build 2
         flowey.exe e 7 flowey_lib_hvlite::build_ohcldiag_dev 0
-        flowey.exe e 7 flowey_core::pipeline::artifact::publish 3
+        flowey.exe e 7 flowey_core::pipeline::artifact::publish 4
         flowey.exe e 7 flowey_lib_hvlite::init_cross_build 0
       shell: bash
     - name: cargo build tmk_vmm
@@ -5389,7 +5374,7 @@ jobs:
         flowey.exe e 7 flowey_lib_common::run_cargo_build 3
         flowey.exe e 7 flowey_lib_hvlite::run_cargo_build 3
         flowey.exe e 7 flowey_lib_hvlite::build_tmk_vmm 0
-        flowey.exe e 7 flowey_core::pipeline::artifact::publish 4
+        flowey.exe e 7 flowey_core::pipeline::artifact::publish 5
       shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey.exe e 7 flowey_lib_common::cache 3

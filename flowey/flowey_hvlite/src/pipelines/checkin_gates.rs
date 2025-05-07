@@ -167,7 +167,7 @@ impl IntoPipeline for CheckinGatesCli {
         let mut all_jobs = Vec::new();
 
         // emit mdbook guide build job
-        let (pub_guide, use_guide) = pipeline.new_artifact("guide");
+        let (pub_guide, use_guide) = pipeline.new_typed_artifact("guide");
         let job = pipeline
             .new_job(
                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
@@ -177,19 +177,17 @@ impl IntoPipeline for CheckinGatesCli {
             .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
                 FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
             ))
-            .dep_on(
-                |ctx| flowey_lib_hvlite::_jobs::build_and_publish_guide::Params {
-                    artifact_dir: ctx.publish_artifact(pub_guide),
-                    done: ctx.new_done_handle(),
-                },
-            )
+            .dep_on(|ctx| flowey_lib_hvlite::build_guide::Request {
+                built_guide: ctx.publish_typed_artifact(pub_guide),
+            })
             .finish();
 
         all_jobs.push(job);
 
         // emit rustdoc jobs
-        let (pub_rustdoc_linux, use_rustdoc_linux) = pipeline.new_artifact("x64-linux-rustdoc");
-        let (pub_rustdoc_win, use_rustdoc_win) = pipeline.new_artifact("x64-windows-rustdoc");
+        let (pub_rustdoc_linux, use_rustdoc_linux) =
+            pipeline.new_typed_artifact("x64-linux-rustdoc");
+        let (pub_rustdoc_win, use_rustdoc_win) = pipeline.new_typed_artifact("x64-windows-rustdoc");
         for (target, platform, pub_rustdoc) in [
             (
                 CommonTriple::X86_64_WINDOWS_MSVC,
@@ -211,13 +209,10 @@ impl IntoPipeline for CheckinGatesCli {
                 .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
                     platform,
                 ))
-                .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::build_and_publish_rustdoc::Params {
-                        target_triple: target.as_triple(),
-                        artifact_dir: ctx.publish_artifact(pub_rustdoc),
-                        done: ctx.new_done_handle(),
-                    },
-                )
+                .dep_on(|ctx| flowey_lib_hvlite::build_rustdoc::Request {
+                    target_triple: target.as_triple(),
+                    docs: ctx.publish_typed_artifact(pub_rustdoc),
+                })
                 .finish();
 
             all_jobs.push(job);
@@ -225,8 +220,8 @@ impl IntoPipeline for CheckinGatesCli {
 
         // emit consolidated gh pages publish job
         if matches!(config, PipelineConfig::Ci) {
-            let artifact_dir = if matches!(backend_hint, PipelineBackendHint::Local) {
-                let (publish, _use) = pipeline.new_artifact("gh-pages");
+            let pub_artifact = if matches!(backend_hint, PipelineBackendHint::Local) {
+                let (publish, _use) = pipeline.new_typed_artifact("gh-pages");
                 Some(publish)
             } else {
                 None
@@ -238,13 +233,17 @@ impl IntoPipeline for CheckinGatesCli {
                     FlowPlatform::Linux(FlowPlatformLinuxDistro::Ubuntu),
                 ))
                 .dep_on(
-                    |ctx| flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages::Params {
-                        rustdoc_linux: ctx.use_artifact(&use_rustdoc_linux),
-                        rustdoc_windows: ctx.use_artifact(&use_rustdoc_win),
-                        guide: ctx.use_artifact(&use_guide),
-                        artifact_dir: artifact_dir.map(|x| ctx.publish_artifact(x)),
-                        done: ctx.new_done_handle(),
-                    },
+                    |ctx| {
+                        flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages::Params {
+                        rustdoc_linux: ctx.use_typed_artifact(&use_rustdoc_linux),
+                        rustdoc_windows: ctx.use_typed_artifact(&use_rustdoc_win),
+                        guide: ctx.use_typed_artifact(&use_guide),
+                        output: if let Some(pub_artifact) = pub_artifact {
+                            ctx.publish_typed_artifact(pub_artifact)
+                        } else {
+                            ctx.new_done_handle().discard_result()
+                        },
+                    }}
                 )
                 .gh_grant_permissions::<flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages::Node>([
                     (GhPermission::IdToken, GhPermissionValue::Write),
