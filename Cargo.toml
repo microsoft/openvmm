@@ -46,6 +46,8 @@ members = [
   "vm/loader/igvmfilegen",
   "vm/vmgs/vmgs_lib",
   "vm/vmgs/vmgstool",
+
+  "vm/devices/pci/vpci_client", # TEMP
 ]
 exclude = [
   "xsync",

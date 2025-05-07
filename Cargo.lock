@@ -9081,6 +9081,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "vpci_client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "thiserror 2.0.12",
+ "tracelimit",
+ "tracing",
+ "vmbus_async",
+ "vmbus_channel",
+ "vmbus_ring",
+ "vpci_protocol",
+]
+
+[[package]]
 name = "vpci_protocol"
 version = "0.0.0"
 dependencies = [
