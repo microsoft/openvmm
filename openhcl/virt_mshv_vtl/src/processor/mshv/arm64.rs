@@ -208,6 +208,16 @@ impl BackingPrivate for HypervisorBackedArm64 {
         Ok(())
     }
 
+    fn process_interrupts(
+        _this: &mut UhProcessor<'_, Self>,
+        scan_irr: hv1_structs::VtlArray<bool, 2>,
+        _first_scan_irr: &mut bool,
+        _dev: &impl CpuIo,
+    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
+        assert!(scan_irr.iter().all(|x| !x));
+        Ok(false)
+    }
+
     fn request_extint_readiness(this: &mut UhProcessor<'_, Self>) {
         this.backing
             .next_deliverability_notifications
@@ -220,14 +230,6 @@ impl BackingPrivate for HypervisorBackedArm64 {
             .set_sints(this.backing.next_deliverability_notifications.sints() | sints);
     }
 
-    fn handle_cross_vtl_interrupts(
-        _this: &mut UhProcessor<'_, Self>,
-        _dev: &impl CpuIo,
-    ) -> Result<bool, UhRunVpError> {
-        // TODO WHP ARM GUEST VSM
-        Ok(false)
-    }
-
     fn inspect_extra(_this: &mut UhProcessor<'_, Self>, _resp: &mut inspect::Response<'_>) {}
 
     fn hv(&self, _vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
@@ -235,10 +237,6 @@ impl BackingPrivate for HypervisorBackedArm64 {
     }
 
     fn hv_mut(&mut self, _vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
-        None
-    }
-
-    fn untrusted_synic(&self) -> Option<&ProcessorSynic> {
         None
     }
 
@@ -258,8 +256,6 @@ impl BackingPrivate for HypervisorBackedArm64 {
         // whether VTL 1 is enabled on the vp (this can be cached).
         false
     }
-
-    fn handle_exit_activity(_this: &mut UhProcessor<'_, Self>) {}
 }
 
 impl UhProcessor<'_, HypervisorBackedArm64> {
