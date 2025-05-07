@@ -60,6 +60,8 @@ pub trait PetriVmConfig: Send {
     ) -> Box<dyn PetriVmConfig>;
     /// Sets whether UEFI frontpage is enabled.
     fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig>;
+    /// Enables Guest VSM.
+    fn with_guest_vsm(self: Box<Self>) -> Box<dyn PetriVmConfig>;
 }
 
 /// Common processor topology information for the VM.

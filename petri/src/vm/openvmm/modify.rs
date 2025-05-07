@@ -6,6 +6,7 @@
 use super::MANA_INSTANCE;
 use super::NIC_MAC_ADDRESS;
 use super::PetriVmConfigOpenVmm;
+use crate::Firmware;
 use crate::ProcessorTopology;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
@@ -23,6 +24,7 @@ use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use hvlite_helpers::disk::open_disk_type;
 use petri_artifacts_common::tags::MachineArch;
+use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ResolvedArtifact;
 use std::path::Path;
 use tpm_resources::TpmDeviceHandle;
@@ -432,6 +434,27 @@ impl PetriVmConfigOpenVmm {
             .late_map_vtl0_memory =
             (!allow).then_some(hvlite_defs::config::LateMapVtl0MemoryPolicy::InjectException);
 
+        self
+    }
+
+    /// Enables Guest VSM for the VM.
+    ///
+    /// Note: Currently this disables the ability to run with pipette.
+    /// This will be addressed in the future.
+    pub fn with_guest_vsm(mut self) -> Self {
+        if !matches!(
+            self.firmware,
+            Firmware::OpenhclUefi {
+                isolation: Some(_),
+                ..
+            },
+        ) {
+            panic!("Guest VSM is only supported for OpenHCL UEFI with isolation.");
+        }
+        if !matches!(self.os_flavor(), OsFlavor::Windows) {
+            panic!("Guest VSM is only supported for Windows.");
+        }
+        self.imc_hive = Some(include_bytes!("../../../guest-bootstrap/imc-vsm.hiv"));
         self
     }
 }

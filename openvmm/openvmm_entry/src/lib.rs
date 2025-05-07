@@ -921,6 +921,7 @@ fn vm_config_from_command_line(
                                 UefiConsoleModeCli::None => UefiConsoleMode::None,
                             },
                             default_boot_always_attempt: opt.default_boot_always_attempt,
+                            enable_imc_when_isolated: opt.imc.is_some(),
                         }
                     },
                     com1: with_vmbus_com1_serial,

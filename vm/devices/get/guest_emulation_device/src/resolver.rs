@@ -97,6 +97,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                         disable_frontpage,
                         console_mode,
                         default_boot_always_attempt,
+                        enable_imc_when_isolated,
                     } => crate::GuestFirmwareConfig::Uefi {
                         enable_vpci_boot,
                         firmware_debug,
@@ -108,6 +109,7 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                             UefiConsoleMode::None => get_protocol::UefiConsoleMode::NONE,
                         },
                         default_boot_always_attempt,
+                        enable_imc_when_isolated,
                     },
                     GuestFirmwareConfig::Pcat { boot_order } => crate::GuestFirmwareConfig::Pcat {
                         boot_order: boot_order.map(|x| match x {

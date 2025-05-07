@@ -406,6 +406,7 @@ impl PetriVmConfigOpenVmm {
             ged,
             vtl2_settings,
             framebuffer_access,
+            imc_hive: None,
         }
         .with_processor_topology(ProcessorTopology::default()))
     }
@@ -840,6 +841,7 @@ impl PetriVmConfigSetupCore<'_> {
                 enable_vpci_boot: false,
                 console_mode: get_resources::ged::UefiConsoleMode::COM1,
                 default_boot_always_attempt: false,
+                enable_imc_when_isolated: true,
             },
             com1: true,
             com2: true,
