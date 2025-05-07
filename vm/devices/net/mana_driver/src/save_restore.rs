@@ -66,6 +66,7 @@ pub struct GdmaDriverSavedState {
     #[mesh(14)]
     pub link_toggle: Vec<(u32, bool)>,
 
+    /// The hwc failure state
     #[mesh(15)]
     pub hwc_failure: bool,
 }

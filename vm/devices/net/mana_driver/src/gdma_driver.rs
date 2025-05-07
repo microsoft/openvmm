@@ -257,54 +257,11 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         num_vps: u32,
         dma_buffer: Option<MemoryBlock>,
     ) -> anyhow::Result<Self> {
-        let bar0_mapping = device.map_bar(0)?;
-        let bar0_len = bar0_mapping.len();
-        if bar0_len < size_of::<RegMap>() {
-            anyhow::bail!("bar0 ({} bytes) too small for reg map", bar0_mapping.len());
-        }
+        let (bar0_mapping, map) = Self::init(&mut device)?;
+
         // Only allocate the HWC interrupt now. Rest will be allocated later.
         let num_msix = 1;
         let mut interrupt0 = device.map_interrupt(0, 0)?;
-        let mut map = RegMap::new_zeroed();
-        for i in 0..size_of_val(&map) / 4 {
-            let v = bar0_mapping.read_u32(i * 4);
-            // Unmapped device memory will return -1 on reads, so check the first 32
-            // bits for this condition to get a clear error message early.
-            if i == 0 && v == !0 {
-                anyhow::bail!("bar0 read returned -1, device is not present");
-            }
-            map.as_mut_bytes()[i * 4..(i + 1) * 4].copy_from_slice(&v.to_ne_bytes());
-        }
-
-        tracing::debug!(?map, "register map");
-
-        // Log on unknown major version numbers. This is not necessarily an
-        // error, so continue.
-        if map.major_version_number != 0 && map.major_version_number != 1 {
-            tracing::warn!(
-                major = map.major_version_number,
-                minor = map.minor_version_number,
-                micro = map.micro_version_number,
-                "unrecognized major version"
-            );
-        }
-
-        if map.vf_gdma_sriov_shared_sz != 32 {
-            anyhow::bail!(
-                "unexpected shared memory size: {}",
-                map.vf_gdma_sriov_shared_sz
-            );
-        }
-
-        if (bar0_len as u64).saturating_sub(map.vf_gdma_sriov_shared_reg_start)
-            < map.vf_gdma_sriov_shared_sz as u64
-        {
-            anyhow::bail!(
-                "bar0 ({} bytes) too small for shared memory at {}",
-                bar0_mapping.len(),
-                map.vf_gdma_sriov_shared_reg_start
-            );
-        }
 
         let dma_buffer = if let Some(dma_buffer) = dma_buffer {
             dma_buffer
@@ -573,14 +530,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         })
     }
 
-    #[allow(dead_code)]
-    pub async fn restore(
-        saved_state: GdmaDriverSavedState,
-        mut device: T,
-        dma_buffer: MemoryBlock,
-    ) -> anyhow::Result<Self> {
-        tracing::info!("restoring gdma driver");
-
+    pub fn init(device: &mut T) -> anyhow::Result<(<T as DeviceBacking>::Registers, RegMap)> {
         let bar0_mapping = device.map_bar(0)?;
         let bar0_len = bar0_mapping.len();
         if bar0_len < size_of::<RegMap>() {
@@ -598,7 +548,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             map.as_mut_bytes()[i * 4..(i + 1) * 4].copy_from_slice(&v.to_ne_bytes());
         }
 
-        tracing::debug!(?map, "register map on restore");
+        tracing::debug!(?map, "register map");
 
         // Log on unknown major version numbers. This is not necessarily an
         // error, so continue.
@@ -628,7 +578,20 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             );
         }
 
+        Ok((bar0_mapping, map))
+    }
+
+    #[allow(dead_code)]
+    pub async fn restore(
+        saved_state: GdmaDriverSavedState,
+        mut device: T,
+        dma_buffer: MemoryBlock,
+    ) -> anyhow::Result<Self> {
+        tracing::info!("restoring gdma driver");
+
+        let (bar0_mapping, map) = Self::init(&mut device)?;
         let doorbell_shift = map.vf_db_page_sz.trailing_zeros();
+
         let bar0 = Arc::new(Bar0 {
             mem: bar0_mapping,
             map,
