@@ -210,11 +210,10 @@ impl BackingPrivate for HypervisorBackedArm64 {
 
     fn process_interrupts(
         _this: &mut UhProcessor<'_, Self>,
-        scan_irr: hv1_structs::VtlArray<bool, 2>,
+        _scan_irr: hv1_structs::VtlArray<bool, 2>,
         _first_scan_irr: &mut bool,
         _dev: &impl CpuIo,
     ) -> Result<bool, VpHaltReason<UhRunVpError>> {
-        assert!(scan_irr.iter().all(|x| !x));
         Ok(false)
     }
 
