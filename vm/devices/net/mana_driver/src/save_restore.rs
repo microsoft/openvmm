@@ -65,6 +65,9 @@ pub struct GdmaDriverSavedState {
     /// Link status by vport index
     #[mesh(14)]
     pub link_toggle: Vec<(u32, bool)>,
+
+    #[mesh(15)]
+    pub hwc_failure: bool,
 }
 
 /// Saved state of an interrupt for restoration during servicing

@@ -160,7 +160,7 @@ pub struct GdmaDriver<T: DeviceBacking> {
     hwc_timeout_in_ms: u32,
     hwc_failure: bool,
     db_id: u32,
-    saving: bool,
+    state_saved: bool,
 }
 
 const EQ_PAGE: usize = 0;
@@ -176,10 +176,10 @@ const RWQE_SIZE: u32 = 32;
 
 impl<T: DeviceBacking> Drop for GdmaDriver<T> {
     fn drop(&mut self) {
-        tracing::debug!(?self.saving, ?self.hwc_failure, "dropping gdma driver");
+        tracing::debug!(?self.state_saved, ?self.hwc_failure, "dropping gdma driver");
 
         // Don't destroy anything if we're saving its state for restoration.
-        if self.saving {
+        if self.state_saved {
             return;
         }
 
@@ -504,7 +504,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_warning_time_in_ms: HWC_WARNING_TIME_IN_MS,
             hwc_timeout_in_ms: HWC_TIMEOUT_DEFAULT_IN_MS,
             hwc_failure: false,
-            saving: false,
+            state_saved: false,
             db_id,
         };
 
@@ -532,11 +532,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
     #[allow(dead_code)]
     pub async fn save(mut self) -> anyhow::Result<GdmaDriverSavedState> {
-        if self.hwc_failure {
-            anyhow::bail!("can't save after hwc failure");
-        }
-
-        self.saving = true;
+        self.state_saved = true;
 
         let doorbell = self.bar0.save(Some(self.db_id as u64));
         let interrupt_config = self
@@ -572,6 +568,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             num_msix: self.num_msix,
             min_queue_avail: self.min_queue_avail,
             link_toggle: self.link_toggle.clone(),
+            hwc_failure: self.hwc_failure,
             interrupt_config,
         })
     }
@@ -692,8 +689,8 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_subscribed: false,
             hwc_warning_time_in_ms: HWC_WARNING_TIME_IN_MS,
             hwc_timeout_in_ms: HWC_TIMEOUT_DEFAULT_IN_MS,
-            hwc_failure: false,
-            saving: false,
+            hwc_failure: saved_state.hwc_failure,
+            state_saved: false,
             db_id: db_id as u32,
         };
 
