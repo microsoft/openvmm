@@ -9085,13 +9085,24 @@ name = "vpci_client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "chipset_device",
+ "closeable_mutex",
+ "guestmem",
+ "guid",
+ "pal_async",
+ "parking_lot",
+ "test_with_tracing",
  "thiserror 2.0.12",
  "tracelimit",
  "tracing",
  "vmbus_async",
  "vmbus_channel",
  "vmbus_ring",
+ "vmcore",
+ "vpci",
  "vpci_protocol",
+ "zerocopy 0.8.24",
 ]
 
 [[package]]
