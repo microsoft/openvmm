@@ -630,9 +630,9 @@ impl IntoPipeline for CheckinGatesCli {
             };
 
             let (pub_openhcl_igvm, use_openhcl_igvm) =
-                pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-openhcl-igvm"));
             let (pub_openhcl_igvm_extras, _use_openhcl_igvm_extras) =
-                pipeline.new_artifact(format!("{arch_tag}-openhcl-igvm-extras"));
+                pipeline.new_typed_artifact(format!("{arch_tag}-openhcl-igvm-extras"));
 
             let (pub_openhcl_baseline, _use_openhcl_baseline) =
                 if matches!(config, PipelineConfig::Ci) {
@@ -715,11 +715,9 @@ impl IntoPipeline for CheckinGatesCli {
                                 ))),
                             })
                             .collect(),
-                        artifact_dir_openhcl_igvm: ctx.publish_artifact(pub_openhcl_igvm),
-                        artifact_dir_openhcl_igvm_extras: ctx
-                            .publish_artifact(pub_openhcl_igvm_extras),
+                        openhcl_igvm: ctx.publish_typed_artifact(pub_openhcl_igvm),
+                        openhcl_igvm_extras: ctx.publish_typed_artifact(pub_openhcl_igvm_extras),
                         artifact_openhcl_verify_size_baseline: publish_baseline_artifact,
-                        done: ctx.new_done_handle(),
                     }
                 })
                 .dep_on(|ctx| flowey_lib_hvlite::build_pipette::Request {
@@ -1135,6 +1133,7 @@ impl IntoPipeline for CheckinGatesCli {
 // of thing that would really benefit from a derive macro.
 mod vmm_tests_artifact_builders {
     use flowey::pipeline::prelude::*;
+    use flowey_lib_hvlite::_jobs::build_and_publish_openhcl_igvm_from_recipe::OpenhclIgvmSet;
     use flowey_lib_hvlite::_jobs::consume_and_test_nextest_vmm_tests_archive::VmmTestsDepArtifacts;
     use flowey_lib_hvlite::build_guest_test_uefi::GuestTestUefiOutput;
     use flowey_lib_hvlite::build_openvmm::OpenvmmOutput;
@@ -1184,7 +1183,7 @@ mod vmm_tests_artifact_builders {
                 tmk_vmm: Some(ctx.use_typed_artifact(&use_tmk_vmm)),
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),
                 // not currently required, since OpenHCL tests cannot be run on OpenVMM on linux
-                artifact_dir_openhcl_igvm_files: None,
+                openhcl_igvm_files: None,
                 tmk_vmm_linux_musl: None,
             }))
         }
@@ -1197,7 +1196,7 @@ mod vmm_tests_artifact_builders {
         pub use_pipette_windows: Option<UseTypedArtifact<PipetteOutput>>,
         pub use_tmk_vmm: Option<UseTypedArtifact<TmkVmmOutput>>,
         // linux build machine
-        pub use_openhcl_igvm_files: Option<UseArtifact>,
+        pub use_openhcl_igvm_files: Option<UseTypedArtifact<OpenhclIgvmSet>>,
         pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
         pub use_tmk_vmm_linux_musl: Option<UseTypedArtifact<TmkVmmOutput>>,
         // any machine
@@ -1232,7 +1231,7 @@ mod vmm_tests_artifact_builders {
                 pipette_windows: Some(ctx.use_typed_artifact(&use_pipette_windows)),
                 pipette_linux_musl: Some(ctx.use_typed_artifact(&use_pipette_linux_musl)),
                 guest_test_uefi: Some(ctx.use_typed_artifact(&use_guest_test_uefi)),
-                artifact_dir_openhcl_igvm_files: Some(ctx.use_artifact(&use_openhcl_igvm_files)),
+                openhcl_igvm_files: Some(ctx.use_typed_artifact(&use_openhcl_igvm_files)),
                 tmk_vmm: Some(ctx.use_typed_artifact(&use_tmk_vmm)),
                 tmk_vmm_linux_musl: Some(ctx.use_typed_artifact(&use_tmk_vmm_linux_musl)),
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),
@@ -1247,7 +1246,7 @@ mod vmm_tests_artifact_builders {
         pub use_pipette_windows: Option<UseTypedArtifact<PipetteOutput>>,
         pub use_tmk_vmm: Option<UseTypedArtifact<TmkVmmOutput>>,
         // linux build machine
-        pub use_openhcl_igvm_files: Option<UseArtifact>,
+        pub use_openhcl_igvm_files: Option<UseTypedArtifact<OpenhclIgvmSet>>,
         pub use_pipette_linux_musl: Option<UseTypedArtifact<PipetteOutput>>,
         pub use_tmk_vmm_linux_musl: Option<UseTypedArtifact<TmkVmmOutput>>,
         // any machine
@@ -1282,7 +1281,7 @@ mod vmm_tests_artifact_builders {
                 pipette_windows: Some(ctx.use_typed_artifact(&use_pipette_windows)),
                 pipette_linux_musl: Some(ctx.use_typed_artifact(&use_pipette_linux_musl)),
                 guest_test_uefi: Some(ctx.use_typed_artifact(&use_guest_test_uefi)),
-                artifact_dir_openhcl_igvm_files: Some(ctx.use_artifact(&use_openhcl_igvm_files)),
+                openhcl_igvm_files: Some(ctx.use_typed_artifact(&use_openhcl_igvm_files)),
                 tmk_vmm: Some(ctx.use_typed_artifact(&use_tmk_vmm)),
                 tmk_vmm_linux_musl: Some(ctx.use_typed_artifact(&use_tmk_vmm_linux_musl)),
                 tmks: Some(ctx.use_typed_artifact(&use_tmks)),

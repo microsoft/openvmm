@@ -26,7 +26,9 @@ pub enum OpenvmmHclBuildProfile {
 
 #[derive(Serialize, Deserialize)]
 pub struct OpenvmmHclOutput {
+    #[serde(rename = "openvmm_hcl")]
     pub bin: PathBuf,
+    #[serde(rename = "openvmm_hcl.dbg")]
     pub dbg: Option<PathBuf>,
 }
 

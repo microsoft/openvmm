@@ -10,12 +10,19 @@ use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 pub struct IgvmOutput {
+    #[serde(rename = "igvm.bin")]
     pub igvm_bin: PathBuf,
+    #[serde(rename = "igvm.bin.map")]
     pub igvm_map: Option<PathBuf>,
+    #[serde(rename = "igvm-tdx.json")]
     pub igvm_tdx_json: Option<PathBuf>,
+    #[serde(rename = "igvm-snp.json")]
     pub igvm_snp_json: Option<PathBuf>,
+    #[serde(rename = "igvm-vbs.json")]
     pub igvm_vbs_json: Option<PathBuf>,
 }
+
+impl Artifact for IgvmOutput {}
 
 flowey_request! {
     pub struct Request {

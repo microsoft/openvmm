@@ -5,6 +5,7 @@
 
 use crate::artifact_openvmm_hcl_sizecheck;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
+use crate::build_openhcl_igvm_from_recipe::RecipeOrCustom;
 use crate::build_openvmm_hcl;
 use crate::build_openvmm_hcl::OpenvmmHclBuildParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
@@ -35,7 +36,7 @@ impl SimpleFlowNode for Node {
             build_params: OpenvmmHclBuildParams {
                 target: CommonTriple::X86_64_LINUX_MUSL,
                 profile: OpenvmmHclBuildProfile::OpenvmmHclShip,
-                features: (OpenhclIgvmRecipe::X64)
+                features: RecipeOrCustom::Recipe(OpenhclIgvmRecipe::X64)
                     .recipe_details(OpenvmmHclBuildProfile::OpenvmmHclShip)
                     .openvmm_hcl_features,
                 no_split_dbg_info: false,

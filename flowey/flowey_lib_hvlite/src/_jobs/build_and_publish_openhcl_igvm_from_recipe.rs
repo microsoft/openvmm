@@ -4,11 +4,12 @@
 //! Builds and publishes an a set of OpenHCL IGVM files.
 
 use super::build_and_publish_openvmm_hcl_baseline;
-use crate::artifact_openhcl_igvm_from_recipe_extras::OpenhclIgvmExtras;
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile;
 use crate::run_cargo_build::common::CommonTriple;
+use crate::run_igvmfilegen::IgvmOutput;
 use flowey::node::prelude::*;
+use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 pub struct VmfirmwareigvmDllParams {
@@ -26,11 +27,32 @@ pub struct OpenhclIgvmBuildParams {
 flowey_request! {
     pub struct Params {
         pub igvm_files: Vec<OpenhclIgvmBuildParams>,
-        pub artifact_dir_openhcl_igvm: ReadVar<PathBuf>,
-        pub artifact_dir_openhcl_igvm_extras: ReadVar<PathBuf>,
+        pub openhcl_igvm: WriteVar<OpenhclIgvmSet>,
+        pub openhcl_igvm_extras: WriteVar<OpenhclIgvmExtrasSet>,
         pub artifact_openhcl_verify_size_baseline: Option<ReadVar<PathBuf>>,
-        pub done: WriteVar<SideEffect>,
     }
+}
+
+pub struct OpenhclIgvmSet(pub Vec<(OpenhclIgvmRecipe, IgvmOutput)>);
+
+impl Artifact for OpenhclIgvmSet {}
+
+#[derive(Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct OpenhclIgvmExtrasSet(pub BTreeMap<OpenhclIgvmRecipe, OpenhclIgvmExtras>);
+
+impl Artifact for OpenhclIgvmExtrasSet {}
+
+#[derive(Serialize, Deserialize)]
+pub struct OpenhclIgvmExtras {
+    #[serde(flatten)]
+    pub openvmm_hcl_bin: crate::build_openvmm_hcl::OpenvmmHclOutput,
+    #[serde(rename = "openhcl.bin.map")]
+    pub openhcl_map: Option<PathBuf>,
+    #[serde(flatten)]
+    pub openhcl_boot: crate::build_openhcl_boot::OpenhclBootOutput,
+    #[serde(flatten)]
+    pub sidecar: Option<crate::build_sidecar::SidecarOutput>,
 }
 
 new_simple_flow_node!(struct Node);
@@ -39,8 +61,6 @@ impl SimpleFlowNode for Node {
     type Request = Params;
 
     fn imports(ctx: &mut ImportCtx<'_>) {
-        ctx.import::<crate::artifact_openhcl_igvm_from_recipe_extras::publish::Node>();
-        ctx.import::<crate::artifact_openhcl_igvm_from_recipe::publish::Node>();
         ctx.import::<crate::artifact_openvmm_hcl_sizecheck::publish::Node>();
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<build_and_publish_openvmm_hcl_baseline::Node>();
@@ -49,88 +69,146 @@ impl SimpleFlowNode for Node {
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let Params {
             igvm_files,
-            artifact_dir_openhcl_igvm,
-            artifact_dir_openhcl_igvm_extras,
+            openhcl_igvm,
+            openhcl_igvm_extras,
             artifact_openhcl_verify_size_baseline,
-            done,
         } = request;
 
-        let mut built_igvm_files = Vec::new();
-        let mut built_extras = Vec::new();
-
-        for OpenhclIgvmBuildParams {
-            profile,
-            recipe,
-            custom_target,
-        } in igvm_files
-        {
-            let (read_built_openvmm_hcl, built_openvmm_hcl) = ctx.new_var();
-            let (read_built_openhcl_boot, built_openhcl_boot) = ctx.new_var();
-            let (read_built_openhcl_igvm, built_openhcl_igvm) = ctx.new_var();
-            let (read_built_sidecar, built_sidecar) = ctx.new_var();
-            ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
-                custom_target,
-                profile,
-                recipe: recipe.clone(),
-                built_openvmm_hcl,
-                built_openhcl_boot,
-                built_openhcl_igvm,
-                built_sidecar,
-            });
-
-            built_igvm_files.push(read_built_openhcl_igvm.map(ctx, {
-                let recipe = recipe.clone();
-                move |x| (recipe, x)
-            }));
-
-            built_extras.push(ctx.emit_minor_rust_stepv(
-                "collect openhcl component paths",
-                |ctx| {
-                    let recipe = recipe.clone();
-                    let read_built_openvmm_hcl = read_built_openvmm_hcl.claim(ctx);
-                    let read_built_openhcl_boot = read_built_openhcl_boot.claim(ctx);
-                    let read_built_openhcl_igvm = read_built_openhcl_igvm.claim(ctx);
-                    let read_built_sidecar = read_built_sidecar.claim(ctx);
-                    |rt| OpenhclIgvmExtras {
+        let output = igvm_files
+            .into_iter()
+            .map(
+                |OpenhclIgvmBuildParams {
+                     profile,
+                     recipe,
+                     custom_target,
+                 }| {
+                    (
                         recipe,
-                        openvmm_hcl_bin: rt.read(read_built_openvmm_hcl),
-                        openhcl_map: rt.read(read_built_openhcl_igvm).igvm_map,
-                        openhcl_boot: rt.read(read_built_openhcl_boot),
-                        sidecar: rt.read(read_built_sidecar),
-                    }
+                        ctx.reqv(|v| crate::build_openhcl_igvm_from_recipe::Request {
+                            custom_target,
+                            profile,
+                            recipe: recipe.into(),
+                            output: v,
+                        }),
+                    )
                 },
-            ));
-        }
+            )
+            .collect::<Vec<_>>();
 
-        let mut did_publish = Vec::new();
-
-        did_publish.push(ctx.reqv(|done| {
-            crate::artifact_openhcl_igvm_from_recipe::publish::Request {
-                openhcl_igvm_files: built_igvm_files,
-                artifact_dir: artifact_dir_openhcl_igvm,
-                done,
-            }
-        }));
-
-        did_publish.push(ctx.reqv(|v| {
-            crate::artifact_openhcl_igvm_from_recipe_extras::publish::Request {
-                extras: built_extras,
-                artifact_dir: artifact_dir_openhcl_igvm_extras,
+        let sizecheck_artifact = artifact_openhcl_verify_size_baseline.map(|artifact_dir| {
+            ctx.reqv(|v| build_and_publish_openvmm_hcl_baseline::Request {
+                artifact_dir,
                 done: v,
+            })
+        });
+
+        ctx.emit_minor_rust_step("collect openhcl results", |ctx| {
+            let output = output
+                .into_iter()
+                .map(|(r, v)| (r, v.claim(ctx)))
+                .collect::<Vec<_>>();
+            let openhcl_igvm = openhcl_igvm.claim(ctx);
+            let openhcl_igvm_extras = openhcl_igvm_extras.claim(ctx);
+            sizecheck_artifact.claim(ctx);
+            move |rt| {
+                let (base, extras) = output
+                    .into_iter()
+                    .map(|(r, v)| {
+                        let v = rt.read(v);
+                        let extras = OpenhclIgvmExtras {
+                            openvmm_hcl_bin: v.openvmm_hcl,
+                            openhcl_map: v.igvm.igvm_map.clone(),
+                            openhcl_boot: v.openhcl_boot,
+                            sidecar: v.sidecar,
+                        };
+                        let base = v.igvm;
+                        ((r, base), (r, extras))
+                    })
+                    .unzip();
+                rt.write(openhcl_igvm, &OpenhclIgvmSet(base));
+                rt.write(openhcl_igvm_extras, &OpenhclIgvmExtrasSet(extras));
             }
-        }));
-
-        if let Some(sizecheck_artifact) = artifact_openhcl_verify_size_baseline {
-            did_publish.push(
-                ctx.reqv(|v| build_and_publish_openvmm_hcl_baseline::Request {
-                    artifact_dir: sizecheck_artifact,
-                    done: v,
-                }),
-            );
-        }
-
-        ctx.emit_side_effect_step(did_publish, [done]);
+        });
 
         Ok(())
+    }
+}
+
+/// Custom logic for serializing and deserializing the [`OpenhclIgvmSet`]` with a
+/// directory structure we like.
+mod artifact {
+    use super::OpenhclIgvmSet;
+    use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
+    use crate::run_igvmfilegen::IgvmOutput;
+    use serde::Deserialize;
+    use serde::Serialize;
+    use serde_json::Value;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    impl Serialize for OpenhclIgvmSet {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            let mut v = BTreeMap::new();
+            for (recipe, value) in &self.0 {
+                let IgvmOutput {
+                    igvm_bin,
+                    igvm_map,
+                    igvm_tdx_json,
+                    igvm_snp_json,
+                    igvm_vbs_json,
+                } = value;
+                let Value::String(recipe) = serde_json::to_value(recipe).unwrap() else {
+                    unreachable!()
+                };
+                v.insert(format!("{}.bin", recipe), igvm_bin);
+                if let Some(igvm_map) = igvm_map {
+                    v.insert(format!("{}.bin.map", recipe), igvm_map);
+                }
+                if let Some(igvm_tdx_json) = igvm_tdx_json {
+                    v.insert(format!("{}-tdx.json", recipe), igvm_tdx_json);
+                }
+                if let Some(igvm_snp_json) = igvm_snp_json {
+                    v.insert(format!("{}-snp.json", recipe), igvm_snp_json);
+                }
+                if let Some(igvm_vbs_json) = igvm_vbs_json {
+                    v.insert(format!("{}-vbs.json", recipe), igvm_vbs_json);
+                }
+            }
+            v.serialize(serializer)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for OpenhclIgvmSet {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let map = BTreeMap::<String, PathBuf>::deserialize(deserializer)?;
+            let mut r = Vec::new();
+            for (name, igvm_bin) in &map {
+                let Some(v) = name.strip_suffix(".bin") else {
+                    continue;
+                };
+                let recipe: OpenhclIgvmRecipe =
+                    serde_json::from_value(Value::String(v.to_string()))
+                        .map_err(serde::de::Error::custom)?;
+                let igvm_map = map.get(&format!("{}.bin.map", v)).cloned();
+                let igvm_tdx_json = map.get(&format!("{}-tdx.json", v)).cloned();
+                let igvm_snp_json = map.get(&format!("{}-snp.json", v)).cloned();
+                let igvm_vbs_json = map.get(&format!("{}-vbs.json", v)).cloned();
+                let igvm = IgvmOutput {
+                    igvm_bin: igvm_bin.clone(),
+                    igvm_map,
+                    igvm_tdx_json,
+                    igvm_snp_json,
+                    igvm_vbs_json,
+                };
+                r.push((recipe, igvm));
+            }
+            Ok(OpenhclIgvmSet(r))
+        }
     }
 }
