@@ -81,7 +81,7 @@ impl FlowNode for Node {
             let tag = format!(
                 "rolling-lts/hcl-{}/{}",
                 match kind {
-                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => "main",
+                    OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => "dev",
                     OpenhclKernelPackageKind::Dev | OpenhclKernelPackageKind::CvmDev => "dev",
                 },
                 version
@@ -91,7 +91,7 @@ impl FlowNode for Node {
                 "Microsoft.OHCL.Kernel{}.{}{}-{}.tar.gz",
                 match kind {
                     OpenhclKernelPackageKind::Main | OpenhclKernelPackageKind::Cvm => {
-                        ""
+                        ".Dev"
                     }
                     OpenhclKernelPackageKind::Dev | OpenhclKernelPackageKind::CvmDev => {
                         ".Dev"

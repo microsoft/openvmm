@@ -16,7 +16,7 @@ use petri::ShutdownKind;
 use petri::openvmm::PetriVmConfigOpenVmm;
 use petri::pipette::cmd;
 use petri_artifacts_common::tags::OsFlavor;
-use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_DEV_KERNEL_X64;
+use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_STANDARD_X64;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
 use vmm_test_macros::vmm_test;
@@ -305,7 +305,7 @@ async fn battery_capacity(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Er
 
 fn configure_for_sidecar(
     config: Box<dyn PetriVmConfig>,
-    igvm: ResolvedArtifact<LATEST_STANDARD_DEV_KERNEL_X64>,
+    igvm: ResolvedArtifact<LATEST_STANDARD_X64>,
     proc_count: u32,
 ) -> Box<dyn PetriVmConfig> {
     config
@@ -323,19 +323,17 @@ fn configure_for_sidecar(
         })
 }
 
-// Sidecar currently requires the dev kernel build.
-//
 // Use UEFI so that the guest doesn't access the other APs, causing hot adds
 // into VTL2 Linux.
 //
 // Sidecar isn't supported on aarch64 yet.
 #[vmm_test(
-    openvmm_openhcl_uefi_x64(none) [LATEST_STANDARD_DEV_KERNEL_X64],
-    // TODO: debug why boot is failing  hyperv_openhcl_uefi_x64(none) [LATEST_STANDARD_DEV_KERNEL_X64],
+    openvmm_openhcl_uefi_x64(none) [LATEST_STANDARD_X64],
+    // TODO: debug why boot is failing  hyperv_openhcl_uefi_x64(none) [LATEST_STANDARD_X64],
 )]
 async fn sidecar_aps_unused(
     config: Box<dyn PetriVmConfig>,
-    (igvm,): (ResolvedArtifact<LATEST_STANDARD_DEV_KERNEL_X64>,),
+    (igvm,): (ResolvedArtifact<LATEST_STANDARD_X64>,),
 ) -> Result<(), anyhow::Error> {
     let proc_count = 4;
     let mut vm = configure_for_sidecar(config, igvm, proc_count)
@@ -367,12 +365,12 @@ async fn sidecar_aps_unused(
 }
 
 #[vmm_test(
-    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)) [LATEST_STANDARD_DEV_KERNEL_X64],
-    // TODO: debug why boot is failing hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)) [LATEST_STANDARD_DEV_KERNEL_X64],
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)) [LATEST_STANDARD_X64],
+    // TODO: debug why boot is failing hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)) [LATEST_STANDARD_X64],
 )]
 async fn sidecar_boot(
     config: Box<dyn PetriVmConfig>,
-    (igvm,): (ResolvedArtifact<LATEST_STANDARD_DEV_KERNEL_X64>,),
+    (igvm,): (ResolvedArtifact<LATEST_STANDARD_X64>,),
 ) -> Result<(), anyhow::Error> {
     let (vm, agent) = configure_for_sidecar(config, igvm, 4).run().await?;
     agent.power_off().await?;
