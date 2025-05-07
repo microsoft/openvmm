@@ -2552,7 +2552,7 @@ impl UhProcessor<'_, TdxBacked> {
                 // zero/write ignore.
                 Ok(0)
             }
-            x86defs::X86X_MSR_CSTAR => Ok(self.backing.vtls[vtl].msr_cstar),
+            x86defs::X86X_MSR_CSTAR => Ok(0),
             x86defs::X86X_MSR_MCG_CAP => Ok(0),
             x86defs::X86X_MSR_MCG_STATUS => Ok(0),
             x86defs::X86X_MSR_MC_UPDATE_PATCH_LEVEL => Ok(0xFFFFFFFF),
