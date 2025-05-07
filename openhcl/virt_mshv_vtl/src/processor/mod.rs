@@ -67,7 +67,6 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::task::Poll;
-use std::time::Duration;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
@@ -188,6 +187,7 @@ mod private {
     use crate::processor::UhProcessor;
     use hv1_emulator::hv::ProcessorVtlHv;
     use hv1_emulator::synic::ProcessorSynic;
+    use hv1_structs::VtlArray;
     use inspect::InspectMut;
     use std::future::Future;
     use virt::StopVp;
@@ -223,6 +223,14 @@ mod private {
             stop: &mut StopVp<'_>,
         ) -> impl Future<Output = Result<(), VpHaltReason<UhRunVpError>>>;
 
+        /// Process any pending interrupts. Returns true if reprocessing is required.
+        fn process_interrupts(
+            this: &mut UhProcessor<'_, Self>,
+            scan_irr: VtlArray<bool, 2>,
+            first_scan_irr: &mut bool,
+            dev: &impl CpuIo,
+        ) -> Result<bool, VpHaltReason<UhRunVpError>>;
+
         /// Process any pending APIC work.
         fn poll_apic(
             this: &mut UhProcessor<'_, Self>,
@@ -242,15 +250,6 @@ mod private {
         /// This is used for hypervisor-managed and untrusted SINTs.
         fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
 
-        /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
-        /// Returns whether interrupt reprocessing is required.
-        fn handle_cross_vtl_interrupts(
-            this: &mut UhProcessor<'_, Self>,
-            dev: &impl CpuIo,
-        ) -> Result<bool, UhRunVpError>;
-
-        fn handle_exit_activity(this: &mut UhProcessor<'_, Self>);
-
         fn handle_vp_start_enable_vtl_wake(
             _this: &mut UhProcessor<'_, Self>,
             _vtl: GuestVtl,
@@ -261,7 +260,6 @@ mod private {
         fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv>;
         fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv>;
 
-        fn untrusted_synic(&self) -> Option<&ProcessorSynic>;
         fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
 
         fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool;
@@ -448,6 +446,12 @@ trait HardwareIsolatedBacking: Backing {
     /// Vector of the event that is pending injection into the guest state, if
     /// valid.
     fn pending_event_vector(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> Option<u8>;
+    /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
+    /// Returns whether interrupt reprocessing is required.
+    fn handle_cross_vtl_interrupts(
+        this: &mut UhProcessor<'_, Self>,
+        dev: &impl CpuIo,
+    ) -> Result<bool, UhRunVpError>;
     /// Sets the pending exception for the guest state.
     ///
     /// Note that this will overwrite any existing pending exception. It will
@@ -627,11 +631,6 @@ pub enum ProcessorError {
     NotSupported,
 }
 
-fn duration_from_100ns(n: u64) -> Duration {
-    const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
-    Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
-}
-
 impl<T: Backing> UhProcessor<'_, T> {
     fn inspect_extra(&mut self, resp: &mut inspect::Response<'_>) {
         resp.child("stats", |req| {
@@ -659,41 +658,6 @@ impl<T: Backing> UhProcessor<'_, T> {
         );
 
         T::inspect_extra(self, resp);
-    }
-
-    fn update_synic(&mut self, vtl: GuestVtl, untrusted_synic: bool) {
-        loop {
-            let hv = self.backing.hv_mut(vtl).unwrap();
-
-            let ref_time_now = hv.ref_time_now();
-            let synic = if untrusted_synic {
-                debug_assert_eq!(vtl, GuestVtl::Vtl0);
-                self.backing.untrusted_synic_mut().unwrap()
-            } else {
-                &mut hv.synic
-            };
-            let (ready_sints, next_ref_time) = synic.scan(
-                ref_time_now,
-                &mut self
-                    .partition
-                    .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
-            );
-            if let Some(next_ref_time) = next_ref_time {
-                // Convert from reference timer basis to vmtime basis via
-                // difference of programmed timer and current reference time.
-                let ref_diff = next_ref_time.saturating_sub(ref_time_now);
-                let timeout = self
-                    .vmtime
-                    .now()
-                    .wrapping_add(duration_from_100ns(ref_diff));
-                self.vmtime.set_timeout_if_before(timeout);
-            }
-            if ready_sints == 0 {
-                break;
-            }
-            self.deliver_synic_messages(vtl, ready_sints);
-            // Loop around to process the synic again.
-        }
     }
 
     #[cfg(guest_arch = "x86_64")]
@@ -863,26 +827,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                         [false, false].into()
                     };
 
-                    T::handle_exit_activity(self);
-
-                    if self.backing.untrusted_synic().is_some() {
-                        self.update_synic(GuestVtl::Vtl0, true);
-                    }
-
-                    for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
-                        // Process interrupts.
-                        if self.backing.hv(vtl).is_some() {
-                            self.update_synic(vtl, false);
-                        }
-
-                        T::poll_apic(self, vtl, scan_irr[vtl] || first_scan_irr)
-                            .map_err(VpHaltReason::Hypervisor)?;
-                    }
-                    first_scan_irr = false;
-
-                    if T::handle_cross_vtl_interrupts(self, dev)
-                        .map_err(VpHaltReason::InvalidVmState)?
-                    {
+                    if T::process_interrupts(self, scan_irr, &mut first_scan_irr, dev)? {
                         continue;
                     }
 

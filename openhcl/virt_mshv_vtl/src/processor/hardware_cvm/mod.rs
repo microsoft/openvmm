@@ -23,6 +23,7 @@ use guestmem::GuestMemory;
 use hv1_emulator::RequestInterrupt;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::ProcessorSet;
+use hv1_structs::VtlArray;
 use hvdef::HvCacheType;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
@@ -40,6 +41,7 @@ use hvdef::hypercall::HvFlushFlags;
 use hvdef::hypercall::TranslateGvaResultCode;
 use std::iter::zip;
 use virt::Processor;
+use virt::VpHaltReason;
 use virt::io::CpuIo;
 use virt::vp::AccessVpState;
 use virt::x86::MsrError;
@@ -1886,7 +1888,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         Ok(())
     }
 
-    pub(crate) fn cvm_handle_exit_activity(&mut self) {
+    fn cvm_handle_exit_activity(&mut self) {
         let exit_vtl = self.backing.cvm_state().exit_vtl;
         if self.exit_activities[exit_vtl].pending_event() {
             self.cvm_deliver_exit_pending_event();
@@ -2301,6 +2303,71 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
                 ?message,
                 "error sending intercept"
             );
+        }
+    }
+
+    pub(crate) fn cvm_process_interrupts(
+        &mut self,
+        scan_irr: VtlArray<bool, 2>,
+        first_scan_irr: &mut bool,
+        dev: &impl CpuIo,
+    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
+        self.cvm_handle_exit_activity();
+
+        if self.backing.untrusted_synic_mut().is_some() {
+            self.update_synic(GuestVtl::Vtl0, true);
+        }
+
+        for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
+            // Process interrupts.
+
+            self.update_synic(vtl, false);
+
+            B::poll_apic(self, vtl, scan_irr[vtl] || *first_scan_irr)
+                .map_err(VpHaltReason::Hypervisor)?;
+        }
+        *first_scan_irr = false;
+
+        B::handle_cross_vtl_interrupts(self, dev).map_err(VpHaltReason::InvalidVmState)
+    }
+
+    fn update_synic(&mut self, vtl: GuestVtl, untrusted_synic: bool) {
+        fn duration_from_100ns(n: u64) -> std::time::Duration {
+            const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
+            std::time::Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
+        }
+
+        loop {
+            let hv = &mut self.backing.cvm_state_mut().hv[vtl];
+
+            let ref_time_now = hv.ref_time_now();
+            let synic = if untrusted_synic {
+                debug_assert_eq!(vtl, GuestVtl::Vtl0);
+                self.backing.untrusted_synic_mut().unwrap()
+            } else {
+                &mut hv.synic
+            };
+            let (ready_sints, next_ref_time) = synic.scan(
+                ref_time_now,
+                &mut self
+                    .partition
+                    .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
+            );
+            if let Some(next_ref_time) = next_ref_time {
+                // Convert from reference timer basis to vmtime basis via
+                // difference of programmed timer and current reference time.
+                let ref_diff = next_ref_time.saturating_sub(ref_time_now);
+                let timeout = self
+                    .vmtime
+                    .now()
+                    .wrapping_add(duration_from_100ns(ref_diff));
+                self.vmtime.set_timeout_if_before(timeout);
+            }
+            if ready_sints == 0 {
+                break;
+            }
+            self.deliver_synic_messages(vtl, ready_sints);
+            // Loop around to process the synic again.
         }
     }
 }

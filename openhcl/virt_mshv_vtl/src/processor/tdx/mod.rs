@@ -663,6 +663,65 @@ impl HardwareIsolatedBacking for TdxBacked {
             intercept_control.msr_pls_ssp_write(),
         );
     }
+
+    fn handle_cross_vtl_interrupts(
+        this: &mut UhProcessor<'_, Self>,
+        dev: &impl CpuIo,
+    ) -> Result<bool, UhRunVpError> {
+        this.cvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
+            let backing_vtl = &this.backing.vtls[vtl];
+            if backing_vtl.interruption_information.valid()
+                && backing_vtl.interruption_information.interruption_type() == INTERRUPT_TYPE_NMI
+            {
+                return true;
+            }
+
+            let (vector, ppr) = if this.backing.cvm.lapics[vtl].lapic.is_offloaded() {
+                let vector = backing_vtl.private_regs.rvi;
+                let ppr = std::cmp::max(
+                    backing_vtl.private_regs.svi.into(),
+                    this.runner.tdx_apic_page(vtl).tpr.value,
+                );
+                (vector, ppr)
+            } else {
+                let lapic = &mut this.backing.cvm.lapics[vtl].lapic;
+                let vector = lapic.next_irr().unwrap_or(0);
+                let ppr = lapic
+                    .access(&mut TdxApicClient {
+                        partition: this.partition,
+                        apic_page: this.runner.tdx_apic_page_mut(vtl),
+                        dev,
+                        vmtime: &this.vmtime,
+                        vtl,
+                    })
+                    .get_ppr();
+                (vector, ppr)
+            };
+            let vector_priority = (vector as u32) >> 4;
+            let ppr_priority = ppr >> 4;
+
+            if vector_priority <= ppr_priority {
+                return false;
+            }
+
+            if check_rflags
+                && !RFlags::from_bits(backing_vtl.private_regs.rflags).interrupt_enable()
+            {
+                return false;
+            }
+
+            let interruptibility: Interruptibility = this
+                .runner
+                .read_vmcs32(vtl, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY)
+                .into();
+
+            if interruptibility.blocked_by_sti() || interruptibility.blocked_by_movss() {
+                return false;
+            }
+
+            true
+        })
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.
@@ -1043,75 +1102,12 @@ impl BackingPrivate for TdxBacked {
         }
     }
 
-    fn handle_cross_vtl_interrupts(
-        this: &mut UhProcessor<'_, Self>,
-        dev: &impl CpuIo,
-    ) -> Result<bool, UhRunVpError> {
-        this.cvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
-            let backing_vtl = &this.backing.vtls[vtl];
-            if backing_vtl.interruption_information.valid()
-                && backing_vtl.interruption_information.interruption_type() == INTERRUPT_TYPE_NMI
-            {
-                return true;
-            }
-
-            let (vector, ppr) = if this.backing.cvm.lapics[vtl].lapic.is_offloaded() {
-                let vector = backing_vtl.private_regs.rvi;
-                let ppr = std::cmp::max(
-                    backing_vtl.private_regs.svi.into(),
-                    this.runner.tdx_apic_page(vtl).tpr.value,
-                );
-                (vector, ppr)
-            } else {
-                let lapic = &mut this.backing.cvm.lapics[vtl].lapic;
-                let vector = lapic.next_irr().unwrap_or(0);
-                let ppr = lapic
-                    .access(&mut TdxApicClient {
-                        partition: this.partition,
-                        apic_page: this.runner.tdx_apic_page_mut(vtl),
-                        dev,
-                        vmtime: &this.vmtime,
-                        vtl,
-                    })
-                    .get_ppr();
-                (vector, ppr)
-            };
-            let vector_priority = (vector as u32) >> 4;
-            let ppr_priority = ppr >> 4;
-
-            if vector_priority <= ppr_priority {
-                return false;
-            }
-
-            if check_rflags
-                && !RFlags::from_bits(backing_vtl.private_regs.rflags).interrupt_enable()
-            {
-                return false;
-            }
-
-            let interruptibility: Interruptibility = this
-                .runner
-                .read_vmcs32(vtl, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY)
-                .into();
-
-            if interruptibility.blocked_by_sti() || interruptibility.blocked_by_movss() {
-                return false;
-            }
-
-            true
-        })
-    }
-
     fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv> {
         Some(&self.cvm.hv[vtl])
     }
 
     fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
         Some(&mut self.cvm.hv[vtl])
-    }
-
-    fn untrusted_synic(&self) -> Option<&ProcessorSynic> {
-        self.untrusted_synic.as_ref()
     }
 
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
@@ -1129,8 +1125,13 @@ impl BackingPrivate for TdxBacked {
         this.hcvm_vtl1_inspectable()
     }
 
-    fn handle_exit_activity(this: &mut UhProcessor<'_, Self>) {
-        this.cvm_handle_exit_activity();
+    fn process_interrupts(
+        this: &mut UhProcessor<'_, Self>,
+        scan_irr: VtlArray<bool, 2>,
+        first_scan_irr: &mut bool,
+        dev: &impl CpuIo,
+    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
+        this.cvm_process_interrupts(scan_irr, first_scan_irr, dev)
     }
 }
 

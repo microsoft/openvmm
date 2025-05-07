@@ -320,6 +320,46 @@ impl HardwareIsolatedBacking for SnpBacked {
             )
             .expect("setting intercept control succeeds");
     }
+
+    fn handle_cross_vtl_interrupts(
+        this: &mut UhProcessor<'_, Self>,
+        dev: &impl CpuIo,
+    ) -> Result<bool, UhRunVpError> {
+        this.cvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
+            let vmsa = this.runner.vmsa_mut(vtl);
+            if vmsa.event_inject().valid()
+                && vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
+            {
+                return true;
+            }
+
+            let vmsa_priority = vmsa.v_intr_cntrl().priority() as u32;
+            let lapic = &mut this.backing.cvm.lapics[vtl].lapic;
+            let ppr = lapic
+                .access(&mut SnpApicClient {
+                    partition: this.partition,
+                    vmsa,
+                    dev,
+                    vmtime: &this.vmtime,
+                    vtl,
+                })
+                .get_ppr();
+            let ppr_priority = ppr >> 4;
+            if vmsa_priority <= ppr_priority {
+                return false;
+            }
+
+            let vmsa = this.runner.vmsa_mut(vtl);
+            if (check_rflags && !RFlags::from_bits(vmsa.rflags()).interrupt_enable())
+                || vmsa.v_intr_cntrl().intr_shadow()
+                || !vmsa.v_intr_cntrl().irq()
+            {
+                return false;
+            }
+
+            true
+        })
+    }
 }
 
 /// Partition-wide shared data for SNP VPs.
@@ -503,50 +543,6 @@ impl BackingPrivate for SnpBacked {
         this.backing.hv_sint_notifications = sints;
     }
 
-    fn handle_cross_vtl_interrupts(
-        this: &mut UhProcessor<'_, Self>,
-        dev: &impl CpuIo,
-    ) -> Result<bool, UhRunVpError> {
-        this.cvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
-            let vmsa = this.runner.vmsa_mut(vtl);
-            if vmsa.event_inject().valid()
-                && vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
-            {
-                return true;
-            }
-
-            let vmsa_priority = vmsa.v_intr_cntrl().priority() as u32;
-            let lapic = &mut this.backing.cvm.lapics[vtl].lapic;
-            let ppr = lapic
-                .access(&mut SnpApicClient {
-                    partition: this.partition,
-                    vmsa,
-                    dev,
-                    vmtime: &this.vmtime,
-                    vtl,
-                })
-                .get_ppr();
-            let ppr_priority = ppr >> 4;
-            if vmsa_priority <= ppr_priority {
-                return false;
-            }
-
-            let vmsa = this.runner.vmsa_mut(vtl);
-            if (check_rflags && !RFlags::from_bits(vmsa.rflags()).interrupt_enable())
-                || vmsa.v_intr_cntrl().intr_shadow()
-                || !vmsa.v_intr_cntrl().irq()
-            {
-                return false;
-            }
-
-            true
-        })
-    }
-
-    fn handle_exit_activity(this: &mut UhProcessor<'_, Self>) {
-        this.cvm_handle_exit_activity();
-    }
-
     fn inspect_extra(this: &mut UhProcessor<'_, Self>, resp: &mut inspect::Response<'_>) {
         let vtl0_vmsa = this.runner.vmsa(GuestVtl::Vtl0);
         let vtl1_vmsa = if this.backing.cvm_state().vtl1.is_some() {
@@ -585,10 +581,6 @@ impl BackingPrivate for SnpBacked {
         Some(&mut self.cvm.hv[vtl])
     }
 
-    fn untrusted_synic(&self) -> Option<&ProcessorSynic> {
-        None
-    }
-
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
@@ -602,6 +594,15 @@ impl BackingPrivate for SnpBacked {
 
     fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool {
         this.hcvm_vtl1_inspectable()
+    }
+
+    fn process_interrupts(
+        this: &mut UhProcessor<'_, Self>,
+        scan_irr: VtlArray<bool, 2>,
+        first_scan_irr: &mut bool,
+        dev: &impl CpuIo,
+    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
+        this.cvm_process_interrupts(scan_irr, first_scan_irr, dev)
     }
 }
 
