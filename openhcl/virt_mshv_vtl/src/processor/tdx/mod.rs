@@ -1809,7 +1809,7 @@ impl UhProcessor<'_, TdxBacked> {
                         vtl: intercepted_vtl,
                     })
                     .msr_read(msr)
-                    .or_else_if_unknown(|| self.read_msr(msr, intercepted_vtl))
+                    .or_else_if_unknown(|| self.read_msr_cvm(msr, intercepted_vtl))
                     .or_else_if_unknown(|| self.read_msr_tdx(msr, intercepted_vtl));
 
                 let value = match result {
@@ -1855,7 +1855,6 @@ impl UhProcessor<'_, TdxBacked> {
                         })
                         .msr_write(msr, value)
                         .or_else_if_unknown(|| self.write_msr_cvm(msr, value, intercepted_vtl))
-                        .or_else_if_unknown(|| self.write_msr(msr, value, intercepted_vtl))
                         .or_else_if_unknown(|| self.write_msr_tdx(msr, value, intercepted_vtl))
                         .or_else_if_unknown(|| {
                             // Sanity check

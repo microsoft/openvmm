@@ -794,7 +794,8 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         let msr = message.msr_number;
         match message.header.intercept_access_type {
             HvInterceptAccessType::READ => {
-                let value = match self.vp.read_msr(msr, self.intercepted_vtl) {
+                // Only supported MSRs are the crash MSRs.
+                let value = match self.vp.read_crash_msr(msr, self.intercepted_vtl) {
                     Ok(v) => v,
                     Err(MsrError::Unknown) => {
                         tracing::trace!(msr, "unknown msr read");
@@ -812,7 +813,8 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             }
             HvInterceptAccessType::WRITE => {
                 let value = (message.rax & 0xffff_ffff) | (message.rdx << 32);
-                match self.vp.write_msr(msr, value, self.intercepted_vtl) {
+                // Only supported MSRs are the crash MSRs.
+                match self.vp.write_crash_msr(msr, value, self.intercepted_vtl) {
                     Ok(()) => {}
                     Err(MsrError::Unknown) => {
                         tracing::trace!(msr, value, "unknown msr write");

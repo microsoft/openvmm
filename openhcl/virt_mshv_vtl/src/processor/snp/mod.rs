@@ -1017,7 +1017,6 @@ impl UhProcessor<'_, SnpBacked> {
                 })
                 .msr_write(msr, value)
                 .or_else_if_unknown(|| self.write_msr_cvm(msr, value, entered_from_vtl))
-                .or_else_if_unknown(|| self.write_msr(msr, value, entered_from_vtl))
                 .or_else_if_unknown(|| self.write_msr_snp(dev, msr, value, entered_from_vtl));
 
             match r {
@@ -1039,7 +1038,7 @@ impl UhProcessor<'_, SnpBacked> {
                     vtl: entered_from_vtl,
                 })
                 .msr_read(msr)
-                .or_else_if_unknown(|| self.read_msr(msr, entered_from_vtl))
+                .or_else_if_unknown(|| self.read_msr_cvm(msr, entered_from_vtl))
                 .or_else_if_unknown(|| self.read_msr_snp(dev, msr, entered_from_vtl));
 
             let value = match r {
