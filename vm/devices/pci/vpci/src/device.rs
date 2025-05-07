@@ -3,8 +3,6 @@
 
 //! Virtual PCI device module
 
-use super::protocol;
-use crate::protocol::SlotNumber;
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use chipset_device::mmio::ControlMmioIntercept;
@@ -43,6 +41,8 @@ use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vmcore::vpci_msi::VpciInterruptParameters;
+use vpci_protocol as protocol;
+use vpci_protocol::SlotNumber;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -1169,8 +1169,6 @@ mod tests {
     use super::VpciChannel;
     use super::VpciChannelState;
     use super::VpciConfigSpace;
-    use crate::protocol;
-    use crate::protocol::SlotNumber;
     use crate::test_helpers::TestVpciInterruptController;
     use chipset_arc_mutex_device::services::MmioInterceptServices;
     use chipset_arc_mutex_device::test_chipset::TestChipset;
@@ -1215,6 +1213,8 @@ mod tests {
     use vmbus_async::queue::connected_queues;
     use vmbus_ring as ring;
     use vmcore::vpci_msi::VpciInterruptMapper;
+    use vpci_protocol as protocol;
+    use vpci_protocol::SlotNumber;
     use zerocopy::FromBytes;
 
     use zerocopy::Immutable;

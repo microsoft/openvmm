@@ -8995,6 +8995,17 @@ dependencies = [
  "vmbus_channel",
  "vmbus_ring",
  "vmcore",
+ "vpci_protocol",
+ "zerocopy 0.8.24",
+]
+
+[[package]]
+name = "vpci_protocol"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.10.1",
+ "guid",
+ "open_enum",
  "zerocopy 0.8.24",
 ]
 

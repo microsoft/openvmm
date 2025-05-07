@@ -8,5 +8,4 @@
 pub mod bus;
 pub mod bus_control;
 mod device;
-mod protocol;
 mod test_helpers;

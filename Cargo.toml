@@ -251,6 +251,7 @@ pci_bus = { path = "vm/devices/pci/pci_bus" }
 pci_core = { path = "vm/devices/pci/pci_core" }
 pci_resources = { path = "vm/devices/pci/pci_resources" }
 vpci = { path = "vm/devices/pci/vpci" }
+vpci_protocol = { path = "vm/devices/pci/vpci_protocol" }
 disk_backend = { path = "vm/devices/storage/disk_backend" }
 disk_backend_resources = { path = "vm/devices/storage/disk_backend_resources" }
 disk_blob = { path = "vm/devices/storage/disk_blob" }

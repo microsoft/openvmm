@@ -7,8 +7,6 @@ use crate::device::NotPciDevice;
 use crate::device::VpciChannel;
 use crate::device::VpciConfigSpace;
 use crate::device::VpciConfigSpaceOffset;
-use crate::protocol;
-use crate::protocol::SlotNumber;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
@@ -32,6 +30,8 @@ use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vpci_msi::VpciInterruptMapper;
+use vpci_protocol as protocol;
+use vpci_protocol::SlotNumber;
 
 /// A VPCI bus, which can be used to enumerate PCI devices to a guest over
 /// vmbus.
