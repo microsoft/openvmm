@@ -276,6 +276,7 @@ impl GuestMemoryMapping {
         }
     }
 
+    /// Read the bitmap for `gpn`.
     pub(crate) fn check_bitmap(&self, gpn: u64) -> bool {
         let bitmap = self.bitmap.as_ref().unwrap();
         let mut b = 0;

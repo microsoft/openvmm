@@ -963,7 +963,11 @@ impl MshvHvcall {
 
     /// Modifies the host visibility of the given pages.
     ///
-    /// [`HypercallCode::HvCallModifySparseGpaPageHostVisibility`] must be allowed.
+    /// [`HypercallCode::HvCallModifySparseGpaPageHostVisibility`] must be
+    /// allowed.
+    ///
+    /// Returns on error, the hypervisor error and the number of pages
+    /// processed.
     //
     // TODO SNP: this isn't really safe. Probably this should be an IOCTL in the
     // kernel so that it can validate the page ranges are VTL0 memory.
@@ -971,7 +975,7 @@ impl MshvHvcall {
         &self,
         host_visibility: HostVisibilityType,
         mut gpns: &[u64],
-    ) -> Result<(), HvError> {
+    ) -> Result<(), (HvError, usize)> {
         const GPNS_PER_CALL: usize = (HV_PAGE_SIZE as usize
             - size_of::<hvdef::hypercall::ModifySparsePageVisibility>())
             / size_of::<u64>();
@@ -1000,7 +1004,7 @@ impl MshvHvcall {
                     assert_eq!({ result.elements_processed() }, n);
                 }
                 Err(HvError::Timeout) => {}
-                Err(e) => return Err(e),
+                Err(e) => return Err((e, result.elements_processed())),
             }
             gpns = &gpns[result.elements_processed()..];
         }

@@ -179,6 +179,14 @@ impl GpaVtlPermissions {
     }
 }
 
+/// Error returned when modifying gpa visibility.
+#[derive(Debug, Error)]
+#[error("failed to modify gpa visibility, elements successfully processed {processed}")]
+pub struct ModifyGpaVisibilityError {
+    source: HvError,
+    processed: usize,
+}
+
 /// Interface to accept and manipulate lower VTL memory acceptance and page
 /// protections.
 ///
@@ -258,9 +266,13 @@ impl MemoryAcceptor {
         &self,
         host_visibility: HostVisibilityType,
         gpns: &[u64],
-    ) -> Result<(), HvError> {
+    ) -> Result<(), ModifyGpaVisibilityError> {
         self.mshv_hvcall
             .modify_gpa_visibility(host_visibility, gpns)
+            .map_err(|(e, processed)| ModifyGpaVisibilityError {
+                source: e,
+                processed,
+            })
     }
 
     /// Apply the initial protections on lower-vtl memory.
@@ -545,11 +557,18 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         };
         if let Err(err) = self.acceptor.modify_gpa_visibility(host_visibility, &gpns) {
             if shared {
+                // A transition from private to shared should always succeed.
+                // There is no safe roll back path, so we must panic.
                 panic!(
                     "the hypervisor refused to transition pages to shared, we cannot safely roll back: {:?}",
                     err
                 );
             }
+
+            // partial success, set the succeded gpns changes into the below,
+            // then return the error back up to the caller for it to decide what
+            // to do.
+
             todo!("roll back bitmap changes and report partial success");
         }
 
