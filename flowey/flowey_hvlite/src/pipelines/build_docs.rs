@@ -21,7 +21,7 @@ enum PipelineConfig {
     Ci,
 }
 
-/// A pipeline defining documentaiton CI and PR jobs.
+/// A pipeline defining documentation CI and PR jobs.
 #[derive(clap::Args)]
 pub struct BuildDocsCli {
     #[clap(long)]
