@@ -9094,6 +9094,7 @@ dependencies = [
  "mesh",
  "pal_async",
  "parking_lot",
+ "pci_core",
  "task_control",
  "test_with_tracing",
  "thiserror 2.0.12",

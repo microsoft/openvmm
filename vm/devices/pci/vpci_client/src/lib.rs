@@ -6,22 +6,43 @@ use anyhow::Context;
 use guestmem::MemoryRead;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::rpc::FailableRpc;
+use mesh::rpc::RpcSend;
+use pal_async::task::Spawn;
+use pal_async::task::Task;
+use parking_lot::Mutex;
+use pci_core::spec::hwid::HardwareIds;
+use std::sync::Arc;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
 use vmbus_async::queue::Queue;
 use vmbus_channel::RawAsyncChannel;
 use vmbus_ring::RingMem;
+use vmcore::vpci_msi::MapVpciInterrupt;
+use vmcore::vpci_msi::MsiAddressData;
+use vmcore::vpci_msi::RegisterInterruptError;
 use vpci_protocol as protocol;
+use vpci_protocol::SlotNumber;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-#[derive(InspectMut)]
-pub struct VpciClient<M: RingMem> {
-    conn: VpciConnection<M>,
-    #[inspect(debug)]
-    protocol_version: protocol::ProtocolVersion,
+pub struct VpciClient {
+    req: mesh::Sender<WorkerRequest>,
+    task: Task<()>,
+}
+
+impl Inspect for VpciClient {
+    fn inspect(&self, req: inspect::Request<'_>) {
+        self.req.send(WorkerRequest::Inspect(req.defer()))
+    }
+}
+
+enum WorkerRequest {
+    Inspect(inspect::Deferred),
+    MapInterrupt(FailableRpc<protocol::CreateInterrupt2, protocol::MsiResourceRemapped>),
+    UnmapInterrupt(FailableRpc<protocol::DeleteInterrupt, ()>),
 }
 
 #[derive(Inspect)]
@@ -101,13 +122,42 @@ async fn negotiate<M: RingMem>(
     anyhow::bail!("no supported VPCI protocol version found");
 }
 
-pub trait MemoryAccess {
+pub trait MemoryAccess: Send {
     fn gpa(&mut self) -> u64;
     fn read(&mut self, offset: u64) -> u32;
     fn write(&mut self, offset: u64, value: u32);
 }
 
-pub struct VpciDevice {}
+pub struct VpciDevice {
+    hw_ids: HardwareIds,
+    config_space: Arc<Mutex<ConfigSpaceAccessor>>,
+    slot: SlotNumber,
+    req: mesh::Sender<WorkerRequest>,
+}
+
+struct ConfigSpaceAccessor {
+    mem: Box<dyn MemoryAccess>,
+    current_slot: SlotNumber,
+}
+
+impl ConfigSpaceAccessor {
+    fn set_slot(&mut self, slot: SlotNumber) {
+        if slot != self.current_slot {
+            self.mem.write(0x1000, slot.into());
+            self.current_slot = slot;
+        }
+    }
+
+    fn read(&mut self, slot: SlotNumber, offset: u16) -> u32 {
+        self.set_slot(slot);
+        self.mem.read(offset.into())
+    }
+
+    fn write(&mut self, slot: SlotNumber, offset: u16, value: u32) {
+        self.set_slot(slot);
+        self.mem.write(offset.into(), value);
+    }
+}
 
 impl Inspect for VpciDevice {
     fn inspect(&self, req: inspect::Request<'_>) {
@@ -116,38 +166,103 @@ impl Inspect for VpciDevice {
 }
 
 impl VpciDevice {
-    pub fn read_cfg(&self, offset: u16) -> anyhow::Result<u32> {
-        todo!()
+    pub fn hw_ids(&self) -> &HardwareIds {
+        &self.hw_ids
     }
 
-    pub fn write_cfg(&self, offset: u16, value: u32) -> anyhow::Result<()> {
-        todo!()
+    pub fn read_cfg(&self, offset: u16) -> u32 {
+        // TODO: for hardware IDs, use the cached values, both for efficiency
+        // and so that the host cannot change them.
+        self.config_space.lock().read(self.slot, offset)
     }
 
-    pub async fn create_interrupt(&self, params: InterruptParams) -> anyhow::Result<()> {
-        todo!()
-    }
-
-    pub async fn destroy_interrupt(&self, address: u64, data: u32) -> anyhow::Result<()> {
-        todo!()
+    pub fn write_cfg(&self, offset: u16, value: u32) {
+        self.config_space.lock().write(self.slot, offset, value);
     }
 }
 
-pub struct InterruptParams {
-    /// 32-bit interrupt vector number
-    pub vector: u32,
-    /// Interrupt delivery mode
-    pub delivery_mode: u8,
-    /// Number of interrupt vectors requested
-    pub vector_count: u16,
-    /// Array of processor IDs for interrupt affinity
-    pub processor_array: Vec<u16>,
+impl MapVpciInterrupt for VpciDevice {
+    async fn register_interrupt(
+        &self,
+        vector_count: u32,
+        params: &vmcore::vpci_msi::VpciInterruptParameters<'_>,
+    ) -> Result<MsiAddressData, RegisterInterruptError> {
+        let mut interrupt = protocol::MsiResourceDescriptor2 {
+            vector: params
+                .vector
+                .try_into()
+                .expect("need to support resource 3 for ARM64"),
+            delivery_mode: 0, // TODO
+            vector_count: vector_count.try_into().expect("BUGBUG: fail to caller"),
+            processor_count: 0,
+            processor_array: [0; 32],
+            reserved: 0,
+        };
+        for (d, &s) in interrupt
+            .processor_array
+            .iter_mut()
+            .zip(params.target_processors)
+        {
+            *d = s.try_into().expect("BUGBUG: fail to caller");
+            interrupt.processor_count += 1;
+        }
+        let resource = self
+            .req
+            .call_failable(
+                WorkerRequest::MapInterrupt,
+                protocol::CreateInterrupt2 {
+                    message_type: protocol::MessageType::CREATE_INTERRUPT2,
+                    slot: self.slot,
+                    interrupt,
+                },
+            )
+            .await
+            .map_err(|err| RegisterInterruptError::new(err))?;
+
+        Ok(MsiAddressData {
+            address: resource.address,
+            data: resource.data_payload,
+        })
+    }
+
+    async fn unregister_interrupt(&self, address: u64, data: u32) {
+        let resource = protocol::DeleteInterrupt {
+            message_type: protocol::MessageType::DELETE_INTERRUPT,
+            slot: self.slot,
+            interrupt: protocol::MsiResourceRemapped {
+                reserved: 0,
+                message_count: 0, // The host does not look at this value, so don't bother to remember it.
+                data_payload: data,
+                address,
+            },
+        };
+        self.req
+            .call_failable(WorkerRequest::UnmapInterrupt, resource)
+            .await
+            .unwrap_or_else(|err| {
+                tracing::error!(
+                    error = &err as &dyn std::error::Error,
+                    "failed to unregister interrupt"
+                );
+            });
+    }
 }
 
-impl<M: RingMem> VpciClient<M> {
-    pub async fn connect(
+#[derive(InspectMut)]
+struct VpciClientWorker<M: RingMem> {
+    conn: VpciConnection<M>,
+    #[inspect(debug)]
+    protocol_version: protocol::ProtocolVersion,
+    #[inspect(skip)]
+    send_devices: mesh::Sender<VpciDevice>,
+}
+
+impl VpciClient {
+    pub async fn connect<M: 'static + RingMem + Sync>(
+        driver: impl Spawn,
         channel: RawAsyncChannel<M>,
-        mmio: Box<dyn MemoryAccess>,
+        mut mmio: Box<dyn MemoryAccess>,
+        devices: mesh::Sender<VpciDevice>,
     ) -> anyhow::Result<Self> {
         let mut conn = VpciConnection {
             queue: Queue::new(channel)?,
@@ -158,12 +273,13 @@ impl<M: RingMem> VpciClient<M> {
             .await
             .context("failed to negotiate protocol version")?;
 
-        let mut this = Self {
+        let mut worker = VpciClientWorker {
             conn,
             protocol_version: version,
+            send_devices: devices,
         };
 
-        let status: protocol::Status = this
+        let status: protocol::Status = worker
             .conn
             .transact(protocol::FdoD0Entry {
                 message_type: protocol::MessageType::FDO_D0_ENTRY,
@@ -177,10 +293,22 @@ impl<M: RingMem> VpciClient<M> {
             anyhow::bail!("failed to enter D0 state: {:#x?}", status);
         }
 
-        Ok(this)
-    }
+        let (send, recv) = mesh::channel();
+        let task = driver.spawn("vpci-client", async move {
+            if let Err(err) = worker.run(recv).await {
+                tracing::error!(
+                    error = err.as_ref() as &dyn std::error::Error,
+                    "vpci client worker failed"
+                );
+            }
+        });
 
-    async fn run(&mut self) -> anyhow::Result<()> {
+        Ok(Self { task, req: send })
+    }
+}
+
+impl<M: RingMem> VpciClientWorker<M> {
+    async fn run(&mut self, req: mesh::Receiver<WorkerRequest>) -> anyhow::Result<()> {
         loop {
             let mut read = self.conn.queue.split().0;
             let packet = read

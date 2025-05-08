@@ -5,6 +5,7 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
+pci_core.workspace = true
 vpci_protocol.workspace = true
 vmbus_async.workspace = true
 vmbus_channel.workspace = true
@@ -18,6 +19,7 @@ guestmem.workspace = true
 tracelimit.workspace = true
 
 anyhow.workspace = true
+parking_lot.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
@@ -29,7 +31,6 @@ test_with_tracing.workspace = true
 vpci.workspace = true
 guid.workspace = true
 async-trait.workspace = true
-parking_lot.workspace = true
 vmbus_core.workspace = true
 mesh.workspace = true
 task_control.workspace = true
