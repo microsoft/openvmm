@@ -1,6 +1,5 @@
 #![cfg(test)]
 
-use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
@@ -9,31 +8,13 @@ use closeable_mutex::CloseableMutex;
 use futures::StreamExt;
 use guestmem::GuestMemory;
 use guid::Guid;
-use mesh::rpc::RpcSend;
 use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pal_async::task::Spawn;
-use parking_lot::Mutex;
 use std::sync::Arc;
-use std::task::Context;
 use task_control::StopTask;
 use test_with_tracing::test;
-use vmbus_async::pipe::MessagePipe;
-use vmbus_channel::SignalVmbusChannel;
-use vmbus_channel::bus::OfferInput;
-use vmbus_channel::bus::OpenData;
-use vmbus_channel::bus::OpenRequest;
-use vmbus_channel::bus::ParentBus;
 use vmbus_channel::simple::SimpleVmbusDevice;
-use vmbus_core::protocol::GpadlId;
-use vmbus_core::protocol::UserDefinedData;
-use vmbus_ring::IncomingRing;
-use vmcore::interrupt::Interrupt;
-use vmcore::notify::Notify;
-use vmcore::notify::PolledNotify;
-use vmcore::slim_event::SlimEvent;
-use vmcore::vm_task::SingleDriverBackend;
-use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::VpciInterruptMapper;
@@ -110,7 +91,7 @@ async fn test_negotiate_version(driver: DefaultDriver) {
 
     let (devices_send, mut devices_recv) = mesh::channel();
 
-    let client =
+    let _client =
         super::VpciClient::connect(&driver, guest, Box::new(BusWrapper(bus)), devices_send)
             .await
             .unwrap();

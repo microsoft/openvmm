@@ -57,19 +57,6 @@ struct VpciConnection<M: RingMem> {
 }
 
 impl<M: RingMem> VpciConnection<M> {
-    async fn send<S: IntoBytes + Immutable>(&mut self, send: S) -> anyhow::Result<()> {
-        let mut write = self.queue.split().1;
-        write
-            .write(OutgoingPacket {
-                transaction_id: 0,
-                packet_type: vmbus_ring::OutgoingPacketType::InBandNoCompletion,
-                payload: &[send.as_bytes()],
-            })
-            .await
-            .context("failed to send protocol version query")?;
-        Ok(())
-    }
-
     async fn transact<
         S: IntoBytes + Immutable,
         R: FromBytes + IntoBytes + Immutable + KnownLayout,
@@ -299,6 +286,19 @@ impl VpciClient {
 
         let gpa = mmio.gpa();
 
+        let status: protocol::Status = conn
+            .transact(protocol::FdoD0Entry {
+                message_type: protocol::MessageType::FDO_D0_ENTRY,
+                padding: 0,
+                mmio_start: gpa,
+            })
+            .await
+            .context("failed to send FDO D0 entry")?;
+
+        if status != protocol::Status::SUCCESS {
+            anyhow::bail!("failed to enter D0 state: {:#x?}", status);
+        }
+
         let (send, recv) = mesh::channel();
         let mut worker = VpciClientWorker {
             conn,
@@ -312,20 +312,6 @@ impl VpciClient {
             })),
         };
 
-        let status: protocol::Status = worker
-            .conn
-            .transact(protocol::FdoD0Entry {
-                message_type: protocol::MessageType::FDO_D0_ENTRY,
-                padding: 0,
-                mmio_start: gpa,
-            })
-            .await
-            .context("failed to send FDO D0 entry")?;
-
-        if status != protocol::Status::SUCCESS {
-            anyhow::bail!("failed to enter D0 state: {:#x?}", status);
-        }
-
         let task = driver.spawn("vpci-client", async move {
             if let Err(err) = worker.run().await {
                 tracing::error!(
@@ -336,6 +322,11 @@ impl VpciClient {
         });
 
         Ok(Self { task, req: send })
+    }
+
+    pub async fn shutdown(self) {
+        drop(self.req);
+        self.task.await;
     }
 }
 
