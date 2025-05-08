@@ -40,6 +40,7 @@ use std::os::windows::prelude::*;
 use std::pin::pin;
 use std::sync::Arc;
 use std::task::Poll;
+use std::task::ready;
 use std::time::Duration;
 use vmbus_channel::bus::ChannelServerRequest;
 use vmbus_channel::bus::ChannelType;
@@ -426,23 +427,18 @@ impl ProxyTask {
                         // block) when the future is polled.
                         pending_flush.complete(());
                     }
-                    if let Some(recv) = &mut flush_recv {
-                        match recv.poll_next_unpin(cx) {
-                            Poll::Ready(Some(rpc)) => {
-                                // We received a flush request from the client. Save
-                                // this request and loop around to poll the action
-                                // again.
-                                pending_flush = Some(rpc);
-                            }
-                            Poll::Ready(None) => {
-                                // The flush channel was closed, so we can stop
-                                // waiting for flushes.
-                                flush_recv = None;
-                            }
-                            Poll::Pending => {}
-                        }
-                    } else {
+                    let Some(recv) = &mut flush_recv else {
                         break Poll::Pending;
+                    };
+                    if let Some(rpc) = ready!(recv.poll_next_unpin(cx)) {
+                        // We received a flush request from the client. Save
+                        // this request and loop around to poll the action
+                        // again.
+                        pending_flush = Some(rpc);
+                    } else {
+                        // The flush channel was closed, so we can stop
+                        // waiting for flushes.
+                        flush_recv = None;
                     }
                 }
             })
