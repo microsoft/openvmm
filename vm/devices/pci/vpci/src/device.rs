@@ -1220,11 +1220,10 @@ mod tests {
     use vmbus_async::queue::Queue;
     use vmbus_async::queue::connected_queues;
     use vmbus_ring as ring;
+    use vmcore::vpci_msi::VpciInterruptMapper;
     use vpci_protocol as protocol;
     use vpci_protocol::SlotNumber;
     use zerocopy::FromBytes;
-
-    use vmcore::vpci_msi::VpciInterruptMapper;
     use zerocopy::Immutable;
     use zerocopy::IntoBytes;
     use zerocopy::KnownLayout;
