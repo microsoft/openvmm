@@ -77,7 +77,7 @@ impl VpciBusDevice {
         instance_id: Guid,
         device: Arc<CloseableMutex<dyn ChipsetDevice>>,
         register_mmio: &mut dyn RegisterMmioIntercept,
-        msi_controller: Arc<dyn VpciInterruptMapper>,
+        msi_controller: VpciInterruptMapper,
     ) -> Result<(Self, VpciChannel), NotPciDevice> {
         let config_space = VpciConfigSpace::new(
             register_mmio.new_io_region(&format!("vpci-{instance_id}-config"), 2 * HV_PAGE_SIZE),
@@ -103,7 +103,7 @@ impl VpciBus {
         device: Arc<CloseableMutex<dyn ChipsetDevice>>,
         register_mmio: &mut dyn RegisterMmioIntercept,
         vmbus: &dyn vmbus_channel::bus::ParentBus,
-        msi_controller: Arc<dyn VpciInterruptMapper>,
+        msi_controller: VpciInterruptMapper,
     ) -> Result<Self, CreateBusError> {
         let (bus, channel) = VpciBusDevice::new(
             instance_id,

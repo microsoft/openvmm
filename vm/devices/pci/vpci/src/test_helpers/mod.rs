@@ -9,9 +9,9 @@ use pci_core::msi::MsiInterruptTarget;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
-use vmcore::vpci_msi::VpciInterruptMapper;
 use vmcore::vpci_msi::VpciInterruptParameters;
 
 #[derive(Debug, Clone)]
@@ -77,8 +77,8 @@ impl MsiInterruptTarget for TestVpciInterruptController {
     }
 }
 
-impl VpciInterruptMapper for TestVpciInterruptController {
-    fn register_interrupt(
+impl MapVpciInterrupt for TestVpciInterruptController {
+    async fn register_interrupt(
         &self,
         vector_count: u32,
         params: &VpciInterruptParameters<'_>,
@@ -89,7 +89,7 @@ impl VpciInterruptMapper for TestVpciInterruptController {
             .register_interrupt(vector_count, params)
     }
 
-    fn unregister_interrupt(&self, address: u64, data: u32) {
+    async fn unregister_interrupt(&self, address: u64, data: u32) {
         self.inner
             .mapping_table
             .lock()
@@ -203,18 +203,21 @@ impl MsiInterruptMappingTable {
 pub mod tests {
     use super::*;
     use crate::test_helpers::TestVpciInterruptController;
+    use pal_async::async_test;
 
-    #[test]
-    fn verify_simple_interrupt() {
+    #[async_test]
+    async fn verify_simple_interrupt() {
         let test_intc = TestVpciInterruptController::new();
-        let interrupt = test_intc.register_interrupt(
-            1,
-            &VpciInterruptParameters {
-                vector: 0x21,
-                multicast: false,
-                target_processors: &[0],
-            },
-        );
+        let interrupt = test_intc
+            .register_interrupt(
+                1,
+                &VpciInterruptParameters {
+                    vector: 0x21,
+                    multicast: false,
+                    target_processors: &[0],
+                },
+            )
+            .await;
         let MsiAddressData {
             address: vector,
             data,
@@ -230,17 +233,19 @@ pub mod tests {
         assert!(test_intc.get_next_interrupt().is_none());
     }
 
-    #[test]
-    fn verify_multi_interrupt() {
+    #[async_test]
+    async fn verify_multi_interrupt() {
         let test_intc = TestVpciInterruptController::new();
-        let interrupt = test_intc.register_interrupt(
-            2,
-            &VpciInterruptParameters {
-                vector: 0x21,
-                multicast: false,
-                target_processors: &[0],
-            },
-        );
+        let interrupt = test_intc
+            .register_interrupt(
+                2,
+                &VpciInterruptParameters {
+                    vector: 0x21,
+                    multicast: false,
+                    target_processors: &[0],
+                },
+            )
+            .await;
         let MsiAddressData {
             address: vector,
             data,
@@ -260,31 +265,35 @@ pub mod tests {
         assert!(test_intc.get_next_interrupt().is_none());
     }
 
-    #[test]
-    fn verify_two_interrupts() {
+    #[async_test]
+    async fn verify_two_interrupts() {
         let test_intc = TestVpciInterruptController::new();
-        let interrupt = test_intc.register_interrupt(
-            1,
-            &VpciInterruptParameters {
-                vector: 0x21,
-                multicast: false,
-                target_processors: &[0],
-            },
-        );
+        let interrupt = test_intc
+            .register_interrupt(
+                1,
+                &VpciInterruptParameters {
+                    vector: 0x21,
+                    multicast: false,
+                    target_processors: &[0],
+                },
+            )
+            .await;
         let MsiAddressData {
             address: vector,
             data,
         } = interrupt.unwrap();
         assert_eq!(vector, 0xfee00000);
         assert_eq!(data, 0);
-        let interrupt = test_intc.register_interrupt(
-            1,
-            &VpciInterruptParameters {
-                vector: 0x27,
-                multicast: false,
-                target_processors: &[1],
-            },
-        );
+        let interrupt = test_intc
+            .register_interrupt(
+                1,
+                &VpciInterruptParameters {
+                    vector: 0x27,
+                    multicast: false,
+                    target_processors: &[1],
+                },
+            )
+            .await;
         let MsiAddressData {
             address: vector,
             data,
@@ -305,17 +314,19 @@ pub mod tests {
         assert!(test_intc.get_next_interrupt().is_none());
     }
 
-    #[test]
-    fn verify_retarget() {
+    #[async_test]
+    async fn verify_retarget() {
         let test_intc = TestVpciInterruptController::new();
-        let interrupt = test_intc.register_interrupt(
-            1,
-            &VpciInterruptParameters {
-                vector: 0x21,
-                multicast: false,
-                target_processors: &[0],
-            },
-        );
+        let interrupt = test_intc
+            .register_interrupt(
+                1,
+                &VpciInterruptParameters {
+                    vector: 0x21,
+                    multicast: false,
+                    target_processors: &[0],
+                },
+            )
+            .await;
         let MsiAddressData {
             address: vector,
             data,
