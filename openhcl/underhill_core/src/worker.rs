@@ -2738,6 +2738,7 @@ async fn new_underhill_vm(
     #[cfg(feature = "vpci")]
     {
         use virt::Hv1;
+        use vmcore::vpci_msi::VpciInterruptMapper;
 
         for crate::dispatch::vtl2_settings_worker::UhVpciDeviceConfig {
             instance_id,
@@ -2764,7 +2765,7 @@ async fn new_underhill_vm(
                         .context("vpci is not supported by this hypervisor")?
                         .build(Vtl::Vtl0, device_id)?;
                     let device = Arc::new(device);
-                    Ok((device.clone(), device))
+                    Ok((device.clone(), VpciInterruptMapper::new(device)))
                 },
             )
             .await?;
