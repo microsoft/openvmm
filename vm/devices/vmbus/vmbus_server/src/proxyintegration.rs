@@ -24,6 +24,7 @@ use futures::stream::SelectAll;
 use guestmem::GuestMemory;
 use mesh::Cancel;
 use mesh::CancelContext;
+use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
@@ -32,9 +33,13 @@ use pal_event::Event;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::future::Future;
+use std::future::poll_fn;
 use std::io;
 use std::os::windows::prelude::*;
+use std::pin::pin;
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::Duration;
 use vmbus_channel::bus::ChannelServerRequest;
 use vmbus_channel::bus::ChannelType;
@@ -75,12 +80,20 @@ impl ProxyServerInfo {
 pub struct ProxyIntegration {
     cancel: Cancel,
     handle: OwnedHandle,
+    flush_send: mesh::Sender<Rpc<(), ()>>,
 }
 
 impl ProxyIntegration {
     /// Cancels the vmbus proxy.
     pub fn cancel(&mut self) {
         self.cancel.cancel();
+    }
+
+    /// Wait for all currently ready pending actions to complete. E.g., wait for
+    /// all channels that have been offered to the kernel driver to have been
+    /// processed.
+    pub async fn flush_actions(&mut self) {
+        self.flush_send.call(|v| v, ()).await.ok();
     }
 
     /// Returns the handle to the vmbus proxy driver.
@@ -96,21 +109,26 @@ impl ProxyIntegration {
         vtl2_server: Option<ProxyServerInfo>,
         mem: Option<&GuestMemory>,
     ) -> io::Result<Self> {
-        let mut proxy = VmbusProxy::new(driver, handle)?;
+        let (cancel_ctx, cancel) = CancelContext::new().with_cancel();
+        let mut proxy = VmbusProxy::new(driver, handle, cancel_ctx)?;
         let handle = proxy.handle().try_clone_to_owned()?;
         if let Some(mem) = mem {
             proxy.set_memory(mem).await?;
         }
 
-        let (cancel_ctx, cancel) = CancelContext::new().with_cancel();
+        let (flush_send, flush_recv) = mesh::channel();
         driver
             .spawn(
                 "vmbus_proxy",
-                proxy_thread(driver.clone(), proxy, server, vtl2_server, cancel_ctx),
+                proxy_thread(driver.clone(), proxy, server, vtl2_server, flush_recv),
             )
             .detach();
 
-        Ok(Self { cancel, handle })
+        Ok(Self {
+            cancel,
+            handle,
+            flush_send,
+        })
     }
 }
 
@@ -388,8 +406,50 @@ impl ProxyTask {
     async fn run_proxy_actions(
         &self,
         send: mesh::Sender<TaggedStream<u64, mesh::Receiver<ChannelRequest>>>,
+        flush_recv: mesh::Receiver<Rpc<(), ()>>,
     ) {
-        while let Ok(action) = self.proxy.next_action().await {
+        let mut pending_flush = None::<Rpc<(), ()>>;
+        let mut flush_recv = Some(flush_recv);
+        loop {
+            let mut action_fut = pin!(self.proxy.next_action());
+            let action = poll_fn(|cx| {
+                loop {
+                    if let r @ Poll::Ready(_) = action_fut.as_mut().poll(cx) {
+                        break r;
+                    }
+                    if let Some(pending_flush) = pending_flush.take() {
+                        // The next action future was polled after this flush
+                        // was received, and it has returned pending. This
+                        // definitively means there are currently no more
+                        // actions pending, because the action future will check
+                        // if the pending IOCTL completed (via its IO status
+                        // block) when the future is polled.
+                        pending_flush.complete(());
+                    }
+                    if let Some(recv) = &mut flush_recv {
+                        match recv.poll_next_unpin(cx) {
+                            Poll::Ready(Some(rpc)) => {
+                                // We received a flush request from the client. Save
+                                // this request and loop around to poll the action
+                                // again.
+                                pending_flush = Some(rpc);
+                            }
+                            Poll::Ready(None) => {
+                                // The flush channel was closed, so we can stop
+                                // waiting for flushes.
+                                flush_recv = None;
+                            }
+                            Poll::Pending => {}
+                        }
+                    } else {
+                        break Poll::Pending;
+                    }
+                }
+            })
+            .await;
+
+            let Ok(action) = action else { break };
+
             tracing::debug!(action = ?action, "action");
             match action {
                 ProxyAction::Offer {
@@ -598,7 +658,7 @@ async fn proxy_thread(
     proxy: VmbusProxy,
     server: ProxyServerInfo,
     vtl2_server: Option<ProxyServerInfo>,
-    mut cancel: CancelContext,
+    flush_recv: mesh::Receiver<Rpc<(), ()>>,
 ) {
     // Separate the hvsocket relay channels.
     let (hvsock_request_recv, hvsock_response_send) = server
@@ -631,16 +691,11 @@ async fn proxy_thread(
         vtl2_hvsock_response_send,
         Arc::clone(&proxy),
     ));
-    let offers = task.run_proxy_actions(send);
+    let offers = task.run_proxy_actions(send, flush_recv);
     let requests =
         task.run_server_requests(spawner, recv, hvsock_request_recv, vtl2_hvsock_request_recv);
-    let cancellation = async {
-        cancel.cancelled().await;
-        tracing::debug!("proxy thread cancelling");
-        proxy.cancel();
-    };
 
-    futures::future::join3(offers, requests, cancellation).await;
+    futures::future::join(offers, requests).await;
     tracing::debug!("proxy thread finished");
     // BUGBUG: cancel all IO if something goes wrong?
 }

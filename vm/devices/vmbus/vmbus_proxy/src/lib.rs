@@ -9,6 +9,7 @@
 
 use futures::poll;
 use guestmem::GuestMemory;
+use mesh::CancelContext;
 use mesh::MeshPayload;
 use pal::windows::ObjectAttributes;
 use pal::windows::UnicodeStringRef;
@@ -19,8 +20,6 @@ use pal_async::windows::overlapped::OverlappedFile;
 use pal_event::Event;
 use std::mem::zeroed;
 use std::os::windows::prelude::*;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
 use vmbusioctl::VMBUS_CHANNEL_OFFER;
@@ -83,7 +82,7 @@ pub struct VmbusProxy {
     // NOTE: This must come after `file` so that it is not released until `file`
     // is closed.
     guest_memory: Option<GuestMemory>,
-    cancelled: AtomicBool,
+    cancel: CancelContext,
 }
 
 #[derive(Debug)]
@@ -127,17 +126,12 @@ unsafe impl<T> IoBufMut for StaticIoctlBuffer<T> {
 }
 
 impl VmbusProxy {
-    pub fn new(driver: &dyn Driver, handle: ProxyHandle) -> Result<Self> {
+    pub fn new(driver: &dyn Driver, handle: ProxyHandle, ctx: CancelContext) -> Result<Self> {
         Ok(Self {
             file: OverlappedFile::new(driver, handle.0)?,
             guest_memory: None,
-            cancelled: AtomicBool::new(false),
+            cancel: ctx,
         })
-    }
-
-    pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
-        self.file.cancel();
     }
 
     pub fn handle(&self) -> BorrowedHandle<'_> {
@@ -149,8 +143,9 @@ impl VmbusProxy {
         In: IoBufMut,
         Out: IoBufMut,
     {
-        // Don't issue new IO if the cancel() method has been called.
-        if self.cancelled.load(Ordering::Acquire) {
+        // Don't issue new IO if the cancel context has already been cancelled.
+        let mut cancel = self.cancel.clone();
+        if cancel.is_cancelled() {
             tracing::trace!("ioctl cancelled before issued");
             return Err(Error::from_hresult(ERROR_CANCELLED.into()));
         }
@@ -160,17 +155,16 @@ impl VmbusProxy {
         let (r, (_, output)) = match poll!(&mut ioctl) {
             std::task::Poll::Ready(result) => result,
             std::task::Poll::Pending => {
-                // Cancellation may have happened after the check above but before the IO was
-                // issued, in which case it was not actually cancelled. Cancel it again now just in
-                // case.
-                if self.cancelled.load(Ordering::Acquire) {
-                    tracing::trace!("ioctl cancelled during issue");
-                    ioctl.cancel();
+                match cancel.until_cancelled(&mut ioctl).await {
+                    Ok(r) => r,
+                    Err(_) => {
+                        tracing::trace!("ioctl cancelled after issued");
+                        ioctl.cancel();
+                        // Even when cancelled, we must wait to complete the IO so buffers aren't released
+                        // while still in use.
+                        ioctl.await
+                    }
                 }
-
-                // Even when cancelled, we must wait to complete the IO so buffers aren't released
-                // while still in use.
-                ioctl.await
             }
         };
 
