@@ -224,6 +224,12 @@ impl MapVpciInterrupt for VpciDevice {
             .await
             .map_err(|err| RegisterInterruptError::new(err))?;
 
+        tracing::debug!(
+            address = resource.address,
+            data = resource.data_payload,
+            "registered interrupt"
+        );
+
         Ok(MsiAddressData {
             address: resource.address,
             data: resource.data_payload,
@@ -231,6 +237,7 @@ impl MapVpciInterrupt for VpciDevice {
     }
 
     async fn unregister_interrupt(&self, address: u64, data: u32) {
+        tracing::debug!(address, data, "unregistering interrupt");
         let resource = protocol::DeleteInterrupt {
             message_type: protocol::MessageType::DELETE_INTERRUPT,
             slot: self.slot,
@@ -417,13 +424,7 @@ impl<M: RingMem> VpciClientWorker<M> {
                                             .read_plain::<protocol::CreateInterruptReply>()
                                             .context("failed to read create interrupt reply")?;
                                         if reply.status == protocol::Status::SUCCESS {
-                                            let resource = p
-                                                .reader()
-                                                .read_plain::<protocol::MsiResourceRemapped>()
-                                                .context(
-                                                    "failed to read create interrupt resource",
-                                                )?;
-                                            rpc.complete(Ok(resource));
+                                            rpc.complete(Ok(reply.interrupt));
                                         } else {
                                             rpc.fail(anyhow::anyhow!(
                                                 "failed to create interrupt: {:#x?}",

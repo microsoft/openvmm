@@ -35,6 +35,7 @@ use vmcore::slim_event::SlimEvent;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 use vmcore::vpci_msi::MapVpciInterrupt;
+use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vmcore::vpci_msi::VpciInterruptParameters;
 use vpci::bus::VpciBusDevice;
@@ -59,16 +60,17 @@ impl PciConfigSpace for NoopDevice {
     }
 }
 
-struct MmioGuy {}
+struct BusWrapper(VpciBusDevice);
 
-impl super::MemoryAccess for VpciBusDevice {
+impl super::MemoryAccess for BusWrapper {
     fn gpa(&mut self) -> u64 {
         0x123456780000
     }
 
     fn read(&mut self, offset: u64) -> u32 {
         let mut data = [0; 4];
-        self.supports_mmio()
+        self.0
+            .supports_mmio()
             .unwrap()
             .mmio_read(offset, &mut data)
             .unwrap();
@@ -76,7 +78,8 @@ impl super::MemoryAccess for VpciBusDevice {
     }
 
     fn write(&mut self, offset: u64, value: u32) {
-        self.supports_mmio()
+        self.0
+            .supports_mmio()
             .unwrap()
             .mmio_write(offset, &value.to_ne_bytes())
             .unwrap();
@@ -107,12 +110,13 @@ async fn test_negotiate_version(driver: DefaultDriver) {
 
     let (devices_send, mut devices_recv) = mesh::channel();
 
-    let vpci = super::VpciClient::connect(&driver, guest, Box::new(bus), devices_send)
-        .await
-        .unwrap();
+    let client =
+        super::VpciClient::connect(&driver, guest, Box::new(BusWrapper(bus)), devices_send)
+            .await
+            .unwrap();
 
     let device = devices_recv.next().await.unwrap();
-    device
+    let MsiAddressData { address, data } = device
         .register_interrupt(
             1,
             &VpciInterruptParameters {
@@ -123,4 +127,6 @@ async fn test_negotiate_version(driver: DefaultDriver) {
         )
         .await
         .unwrap();
+
+    device.unregister_interrupt(address, data).await;
 }
