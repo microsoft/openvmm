@@ -11,6 +11,7 @@ vmbus_channel.workspace = true
 vmbus_ring.workspace = true
 
 pal_async.workspace = true
+guestmem.workspace = true
 tracelimit.workspace = true
 
 anyhow.workspace = true
@@ -27,7 +28,9 @@ vpci.workspace = true
 guid.workspace = true
 async-trait.workspace = true
 parking_lot.workspace = true
-guestmem.workspace = true
+vmbus_core.workspace = true
+mesh.workspace = true
+task_control.workspace = true
 
 [lints]
 workspace = true
