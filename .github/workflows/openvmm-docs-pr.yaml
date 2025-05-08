@@ -185,9 +185,7 @@ jobs:
         path: ${{ runner.temp }}/publish_artifacts/guide/
   job1:
     name: build and check docs [x64-windows]
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Win-Pool-WestUS3
+    runs-on: windows-latest
     permissions:
       contents: read
       id-token: write
@@ -357,10 +355,7 @@ jobs:
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-rustdoc/
   job2:
     name: build and check docs [x64-linux]
-    runs-on:
-    - self-hosted
-    - 1ES.Pool=OpenVMM-GitHub-Linux-Pool-WestUS3
-    - 1ES.ImageOverride=MMSUbuntu22.04-256GB
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write

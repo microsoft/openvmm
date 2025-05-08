@@ -154,7 +154,7 @@ impl IntoPipeline for BuildDocsCli {
                     FlowArch::X86_64,
                     format!("build and check docs [x64-{platform}]"),
                 )
-                .gh_set_pool(crate::pipelines_shared::gh_pools::default_x86_pool(
+                .gh_set_pool(crate::pipelines_shared::gh_pools::default_gh_hosted(
                     platform,
                 ))
                 .dep_on(
