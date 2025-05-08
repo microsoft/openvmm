@@ -385,6 +385,7 @@ mod ioctls {
     const MSHV_VTL_RMPQUERY: u16 = 0x35;
     const MSHV_INVLPGB: u16 = 0x36;
     const MSHV_TLBSYNC: u16 = 0x37;
+    const MSHV_KICKCPUS: u16 = 0x38;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -598,6 +599,14 @@ mod ioctls {
         hcl_tlbsync,
         MSHV_IOCTL,
         MSHV_TLBSYNC
+    );
+
+    ioctl_write_ptr!(
+        /// Kick CPUs.
+        hcl_kickcpus,
+        MSHV_IOCTL,
+        MSHV_KICKCPUS,
+        protocol::hcl_kick_cpus
     );
 }
 
@@ -3219,6 +3228,27 @@ impl Hcl {
         // SAFETY: ioctl has no prerequisites.
         unsafe {
             hcl_tlbsync(self.mshv_vtl.file.as_raw_fd()).expect("should always succeed");
+        }
+    }
+
+    pub fn kick_cpus(
+        &self,
+        cpus: impl IntoIterator<Item = u32>,
+        cancel_run: bool,
+        wait_for_other_cpus: bool,
+    ) {
+        let cpu_bitmap = cpus.into_iter().fold(0u64, |bitmap, cpu| bitmap | 1 << cpu);
+
+        let data = protocol::hcl_kick_cpus {
+            len: size_of_val(&cpu_bitmap) as u64,
+            cpu_mask: cpu_bitmap.as_bytes().as_ptr(),
+            flags: protocol::hcl_kick_cpus_flags::new()
+                .with_cancel_run(cancel_run)
+                .with_wait_for_other_cpus(wait_for_other_cpus),
+        };
+
+        unsafe {
+            hcl_kickcpus(self.mshv_vtl.file.as_raw_fd(), &data).expect("should always succeed");
         }
     }
 }
