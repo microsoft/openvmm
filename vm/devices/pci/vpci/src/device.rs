@@ -272,6 +272,8 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
         .map_err(|_| PacketError::PacketTooSmall("header"))?
         .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
+    tracing::trace!(?message_type, "parsing vpci packet");
+
     let data = match message_type {
         protocol::MessageType::ASSIGNED_RESOURCES | protocol::MessageType::ASSIGNED_RESOURCES2 => {
             let (msg, rest) = Ref::<_, protocol::DeviceTranslate>::from_prefix(buf)
@@ -1072,7 +1074,7 @@ impl VpciConfigSpaceOffset {
 
 impl VpciChannel {
     /// Create New VPCI Channel
-    pub fn new(
+    pub(crate) fn new(
         device: &Arc<CloseableMutex<dyn ChipsetDevice>>,
         instance_id: Guid,
         config_space: VpciConfigSpace,
@@ -1101,9 +1103,9 @@ impl VpciChannel {
 }
 
 #[async_trait]
-impl SimpleVmbusDevice for VpciChannel {
+impl<M: 'static + Send + Sync + RingMem> SimpleVmbusDevice<M> for VpciChannel {
     type SavedState = NoSavedState;
-    type Runner = VpciChannelState;
+    type Runner = VpciChannelState<M>;
 
     fn offer(&self) -> OfferParams {
         OfferParams {
@@ -1121,7 +1123,7 @@ impl SimpleVmbusDevice for VpciChannel {
 
     fn open(
         &mut self,
-        channel: RawAsyncChannel<GpadlRingMem>,
+        channel: RawAsyncChannel<M>,
         _guest_memory: guestmem::GuestMemory,
     ) -> Result<Self::Runner, ChannelOpenError> {
         Ok(VpciChannelState {
