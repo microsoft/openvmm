@@ -4277,21 +4277,19 @@ impl TdxTlbLockFlushAccess<'_> {
     ) {
         match processor_set {
             Some(processors) => {
-                self.wake_processors_for_tlb_flush_inner(
-                    target_vtl,
-                    processors.iter().map(|x| x as usize),
-                );
+                self.wake_processors_for_tlb_flush_inner(target_vtl, processors);
             }
-            None => {
-                self.wake_processors_for_tlb_flush_inner(target_vtl, 0..self.partition.vps.len())
-            }
+            None => self.wake_processors_for_tlb_flush_inner(
+                target_vtl,
+                0..(self.partition.vps.len() as u32),
+            ),
         }
     }
 
     fn wake_processors_for_tlb_flush_inner(
         &mut self,
         target_vtl: GuestVtl,
-        processors: impl Iterator<Item = usize>,
+        processors: impl IntoIterator<Item = u32>,
     ) {
         // Use SeqCst ordering to ensure that we are observing the most
         // up-to-date value from other VPs. Otherwise we might not send a
@@ -4301,15 +4299,15 @@ impl TdxTlbLockFlushAccess<'_> {
         // We use a single fence to avoid having to take a SeqCst load
         // for each VP.
         std::sync::atomic::fence(Ordering::SeqCst);
-        for target_vp in processors {
-            if self.vp_index.index() as usize != target_vp
-                && self.shared.active_vtl[target_vp].load(Ordering::Relaxed) == target_vtl as u8
-            {
-                self.partition.vps[target_vp].wake_vtl2();
-            }
-        }
-
-        // TODO TDX GUEST VSM: We need to wait here until all woken VPs actually enter VTL 2.
+        self.partition.hcl.kick_cpus(
+            processors.into_iter().filter(|&vp| {
+                vp != self.vp_index.index()
+                    && self.shared.active_vtl[vp as usize].load(Ordering::Relaxed)
+                        == target_vtl as u8
+            }),
+            true,
+            true,
+        );
     }
 }
 
