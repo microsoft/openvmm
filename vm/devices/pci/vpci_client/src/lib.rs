@@ -3,6 +3,9 @@
 mod tests;
 
 use anyhow::Context;
+use futures::FutureExt;
+use futures::StreamExt;
+use futures_concurrency::future::Race;
 use guestmem::MemoryRead;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -27,6 +30,7 @@ use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
+use zerocopy::Unalign;
 
 pub struct VpciClient {
     req: mesh::Sender<WorkerRequest>,
@@ -128,15 +132,22 @@ pub trait MemoryAccess: Send {
     fn write(&mut self, offset: u64, value: u32);
 }
 
+#[derive(Inspect)]
 pub struct VpciDevice {
     hw_ids: HardwareIds,
+    #[inspect(skip)]
     config_space: Arc<Mutex<ConfigSpaceAccessor>>,
+    #[inspect(with = "|&x| inspect::AsHex(u32::from(x))")]
     slot: SlotNumber,
+    #[inspect(skip)]
     req: mesh::Sender<WorkerRequest>,
 }
 
+#[derive(Inspect)]
 struct ConfigSpaceAccessor {
+    #[inspect(skip)]
     mem: Box<dyn MemoryAccess>,
+    #[inspect(with = "|&x| inspect::AsHex(u32::from(x))")]
     current_slot: SlotNumber,
 }
 
@@ -156,12 +167,6 @@ impl ConfigSpaceAccessor {
     fn write(&mut self, slot: SlotNumber, offset: u16, value: u32) {
         self.set_slot(slot);
         self.mem.write(offset.into(), value);
-    }
-}
-
-impl Inspect for VpciDevice {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        todo!()
     }
 }
 
@@ -251,10 +256,22 @@ impl MapVpciInterrupt for VpciDevice {
 #[derive(InspectMut)]
 struct VpciClientWorker<M: RingMem> {
     conn: VpciConnection<M>,
+    #[inspect(iter_by_key)]
+    tx: slab::Slab<Tx>,
+    #[inspect(skip)]
+    req: mesh::Receiver<WorkerRequest>,
+    config_space: Arc<Mutex<ConfigSpaceAccessor>>,
     #[inspect(debug)]
     protocol_version: protocol::ProtocolVersion,
     #[inspect(skip)]
     send_devices: mesh::Sender<VpciDevice>,
+}
+
+#[derive(Inspect)]
+#[inspect(external_tag)]
+enum Tx {
+    CreateInterrupt(#[inspect(skip)] FailableRpc<(), protocol::MsiResourceRemapped>),
+    DeleteInterrupt(#[inspect(skip)] FailableRpc<(), ()>),
 }
 
 impl VpciClient {
@@ -273,10 +290,19 @@ impl VpciClient {
             .await
             .context("failed to negotiate protocol version")?;
 
+        let gpa = mmio.gpa();
+
+        let (send, recv) = mesh::channel();
         let mut worker = VpciClientWorker {
             conn,
+            tx: slab::Slab::new(),
             protocol_version: version,
             send_devices: devices,
+            req: recv,
+            config_space: Arc::new(Mutex::new(ConfigSpaceAccessor {
+                mem: mmio,
+                current_slot: (!0).into(),
+            })),
         };
 
         let status: protocol::Status = worker
@@ -284,7 +310,7 @@ impl VpciClient {
             .transact(protocol::FdoD0Entry {
                 message_type: protocol::MessageType::FDO_D0_ENTRY,
                 padding: 0,
-                mmio_start: mmio.gpa(),
+                mmio_start: gpa,
             })
             .await
             .context("failed to send FDO D0 entry")?;
@@ -293,9 +319,8 @@ impl VpciClient {
             anyhow::bail!("failed to enter D0 state: {:#x?}", status);
         }
 
-        let (send, recv) = mesh::channel();
         let task = driver.spawn("vpci-client", async move {
-            if let Err(err) = worker.run(recv).await {
+            if let Err(err) = worker.run().await {
                 tracing::error!(
                     error = err.as_ref() as &dyn std::error::Error,
                     "vpci client worker failed"
@@ -308,44 +333,172 @@ impl VpciClient {
 }
 
 impl<M: RingMem> VpciClientWorker<M> {
-    async fn run(&mut self, req: mesh::Receiver<WorkerRequest>) -> anyhow::Result<()> {
+    async fn run(&mut self) -> anyhow::Result<()> {
         loop {
-            let mut read = self.conn.queue.split().0;
-            let packet = read
-                .read()
-                .await
-                .context("failed to read protocol version reply")
-                .unwrap();
+            let req = {
+                enum Event<T, U> {
+                    Packet(T),
+                    Request(U),
+                }
 
-            match &*packet {
-                IncomingPacket::Data(p) => {
-                    let mut reader = p.reader();
-                    let len = reader.len();
-                    let buf = self.conn.buf.get_mut(..len).context("packet too large")?;
-                    reader.read(buf)?;
-                    let (packet_type, _) = protocol::MessageType::read_from_prefix(buf)
-                        .ok()
-                        .context("packet too small")?;
-                    match packet_type {
-                        protocol::MessageType::BUS_RELATIONS2 => {
-                            let (bus_relations, _) =
-                                protocol::QueryBusRelations2::read_from_prefix(buf)
+                let mut read = self.conn.queue.split().0;
+                let read_packet = read.read().map(Event::Packet);
+                let req = self.req.next().map(Event::Request);
+
+                let event = (read_packet, req).race().await;
+                match event {
+                    Event::Packet(p) => {
+                        let p = p.context("failed to read packet")?;
+                        match &*p {
+                            IncomingPacket::Data(p) => {
+                                let mut reader = p.reader();
+                                let len = reader.len();
+                                let buf =
+                                    self.conn.buf.get_mut(..len).context("packet too large")?;
+                                reader.read(buf)?;
+                                let (packet_type, _) = protocol::MessageType::read_from_prefix(buf)
                                     .ok()
-                                    .context("failed to read bus relations")?;
-                            if bus_relations.device_count != 1 {
-                                anyhow::bail!("only a single device is supported");
+                                    .context("packet too small")?;
+                                match packet_type {
+                                    protocol::MessageType::BUS_RELATIONS2 => {
+                                        let (bus_relations, devices) =
+                                            protocol::QueryBusRelations2::read_from_prefix(buf)
+                                                .ok()
+                                                .context("failed to read bus relations")?;
+
+                                        let (devices, _) = <[Unalign<
+                                            protocol::DeviceDescription2,
+                                        >]>::ref_from_prefix_with_elems(
+                                            devices,
+                                            bus_relations.device_count as usize,
+                                        )
+                                        .ok()
+                                        .context("failed to read bus relation devices")?;
+                                        for device in devices {
+                                            let device = device.get();
+                                            let hw_ids = HardwareIds {
+                                                vendor_id: device.pnp_id.vendor_id,
+                                                device_id: device.pnp_id.device_id,
+                                                revision_id: device.pnp_id.revision_id,
+                                                prog_if: device.pnp_id.prog_if.into(),
+                                                sub_class: device.pnp_id.sub_class.into(),
+                                                base_class: device.pnp_id.base_class.into(),
+                                                type0_sub_vendor_id: device
+                                                    .pnp_id
+                                                    .sub_vendor_id
+                                                    .into(),
+                                                type0_sub_system_id: device
+                                                    .pnp_id
+                                                    .sub_system_id
+                                                    .into(),
+                                            };
+                                            let vpci_device = VpciDevice {
+                                                hw_ids,
+                                                config_space: self.config_space.clone(),
+                                                slot: device.slot,
+                                                req: self.req.sender(),
+                                            };
+                                            self.send_devices.send(vpci_device);
+                                        }
+                                    }
+                                    p => {
+                                        anyhow::bail!("unexpected packet type: {:?}", p);
+                                    }
+                                }
                             }
-                            tracing::info!(?bus_relations, "bus relations");
+                            IncomingPacket::Completion(p) => {
+                                let tx = p.transaction_id() as usize;
+                                let entry =
+                                    self.tx.try_remove(tx).context("failed to find tx entry")?;
+                                match entry {
+                                    Tx::CreateInterrupt(rpc) => {
+                                        let reply = p
+                                            .reader()
+                                            .read_plain::<protocol::CreateInterruptReply>()
+                                            .context("failed to read create interrupt reply")?;
+                                        if reply.status == protocol::Status::SUCCESS {
+                                            let resource = p
+                                                .reader()
+                                                .read_plain::<protocol::MsiResourceRemapped>()
+                                                .context(
+                                                    "failed to read create interrupt resource",
+                                                )?;
+                                            rpc.complete(Ok(resource));
+                                        } else {
+                                            rpc.fail(anyhow::anyhow!(
+                                                "failed to create interrupt: {:#x?}",
+                                                reply.status
+                                            ));
+                                        }
+                                    }
+                                    Tx::DeleteInterrupt(rpc) => {
+                                        let status = p
+                                            .reader()
+                                            .read_plain::<protocol::Status>()
+                                            .context("failed to read delete interrupt reply")?;
+                                        if status == protocol::Status::SUCCESS {
+                                            rpc.complete(Ok(()));
+                                        } else {
+                                            rpc.fail(anyhow::anyhow!(
+                                                "failed to delete interrupt: {:#x?}",
+                                                status
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        p => {
-                            anyhow::bail!("unexpected packet type: {:?}", p);
-                        }
+                        None
                     }
+                    Event::Request(Some(req)) => Some(req),
+                    Event::Request(None) => break,
                 }
-                IncomingPacket::Completion(p) => {
-                    todo!()
-                }
+            };
+            if let Some(req) = req {
+                self.handle_req(req).await?;
             }
         }
+        todo!("cleanly tear down");
+    }
+
+    async fn handle_req(&mut self, req: WorkerRequest) -> anyhow::Result<()> {
+        match req {
+            WorkerRequest::Inspect(deferred) => deferred.inspect(&mut *self),
+            WorkerRequest::MapInterrupt(rpc) => {
+                let (req, reply) = rpc.split();
+                let entry = self.tx.vacant_entry();
+                self.conn
+                    .queue
+                    .split()
+                    .1
+                    .write(OutgoingPacket {
+                        transaction_id: entry.key() as u64,
+                        packet_type: vmbus_ring::OutgoingPacketType::InBandWithCompletion,
+                        payload: &[req.as_bytes()],
+                    })
+                    .await
+                    .context("failed to send create interrupt message")?;
+
+                entry.insert(Tx::CreateInterrupt(reply));
+            }
+            WorkerRequest::UnmapInterrupt(rpc) => {
+                let (req, reply) = rpc.split();
+                let entry = self.tx.vacant_entry();
+                self.conn
+                    .queue
+                    .split()
+                    .1
+                    .write(OutgoingPacket {
+                        transaction_id: entry.key() as u64,
+                        packet_type: vmbus_ring::OutgoingPacketType::InBandWithCompletion,
+                        payload: &[req.as_bytes()],
+                    })
+                    .await
+                    .context("failed to send delete interrupt message")?;
+
+                entry.insert(Tx::DeleteInterrupt(reply));
+            }
+        }
+        Ok(())
     }
 }

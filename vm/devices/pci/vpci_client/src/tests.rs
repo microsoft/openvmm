@@ -6,6 +6,7 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::ExternallyManagedMmioIntercepts;
 use chipset_device::pci::PciConfigSpace;
 use closeable_mutex::CloseableMutex;
+use futures::StreamExt;
 use guestmem::GuestMemory;
 use guid::Guid;
 use mesh::rpc::RpcSend;
@@ -33,6 +34,10 @@ use vmcore::notify::PolledNotify;
 use vmcore::slim_event::SlimEvent;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
+use vmcore::vpci_msi::MapVpciInterrupt;
+use vmcore::vpci_msi::VpciInterruptMapper;
+use vmcore::vpci_msi::VpciInterruptParameters;
+use vpci::bus::VpciBusDevice;
 use vpci::test_helpers::TestVpciInterruptController;
 
 struct NoopDevice;
@@ -54,15 +59,39 @@ impl PciConfigSpace for NoopDevice {
     }
 }
 
+struct MmioGuy {}
+
+impl super::MemoryAccess for VpciBusDevice {
+    fn gpa(&mut self) -> u64 {
+        0x123456780000
+    }
+
+    fn read(&mut self, offset: u64) -> u32 {
+        let mut data = [0; 4];
+        self.supports_mmio()
+            .unwrap()
+            .mmio_read(offset, &mut data)
+            .unwrap();
+        u32::from_ne_bytes(data)
+    }
+
+    fn write(&mut self, offset: u64, value: u32) {
+        self.supports_mmio()
+            .unwrap()
+            .mmio_write(offset, &value.to_ne_bytes())
+            .unwrap();
+    }
+}
+
 #[async_test]
 async fn test_negotiate_version(driver: DefaultDriver) {
     let device = Arc::new(CloseableMutex::new(NoopDevice));
     let msi_controller = TestVpciInterruptController::new();
-    let (bus, mut channel) = vpci::bus::VpciBusDevice::new(
+    let (bus, mut channel) = VpciBusDevice::new(
         Guid::new_random(),
         device,
         &mut ExternallyManagedMmioIntercepts,
-        msi_controller,
+        VpciInterruptMapper::new(msi_controller),
     )
     .unwrap();
 
@@ -76,6 +105,22 @@ async fn test_negotiate_version(driver: DefaultDriver) {
         .await
     });
 
-    let mut vpci = super::VpciClient::connect(guest).await.unwrap();
-    vpci.run().await.unwrap();
+    let (devices_send, mut devices_recv) = mesh::channel();
+
+    let vpci = super::VpciClient::connect(&driver, guest, Box::new(bus), devices_send)
+        .await
+        .unwrap();
+
+    let device = devices_recv.next().await.unwrap();
+    device
+        .register_interrupt(
+            1,
+            &VpciInterruptParameters {
+                vector: 5,
+                multicast: false,
+                target_processors: &[1, 2, 3],
+            },
+        )
+        .await
+        .unwrap();
 }
