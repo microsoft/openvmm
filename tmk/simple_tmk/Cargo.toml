@@ -7,6 +7,8 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
+aarch64defs.workspace = true
+bitfield-struct.workspace = true
 tmk_core.workspace = true
 tmk_macros.workspace = true
 x86defs.workspace = true
