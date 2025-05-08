@@ -39,7 +39,7 @@ use user_driver::memory::PAGE_SIZE64;
 /// allowing the user to control device behaviour to a certain extent. Can be used with devices such as the `NvmeController`
 pub struct EmulatedDevice<T, U> {
     device: Arc<Mutex<T>>,
-    controller: MsiController,
+    controller: Arc<MsiController>,
     dma_client: Arc<U>,
     bar0_len: usize,
 }
@@ -77,6 +77,17 @@ impl MsiInterruptTarget for MsiController {
     }
 }
 
+impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> Clone for EmulatedDevice<T, U> {
+    fn clone(&self) -> Self {
+        Self {
+            device: self.device.clone(),
+            controller: self.controller.clone(),
+            dma_client: self.dma_client.clone(),
+            bar0_len: self.bar0_len,
+        }
+    }
+}
+
 impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
     /// Creates a new emulated device, wrapping `device` of type T, using the provided MSI Interrupt Set. Dma_client should point to memory
     /// shared with the device.
@@ -84,6 +95,7 @@ impl<T: PciConfigSpace + MmioIntercept, U: DmaClient> EmulatedDevice<T, U> {
         // Connect an interrupt controller.
         let controller = MsiController::new(msi_set.len());
         msi_set.connect(&controller);
+        let controller = Arc::new(controller);
 
         let bars = device.probe_bar_masks();
         let bar0_len = !(bars[0] & !0xf) as usize + 1;
