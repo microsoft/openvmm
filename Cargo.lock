@@ -8972,7 +8972,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bitfield-struct 0.10.1",
  "chipset_arc_mutex_device",
  "chipset_device",
  "closeable_mutex",
@@ -8982,7 +8981,6 @@ dependencies = [
  "hvdef",
  "inspect",
  "mesh",
- "open_enum",
  "pal_async",
  "parking_lot",
  "pci_core",
