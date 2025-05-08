@@ -23,6 +23,7 @@ use crate::protocol::HCL_VMSA_PAGE_OFFSET;
 use crate::protocol::MSHV_APIC_PAGE_OFFSET;
 use crate::protocol::hcl_intr_offload_flags;
 use crate::protocol::hcl_run;
+use bitvec::vec::BitVec;
 use deferred::RegisteredDeferredActions;
 use deferred::push_deferred_action;
 use deferred::register_deferred_actions;
@@ -3251,22 +3252,27 @@ impl Hcl {
         }
     }
 
+    /// Causes the specified CPUs to be woken out of a lower VTL.
     pub fn kick_cpus(
         &self,
         cpus: impl IntoIterator<Item = u32>,
         cancel_run: bool,
         wait_for_other_cpus: bool,
     ) {
-        let cpu_bitmap = cpus.into_iter().fold(0u64, |bitmap, cpu| bitmap | 1 << cpu);
+        let mut cpu_bitmap: BitVec<u8> = BitVec::from_vec(vec![0; self.vps.len().div_ceil(8)]);
+        for cpu in cpus {
+            cpu_bitmap.set(cpu as usize, true);
+        }
 
         let data = protocol::hcl_kick_cpus {
-            len: size_of_val(&cpu_bitmap) as u64,
-            cpu_mask: cpu_bitmap.as_bytes().as_ptr(),
+            len: cpu_bitmap.len() as u64,
+            cpu_mask: cpu_bitmap.as_bitptr().pointer(),
             flags: protocol::hcl_kick_cpus_flags::new()
                 .with_cancel_run(cancel_run)
                 .with_wait_for_other_cpus(wait_for_other_cpus),
         };
 
+        // SAFETY: ioctl has no prerequisites.
         unsafe {
             hcl_kickcpus(self.mshv_vtl.file.as_raw_fd(), &data).expect("should always succeed");
         }

@@ -2745,6 +2745,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "bitfield-struct 0.10.1",
+ "bitvec",
  "build_rs_guest_arch",
  "fs-err",
  "getrandom 0.3.2",
