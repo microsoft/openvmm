@@ -9090,6 +9090,7 @@ dependencies = [
  "closeable_mutex",
  "guestmem",
  "guid",
+ "inspect",
  "mesh",
  "pal_async",
  "parking_lot",

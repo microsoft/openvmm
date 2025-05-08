@@ -76,5 +76,6 @@ async fn test_negotiate_version(driver: DefaultDriver) {
         .await
     });
 
-    super::VpciClient::connect(guest).await.unwrap();
+    let mut vpci = super::VpciClient::connect(guest).await.unwrap();
+    vpci.run().await.unwrap();
 }
