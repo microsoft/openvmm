@@ -25,6 +25,7 @@ use hv1_hypercall::HvRepResult;
 use hv1_structs::ProcessorSet;
 use hvdef::HvCacheType;
 use hvdef::HvError;
+use hvdef::HvInterruptType;
 use hvdef::HvMapGpaFlags;
 use hvdef::HvRegisterVsmPartitionConfig;
 use hvdef::HvRegisterVsmVpSecureVtlConfig;
@@ -41,6 +42,7 @@ use hvdef::hypercall::TranslateGvaResultCode;
 use std::iter::zip;
 use virt::Processor;
 use virt::io::CpuIo;
+use virt::irqcon::MsiRequest;
 use virt::vp::AccessVpState;
 use virt::x86::MsrError;
 use virt::x86::MsrErrorExt;
@@ -2479,6 +2481,56 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::InstallIntercept
             }
             _ => return Err(HvError::InvalidParameter),
         }
+
+        Ok(())
+    }
+}
+
+impl<T, B: HardwareIsolatedBacking> hv1_hypercall::AssertVirtualInterrupt
+    for UhHypercallHandler<'_, '_, T, B>
+{
+    fn assert_virtual_interrupt(
+        &mut self,
+        partition_id: u64,
+        interrupt_control: hvdef::HvInterruptControl,
+        destination_address: u64,
+        requested_vector: u32,
+        target_vtl: Vtl,
+    ) -> HvResult<()> {
+        let target_vtl = GuestVtl::try_from(target_vtl).map_err(|_| HvError::InvalidParameter)?;
+
+        if partition_id != hvdef::HV_PARTITION_ID_SELF || target_vtl >= self.intercepted_vtl {
+            return Err(HvError::AccessDenied);
+        }
+
+        // Only fixed interrupts and NMIs are supported today.
+        if !matches!(
+            interrupt_control.interrupt_type(),
+            HvInterruptType::HvX64InterruptTypeFixed | HvInterruptType::HvX64InterruptTypeNmi
+        ) {
+            return Err(HvError::InvalidParameter);
+        }
+
+        self.vp.partition.request_msi(
+            target_vtl,
+            MsiRequest::new_x86(
+                x86defs::apic::DeliveryMode(
+                    interrupt_control
+                        .interrupt_type()
+                        .0
+                        .try_into()
+                        .map_err(|_| HvError::InvalidParameter)?,
+                ),
+                destination_address
+                    .try_into()
+                    .map_err(|_| HvError::InvalidParameter)?,
+                interrupt_control.x86_logical_destination_mode(),
+                requested_vector
+                    .try_into()
+                    .map_err(|_| HvError::InvalidParameter)?,
+                interrupt_control.x86_level_triggered(),
+            ),
+        );
 
         Ok(())
     }

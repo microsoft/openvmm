@@ -221,6 +221,9 @@ pub trait AssertVirtualInterrupt {
 impl<T: AssertVirtualInterrupt> HypercallDispatch<HvAssertVirtualInterrupt> for T {
     fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
         HvAssertVirtualInterrupt::run(params, |input| {
+            if input.rsvd0 != 0 || input.rsvd1 != 0 {
+                return Err(HvError::InvalidParameter);
+            }
             self.assert_virtual_interrupt(
                 input.partition_id,
                 input.interrupt_control,
