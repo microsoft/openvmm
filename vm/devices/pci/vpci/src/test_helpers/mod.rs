@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg(test)]
+//! Test helpers.
+
+#![expect(missing_docs)]
 
 use parking_lot::Mutex;
 use pci_core::msi::MsiControl;

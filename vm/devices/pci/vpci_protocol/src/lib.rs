@@ -234,8 +234,8 @@ pub struct QueryBusRelations {
     pub message_type: MessageType,
     /// Number of devices reported
     pub device_count: u32,
-    /// Information about the first device
-    pub device: DeviceDescription,
+    /// Alignment for following devices.
+    pub device: [DeviceDescription; 0],
 }
 
 /// Extended device description (version 2).
@@ -268,8 +268,8 @@ pub struct QueryBusRelations2 {
     pub message_type: MessageType,
     /// Number of devices reported
     pub device_count: u32,
-    /// Information about the first device
-    pub device: DeviceDescription2,
+    /// Alignment for following devices.
+    pub device: [DeviceDescription2; 0],
 }
 
 /// PCI slot number.

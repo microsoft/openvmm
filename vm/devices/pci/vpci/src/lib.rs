@@ -8,4 +8,4 @@
 pub mod bus;
 pub mod bus_control;
 mod device;
-mod test_helpers;
+pub mod test_helpers;
