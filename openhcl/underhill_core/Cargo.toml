@@ -64,6 +64,7 @@ ide.workspace = true
 ide_resources.workspace = true
 input_core.workspace = true
 kmsg_defs.workspace = true
+hcl.workspace = true
 mana_driver.workspace = true
 mcr_resources.workspace = true
 net_backend.workspace = true

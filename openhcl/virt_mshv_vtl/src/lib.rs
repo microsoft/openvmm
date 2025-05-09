@@ -2063,34 +2063,6 @@ impl UhPartition {
 
         caps
     }
-
-    /// Forward a (virtual) MMIO read to the host for handling.
-    pub fn host_mmio_read(&self, addr: u64, data: &mut [u8]) {
-        if !self.inner.use_mmio_hypercalls {
-            return;
-        }
-        // There isn't anything reasonable that can be done in the face of errors from the host.
-        if let Err(err) = self.inner.hcl.memory_mapped_io_read(addr, data) {
-            tracelimit::error_ratelimited!(
-                error = &err as &dyn std::error::Error,
-                "Failed host MMIO read"
-            );
-        }
-    }
-
-    /// Forward a (virtual) MMIO write to the host for handling.
-    pub fn host_mmio_write(&self, addr: u64, data: &[u8]) {
-        if !self.inner.use_mmio_hypercalls {
-            return;
-        }
-        // There isn't anything reasonable that can be done in the face of errors from the host.
-        if let Err(err) = self.inner.hcl.memory_mapped_io_write(addr, data) {
-            tracelimit::error_ratelimited!(
-                error = &err as &dyn std::error::Error,
-                "Failed host MMIO write"
-            );
-        }
-    }
 }
 
 #[cfg(guest_arch = "x86_64")]

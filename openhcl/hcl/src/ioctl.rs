@@ -1489,6 +1489,60 @@ impl MshvHvcall {
 
         self.get_vp_register_for_vtl_inner(vtl, name.into())
     }
+
+    /// Invokes the HvCallMemoryMappedIoRead hypercall
+    pub fn mmio_read(&self, gpa: u64, data: &mut [u8]) -> Result<(), HvError> {
+        assert!(data.len() <= hvdef::hypercall::HV_HYPERCALL_MMIO_MAX_DATA_LENGTH);
+
+        let header = hvdef::hypercall::MemoryMappedIoRead {
+            gpa,
+            access_width: data.len() as u32,
+            reserved_z0: 0,
+        };
+
+        let mut output: hvdef::hypercall::MemoryMappedIoReadOutput = FromZeros::new_zeroed();
+
+        // SAFETY: The input header and slice are the correct types for this hypercall.
+        //         The hypercall output is validated right after the hypercall is issued.
+        let status = unsafe {
+            self.hvcall(
+                HypercallCode::HvCallMemoryMappedIoRead,
+                &header,
+                &mut output,
+            )
+            .expect("submitting hypercall should not fail")
+        };
+
+        // Only copy the data if the hypercall was successful
+        if status.result().is_ok() {
+            data.copy_from_slice(&output.data[..data.len()]);
+        };
+
+        status.result()
+    }
+
+    /// Invokes the HvCallMemoryMappedIoWrite hypercall
+    pub fn mmio_write(&self, gpa: u64, data: &[u8]) -> Result<(), HvError> {
+        assert!(data.len() <= hvdef::hypercall::HV_HYPERCALL_MMIO_MAX_DATA_LENGTH);
+
+        let mut header = hvdef::hypercall::MemoryMappedIoWrite {
+            gpa,
+            access_width: data.len() as u32,
+            reserved_z0: 0,
+            data: [0; hvdef::hypercall::HV_HYPERCALL_MMIO_MAX_DATA_LENGTH],
+        };
+
+        header.data[..data.len()].copy_from_slice(data);
+
+        // SAFETY: The input header and slice are the correct types for this hypercall.
+        //         The hypercall output is validated right after the hypercall is issued.
+        let status = unsafe {
+            self.hvcall(HypercallCode::HvCallMemoryMappedIoWrite, &header, &mut ())
+                .expect("submitting hypercall should not fail")
+        };
+
+        status.result()
+    }
 }
 
 /// The HCL device and collection of fds.
@@ -3060,62 +3114,6 @@ impl Hcl {
         }
 
         value
-    }
-
-    /// Invokes the HvCallMemoryMappedIoRead hypercall
-    pub fn memory_mapped_io_read(&self, gpa: u64, data: &mut [u8]) -> Result<(), HvError> {
-        assert!(data.len() <= hvdef::hypercall::HV_HYPERCALL_MMIO_MAX_DATA_LENGTH);
-
-        let header = hvdef::hypercall::MemoryMappedIoRead {
-            gpa,
-            access_width: data.len() as u32,
-            reserved_z0: 0,
-        };
-
-        let mut output: hvdef::hypercall::MemoryMappedIoReadOutput = FromZeros::new_zeroed();
-
-        // SAFETY: The input header and slice are the correct types for this hypercall.
-        //         The hypercall output is validated right after the hypercall is issued.
-        let status = unsafe {
-            self.mshv_hvcall
-                .hvcall(
-                    HypercallCode::HvCallMemoryMappedIoRead,
-                    &header,
-                    &mut output,
-                )
-                .expect("submitting hypercall should not fail")
-        };
-
-        // Only copy the data if the hypercall was successful
-        if status.result().is_ok() {
-            data.copy_from_slice(&output.data[..data.len()]);
-        };
-
-        status.result()
-    }
-
-    /// Invokes the HvCallMemoryMappedIoWrite hypercall
-    pub fn memory_mapped_io_write(&self, gpa: u64, data: &[u8]) -> Result<(), HvError> {
-        assert!(data.len() <= hvdef::hypercall::HV_HYPERCALL_MMIO_MAX_DATA_LENGTH);
-
-        let mut header = hvdef::hypercall::MemoryMappedIoWrite {
-            gpa,
-            access_width: data.len() as u32,
-            reserved_z0: 0,
-            data: [0; hvdef::hypercall::HV_HYPERCALL_MMIO_MAX_DATA_LENGTH],
-        };
-
-        header.data[..data.len()].copy_from_slice(data);
-
-        // SAFETY: The input header and slice are the correct types for this hypercall.
-        //         The hypercall output is validated right after the hypercall is issued.
-        let status = unsafe {
-            self.mshv_hvcall
-                .hvcall(HypercallCode::HvCallMemoryMappedIoWrite, &header, &mut ())
-                .expect("submitting hypercall should not fail")
-        };
-
-        status.result()
     }
 
     /// Invokes the HvCallRetargetDeviceInterrupt hypercall.
