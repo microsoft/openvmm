@@ -2888,7 +2888,7 @@ async fn test_save_restore_with_rss_table(
 
     // RSS parameters
     #[repr(C)]
-    #[derive(FromBytes, Immutable, IntoBytes, KnownLayout)]
+    #[derive(AsBytes, FromBytes, FromZeroes, KnownLayout)]
     struct RssParams {
         params: rndisprot::NdisReceiveScaleParameters,
         hash_secret_key: [u8; 40],
