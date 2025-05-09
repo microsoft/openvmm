@@ -802,9 +802,24 @@ impl PrimaryChannelState {
             .collect();
 
         let rss_state = rss_state
-            .map(|rss| {
-                if rss.indirection_table.len() != indirection_table_size as usize {
-                    return Err(NetRestoreError::MismatchedIndirectionTableSize);
+            .map(|mut rss| {
+                if rss.indirection_table.len() > indirection_table_size as usize {
+                    // Dynamic reduction of indirection table can cause unexpected and hard to investigate issues
+                    // with performance and processor overloading.
+                    return Err(NetRestoreError::ReducedIndirectionTableSize);
+                }
+                if rss.indirection_table.len() < indirection_table_size as usize {
+                    tracing::warn!(
+                        saved_indirection_table_size = rss.indirection_table.len(),
+                        adapter_indirection_table_size = indirection_table_size,
+                        "increasing indirection table size",
+                    );
+                    // Dynamic increase of indirection table is done by duplicating the existing entries until
+                    // the desired size is reached.
+                    let table_clone = rss.indirection_table.clone();
+                    let num_to_add = indirection_table_size as usize - rss.indirection_table.len();
+                    rss.indirection_table
+                        .extend(table_clone.iter().cycle().take(num_to_add));
                 }
                 Ok(RssState {
                     key: rss
@@ -1406,8 +1421,8 @@ enum NetRestoreError {
     Open(#[from] OpenError),
     #[error("invalid rss key size")]
     InvalidRssKeySize,
-    #[error("mismatched indirection table size")]
-    MismatchedIndirectionTableSize,
+    #[error("reduced indirection table size")]
+    ReducedIndirectionTableSize,
 }
 
 impl From<NetRestoreError> for RestoreError {
