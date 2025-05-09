@@ -261,12 +261,13 @@ pub struct HvIsolationConfiguration {
 open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HypercallCode: u16 {
-        #![allow(non_upper_case_globals)]
+        #![expect(non_upper_case_globals)]
 
         HvCallSwitchVirtualAddressSpace = 0x0001,
         HvCallFlushVirtualAddressSpace = 0x0002,
         HvCallFlushVirtualAddressList = 0x0003,
         HvCallNotifyLongSpinWait = 0x0008,
+        HvCallInvokeHypervisorDebugger = 0x000a,
         HvCallSendSyntheticClusterIpi = 0x000b,
         HvCallModifyVtlProtectionMask = 0x000c,
         HvCallEnablePartitionVtl = 0x000d,
@@ -284,6 +285,7 @@ open_enum! {
         HvCallSignalEvent = 0x005D,
         HvCallOutputDebugCharacter = 0x0071,
         HvCallRetargetDeviceInterrupt = 0x007e,
+        HvCallNotifyPartitionEvent = 0x0087,
         HvCallAssertVirtualInterrupt = 0x0094,
         HvCallStartVirtualProcessor = 0x0099,
         HvCallGetVpIndexFromApicId = 0x009A,
@@ -449,7 +451,7 @@ impl core::error::Error for HvError {}
 macro_rules! hv_error {
     ($ty:ty, $(#[doc = $doc:expr] $ident:ident = $val:expr),* $(,)?) => {
 
-        #[allow(non_upper_case_globals)]
+        #[expect(non_upper_case_globals)]
         impl $ty {
             $(
                 #[doc = $doc]
@@ -705,7 +707,7 @@ impl From<AlignedU128> for u128 {
 open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvMessageType: u32 {
-        #![allow(non_upper_case_globals)]
+        #![expect(non_upper_case_globals)]
 
         HvMessageTypeNone = 0x00000000,
 
@@ -1178,7 +1180,7 @@ pub mod hypercall {
     open_enum::open_enum! {
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub enum HvInterceptType: u32 {
-            #![allow(non_upper_case_globals)]
+            #![expect(non_upper_case_globals)]
             HvInterceptTypeX64IoPort = 0x00000000,
             HvInterceptTypeX64Msr = 0x00000001,
             HvInterceptTypeX64Cpuid = 0x00000002,
@@ -1969,7 +1971,7 @@ macro_rules! registers {
         open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
             pub enum $name: u32 {
-        #![allow(non_upper_case_globals)]
+        #![expect(non_upper_case_globals)]
                 $($variant = $value,)*
                 InstructionEmulationHints = 0x00000002,
                 InternalActivityState = 0x00000004,
@@ -2722,7 +2724,7 @@ pub struct HvArm64MemoryAccessInfo {
 open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvCacheType: u32 {
-        #![allow(non_upper_case_globals)]
+        #![expect(non_upper_case_globals)]
         HvCacheTypeUncached = 0,
         HvCacheTypeWriteCombining = 1,
         HvCacheTypeWriteThrough = 4,
@@ -3026,7 +3028,7 @@ impl HvX64RegisterAccessInfo {
 open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvInterruptType : u32  {
-        #![allow(non_upper_case_globals)]
+        #![expect(non_upper_case_globals)]
         HvArm64InterruptTypeFixed = 0x0000,
         HvX64InterruptTypeFixed = 0x0000,
         HvX64InterruptTypeLowestPriority = 0x0001,
