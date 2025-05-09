@@ -324,11 +324,12 @@ impl BackingPrivate for HypervisorBackedX86 {
         Ok(())
     }
 
-    fn handle_cross_vtl_interrupts(
+    fn process_interrupts(
         _this: &mut UhProcessor<'_, Self>,
+        _scan_irr: hv1_structs::VtlArray<bool, 2>,
+        _first_scan_irr: &mut bool,
         _dev: &impl CpuIo,
-    ) -> Result<bool, UhRunVpError> {
-        // TODO WHP GUEST VSM
+    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
         Ok(false)
     }
 
@@ -352,10 +353,6 @@ impl BackingPrivate for HypervisorBackedX86 {
         None
     }
 
-    fn untrusted_synic(&self) -> Option<&ProcessorSynic> {
-        None
-    }
-
     fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
@@ -372,8 +369,6 @@ impl BackingPrivate for HypervisorBackedX86 {
         // whether VTL 1 is enabled on the vp (this can be cached).
         false
     }
-
-    fn handle_exit_activity(_this: &mut UhProcessor<'_, Self>) {}
 }
 
 fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {
