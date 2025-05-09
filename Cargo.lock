@@ -7559,6 +7559,7 @@ dependencies = [
  "vmsocket",
  "vnc_worker_defs",
  "vpci",
+ "vpci_client",
  "watchdog_core",
  "watchdog_vmgs_format",
  "x86defs",
