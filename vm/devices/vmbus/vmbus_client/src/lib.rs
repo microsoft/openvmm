@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod hvsock;
+pub mod local_use;
 pub mod saved_state;
 
 pub use self::saved_state::SavedState;
