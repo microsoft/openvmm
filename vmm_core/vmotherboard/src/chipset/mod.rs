@@ -207,11 +207,6 @@ impl Chipset {
         .await
     }
 
-    /// Check if a MMIO device exists at the given address
-    pub fn is_mmio(&self, addr: u64) -> bool {
-        self.mmio_ranges.is_occupied(addr)
-    }
-
     /// Dispatch a Port IO read to the given address.
     pub async fn io_read(&self, vp: u32, port: u16, data: &mut [u8]) {
         let lookup = self.pio_ranges.lookup(port, true);
