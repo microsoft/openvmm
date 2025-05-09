@@ -27,7 +27,7 @@ use vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use widestring::Utf16Str;
 use widestring::utf16str;
 use windows::Wdk::Storage::FileSystem::NtOpenFile;
-use windows::Win32::Foundation::ERROR_CANCELLED;
+use windows::Win32::Foundation::ERROR_OPERATION_ABORTED;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
@@ -147,7 +147,7 @@ impl VmbusProxy {
         let mut cancel = self.cancel.clone();
         if cancel.is_cancelled() {
             tracing::trace!("ioctl cancelled before issued");
-            return Err(Error::from_hresult(ERROR_CANCELLED.into()));
+            return Err(ERROR_OPERATION_ABORTED.into());
         }
 
         // SAFETY: guaranteed by caller.

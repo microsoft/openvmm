@@ -444,7 +444,20 @@ impl ProxyTask {
             })
             .await;
 
-            let Ok(action) = action else { break };
+            let action = match action {
+                Ok(action) => action,
+                Err(e) => {
+                    if e == windows::Win32::Foundation::ERROR_OPERATION_ABORTED.into() {
+                        tracing::debug!("proxy cancelled");
+                    } else {
+                        tracing::error!(
+                            error = &e as &dyn std::error::Error,
+                            "failed to get action",
+                        );
+                    }
+                    break;
+                }
+            };
 
             tracing::debug!(action = ?action, "action");
             match action {
