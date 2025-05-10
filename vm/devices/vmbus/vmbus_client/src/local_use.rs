@@ -1,6 +1,7 @@
 use crate::ChannelRequest;
 use crate::OfferInfo;
 use crate::OpenRequest;
+use anyhow::Context as _;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use inspect::InspectMut;
@@ -45,15 +46,15 @@ pub async fn open_channel(
         dma_client.allocate_dma_buffer(vmbus_ring::PAGE_SIZE * input.ring_pages as usize)?;
 
     let (resp_send, resp_recv) = mesh::oneshot();
-    // Detach the task so that it doesn't get dropped (and leak the channel).
+    // Detach the task so that it doesn't get dropped (and thereby leak the allocation).
     driver
         .clone()
         .spawn("vmbus_client", async move {
-            ChannelWorker::run(driver, offer_info, input, gpadl, resp_send)
+            ChannelWorker::run(driver, offer_info, input, gpadl, resp_send).await
         })
         .detach();
 
-    resp_recv.await.unwrap()
+    resp_recv.await.context("no response opening channel")?
 }
 
 #[derive(InspectMut)]
@@ -79,16 +80,23 @@ impl<D: SpawnDriver> ChannelWorker<D> {
         host_to_guest: pal_event::Event,
         revoked: Arc<AtomicBool>,
     ) -> anyhow::Result<RawAsyncChannel<MemoryBlockRingMem>> {
+        let gpadl_buf = [self.gpadl.len() as u64]
+            .into_iter()
+            .chain(self.gpadl.pfns().iter().copied())
+            .collect::<Vec<_>>();
+
         self.request_send
             .call_failable(
                 ChannelRequest::Gpadl,
                 GpadlRequest {
                     id: self.ring_gpadl_id,
-                    count: input.ring_pages,
-                    buf: self.gpadl.pfns().to_vec(),
+                    count: 1,
+                    buf: gpadl_buf,
                 },
             )
             .await?;
+
+        self.is_gpadl_created = true;
 
         let open = self
             .request_send
@@ -108,6 +116,8 @@ impl<D: SpawnDriver> ChannelWorker<D> {
                 },
             )
             .await?;
+
+        self.is_open = true;
 
         let in_ring = MemoryBlockView {
             mem: Arc::clone(&self.gpadl),
@@ -158,6 +168,7 @@ impl<D: SpawnDriver> ChannelWorker<D> {
         gpadl_mem: MemoryBlock,
         resp: mesh::OneshotSender<anyhow::Result<RawAsyncChannel<MemoryBlockRingMem>>>,
     ) {
+        let instance_id = offer_info.offer.instance_id;
         let ring_gpadl_id = GpadlId((1 << 31) | offer_info.offer.channel_id.0);
 
         let mut worker = ChannelWorker {
@@ -196,8 +207,11 @@ impl<D: SpawnDriver> ChannelWorker<D> {
         let close = close_recv.map(Event::Close);
         let event = (revoke, close).race().await;
         match event {
-            Event::Close(_) => {}
+            Event::Close(_) => {
+                tracing::debug!(%instance_id, "channel close requested");
+            }
             Event::Revoke(_) => {
+                tracing::debug!(%instance_id, "channel revoked");
                 revoked.store(true, Relaxed);
                 host_to_guest.signal();
                 worker.is_open = false;

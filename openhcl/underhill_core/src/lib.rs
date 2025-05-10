@@ -6,7 +6,7 @@
 
 #![cfg(target_os = "linux")]
 #![expect(missing_docs)]
-#![forbid(unsafe_code)]
+//#![forbid(unsafe_code)]
 
 mod diag;
 mod dispatch;
@@ -25,7 +25,7 @@ mod vmbus_relay_unit;
 mod vmgs_logger;
 mod vp;
 mod vpci;
-//mod vpci_relay;
+mod vpci_relay;
 mod worker;
 mod wrapped_partition;
 

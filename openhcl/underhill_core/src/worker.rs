@@ -2718,6 +2718,25 @@ async fn new_underhill_vm(
 
             let connection = relay_filter.take();
 
+            for offer in vpci_filter.take().offers {
+                let instance_id = offer.offer.instance_id;
+                crate::vpci_relay::relay_vpci_bus(
+                    &mut chipset_builder,
+                    &driver_source,
+                    offer,
+                    dma_manager
+                        .new_client(DmaClientParameters {
+                            device_name: format!("vpci-{instance_id}"),
+                            lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
+                            allocation_visibility: AllocationVisibility::Private,
+                            persistent_allocations: false,
+                        })?
+                        .as_ref(),
+                    vmbus.control(),
+                )
+                .await?;
+            }
+
             //crate::vpci_relay::foo(vpci_filter.take());
 
             let mut intercept_list = Vec::new();
