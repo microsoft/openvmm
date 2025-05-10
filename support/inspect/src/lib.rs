@@ -1065,25 +1065,29 @@ impl<'a> Request<'a> {
     }
 
     /// Sets numeric values to be displayed in decimal format.
-    pub fn as_decimal(mut self) -> Self {
+    #[must_use]
+    pub fn format_as_decimal(mut self) -> Self {
         self.number_format = NumberFormat::Decimal;
         self
     }
 
     /// Sets numeric values to be displayed in hexadecimal format.
-    pub fn as_hex(mut self) -> Self {
+    #[must_use]
+    pub fn format_as_hex(mut self) -> Self {
         self.number_format = NumberFormat::Hex;
         self
     }
 
     /// Sets numeric values to be displayed in binary format.
-    pub fn as_binary(mut self) -> Self {
+    #[must_use]
+    pub fn format_as_binary(mut self) -> Self {
         self.number_format = NumberFormat::Binary;
         self
     }
 
     /// Sets numeric values to be displayed as counters.
-    pub fn as_counter(mut self) -> Self {
+    #[must_use]
+    pub fn format_as_counter(mut self) -> Self {
         self.number_format = NumberFormat::Counter;
         self
     }
@@ -2122,13 +2126,13 @@ impl<T: ?Sized + Inspect + ToOwned> Inspect for Cow<'_, T> {
 
 impl<T> Inspect for *mut T {
     fn inspect(&self, req: Request<'_>) {
-        req.as_hex().value(*self as usize)
+        req.format_as_hex().value(*self as usize)
     }
 }
 
 impl<T> Inspect for *const T {
     fn inspect(&self, req: Request<'_>) {
-        req.as_hex().value(*self as usize)
+        req.format_as_hex().value(*self as usize)
     }
 }
 
@@ -2141,11 +2145,11 @@ impl Inspect for ValueKind {
 impl Inspect for Value {
     fn inspect(&self, req: Request<'_>) {
         let req = if self.flags.count() {
-            req.as_counter()
+            req.format_as_counter()
         } else if self.flags.hex() {
-            req.as_hex()
+            req.format_as_hex()
         } else if self.flags.binary() {
-            req.as_binary()
+            req.format_as_binary()
         } else {
             req
         };

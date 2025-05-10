@@ -377,7 +377,7 @@ fn impl_defs(
     let (impl_generics, type_generics, where_clause) = generics.split_for_impl();
 
     let fmt = if hex {
-        quote!(let #req = #req.as_hex();)
+        quote!(let #req = #req.format_as_hex();)
     } else {
         quote!()
     };
