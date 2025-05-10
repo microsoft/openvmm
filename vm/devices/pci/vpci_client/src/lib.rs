@@ -124,7 +124,7 @@ pub struct VpciDevice {
     hw_ids: HardwareIds,
     #[inspect(skip)]
     config_space: Arc<Mutex<ConfigSpaceAccessor>>,
-    #[inspect(with = "|&x| inspect::AsHex(u32::from(x))")]
+    #[inspect(hex, with = "|&x| u32::from(x)")]
     slot: SlotNumber,
     #[inspect(skip)]
     req: mesh::Sender<WorkerRequest>,
@@ -135,7 +135,7 @@ struct ConfigSpaceAccessor {
     #[inspect(skip)]
     mem: Box<dyn MemoryAccess>,
     base_gpa: u64,
-    #[inspect(with = "|&x| inspect::AsHex(u32::from(x))")]
+    #[inspect(hex, with = "|&x| u32::from(x)")]
     current_slot: SlotNumber,
 }
 
