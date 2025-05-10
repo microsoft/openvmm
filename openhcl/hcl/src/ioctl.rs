@@ -211,9 +211,7 @@ pub enum HvcallError {
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum ApplyVtlProtectionsError {
-    #[error(
-        "hypervisor returned {output:?} error {hv_error:?} when protecting pages {range} for vtl {vtl:?}"
-    )]
+    #[error("hypervisor failed with {output:?} when protecting pages {range} for vtl {vtl:?}")]
     Hypervisor {
         range: MemoryRange,
         output: HypercallOutput,
@@ -221,9 +219,7 @@ pub enum ApplyVtlProtectionsError {
         hv_error: HvError,
         vtl: HvInputVtl,
     },
-    #[error(
-        "{failed_operation} when protecting pages {range} with {permissions:x?} for vtl {vtl:?}"
-    )]
+    #[error("snp failure to protect pages {range} with {permissions:x?} for vtl {vtl:?}")]
     Snp {
         #[source]
         failed_operation: snp::SnpPageError,
@@ -248,11 +244,10 @@ pub enum ApplyVtlProtectionsError {
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum SetGuestVsmConfigError {
-    #[error(
-        "hypervisor returned error {hv_error:?} when configuring guest vsm {enable_guest_vsm:?}"
-    )]
+    #[error("hypervisor failed to configure guest vsm to {enable_guest_vsm}")]
     Hypervisor {
         enable_guest_vsm: bool,
+        #[source]
         hv_error: HvError,
     },
 }
@@ -261,19 +256,22 @@ pub enum SetGuestVsmConfigError {
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum GetVpIndexFromApicIdError {
-    #[error("hypervisor returned error {hv_error:?} when querying vp index for {apic_id}")]
-    Hypervisor { hv_error: HvError, apic_id: u32 },
+    #[error("hypervisor failed when querying vp index for {apic_id}")]
+    Hypervisor {
+        #[source]
+        hv_error: HvError,
+        apic_id: u32,
+    },
 }
 
 /// Error setting VSM partition configuration.
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum SetVsmPartitionConfigError {
-    #[error(
-        "hypervisor returned error {hv_error:?} when configuring vsm partition config {config:?}"
-    )]
+    #[error("hypervisor failed when configuring vsm partition config {config:?}")]
     Hypervisor {
         config: HvRegisterVsmPartitionConfig,
+        #[source]
         hv_error: HvError,
     },
 }
@@ -282,9 +280,13 @@ pub enum SetVsmPartitionConfigError {
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum TranslateGvaToGpaError {
-    #[error("hypervisor returned error {hv_error:?} on gva {gva:x}")]
-    Hypervisor { gva: u64, hv_error: HvError },
-    #[error("sidecar kernel failed on gva {gva:x}")]
+    #[error("hypervisor failed when translating gva {gva:#x}")]
+    Hypervisor {
+        gva: u64,
+        #[source]
+        hv_error: HvError,
+    },
+    #[error("sidecar kernel failed when translating gva {gva:#x}")]
     Sidecar {
         gva: u64,
         #[source]
@@ -306,19 +308,22 @@ pub struct CheckVtlAccessResult {
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum AcceptPagesError {
-    #[error("hypervisor returned {output:?} error {hv_error:?} when accepting pages {range}")]
+    #[error("hypervisor failed to accept pages {range} with {output:?}")]
     Hypervisor {
         range: MemoryRange,
         output: HypercallOutput,
+        #[source]
         hv_error: HvError,
     },
-    #[error("{failed_operation} when protecting pages {range}")]
+    #[error("snp failure to protect pages {range}")]
     Snp {
+        #[source]
         failed_operation: snp::SnpPageError,
         range: MemoryRange,
     },
-    #[error("tdcall failed with {error:?} when accepting pages {range}")]
+    #[error("tdcall failure when accepting pages {range}")]
     Tdx {
+        #[source]
         error: tdcall::AcceptPagesError,
         range: MemoryRange,
     },
@@ -336,6 +341,7 @@ enum GpaPinUnpinAction {
 #[error("partial success: {ranges_processed} operations succeeded, but encountered an error")]
 struct PinUnpinError {
     ranges_processed: usize,
+    #[source]
     error: HvError,
 }
 

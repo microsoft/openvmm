@@ -6690,6 +6690,7 @@ version = "0.0.0"
 dependencies = [
  "hvdef",
  "memory_range",
+ "thiserror 2.0.12",
  "tracing",
  "x86defs",
 ]

@@ -7,6 +7,7 @@
 
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
+use thiserror::Error;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use x86defs::tdx::TdCallLeaf;
 use x86defs::tdx::TdCallResult;
@@ -393,15 +394,21 @@ fn set_page_attr(
 }
 
 /// The error returned by [`accept_pages`].
-#[derive(Debug)]
+// TODO: why is this an enum with multiple variants--callers don't seem to care.
+// Collapse into a struct, or at least collapse some of the variants?
+#[derive(Debug, Error)]
 pub enum AcceptPagesError {
     /// Unknown error type.
+    #[error("unknown error: {0:?}")]
     Unknown(TdCallResultCode),
     /// Setting page attributes failed after accepting,
+    #[error("setting page attributes failed after accepting: {0:?}")]
     Attributes(TdCallResultCode),
     /// Invalid operand
+    #[error("invalid operand: {0:?}")]
     Invalid(TdCallResultCode),
     /// Busy Operand
+    #[error("operand busy: {0:?}")]
     Busy(TdCallResultCode),
 }
 
