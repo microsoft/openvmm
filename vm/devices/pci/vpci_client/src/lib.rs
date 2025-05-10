@@ -328,6 +328,10 @@ impl VpciClient {
         drop(self.req);
         self.task.await;
     }
+
+    pub fn detach(self) {
+        self.task.detach();
+    }
 }
 
 impl<M: RingMem> VpciClientWorker<M> {

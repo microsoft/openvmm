@@ -83,10 +83,11 @@ pub async fn relay_vpci_bus(
     )
     .await?;
     let (devices, mut devices_recv) = mesh::channel();
-    // TODO: hang onto this guy, wire him up to the inspect graph at least.
-    let _vpci_client =
+    let vpci_client =
         vpci_client::VpciClient::connect(driver_source.simple(), channel, Box::new(mmio), devices)
             .await?;
+    // TODO: hang onto this guy, wire him up to the inspect graph at least.
+    vpci_client.detach();
     let vpci_device = Arc::new(devices_recv.next().await.context("no device")?);
 
     let device_name = format!("assigned_device:vpci-{instance_id}");
