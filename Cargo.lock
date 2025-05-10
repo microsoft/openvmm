@@ -7396,6 +7396,7 @@ dependencies = [
  "guest_emulation_transport",
  "guestmem",
  "guid",
+ "hcl",
  "hcl_compat_uefi_nvram_storage",
  "hvdef",
  "hyperv_ic_guest",
