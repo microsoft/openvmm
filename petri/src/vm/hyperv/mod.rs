@@ -38,7 +38,6 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
-use thiserror::Error;
 use vm::HyperVVM;
 use vmm_core_defs::HaltReason;
 
@@ -715,20 +714,6 @@ impl PetriVmHyperV {
 
         Ok(())
     }
-}
-
-/// Error running command
-#[derive(Error, Debug)]
-pub enum CommandError {
-    /// failed to launch command
-    #[error("failed to launch command")]
-    Launch(#[from] std::io::Error),
-    /// command exited with non-zero status
-    #[error("command exited with non-zero status ({0}): {1}")]
-    Command(std::process::ExitStatus, String),
-    /// command output is not utf-8
-    #[error("command output is not utf-8")]
-    Utf8(#[from] std::string::FromUtf8Error),
 }
 
 fn acl_read_for_vm(path: &Path, id: Option<guid::Guid>) -> anyhow::Result<()> {

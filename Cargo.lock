@@ -685,6 +685,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmd_builder"
+version = "0.0.0"
+dependencies = [
+ "jiff",
+ "thiserror 2.0.12",
+ "tracing",
+]
+
+[[package]]
 name = "cobs"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2673,6 +2682,7 @@ dependencies = [
 name = "guid"
 version = "0.0.0"
 dependencies = [
+ "cmd_builder",
  "getrandom 0.3.2",
  "inspect",
  "mesh_protobuf",
@@ -5353,6 +5363,7 @@ dependencies = [
  "async-trait",
  "chipset_resources",
  "clap",
+ "cmd_builder",
  "diag_client",
  "disk_backend_resources",
  "disk_vhd1",
@@ -5402,7 +5413,6 @@ dependencies = [
  "sparse_mmap",
  "storvsp_resources",
  "tempfile",
- "thiserror 2.0.12",
  "tpm_resources",
  "tracing",
  "tracing-subscriber",

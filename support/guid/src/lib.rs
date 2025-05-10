@@ -333,6 +333,16 @@ mod windows {
     }
 }
 
+#[cfg(feature = "ps_val")]
+mod ps_val {
+    use cmd_builder::disp_str;
+    use cmd_builder::ps::AsVal;
+    use cmd_builder::ps::quote_str;
+    use std::ffi::OsStr;
+
+    disp_str!(super::Guid);
+}
+
 #[cfg(test)]
 mod tests {
     use super::Guid;

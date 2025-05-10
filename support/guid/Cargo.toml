@@ -9,8 +9,10 @@ rust-version.workspace = true
 [features]
 default = []
 mesh = ["mesh_protobuf"]
+ps_val = ["cmd_builder"]
 
 [dependencies]
+cmd_builder = { workspace = true, optional = true }
 inspect = { workspace = true, optional = true }
 mesh_protobuf = { workspace = true, optional = true }
 
