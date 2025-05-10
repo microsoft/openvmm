@@ -7,6 +7,7 @@
 use std::array;
 use std::ops::Deref;
 use std::ops::DerefMut;
+use x86defs::snp::SecureAvicControl;
 use x86defs::snp::SevEventInjectInfo;
 use x86defs::snp::SevFeatures;
 use x86defs::snp::SevSelector;
@@ -267,6 +268,11 @@ reg_direct_mut!(v_intr_cntrl, v_intr_cntrl_mut, SevVirtualInterruptControl);
 reg_direct!(virtual_tom, set_virtual_tom, u64);
 reg_direct!(event_inject, set_event_inject, SevEventInjectInfo);
 reg_direct!(guest_error_code, set_guest_error_code, u64);
+reg_direct_mut!(
+    secure_avic_control,
+    secure_avic_control_mut,
+    SecureAvicControl
+);
 regss!(es, set_es);
 regss!(cs, set_cs);
 regss!(ss, set_ss);
