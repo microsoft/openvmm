@@ -24,7 +24,7 @@ pub(super) const FLUSH_GVA_LIST_SIZE: usize = 32;
 #[derive(Debug, Inspect)]
 pub(super) struct TdxPartitionFlushState {
     /// A fixed-size ring buffer of GVAs that need to be flushed.
-    #[inspect(with = "|vd| inspect::iter_by_index(vd).map_value(|g| inspect::AsHex(g.0))")]
+    #[inspect(hex, with = "|vd| inspect::iter_by_index(vd).map_value(|g| g.0)")]
     pub(super) gva_list: VecDeque<HvGvaRange>,
     pub(super) s: TdxFlushState,
 }

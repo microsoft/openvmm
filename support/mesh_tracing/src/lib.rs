@@ -112,10 +112,10 @@ impl InspectMut for MeshFilterUpdater {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         match req.update() {
             Ok(req) => match self.update(req.new_value()) {
-                Ok(()) => req.succeed(self.get().into()),
+                Ok(()) => req.succeed(self.get()),
                 Err(err) => req.fail(err),
             },
-            Err(req) => req.value(self.get().into()),
+            Err(req) => req.value(self.get()),
         }
     }
 }
@@ -150,11 +150,11 @@ impl InspectMut for MeshFlusher {
                 self.spawn
                     .spawn("trace-flush", async move {
                         let _ = join.await;
-                        req.succeed(true.into());
+                        req.succeed(true);
                     })
                     .detach();
             }
-            Err(req) => req.value(false.into()),
+            Err(req) => req.value(false),
         }
     }
 }

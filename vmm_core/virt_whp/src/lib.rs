@@ -174,7 +174,7 @@ struct RunState {
     active_vtl: Vtl,
     enabled_vtls: VtlSet,
     runnable_vtls: VtlSet,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     vtl2_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     vtl2_wakeup_vmtime: Option<VmTimeAccess>,
     #[inspect(skip)]
@@ -202,7 +202,7 @@ struct PerVtlRunState {
     #[cfg(guest_arch = "x86_64")]
     lapic: Option<apic::ApicState>,
     hv: Option<ProcessorVtlHv>,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     deliverability_notifications: HvDeliverabilityNotificationsRegister,
     // Only used when `hv` is `None`.
     vp_assist_page: u64,

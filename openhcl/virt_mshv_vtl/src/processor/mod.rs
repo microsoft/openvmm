@@ -95,9 +95,9 @@ pub struct UhProcessor<'a, T: Backing> {
     idle_control: Option<&'a mut IdleControl>,
     #[inspect(skip)]
     kernel_returns: u64,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     crash_reg: [u64; hvdef::HV_X64_GUEST_CRASH_PARAMETER_MSRS],
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     crash_control: hvdef::GuestCrashCtl,
     vmtime: VmTimeAccess,
     #[inspect(skip)]
@@ -108,7 +108,7 @@ pub struct UhProcessor<'a, T: Backing> {
     vtls_tlb_locked: VtlsTlbLocked,
     #[inspect(skip)]
     shared: &'a T::Shared,
-    #[inspect(with = "|x| inspect::iter_by_index(x.iter()).map_value(|a| inspect::AsHex(a.0))")]
+    #[inspect(hex, with = "|x| inspect::iter_by_index(x.iter()).map_value(|a| a.0)")]
     exit_activities: VtlArray<ExitActivity, 2>,
 
     // Put the runner and backing at the end so that monomorphisms of functions

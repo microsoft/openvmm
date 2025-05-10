@@ -563,7 +563,7 @@ impl std::fmt::Display for PrimaryChannelGuestVfState {
 
 impl Inspect for PrimaryChannelGuestVfState {
     fn inspect(&self, req: inspect::Request<'_>) {
-        req.value(format!("{}", self).into());
+        req.value(self.to_string());
     }
 }
 

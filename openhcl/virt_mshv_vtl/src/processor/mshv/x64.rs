@@ -83,10 +83,10 @@ use zerocopy::KnownLayout;
 pub struct HypervisorBackedX86 {
     // VTL0 only, used for synic message and extint readiness notifications.
     // We do not currently support synic message ports or extint interrupts for VTL1.
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     deliverability_notifications: HvDeliverabilityNotificationsRegister,
     /// Next set of deliverability notifications. See register definition for details.
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     pub(super) next_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     stats: ProcessorStatsX86,
 }

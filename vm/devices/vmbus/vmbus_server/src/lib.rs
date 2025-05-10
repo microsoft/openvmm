@@ -924,7 +924,7 @@ impl ServerTask {
                         .field("running", self.inner.running)
                         .field("hvsock_requests", self.inner.hvsock_requests)
                         .field_mut_with("unstick_channels", |v| {
-                            let v: inspect::Value = if let Some(v) = v {
+                            let v: inspect::ValueKind = if let Some(v) = v {
                                 if v == "force" {
                                     self.unstick_channels(true);
                                     v.into()

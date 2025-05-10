@@ -223,7 +223,7 @@ struct UhPartitionInner {
     intercept_debug_exceptions: bool,
     #[cfg(guest_arch = "x86_64")]
     // N.B For now, only one device vector table i.e. for VTL0 only
-    #[inspect(with = "|x| inspect::iter_by_index(x.read().into_inner().map(inspect::AsHex))")]
+    #[inspect(hex, with = "|x| inspect::iter_by_index(x.read().into_inner())")]
     device_vector_table: RwLock<IrrBitmap>,
     vmbus_relay: bool,
 }
@@ -426,9 +426,10 @@ impl UhCvmVpState {
 
 #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect, Default)]
+#[inspect(hex)]
 /// Configuration of VTL 1 registration for intercepts on certain registers
 pub struct SecureRegisterInterceptState {
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(with = "|&x| u64::from(x)")]
     intercept_control: hvdef::HvRegisterCrInterceptControl,
     cr0_mask: u64,
     cr4_mask: u64,

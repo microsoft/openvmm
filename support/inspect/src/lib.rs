@@ -133,6 +133,10 @@ pub use initiate::*;
 /// }
 /// ```
 ///
+/// ### `hex`
+///
+/// Use hexadecimal formatting by default for all fields, recursively.
+///
 /// ## Field attributes
 ///
 /// ### `rename = "custom_name"`
@@ -220,13 +224,13 @@ pub use initiate::*;
 ///
 /// ### `hex`
 ///
-/// Inspect the field as a hex-formatted numeric value. Calls [`Response::hex`]
-/// with `&field`.
+/// Inspect the field, including all children, recursively, with hexadecimal
+/// formatting.
 ///
 /// ### `binary`
 ///
-/// Inspect the field as a binary-formatted numeric value. Calls
-/// [`Response::hex`] with `&field`.
+/// Inspect the field, including all children, recursively, with binary
+/// formatting.
 ///
 /// ### `bytes`
 ///
@@ -467,6 +471,20 @@ pub struct Request<'a> {
     node: &'a mut InternalNode,
     value: Option<&'a str>,
     sensitivity: SensitivityLevel,
+    number_format: NumberFormat,
+}
+
+#[cfg_attr(
+    any(feature = "defer", feature = "initiate"),
+    derive(mesh::MeshPayload)
+)]
+#[derive(Debug, Default, Copy, Clone)]
+enum NumberFormat {
+    #[default]
+    Decimal,
+    Hex,
+    Binary,
+    Counter,
 }
 
 #[cfg(any(feature = "defer", feature = "initiate"))]
@@ -476,6 +494,7 @@ struct RequestRoot<'a> {
     depth: usize,
     value: Option<&'a str>,
     sensitivity: SensitivityLevel,
+    number_format: NumberFormat,
 }
 
 /// The sensitivity level for an inspection node or request.
@@ -514,6 +533,7 @@ impl<'a> RequestRoot<'a> {
         depth: usize,
         value: Option<&'a str>,
         sensitivity: SensitivityLevel,
+        number_format: NumberFormat,
     ) -> Self {
         Self {
             path,
@@ -521,6 +541,7 @@ impl<'a> RequestRoot<'a> {
             depth,
             value,
             sensitivity,
+            number_format,
         }
     }
 
@@ -531,6 +552,7 @@ impl<'a> RequestRoot<'a> {
             &mut self.node,
             self.value,
             self.sensitivity,
+            self.number_format,
         )
     }
 }
@@ -545,6 +567,7 @@ pub struct Response<'a> {
     cell: &'a mut InternalNode,
     value: Option<&'a str>,
     sensitivity: SensitivityLevel,
+    number_format: NumberFormat,
 }
 
 #[derive(Debug)]
@@ -663,23 +686,19 @@ impl Response<'_> {
     }
 
     /// Adds a hexadecimal field to the response.
-    ///
-    /// This is a convenience method for `field(name, Value::hex(value))`.
     pub fn hex<T>(&mut self, name: &str, value: T) -> &mut Self
     where
-        T: Into<Value>,
+        T: Inspect,
     {
-        self.field_with(name, || value.into().into_hex())
+        self.field(name, AsHex(value))
     }
 
     /// Adds a counter field to the response.
-    ///
-    /// This is a convenience method for `field(name, Value::counter(value))`.
     pub fn counter<T>(&mut self, name: &str, value: T) -> &mut Self
     where
-        T: Into<Value>,
+        T: Inspect,
     {
-        self.field_with(name, || value.into().into_counter())
+        self.field(name, AsCounter(value))
     }
 
     /// Adds a counter field to the response.
@@ -692,9 +711,9 @@ impl Response<'_> {
         value: T,
     ) -> &mut Self
     where
-        T: Into<Value>,
+        T: Inspect,
     {
-        self.sensitivity_field_with(name, sensitivity, || value.into().into_counter())
+        self.sensitivity_field(name, sensitivity, AsCounter(value))
     }
 
     /// Adds a binary field to the response.
@@ -702,9 +721,9 @@ impl Response<'_> {
     /// This is a convenience method for `field(name, Value::binary(value))`.
     pub fn binary<T>(&mut self, name: &str, value: T) -> &mut Self
     where
-        T: Into<Value>,
+        T: Inspect,
     {
-        self.field_with(name, || value.into().into_binary())
+        self.field(name, AsBinary(value))
     }
 
     /// Adds a string field that implements [`std::fmt::Display`].
@@ -789,15 +808,15 @@ impl Response<'_> {
     pub fn field_mut_with<F, V, E>(&mut self, name: &str, f: F) -> &mut Self
     where
         F: FnOnce(Option<&str>) -> Result<V, E>,
-        V: Into<Value>,
+        V: Into<ValueKind>,
         E: Into<Box<dyn core::error::Error + Send + Sync>>,
     {
         self.child(name, |req| match req.update() {
             Ok(req) => match (f)(Some(req.new_value())) {
-                Ok(v) => req.succeed(v.into()),
+                Ok(v) => req.succeed(v),
                 Err(err) => req.fail(err),
             },
-            Err(req) => req.value((f)(None).ok().unwrap().into()),
+            Err(req) => req.value((f)(None).ok().unwrap()),
         })
     }
 
@@ -826,6 +845,7 @@ impl Response<'_> {
                     &mut entry.node,
                     self.value,
                     self.sensitivity,
+                    self.number_format,
                 ))
             }
             Action::Skip => None,
@@ -1007,6 +1027,7 @@ assert_eq!(
             &mut entry.node,
             self.value,
             self.sensitivity,
+            self.number_format,
         )
     }
 }
@@ -1031,6 +1052,7 @@ impl<'a> Request<'a> {
         cell: &'a mut InternalNode,
         value: Option<&'a str>,
         sensitivity: SensitivityLevel,
+        number_format: NumberFormat,
     ) -> Self {
         Self {
             path,
@@ -1038,14 +1060,42 @@ impl<'a> Request<'a> {
             node: cell,
             value,
             sensitivity,
+            number_format,
         }
     }
 
+    /// Sets numeric values to be displayed in decimal format.
+    pub fn as_decimal(mut self) -> Self {
+        self.number_format = NumberFormat::Decimal;
+        self
+    }
+
+    /// Sets numeric values to be displayed in hexadecimal format.
+    pub fn as_hex(mut self) -> Self {
+        self.number_format = NumberFormat::Hex;
+        self
+    }
+
+    /// Sets numeric values to be displayed in binary format.
+    pub fn as_binary(mut self) -> Self {
+        self.number_format = NumberFormat::Binary;
+        self
+    }
+
+    /// Sets numeric values to be displayed as counters.
+    pub fn as_counter(mut self) -> Self {
+        self.number_format = NumberFormat::Counter;
+        self
+    }
+
     /// Responds to the request with a value.
-    pub fn value(self, value: Value) {
+    pub fn value(self, value: impl Into<ValueKind>) {
+        self.value_(value.into());
+    }
+    fn value_(self, value: ValueKind) {
         let node = if self.path.is_empty() {
             if self.value.is_none() {
-                InternalNode::Value(value)
+                InternalNode::Value(value.with_format(self.number_format))
             } else {
                 InternalNode::Failed(InternalError::Immutable)
             }
@@ -1066,6 +1116,7 @@ impl<'a> Request<'a> {
             Ok(UpdateRequest {
                 node: self.node,
                 value,
+                number_format: self.number_format,
             })
         } else {
             Err(self)
@@ -1083,6 +1134,7 @@ impl<'a> Request<'a> {
             cell: self.node,
             value: self.value,
             sensitivity: self.sensitivity,
+            number_format: self.number_format,
         }
     }
 
@@ -1106,6 +1158,7 @@ impl<'a> Request<'a> {
 pub struct UpdateRequest<'a> {
     node: &'a mut InternalNode,
     value: &'a str,
+    number_format: NumberFormat,
 }
 
 impl UpdateRequest<'_> {
@@ -1115,8 +1168,11 @@ impl UpdateRequest<'_> {
     }
 
     /// Report that the update succeeded, with a new value of `value`.
-    pub fn succeed(self, value: Value) {
-        *self.node = InternalNode::Value(value);
+    pub fn succeed(self, value: impl Into<ValueKind>) {
+        self.succeed_(value.into());
+    }
+    fn succeed_(self, value: ValueKind) {
+        *self.node = InternalNode::Value(value.with_format(self.number_format));
     }
 
     /// Report that the update failed, with the reason in `err`.
@@ -1222,6 +1278,20 @@ pub enum ValueKind {
     /// Opaque binary data.
     #[cfg_attr(any(feature = "defer", feature = "initiate"), mesh(7))]
     Bytes(Vec<u8>),
+}
+
+impl ValueKind {
+    fn with_format(self, format: NumberFormat) -> Value {
+        match self {
+            Self::Signed(_) | Self::Unsigned(_) => match format {
+                NumberFormat::Decimal => Value::new(self),
+                NumberFormat::Hex => Value::hex(self).into_hex(),
+                NumberFormat::Binary => Value::binary(self).into_binary(),
+                NumberFormat::Counter => Value::counter(self).into_counter(),
+            },
+            v => v.into(),
+        }
+    }
 }
 
 /// Flags specifying additional metadata on values.
@@ -1431,7 +1501,7 @@ macro_rules! inspect_value_immut {
         $(#[$attr])*
         impl Inspect for $ty {
             fn inspect(&self, req: Request<'_>) {
-                req.value(self.into())
+                req.value(self)
             }
         }
         )*
@@ -1449,11 +1519,11 @@ macro_rules! inspect_value {
                     Ok(req) => match req.new_value().parse::<Self>() {
                         Ok(v) => {
                             *self = v.clone();
-                            req.succeed(v.into());
+                            req.succeed(v);
                         }
                         Err(err) => req.fail(err),
                     }
-                    Err(req) => req.value((&*self).into()),
+                    Err(req) => req.value(&*self),
                 }
             }
         }
@@ -1515,7 +1585,7 @@ macro_rules! inspect_atomic_value {
 
         impl Inspect for core::sync::atomic::$ty {
             fn inspect(&self, req: Request<'_>) {
-                req.value(self.load(core::sync::atomic::Ordering::Relaxed).into())
+                req.value(self.load(core::sync::atomic::Ordering::Relaxed))
             }
         }
 
@@ -1569,7 +1639,7 @@ impl Inspect for std::fs::File {
     fn inspect(&self, req: Request<'_>) {
         use filepath::FilePath;
         if let Ok(path) = self.path() {
-            req.value(path.display().to_string().into());
+            req.value(path.display().to_string());
         } else {
             req.ignore();
         }
@@ -1582,7 +1652,7 @@ pub struct AsDisplay<T>(pub T);
 
 impl<T: Display> Inspect for AsDisplay<T> {
     fn inspect(&self, req: Request<'_>) {
-        req.value(self.0.to_string().into())
+        req.value(self.0.to_string())
     }
 }
 
@@ -1592,25 +1662,31 @@ pub struct AsDebug<T>(pub T);
 
 impl<T: Debug> InspectMut for AsDebug<T> {
     fn inspect_mut(&mut self, req: Request<'_>) {
-        req.value(format!("{:?}", self.0).into())
+        req.value(format!("{:?}", self.0))
     }
 }
 
 impl<T: Debug> Inspect for AsDebug<T> {
     fn inspect(&self, req: Request<'_>) {
-        req.value(format!("{:?}", self.0).into())
+        req.value(format!("{:?}", self.0))
     }
 }
 
 macro_rules! hexbincount {
-    ($tr:ident, $method:ident, $($ty:ty),* $(,)?) => {
-        $(
-            impl Inspect for $tr<$ty> {
-                fn inspect(&self, req: Request<'_>) {
-                    req.value(Value::from(self.0).$method());
-                }
+    ($tr:ident, $fmt:expr) => {
+        impl<T: Inspect> Inspect for $tr<T> {
+            fn inspect(&self, mut req: Request<'_>) {
+                req.number_format = $fmt;
+                self.0.inspect(req);
             }
-        )*
+        }
+
+        impl<T: InspectMut> InspectMut for $tr<T> {
+            fn inspect_mut(&mut self, mut req: Request<'_>) {
+                req.number_format = $fmt;
+                self.0.inspect_mut(req);
+            }
+        }
     };
 }
 
@@ -1619,73 +1695,19 @@ macro_rules! hexbincount {
 #[derive(Clone, Copy)]
 pub struct AsHex<T>(pub T);
 
-hexbincount!(AsHex, into_hex, u8, u16, u32, u64, usize);
-
-impl<T> Inspect for AsHex<Wrapping<T>>
-where
-    for<'a> AsHex<&'a T>: Inspect,
-{
-    fn inspect(&self, req: Request<'_>) {
-        Inspect::inspect(&AsHex(&self.0.0), req)
-    }
-}
-
-impl<T: Clone> Inspect for AsHex<&'_ T>
-where
-    AsHex<T>: Inspect,
-{
-    fn inspect(&self, req: Request<'_>) {
-        Inspect::inspect(&AsHex(self.0.clone()), req)
-    }
-}
-
-impl<T> Inspect for AsHex<Option<T>>
-where
-    for<'a> AsHex<&'a T>: Inspect,
-{
-    fn inspect(&self, req: Request<'_>) {
-        Inspect::inspect(&self.0.as_ref().map(AsHex), req);
-    }
-}
+hexbincount!(AsHex, NumberFormat::Hex);
 
 /// Wrapper around `T` that implements [`Inspect`] by writing a value with
 /// [`ValueFlags::binary`].
 pub struct AsBinary<T>(pub T);
 
-hexbincount!(AsBinary, into_binary, u8, u16, u32, u64, usize);
-
-impl<T: Clone> Inspect for AsBinary<&'_ T>
-where
-    AsBinary<T>: Inspect,
-{
-    fn inspect(&self, req: Request<'_>) {
-        Inspect::inspect(&AsBinary(self.0.clone()), req)
-    }
-}
-
-impl<T> Inspect for AsBinary<Option<T>>
-where
-    for<'a> AsBinary<&'a T>: Inspect,
-{
-    fn inspect(&self, req: Request<'_>) {
-        Inspect::inspect(&self.0.as_ref().map(AsBinary), req);
-    }
-}
+hexbincount!(AsBinary, NumberFormat::Binary);
 
 /// Wrapper around `T` that implements [`Inspect`] by writing a value with
 /// [`ValueFlags::count`].
 pub struct AsCounter<T>(pub T);
 
-hexbincount!(AsCounter, into_counter, u8, u16, u32, u64, usize);
-
-impl<T: Clone> Inspect for AsCounter<&'_ T>
-where
-    AsCounter<T>: Inspect,
-{
-    fn inspect(&self, req: Request<'_>) {
-        Inspect::inspect(&AsCounter(self.0.clone()), req)
-    }
-}
+hexbincount!(AsCounter, NumberFormat::Counter);
 
 /// Wrapper around `T` that implements [`Inspect`] by writing a
 /// [`ValueKind::Bytes`] value.
@@ -1701,7 +1723,7 @@ where
     fn inspect(&self, req: Request<'_>) {
         let mut v = Vec::new();
         v.extend(self.0.clone());
-        req.value(ValueKind::Bytes(v).into())
+        req.value(ValueKind::Bytes(v))
     }
 }
 
@@ -2100,19 +2122,34 @@ impl<T: ?Sized + Inspect + ToOwned> Inspect for Cow<'_, T> {
 
 impl<T> Inspect for *mut T {
     fn inspect(&self, req: Request<'_>) {
-        req.value(Value::hex(*self as usize))
+        req.as_hex().value(*self as usize)
     }
 }
 
 impl<T> Inspect for *const T {
     fn inspect(&self, req: Request<'_>) {
-        req.value(Value::hex(*self as usize))
+        req.as_hex().value(*self as usize)
+    }
+}
+
+impl Inspect for ValueKind {
+    fn inspect(&self, req: Request<'_>) {
+        req.value(self.clone());
     }
 }
 
 impl Inspect for Value {
     fn inspect(&self, req: Request<'_>) {
-        req.value(self.clone());
+        let req = if self.flags.count() {
+            req.as_counter()
+        } else if self.flags.hex() {
+            req.as_hex()
+        } else if self.flags.binary() {
+            req.as_binary()
+        } else {
+            req
+        };
+        req.value(self.kind.clone());
     }
 }
 
@@ -2186,7 +2223,7 @@ mod tests {
     use pal_async::timer::PolledTimer;
 
     fn expected_node(node: Node, expect: Expect) -> Node {
-        expect.assert_eq(&node.to_string());
+        expect.assert_eq(&std::format!("{node:#}"));
         node
     }
 
@@ -2274,7 +2311,19 @@ mod tests {
             "",
             None,
             &f,
-            expect!("{0: {xx: 3, xy: false}, 1: {xx: 5, xy: true}, xx: 1, xy: true}"),
+            expect!([r#"
+                {
+                    0: {
+                        xx: 3,
+                        xy: false,
+                    },
+                    1: {
+                        xx: 5,
+                        xy: true,
+                    },
+                    xx: 1,
+                    xy: true,
+                }"#]),
         );
         let expected_json =
             expect!([r#"{"0":{"xx":3,"xy":false},"1":{"xx":5,"xy":true},"xx":1,"xy":true}"#]);
@@ -2292,7 +2341,11 @@ mod tests {
                 let foo = req.defer();
                 std::thread::spawn(|| foo.inspect(&Foo::default()));
             }),
-            expect!("{xx: 0, xy: false}"),
+            expect!([r#"
+                {
+                    xx: 0,
+                    xy: false,
+                }"#]),
         )
         .await;
     }
@@ -2323,7 +2376,12 @@ mod tests {
         });
         inspect_sync_expect("a", None, &mut obj, expect!("1"));
         inspect_sync_expect("///a", None, &mut obj, expect!("1"));
-        inspect_sync_expect("b", None, &mut obj, expect!("{c: 2, d: 2, e: {}}"));
+        inspect_sync_expect("b", None, &mut obj, expect!([r#"
+            {
+                c: 2,
+                d: 2,
+                e: {},
+            }"#]));
         inspect_sync_expect("b/c", None, &mut obj, expect!("2"));
         inspect_sync_expect("b////c", None, &mut obj, expect!("2"));
         inspect_sync_expect("b/c/", None, &mut obj, expect!("error (not a directory)"));
@@ -2363,7 +2421,11 @@ mod tests {
                 .field("b", 2);
         });
 
-        inspect_sync_expect("", None, &mut obj, expect!("{a: 1, b: 2}"));
+        inspect_sync_expect("", None, &mut obj, expect!([r#"
+            {
+                a: 1,
+                b: 2,
+            }"#]));
         inspect_sync_expect("a", None, &mut obj, expect!("1"));
         inspect_sync_expect("b", None, &mut obj, expect!("2"));
         inspect_sync_expect("c", None, &mut obj, expect!("error (not found)"));
@@ -2391,9 +2453,30 @@ mod tests {
             "",
             None,
             &mut obj,
-            expect!("{a: 2, x: {b: 4, c: {y: 4}, d: {y: 5}}}"),
+            expect!([r#"
+                {
+                    a: 2,
+                    x: {
+                        b: 4,
+                        c: {
+                            y: 4,
+                        },
+                        d: {
+                            y: 5,
+                        },
+                    },
+                }"#]),
         );
-        inspect_sync_expect("x", None, &mut obj, expect!("{b: 4, c: {y: 4}, d: {y: 5}}"));
+        inspect_sync_expect("x", None, &mut obj, expect!([r#"
+            {
+                b: 4,
+                c: {
+                    y: 4,
+                },
+                d: {
+                    y: 5,
+                },
+            }"#]));
     }
 
     #[test]
@@ -2462,10 +2545,31 @@ mod tests {
             req.respond().field("x/a/b", 1).field("x/a/c", 2);
         });
 
-        inspect_sync_expect("", None, &mut obj, expect!("{x: {a: {b: 1, c: 2}}}"));
-        inspect_sync_expect("x/a", None, &mut obj, expect!("{b: 1, c: 2}"));
-        inspect_sync_expect("x", Some(0), &mut obj, expect!("{a: _}"));
-        inspect_sync_expect("x", Some(2), &mut obj, expect!("{a: {b: 1, c: 2}}"));
+        inspect_sync_expect("", None, &mut obj, expect!([r#"
+            {
+                x: {
+                    a: {
+                        b: 1,
+                        c: 2,
+                    },
+                },
+            }"#]));
+        inspect_sync_expect("x/a", None, &mut obj, expect!([r#"
+            {
+                b: 1,
+                c: 2,
+            }"#]));
+        inspect_sync_expect("x", Some(0), &mut obj, expect!([r#"
+            {
+                a: _,
+            }"#]));
+        inspect_sync_expect("x", Some(2), &mut obj, expect!([r#"
+            {
+                a: {
+                    b: 1,
+                    c: 2,
+                },
+            }"#]));
     }
 
     #[test]
@@ -2485,18 +2589,37 @@ mod tests {
                 .field("1d/2b/3b", 0);
         });
 
-        inspect_sync_expect("1d", Some(0), &mut obj, expect!("{2a: 0, 2b: _}"));
+        inspect_sync_expect("1d", Some(0), &mut obj, expect!([r#"
+            {
+                2a: 0,
+                2b: _,
+            }"#]));
         inspect_sync_expect(
             "",
             Some(0),
             &mut obj,
-            expect!("{1a: 0, 1b: 0, 1c: 0, 1d: _}"),
+            expect!([r#"
+                {
+                    1a: 0,
+                    1b: 0,
+                    1c: 0,
+                    1d: _,
+                }"#]),
         );
         inspect_sync_expect(
             "",
             Some(1),
             &mut obj,
-            expect!("{1a: 0, 1b: 0, 1c: 0, 1d: {2a: 0, 2b: _}}"),
+            expect!([r#"
+                {
+                    1a: 0,
+                    1b: 0,
+                    1c: 0,
+                    1d: {
+                        2a: 0,
+                        2b: _,
+                    },
+                }"#]),
         );
     }
 
@@ -2505,7 +2628,10 @@ mod tests {
         let mut obj = adhoc(|req| {
             req.respond().hex("a", 0x1234);
         });
-        inspect_sync_expect("", Some(0), &mut obj, expect!("{a: 0x1234}"));
+        inspect_sync_expect("", Some(0), &mut obj, expect!([r#"
+            {
+                a: 0x1234,
+            }"#]));
     }
 
     #[test]
@@ -2513,7 +2639,10 @@ mod tests {
         let mut obj = adhoc(|req| {
             req.respond().binary("a", 0b1001000110100);
         });
-        inspect_sync_expect("", Some(0), &mut obj, expect!("{a: 0b1001000110100}"));
+        inspect_sync_expect("", Some(0), &mut obj, expect!([r#"
+            {
+                a: 0b1001000110100,
+            }"#]));
     }
 
     #[test]
@@ -2548,7 +2677,18 @@ mod tests {
 
         expected_node(
             diff,
-            expect!("{c: 50, d: {1_c: true, 2: true, 3: 50, 4_b: true, 4_c: true}, f: 600}"),
+            expect!([r#"
+                {
+                    c: 50,
+                    d: {
+                        1_c: true,
+                        2: true,
+                        3: 50,
+                        4_b: true,
+                        4_c: true,
+                    },
+                    f: 600,
+                }"#]),
         );
     }
 
@@ -2607,23 +2747,83 @@ mod tests {
 
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Safe), &mut obj),
-            expect!("{1a: 0, 1d: {2b: {}}}"),
+            expect!([r#"
+                {
+                    1a: 0,
+                    1d: {
+                        2b: {},
+                    },
+                }"#]),
         );
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Unspecified), &mut obj),
-            expect!("{1a: 0, 1b: 0, 1d: {2b: {3b: 0}}}"),
+            expect!([r#"
+                {
+                    1a: 0,
+                    1b: 0,
+                    1d: {
+                        2b: {
+                            3b: 0,
+                        },
+                    },
+                }"#]),
         );
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Sensitive), &mut obj),
-            expect!("{1a: 0, 1b: 0, 1c: 0, 1d: {2a: 0, 2b: {3a: {4a: 0}, 3b: 0}}, 1e: 0}"),
+            expect!([r#"
+                {
+                    1a: 0,
+                    1b: 0,
+                    1c: 0,
+                    1d: {
+                        2a: 0,
+                        2b: {
+                            3a: {
+                                4a: 0,
+                            },
+                            3b: 0,
+                        },
+                    },
+                    1e: 0,
+                }"#]),
         );
         expected_node(
             inspect_sync("", None, &mut obj),
-            expect!("{1a: 0, 1b: 0, 1c: 0, 1d: {2a: 0, 2b: {3a: {4a: 0}, 3b: 0}}, 1e: 0}"),
+            expect!([r#"
+                {
+                    1a: 0,
+                    1b: 0,
+                    1c: 0,
+                    1d: {
+                        2a: 0,
+                        2b: {
+                            3a: {
+                                4a: 0,
+                            },
+                            3b: 0,
+                        },
+                    },
+                    1e: 0,
+                }"#]),
         );
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Sensitive), &mut obj),
-            expect!("{1a: 0, 1b: 0, 1c: 0, 1d: {2a: 0, 2b: {3a: {4a: 0}, 3b: 0}}, 1e: 0}"),
+            expect!([r#"
+                {
+                    1a: 0,
+                    1b: 0,
+                    1c: 0,
+                    1d: {
+                        2a: 0,
+                        2b: {
+                            3a: {
+                                4a: 0,
+                            },
+                            3b: 0,
+                        },
+                    },
+                    1e: 0,
+                }"#]),
         );
     }
 
@@ -2657,7 +2857,13 @@ mod tests {
             ignored: Ignored,
             tr1: Tr1,
             tr2: Tr2,
+            #[inspect(iter_by_index, hex)]
+            hex_array: [u8; 4],
+            hex_inner: HexInner,
+            #[inspect(hex)]
+            inner_as_hex: Inner,
         }
+
 
         #[derive(Clone, Inspect)]
         struct Inner {
@@ -2667,6 +2873,12 @@ mod tests {
         #[derive(InspectMut)]
         struct InnerMut {
             val: String,
+        }
+
+        #[derive(Inspect)]
+        #[inspect(hex)]
+        struct HexInner {
+            val: u32,
         }
 
         #[derive(Inspect)]
@@ -2723,15 +2935,52 @@ mod tests {
             ignored: Ignored { _x: || () },
             tr1: Tr1(10, PhantomData),
             tr2: Tr2(()),
+            hex_array: [100, 101, 102, 103],
+            hex_inner: HexInner { val: 100 },
+            inner_as_hex: Inner { val: 100 },
         };
 
         inspect_sync_expect(
             "",
             None,
             &mut obj,
-            expect!([
-                r#"{bin: 0b11, debug: "()", dec: 5, display: "10", hex: 0x4, inner: {val: 3}, inner_mut: {val: "hi"}, minute: "07", t: {val: 1}, t2: {val: 2}, tr1: 0xa, tr2: "()", val: 8, var: "bar_baz"}"#
-            ]),
+            expect!([r#"
+                {
+                    bin: 0b11,
+                    debug: "()",
+                    dec: 5,
+                    display: "10",
+                    hex: 0x4,
+                    hex_array: {
+                        0: 0x64,
+                        1: 0x65,
+                        2: 0x66,
+                        3: 0x67,
+                    },
+                    hex_inner: {
+                        val: 0x64,
+                    },
+                    inner: {
+                        val: 3,
+                    },
+                    inner_as_hex: {
+                        val: 0x64,
+                    },
+                    inner_mut: {
+                        val: "hi",
+                    },
+                    minute: "07",
+                    t: {
+                        val: 1,
+                    },
+                    t2: {
+                        val: 2,
+                    },
+                    tr1: 0xa,
+                    tr2: "()",
+                    val: 8,
+                    var: "bar_baz",
+                }"#]),
         );
     }
 
@@ -2768,7 +3017,11 @@ mod tests {
             "",
             None,
             &TaggedEnum::B(true),
-            expect!([r#"{tag: "b", y: true}"#]),
+            expect!([r#"
+                {
+                    tag: "b",
+                    y: true,
+                }"#]),
         );
 
         #[expect(dead_code)]
@@ -2787,10 +3040,18 @@ mod tests {
             "",
             None,
             &ExternallyTaggedEnum::B(true),
-            expect!("{b: {y: true}}"),
+            expect!([r#"
+                {
+                    b: {
+                        y: true,
+                    },
+                }"#]),
         );
 
-        inspect_sync_expect("", None, &ExternallyTaggedEnum::C(5), expect!("{c: 5}"));
+        inspect_sync_expect("", None, &ExternallyTaggedEnum::C(5), expect!([r#"
+            {
+                c: 5,
+            }"#]));
 
         #[expect(dead_code)]
         #[derive(Inspect)]
@@ -2800,7 +3061,10 @@ mod tests {
             B(#[inspect(rename = "y")] bool),
         }
 
-        inspect_sync_expect("", None, &UntaggedEnum::B(true), expect!("{y: true}"));
+        inspect_sync_expect("", None, &UntaggedEnum::B(true), expect!([r#"
+            {
+                y: true,
+            }"#]));
     }
 
     #[test]
@@ -2822,7 +3086,12 @@ mod tests {
             "",
             None,
             &Foo { x: 2, y: 5 },
-            expect!("{sum: 7, x: 2, y: 5}"),
+            expect!([r#"
+                {
+                    sum: 7,
+                    x: 2,
+                    y: 5,
+                }"#]),
         );
     }
 
@@ -2884,15 +3153,44 @@ mod tests {
 
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Safe), &obj),
-            expect!("{a: 0, d: {b: {}}}"),
+            expect!([r#"
+                {
+                    a: 0,
+                    d: {
+                        b: {},
+                    },
+                }"#]),
         );
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Unspecified), &obj),
-            expect!("{a: 0, b: 0, d: {b: {b: 0}}}"),
+            expect!([r#"
+                {
+                    a: 0,
+                    b: 0,
+                    d: {
+                        b: {
+                            b: 0,
+                        },
+                    },
+                }"#]),
         );
         let node = expected_node(
             inspect_sync("", Some(SensitivityLevel::Sensitive), &obj),
-            expect!("{a: 0, b: 0, c: 0, d: {a: 0, b: {a: {a: 0}, b: 0}}}"),
+            expect!([r#"
+                {
+                    a: 0,
+                    b: 0,
+                    c: 0,
+                    d: {
+                        a: 0,
+                        b: {
+                            a: {
+                                a: 0,
+                            },
+                            b: 0,
+                        },
+                    },
+                }"#]),
         );
         assert_eq!(
             node,

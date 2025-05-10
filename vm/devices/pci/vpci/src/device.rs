@@ -1008,7 +1008,7 @@ pub struct VpciChannel {
     instance_id: Guid,
     serial_num: u32,
     hardware_ids: HardwareIds,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     bar_masks: [u32; 6],
 
     // The underlying device.

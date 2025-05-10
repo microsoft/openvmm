@@ -78,13 +78,13 @@ pub struct LocalApic {
     cluster_mode: bool,
     #[inspect(hex)]
     svr: u32,
-    #[inspect(with = "|x| inspect::iter_by_index(x.to_bits()).map_value(inspect::AsHex)")]
+    #[inspect(hex, with = "|x| inspect::iter_by_index(x.to_bits())")]
     isr: IsrStack,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     irr: [u32; 8],
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     tmr: [u32; 8],
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     auto_eoi: [u32; 8],
     next_irr: Option<u8>,
     #[inspect(hex)]
@@ -97,7 +97,7 @@ pub struct LocalApic {
     lvt_thermal: u32,
     #[inspect(hex)]
     lvt_pmc: u32,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     lvt_lint: [u32; 2],
     #[inspect(hex)]
     lvt_error: u32,
@@ -213,17 +213,11 @@ impl IsrStack {
 #[derive(Debug, Inspect)]
 struct SharedState {
     vp_index: VpIndex,
-    #[inspect(
-        with = "|x| inspect::iter_by_index(x).map_value(|x| inspect::AsHex(x.load(Ordering::Relaxed)))"
-    )]
+    #[inspect(hex, iter_by_index)]
     tmr: [AtomicU32; 8],
-    #[inspect(
-        with = "|x| inspect::iter_by_index(x).map_value(|x| inspect::AsHex(x.load(Ordering::Relaxed)))"
-    )]
+    #[inspect(hex, iter_by_index)]
     new_irr: [AtomicU32; 8],
-    #[inspect(
-        with = "|x| inspect::iter_by_index(x).map_value(|x| inspect::AsHex(x.load(Ordering::Relaxed)))"
-    )]
+    #[inspect(hex, iter_by_index)]
     auto_eoi: [AtomicU32; 8],
     work: AtomicU32,
     software_enabled_on_reset: bool,

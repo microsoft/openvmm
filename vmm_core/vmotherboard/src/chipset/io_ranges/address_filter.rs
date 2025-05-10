@@ -176,13 +176,13 @@ impl<T: RangeKey> InspectMut for AddressFilter<T> {
             Ok(req) => match req.new_value().parse() {
                 Ok(v) => {
                     *self = v;
-                    req.succeed(self.to_string().into());
+                    req.succeed(self.to_string());
                 }
                 Err(err) => {
                     req.fail(err);
                 }
             },
-            Err(req) => req.value(self.to_string().into()),
+            Err(req) => req.value(self.to_string()),
         }
     }
 }

@@ -78,7 +78,7 @@ impl Inspect for NvmeManager {
                     .sender
                     .send(Request::ForceLoadDriver(update.defer()));
             }
-            Err(req) => req.value("".into()),
+            Err(req) => req.value(""),
         });
         // Send the remaining fields directly to the worker.
         self.client
@@ -231,7 +231,7 @@ impl NvmeManagerWorker {
                 Request::ForceLoadDriver(update) => {
                     match self.get_driver(update.new_value().to_owned()).await {
                         Ok(_) => {
-                            let pci_id = update.new_value().into();
+                            let pci_id = update.new_value().to_string();
                             update.succeed(pci_id);
                         }
                         Err(err) => {

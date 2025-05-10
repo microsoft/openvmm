@@ -557,13 +557,10 @@ impl BackingPrivate for SnpBacked {
 
         let add_vmsa_inspect = |req: inspect::Request<'_>, vmsa: VmsaWrapper<'_, &SevVmsa>| {
             req.respond()
-                .field("guest_error_code", inspect::AsHex(vmsa.guest_error_code()))
-                .field("exit_info1", inspect::AsHex(vmsa.exit_info1()))
-                .field("exit_info2", inspect::AsHex(vmsa.exit_info2()))
-                .field(
-                    "v_intr_cntrl",
-                    inspect::AsHex(u64::from(vmsa.v_intr_cntrl())),
-                );
+                .hex("guest_error_code", vmsa.guest_error_code())
+                .hex("exit_info1", vmsa.exit_info1())
+                .hex("exit_info2", vmsa.exit_info2())
+                .hex("v_intr_cntrl", u64::from(vmsa.v_intr_cntrl()));
         };
 
         resp.child("vmsa_additional", |req| {
