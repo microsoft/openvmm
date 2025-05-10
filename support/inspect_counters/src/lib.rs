@@ -35,7 +35,7 @@ impl Counter {
 
 impl Inspect for Counter {
     fn inspect(&self, req: inspect::Request<'_>) {
-        req.format_as_counter().value(self.0)
+        req.with_counter_format().value(self.0)
     }
 }
 
@@ -69,7 +69,7 @@ impl SharedCounter {
 
 impl Inspect for SharedCounter {
     fn inspect(&self, req: inspect::Request<'_>) {
-        req.format_as_counter()
+        req.with_counter_format()
             .value(self.0.load(Ordering::Relaxed))
     }
 }
