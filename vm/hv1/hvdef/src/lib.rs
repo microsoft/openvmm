@@ -468,7 +468,7 @@ macro_rules! hv_error {
             fn doc_str(&self) -> Option<&'static str> {
                 Some(match self.0.get() {
                     $(
-                        $val => $doc,
+                        $val => const { $doc.trim_ascii() },
                     )*
                     _ => return None,
                 })
