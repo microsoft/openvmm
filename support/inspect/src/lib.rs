@@ -2376,12 +2376,17 @@ mod tests {
         });
         inspect_sync_expect("a", None, &mut obj, expect!("1"));
         inspect_sync_expect("///a", None, &mut obj, expect!("1"));
-        inspect_sync_expect("b", None, &mut obj, expect!([r#"
+        inspect_sync_expect(
+            "b",
+            None,
+            &mut obj,
+            expect!([r#"
             {
                 c: 2,
                 d: 2,
                 e: {},
-            }"#]));
+            }"#]),
+        );
         inspect_sync_expect("b/c", None, &mut obj, expect!("2"));
         inspect_sync_expect("b////c", None, &mut obj, expect!("2"));
         inspect_sync_expect("b/c/", None, &mut obj, expect!("error (not a directory)"));
@@ -2421,11 +2426,16 @@ mod tests {
                 .field("b", 2);
         });
 
-        inspect_sync_expect("", None, &mut obj, expect!([r#"
+        inspect_sync_expect(
+            "",
+            None,
+            &mut obj,
+            expect!([r#"
             {
                 a: 1,
                 b: 2,
-            }"#]));
+            }"#]),
+        );
         inspect_sync_expect("a", None, &mut obj, expect!("1"));
         inspect_sync_expect("b", None, &mut obj, expect!("2"));
         inspect_sync_expect("c", None, &mut obj, expect!("error (not found)"));
@@ -2467,7 +2477,11 @@ mod tests {
                     },
                 }"#]),
         );
-        inspect_sync_expect("x", None, &mut obj, expect!([r#"
+        inspect_sync_expect(
+            "x",
+            None,
+            &mut obj,
+            expect!([r#"
             {
                 b: 4,
                 c: {
@@ -2476,7 +2490,8 @@ mod tests {
                 d: {
                     y: 5,
                 },
-            }"#]));
+            }"#]),
+        );
     }
 
     #[test]
@@ -2545,7 +2560,11 @@ mod tests {
             req.respond().field("x/a/b", 1).field("x/a/c", 2);
         });
 
-        inspect_sync_expect("", None, &mut obj, expect!([r#"
+        inspect_sync_expect(
+            "",
+            None,
+            &mut obj,
+            expect!([r#"
             {
                 x: {
                     a: {
@@ -2553,23 +2572,39 @@ mod tests {
                         c: 2,
                     },
                 },
-            }"#]));
-        inspect_sync_expect("x/a", None, &mut obj, expect!([r#"
+            }"#]),
+        );
+        inspect_sync_expect(
+            "x/a",
+            None,
+            &mut obj,
+            expect!([r#"
             {
                 b: 1,
                 c: 2,
-            }"#]));
-        inspect_sync_expect("x", Some(0), &mut obj, expect!([r#"
+            }"#]),
+        );
+        inspect_sync_expect(
+            "x",
+            Some(0),
+            &mut obj,
+            expect!([r#"
             {
                 a: _,
-            }"#]));
-        inspect_sync_expect("x", Some(2), &mut obj, expect!([r#"
+            }"#]),
+        );
+        inspect_sync_expect(
+            "x",
+            Some(2),
+            &mut obj,
+            expect!([r#"
             {
                 a: {
                     b: 1,
                     c: 2,
                 },
-            }"#]));
+            }"#]),
+        );
     }
 
     #[test]
@@ -2589,11 +2624,16 @@ mod tests {
                 .field("1d/2b/3b", 0);
         });
 
-        inspect_sync_expect("1d", Some(0), &mut obj, expect!([r#"
+        inspect_sync_expect(
+            "1d",
+            Some(0),
+            &mut obj,
+            expect!([r#"
             {
                 2a: 0,
                 2b: _,
-            }"#]));
+            }"#]),
+        );
         inspect_sync_expect(
             "",
             Some(0),
@@ -2628,10 +2668,15 @@ mod tests {
         let mut obj = adhoc(|req| {
             req.respond().hex("a", 0x1234);
         });
-        inspect_sync_expect("", Some(0), &mut obj, expect!([r#"
+        inspect_sync_expect(
+            "",
+            Some(0),
+            &mut obj,
+            expect!([r#"
             {
                 a: 0x1234,
-            }"#]));
+            }"#]),
+        );
     }
 
     #[test]
@@ -2639,10 +2684,15 @@ mod tests {
         let mut obj = adhoc(|req| {
             req.respond().binary("a", 0b1001000110100);
         });
-        inspect_sync_expect("", Some(0), &mut obj, expect!([r#"
+        inspect_sync_expect(
+            "",
+            Some(0),
+            &mut obj,
+            expect!([r#"
             {
                 a: 0b1001000110100,
-            }"#]));
+            }"#]),
+        );
     }
 
     #[test]
@@ -2864,7 +2914,6 @@ mod tests {
             inner_as_hex: Inner,
         }
 
-
         #[derive(Clone, Inspect)]
         struct Inner {
             val: u32,
@@ -3048,10 +3097,15 @@ mod tests {
                 }"#]),
         );
 
-        inspect_sync_expect("", None, &ExternallyTaggedEnum::C(5), expect!([r#"
+        inspect_sync_expect(
+            "",
+            None,
+            &ExternallyTaggedEnum::C(5),
+            expect!([r#"
             {
                 c: 5,
-            }"#]));
+            }"#]),
+        );
 
         #[expect(dead_code)]
         #[derive(Inspect)]
@@ -3061,10 +3115,15 @@ mod tests {
             B(#[inspect(rename = "y")] bool),
         }
 
-        inspect_sync_expect("", None, &UntaggedEnum::B(true), expect!([r#"
+        inspect_sync_expect(
+            "",
+            None,
+            &UntaggedEnum::B(true),
+            expect!([r#"
             {
                 y: true,
-            }"#]));
+            }"#]),
+        );
     }
 
     #[test]
