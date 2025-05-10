@@ -696,6 +696,7 @@ impl<T: CpuIo> hv1_hypercall::ModifySparseGpaPageHostVisibility for WhpHypercall
 
 impl<T: CpuIo> hv1_hypercall::MemoryMappedIoRead for WhpHypercallExit<'_, '_, T> {
     fn mmio_read(&mut self, gpa: u64, data: &mut [u8]) -> hvdef::HvResult<()> {
+        // Set a pending hypercall since the MMIO access may be async.
         self.pending_hypercall = Some(PendingHypercall::MmioRead {
             gpa,
             len: data.len(),
@@ -706,6 +707,7 @@ impl<T: CpuIo> hv1_hypercall::MemoryMappedIoRead for WhpHypercallExit<'_, '_, T>
 
 impl<T: CpuIo> hv1_hypercall::MemoryMappedIoWrite for WhpHypercallExit<'_, '_, T> {
     fn mmio_write(&mut self, gpa: u64, data: &[u8]) -> hvdef::HvResult<()> {
+        // Set a pending hypercall since the MMIO access may be async.
         self.pending_hypercall = Some(PendingHypercall::MmioWrite {
             gpa,
             data: data.try_into().expect("cap is set to hypercall maximum"),

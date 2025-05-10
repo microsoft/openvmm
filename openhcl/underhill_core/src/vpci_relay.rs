@@ -26,8 +26,7 @@ impl MemoryAccess for Mmio {
         0x2000000000 - 0x2000
     }
 
-    fn read(&mut self, offset: u64) -> u32 {
-        let addr = self.gpa() + offset;
+    fn read(&mut self, addr: u64) -> u32 {
         let mut data = [0; 4];
         match self.0.mmio_read(addr, &mut data) {
             Ok(()) => u32::from_ne_bytes(data),
@@ -42,8 +41,7 @@ impl MemoryAccess for Mmio {
         }
     }
 
-    fn write(&mut self, offset: u64, value: u32) {
-        let addr = self.gpa() + offset;
+    fn write(&mut self, addr: u64, value: u32) {
         let data = value.to_ne_bytes();
         if let Err(err) = self.0.mmio_write(addr, &data) {
             tracelimit::error_ratelimited!(

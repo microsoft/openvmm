@@ -115,8 +115,8 @@ async fn negotiate<M: RingMem>(
 
 pub trait MemoryAccess: Send {
     fn gpa(&mut self) -> u64;
-    fn read(&mut self, offset: u64) -> u32;
-    fn write(&mut self, offset: u64, value: u32);
+    fn read(&mut self, addr: u64) -> u32;
+    fn write(&mut self, addr: u64, value: u32);
 }
 
 #[derive(Inspect)]
@@ -134,6 +134,7 @@ pub struct VpciDevice {
 struct ConfigSpaceAccessor {
     #[inspect(skip)]
     mem: Box<dyn MemoryAccess>,
+    base_gpa: u64,
     #[inspect(with = "|&x| inspect::AsHex(u32::from(x))")]
     current_slot: SlotNumber,
 }
@@ -141,19 +142,24 @@ struct ConfigSpaceAccessor {
 impl ConfigSpaceAccessor {
     fn set_slot(&mut self, slot: SlotNumber) {
         if slot != self.current_slot {
-            self.mem.write(0x1000, slot.into());
+            self.mem
+                .write(self.base_gpa + protocol::MMIO_PAGE_SLOT_NUMBER, slot.into());
             self.current_slot = slot;
         }
     }
 
     fn read(&mut self, slot: SlotNumber, offset: u16) -> u32 {
         self.set_slot(slot);
-        self.mem.read(offset.into())
+        self.mem
+            .read(self.base_gpa + protocol::MMIO_PAGE_CONFIG_SPACE + offset as u64)
     }
 
     fn write(&mut self, slot: SlotNumber, offset: u16, value: u32) {
         self.set_slot(slot);
-        self.mem.write(offset.into(), value);
+        self.mem.write(
+            self.base_gpa + protocol::MMIO_PAGE_CONFIG_SPACE + offset as u64,
+            value,
+        );
     }
 }
 
@@ -308,6 +314,7 @@ impl VpciClient {
             req: recv,
             config_space: Arc::new(Mutex::new(ConfigSpaceAccessor {
                 mem: mmio,
+                base_gpa: gpa,
                 current_slot: (!0).into(),
             })),
         };

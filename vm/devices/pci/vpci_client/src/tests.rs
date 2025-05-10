@@ -48,21 +48,21 @@ impl super::MemoryAccess for BusWrapper {
         0x123456780000
     }
 
-    fn read(&mut self, offset: u64) -> u32 {
+    fn read(&mut self, addr: u64) -> u32 {
         let mut data = [0; 4];
         self.0
             .supports_mmio()
             .unwrap()
-            .mmio_read(offset, &mut data)
+            .mmio_read(addr, &mut data)
             .unwrap();
         u32::from_ne_bytes(data)
     }
 
-    fn write(&mut self, offset: u64, value: u32) {
+    fn write(&mut self, addr: u64, value: u32) {
         self.0
             .supports_mmio()
             .unwrap()
-            .mmio_write(offset, &value.to_ne_bytes())
+            .mmio_write(addr, &value.to_ne_bytes())
             .unwrap();
     }
 }
