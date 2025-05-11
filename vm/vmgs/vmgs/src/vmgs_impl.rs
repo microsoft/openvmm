@@ -2603,7 +2603,7 @@ mod tests {
         let fcb = vmgs.fcbs.get_mut(&FileId::BIOS_NVRAM).unwrap();
 
         // Manipulate the nonce and expect the read to fail.
-        fcb.nonce[0] += 1;
+        fcb.nonce[0] ^= 1;
 
         // read and expect to fail
         let result = vmgs.read_file(FileId::BIOS_NVRAM).await;
