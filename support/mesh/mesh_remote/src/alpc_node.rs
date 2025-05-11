@@ -835,12 +835,8 @@ mod tests {
         let (invitation, _handle) = node1.invite(p2).unwrap();
         let _node2 = AlpcNode::join(driver.clone(), invitation, p3).unwrap();
 
-        crate::test_common::test_message_sizes(
-            p1,
-            p4,
-            0..=crate::alpc_node::MAX_SMALL_EVENT_SIZE + 0x1000,
-        )
-        .await;
+        crate::test_common::test_message_sizes(p1, p4, 0..=super::MAX_SMALL_EVENT_SIZE + 0x1000)
+            .await;
     }
 
     #[async_test]

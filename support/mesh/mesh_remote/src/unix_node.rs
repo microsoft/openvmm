@@ -1291,7 +1291,6 @@ fn set_cloexec(fd: impl AsFd) {
 
 #[cfg(test)]
 mod tests {
-    use super::MAX_SMALL_EVENT_SIZE;
     use crate::unix::UnixNode;
     use mesh_channel::RecvError;
     use mesh_channel::channel;
@@ -1346,7 +1345,8 @@ mod tests {
             .await
             .unwrap();
 
-        crate::test_common::test_message_sizes(p1, p4, 0..=MAX_SMALL_EVENT_SIZE + 0x1000).await;
+        crate::test_common::test_message_sizes(p1, p4, 0..=super::MAX_SMALL_EVENT_SIZE + 0x1000)
+            .await;
     }
 
     #[async_test]
