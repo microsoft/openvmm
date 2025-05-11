@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+
 #![cfg(test)]
 
 use mesh_node::local_node::HandlePortEvent;
