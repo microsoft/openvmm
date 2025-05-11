@@ -139,7 +139,7 @@ impl PortConfig {
                 | ALPC_PORFLG_ACCEPT_INDIRECT_HANDLES
                 | ALPC_PORFLG_ACCEPT_REQUESTS,
             DupObjectTypes: OB_ALL_OBJECT_TYPE_CODES,
-            MaxMessageLength: self.max_message_len,
+            MaxMessageLength: self.max_message_len + size_of::<PORT_MESSAGE>(),
             MaxPoolUsage: usize::MAX,
             MaxSectionSize: usize::MAX,
             MaxTotalSectionSize: usize::MAX,

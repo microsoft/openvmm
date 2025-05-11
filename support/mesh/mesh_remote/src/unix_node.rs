@@ -1291,6 +1291,7 @@ fn set_cloexec(fd: impl AsFd) {
 
 #[cfg(test)]
 mod tests {
+    use super::MAX_SMALL_EVENT_SIZE;
     use crate::unix::UnixNode;
     use mesh_channel::RecvError;
     use mesh_channel::channel;
@@ -1332,6 +1333,20 @@ mod tests {
         assert_eq!(v, v2);
         follower.shutdown().await;
         leader.shutdown().await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[async_test]
+    async fn test_message_sizes(driver: DefaultDriver) {
+        let (p1, p2) = mesh_node::local_node::Port::new_pair();
+        let (p3, p4) = mesh_node::local_node::Port::new_pair();
+        let node1 = UnixNode::new(driver.clone());
+        let invitation = node1.invite(p2).await.unwrap();
+        let _node2 = UnixNode::join(driver.clone(), invitation, p3)
+            .await
+            .unwrap();
+
+        crate::test_common::test_message_sizes(p1, p4, 0..=MAX_SMALL_EVENT_SIZE + 0x1000).await;
     }
 
     #[async_test]
