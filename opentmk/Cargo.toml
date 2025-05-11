@@ -21,6 +21,9 @@ lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 spin = "0.10.0"
 serde = {version = "1.0", default-features = false}
+log = { version = "0.4", features = ["serde"] }
+x86defs.workspace = true
+
 [lints]
 workspace = true
 

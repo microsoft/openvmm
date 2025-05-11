@@ -1,14 +1,9 @@
-use core::{arch::asm, cell::{RefCell, UnsafeCell}, fmt::Error, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
+use core::sync::atomic::{AtomicUsize, Ordering};
 pub use spin::Mutex;
-use alloc::{boxed::Box, string::{String, ToString}, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use alloc::collections::VecDeque;
-#[cfg(feature = "std")]
-use std::error::Error;
+use core::error::Error;
 use core::fmt;
-
-use crate::infolog;
-
-
 
 /// An unbounded channel implementation with priority send capability.
 /// This implementation works in no_std environments using spin-rs.
@@ -47,7 +42,6 @@ impl<T> fmt::Display for SendError<T> {
     }
 }
 
-#[cfg(feature = "std")]
 impl<T: fmt::Debug> Error for SendError<T> {}
 
 /// Error type for receiving operations
@@ -68,7 +62,6 @@ impl fmt::Display for RecvError {
     }
 }
 
-#[cfg(feature = "std")]
 impl Error for RecvError {}
 
 /// Sender half of the channel

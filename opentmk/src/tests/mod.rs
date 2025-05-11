@@ -1,10 +1,9 @@
-use super::hypvctx::HvTestCtx;
+mod hv_processor;
+mod hv_misc;
 
-pub mod hv_processor;
-pub mod hv_misc;
+use crate::uefi::hypvctx::HvTestCtx;
 
 pub fn run_test() {
     let mut ctx = HvTestCtx::new();
-    ctx.init();
     hv_processor::exec(&mut ctx);
 }

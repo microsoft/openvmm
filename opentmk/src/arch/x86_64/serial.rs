@@ -2,10 +2,9 @@
 // Licensed under the MIT License.
 
 //! Serial output for debugging.
-
+#![allow(static_mut_refs)]
 use core::arch::asm;
 use core::fmt;
-use core::sync::atomic::AtomicBool;
 use crate::sync::Mutex;
 
 const COM4: u16 = 0x2E8;

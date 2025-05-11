@@ -1,7 +1,9 @@
 use hvdef::Vtl;
 
 use crate::{
-    tmk_assert, uefi::context::{TestCtxTrait, VpExecutor}
+    criticallog, infolog,
+    tmk_assert,
+    uefi::context::{TestCtxTrait, VpExecutor},
 };
 
 pub fn exec(ctx: &mut dyn TestCtxTrait) {
@@ -68,5 +70,5 @@ pub fn exec(ctx: &mut dyn TestCtxTrait) {
         }
     }
 
-    log::warn!("All VPs have been tested");
+    log::error!("All VPs have been tested");
 }

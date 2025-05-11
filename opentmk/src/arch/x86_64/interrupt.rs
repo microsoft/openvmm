@@ -1,13 +1,6 @@
-
-use alloc::boxed::Box;
-use alloc::sync::Arc;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 use lazy_static::lazy_static;
-use core::cell::{Ref, RefCell};
-use core::concat_idents;
 use crate::sync::Mutex;
-
-use crate::{criticallog, infolog};
 
 use super::interrupt_handler_register::{register_interrupt_handler, set_common_handler};
 
@@ -24,7 +17,7 @@ static mut HANDLERS : [fn(); 256] = [no_op; 256];
 static MUTEX: Mutex<()> = Mutex::new(());
 fn no_op() {}
 
-fn common_handler(stack_frame: InterruptStackFrame, interrupt: u8) {
+fn common_handler(_stack_frame: InterruptStackFrame, interrupt: u8) {
     unsafe { HANDLERS[interrupt as usize](); }
 }
 
@@ -38,13 +31,13 @@ extern "x86-interrupt" fn handler_double_fault(
     stack_frame: InterruptStackFrame,
     _error_code: u64,
 ) -> ! {
-    criticallog!("EXCEPTION:\n\tERROR_CODE: {}\n\tDOUBLE FAULT\n{:#?}", _error_code, stack_frame);
+    log::error!("EXCEPTION:\n\tERROR_CODE: {}\n\tDOUBLE FAULT\n{:#?}", _error_code, stack_frame);
     loop {}
 }
 
 // Initialize the IDT
 pub fn init() {
-    unsafe { IDT.load() };
+    IDT.load();
     set_common_handler(common_handler);
-    unsafe { x86_64::instructions::interrupts::enable() };
+    x86_64::instructions::interrupts::enable();
 }

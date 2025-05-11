@@ -1,7 +1,7 @@
-use core::arch::asm;
+#![allow(dead_code)]
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
-use crate::{infolog, sync::Mutex};
+use crate::sync::Mutex;
 
 static mut COMMON_HANDLER: fn(InterruptStackFrame, u8) = common_handler;
 static COMMON_HANDLER_MUTEX: Mutex<()> = Mutex::new(());
@@ -20,28 +20,52 @@ macro_rules! register_interrupt_handler {
     };
 }
 
-fn common_handler(stack_frame: InterruptStackFrame, interrupt: u8) {
-    infolog!("Default interrupt handler fired: {}", interrupt);
+fn common_handler(_stack_frame: InterruptStackFrame, interrupt: u8) {
+    log::info!("Default interrupt handler fired: {}", interrupt);
 }
 
 pub fn set_common_handler(handler: fn(InterruptStackFrame, u8)) {
-    let guard = COMMON_HANDLER_MUTEX.lock();
+    let _guard = COMMON_HANDLER_MUTEX.lock();
     unsafe {
         COMMON_HANDLER = handler;
     }
 }
 
-extern "x86-interrupt" fn no_op(stack_frame: InterruptStackFrame) {}
+extern "x86-interrupt" fn no_op(_stack_frame: InterruptStackFrame) {}
 
 pub fn register_interrupt_handler(idt: &mut InterruptDescriptorTable) {
-    register_interrupt_handler!(idt, 0, handler_0);
-    register_interrupt_handler!(idt, 1, handler_1);
+    register_interrupt_handler!(idt, x86defs::Exception::DIVIDE_ERROR.0, handler_0);
+    register_interrupt_handler!(idt, x86defs::Exception::DEBUG.0, handler_1);
     register_interrupt_handler!(idt, 2, handler_2);
-    register_interrupt_handler!(idt, 3, handler_3);
-    register_interrupt_handler!(idt, 4, handler_4);
-    register_interrupt_handler!(idt, 5, handler_5);
-    register_interrupt_handler!(idt, 6, handler_6);
-    register_interrupt_handler!(idt, 7, handler_7);
+    register_interrupt_handler!(idt, x86defs::Exception::BREAKPOINT.0, handler_3);
+    register_interrupt_handler!(idt, x86defs::Exception::OVERFLOW.0, handler_4);
+    register_interrupt_handler!(idt, x86defs::Exception::BOUND_RANGE_EXCEEDED.0, handler_5);
+    register_interrupt_handler!(idt, x86defs::Exception::INVALID_OPCODE.0, handler_6);
+    register_interrupt_handler!(idt, x86defs::Exception::DEVICE_NOT_AVAILABLE.0, handler_7);
+    // register_interrupt_handler!(idt, x86defs::Exception::DOUBLE_FAULT.0, handler_8);
+    register_interrupt_handler!(idt, 9, handler_9);
+    // register_interrupt_handler!(idt, x86defs::Exception::INVALID_TSS.0, handler_10);
+    // register_interrupt_handler!(idt, x86defs::Exception::SEGMENT_NOT_PRESENT.0, handler_11);
+    // register_interrupt_handler!(idt, x86defs::Exception::STACK_SEGMENT_FAULT.0, handler_12);
+    // register_interrupt_handler!(idt, x86defs::Exception::GENERAL_PROTECTION_FAULT.0, handler_13);
+    // register_interrupt_handler!(idt, x86defs::Exception::PAGE_FAULT.0, handler_14);
+    // register_interrupt_handler!(idt, 15, handler_15);
+    // register_interrupt_handler!(idt, x86defs::Exception::FLOATING_POINT_EXCEPTION.0, handler_16);
+    // register_interrupt_handler!(idt, x86defs::Exception::ALIGNMENT_CHECK.0, handler_17);
+    // register_interrupt_handler!(idt, x86defs::Exception::MACHINE_CHECK.0, handler_18);
+    // register_interrupt_handler!(idt, x86defs::Exception::SIMD_FLOATING_POINT_EXCEPTION.0, handler_19);
+    // register_interrupt_handler!(idt, 20, handler_20);
+    // register_interrupt_handler!(idt, 21, handler_21);
+    // register_interrupt_handler!(idt, 22, handler_22);
+    // register_interrupt_handler!(idt, 23, handler_23);
+    // register_interrupt_handler!(idt, 24, handler_24);
+    // register_interrupt_handler!(idt, 25, handler_25);
+    // register_interrupt_handler!(idt, 26, handler_26);
+    // register_interrupt_handler!(idt, 27, handler_27);
+    // register_interrupt_handler!(idt, 28, handler_28);
+    // register_interrupt_handler!(idt, x86defs::Exception::SEV_VMM_COMMUNICATION.0, handler_29);
+    // register_interrupt_handler!(idt, 30, handler_30);
+    // register_interrupt_handler!(idt, 31, handler_31);
 
     register_interrupt_handler!(idt, 32, handler_32);
     register_interrupt_handler!(idt, 33, handler_33);

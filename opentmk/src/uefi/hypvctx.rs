@@ -3,21 +3,16 @@ use super::{
     hypercall::HvCall,
 };
 use crate::uefi::alloc::ALLOCATOR;
-use crate::{debuglog, slog::AssertResult};
-use crate::{
-    infolog,
-    slog::AssertOption,
-    sync::{Channel, Receiver, Sender},
-};
+use crate::tmk_assert::AssertResult;
+use crate::tmk_assert::AssertOption;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::collections::linked_list::LinkedList;
 use alloc::{boxed::Box, vec::Vec};
 use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
 use core::ops::Range;
-use core::sync::atomic::{AtomicBool, Ordering};
 use hvdef::hypercall::{HvInputVtl, InitialVpContextX64};
-use hvdef::{HvAllArchRegisterName, HvRegisterName, Vtl};
+use hvdef::Vtl;
 use memory_range::MemoryRange;
 use minimal_rt::arch::msr::{read_msr, write_msr};
 use spin::Mutex;
@@ -28,34 +23,26 @@ type ComandTable =
     BTreeMap<u32, LinkedList<(Box<dyn FnOnce(&mut dyn TestCtxTrait) + 'static>, Vtl)>>;
 static mut CMD: Mutex<ComandTable> = Mutex::new(BTreeMap::new());
 
+#[allow(static_mut_refs)]
 fn cmdt() -> &'static Mutex<ComandTable> {
     unsafe { &CMD }
 }
 
-struct VpContext {
-    #[cfg(target_arch = "x86_64")]
-    ctx: InitialVpContextX64,
-    #[cfg(target_arch = "aarch64")]
-    ctx: InitialVpContextAarch64,
-}
-
 fn register_command_queue(vp_index: u32) {
-    unsafe {
-        debuglog!("registering command queue for vp: {}", vp_index);
-        if CMD.lock().get(&vp_index).is_none() {
-            CMD.lock().insert(vp_index, LinkedList::new());
-            debuglog!("registered command queue for vp: {}", vp_index);
+        log::debug!("registering command queue for vp: {}", vp_index);
+        if cmdt().lock().get(&vp_index).is_none() {
+            cmdt().lock().insert(vp_index, LinkedList::new());
+            log::debug!("registered command queue for vp: {}", vp_index);
         } else {
-            debuglog!("command queue already registered for vp: {}", vp_index);
+            log::debug!("command queue already registered for vp: {}", vp_index);
         }
-    }
 }
 
 pub struct HvTestCtx {
     pub hvcall: HvCall,
     pub vp_runing: Vec<(u32, (bool, bool))>,
     pub my_vp_idx: u32,
-    senders: Vec<(u64, Sender<(Box<dyn FnOnce(&mut HvCall)>, Vtl)>)>,
+    pub my_vtl: Vtl,
 }
 
 impl Drop for HvTestCtx {
@@ -138,8 +125,8 @@ impl TestCtxTrait for HvTestCtx {
         }
         let is_vp_running = self.vp_runing.iter_mut().find(|x| x.0 == vp_index);
 
-        if let Some(running_vtl) = is_vp_running {
-            debuglog!("both vtl0 and vtl1 are running for VP: {:?}", vp_index);
+        if let Some(_running_vtl) = is_vp_running {
+            log::debug!("both vtl0 and vtl1 are running for VP: {:?}", vp_index);
         } else {
             if vp_index == 0 {
                 let vp_context = self
@@ -158,7 +145,6 @@ impl TestCtxTrait for HvTestCtx {
                 self.switch_to_high_vtl();
                 self.vp_runing.push((vp_index, (true, true)));
             } else {
-                let my_idx = self.my_vp_idx;
                 cmdt().lock().get_mut(&self.my_vp_idx).unwrap().push_back((
                     Box::new(move |ctx| {
                         ctx.enable_vp_vtl_with_default_context(vp_index, Vtl::Vtl1);
@@ -186,7 +172,7 @@ impl TestCtxTrait for HvTestCtx {
             .get_mut(&vp_index)
             .unwrap()
             .push_back((cmd, vtl));
-        if vp_index == self.my_vp_idx && self.hvcall.vtl != vtl {
+        if vp_index == self.my_vp_idx && self.my_vtl != vtl {
             if vtl == Vtl::Vtl0 {
                 self.switch_to_low_vtl();
             } else {
@@ -218,7 +204,7 @@ impl TestCtxTrait for HvTestCtx {
         self.hvcall
             .enable_partition_vtl(hvdef::HV_PARTITION_ID_SELF, vtl)
             .expect_assert("Failed to enable VTL1 for the partition");
-        infolog!("enabled vtl protections for the partition.");
+        log::info!("enabled vtl protections for the partition.");
     }
     fn setup_interrupt_handler(&mut self) {
         crate::arch::interrupt::init();
@@ -226,10 +212,10 @@ impl TestCtxTrait for HvTestCtx {
 
     fn setup_vtl_protection(&mut self) {
         self.hvcall
-            .enable_vtl_protection(0, HvInputVtl::CURRENT_VTL)
+            .enable_vtl_protection(HvInputVtl::CURRENT_VTL)
             .expect_assert("Failed to enable VTL protection, vtl1");
 
-        infolog!("enabled vtl protections for the partition.");
+        log::info!("enabled vtl protections for the partition.");
     }
 
     fn setup_secure_intercept(&mut self, interrupt_idx: u8) {
@@ -241,7 +227,7 @@ impl TestCtxTrait for HvTestCtx {
         let reg = (gpn << 12) | 0x1;
 
         unsafe { write_msr(hvdef::HV_X64_MSR_SIMP, reg.into()) };
-        infolog!("Successfuly set the SIMP register.");
+        log::info!("Successfuly set the SIMP register.");
 
         let reg = unsafe { read_msr(hvdef::HV_X64_MSR_SINT0) };
         let mut reg: hvdef::HvSynicSint = reg.into();
@@ -250,7 +236,7 @@ impl TestCtxTrait for HvTestCtx {
         reg.set_auto_eoi(true);
 
         self.write_msr(hvdef::HV_X64_MSR_SINT0, reg.into());
-        infolog!("Successfuly set the SINT0 register.");
+        log::info!("Successfuly set the SINT0 register.");
     }
 
     fn apply_vtl_protection_for_memory(&mut self, range: Range<u64>, vtl: Vtl) {
@@ -268,7 +254,7 @@ impl TestCtxTrait for HvTestCtx {
     }
 
     fn start_running_vp_with_default_context(&mut self, cmd: VpExecutor) {
-        let (vp_index, vtl, cmd) = cmd.get();
+        let (vp_index, vtl, _cmd) = cmd.get();
         let vp_ctx = self
             .get_default_context()
             .expect_assert("error: failed to get default context");
@@ -282,7 +268,6 @@ impl TestCtxTrait for HvTestCtx {
             Vtl::Vtl0 => 0,
             Vtl::Vtl1 => 1,
             Vtl::Vtl2 => 2,
-            _ => panic!("error: invalid vtl"),
         };
         let vp_context = self
             .get_default_context()
@@ -310,19 +295,19 @@ impl TestCtxTrait for HvTestCtx {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn set_interupt_idx(&mut self, interrupt_idx: u8, handler: fn()) {
+    fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn()) {
         crate::arch::interrupt::set_handler(interrupt_idx, handler);
     }
 
+    #[cfg(target_arch = "x86_64")]
     fn get_vp_count(&self) -> u32 {
-        let mut result: u32 = 0;
-
+        let mut result: u32;
         unsafe {
             // Call CPUID with EAX=1, but work around the rbx constraint
             asm!(
                 "push rbx",                      // Save rbx
                 "cpuid",                         // Execute CPUID
-                "mov {result}, rbx",                // Store ebx to our result variable
+                "mov {result:r}, rbx",                // Store ebx to our result variable
                 "pop rbx",                       // Restore rbx
                 in("eax") 1u32,                 // Input: CPUID leaf 1
                 out("ecx") _,                   // Output registers (not used)
@@ -363,7 +348,7 @@ impl TestCtxTrait for HvTestCtx {
     }
 
     fn get_current_vtl(&self) -> Vtl {
-        self.hvcall.vtl
+        self.my_vtl
     }
 }
 
@@ -373,7 +358,7 @@ impl HvTestCtx {
             hvcall: HvCall::new(),
             vp_runing: Vec::new(),
             my_vp_idx: 0,
-            senders: Vec::new(),
+            my_vtl: Vtl::Vtl0,
         }
     }
 
@@ -383,6 +368,7 @@ impl HvTestCtx {
         for i in 0..vp_count {
             register_command_queue(i);
         }
+        self.my_vtl = self.hvcall.vtl();
     }
 
     fn exec_handler() {
@@ -400,14 +386,14 @@ impl HvTestCtx {
             let mut cmd: Option<Box<dyn FnOnce(&mut dyn TestCtxTrait) + 'static>> = None;
 
             {
-                let mut d = unsafe { CMD.lock() };
-                let mut d = d.get_mut(&ctx.my_vp_idx);
+                let mut cmdt = cmdt().lock();
+                let d = cmdt.get_mut(&ctx.my_vp_idx);
                 if d.is_some() {
-                    let mut d = d.unwrap();
+                    let d = d.unwrap();
                     if !d.is_empty() {
-                        let (c, v) = d.front().unwrap();
-                        if *v == ctx.hvcall.vtl {
-                            let (c, v) = d.pop_front().unwrap();
+                        let (_c, v) = d.front().unwrap();
+                        if *v == ctx.my_vtl {
+                            let (c, _v) = d.pop_front().unwrap();
                             cmd = Some(c);
                         } else {
                             vtl = Some(*v);
@@ -417,7 +403,7 @@ impl HvTestCtx {
             }
 
             if let Some(vtl) = vtl {
-                if (vtl == Vtl::Vtl0) {
+                if vtl == Vtl::Vtl0 {
                     ctx.switch_to_low_vtl();
                 } else {
                     ctx.switch_to_high_vtl();
@@ -455,11 +441,6 @@ impl HvTestCtx {
         let fn_address = fn_ptr as u64;
         vp_context.rip = fn_address;
         vp_context.rsp = stack_top;
-        // print stack range
-        let stack_range = Range {
-            start: x as u64,
-            end: x as u64 + sz as u64,
-        };
         Ok(vp_context)
     }
 }
