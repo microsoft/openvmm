@@ -3357,7 +3357,7 @@ impl FallbackMmioDevice {
 
 impl chipset_device::mmio::MmioIntercept for FallbackMmioDevice {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> chipset_device::io::IoResult {
-            data.fill(!0);
+        data.fill(!0);
         if self.is_allowed(addr, data.len()) {
             if let Err(err) = self.mshv_hvcall.mmio_read(addr, data) {
                 tracelimit::error_ratelimited!(
