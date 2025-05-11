@@ -293,13 +293,7 @@ impl VarDb {
                         let mut gh_env_file = fs_err::OpenOptions::new()
                             .append(true)
                             .open(gh_env_file_path)?;
-                        let gh_env_var_assignment = format!(
-                            r#"{}<<EOF
-                            {}
-                            EOF
-                            "#,
-                            env, data_string
-                        );
+                        let gh_env_var_assignment = format!("{}<<EOF\n{}\nEOF\n", env, data_string);
                         gh_env_file.write_all(gh_env_var_assignment.as_bytes())?;
                     }
                 }
