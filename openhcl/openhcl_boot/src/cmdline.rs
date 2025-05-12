@@ -25,52 +25,85 @@ const SERIAL_LOGGER: &str = "com3";
 /// supported in openhcl_boot.
 const ENABLE_VTL2_GPA_POOL: &str = "OPENHCL_ENABLE_VTL2_GPA_POOL=";
 
+/// Options controlling sidecar.
+///
+/// * `off`: Disable sidecar support.
+/// * `on`: Enable sidecar support. Sidecar will still only be started if
+///   sidecar is present in the binary and supported on the platform. This
+///   is the default.
+/// * `log`: Enable sidecar logging.
+const SIDECAR: &str = "OPENHCL_SIDECAR=";
+
 #[derive(Debug, PartialEq)]
 pub struct BootCommandLineOptions {
     pub logger: Option<LoggerType>,
     pub confidential_debug: bool,
     pub enable_vtl2_gpa_pool: Option<u64>,
+    pub sidecar: bool,
+    pub sidecar_logging: bool,
 }
 
-/// Parse arguments from a command line.
-pub fn parse_boot_command_line(cmdline: &str) -> BootCommandLineOptions {
-    let mut result = BootCommandLineOptions {
-        logger: None,
-        confidential_debug: false,
-        enable_vtl2_gpa_pool: None,
-    };
-
-    for arg in cmdline.split_whitespace() {
-        if arg.starts_with(BOOT_LOG) {
-            let arg = arg.split_once('=').map(|(_, arg)| arg);
-            if let Some(SERIAL_LOGGER) = arg {
-                result.logger = Some(LoggerType::Serial)
-            }
-        } else if arg.starts_with(OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME) {
-            let arg = arg.split_once('=').map(|(_, arg)| arg);
-            if arg.is_some_and(|a| a != "0") {
-                result.confidential_debug = true;
-                // Explicit logger specification overrides this default.
-                if result.logger.is_none() {
-                    result.logger = Some(LoggerType::Serial);
-                }
-            }
-        } else if arg.starts_with(ENABLE_VTL2_GPA_POOL) {
-            result.enable_vtl2_gpa_pool = arg.split_once('=').and_then(|(_, arg)| {
-                let num = arg.parse::<u64>().unwrap_or(0);
-                // A size of 0 or failure to parse is treated as disabling
-                // the pool.
-                if num == 0 { None } else { Some(num) }
-            });
+impl BootCommandLineOptions {
+    pub const fn new() -> Self {
+        BootCommandLineOptions {
+            logger: None,
+            confidential_debug: false,
+            enable_vtl2_gpa_pool: None,
+            sidecar: true, // sidecar is enabled by default
+            sidecar_logging: false,
         }
     }
+}
 
-    result
+impl BootCommandLineOptions {
+    /// Parse arguments from a command line.
+    pub fn parse(&mut self, cmdline: &str) {
+        for arg in cmdline.split_whitespace() {
+            if arg.starts_with(BOOT_LOG) {
+                if let Some(SERIAL_LOGGER) = arg.split_once('=').map(|(_, arg)| arg) {
+                    self.logger = Some(LoggerType::Serial)
+                }
+            } else if arg.starts_with(OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME) {
+                let arg = arg.split_once('=').map(|(_, arg)| arg);
+                if arg.is_some_and(|a| a != "0") {
+                    self.confidential_debug = true;
+                    // Explicit logger specification overrides this default.
+                    if self.logger.is_none() {
+                        self.logger = Some(LoggerType::Serial);
+                    }
+                }
+            } else if arg.starts_with(ENABLE_VTL2_GPA_POOL) {
+                self.enable_vtl2_gpa_pool = arg.split_once('=').and_then(|(_, arg)| {
+                    let num = arg.parse::<u64>().unwrap_or(0);
+                    // A size of 0 or failure to parse is treated as disabling
+                    // the pool.
+                    if num == 0 { None } else { Some(num) }
+                });
+            } else if arg.starts_with(SIDECAR) {
+                if let Some((_, arg)) = arg.split_once('=') {
+                    for arg in arg.split(',') {
+                        match arg {
+                            "off" => self.sidecar = false,
+                            "on" => self.sidecar = true,
+                            "log" => self.sidecar_logging = true,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_boot_command_line(cmdline: &str) -> BootCommandLineOptions {
+        let mut options = BootCommandLineOptions::new();
+        options.parse(cmdline);
+        options
+    }
 
     #[test]
     fn test_console_parsing() {
@@ -78,8 +111,7 @@ mod tests {
             parse_boot_command_line("OPENHCL_BOOT_LOG=com3"),
             BootCommandLineOptions {
                 logger: Some(LoggerType::Serial),
-                confidential_debug: false,
-                enable_vtl2_gpa_pool: None
+                ..BootCommandLineOptions::new()
             }
         );
 
@@ -87,8 +119,7 @@ mod tests {
             parse_boot_command_line("OPENHCL_BOOT_LOG=1"),
             BootCommandLineOptions {
                 logger: None,
-                confidential_debug: false,
-                enable_vtl2_gpa_pool: None
+                ..BootCommandLineOptions::new()
             }
         );
 
@@ -96,8 +127,7 @@ mod tests {
             parse_boot_command_line("OPENHCL_BOOT_LOG=random"),
             BootCommandLineOptions {
                 logger: None,
-                confidential_debug: false,
-                enable_vtl2_gpa_pool: None
+                ..BootCommandLineOptions::new()
             }
         );
 
@@ -105,8 +135,7 @@ mod tests {
             parse_boot_command_line("OPENHCL_BOOT_LOG==com3"),
             BootCommandLineOptions {
                 logger: None,
-                confidential_debug: false,
-                enable_vtl2_gpa_pool: None
+                ..BootCommandLineOptions::new()
             }
         );
 
@@ -114,8 +143,7 @@ mod tests {
             parse_boot_command_line("OPENHCL_BOOT_LOGserial"),
             BootCommandLineOptions {
                 logger: None,
-                confidential_debug: false,
-                enable_vtl2_gpa_pool: None
+                ..BootCommandLineOptions::new()
             }
         );
 
@@ -125,7 +153,7 @@ mod tests {
             BootCommandLineOptions {
                 logger: Some(LoggerType::Serial),
                 confidential_debug: true,
-                enable_vtl2_gpa_pool: None
+                ..BootCommandLineOptions::new()
             }
         );
     }
@@ -135,33 +163,70 @@ mod tests {
         assert_eq!(
             parse_boot_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=1"),
             BootCommandLineOptions {
-                logger: None,
-                confidential_debug: false,
                 enable_vtl2_gpa_pool: Some(1),
+                ..BootCommandLineOptions::new()
             }
         );
         assert_eq!(
             parse_boot_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=0"),
             BootCommandLineOptions {
-                logger: None,
-                confidential_debug: false,
                 enable_vtl2_gpa_pool: None,
+                ..BootCommandLineOptions::new()
             }
         );
         assert_eq!(
             parse_boot_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=asdf"),
             BootCommandLineOptions {
-                logger: None,
-                confidential_debug: false,
                 enable_vtl2_gpa_pool: None,
+                ..BootCommandLineOptions::new()
             }
         );
         assert_eq!(
             parse_boot_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=512"),
             BootCommandLineOptions {
-                logger: None,
-                confidential_debug: false,
                 enable_vtl2_gpa_pool: Some(512),
+                ..BootCommandLineOptions::new()
+            }
+        );
+    }
+
+    #[test]
+    fn test_sidecar_parsing() {
+        assert_eq!(
+            parse_boot_command_line("OPENHCL_SIDECAR=on"),
+            BootCommandLineOptions {
+                sidecar: true,
+                ..BootCommandLineOptions::new()
+            }
+        );
+        assert_eq!(
+            parse_boot_command_line("OPENHCL_SIDECAR=off"),
+            BootCommandLineOptions {
+                sidecar: false,
+                ..BootCommandLineOptions::new()
+            }
+        );
+        assert_eq!(
+            parse_boot_command_line("OPENHCL_SIDECAR=on,off"),
+            BootCommandLineOptions {
+                sidecar: false,
+                ..BootCommandLineOptions::new()
+            }
+        );
+        assert_eq!(
+            parse_boot_command_line("OPENHCL_SIDECAR=on,log"),
+            BootCommandLineOptions {
+                sidecar: true,
+                sidecar_logging: true,
+                ..BootCommandLineOptions::new()
+            }
+        );
+        assert_eq!(
+            parse_boot_command_line("OPENHCL_SIDECAR=log"),
+            BootCommandLineOptions {
+                sidecar: true,
+                sidecar_logging: true,
+                ..BootCommandLineOptions::new()
             }
         );
     }

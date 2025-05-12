@@ -7,6 +7,7 @@ use super::PartitionInfo;
 use super::shim_params::IsolationType;
 use super::shim_params::ShimParams;
 use crate::boot_logger::log;
+use crate::cmdline::BootCommandLineOptions;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_ENTROPY_SIZE;
@@ -323,6 +324,7 @@ impl PartitionInfo {
     pub fn read_from_dt<'a>(
         params: &'a ShimParams,
         storage: &'a mut Self,
+        mut options: BootCommandLineOptions,
         can_trust_host: bool,
     ) -> Result<Option<&'a mut Self>, DtError> {
         let dt = params.device_tree();
@@ -350,6 +352,8 @@ impl PartitionInfo {
 
         // Depending on policy, write what the host specified in the chosen node.
         if can_trust_host && command_line.policy == CommandLinePolicy::APPEND_CHOSEN {
+            // Parse in extra options from the host provided command line.
+            options.parse(&parsed.command_line);
             write!(storage.cmdline, " {}", &parsed.command_line)
                 .map_err(|_| DtError::CommandLineSize)?;
         }
@@ -459,10 +463,7 @@ impl PartitionInfo {
         // from the final command line, or the host provided device tree value.
         let vtl2_gpa_pool_size = {
             let dt_page_count = parsed.device_dma_page_count;
-            let cmdline_page_count =
-                crate::cmdline::parse_boot_command_line(storage.cmdline.as_str())
-                    .enable_vtl2_gpa_pool;
-
+            let cmdline_page_count = options.enable_vtl2_gpa_pool;
             max(dt_page_count.unwrap_or(0), cmdline_page_count.unwrap_or(0))
         };
         if vtl2_gpa_pool_size != 0 {
@@ -528,6 +529,7 @@ impl PartitionInfo {
             entropy,
             vtl0_alias_map: _,
             nvme_keepalive,
+            boot_options,
         } = storage;
 
         assert!(!vtl2_used_ranges.is_empty());
@@ -550,6 +552,7 @@ impl PartitionInfo {
         *gic = parsed.gic.clone();
         *entropy = parsed.entropy.clone();
         *nvme_keepalive = parsed.nvme_keepalive;
+        *boot_options = options;
 
         Ok(Some(storage))
     }
