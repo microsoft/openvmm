@@ -241,7 +241,7 @@ echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
         let bootstrap_bash_var_db_inject = |var, is_raw_string| {
             var_db
                 .update_from_stdin(var, false)
-                .is_raw_string(is_raw_string)
+                .raw_string(is_raw_string)
                 .to_string()
         };
 
@@ -843,7 +843,7 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
                     // flowey considers all ADO vars to be typed as raw strings
                     let read_rust_var = var_db
                         .write_to_ado_env(&rust_var, &ado_var)
-                        .is_raw_string(true)
+                        .raw_string(true)
                         .condvar(condvar.as_deref());
 
                     bash_commands.push_minor(format!("{read_rust_var}\n"));
@@ -918,7 +918,7 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
                     // flowey considers all ADO vars to be typed as raw strings
                     let write_rust_var = var_db
                         .update_from_stdin(&rust_var, is_secret)
-                        .is_raw_string(true)
+                        .raw_string(true)
                         .condvar(condvar.as_deref())
                         .env_source(Some(&ado_var));
 

@@ -217,7 +217,7 @@ pub fn github_yaml(
         let bootstrap_bash_var_db_inject = |var, is_raw_string| {
             var_db
                 .update_from_stdin(var, false)
-                .is_raw_string(is_raw_string)
+                .raw_string(is_raw_string)
                 .to_string()
         };
 
@@ -789,7 +789,7 @@ fn resolve_flow_as_github_yaml_steps(
                 for gh_var_state in rust_to_gh {
                     let set_gh_env_var = var_db
                         .write_to_gh_env(&gh_var_state.backing_var, &gh_var_state.raw_name)
-                        .is_raw_string(!gh_var_state.is_object)
+                        .raw_string(!gh_var_state.is_object)
                         .condvar(condvar.as_deref());
 
                     bash_commands.push_minor(format!("{set_gh_env_var}\n"));
@@ -832,7 +832,7 @@ fn resolve_flow_as_github_yaml_steps(
 
                     let write_var = var_db
                         .update_from_stdin(&gh_var_state.backing_var, gh_var_state.is_secret)
-                        .is_raw_string(!gh_var_state.is_object)
+                        .raw_string(!gh_var_state.is_object)
                         .condvar(condvar.as_deref())
                         .env_source(Some(&gh_var_state.raw_name));
 

@@ -115,7 +115,7 @@ impl<'a> VarDbRequest<'a> {
         }
     }
 
-    pub fn is_raw_string(self, is_raw_string: bool) -> Self {
+    pub fn raw_string(self, is_raw_string: bool) -> Self {
         Self {
             is_raw_string,
             ..self
