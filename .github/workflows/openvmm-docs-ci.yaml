@@ -172,6 +172,7 @@ jobs:
       with:
         name: guide
         path: ${{ runner.temp }}/publish_artifacts/guide/
+        include-hidden-files: true
   job1:
     name: build and check docs [x64-windows]
     runs-on: windows-latest
@@ -336,6 +337,7 @@ jobs:
       with:
         name: x64-windows-rustdoc
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-rustdoc/
+        include-hidden-files: true
   job2:
     name: build and check docs [x64-linux]
     runs-on: ubuntu-latest
@@ -506,6 +508,7 @@ jobs:
       with:
         name: x64-linux-rustdoc
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-rustdoc/
+        include-hidden-files: true
     - name: 🌼🧼 Redact bootstrap var db
       run: rm $AgentTempDirNormal/bootstrapped-flowey/job2.json
       shell: bash

@@ -3019,31 +3019,37 @@ jobs:
       with:
         name: aarch64-windows-hypestv
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-hypestv/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-igvmfilegen
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-windows-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-igvmfilegen/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-ohcldiag-dev
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-windows-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-ohcldiag-dev/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-tmk_vmm
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-windows-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-tmk_vmm/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-vmgs_lib
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-windows-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmgs_lib/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-vmgstool
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-windows-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmgstool/
+        include-hidden-files: true
   job3:
     name: build artifacts (for VMM tests) [aarch64-windows]
     runs-on: windows-latest
@@ -3262,16 +3268,19 @@ jobs:
       with:
         name: aarch64-windows-openvmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-openvmm/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-pipette
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-windows-pipette
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-pipette/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-windows-vmm-tests-archive
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-windows-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/aarch64-windows-vmm-tests-archive/
+        include-hidden-files: true
   job4:
     name: build artifacts (not for VMM tests) [x64-windows]
     runs-on:
@@ -3490,31 +3499,37 @@ jobs:
       with:
         name: x64-windows-hypestv
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-hypestv/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-igvmfilegen
       uses: actions/upload-artifact@v4
       with:
         name: x64-windows-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-igvmfilegen/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-ohcldiag-dev
       uses: actions/upload-artifact@v4
       with:
         name: x64-windows-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-ohcldiag-dev/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-tmk_vmm
       uses: actions/upload-artifact@v4
       with:
         name: x64-windows-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-tmk_vmm/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-vmgs_lib
       uses: actions/upload-artifact@v4
       with:
         name: x64-windows-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-vmgs_lib/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-vmgstool
       uses: actions/upload-artifact@v4
       with:
         name: x64-windows-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-vmgstool/
+        include-hidden-files: true
   job5:
     name: build artifacts (for VMM tests) [x64-windows]
     runs-on: windows-latest
@@ -3731,16 +3746,19 @@ jobs:
       with:
         name: x64-windows-openvmm
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-openvmm/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-pipette
       uses: actions/upload-artifact@v4
       with:
         name: x64-windows-pipette
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-pipette/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-windows-vmm-tests-archive
       uses: actions/upload-artifact@v4
       with:
         name: x64-windows-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/x64-windows-vmm-tests-archive/
+        include-hidden-files: true
     - name: 🌼🧼 Redact bootstrap var db
       run: rm $AgentTempDirNormal/bootstrapped-flowey/job5.json
       shell: bash
@@ -4015,36 +4033,43 @@ jobs:
       with:
         name: aarch64-guest_test_uefi
         path: ${{ runner.temp }}/publish_artifacts/aarch64-guest_test_uefi/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-igvmfilegen
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-linux-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-igvmfilegen/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-ohcldiag-dev
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-linux-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-ohcldiag-dev/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-openvmm
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-linux-openvmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-openvmm/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-vmgs_lib
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-linux-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-vmgs_lib/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-vmgstool
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-linux-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-vmgstool/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-tmks
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-tmks
         path: ${{ runner.temp }}/publish_artifacts/aarch64-tmks/
+        include-hidden-files: true
   job7:
     name: build artifacts [x64-linux]
     runs-on:
@@ -4355,41 +4380,49 @@ jobs:
       with:
         name: x64-guest_test_uefi
         path: ${{ runner.temp }}/publish_artifacts/x64-guest_test_uefi/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-igvmfilegen
       uses: actions/upload-artifact@v4
       with:
         name: x64-linux-igvmfilegen
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-igvmfilegen/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-ohcldiag-dev
       uses: actions/upload-artifact@v4
       with:
         name: x64-linux-ohcldiag-dev
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-ohcldiag-dev/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-openvmm
       uses: actions/upload-artifact@v4
       with:
         name: x64-linux-openvmm
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-openvmm/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-vmgs_lib
       uses: actions/upload-artifact@v4
       with:
         name: x64-linux-vmgs_lib
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmgs_lib/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-vmgstool
       uses: actions/upload-artifact@v4
       with:
         name: x64-linux-vmgstool
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmgstool/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-vmm-tests-archive
       uses: actions/upload-artifact@v4
       with:
         name: x64-linux-vmm-tests-archive
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-vmm-tests-archive/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-tmks
       uses: actions/upload-artifact@v4
       with:
         name: x64-tmks
         path: ${{ runner.temp }}/publish_artifacts/x64-tmks/
+        include-hidden-files: true
   job8:
     name: build openhcl [aarch64-linux]
     runs-on:
@@ -4716,26 +4749,31 @@ jobs:
       with:
         name: aarch64-linux-musl-pipette
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-pipette/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-musl-tmk_vmm
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-linux-musl-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-linux-musl-tmk_vmm/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-openhcl-baseline
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-openhcl-baseline
         path: ${{ runner.temp }}/publish_artifacts/aarch64-openhcl-baseline/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-openhcl-igvm
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-openhcl-igvm
         path: ${{ runner.temp }}/publish_artifacts/aarch64-openhcl-igvm/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-openhcl-igvm-extras
       uses: actions/upload-artifact@v4
       with:
         name: aarch64-openhcl-igvm-extras
         path: ${{ runner.temp }}/publish_artifacts/aarch64-openhcl-igvm-extras/
+        include-hidden-files: true
   job9:
     name: build openhcl [x64-linux]
     runs-on:
@@ -5156,26 +5194,31 @@ jobs:
       with:
         name: x64-linux-musl-pipette
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-musl-pipette/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-musl-tmk_vmm
       uses: actions/upload-artifact@v4
       with:
         name: x64-linux-musl-tmk_vmm
         path: ${{ runner.temp }}/publish_artifacts/x64-linux-musl-tmk_vmm/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-openhcl-baseline
       uses: actions/upload-artifact@v4
       with:
         name: x64-openhcl-baseline
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-baseline/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-openhcl-igvm
       uses: actions/upload-artifact@v4
       with:
         name: x64-openhcl-igvm
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-openhcl-igvm-extras
       uses: actions/upload-artifact@v4
       with:
         name: x64-openhcl-igvm-extras
         path: ${{ runner.temp }}/publish_artifacts/x64-openhcl-igvm-extras/
+        include-hidden-files: true
     - name: 🌼🧼 Redact bootstrap var db
       run: rm $AgentTempDirNormal/bootstrapped-flowey/job9.json
       shell: bash
