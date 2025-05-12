@@ -799,7 +799,7 @@ fn resolve_flow_as_github_yaml_steps(
                     if let Some(condvar) = &condvar {
                         // guaranteed to be a bare bool `true`/`false`, hence
                         // is_raw_string = false
-                        let set_condvar = var_db.write_to_gh_env(&condvar, "FLOWEY_CONDITION");
+                        let set_condvar = var_db.write_to_gh_env(condvar, "FLOWEY_CONDITION");
                         bash_commands.push_minor(format!("{set_condvar}\n"));
                     }
 

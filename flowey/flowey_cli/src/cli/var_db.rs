@@ -280,7 +280,7 @@ impl VarDb {
                     EnvBackend::Ado => {
                         println!("##vso[task.setvariable variable={env};issecret={is_secret}]");
                         std::io::stdout().write_all(&data).unwrap();
-                        println!("");
+                        println!();
                     }
                     EnvBackend::Github => {
                         let data_string = String::from_utf8(data)?;
