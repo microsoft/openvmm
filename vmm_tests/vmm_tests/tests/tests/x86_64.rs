@@ -11,7 +11,6 @@ use anyhow::Context;
 use petri::ApicMode;
 use petri::PetriVmConfig;
 use petri::ProcessorTopology;
-use petri::ResolvedArtifact;
 use petri::ShutdownKind;
 use petri::openvmm::PetriVmConfigOpenVmm;
 use petri::pipette::cmd;
