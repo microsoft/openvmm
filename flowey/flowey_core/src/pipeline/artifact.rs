@@ -312,3 +312,93 @@ pub mod resolve {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::fs_to_json;
+    use crate::pipeline::artifact::json_to_fs;
+    use serde_json::Value;
+    use std::path::Path;
+
+    fn make_abs(root: &Path, value: Value) -> Value {
+        match value {
+            Value::String(v) => Value::String(
+                std::path::absolute(root.join(v))
+                    .unwrap()
+                    .into_os_string()
+                    .into_string()
+                    .ok()
+                    .unwrap(),
+            ),
+            Value::Array(values) => {
+                Value::Array(values.into_iter().map(|v| make_abs(root, v)).collect())
+            }
+            Value::Object(map) => Value::Object(
+                map.into_iter()
+                    .map(|(k, v)| (k, make_abs(root, v)))
+                    .collect(),
+            ),
+            v => v,
+        }
+    }
+
+    #[test]
+    fn test_fs_to_json() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fs_err::write(dir.path().join("foo"), "").unwrap();
+        fs_err::create_dir(dir.path().join("bar")).unwrap();
+        fs_err::write(dir.path().join("bar/baz"), "").unwrap();
+        fs_err::create_dir(dir.path().join("bar/quux")).unwrap();
+        fs_err::write(dir.path().join("bar/.artifact-dir.quux"), "").unwrap();
+        fs_err::write(dir.path().join("bar/quux/0"), "").unwrap();
+        fs_err::write(dir.path().join("bar/quux/1"), "").unwrap();
+        let json = fs_to_json(dir.path()).unwrap();
+        let expected = make_abs(
+            dir.path(),
+            serde_json::json!({
+                "foo": "foo",
+                "bar": {
+                    "baz": "bar/baz",
+                    "quux": "bar/quux",
+                }
+            }),
+        );
+        assert_eq!(json, expected);
+    }
+
+    #[test]
+    fn test_json_to_fs() {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let f_path = f.path().to_str().unwrap();
+
+        let d = tempfile::TempDir::new().unwrap();
+        fs_err::write(d.path().join("foo"), "").unwrap();
+        fs_err::create_dir(d.path().join("bar")).unwrap();
+        fs_err::write(d.path().join("bar/baz"), "").unwrap();
+        let d_path = d.path().to_str().unwrap();
+
+        let json = serde_json::json!({
+            "foo": f_path,
+            "bar": {
+                "baz": f_path,
+                "quux": d_path,
+            }
+        });
+        let dir = tempfile::TempDir::new().unwrap();
+        json_to_fs(json, dir.path()).unwrap();
+        let assert_exists = |p: &str| {
+            let is_dir = p.ends_with('/');
+            let m = fs_err::metadata(dir.path().join(p)).unwrap();
+            if is_dir {
+                assert!(m.is_dir(), "file {p} is not a directory");
+            } else {
+                assert!(m.is_file(), "file {p} is not a file");
+            }
+        };
+        assert_exists("foo");
+        assert_exists("bar/");
+        assert_exists("bar/baz");
+        assert_exists("bar/quux/");
+        assert_exists("bar/.artifact-dir.quux");
+    }
+}

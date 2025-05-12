@@ -444,6 +444,7 @@ EOF
                         with:
                             name: {name}
                             path: {RUNNER_TEMP}/publish_artifacts/{name}/
+                            include-hidden-files: true
                     "#
                 ))
                 .unwrap();
