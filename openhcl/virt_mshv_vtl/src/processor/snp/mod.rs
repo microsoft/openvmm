@@ -1370,6 +1370,11 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::NPF if has_intercept => {
+                // TODO SNP: This code needs to be fixed to not rely on the
+                // hypervisor message to check the validity of the NPF, rather
+                // we should look at the SNP hardware exit info only like we do
+                // with TDX.
+                //
                 // Determine whether an NPF needs to be handled. If not, assume this fault is spurious
                 // and that the instruction can be retried. The intercept itself may be presented by the
                 // hypervisor as either a GPA intercept or an exception intercept.

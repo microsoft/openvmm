@@ -2014,34 +2014,8 @@ impl UhProcessor<'_, TdxBacked> {
                         )
                         .into();
                     assert!(!old_interruptibility.blocked_by_nmi());
-                }
-                // TODO TDX: If this is an access to a shared gpa, we need to
-                // check the intercept page to see if this is a real exit or
-                // spurious. This exit is only real if the hypervisor has
-                // delivered an intercept message for this GPA.
-                //
-                // However, at this point the kernel has cleared that
-                // information so some kind of redesign is required to figure
-                // this out.
-                //
-                // For now, we instead treat EPTs on readable RAM as spurious
-                // and log appropriately. This check is also not entirely
-                // sufficient, as it may be a write access where the page is
-                // protected, but we don't yet support MNF/guest VSM so this is
-                // okay enough.
-                else if self.partition.gm[intercepted_vtl].check_gpa_readable(gpa) {
-                    tracelimit::warn_ratelimited!(gpa, "possible spurious EPT violation, ignoring");
                 } else {
-                    // Emulate the access.
-                    self.emulate(
-                        dev,
-                        self.backing.vtls[intercepted_vtl]
-                            .interruption_information
-                            .valid(),
-                        intercepted_vtl,
-                        TdxEmulationCache::default(),
-                    )
-                    .await?;
+                    self.handle_ept(intercepted_vtl, gpa, ept_info);
                 }
 
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.ept_violation
@@ -2384,6 +2358,61 @@ impl UhProcessor<'_, TdxBacked> {
             .with_interruption_type(INTERRUPT_TYPE_HARDWARE_EXCEPTION)
             .with_deliver_error_code(true);
         self.backing.vtls[vtl].exception_error_code = 0;
+    }
+
+    fn inject_mc(&mut self, vtl: GuestVtl) {
+        self.backing.vtls[vtl].interruption_information = InterruptionInformation::new()
+            .with_valid(true)
+            .with_vector(x86defs::Exception::MACHINE_CHECK.0)
+            .with_interruption_type(INTERRUPT_TYPE_HARDWARE_EXCEPTION);
+    }
+
+    fn handle_ept(
+        &mut self,
+        intercepted_vtl: GuestVtl,
+        gpa: u64,
+        ept_info: VmxEptExitQualification,
+    ) {
+        // Only emulate the access if the gpa is expected to be
+        // accessible. This means, the gpa was described to VTL0 in
+        // some form as memory or mmio, and the hardware did not
+        // generate an exit for a shared violation.
+        self.partition.lower_vtl_memory_layout
+
+        // An exit to a readable gpa is treated as spurious. This can
+        // happen due to hypervisor handling on the host, which means we
+        // need to just resume the guest.
+        //
+        // TODO TDX: If this is an access to a shared gpa, we need to
+        // check the intercept page to see if this is a real exit or
+        // spurious. This exit is only real if the hypervisor has
+        // delivered an intercept message for this GPA.
+        //
+        // However, at this point the kernel has cleared that
+        // information so some kind of redesign is required to figure
+        // this out.
+        //
+        // For now, we instead treat EPTs on readable RAM as spurious
+        // and log appropriately. This check is also not entirely
+        // sufficient, as it may be a write access where the page is
+        // protected, but we don't yet support MNF/guest VSM so this is
+        // okay enough.
+        if self.partition.gm[intercepted_vtl].check_gpa_readable(gpa) {
+            tracelimit::warn_ratelimited!(gpa, "possible spurious EPT violation, ignoring");
+        } else {
+
+
+            // Emulate the access.
+            self.emulate(
+                dev,
+                self.backing.vtls[intercepted_vtl]
+                    .interruption_information
+                    .valid(),
+                intercepted_vtl,
+                TdxEmulationCache::default(),
+            )
+            .await?;
+        }
     }
 
     fn handle_tdvmcall(&mut self, dev: &impl CpuIo, intercepted_vtl: GuestVtl) {
