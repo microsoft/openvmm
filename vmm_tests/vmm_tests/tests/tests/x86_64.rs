@@ -322,10 +322,7 @@ fn configure_for_sidecar(
 // into VTL2 Linux.
 //
 // Sidecar isn't supported on aarch64 yet.
-#[vmm_test(
-    openvmm_openhcl_uefi_x64(none),
-    // TODO: debug why boot is failing hyperv_openhcl_uefi_x64(none),
-)]
+#[vmm_test(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none))]
 async fn sidecar_aps_unused(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow::Error> {
     let proc_count = 4;
     let mut vm = configure_for_sidecar(config, proc_count)
@@ -358,7 +355,7 @@ async fn sidecar_aps_unused(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow
 
 #[vmm_test(
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
-    // TODO: debug why boot is failing hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
 async fn sidecar_boot(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow::Error> {
     let (vm, agent) = configure_for_sidecar(config, 4).run().await?;
