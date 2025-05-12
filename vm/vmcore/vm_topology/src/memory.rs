@@ -297,7 +297,7 @@ impl MemoryLayout {
     /// layout.
     ///
     /// This does not check the vtl2_range.
-    fn probe_address(&self, address: u64) -> Option<AddressType> {
+    pub fn probe_address(&self, address: u64) -> Option<AddressType> {
         let ranges = self
             .ram
             .iter()
