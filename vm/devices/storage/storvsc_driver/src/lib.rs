@@ -3,8 +3,7 @@
 
 //! Storvsc driver for use as a disk backend.
 
-#[cfg(test)]
-mod test_helpers;
+pub mod test_helpers;
 
 use async_channel::Receiver;
 use async_channel::RecvError;
@@ -19,6 +18,7 @@ use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use task_control::AsyncRun;
+use task_control::InspectTask;
 use task_control::StopTask;
 use task_control::TaskControl;
 use thiserror::Error;
@@ -263,6 +263,15 @@ impl<T: 'static + Send + Sync + RingMem> AsyncRun<Storvsc<T>> for StorvscState {
             Err(err) => tracing::error!(error = err.as_error(), "storvsc run error"),
         }
         Ok(())
+    }
+}
+
+impl<T: 'static + Send + Sync + RingMem> InspectTask<Storvsc<T>> for StorvscState {
+    fn inspect(&self, req: inspect::Request<'_>, worker: Option<&Storvsc<T>>) {
+        if let Some(worker) = worker {
+            let mut resp = req.respond();
+            resp.field("has_negotiated", worker.has_negotiated);
+        }
     }
 }
 
@@ -533,7 +542,6 @@ impl StorvscInner {
         self.send_vmbus_packet(
             &mut writer.batched(),
             OutgoingPacketType::InBandWithCompletion,
-            payload_bytes.len(),
             transaction_id,
             operation,
             status,
@@ -562,7 +570,6 @@ impl StorvscInner {
         self.send_vmbus_packet(
             &mut writer.batched(),
             OutgoingPacketType::GpaDirect(&[pages]),
-            payload_bytes.len(),
             transaction_id,
             operation,
             status,
@@ -576,7 +583,6 @@ impl StorvscInner {
         &mut self,
         writer: &mut queue::WriteBatch<'_, M>,
         packet_type: OutgoingPacketType<'_>,
-        request_size: usize,
         transaction_id: u64,
         operation: storvsp_protocol::Operation,
         status: storvsp_protocol::NtStatus,
@@ -588,22 +594,25 @@ impl StorvscInner {
             status,
         };
 
-        let packet_size = size_of_val(&header) + request_size;
-
-        // Zero pad or truncate the payload to the queue's packet size. This is
-        // necessary because Windows guests check that each packet's size is
-        // exactly the largest possible packet size for the negotiated protocol
-        // version.
+        // storvsp limits the size of the completion packet to the size of the request packet,
+        // so we need to pad the payload to the maximum size to ensure we get a complete response.
+        // The maximum size includes header + payload.
         let len = size_of_val(&header) + size_of_val(payload);
         let padding = [0; storvsp_protocol::SCSI_REQUEST_LEN_MAX];
-        let (payload_bytes, padding_bytes) = if len > packet_size {
-            (&payload[..packet_size - size_of_val(&header)], &[][..])
+        let (payload_bytes, padding_bytes) = if len > storvsp_protocol::SCSI_REQUEST_LEN_MAX {
+            (
+                &payload[..storvsp_protocol::SCSI_REQUEST_LEN_MAX - size_of_val(&header)],
+                &[][..],
+            )
         } else {
-            (payload, &padding[..packet_size - len])
+            (
+                payload,
+                &padding[..storvsp_protocol::SCSI_REQUEST_LEN_MAX - len],
+            )
         };
         assert_eq!(
             size_of_val(&header) + payload_bytes.len() + padding_bytes.len(),
-            packet_size
+            storvsp_protocol::SCSI_REQUEST_LEN_MAX
         );
         writer
             .try_write(&OutgoingPacket {
@@ -796,6 +805,9 @@ mod tests {
         let mut timer = PolledTimer::new(&driver);
         timer.sleep(time::Duration::from_secs(1)).await;
 
+        storvsc.stop().await;
+        assert!(storvsc.get_mut().has_negotiated);
+
         storvsc.teardown().await;
         storvsp.teardown().await;
     }
@@ -817,6 +829,10 @@ mod tests {
 
         let mut timer = PolledTimer::new(&driver);
         timer.sleep(time::Duration::from_secs(1)).await;
+
+        storvsc.stop().await;
+        assert!(storvsc.get_mut().has_negotiated);
+        storvsc.resume().await;
 
         // Send SCSI write request
         let write_buf = [7u8; 4096];

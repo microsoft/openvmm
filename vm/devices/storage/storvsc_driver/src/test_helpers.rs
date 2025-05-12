@@ -208,7 +208,7 @@ fn parse_storvsp_packet<T: RingMem>(
     })
 }
 
-pub(crate) struct TestStorvscWorker<T: Send + Sync + RingMem> {
+pub struct TestStorvscWorker<T: Send + Sync + RingMem> {
     task: TaskControl<StorvscState, Storvsc<T>>,
     new_request_sender: Option<Sender<StorvscRequest>>,
 }
@@ -237,6 +237,18 @@ impl<T: 'static + Send + Sync + RingMem> TestStorvscWorker<T> {
 
         self.task.insert(spawner, "storvsc", storvsc);
         self.task.start();
+    }
+
+    pub async fn stop(&mut self) {
+        self.task.stop().await;
+    }
+
+    pub async fn resume(&mut self) {
+        self.task.start();
+    }
+
+    pub fn get_mut(&mut self) -> &Storvsc<T> {
+        self.task.get_mut().1.unwrap()
     }
 
     pub async fn teardown(&mut self) {
