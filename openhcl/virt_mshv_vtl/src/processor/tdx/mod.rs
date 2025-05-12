@@ -2375,8 +2375,9 @@ impl UhProcessor<'_, TdxBacked> {
         gpa: u64,
         ept_info: VmxEptExitQualification,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
-        let vtom = self.partition.caps.vtom.expect("vtom always set on tdx");
-        let is_shared = (gpa & vtom) == vtom;
+        // vtom may be 0 if we are hiding isolation
+        let vtom = self.partition.caps.vtom.unwrap_or(0);
+        let is_shared = (gpa & vtom) == vtom && vtom != 0;
         let canonical_gpa = gpa & !vtom;
 
         // Only emulate the access if the gpa is expected to be accessible. This
