@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
 use sync_nostd::Mutex;
 
@@ -9,6 +9,40 @@ static COMMON_HANDLER_MUTEX: Mutex<()> = Mutex::new(());
 macro_rules! create_fn {
     ($name:ident, $i: expr) => {
         extern "x86-interrupt" fn $name(stack_frame: InterruptStackFrame) {
+            unsafe { (COMMON_HANDLER)(stack_frame, $i) };
+        }
+    };
+}
+
+macro_rules! create_fn_create_with_errorcode {
+    ($name:ident, $i: expr) => {
+        extern "x86-interrupt" fn $name(stack_frame: InterruptStackFrame, _error_code: u64) {
+            unsafe { (COMMON_HANDLER)(stack_frame, $i) };
+        }
+    };
+}
+
+macro_rules! create_fn_divergent_create_with_errorcode {
+    ($name:ident, $i: expr) => {
+        extern "x86-interrupt" fn $name(stack_frame: InterruptStackFrame, _error_code: u64) -> ! {
+            unsafe { (COMMON_HANDLER)(stack_frame, $i) };
+            loop{}
+        }
+    };
+}
+
+macro_rules! create_fn_divergent_create {
+    ($name:ident, $i: expr) => {
+        extern "x86-interrupt" fn $name(stack_frame: InterruptStackFrame) -> ! {
+            unsafe { (COMMON_HANDLER)(stack_frame, $i) };
+            loop{}
+        }
+    };
+}
+
+macro_rules! create_page_fault_fn {
+    ($name:ident, $i: expr) => {
+        extern "x86-interrupt" fn $name(stack_frame:InterruptStackFrame, _error_code: PageFaultErrorCode) {
             unsafe { (COMMON_HANDLER)(stack_frame, $i) };
         }
     };
@@ -34,38 +68,33 @@ pub fn set_common_handler(handler: fn(InterruptStackFrame, u8)) {
 extern "x86-interrupt" fn no_op(_stack_frame: InterruptStackFrame) {}
 
 pub fn register_interrupt_handler(idt: &mut InterruptDescriptorTable) {
-    register_interrupt_handler!(idt, x86defs::Exception::DIVIDE_ERROR.0, handler_0);
-    register_interrupt_handler!(idt, x86defs::Exception::DEBUG.0, handler_1);
-    register_interrupt_handler!(idt, 2, handler_2);
-    register_interrupt_handler!(idt, x86defs::Exception::BREAKPOINT.0, handler_3);
-    register_interrupt_handler!(idt, x86defs::Exception::OVERFLOW.0, handler_4);
-    register_interrupt_handler!(idt, x86defs::Exception::BOUND_RANGE_EXCEEDED.0, handler_5);
-    register_interrupt_handler!(idt, x86defs::Exception::INVALID_OPCODE.0, handler_6);
-    register_interrupt_handler!(idt, x86defs::Exception::DEVICE_NOT_AVAILABLE.0, handler_7);
-    // register_interrupt_handler!(idt, x86defs::Exception::DOUBLE_FAULT.0, handler_8);
+    idt.divide_error.set_handler_fn(handler_0);
+    idt.debug.set_handler_fn(handler_1);
+    idt.non_maskable_interrupt.set_handler_fn(handler_2);
+    idt.breakpoint.set_handler_fn(handler_3);
+    idt.overflow.set_handler_fn(handler_4);
+    idt.bound_range_exceeded.set_handler_fn(handler_5);
+    idt.invalid_opcode.set_handler_fn(handler_6);
+    idt.device_not_available.set_handler_fn(handler_7);
+    idt.double_fault.set_handler_fn(handler_8);
     register_interrupt_handler!(idt, 9, handler_9);
-    // register_interrupt_handler!(idt, x86defs::Exception::INVALID_TSS.0, handler_10);
-    // register_interrupt_handler!(idt, x86defs::Exception::SEGMENT_NOT_PRESENT.0, handler_11);
-    // register_interrupt_handler!(idt, x86defs::Exception::STACK_SEGMENT_FAULT.0, handler_12);
-    // register_interrupt_handler!(idt, x86defs::Exception::GENERAL_PROTECTION_FAULT.0, handler_13);
-    // register_interrupt_handler!(idt, x86defs::Exception::PAGE_FAULT.0, handler_14);
-    // register_interrupt_handler!(idt, 15, handler_15);
-    // register_interrupt_handler!(idt, x86defs::Exception::FLOATING_POINT_EXCEPTION.0, handler_16);
-    // register_interrupt_handler!(idt, x86defs::Exception::ALIGNMENT_CHECK.0, handler_17);
-    // register_interrupt_handler!(idt, x86defs::Exception::MACHINE_CHECK.0, handler_18);
-    // register_interrupt_handler!(idt, x86defs::Exception::SIMD_FLOATING_POINT_EXCEPTION.0, handler_19);
-    // register_interrupt_handler!(idt, 20, handler_20);
-    // register_interrupt_handler!(idt, 21, handler_21);
-    // register_interrupt_handler!(idt, 22, handler_22);
-    // register_interrupt_handler!(idt, 23, handler_23);
-    // register_interrupt_handler!(idt, 24, handler_24);
-    // register_interrupt_handler!(idt, 25, handler_25);
-    // register_interrupt_handler!(idt, 26, handler_26);
-    // register_interrupt_handler!(idt, 27, handler_27);
-    // register_interrupt_handler!(idt, 28, handler_28);
-    // register_interrupt_handler!(idt, x86defs::Exception::SEV_VMM_COMMUNICATION.0, handler_29);
-    // register_interrupt_handler!(idt, 30, handler_30);
-    // register_interrupt_handler!(idt, 31, handler_31);
+    idt.invalid_tss.set_handler_fn(handler_10);
+    idt.segment_not_present.set_handler_fn(handler_11);
+    idt.stack_segment_fault.set_handler_fn(handler_12);
+    idt.general_protection_fault.set_handler_fn(handler_13);
+    idt.page_fault.set_handler_fn(handler_14);
+    // Vector 15 is reserved
+    idt.x87_floating_point.set_handler_fn(handler_16);
+    idt.alignment_check.set_handler_fn(handler_17);
+    idt.machine_check.set_handler_fn(handler_18);
+    idt.simd_floating_point.set_handler_fn(handler_19);
+    idt.virtualization.set_handler_fn(handler_20);
+    idt.cp_protection_exception.set_handler_fn(handler_21);
+    // Vector 22-27 is reserved
+    idt.hv_injection_exception.set_handler_fn(handler_28);
+    idt.vmm_communication_exception.set_handler_fn(handler_29);
+    idt.security_exception.set_handler_fn(handler_30);
+    // Vector 31 is reserved
 
     register_interrupt_handler!(idt, 32, handler_32);
     register_interrupt_handler!(idt, 33, handler_33);
@@ -301,20 +330,20 @@ create_fn!(handler_4, 4);
 create_fn!(handler_5, 5);
 create_fn!(handler_6, 6);
 create_fn!(handler_7, 7);
-create_fn!(handler_8, 8);
+create_fn_divergent_create_with_errorcode!(handler_8, 8);
 create_fn!(handler_9, 9);
-create_fn!(handler_10, 10);
-create_fn!(handler_11, 11);
-create_fn!(handler_12, 12);
-create_fn!(handler_13, 13);
-create_fn!(handler_14, 14);
+create_fn_create_with_errorcode!(handler_10, 10);
+create_fn_create_with_errorcode!(handler_11, 11);
+create_fn_create_with_errorcode!(handler_12, 12);
+create_fn_create_with_errorcode!(handler_13, 13);
+create_page_fault_fn!(handler_14, 14);
 create_fn!(handler_15, 15);
 create_fn!(handler_16, 16);
-create_fn!(handler_17, 17);
-create_fn!(handler_18, 18);
+create_fn_create_with_errorcode!(handler_17, 17);
+create_fn_divergent_create!(handler_18, 18);
 create_fn!(handler_19, 19);
 create_fn!(handler_20, 20);
-create_fn!(handler_21, 21);
+create_fn_create_with_errorcode!(handler_21, 21);
 create_fn!(handler_22, 22);
 create_fn!(handler_23, 23);
 create_fn!(handler_24, 24);
@@ -322,8 +351,8 @@ create_fn!(handler_25, 25);
 create_fn!(handler_26, 26);
 create_fn!(handler_27, 27);
 create_fn!(handler_28, 28);
-create_fn!(handler_29, 29);
-create_fn!(handler_30, 30);
+create_fn_create_with_errorcode!(handler_29, 29);
+create_fn_create_with_errorcode!(handler_30, 30);
 create_fn!(handler_31, 31);
 create_fn!(handler_32, 32);
 create_fn!(handler_33, 33);

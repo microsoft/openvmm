@@ -6,7 +6,7 @@
 use crate::tmk_assert::{AssertOption, AssertResult};
 use sync_nostd::{Channel, Receiver, Sender};
 use crate::uefi::alloc::{ALLOCATOR, SIZE_1MB};
-use crate::uefi::{context, hypvctx};
+use crate::{context, uefi::hypvctx};
 use crate::{tmk_assert};
 use ::alloc::boxed::Box;
 use alloc::sync::Arc;

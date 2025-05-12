@@ -1,4 +1,4 @@
-use super::{
+use crate::{
     context::{TestCtxTrait, VpExecutor},
     hypercall::HvCall,
 };
@@ -431,12 +431,12 @@ impl HvTestCtx {
             .expect("Failed to get VTL1 context");
         let stack_layout = Layout::from_size_align(SIZE_1MB, 16)
             .expect("Failed to create layout for stack allocation");
-        let x = unsafe { ALLOCATOR.alloc(stack_layout) };
-        if x.is_null() {
+        let allocated_stack_ptr = unsafe { ALLOCATOR.alloc(stack_layout) };
+        if allocated_stack_ptr.is_null() {
             return Err(false);
         }
-        let sz = stack_layout.size();
-        let stack_top = x as u64 + sz as u64;
+        let stack_size = stack_layout.size();
+        let stack_top = allocated_stack_ptr as u64 + stack_size as u64;
         let fn_ptr = func as fn();
         let fn_address = fn_ptr as u64;
         vp_context.rip = fn_address;

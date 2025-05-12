@@ -2,8 +2,6 @@
 // Licensed under the MIT License.
 
 mod alloc;
-mod context;
-pub mod hypercall;
 mod hypvctx;
 pub mod init;
 mod rt;

@@ -2,7 +2,7 @@ use hvdef::Vtl;
 use sync_nostd::Channel;
 
 use crate::{
-    tmk_assert, uefi::context::{TestCtxTrait, VpExecutor}
+    tmk_assert, context::{TestCtxTrait, VpExecutor}
 };
 
 pub fn exec(ctx: &mut dyn TestCtxTrait) {
