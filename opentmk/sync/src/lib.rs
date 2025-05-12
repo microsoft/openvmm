@@ -1,5 +1,8 @@
+#![no_std]
+#![allow(unsafe_code)]
+extern crate alloc;
 use core::sync::atomic::{AtomicUsize, Ordering};
-pub use spin::Mutex;
+pub use spin::{Mutex, MutexGuard};
 use alloc::{sync::Arc, vec::Vec};
 use alloc::collections::VecDeque;
 use core::error::Error;

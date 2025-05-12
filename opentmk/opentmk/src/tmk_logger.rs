@@ -3,7 +3,7 @@ use core::fmt::Write;
 use alloc::{fmt::format, string::{String, ToString}};
 use log::SetLoggerError;
 use serde_json::json;
-use spin::{mutex::Mutex, MutexGuard};
+use sync_nostd::{Mutex, MutexGuard};
 
 use crate::arch::serial::{InstrIoAccess, Serial};
 

@@ -5,7 +5,7 @@
 #![allow(static_mut_refs)]
 use core::arch::asm;
 use core::fmt;
-use crate::sync::Mutex;
+use sync_nostd::Mutex;
 
 const COM4: u16 = 0x2E8;
 static mut MUTEX : Mutex<()> = Mutex::new(());

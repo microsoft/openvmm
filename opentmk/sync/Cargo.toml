@@ -1,0 +1,12 @@
+[package]
+name = "sync_nostd"
+version = "0.1.0"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+spin.workspace = true
+
+
+[lints]
+workspace = true

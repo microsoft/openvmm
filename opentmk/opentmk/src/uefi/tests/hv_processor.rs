@@ -1,4 +1,5 @@
 use hvdef::Vtl;
+use sync_nostd::Channel;
 
 use crate::{
     tmk_assert, uefi::context::{TestCtxTrait, VpExecutor}
@@ -13,7 +14,7 @@ pub fn exec(ctx: &mut dyn TestCtxTrait) {
 
     // Testing BSP VTL Bringup
     {
-        let (tx, rx) = crate::sync::Channel::new().split();
+        let (tx, rx) = Channel::new().split();
         ctx.start_on_vp(VpExecutor::new(0, Vtl::Vtl1).command(
             move |ctx: &mut dyn TestCtxTrait| {
                 let vp = ctx.get_current_vp();
@@ -33,7 +34,7 @@ pub fn exec(ctx: &mut dyn TestCtxTrait) {
     for i in 1..vp_count {
         // Testing VTL1
         {
-            let (tx, rx) = crate::sync::Channel::new().split();
+            let (tx, rx) = Channel::new().split();
             ctx.start_on_vp(VpExecutor::new(i, Vtl::Vtl1).command(
                 move |ctx: &mut dyn TestCtxTrait| {
                     let vp = ctx.get_current_vp();
@@ -51,7 +52,7 @@ pub fn exec(ctx: &mut dyn TestCtxTrait) {
 
         // Testing VTL0
         {
-            let (tx, rx) = crate::sync::Channel::new().split();
+            let (tx, rx) = Channel::new().split();
             ctx.start_on_vp(VpExecutor::new(i, Vtl::Vtl0).command(
                 move |ctx: &mut dyn TestCtxTrait| {
                     let vp = ctx.get_current_vp();

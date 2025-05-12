@@ -1,7 +1,7 @@
 use core::{alloc::GlobalAlloc, cell::RefCell};
 
 use linked_list_allocator::LockedHeap;
-use spin::mutex::Mutex;
+use sync_nostd::Mutex;
 use uefi::{
     allocator::Allocator,
     boot::{self, AllocateType, MemoryType},

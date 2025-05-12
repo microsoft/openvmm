@@ -1,6 +1,6 @@
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 use lazy_static::lazy_static;
-use crate::sync::Mutex;
+use sync_nostd::Mutex;
 
 use super::interrupt_handler_register::{register_interrupt_handler, set_common_handler};
 

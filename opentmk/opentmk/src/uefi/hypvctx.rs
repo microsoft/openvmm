@@ -15,7 +15,7 @@ use hvdef::hypercall::{HvInputVtl, InitialVpContextX64};
 use hvdef::Vtl;
 use memory_range::MemoryRange;
 use minimal_rt::arch::msr::{read_msr, write_msr};
-use spin::Mutex;
+use sync_nostd::Mutex;
 
 const ALIGNMENT: usize = 4096;
 

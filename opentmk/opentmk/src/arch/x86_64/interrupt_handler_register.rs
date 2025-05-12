@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
-use crate::sync::Mutex;
+use sync_nostd::Mutex;
 
 static mut COMMON_HANDLER: fn(InterruptStackFrame, u8) = common_handler;
 static COMMON_HANDLER_MUTEX: Mutex<()> = Mutex::new(());

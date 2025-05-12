@@ -4,7 +4,7 @@
 // This test is to verify that the VTL protections are working as expected.
 // The stack values in VTL0 are changing after interrupt handling in VTL1.
 use crate::tmk_assert::{AssertOption, AssertResult};
-use crate::sync::{Channel, Receiver, Sender};
+use sync_nostd::{Channel, Receiver, Sender};
 use crate::uefi::alloc::{ALLOCATOR, SIZE_1MB};
 use crate::uefi::{context, hypvctx};
 use crate::{tmk_assert};
