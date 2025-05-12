@@ -299,7 +299,7 @@ impl PetriVmOpenVmm {
             }
             Either::Halt(halt_result) => {
                 tracing::warn!(
-                    ?halt_result,
+                    halt_result = format_args!("{:x?}", halt_result),
                     "Halt channel returned while waiting for other future, sleeping for 5 seconds to let outstanding work finish"
                 );
                 let mut c = CancelContext::new().with_timeout(Duration::from_secs(5));
@@ -319,7 +319,7 @@ impl PetriVmOpenVmm {
                         fut_result
                     }
                     Err(_cancel) => match halt_result {
-                        Ok(halt_reason) => Err(anyhow::anyhow!("VM halted: {:?}", halt_reason)),
+                        Ok(halt_reason) => Err(anyhow::anyhow!("VM halted: {:x?}", halt_reason)),
                         Err(e) => Err(e).context("VM disappeared"),
                     },
                 }
