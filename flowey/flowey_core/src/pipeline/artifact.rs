@@ -113,7 +113,7 @@ fn json_to_fs_inner(
 
 fn fs_to_json(root: &Path) -> anyhow::Result<serde_json::Value> {
     let mut map = serde_json::Map::new();
-    for entry in fs_err::read_dir(root)? {
+    for entry in fs_err::read_dir(std::path::absolute(root)?)? {
         let entry = entry?;
         let path = entry.path();
         let file_name = entry
