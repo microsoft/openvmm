@@ -129,6 +129,7 @@ use x86emu::Segment;
 /// MSRs that are allowed to be read by the guest without interception.
 const MSR_ALLOWED_READ: &[u32] = &[
     x86defs::X86X_MSR_TSC,
+    x86defs::X86X_MSR_TSC_AUX,
     X86X_MSR_EFER,
     x86defs::X86X_MSR_STAR,
     x86defs::X86X_MSR_LSTAR,
@@ -150,7 +151,6 @@ const MSR_ALLOWED_READ_WRITE: &[u32] = &[
     x86defs::X86X_MSR_PL1_SSP,
     x86defs::X86X_MSR_PL2_SSP,
     x86defs::X86X_MSR_PL3_SSP,
-    x86defs::X86X_MSR_TSC_AUX,
     x86defs::X86X_MSR_INTERRUPT_SSP_TABLE_ADDR,
     x86defs::X86X_IA32_MSR_XFD,
     x86defs::X86X_IA32_MSR_XFD_ERR,
@@ -620,12 +620,6 @@ impl HardwareIsolatedBacking for TdxBacked {
         // Update MSR intercepts. We only need to update those that are allowed
         // to be passed through, as the default otherwise is to always intercept.
         // See [`MSR_ALLOWED_READ_WRITE`].
-        this.runner.set_msr_bit(
-            vtl,
-            x86defs::X86X_MSR_TSC_AUX,
-            true,
-            intercept_control.msr_tsc_aux_write(),
-        );
         this.runner.set_msr_bit(
             vtl,
             x86defs::X86X_MSR_S_CET,
@@ -2601,6 +2595,7 @@ impl UhProcessor<'_, TdxBacked> {
             x86defs::X86X_MSR_CSTAR => self.backing.vtls[vtl].msr_cstar = value,
             x86defs::X86X_MSR_LSTAR => state.msr_lstar = value,
             x86defs::X86X_MSR_SFMASK => state.msr_sfmask = value,
+            x86defs::X86X_MSR_TSC_AUX => state.msr_tsc_aux = value,
             x86defs::X86X_MSR_SYSENTER_CS => {
                 self.runner.write_vmcs32(
                     vtl,
