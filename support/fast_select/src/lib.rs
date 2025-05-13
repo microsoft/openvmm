@@ -397,7 +397,14 @@ mod tests {
         let mut select = FastSelect::new();
         let mut timer = PolledTimer::new(&driver);
         select
-            .select((pending(), pending(), timer.sleep(Duration::from_millis(30))))
+            .select((
+                pending(),
+                pending(),
+                pending(),
+                pending(),
+                pending(),
+                timer.sleep(Duration::from_millis(30)),
+            ))
             .await;
     }
 }
