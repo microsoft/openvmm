@@ -6597,7 +6597,6 @@ dependencies = [
  "inspect",
  "mesh_channel",
  "pal_async",
- "parking_lot",
  "scsi_buffers",
  "scsi_defs",
  "slab",
