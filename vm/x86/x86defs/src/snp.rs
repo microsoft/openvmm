@@ -3,28 +3,49 @@
 
 //! AMD SEV-SNP specific definitions.
 
+use crate::Exception;
 use bitfield_struct::bitfield;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-// Interruption Information Field
-pub const SEV_INTR_TYPE_EXT: u32 = 0;
-pub const SEV_INTR_TYPE_NMI: u32 = 2;
-pub const SEV_INTR_TYPE_EXCEPT: u32 = 3;
-pub const SEV_INTR_TYPE_SW: u32 = 4;
-
 // Secrets page layout.
 pub const REG_TWEAK_BITMAP_OFFSET: usize = 0x100;
 pub const REG_TWEAK_BITMAP_SIZE: usize = 0x40;
 
+open_enum::open_enum! {
+    /// SEV-SNP interruption type.
+    #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub enum SevInterruptionType: u8 {
+        /// External interrupt
+        EXT = 0,
+        /// NMI
+        NMI = 2,
+        /// Exception
+        EXCEPT = 3,
+        /// Software interrupt
+        SW = 4,
+    }
+}
+
+impl SevInterruptionType {
+    const fn into_bits(self) -> u8 {
+        self.0
+    }
+
+    const fn from_bits(bits: u8) -> Self {
+        Self(bits)
+    }
+}
+
 #[bitfield(u64)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes, PartialEq, Eq)]
 pub struct SevEventInjectInfo {
-    pub vector: u8,
+    #[bits(8)]
+    pub vector: Exception,
     #[bits(3)]
-    pub interruption_type: u32,
+    pub interruption_type: SevInterruptionType,
     pub deliver_error_code: bool,
     #[bits(19)]
     _rsvd1: u64,

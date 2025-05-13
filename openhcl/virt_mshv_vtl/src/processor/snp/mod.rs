@@ -65,10 +65,12 @@ use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::vmtime::VmTimeAccess;
+use x86defs::Exception;
 use x86defs::RFlags;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::snp::SevEventInjectInfo;
 use x86defs::snp::SevExitCode;
+use x86defs::snp::SevInterruptionType;
 use x86defs::snp::SevInvlpgbEcx;
 use x86defs::snp::SevInvlpgbEdx;
 use x86defs::snp::SevInvlpgbRax;
@@ -242,7 +244,7 @@ impl HardwareIsolatedBacking for SnpBacked {
     fn pending_event_vector(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> Option<u8> {
         let event_inject = this.runner.vmsa(vtl).event_inject();
         if event_inject.valid() {
-            Some(event_inject.vector())
+            Some(event_inject.vector().0)
         } else {
             None
         }
@@ -257,8 +259,10 @@ impl HardwareIsolatedBacking for SnpBacked {
             .with_valid(true)
             .with_deliver_error_code(event.deliver_error_code())
             .with_error_code(event.error_code())
-            .with_vector(event.vector().try_into().unwrap())
-            .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT);
+            .with_vector(Exception(
+                event.vector().try_into().expect("valid exception vector"),
+            ))
+            .with_interruption_type(SevInterruptionType::EXCEPT);
 
         this.runner.vmsa_mut(vtl).set_event_inject(inject_info);
     }
@@ -509,7 +513,7 @@ impl BackingPrivate for SnpBacked {
         this.cvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
             let vmsa = this.runner.vmsa_mut(vtl);
             if vmsa.event_inject().valid()
-                && vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
+                && vmsa.event_inject().interruption_type() == SevInterruptionType::NMI
             {
                 return true;
             }
@@ -860,8 +864,8 @@ impl<'b> hardware_cvm::apic::ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpB
 
         vmsa.set_event_inject(
             SevEventInjectInfo::new()
-                .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_NMI)
-                .with_vector(2)
+                .with_interruption_type(SevInterruptionType::NMI)
+                .with_vector(Exception::NMI)
                 .with_valid(true),
         );
         self.backing.cvm.lapics[vtl].nmi_pending = false;
@@ -1060,8 +1064,8 @@ impl UhProcessor<'_, SnpBacked> {
         if gp {
             vmsa.set_event_inject(
                 SevEventInjectInfo::new()
-                    .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT)
-                    .with_vector(x86defs::Exception::GENERAL_PROTECTION_FAULT.0)
+                    .with_interruption_type(SevInterruptionType::EXCEPT)
+                    .with_vector(Exception::GENERAL_PROTECTION_FAULT)
                     .with_deliver_error_code(true)
                     .with_valid(true),
             );
@@ -1092,8 +1096,8 @@ impl UhProcessor<'_, SnpBacked> {
             let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
             vmsa.set_event_inject(
                 SevEventInjectInfo::new()
-                    .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT)
-                    .with_vector(x86defs::Exception::GENERAL_PROTECTION_FAULT.0)
+                    .with_interruption_type(SevInterruptionType::EXCEPT)
+                    .with_vector(Exception::GENERAL_PROTECTION_FAULT)
                     .with_deliver_error_code(true)
                     .with_valid(true),
             );
@@ -1196,29 +1200,28 @@ impl UhProcessor<'_, SnpBacked> {
             self.backing.general_stats[entered_from_vtl]
                 .guest_busy
                 .increment();
-            // Software interrupts/exceptions cannot be automatically re-injected, but RIP still
-            // points to the instruction and the event should be re-generated when the
-            // instruction is re-executed. Note that hardware does not provide instruction
-            // length in this case so it's impossible to directly re-inject a software event if
-            // delivery generates an intercept.
-            //
-            // TODO SNP: Handle ICEBP.
+
             let exit_int_info = SevEventInjectInfo::from(vmsa.exit_int_info());
-            debug_assert!(
-                exit_int_info.valid(),
-                "event inject info should be valid {exit_int_info:x?}"
-            );
+            if exit_int_info.valid() {
+                // Software interrupts/exceptions cannot be automatically re-injected, but RIP still
+                // points to the instruction and the event should be re-generated when the
+                // instruction is re-executed. Note that hardware does not provide instruction
+                // length in this case so it's impossible to directly re-inject a software event if
+                // delivery generates an intercept.
+                //
+                // TODO SNP: Handle ICEBP.
+                let inject = match exit_int_info.interruption_type() {
+                    SevInterruptionType::EXCEPT => {
+                        exit_int_info.vector() != Exception::BREAKPOINT
+                            && exit_int_info.vector() != Exception::OVERFLOW
+                    }
+                    SevInterruptionType::SW => false,
+                    _ => true,
+                };
 
-            let inject = match exit_int_info.interruption_type() {
-                x86defs::snp::SEV_INTR_TYPE_EXCEPT => {
-                    exit_int_info.vector() != 3 && exit_int_info.vector() != 4
+                if inject {
+                    vmsa.set_event_inject(exit_int_info);
                 }
-                x86defs::snp::SEV_INTR_TYPE_SW => false,
-                _ => true,
-            };
-
-            if inject {
-                vmsa.set_event_inject(exit_int_info);
             }
         }
         vmsa.v_intr_cntrl_mut().set_guest_busy(true);
@@ -1381,8 +1384,7 @@ impl UhProcessor<'_, SnpBacked> {
                         let exception_message =
                             exit_message.as_message::<hvdef::HvX64ExceptionInterceptMessage>();
 
-                        exception_message.vector
-                            == x86defs::Exception::SEV_VMM_COMMUNICATION.0 as u16
+                        exception_message.vector == Exception::SEV_VMM_COMMUNICATION.0 as u16
                     }
                     HvMessageType::HvMessageTypeUnmappedGpa
                     | HvMessageType::HvMessageTypeGpaIntercept
@@ -1426,8 +1428,8 @@ impl UhProcessor<'_, SnpBacked> {
             SevExitCode::INVLPGB | SevExitCode::ILLEGAL_INVLPGB => {
                 vmsa.set_event_inject(
                     SevEventInjectInfo::new()
-                        .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT)
-                        .with_vector(x86defs::Exception::INVALID_OPCODE.0)
+                        .with_interruption_type(SevInterruptionType::EXCEPT)
+                        .with_vector(Exception::INVALID_OPCODE)
                         .with_valid(true),
                 );
                 &mut self.backing.exit_stats[entered_from_vtl].invlpgb
@@ -1442,8 +1444,8 @@ impl UhProcessor<'_, SnpBacked> {
                 {
                     vmsa.set_event_inject(
                         SevEventInjectInfo::new()
-                            .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT)
-                            .with_vector(x86defs::Exception::GENERAL_PROTECTION_FAULT.0)
+                            .with_interruption_type(SevInterruptionType::EXCEPT)
+                            .with_vector(Exception::GENERAL_PROTECTION_FAULT)
                             .with_deliver_error_code(true)
                             .with_valid(true),
                     );
@@ -2412,8 +2414,8 @@ impl<T: CpuIo> hv1_hypercall::VtlSwitchOps for UhHypercallHandler<'_, '_, T, Snp
             .set_event_inject(
                 SevEventInjectInfo::new()
                     .with_valid(true)
-                    .with_interruption_type(x86defs::snp::SEV_INTR_TYPE_EXCEPT)
-                    .with_vector(x86defs::Exception::INVALID_OPCODE.0),
+                    .with_interruption_type(SevInterruptionType::EXCEPT)
+                    .with_vector(Exception::INVALID_OPCODE),
             );
     }
 }

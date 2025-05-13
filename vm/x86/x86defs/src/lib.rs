@@ -415,6 +415,7 @@ open_enum! {
     pub enum Exception: u8 {
         DIVIDE_ERROR = 0x0,
         DEBUG = 0x1,
+        NMI = 0x2,
         BREAKPOINT = 0x3,
         OVERFLOW = 0x4,
         BOUND_RANGE_EXCEEDED = 0x5,
@@ -432,6 +433,16 @@ open_enum! {
         SIMD_FLOATING_POINT_EXCEPTION = 0x13,
         CONTROL_PROTECTION_EXCEPTION = 0x15,
         SEV_VMM_COMMUNICATION = 0x1D,
+    }
+}
+
+impl Exception {
+    const fn into_bits(self) -> u8 {
+        self.0
+    }
+
+    const fn from_bits(bits: u8) -> Self {
+        Self(bits)
     }
 }
 
