@@ -5,18 +5,15 @@
 
 pub mod test_helpers;
 
-use async_channel::Receiver;
-use async_channel::RecvError;
-use async_channel::Sender;
 use futures::FutureExt;
 use futures_concurrency::future::Race;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
 use guestmem::ranges::PagedRange;
-use parking_lot::Mutex;
-use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
+use mesh_channel::Receiver;
+use mesh_channel::RecvError;
+use mesh_channel::Sender;
+use slab::Slab;
 use task_control::AsyncRun;
 use task_control::InspectTask;
 use task_control::StopTask;
@@ -58,9 +55,8 @@ struct Storvsc<T: Send + Sync + RingMem> {
 }
 
 struct StorvscInner {
-    next_transaction_id: AtomicU64,
     new_request_receiver: Receiver<StorvscRequest>,
-    transactions: Mutex<HashMap<u64, PendingOperation>>,
+    transactions: Slab<PendingOperation>,
 }
 
 struct StorvscRequest {
@@ -84,25 +80,25 @@ impl PendingOperation {
         Self { sender }
     }
 
-    fn complete(&mut self, result: storvsp_protocol::ScsiRequest) -> Result<(), StorvscError> {
-        self.sender
-            .send_blocking(StorvscCompletion {
-                completion: Some(result),
-            })
-            .map_err(|_err| StorvscError::NotificationError)
+    fn complete(&mut self, result: storvsp_protocol::ScsiRequest) {
+        self.sender.send(StorvscCompletion {
+            completion: Some(result),
+        })
     }
 
     fn cancel(&mut self) {
         // Sending completion with an empty result indicates cancellation or other error.
-        self.sender
-            .send_blocking(StorvscCompletion { completion: None })
-            .unwrap();
+        self.sender.send(StorvscCompletion { completion: None });
     }
 }
 
 /// Errors resulting from storvsc.
 #[derive(Debug, Error)]
-pub enum StorvscError {
+#[error(transparent)]
+pub struct StorvscError(StorvscErrorInner);
+
+#[derive(Debug, Error)]
+pub(crate) enum StorvscErrorInner {
     /// Packet error.
     #[error("packet error")]
     PacketError(#[source] PacketError),
@@ -118,15 +114,9 @@ pub enum StorvscError {
     /// Unexpected protocol data or operation.
     #[error("unexpected protocol data or operation")]
     UnexpectedOperation,
-    /// Error notifying completion of operation.
-    #[error("error notifying completion of operation")]
-    NotificationError,
     /// Error sending request to storvsc driver.
     #[error("error sending request to storvsc")]
     RequestError,
-    /// Error receiving new operations from channel.
-    #[error("error receiving new operations from channel")]
-    RequestReceiveError(#[source] RecvError),
     /// Error waiting for completion of operation.
     #[error("error waiting for completion of operation")]
     CompletionError(#[source] RecvError),
@@ -160,7 +150,7 @@ pub enum PacketError {
     #[error("Invalid data transfer length")]
     InvalidDataTransferLength,
     /// Access error.
-    #[error("Access error: {0}")]
+    #[error("Access error")]
     Access(#[source] AccessError),
     /// Range error.
     #[error("Range error")]
@@ -182,16 +172,20 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
     }
 
     /// Start Storvsc.
-    pub fn run(&mut self, channel: RawAsyncChannel<T>, target_vp: u32) -> Result<(), StorvscError> {
+    pub async fn run(
+        &mut self,
+        channel: RawAsyncChannel<T>,
+        target_vp: u32,
+    ) -> Result<(), StorvscError> {
         let driver = self
             .driver_source
             .builder()
             .target_vp(target_vp)
             .run_on_target(true)
             .build("storvsc");
-        let (new_request_sender, new_request_receiver) =
-            async_channel::unbounded::<StorvscRequest>();
-        let storvsc = Storvsc::new(channel, self.version, new_request_receiver)?;
+        let (new_request_sender, new_request_receiver) = mesh_channel::channel::<StorvscRequest>();
+        let mut storvsc = Storvsc::new(channel, self.version, new_request_receiver)?;
+        storvsc.negotiate().await.unwrap();
         self.new_request_sender = Some(new_request_sender);
 
         self.storvsc.insert(&driver, "storvsc", storvsc);
@@ -212,7 +206,7 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
         buf_gpa: u64,
         byte_len: usize,
     ) -> Result<storvsp_protocol::ScsiRequest, StorvscError> {
-        let (sender, receiver) = async_channel::unbounded::<StorvscCompletion>();
+        let (sender, mut receiver) = mesh_channel::channel::<StorvscCompletion>();
         let storvsc_request = StorvscRequest {
             request: *request,
             buf_gpa,
@@ -221,24 +215,21 @@ impl<T: 'static + Send + Sync + RingMem> StorvscDriver<T> {
         };
         match &self.new_request_sender {
             Some(request_sender) => {
-                request_sender
-                    .send(storvsc_request)
-                    .await
-                    .map_err(|_err| StorvscError::RequestError)?;
+                request_sender.send(storvsc_request);
                 Ok(())
             }
-            None => Err(StorvscError::Uninitialized),
+            None => Err(StorvscError(StorvscErrorInner::Uninitialized)),
         }?;
 
         let resp = receiver
             .recv()
             .await
-            .map_err(StorvscError::CompletionError)?;
+            .map_err(|err| StorvscError(StorvscErrorInner::CompletionError(err)))?;
 
         if resp.completion.is_some() {
             Ok(resp.completion.unwrap())
         } else {
-            Err(StorvscError::Cancelled)
+            Err(StorvscError(StorvscErrorInner::Cancelled))
         }
     }
 }
@@ -281,13 +272,13 @@ impl<T: 'static + Send + Sync + RingMem> Storvsc<T> {
         version: storvsp_protocol::ProtocolVersion,
         new_request_receiver: Receiver<StorvscRequest>,
     ) -> Result<Self, StorvscError> {
-        let queue = Queue::new(channel).map_err(StorvscError::Queue)?;
+        let queue =
+            Queue::new(channel).map_err(|err| StorvscError(StorvscErrorInner::Queue(err)))?;
 
         Ok(Self {
             inner: StorvscInner {
-                next_transaction_id: AtomicU64::new(1),
                 new_request_receiver,
-                transactions: Mutex::new(HashMap::new()),
+                transactions: Slab::new(),
             },
             version,
             queue,
@@ -305,6 +296,7 @@ impl<T: Send + Sync + RingMem> Storvsc<T> {
             .send_packet_and_expect_completion(
                 &mut self.queue,
                 storvsp_protocol::Operation::BEGIN_INITIALIZATION,
+                1,
                 &(),
             )
             .await?;
@@ -314,13 +306,14 @@ impl<T: Send + Sync + RingMem> Storvsc<T> {
             .send_packet_and_expect_completion(
                 &mut self.queue,
                 storvsp_protocol::Operation::QUERY_PROTOCOL_VERSION,
+                2,
                 &self.version,
             )
             .await
             .map_err(|err| match err {
-                StorvscError::PacketError(PacketError::UnexpectedStatus(
+                StorvscError(StorvscErrorInner::PacketError(PacketError::UnexpectedStatus(
                     storvsp_protocol::NtStatus::INVALID_DEVICE_STATE,
-                )) => StorvscError::UnsupportedProtocolVersion,
+                ))) => StorvscError(StorvscErrorInner::UnsupportedProtocolVersion),
                 _ => err,
             })?;
 
@@ -330,13 +323,14 @@ impl<T: Send + Sync + RingMem> Storvsc<T> {
             .send_packet_and_expect_completion(
                 &mut self.queue,
                 storvsp_protocol::Operation::QUERY_PROPERTIES,
+                3,
                 &(),
             )
             .await?;
         let properties = storvsp_protocol::ChannelProperties::ref_from_prefix(
             &properties_packet.data[0..properties_packet.data_size],
         )
-        .map_err(|_err| StorvscError::UnexpectedOperation)?
+        .map_err(|_err| StorvscError(StorvscErrorInner::UnexpectedOperation))?
         .0
         .to_owned();
 
@@ -350,6 +344,7 @@ impl<T: Send + Sync + RingMem> Storvsc<T> {
                     .send_packet_and_expect_completion(
                         &mut self.queue,
                         storvsp_protocol::Operation::CREATE_SUB_CHANNELS,
+                        4,
                         &self.num_sub_channels.unwrap(),
                     )
                     .await
@@ -367,6 +362,7 @@ impl<T: Send + Sync + RingMem> Storvsc<T> {
             .send_packet_and_expect_completion(
                 &mut self.queue,
                 storvsp_protocol::Operation::END_INITIALIZATION,
+                5,
                 &(),
             )
             .await?;
@@ -386,13 +382,13 @@ impl<T: Send + Sync + RingMem> Storvsc<T> {
     async fn process_main(&mut self) -> Result<(), StorvscError> {
         match self.inner.process_main(&mut self.queue).await {
             Ok(_) => Ok(()),
-            Err(StorvscError::Queue(err2)) => {
+            Err(StorvscError(StorvscErrorInner::Queue(err2))) => {
                 if err2.is_closed_error() {
                     // This is expected, cancel any pending completions
                     self.inner.cancel_pending_completions().await;
                     Ok(())
                 } else {
-                    Err(StorvscError::Queue(err2))
+                    Err(StorvscError(StorvscErrorInner::Queue(err2)))
                 }
             }
             Err(err) => Err(err),
@@ -438,14 +434,14 @@ impl StorvscInner {
                     }
                     Err(err) => {
                         tracing::error!("Unable to receive new request, err={:?}", err);
-                        Err(StorvscError::RequestError)
+                        Err(StorvscError(StorvscErrorInner::RequestError))
                     }
                 },
                 Event::VmbusPacketReceived(result) => match result {
                     Ok(packet_ref) => self.handle_packet(packet_ref.as_ref()),
                     Err(err) => {
                         tracing::error!("Error receiving VMBus packet, err={:?}", err);
-                        Err(StorvscError::Queue(err))
+                        Err(StorvscError(StorvscErrorInner::Queue(err)))
                     }
                 },
             }?;
@@ -460,21 +456,16 @@ impl StorvscInner {
         writer: &mut queue::WriteHalf<'_, M>,
         completion_sender: Sender<StorvscCompletion>,
     ) -> Result<(), StorvscError> {
-        // Fetch a transaction ID for this operation
-        let transaction_id = self.get_next_transaction_id();
-
         // Create pending transaction record
-        {
-            self.transactions
-                .lock()
-                .insert(transaction_id, PendingOperation::new(completion_sender));
-        }
+        let transaction_id = self
+            .transactions
+            .insert(PendingOperation::new(completion_sender));
 
         self.send_gpa_direct_packet(
             writer,
             storvsp_protocol::Operation::EXECUTE_SRB,
             storvsp_protocol::NtStatus::SUCCESS,
-            transaction_id,
+            transaction_id as u64,
             request,
             buf_gpa,
             byte_len,
@@ -482,9 +473,10 @@ impl StorvscInner {
     }
 
     async fn cancel_pending_completions(&mut self) {
-        for transaction in self.transactions.lock().values_mut() {
-            transaction.cancel();
+        for transaction in self.transactions.iter_mut() {
+            transaction.1.cancel();
         }
+        self.transactions.clear();
     }
 
     fn handle_packet<M: RingMem>(
@@ -499,19 +491,20 @@ impl StorvscInner {
 
         // Parse ScsiRequest (contains response) from bytes
         let result = storvsp_protocol::ScsiRequest::ref_from_bytes(completion.data.as_slice())
-            .map_err(|_err| StorvscError::UnexpectedOperation)?
+            .map_err(|_err| StorvscError(StorvscErrorInner::UnexpectedOperation))?
             .to_owned();
 
         // Match completion against pending transactions
+        match self
+            .transactions
+            .get_mut(completion.transaction_id as usize)
         {
-            match self.transactions.lock().get_mut(&completion.transaction_id) {
-                Some(t) => Ok(t),
-                None => Err(StorvscError::PacketError(
-                    PacketError::UnexpectedTransaction(completion.transaction_id),
-                )),
-            }
+            Some(t) => Ok(t),
+            None => Err(StorvscError(StorvscErrorInner::PacketError(
+                PacketError::UnexpectedTransaction(completion.transaction_id),
+            ))),
         }?
-        .complete(result)?;
+        .complete(result);
 
         Ok(())
     }
@@ -521,12 +514,11 @@ impl StorvscInner {
         &mut self,
         reader: &'a mut queue::ReadHalf<'a, M>,
     ) -> Result<Packet, StorvscError> {
-        let packet = reader.read().await.map_err(StorvscError::Queue)?;
+        let packet = reader
+            .read()
+            .await
+            .map_err(|err| StorvscError(StorvscErrorInner::Queue(err)))?;
         parse_packet(&packet)
-    }
-
-    fn get_next_transaction_id(&mut self) -> u64 {
-        self.next_transaction_id.fetch_add(1, Ordering::AcqRel)
     }
 
     /// Send a non-GPA Direct packet over VMBus.
@@ -621,8 +613,8 @@ impl StorvscInner {
                 payload: &[header.as_bytes(), payload_bytes, padding_bytes],
             })
             .map_err(|err| match err {
-                queue::TryWriteError::Full(_) => StorvscError::NotEnoughSpace,
-                queue::TryWriteError::Queue(err) => StorvscError::Queue(err),
+                queue::TryWriteError::Full(_) => StorvscError(StorvscErrorInner::NotEnoughSpace),
+                queue::TryWriteError::Queue(err) => StorvscError(StorvscErrorInner::Queue(err)),
             })
     }
 
@@ -633,10 +625,10 @@ impl StorvscInner {
         &mut self,
         queue: &mut Queue<M>,
         operation: storvsp_protocol::Operation,
+        transaction_id: u64,
         payload: &P,
     ) -> Result<StorvscCompletionPacket, StorvscError> {
         let (mut reader, mut writer) = queue.split();
-        let transaction_id = self.get_next_transaction_id();
         self.send_packet(
             &mut writer,
             operation,
@@ -650,9 +642,10 @@ impl StorvscInner {
             //Packet::Data(_) => Err(StorvscError::PacketError(PacketError::InvalidPacketType)),
         }?;
         expect_success(
-            expect_transaction_id(completion, transaction_id).map_err(StorvscError::PacketError)?,
+            expect_transaction_id(completion, transaction_id)
+                .map_err(|err| StorvscError(StorvscErrorInner::PacketError(err)))?,
         )
-        .map_err(StorvscError::PacketError)
+        .map_err(|err| StorvscError(StorvscErrorInner::PacketError(err)))
     }
 }
 
@@ -671,10 +664,11 @@ struct StorvscCompletionPacket {
 
 fn parse_packet<T: RingMem>(packet: &IncomingPacket<'_, T>) -> Result<Packet, StorvscError> {
     match packet {
-        IncomingPacket::Completion(completion) => {
-            parse_completion(completion).map_err(StorvscError::PacketError)
-        }
-        IncomingPacket::Data(_) => Err(StorvscError::PacketError(PacketError::InvalidPacketType)),
+        IncomingPacket::Completion(completion) => parse_completion(completion)
+            .map_err(|err| StorvscError(StorvscErrorInner::PacketError(err))),
+        IncomingPacket::Data(_) => Err(StorvscError(StorvscErrorInner::PacketError(
+            PacketError::InvalidPacketType,
+        ))),
     }
 }
 

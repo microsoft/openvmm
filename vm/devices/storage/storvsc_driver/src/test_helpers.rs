@@ -10,13 +10,14 @@ use crate::PacketError;
 use crate::Storvsc;
 use crate::StorvscCompletion;
 use crate::StorvscError;
+use crate::StorvscErrorInner;
 use crate::StorvscRequest;
 use crate::StorvscState;
-use async_channel::Sender;
 use guestmem::GuestMemory;
 use guestmem::MemoryRead;
 use guestmem::ranges::PagedRange;
 use inspect::Inspect;
+use mesh_channel::Sender;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use scsi_buffers::RequestBuffers;
@@ -223,8 +224,7 @@ impl<T: 'static + Send + Sync + RingMem> TestStorvscWorker<T> {
     }
 
     pub fn start(&mut self, spawner: impl Spawn, channel: RawAsyncChannel<T>) {
-        let (new_request_sender, new_request_receiver) =
-            async_channel::unbounded::<StorvscRequest>();
+        let (new_request_sender, new_request_receiver) = mesh_channel::channel::<StorvscRequest>();
         let storvsc = Storvsc::new(
             channel,
             storvsp_protocol::ProtocolVersion {
@@ -264,7 +264,7 @@ impl<T: 'static + Send + Sync + RingMem> TestStorvscWorker<T> {
         buf_gpa: u64,
         byte_len: usize,
     ) -> Result<storvsp_protocol::ScsiRequest, StorvscError> {
-        let (sender, receiver) = async_channel::unbounded::<StorvscCompletion>();
+        let (sender, mut receiver) = mesh_channel::channel::<StorvscCompletion>();
         let storvsc_request = StorvscRequest {
             request: *request,
             buf_gpa,
@@ -273,24 +273,21 @@ impl<T: 'static + Send + Sync + RingMem> TestStorvscWorker<T> {
         };
         match &self.new_request_sender {
             Some(request_sender) => {
-                request_sender
-                    .send(storvsc_request)
-                    .await
-                    .map_err(|_err| StorvscError::RequestError)?;
+                request_sender.send(storvsc_request);
                 Ok(())
             }
-            None => Err(StorvscError::Uninitialized),
+            None => Err(StorvscError(StorvscErrorInner::Uninitialized)),
         }?;
 
         let resp = receiver
             .recv()
             .await
-            .map_err(StorvscError::CompletionError)?;
+            .map_err(|err| StorvscError(StorvscErrorInner::CompletionError(err)))?;
 
         if resp.completion.is_some() {
             Ok(resp.completion.unwrap())
         } else {
-            Err(StorvscError::Cancelled)
+            Err(StorvscError(StorvscErrorInner::Cancelled))
         }
     }
 }
@@ -367,9 +364,13 @@ impl TestStorvsp {
         while !has_end_initialization {
             tracing::trace!("Waiting for next initialization packet");
             let (mut reader, mut writer) = self.queue.split();
-            let packet = reader.read().await.map_err(StorvscError::Queue).unwrap();
+            let packet = reader
+                .read()
+                .await
+                .map_err(|err| StorvscError(StorvscErrorInner::Queue(err)))
+                .unwrap();
             let stor_packet = parse_storvsp_packet(&packet, &mut self.full_request_pool)
-                .map_err(StorvscError::PacketError)
+                .map_err(|err| StorvscError(StorvscErrorInner::PacketError(err)))
                 .unwrap();
 
             match stor_packet.data {
@@ -541,9 +542,12 @@ impl TestStorvsp {
     async fn process_packets(&mut self) -> Result<(), StorvscError> {
         loop {
             let (mut reader, mut writer) = self.queue.split();
-            let packet = reader.read().await.map_err(StorvscError::Queue)?;
+            let packet = reader
+                .read()
+                .await
+                .map_err(|err| StorvscError(StorvscErrorInner::Queue(err)))?;
             let stor_packet = parse_storvsp_packet(&packet, &mut self.full_request_pool)
-                .map_err(StorvscError::PacketError)?;
+                .map_err(|err| StorvscError(StorvscErrorInner::PacketError(err)))?;
             tracing::info!("storvsp received request packet");
 
             match stor_packet.data.clone() {
@@ -612,8 +616,8 @@ impl TestStorvspInner {
                 payload: &[header.as_bytes(), payload],
             })
             .map_err(|err| match err {
-                queue::TryWriteError::Full(_) => StorvscError::NotEnoughSpace,
-                queue::TryWriteError::Queue(err) => StorvscError::Queue(err),
+                queue::TryWriteError::Full(_) => StorvscError(StorvscErrorInner::NotEnoughSpace),
+                queue::TryWriteError::Queue(err) => StorvscError(StorvscErrorInner::Queue(err)),
             })
     }
 
@@ -630,6 +634,6 @@ impl TestStorvspInner {
     ) -> Poll<Result<(), StorvscError>> {
         writer
             .poll_ready(cx, MAX_VMBUS_PACKET_SIZE)
-            .map_err(StorvscError::Queue)
+            .map_err(|err| StorvscError(StorvscErrorInner::Queue(err)))
     }
 }

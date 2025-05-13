@@ -6591,15 +6591,16 @@ dependencies = [
 name = "storvsc_driver"
 version = "0.0.0"
 dependencies = [
- "async-channel",
  "futures",
  "futures-concurrency",
  "guestmem",
  "inspect",
+ "mesh_channel",
  "pal_async",
  "parking_lot",
  "scsi_buffers",
  "scsi_defs",
+ "slab",
  "storvsp_protocol",
  "task_control",
  "test_with_tracing",
