@@ -47,7 +47,6 @@ use hvdef::hypercall::HvGvaRange;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
-use parking_lot::RwLock;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use tlb_flush::FLUSH_GVA_LIST_SIZE;
@@ -727,7 +726,7 @@ pub struct TdxBackedShared {
     /// the guest thinks it is interacting directly with the untrusted
     /// hypervisor via an architecture-specific interface.
     pub(crate) untrusted_synic: Option<GlobalSynic>,
-    flush_state: VtlArray<RwLock<TdxPartitionFlushState>, 2>,
+    flush_state: VtlArray<TdxPartitionFlushState, 2>,
     #[inspect(iter_by_index)]
     active_vtl: Vec<AtomicU8>,
     /// CR4 bits that the guest is allowed to set to 1.
@@ -759,7 +758,7 @@ impl TdxBackedShared {
 
         Ok(Self {
             untrusted_synic,
-            flush_state: VtlArray::from_fn(|_| RwLock::new(TdxPartitionFlushState::new())),
+            flush_state: VtlArray::from_fn(|_| TdxPartitionFlushState::new()),
             cvm: params.cvm_state.unwrap(),
             // VPs start in VTL 2.
             active_vtl: std::iter::repeat_n(2, partition_params.topology.vp_count() as usize)
@@ -4156,20 +4155,22 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressListEx
             .map_err(|e| (e, 0))?;
 
         let vtl = self.intercepted_vtl;
-        {
-            let mut flush_state = self.vp.shared.flush_state[vtl].write();
+        let flush_state = &self.vp.shared.flush_state[vtl];
 
-            // If we fail to add ranges to the list for any reason then promote this request to a flush entire.
-            if let Err(()) = Self::add_ranges_to_tlb_flush_list(
-                &mut flush_state,
-                gva_ranges,
-                flags.use_extended_range_format(),
-            ) {
-                if flags.non_global_mappings_only() {
-                    flush_state.s.flush_entire_non_global_counter += 1;
-                } else {
-                    flush_state.s.flush_entire_counter += 1;
-                }
+        // If we fail to add ranges to the list for any reason then promote this request to a flush entire.
+        if let Err(()) = Self::add_ranges_to_tlb_flush_list(
+            flush_state,
+            gva_ranges,
+            flags.use_extended_range_format(),
+        ) {
+            if flags.non_global_mappings_only() {
+                flush_state
+                    .flush_entire_non_global_counter
+                    .fetch_add(1, Ordering::Relaxed);
+            } else {
+                flush_state
+                    .flush_entire_counter
+                    .fetch_add(1, Ordering::Relaxed);
             }
         }
 
@@ -4215,15 +4216,17 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
         self.hcvm_validate_flush_inputs(processor_set, flags, false)?;
         let vtl = self.intercepted_vtl;
 
-        {
-            let mut flush_state = self.vp.shared.flush_state[vtl].write();
+        let flush_state = &self.vp.shared.flush_state[vtl];
 
-            // Set flush entire.
-            if flags.non_global_mappings_only() {
-                flush_state.s.flush_entire_non_global_counter += 1;
-            } else {
-                flush_state.s.flush_entire_counter += 1;
-            }
+        // Set flush entire.
+        if flags.non_global_mappings_only() {
+            flush_state
+                .flush_entire_non_global_counter
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            flush_state
+                .flush_entire_counter
+                .fetch_add(1, Ordering::Relaxed);
         }
 
         // Send flush IPIs to the specified VPs.
@@ -4243,7 +4246,7 @@ impl<T: CpuIo> hv1_hypercall::FlushVirtualAddressSpaceEx
 
 impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
     fn add_ranges_to_tlb_flush_list(
-        flush_state: &mut TdxPartitionFlushState,
+        flush_state: &TdxPartitionFlushState,
         gva_ranges: &[HvGvaRange],
         use_extended_range_format: bool,
     ) -> Result<(), ()> {
@@ -4252,17 +4255,14 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
             return Err(());
         }
 
+        let gva_list = flush_state.gva_list.write();
         for range in gva_ranges {
             if use_extended_range_format && range.as_extended().large_page() {
                 // TDX does not provide a way to flush large page ranges,
                 // we have to promote this request to a flush entire.
                 return Err(());
             }
-            if flush_state.gva_list.len() == FLUSH_GVA_LIST_SIZE {
-                flush_state.gva_list.pop_front();
-            }
-            flush_state.gva_list.push_back(*range);
-            flush_state.s.gva_list_count += 1;
+            gva_list.push(range.0);
         }
 
         Ok(())
@@ -4319,16 +4319,19 @@ struct TdxTlbLockFlushAccess<'a> {
 
 impl TlbFlushLockAccess for TdxTlbLockFlushAccess<'_> {
     fn flush(&mut self, vtl: GuestVtl) {
-        {
-            self.shared.flush_state[vtl].write().s.flush_entire_counter += 1;
-        }
+        self.shared.flush_state[vtl]
+            .flush_entire_counter
+            .fetch_add(1, Ordering::Relaxed);
+
         self.wake_processors_for_tlb_flush(vtl, None);
         self.set_wait_for_tlb_locks(vtl);
     }
 
     fn flush_entire(&mut self) {
         for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
-            self.shared.flush_state[vtl].write().s.flush_entire_counter += 1;
+            self.shared.flush_state[vtl]
+                .flush_entire_counter
+                .fetch_add(1, Ordering::Relaxed);
         }
         for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
             self.wake_processors_for_tlb_flush(vtl, None);
