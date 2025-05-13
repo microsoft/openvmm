@@ -2497,9 +2497,9 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::AssertVirtualInterrupt
         requested_vector: u32,
         target_vtl: Vtl,
     ) -> HvResult<()> {
-        let target_vtl = GuestVtl::try_from(target_vtl).map_err(|_| HvError::InvalidParameter)?;
+        let target_vtl = self.target_vtl_no_higher(target_vtl)?;
 
-        if partition_id != hvdef::HV_PARTITION_ID_SELF || target_vtl >= self.intercepted_vtl {
+        if partition_id != hvdef::HV_PARTITION_ID_SELF {
             return Err(HvError::AccessDenied);
         }
 
