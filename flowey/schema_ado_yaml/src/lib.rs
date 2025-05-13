@@ -65,6 +65,16 @@ pub struct TriggerBranches {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TriggerTags {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub include: Vec<String>,
+    // Wrapping this in an Option is necessary to prevent problems when deserializing and exclude isn't present
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 #[serde(rename_all = "camelCase")]
 pub enum PrTrigger {
@@ -87,7 +97,10 @@ pub enum CiTrigger {
     #[serde(rename_all = "camelCase")]
     Some {
         batch: bool,
-        branches: TriggerBranches,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        branches: Option<TriggerBranches>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tags: Option<TriggerTags>,
     },
     // serde has a bug with untagged and `with` during deserialization
     NoneWorkaround(String),
