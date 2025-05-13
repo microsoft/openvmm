@@ -2499,7 +2499,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::AssertVirtualInterrupt
     ) -> HvResult<()> {
         let target_vtl = self.target_vtl_no_higher(target_vtl)?;
 
-        if partition_id != hvdef::HV_PARTITION_ID_SELF {
+        if partition_id != hvdef::HV_PARTITION_ID_SELF || target_vtl == self.intercepted_vtl {
             return Err(HvError::AccessDenied);
         }
 
