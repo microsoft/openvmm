@@ -5,7 +5,6 @@
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
-// #![warn(missing_docs)] // TODO: lots to do here
 
 pub mod _jobs;
 pub mod artifact_openhcl_igvm_from_recipe;
