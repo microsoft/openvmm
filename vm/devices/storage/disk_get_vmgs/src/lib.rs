@@ -8,6 +8,7 @@
 //! device.
 
 #![cfg(target_os = "linux")]
+#![forbid(unsafe_code)]
 
 use disk_backend::DiskError;
 use disk_backend::DiskIo;

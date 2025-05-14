@@ -4,6 +4,7 @@
 //! Common TDCALL handling for issuing tdcalls and functionality using tdcalls.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;

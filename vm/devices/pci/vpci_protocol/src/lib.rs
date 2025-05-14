@@ -10,6 +10,8 @@
 //! The VPCI protocol is used to create a virtual PCI bus over a vmbus transport, which allows
 //! for efficient and safe exposure of PCI devices to guest virtual machines.
 
+#![forbid(unsafe_code)]
+
 use bitfield_struct::bitfield;
 use guid::Guid;
 use open_enum::open_enum;

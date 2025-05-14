@@ -28,6 +28,8 @@
 //! This model allows for asynchronous, highly concurrent state changes, and it
 //! works across process boundaries thanks to `mesh`.
 
+#![forbid(unsafe_code)]
+
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::join_all;

@@ -3,6 +3,8 @@
 
 //! The client for connecting to the Underhill diagnostics server.
 
+#![forbid(unsafe_code)]
+
 pub mod kmsg_stream;
 
 use anyhow::Context;

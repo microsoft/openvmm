@@ -10,6 +10,7 @@
 //! - `linux`: types specific to UEFI on Linux
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 #![no_std]
 
 // TODO: find a nice way to create const `Ucs2LeSlice` instances, and use proper

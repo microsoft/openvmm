@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 //! Provides the [`open_enum`] macro.
 

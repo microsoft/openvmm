@@ -14,6 +14,8 @@
 //! Incoming config space accesses are then routed to connected
 //! [`GenericPciBusDevice`] devices.
 
+#![forbid(unsafe_code)]
+
 use bitfield_struct::bitfield;
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;

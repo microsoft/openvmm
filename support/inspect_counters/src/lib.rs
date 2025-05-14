@@ -3,6 +3,8 @@
 
 //! Inspectable types for implementing performance counters.
 
+#![forbid(unsafe_code)]
+
 use inspect::Inspect;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;

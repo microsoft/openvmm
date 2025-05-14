@@ -14,6 +14,7 @@
 //! as this will automatically update the implementation as new fields are added.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 extern crate alloc;
 

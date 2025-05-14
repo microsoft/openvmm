@@ -4,6 +4,7 @@
 //! Abstractions to support pluggable UEFI nvram storage backends (e.g: in memory, file backed, etc...)
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub use uefi_specs::uefi::time::EFI_TIME;
 

@@ -4,6 +4,7 @@
 //! Mesh tracing backend.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod bounded;
 

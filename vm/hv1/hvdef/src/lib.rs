@@ -4,6 +4,7 @@
 //! Microsoft hypervisor definitions.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 #![no_std]
 
 use bitfield_struct::bitfield;

@@ -4,6 +4,8 @@
 //! A disk device wrapper that provides confidentiality (but not authentication)
 //! via encryption.
 
+#![forbid(unsafe_code)]
+
 pub mod resolver;
 
 use block_crypto::XtsAes256;

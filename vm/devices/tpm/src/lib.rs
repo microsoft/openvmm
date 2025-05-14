@@ -10,6 +10,7 @@
 
 #![cfg(feature = "tpm")]
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod ak_cert;
 pub mod logger;

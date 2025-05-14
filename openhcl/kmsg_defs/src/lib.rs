@@ -3,6 +3,8 @@
 
 //! Kmsg-related definitions shared by underhill_core and underhill_init.
 
+#![forbid(unsafe_code)]
+
 /// system is unusable
 pub const LOGLEVEL_EMERG: u8 = 0;
 /// action must be taken immediately

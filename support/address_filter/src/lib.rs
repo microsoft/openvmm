@@ -9,6 +9,8 @@
 //! See [`AddressFilter`] for more information, including the syntax used to
 //! define the filter.
 
+#![forbid(unsafe_code)]
+
 use inspect::InspectMut;
 use std::fmt::Display;
 use std::fmt::LowerHex;

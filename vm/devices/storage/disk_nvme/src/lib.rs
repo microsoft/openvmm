@@ -4,6 +4,7 @@
 //! Disk backend implementation that uses a user-mode NVMe driver based on VFIO.
 
 #![cfg(target_os = "linux")]
+#![forbid(unsafe_code)]
 #![expect(missing_docs)]
 
 use async_trait::async_trait;
