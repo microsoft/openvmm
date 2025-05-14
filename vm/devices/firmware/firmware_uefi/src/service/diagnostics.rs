@@ -280,6 +280,12 @@ impl DiagnosticsServices {
         let mut bytes_read: usize = 0;
         let mut entries_processed: usize = 0;
 
+        // Defines how to handle completed messages
+        let mut process_complete_log = |log: EfiDiagnosticsLog<'_>| {
+            log_handler(log);
+            entries_processed += 1;
+        };
+
         // Process the buffer slice until all entries are processed
         while !buffer_slice.is_empty() {
             let entry = parse_entry(buffer_slice)?;
@@ -303,13 +309,12 @@ impl DiagnosticsServices {
 
             // Handle completed messages (ending with '\n')
             if !entry.message.is_empty() && entry.message.ends_with('\n') {
-                log_handler(EfiDiagnosticsLog {
+                process_complete_log(EfiDiagnosticsLog {
                     debug_level,
                     ticks: time_stamp,
                     phase,
                     message: accumulated_message.trim_end_matches(&['\r', '\n'][..]),
                 });
-                entries_processed += 1;
                 is_accumulating = false;
             }
 
@@ -327,13 +332,12 @@ impl DiagnosticsServices {
 
         // Process any remaining accumulated message
         if is_accumulating && !accumulated_message.is_empty() {
-            log_handler(EfiDiagnosticsLog {
+            process_complete_log(EfiDiagnosticsLog {
                 debug_level,
                 ticks: time_stamp,
                 phase,
                 message: accumulated_message.trim_end_matches(&['\r', '\n'][..]),
             });
-            entries_processed += 1;
         }
 
         // Print summary statistics
