@@ -583,6 +583,9 @@ fn get_ref_time(isolation: IsolationType) -> Option<u64> {
 
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
+    if p.isolation_type == IsolationType::None {
+        enable_enlightened_panic();
+    }
 
     // The support code for the fast hypercalls does not set
     // the Guest ID if it is not set yet as opposed to the slow
@@ -599,9 +602,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // provisions for the hardware-isolated case.
     if !p.isolation_type.is_hardware_isolated() {
         hvcall().initialize();
-        if p.isolation_type == IsolationType::None {
-            enable_enlightened_panic();
-        }
     }
 
     // Enable early log output if requested in the static command line.

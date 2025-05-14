@@ -20,7 +20,7 @@ const PRE_OS_ID: u8 = 5;
 
 static CAN_REPORT_MSG: AtomicBool = AtomicBool::new(false);
 
-fn report_raw(msg: &[u8], msg_pa: Option<usize>) {
+fn report_raw(tag: [u8; 8], msg: &[u8], msg_pa: Option<usize>) {
     // Before using the guest crash MSRs, could check
     // if these are supported. Here, we don't do that
     // as the intention is to fault anyways.
@@ -34,7 +34,7 @@ fn report_raw(msg: &[u8], msg_pa: Option<usize>) {
     // SAFETY: Using the contract established in the Hyper-V TLFS.
     unsafe {
         write_crash_reg(0, u64::from_le_bytes(*b"BOOTSHIM"));
-        write_crash_reg(1, u64::from_be_bytes(*b"IGVMBOOT"));
+        write_crash_reg(1, u64::from_be_bytes(tag));
         write_crash_reg(2, u64::MAX);
 
         match (msg, msg_pa) {
@@ -58,6 +58,7 @@ fn report_raw(msg: &[u8], msg_pa: Option<usize>) {
 ///
 /// `stack_va_to_pa` takes an object on the stack and returns its physical address.
 pub fn report(
+    tag: [u8; 8],
     panic: &core::panic::PanicInfo<'_>,
     mut stack_va_to_pa: impl FnMut(*const ()) -> Option<usize>,
 ) {
@@ -66,6 +67,7 @@ pub fn report(
         let _ = write!(panic_buffer, "{}", panic);
     }
     report_raw(
+        tag,
         panic_buffer.as_bytes(),
         stack_va_to_pa(panic_buffer.as_bytes().as_ptr().cast()),
     );
