@@ -12,10 +12,10 @@ use zerocopy::Immutable;
 use zerocopy::KnownLayout;
 
 /// Advanced Logger Info signature
-pub const SIG_HEADER: u32 = u32::from_le_bytes(*b"ALOG");
+pub const SIG_HEADER: [u8; 4] = *b"ALOG";
 
 /// Advanced Logger Entry signature
-pub const SIG_ENTRY: u32 = u32::from_le_bytes(*b"ALM2");
+pub const SIG_ENTRY: [u8; 4] = *b"ALM2";
 
 /// UEFI Advanced Logger Info Header, which is shared
 /// with the Advanced Logger Package in UEFI. The entries

@@ -14,7 +14,6 @@
 #![warn(missing_docs)]
 
 use crate::UefiDevice;
-use anyhow::anyhow;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
@@ -41,7 +40,7 @@ pub const MAX_MESSAGE_LENGTH: u16 = 0x1000; // 4KB
 
 /// Represents a processed log entry from the EFI diagnostics buffer
 #[derive(Debug, Clone)]
-pub struct EfiDiagnosticsLog {
+pub struct EfiDiagnosticsLog<'a> {
     /// The debug level of the log entry
     pub debug_level: u32,
     /// Hypervisor reference ticks elapsed from UEFI
@@ -49,7 +48,7 @@ pub struct EfiDiagnosticsLog {
     /// The boot phase that produced this log entry
     pub phase: u16,
     /// The log message itself
-    pub message: String,
+    pub message: &'a str,
 }
 
 /// Errors that occur when parsing entries
@@ -64,8 +63,8 @@ pub enum EntryParseError {
     MessageLength(u16, u16),
     #[error("Failed to read from buffer slice")]
     SliceRead,
-    #[error("Encountered arithmetic overflow: {0}")]
-    Overflow(#[from] anyhow::Error),
+    #[error("Arithmetic overflow in {0}")]
+    Overflow(&'static str),
     #[error("Failed to read UTF-8 string: {0}")]
     Utf8Error(#[from] std::str::Utf8Error),
     #[error("message_end ({0:#x}) exceeds buffer slice length ({1:#x})")]
@@ -88,22 +87,18 @@ struct EntryData<'a> {
 
 /// Parse a single entry from a buffer slice
 fn parse_entry(buffer_slice: &[u8]) -> Result<EntryData<'_>, EntryParseError> {
-    // Try to parse an entry from the buffer slice
+    // Try to parse an entry from the buffer slice and validate it
     let (entry, _) = AdvancedLoggerMessageEntryV2::read_from_prefix(buffer_slice)
         .map_err(|_| EntryParseError::SliceRead)?;
 
-    // Validate the entry signature
-    let signature = entry.signature.to_le();
-    if signature != SIG_ENTRY {
-        return Err(EntryParseError::SignatureMismatch(SIG_ENTRY, signature));
+    let signature = entry.signature;
+    if signature != u32::from_le_bytes(SIG_ENTRY) {
+        return Err(EntryParseError::SignatureMismatch(
+            u32::from_le_bytes(SIG_ENTRY),
+            signature,
+        ));
     }
 
-    // Validate the entry timestamp
-    if entry.time_stamp == 0 {
-        return Err(EntryParseError::Timestamp(entry.time_stamp));
-    }
-
-    // Validate the message length
     if entry.message_len > MAX_MESSAGE_LENGTH {
         return Err(EntryParseError::MessageLength(
             MAX_MESSAGE_LENGTH,
@@ -111,23 +106,15 @@ fn parse_entry(buffer_slice: &[u8]) -> Result<EntryData<'_>, EntryParseError> {
         ));
     }
 
-    // Copy packed fields to local variables to avoid unaligned access
     let message_offset = entry.message_offset;
     let message_len = entry.message_len;
 
-    // Calculate message start and end offsets
+    // Calculate message start and end offsets for boundary validation
     let message_start = message_offset as usize;
     let message_end = message_start
         .checked_add(message_len as usize)
-        .ok_or_else(|| {
-            EntryParseError::Overflow(anyhow!(
-                "message_start ({}) + message_len ({})",
-                message_start,
-                message_len
-            ))
-        })?;
+        .ok_or(EntryParseError::Overflow("message_end"))?;
 
-    // Validate message end fits within the buffer slice
     if message_end > buffer_slice.len() {
         return Err(EntryParseError::BadMessageEnd(
             message_end,
@@ -135,28 +122,17 @@ fn parse_entry(buffer_slice: &[u8]) -> Result<EntryData<'_>, EntryParseError> {
         ));
     }
 
-    // Get the message
     let message = std::str::from_utf8(&buffer_slice[message_start..message_end])?;
 
-    // Calculate base offset (entry header size + message length)
+    // Calculate size of the entry to find the offset of the next entry
     let base_offset = size_of::<AdvancedLoggerMessageEntryV2>()
         .checked_add(message_len as usize)
-        .ok_or_else(|| {
-            EntryParseError::Overflow(anyhow!(
-                "size_of::<AdvancedLoggerMessageEntryV2> ({}) + message_len ({})",
-                size_of::<AdvancedLoggerMessageEntryV2>(),
-                message_len
-            ))
-        })?;
+        .ok_or(EntryParseError::Overflow("base_offset"))?;
 
     // Add padding for 8-byte alignment
-    let aligned_offset = base_offset.checked_add(ALIGNMENT_MASK).ok_or_else(|| {
-        EntryParseError::Overflow(anyhow!(
-            "base_offset ({}) + ALIGNMENT_MASK ({})",
-            base_offset,
-            ALIGNMENT_MASK
-        ))
-    })?;
+    let aligned_offset = base_offset
+        .checked_add(ALIGNMENT_MASK)
+        .ok_or(EntryParseError::Overflow("aligned_offset"))?;
     let entry_size = aligned_offset & !ALIGNMENT_MASK;
 
     Ok(EntryData {
@@ -184,8 +160,8 @@ pub enum DiagnosticsError {
     NoGpa,
     #[error("Failed to read from guest memory: {0}")]
     GuestMemoryRead(#[from] GuestMemoryError),
-    #[error("Encountered arithmetic overflow: {0}")]
-    Overflow(#[from] anyhow::Error),
+    #[error("Arithmetic overflow in {0}")]
+    Overflow(&'static str),
     #[error("Expected used log buffer size < {0:#x}, got: {1:#x}")]
     BadUsedBufferSize(u32, u32),
     #[error("Expected accumulated message length < {0:#x}, got: {1:#x}")]
@@ -226,34 +202,31 @@ impl DiagnosticsServices {
 
     /// Process the diagnostics buffer
     pub fn process_diagnostics<F>(
-        &self,
+        &mut self,
         gm: &GuestMemory,
         mut log_handler: F,
     ) -> Result<(), DiagnosticsError>
     where
-        F: FnMut(EfiDiagnosticsLog),
+        F: FnMut(EfiDiagnosticsLog<'_>),
     {
-        // Step 1: Validate GPA
+        // Validate the GPA
         let gpa = match self.gpa {
             Some(gpa) if gpa != 0 && gpa != u32::MAX => gpa,
             Some(invalid_gpa) => return Err(DiagnosticsError::BadGpa(invalid_gpa)),
             None => return Err(DiagnosticsError::NoGpa),
         };
 
-        // Step 2: Get the advanced logger info header
-
-        // Read the header from the guest memory
+        // Read and validate the header from the guest memory
         let header: AdvancedLoggerInfo = gm.read_plain(gpa as u64)?;
 
-        // Validate the header signature
-        let signature = header.signature.to_le();
-        if signature != SIG_HEADER {
+        let signature = header.signature;
+        if signature != u32::from_le_bytes(SIG_HEADER) {
             return Err(DiagnosticsError::HeaderSignatureMismatch(
-                SIG_HEADER, signature,
+                u32::from_le_bytes(SIG_HEADER),
+                signature,
             ));
         }
 
-        // Validate the log buffer size
         if header.log_buffer_size > MAX_LOG_BUFFER_SIZE {
             return Err(DiagnosticsError::HeaderBufferSize(
                 MAX_LOG_BUFFER_SIZE,
@@ -261,32 +234,20 @@ impl DiagnosticsServices {
             ));
         }
 
-        // Step 3: Read the rest of the used log buffer
-
-        // Copy packed fields to local variables to avoid unaligned access
+        // Calculate the used portion of the log buffer
         let log_current_offset = header.log_current_offset;
         let log_buffer_offset = header.log_buffer_offset;
 
-        // Calculate used log buffer size
         let used_log_buffer_size = log_current_offset
             .checked_sub(log_buffer_offset)
-            .ok_or_else(|| {
-                DiagnosticsError::Overflow(anyhow!(
-                    "log_current_offset ({:#x}) - log_buffer_offset ({:#x})",
-                    log_current_offset,
-                    log_buffer_offset
-                ))
-            })?;
+            .ok_or_else(|| DiagnosticsError::Overflow("used_log_buffer_size"))?;
 
-        // If used log buffer size is zero, return early
+        // Early exit if there is no buffer to process
         if used_log_buffer_size == 0 {
-            tracelimit::info_ratelimited!(
-                "EFI Diagnostics: Used log buffer size is zero, ending processing"
-            );
+            tracelimit::info_ratelimited!("Used log buffer size is zero, ending processing");
             return Ok(());
         }
 
-        // Validate used log buffer size
         if used_log_buffer_size > header.log_buffer_size
             || used_log_buffer_size > MAX_LOG_BUFFER_SIZE
         {
@@ -297,19 +258,13 @@ impl DiagnosticsServices {
         }
 
         // Calculate start address of the log buffer
-        let buffer_start_addr = gpa.checked_add(log_buffer_offset).ok_or_else(|| {
-            DiagnosticsError::Overflow(anyhow!(
-                "gpa ({:#x}) + log_buffer_offset ({:#x})",
-                gpa,
-                log_buffer_offset
-            ))
-        })?;
+        let buffer_start_addr = gpa
+            .checked_add(log_buffer_offset)
+            .ok_or_else(|| DiagnosticsError::Overflow("buffer_start_addr"))?;
 
         // Now read the used log buffer into a vector
         let mut buffer_data = vec![0u8; used_log_buffer_size as usize];
         gm.read_at(buffer_start_addr as u64, &mut buffer_data)?;
-
-        // Step 4: Parse the log buffer
 
         // Maintain a slice of the buffer that needs to be processed
         let mut buffer_slice = &buffer_data[..];
@@ -327,7 +282,6 @@ impl DiagnosticsServices {
 
         // Process the buffer slice until all entries are processed
         while !buffer_slice.is_empty() {
-            // Parse the current etnry
             let entry = parse_entry(buffer_slice)?;
 
             // Handle message accumulation
@@ -339,10 +293,7 @@ impl DiagnosticsServices {
                 is_accumulating = true;
             }
 
-            // Append the message
             accumulated_message.push_str(entry.message);
-
-            // Check message length
             if accumulated_message.len() > MAX_MESSAGE_LENGTH as usize {
                 return Err(DiagnosticsError::BadAccumulatedMessageLength(
                     MAX_MESSAGE_LENGTH,
@@ -356,24 +307,17 @@ impl DiagnosticsServices {
                     debug_level,
                     ticks: time_stamp,
                     phase,
-                    message: std::mem::take(&mut accumulated_message)
-                        .trim_end_matches(&['\r', '\n'][..])
-                        .to_string(),
+                    message: accumulated_message.trim_end_matches(&['\r', '\n'][..]),
                 });
                 entries_processed += 1;
                 is_accumulating = false;
             }
 
             // Update bytes read and move to the next entry
-            bytes_read = bytes_read.checked_add(entry.entry_size).ok_or_else(|| {
-                DiagnosticsError::Overflow(anyhow!(
-                    "bytes_read ({}) + entry_size ({})",
-                    bytes_read,
-                    entry.entry_size
-                ))
-            })?;
+            bytes_read = bytes_read
+                .checked_add(entry.entry_size)
+                .ok_or_else(|| DiagnosticsError::Overflow("bytes_read"))?;
 
-            // Advance the buffer to the next entry
             if entry.entry_size >= buffer_slice.len() {
                 break; // End of buffer
             } else {
@@ -387,19 +331,13 @@ impl DiagnosticsServices {
                 debug_level,
                 ticks: time_stamp,
                 phase,
-                message: std::mem::take(&mut accumulated_message)
-                    .trim_end_matches(&['\r', '\n'][..])
-                    .to_string(),
+                message: accumulated_message.trim_end_matches(&['\r', '\n'][..]),
             });
             entries_processed += 1;
         }
 
         // Print summary statistics
-        tracelimit::info_ratelimited!(
-            "EFI Diagnostics: Processed {} entries, Read {} bytes",
-            entries_processed,
-            bytes_read
-        );
+        tracelimit::info_ratelimited!(entries_processed, bytes_read, "processed EFI log entries");
 
         Ok(())
     }
@@ -410,7 +348,7 @@ impl UefiDevice {
     pub(crate) fn process_diagnostics(&mut self, gm: GuestMemory) {
         // Do not proceed if we have already processed before
         if self.service.diagnostics.did_process {
-            tracelimit::warn_ratelimited!("EFI Diagnostics: Already processed, skipping");
+            tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
             return;
         }
         self.service.diagnostics.did_process = true;
@@ -421,15 +359,15 @@ impl UefiDevice {
                 debug_level = log.debug_level,
                 ticks = log.ticks,
                 phase = log.phase,
-                message = %log.message,
-                "EFI Diagnostics:"
+                log_message = %log.message,
+                "EFI log entry:"
             );
         }) {
             Ok(_) => {}
             Err(error) => {
                 tracelimit::error_ratelimited!(
                     error = &error as &dyn std::error::Error,
-                    "EFI Diagnostics: Failed to process diagnostics buffer"
+                    "Failed to process diagnostics buffer"
                 );
             }
         }
