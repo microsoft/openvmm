@@ -1687,7 +1687,6 @@ dependencies = [
 name = "firmware_uefi"
 version = "0.0.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "bitfield-struct 0.10.1",
  "chipset_device",
