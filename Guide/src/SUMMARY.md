@@ -28,6 +28,7 @@
   - [Suggested Dev Environment](./dev_guide/getting_started/suggested_dev_env.md)
 - [Testing](./dev_guide/tests.md)
   - [Unit Tests](./dev_guide/tests/unit.md)
+  - [Test microkernels](./dev_guide/tests/TMKs.md)
   - [VMM Tests](./dev_guide/tests/vmm.md)
     - [Azure-hosted Test Images](./dev_guide/tests/vmm/azure_images.md)
   - [Fuzzing](./dev_guide/tests/fuzzing.md)
