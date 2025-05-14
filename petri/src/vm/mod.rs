@@ -492,7 +492,7 @@ pub enum IsolationType {
 }
 
 /// Flags controlling servicing behavior.
-#[derive(Default)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct OpenHclServicingFlags {
     /// Preserve DMA memory for NVMe devices if supported.
     pub enable_nvme_keepalive: bool,

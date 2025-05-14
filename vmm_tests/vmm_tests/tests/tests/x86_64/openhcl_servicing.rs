@@ -36,7 +36,7 @@ async fn openhcl_servicing_core(
         // Test that inspect serialization works with the old version.
         vm.test_inspect_openhcl().await?;
 
-        vm.restart_openhcl(new_openhcl, flags).await?;
+        vm.restart_openhcl(&new_openhcl, flags).await?;
 
         agent.ping().await?;
 
@@ -123,7 +123,7 @@ async fn openhcl_servicing_shutdown_ic(
     cmd!(sh, "ls /dev/sda").run().await?;
 
     let shutdown_ic = vm.wait_for_enlightened_shutdown_ready().await?;
-    vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
+    vm.restart_openhcl(&igvm_file, OpenHclServicingFlags::default())
         .await?;
     // VTL2 will disconnect and then reconnect the shutdown IC across a servicing event.
     tracing::info!("waiting for shutdown IC to close");

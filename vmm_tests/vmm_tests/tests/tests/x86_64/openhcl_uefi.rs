@@ -52,7 +52,7 @@ async fn nvme_relay_servicing_core(
     // Test that inspect serialization works with the old version.
     vm.test_inspect_openhcl().await?;
 
-    vm.restart_openhcl(new_openhcl, flags).await?;
+    vm.restart_openhcl(&new_openhcl, flags).await?;
 
     agent.ping().await?;
 

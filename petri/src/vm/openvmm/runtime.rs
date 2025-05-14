@@ -213,7 +213,7 @@ impl PetriVmOpenVmm {
         /// Restarts OpenHCL.
         pub async fn restart_openhcl(
             &mut self,
-            new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+            new_openhcl: &ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
             flags: OpenHclServicingFlags
         ) -> anyhow::Result<()>
     );
@@ -425,7 +425,7 @@ impl PetriVmInner {
 
     async fn restart_openhcl(
         &self,
-        new_openhcl: ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
+        new_openhcl: &ResolvedArtifact<impl petri_artifacts_common::tags::IsOpenhclIgvm>,
         flags: OpenHclServicingFlags,
     ) -> anyhow::Result<()> {
         let ged_send = self
