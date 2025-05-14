@@ -349,7 +349,7 @@ impl DiagnosticsServices {
 
 impl UefiDevice {
     /// Process the diagnostics buffer and log the entries to tracing
-    pub(crate) fn process_diagnostics(&mut self, gm: GuestMemory) {
+    pub(crate) fn process_diagnostics(&mut self) {
         // Do not proceed if we have already processed before
         if self.service.diagnostics.did_process {
             tracelimit::warn_ratelimited!("Already processed diagnostics, skipping");
@@ -358,15 +358,18 @@ impl UefiDevice {
         self.service.diagnostics.did_process = true;
 
         // Process diagnostics logs and send each directly to tracing
-        match self.service.diagnostics.process_diagnostics(&gm, |log| {
-            tracing::info!(
-                debug_level = log.debug_level,
-                ticks = log.ticks,
-                phase = log.phase,
-                log_message = %log.message,
-                "EFI log entry:"
-            );
-        }) {
+        match self
+            .service
+            .diagnostics
+            .process_diagnostics(&self.gm, |log| {
+                tracing::info!(
+                    debug_level = log.debug_level,
+                    ticks = log.ticks,
+                    phase = log.phase,
+                    log_message = %log.message,
+                    "EFI log entry:"
+                );
+            }) {
             Ok(_) => {}
             Err(error) => {
                 tracelimit::error_ratelimited!(

@@ -569,7 +569,7 @@ impl UefiDevice {
                         vsm.revoke_guest_vsm()
                     }
                 }
-                self.process_diagnostics(self.gm.clone());
+                self.process_diagnostics();
                 self.service.nvram.services.exit_boot_services();
 
                 (EfiStatus::SUCCESS, None)
