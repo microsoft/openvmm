@@ -228,7 +228,6 @@ struct UhPartitionInner {
     vmbus_relay: bool,
 }
 
-#[expect(clippy::large_enum_variant)]
 #[derive(Inspect)]
 #[inspect(untagged)]
 enum BackingShared {

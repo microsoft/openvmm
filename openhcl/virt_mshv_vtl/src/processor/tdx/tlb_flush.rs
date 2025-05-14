@@ -200,8 +200,8 @@ impl UhProcessor<'_, TdxBacked> {
 #[derive(Debug, Inspect)]
 pub(super) struct AtomicTlbRingBuffer {
     /// The contents of the buffer.
-    #[inspect(hex, iter_by_index)]
-    buffer: [AtomicU64; FLUSH_GVA_LIST_SIZE],
+    #[inspect(hex, with = "|x| inspect::iter_by_index(x.iter())")]
+    buffer: Box<[AtomicU64; FLUSH_GVA_LIST_SIZE]>,
     /// The number of GVAs that have been added over the lifetime of the VM.
     gva_list_count: AtomicUsize,
     /// The number of GVAs that have started being added to the list over the
@@ -212,7 +212,7 @@ pub(super) struct AtomicTlbRingBuffer {
 impl AtomicTlbRingBuffer {
     fn new() -> Self {
         Self {
-            buffer: std::array::from_fn(|_| AtomicU64::new(0)),
+            buffer: Box::new(std::array::from_fn(|_| AtomicU64::new(0))),
             gva_list_count: AtomicUsize::new(0),
             in_progress_count: AtomicUsize::new(0),
         }
