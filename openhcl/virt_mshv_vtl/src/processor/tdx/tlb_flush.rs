@@ -10,6 +10,8 @@ use hcl::ioctl::ProcessorRunner;
 use hcl::ioctl::tdx::Tdx;
 use hvdef::hypercall::HvGvaRange;
 use inspect::Inspect;
+use parking_lot::Mutex;
+use parking_lot::MutexGuard;
 use safeatomic::AtomicSliceOps;
 use std::num::Wrapping;
 use std::sync::atomic::AtomicU32;
@@ -207,6 +209,13 @@ pub(super) struct AtomicTlbRingBuffer {
     /// The number of GVAs that have started being added to the list over the
     /// lifetime of the VM.
     in_progress_count: AtomicUsize,
+    /// A guard to ensure that only one thread is writing to the list at a time.
+    write_lock: Mutex<()>,
+}
+
+pub(super) struct AtomicTlbRingBufferWriteGuard<'a> {
+    buf: &'a AtomicTlbRingBuffer,
+    _write_lock: MutexGuard<'a, ()>,
 }
 
 impl AtomicTlbRingBuffer {
@@ -215,11 +224,20 @@ impl AtomicTlbRingBuffer {
             buffer: Box::new(std::array::from_fn(|_| AtomicU64::new(0))),
             gva_list_count: AtomicUsize::new(0),
             in_progress_count: AtomicUsize::new(0),
+            write_lock: Mutex::new(()),
         }
     }
 
     fn count(&self) -> usize {
         self.gva_list_count.load(Ordering::Relaxed)
+    }
+
+    pub fn write(&self) -> AtomicTlbRingBufferWriteGuard<'_> {
+        let write_lock = self.write_lock.lock();
+        AtomicTlbRingBufferWriteGuard {
+            buf: self,
+            _write_lock: write_lock,
+        }
     }
 
     fn try_copy(&self, start_count: Wrapping<usize>, flush_addrs: &mut [u64]) -> bool {
@@ -239,8 +257,14 @@ impl AtomicTlbRingBuffer {
         }
         true
     }
+}
 
+impl AtomicTlbRingBufferWriteGuard<'_> {
     pub fn push(&self, v: u64) {
+        debug_assert_eq!(
+            self.buf.in_progress_count.load(Ordering::Relaxed),
+            self.buf.gva_list_count.load(Ordering::Relaxed)
+        );
         // Adding a new item to the buffer must be done in three steps:
         // 1. Indicate that an entry is about to be added so that any flush
         //    code executing simultaneously will know that it might lose an
@@ -248,8 +272,9 @@ impl AtomicTlbRingBuffer {
         // 2. Add the entry.
         // 3. Increment the valid entry count so that any flush code executing
         //    simultaneously will know it is valid.
-        let index = self.in_progress_count.fetch_add(1, Ordering::Relaxed);
-        self.buffer[index % FLUSH_GVA_LIST_SIZE].store(v, Ordering::Relaxed);
-        self.gva_list_count.fetch_add(1, Ordering::Relaxed);
+        self.buf.in_progress_count.fetch_add(1, Ordering::Relaxed);
+        let count = self.buf.gva_list_count.load(Ordering::Relaxed);
+        self.buf.buffer[count % FLUSH_GVA_LIST_SIZE].store(v, Ordering::Relaxed);
+        self.buf.gva_list_count.store(count + 1, Ordering::Relaxed);
     }
 }
