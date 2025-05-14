@@ -272,9 +272,8 @@ impl AtomicTlbRingBufferWriteGuard<'_> {
         // 2. Add the entry.
         // 3. Increment the valid entry count so that any flush code executing
         //    simultaneously will know it is valid.
-        self.buf.in_progress_count.fetch_add(1, Ordering::Relaxed);
-        let count = self.buf.gva_list_count.load(Ordering::Relaxed);
+        let count = self.buf.in_progress_count.fetch_add(1, Ordering::Relaxed);
         self.buf.buffer[count % FLUSH_GVA_LIST_SIZE].store(v, Ordering::Relaxed);
-        self.buf.gva_list_count.store(count + 1, Ordering::Relaxed);
+        self.buf.gva_list_count.fetch_add(1, Ordering::Relaxed);
     }
 }
