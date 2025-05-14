@@ -30,17 +30,19 @@ async fn openhcl_servicing_core(
         .run()
         .await?;
 
-    agent.ping().await?;
+    for _ in 0..3 {
+        agent.ping().await?;
 
-    // Test that inspect serialization works with the old version.
-    vm.test_inspect_openhcl().await?;
+        // Test that inspect serialization works with the old version.
+        vm.test_inspect_openhcl().await?;
 
-    vm.restart_openhcl(new_openhcl, flags).await?;
+        vm.restart_openhcl(new_openhcl, flags).await?;
 
-    agent.ping().await?;
+        agent.ping().await?;
 
-    // Test that inspect serialization works with the new version.
-    vm.test_inspect_openhcl().await?;
+        // Test that inspect serialization works with the new version.
+        vm.test_inspect_openhcl().await?;
+    }
 
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);

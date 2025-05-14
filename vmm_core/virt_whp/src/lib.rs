@@ -464,6 +464,8 @@ impl virt::ScrubVtl for WhpPartition {
         assert!(!self.inner.isolation.is_isolated());
         assert_eq!(vtl, Vtl::Vtl2);
 
+        tracing::info!(?vtl, "scrubbing partition");
+
         let vtl2 = self.inner.vtl2.as_ref().ok_or(Error::NoVtl2)?;
 
         // Preserve VTL2 reference time across the scrub to match hypervisor
