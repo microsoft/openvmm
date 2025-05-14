@@ -450,7 +450,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                         .await?
                         .map_err(Error::Vmbus)?;
 
-                    if version_request.message_header.message_id != HostRequests::VERSION {
+                    if version_request.message_header.message_id() != HostRequests::VERSION {
                         return Err(Error::InvalidSequence);
                     }
 
@@ -655,7 +655,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
         state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
-        match header.message_id {
+        match header.message_id() {
             HostRequests::TIME => self.handle_time()?,
             HostRequests::BIOS_BOOT_FINALIZE => self.handle_bios_boot_finalize(message_buf)?,
             HostRequests::VMGS_GET_DEVICE_INFO => self.handle_vmgs_get_device_info(state)?,
@@ -683,7 +683,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostRequests::CREATE_RAM_GPA_RANGE => self.handle_create_ram_gpa_range(message_buf)?,
             HostRequests::RESET_RAM_GPA_RANGE => self.handle_reset_ram_gpa_range(message_buf)?,
             _ => {
-                tracing::error!(message_id = ?header.message_id, "unexpected message");
+                tracing::error!(message_id = ?header.message_id(), "unexpected message");
                 return Err(Error::InvalidSequence);
             }
         };
@@ -1139,7 +1139,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
         state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
-        match header.message_id {
+        match header.message_id() {
             HostNotifications::POWER_OFF => {
                 self.handle_power_off(state);
             }

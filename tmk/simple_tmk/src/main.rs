@@ -5,7 +5,7 @@
 
 #![cfg_attr(minimal_rt, no_std, no_main)]
 // UNSAFETY: TMK tests are going to need to perform unsafe operations.
-#![allow(unsafe_code)]
+#![expect(unsafe_code)]
 
 mod prelude;
 
