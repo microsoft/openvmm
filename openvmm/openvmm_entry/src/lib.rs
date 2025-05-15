@@ -2199,6 +2199,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         Resume(bool),
         Reset(Result<(), RemoteError>),
         PulseSaveRestore(Result<(), PulseSaveRestoreError>),
+        ServiceVtl2(anyhow::Result<Duration>),
     }
 
     enum Event {
@@ -2392,6 +2393,18 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                             Err(err) => tracing::error!(
                                 error = &err as &dyn std::error::Error,
                                 "pulse save/restore failed"
+                            ),
+                        },
+                        StateChange::ServiceVtl2(r) => match r {
+                            Ok(dur) => {
+                                tracing::info!(
+                                    duration = dur.as_millis() as i64,
+                                    "vtl2 servicing complete"
+                                )
+                            }
+                            Err(err) => tracing::error!(
+                                error = err.as_ref() as &dyn std::error::Error,
+                                "vtl2 servicing failed"
                             ),
                         },
                     },
@@ -2735,36 +2748,32 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 user_mode_only,
                 igvm,
             } => {
-                let r = async {
+                let paravisor_diag = paravisor_diag.clone();
+                let vm_rpc = vm_rpc.clone();
+                let igvm = igvm.or_else(|| opt.igvm.clone());
+                let ged_rpc = resources.ged_rpc.clone();
+                let r = async move {
                     let start;
                     if user_mode_only {
                         start = Instant::now();
                         paravisor_diag.restart().await?;
                     } else {
-                        let path = igvm
-                            .as_ref()
-                            .or(opt.igvm.as_ref())
-                            .context("no igvm file loaded")?;
+                        let path = igvm.context("no igvm file loaded")?;
                         let file = fs_err::File::open(path)?;
                         start = Instant::now();
                         hvlite_helpers::underhill::service_underhill(
                             &vm_rpc,
-                            resources.ged_rpc.as_ref().context("no GED")?,
+                            ged_rpc.as_ref().context("no GED")?,
                             GuestServicingFlags::default(),
                             file.into(),
                         )
                         .await?;
                     }
-                    anyhow::Ok(start)
+                    let end = Instant::now();
+                    Ok(end - start)
                 }
-                .await;
-                let end = Instant::now();
-                match r {
-                    Ok(start) => {
-                        println!("servicing time: {}ms", (end - start).as_millis());
-                    }
-                    Err(err) => eprintln!("error: {:#}", err),
-                }
+                .map(|r| Ok(StateChange::ServiceVtl2(r)));
+                state_change_task = Some(driver.spawn("state-change", r));
             }
             InteractiveCommand::Quit => {
                 tracing::info!("quitting");
