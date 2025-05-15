@@ -261,23 +261,27 @@ impl QueuePair {
             }
         });
 
+        // Convert the queue pages to bytes, and assert that queue size is large
+        // enough.
+        const fn pages_to_size_bytes(pages: usize) -> usize {
+            let size = pages * PAGE_SIZE;
+            assert!(
+                size >= 128 * 1024 + PAGE_SIZE,
+                "not enough room for an ATAPI IO plus a PRP list"
+            );
+            size
+        }
+
         // Page allocator uses remaining part of the buffer for dynamic
         // allocation. The length of the page allocator depends on if bounce
         // buffering / double buffering is needed.
+        //
+        // NOTE: Do not remove the `const` blocks below. This is to force
+        // compile time evaluation of the assertion described above.
         let alloc_len = if bounce_buffer {
-            const SIZE: usize = QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER * PAGE_SIZE;
-            const _: () = assert!(
-                SIZE >= 128 * 1024 + PAGE_SIZE,
-                "not enough room for an ATAPI IO plus a PRP list"
-            );
-            SIZE
+            const { pages_to_size_bytes(QueuePair::PER_QUEUE_PAGES_BOUNCE_BUFFER) }
         } else {
-            const SIZE: usize = QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER * PAGE_SIZE;
-            const _: () = assert!(
-                SIZE >= 128 * 1024 + PAGE_SIZE,
-                "not enough room for an ATAPI IO plus a PRP list"
-            );
-            SIZE
+            const { pages_to_size_bytes(QueuePair::PER_QUEUE_PAGES_NO_BOUNCE_BUFFER) }
         };
 
         let alloc = PageAllocator::new(mem.subblock(data_offset, alloc_len));
