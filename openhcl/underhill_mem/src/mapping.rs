@@ -17,8 +17,70 @@ use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use sparse_mmap::SparseMapping;
 use std::ptr::NonNull;
+use std::sync::Arc;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
+
+/// Partition-wide (cross-vtl) tracking of valid memory that can be used in
+/// individual GuestMemoryMappings.
+#[derive(Debug)]
+pub struct GuestValidMemory {
+    valid_bitmap: GuestMemoryBitmap,
+    valid_bitmap_lock: Mutex<()>,
+}
+
+impl GuestValidMemory {
+    pub fn new(
+        memory_layout: &MemoryLayout,
+        valid_bitmap_state: bool,
+    ) -> Result<Self, MappingError> {
+        let valid_bitmap = {
+            let mut bitmap = {
+                // Calculate the total size of the address space by looking at the ending region.
+                let last_entry = memory_layout
+                    .ram()
+                    .last()
+                    .expect("memory map must have at least 1 entry");
+                let address_space_size = last_entry.range.end();
+                GuestMemoryBitmap::new(address_space_size as usize)?
+            };
+
+            for entry in memory_layout.ram() {
+                if entry.range.is_empty() {
+                    continue;
+                }
+
+                bitmap.init(entry.range, valid_bitmap_state)?;
+            }
+
+            bitmap
+        };
+
+        Ok(GuestValidMemory {
+            valid_bitmap,
+            valid_bitmap_lock: Default::default(),
+        })
+    }
+
+    pub fn update_valid(&self, range: MemoryRange, state: bool) {
+        let _lock = self.valid_bitmap_lock.lock();
+        self.valid_bitmap.update(range, state);
+    }
+
+    pub(crate) fn check_valid(&self, gpn: u64) -> bool {
+        self.valid_bitmap.page_state(gpn)
+    }
+
+    fn access_bitmap(&self) -> guestmem::BitmapInfo {
+        let ptr = NonNull::new(self.valid_bitmap.as_ptr()).unwrap();
+        guestmem::BitmapInfo {
+            read_bitmap: ptr,
+            write_bitmap: ptr,
+            execute_bitmap: ptr,
+            bit_offset: 0,
+        }
+    }
+}
 
 /// An implementation of a [`GuestMemoryAccess`] trait for Underhill VMs.
 #[derive(Debug, Inspect)]
@@ -27,10 +89,90 @@ pub struct GuestMemoryMapping {
     mapping: SparseMapping,
     iova_offset: Option<u64>,
     #[inspect(with = "Option::is_some")]
-    bitmap: Option<SparseMapping>,
-    #[inspect(skip)]
-    bitmap_lock: Mutex<()>,
+    valid_memory: Option<Arc<GuestValidMemory>>,
     registrar: Option<MemoryRegistrar<MshvVtlWithPolicy>>,
+}
+
+#[derive(Debug)]
+struct GuestMemoryBitmap {
+    bitmap: SparseMapping,
+}
+
+impl GuestMemoryBitmap {
+    fn new(address_space_size: usize) -> Result<Self, MappingError> {
+        let bitmap = SparseMapping::new((address_space_size / PAGE_SIZE).div_ceil(8))
+            .map_err(MappingError::BitmapReserve)?;
+        bitmap
+            .map_zero(0, bitmap.len())
+            .map_err(MappingError::BitmapMap)?;
+        Ok(Self { bitmap })
+    }
+
+    fn init(&mut self, range: MemoryRange, state: bool) -> Result<(), MappingError> {
+        if range.start() % (PAGE_SIZE as u64 * 8) != 0 || range.end() % (PAGE_SIZE as u64 * 8) != 0
+        {
+            return Err(MappingError::BadAlignment(range));
+        }
+
+        let bitmap_start = range.start() as usize / PAGE_SIZE / 8;
+        let bitmap_end = (range.end() - 1) as usize / PAGE_SIZE / 8;
+        let bitmap_page_start = bitmap_start / PAGE_SIZE;
+        let bitmap_page_end = bitmap_end / PAGE_SIZE;
+        let page_count = bitmap_page_end + 1 - bitmap_page_start;
+
+        // TODO SNP: map some pre-reserved lower VTL memory into the
+        // bitmap. Or just figure out how to hot add that memory to the
+        // kernel. Or have the boot loader reserve it at boot time.
+        self.bitmap
+            .alloc(bitmap_page_start * PAGE_SIZE, page_count * PAGE_SIZE)
+            .map_err(MappingError::BitmapAlloc)?;
+
+        // Set the initial bitmap state.
+        if state {
+            let start_gpn = range.start() / PAGE_SIZE as u64;
+            let gpn_count = range.len() / PAGE_SIZE as u64;
+            assert_eq!(range.start() % 8, 0);
+            assert_eq!(gpn_count % 8, 0);
+            self.bitmap
+                .fill_at(start_gpn as usize / 8, 0xff, gpn_count as usize / 8)
+                .unwrap();
+        }
+
+        Ok(())
+    }
+
+    /// Panics if the range is outside of guest RAM.
+    fn update(&self, range: MemoryRange, state: bool) {
+        for gpn in range.start() / PAGE_SIZE as u64..range.end() / PAGE_SIZE as u64 {
+            // TODO: use `fill_at` for the aligned part of the range.
+            let mut b = 0;
+            self.bitmap
+                .read_at(gpn as usize / 8, std::slice::from_mut(&mut b))
+                .unwrap();
+            if state {
+                b |= 1 << (gpn % 8);
+            } else {
+                b &= !(1 << (gpn % 8));
+            }
+            self.bitmap
+                .write_at(gpn as usize / 8, std::slice::from_ref(&b))
+                .unwrap();
+        }
+    }
+
+    /// Read the bitmap for `gpn`.
+    /// Panics if the range is outside of guest RAM.
+    fn page_state(&self, gpn: u64) -> bool {
+        let mut b = 0;
+        self.bitmap
+            .read_at(gpn as usize / 8, std::slice::from_mut(&mut b))
+            .unwrap();
+        b & (1 << (gpn % 8)) != 0
+    }
+
+    fn as_ptr(&self) -> *mut u8 {
+        self.bitmap.as_ptr().cast()
+    }
 }
 
 /// Error constructing a [`GuestMemoryMapping`].
@@ -55,7 +197,7 @@ pub enum MappingError {
 /// A builder for [`GuestMemoryMapping`].
 pub struct GuestMemoryMappingBuilder {
     physical_address_base: u64,
-    bitmap_state: Option<bool>,
+    valid_memory: Option<Arc<GuestValidMemory>>,
     shared: bool,
     for_kernel_access: bool,
     dma_base_address: Option<u64>,
@@ -71,8 +213,11 @@ impl GuestMemoryMappingBuilder {
     ///
     /// FUTURE: use bitmaps to track VTL permissions as well, to support guest
     /// VSM for hardware-isolated VMs.
-    pub fn use_bitmap(&mut self, initial_state: Option<bool>) -> &mut Self {
-        self.bitmap_state = initial_state;
+    pub fn use_partition_valid_memory(
+        &mut self,
+        valid_memory: Option<Arc<GuestValidMemory>>,
+    ) -> &mut Self {
+        self.valid_memory = valid_memory;
         self
     }
 
@@ -163,17 +308,6 @@ impl GuestMemoryMappingBuilder {
 
         tracing::trace!(?mapping, "map_lower_vtl_memory mapping");
 
-        let bitmap = if self.bitmap_state.is_some() {
-            let bitmap = SparseMapping::new((address_space_size as usize / PAGE_SIZE).div_ceil(8))
-                .map_err(MappingError::BitmapReserve)?;
-            bitmap
-                .map_zero(0, bitmap.len())
-                .map_err(MappingError::BitmapMap)?;
-            Some(bitmap)
-        } else {
-            None
-        };
-
         // Loop through each of the memory map entries and create a mapping for it.
         for entry in memory_layout.ram() {
             if entry.range.is_empty() {
@@ -194,43 +328,7 @@ impl GuestMemoryMappingBuilder {
                 )
                 .map_err(MappingError::Map)?;
 
-            if let Some(bitmap) = &bitmap {
-                // To simplify bitmap implementation, require that all memory
-                // regions be 8-page aligned. Relax this if necessary.
-                if entry.range.start() % (PAGE_SIZE as u64 * 8) != 0
-                    || entry.range.end() % (PAGE_SIZE as u64 * 8) != 0
-                {
-                    return Err(MappingError::BadAlignment(entry.range));
-                }
-
-                let bitmap_start = entry.range.start() as usize / PAGE_SIZE / 8;
-                let bitmap_end = (entry.range.end() - 1) as usize / PAGE_SIZE / 8;
-                let bitmap_page_start = bitmap_start / PAGE_SIZE;
-                let bitmap_page_end = bitmap_end / PAGE_SIZE;
-                let page_count = bitmap_page_end + 1 - bitmap_page_start;
-
-                // TODO SNP: map some pre-reserved lower VTL memory into the
-                // bitmap. Or just figure out how to hot add that memory to the
-                // kernel. Or have the boot loader reserve it at boot time.
-                bitmap
-                    .alloc(bitmap_page_start * PAGE_SIZE, page_count * PAGE_SIZE)
-                    .map_err(MappingError::BitmapAlloc)?;
-            }
-
             tracing::trace!(?entry, "mapped memory map entry");
-        }
-
-        // Set the initial bitmap state.
-        if let Some((bitmap, true)) = bitmap.as_ref().zip(self.bitmap_state) {
-            for entry in memory_layout.ram() {
-                let start_gpn = entry.range.start() / PAGE_SIZE as u64;
-                let gpn_count = entry.range.len() / PAGE_SIZE as u64;
-                assert_eq!(entry.range.start() % 8, 0);
-                assert_eq!(gpn_count % 8, 0);
-                bitmap
-                    .fill_at(start_gpn as usize / 8, 0xff, gpn_count as usize / 8)
-                    .unwrap();
-            }
         }
 
         let registrar = if self.for_kernel_access {
@@ -252,8 +350,7 @@ impl GuestMemoryMappingBuilder {
         Ok(GuestMemoryMapping {
             mapping,
             iova_offset: self.dma_base_address,
-            bitmap,
-            bitmap_lock: Default::default(),
+            valid_memory: self.valid_memory.clone(),
             registrar,
         })
     }
@@ -268,42 +365,11 @@ impl GuestMemoryMapping {
     pub fn builder(physical_address_base: u64) -> GuestMemoryMappingBuilder {
         GuestMemoryMappingBuilder {
             physical_address_base,
-            bitmap_state: None,
+            valid_memory: None,
             shared: false,
             for_kernel_access: false,
             dma_base_address: None,
             ignore_registration_failure: false,
-        }
-    }
-
-    /// Read the bitmap for `gpn`.
-    pub(crate) fn check_bitmap(&self, gpn: u64) -> bool {
-        let bitmap = self.bitmap.as_ref().unwrap();
-        let mut b = 0;
-        bitmap
-            .read_at(gpn as usize / 8, std::slice::from_mut(&mut b))
-            .unwrap();
-        b & (1 << (gpn % 8)) != 0
-    }
-
-    /// Panics if the range is outside of guest RAM.
-    pub fn update_bitmap(&self, range: MemoryRange, state: bool) {
-        let bitmap = self.bitmap.as_ref().unwrap();
-        let _lock = self.bitmap_lock.lock();
-        for gpn in range.start() / PAGE_SIZE as u64..range.end() / PAGE_SIZE as u64 {
-            // TODO: use `fill_at` for the aligned part of the range.
-            let mut b = 0;
-            bitmap
-                .read_at(gpn as usize / 8, std::slice::from_mut(&mut b))
-                .unwrap();
-            if state {
-                b |= 1 << (gpn % 8);
-            } else {
-                b &= !(1 << (gpn % 8));
-            }
-            bitmap
-                .write_at(gpn as usize / 8, std::slice::from_ref(&b))
-                .unwrap();
         }
     }
 
@@ -349,14 +415,8 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
     }
 
     fn access_bitmap(&self) -> Option<guestmem::BitmapInfo> {
-        self.bitmap.as_ref().map(|bitmap| {
-            let ptr = NonNull::new(bitmap.as_ptr().cast()).unwrap();
-            guestmem::BitmapInfo {
-                read_bitmap: ptr,
-                write_bitmap: ptr,
-                execute_bitmap: ptr,
-                bit_offset: 0,
-            }
-        })
+        self.valid_memory
+            .as_ref()
+            .map(|bitmap| bitmap.access_bitmap())
     }
 }

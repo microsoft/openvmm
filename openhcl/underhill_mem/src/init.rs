@@ -6,6 +6,7 @@
 use crate::HardwareIsolatedMemoryProtector;
 use crate::MemoryAcceptor;
 use crate::mapping::GuestMemoryMapping;
+use crate::mapping::GuestValidMemory;
 use anyhow::Context;
 use futures::future::try_join_all;
 use guestmem::GuestMemory;
@@ -207,12 +208,19 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // Do not register this mapping with the kernel. It will not be safe for
         // use with syscalls that expect virtual addresses to be in
         // kernel-registered RAM.
+
+        tracing::debug!("Building valid encrypted memory view");
+        let valid_encrypted_memory = Arc::new({
+            let _span = tracing::info_span!("create encrypted memory bitmap").entered();
+            GuestValidMemory::new(params.mem_layout, true)?
+        });
+
         tracing::debug!("Building VTL0 memory map");
         let vtl0_mapping = Arc::new({
             let _span = tracing::info_span!("map_vtl0_memory").entered();
             GuestMemoryMapping::builder(0)
                 .dma_base_address(None) // prohibit direct DMA attempts until TDISP is supported
-                .use_bitmap(Some(true))
+                .use_partition_valid_memory(Some(valid_encrypted_memory.clone()))
                 .build(&gpa_fd, params.mem_layout)
                 .context("failed to map vtl0 memory")?
         });
@@ -280,16 +288,12 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // confused about shared memory, and our current use of kernel-mode
         // guest memory access is limited to low-perf paths where we can use
         // bounce buffering.
+
         tracing::debug!("Building shared memory map");
-        let shared_mapping = Arc::new({
-            let _span = tracing::info_span!("map_shared_memory").entered();
-            GuestMemoryMapping::builder(shared_offset)
-                .shared(true)
-                .use_bitmap(Some(false))
-                .ignore_registration_failure(params.boot_init.is_none())
-                .dma_base_address(Some(dma_base_address))
-                .build(&gpa_fd, params.complete_memory_layout)
-                .context("failed to map shared memory")?
+
+        let valid_shared_memory = Arc::new({
+            let _span = tracing::info_span!("create shared memory bitmap").entered();
+            GuestValidMemory::new(params.complete_memory_layout, false)?
         });
 
         // Update the shared mapping bitmap for pages used by the shared
@@ -297,8 +301,19 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // marked as no-access in the bitmap.
         tracing::debug!("Updating shared mapping bitmaps");
         for range in params.shared_pool {
-            shared_mapping.update_bitmap(range.range, true);
+            valid_shared_memory.update_valid(range.range, true);
         }
+
+        let shared_mapping = Arc::new({
+            let _span = tracing::info_span!("map_shared_memory").entered();
+            GuestMemoryMapping::builder(shared_offset)
+                .shared(true)
+                .use_partition_valid_memory(Some(valid_shared_memory.clone()))
+                .ignore_registration_failure(params.boot_init.is_none())
+                .dma_base_address(Some(dma_base_address))
+                .build(&gpa_fd, params.complete_memory_layout)
+                .context("failed to map shared memory")?
+        });
 
         tracing::debug!("Creating VTL0 guest memory");
         let vtl0_gm = GuestMemory::new_multi_region(
@@ -308,6 +323,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         )
         .context("failed to make vtl0 guest memory")?;
 
+        tracing::debug!("Creating VTL1 guest memory");
         let vtl1_gm = if params.maximum_vtl >= Vtl::Vtl1 {
             // TODO CVM GUEST VSM: This should not just use the vtl0_gm. This
             // could also be further tightened -- whether or not VTL 1 is
@@ -349,7 +365,8 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         let private_vtl0_memory = GuestMemory::new("trusted", vtl0_mapping.clone());
 
         let protector = Arc::new(HardwareIsolatedMemoryProtector::new(
-            shared_mapping.clone(),
+            valid_encrypted_memory.clone(),
+            valid_shared_memory.clone(),
             vtl0_mapping.clone(),
             params.mem_layout.clone(),
             acceptor.as_ref().unwrap().clone(),
