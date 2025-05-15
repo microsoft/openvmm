@@ -152,6 +152,7 @@ pub struct VMBUS_PROXY_RESTORE_CHANNEL_INPUT {
 #[derive(Copy, Clone)]
 pub struct VMBUS_PROXY_RESTORE_CHANNEL_OUTPUT {
     pub ProxyId: u64,
+    pub Flags: u32,
 }
 
 #[repr(C)]
