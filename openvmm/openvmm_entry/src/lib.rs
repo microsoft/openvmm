@@ -2773,7 +2773,11 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                     Ok(end - start)
                 }
                 .map(|r| Ok(StateChange::ServiceVtl2(r)));
-                state_change_task = Some(driver.spawn("state-change", r));
+                if state_change_task.is_some() {
+                    tracing::error!("state change already in progress");
+                } else {
+                    state_change_task = Some(driver.spawn("state-change", r));
+                }
             }
             InteractiveCommand::Quit => {
                 tracing::info!("quitting");
