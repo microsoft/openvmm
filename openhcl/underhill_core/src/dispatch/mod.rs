@@ -530,7 +530,9 @@ impl LoadedVm {
                     nvme_manager
                         .shutdown(nvme_keepalive)
                         .instrument(tracing::info_span!("shutdown_nvme_vfio", %correlation_id, %nvme_keepalive))
-                        .await;
+                        .await
+                } else {
+                    Ok(())
                 }
             };
 
@@ -542,9 +544,10 @@ impl LoadedVm {
                     .await
             };
 
-            let (r, r_mana, ()) = (shutdown_pci, shutdown_mana, shutdown_nvme).join().await;
-            r?;
+            let (r_pci, r_mana, r_nvme) = (shutdown_pci, shutdown_mana, shutdown_nvme).join().await;
+            r_pci?;
             r_mana?;
+            r_nvme?;
 
             Ok(state)
         }
