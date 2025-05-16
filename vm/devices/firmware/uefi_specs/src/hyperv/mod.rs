@@ -7,6 +7,7 @@
 //! in any public spec. Instead, they are transcribed directly from the Hyper-V
 //! C/C++ sources.
 
+pub mod advanced_logger;
 pub mod bios_event_log;
 pub mod boot_bios_log;
 pub mod common;
