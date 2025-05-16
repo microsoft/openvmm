@@ -243,9 +243,10 @@ impl AtomicTlbRingBuffer {
     fn try_copy(&self, start_count: Wrapping<usize>, flush_addrs: &mut [u64]) -> bool {
         let mut index = start_count;
         for flush_addr in flush_addrs.iter_mut() {
-            *flush_addr = self.buffer[index.0 % FLUSH_GVA_LIST_SIZE].load(Ordering::Acquire);
+            *flush_addr = self.buffer[index.0 % FLUSH_GVA_LIST_SIZE].load(Ordering::Relaxed);
             index += 1;
         }
+        std::sync::atomic::fence(Ordering::Acquire);
 
         // Check to see whether any additional entries have been added
         // that would have caused a wraparound. If so, the local list is
@@ -273,10 +274,15 @@ impl AtomicTlbRingBufferWriteGuard<'_> {
         // 3. Increment the valid entry count so that any flush code executing
         //    simultaneously will know it is valid.
         let len = items.len();
-        let count = self.buf.in_progress_count.fetch_add(len, Ordering::AcqRel);
+        let start_count = self.buf.in_progress_count.load(Ordering::Relaxed);
+        let end_count = start_count.wrapping_add(len);
+        self.buf
+            .in_progress_count
+            .store(end_count, Ordering::Relaxed);
         for (i, v) in items.enumerate() {
-            self.buf.buffer[(count + i) % FLUSH_GVA_LIST_SIZE].store(v.0, Ordering::Release);
+            self.buf.buffer[(start_count.wrapping_add(i)) % FLUSH_GVA_LIST_SIZE]
+                .store(v.0, Ordering::Release);
         }
-        self.buf.gva_list_count.fetch_add(len, Ordering::AcqRel);
+        self.buf.gva_list_count.store(end_count, Ordering::Release);
     }
 }
