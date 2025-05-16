@@ -348,7 +348,7 @@ impl mesh_rpc::client::Dial for VmConnector {
                     diag_proto::VSOCK_CONTROL_PORT,
                 )
                 .await
-                .map_err(|err| std::io::Error::new(ErrorKind::Other, err))?;
+                .map_err(std::io::Error::other)?;
                 Ok(PolledSocket::new(&self.driver, socket.into())?)
             }
             VmType::HybridVsock(path) => {
@@ -358,7 +358,7 @@ impl mesh_rpc::client::Dial for VmConnector {
                     diag_proto::VSOCK_CONTROL_PORT,
                 )
                 .await
-                .map_err(|err| std::io::Error::new(ErrorKind::Other, err))?;
+                .map_err(std::io::Error::other)?;
                 Ok(socket)
             }
             VmType::None => unreachable!(),

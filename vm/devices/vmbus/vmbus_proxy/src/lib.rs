@@ -175,8 +175,7 @@ impl VmbusProxy {
     pub async fn set_memory(&mut self, guest_memory: &GuestMemory) -> Result<()> {
         assert!(self.guest_memory.is_none());
         let (base, len) = guest_memory.full_mapping().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
+            std::io::Error::other(
                 "vmbusproxy not supported without mapped memory",
             )
         })?;

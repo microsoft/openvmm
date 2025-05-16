@@ -2930,7 +2930,7 @@ impl mesh_rpc::client::Dial for DiagDialer {
                 ),
             )
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            .map_err(io::Error::other)?;
 
         PolledSocket::new(&self.driver, socket)
     }

@@ -1201,7 +1201,7 @@ impl TcpListener {
 fn take_socket_error(socket: &PolledSocket<Socket>) -> io::Error {
     match socket.get().take_error() {
         Ok(Some(err)) => err,
-        Ok(_) => io::Error::new(ErrorKind::Other, "missing error"),
+        Ok(_) => io::Error::other("missing error"),
         Err(err) => err,
     }
 }

@@ -719,10 +719,7 @@ async fn run_send(
             }
             SenderCommand::ReleaseFds { count } => {
                 if retained_fds.len() < count {
-                    return Err(io::Error::new(
-                        ErrorKind::Other,
-                        ProtocolError::ReleasingTooManyFds,
-                    ));
+                    return Err(io::Error::other(ProtocolError::ReleasingTooManyFds));
                 }
                 retained_fds.drain(..count);
             }

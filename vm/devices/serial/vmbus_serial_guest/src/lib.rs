@@ -173,7 +173,7 @@ enum ErrorInner {
 
 impl From<ErrorInner> for io::Error {
     fn from(value: ErrorInner) -> Self {
-        Self::new(io::ErrorKind::Other, value)
+        Self::other(value)
     }
 }
 
