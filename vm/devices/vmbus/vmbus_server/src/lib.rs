@@ -201,6 +201,7 @@ impl From<ModifyConnectionRequest> for ModifyRelayRequest {
     }
 }
 
+#[expect(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum VmbusRequest {
     Reset(Rpc<(), ()>),
@@ -218,6 +219,7 @@ pub struct OfferInfo {
     pub server_request_recv: mesh::Receiver<ChannelServerRequest>,
 }
 
+#[expect(clippy::large_enum_variant)]
 #[derive(mesh::MeshPayload)]
 pub(crate) enum OfferRequest {
     Offer(FailableRpc<OfferInfo, ()>),
