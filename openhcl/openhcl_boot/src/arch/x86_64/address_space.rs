@@ -17,6 +17,7 @@ use core::marker::PhantomData;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 use core::sync::atomic::compiler_fence;
+use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
 use x86defs::X64_LARGE_PAGE_SIZE;
 use zerocopy::FromBytes;
@@ -213,7 +214,8 @@ unsafe fn get_pde_for_va(va: u64) -> &'static mut PageTableEntry {
 
     // SAFETY: See function comment.
     unsafe {
-        asm!("mov {0}, cr3", out(reg) page_table_base);
+        asm!("mov {0}, cr3", out(reg) page_table_base, options(nostack));
+        page_table_base &= !(HV_PAGE_SIZE - 1);
         let pml4 = page_table_at_address(page_table_base);
         let entry = pml4.entry(va, 3);
         assert!(entry.is_present());
