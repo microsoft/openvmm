@@ -260,7 +260,7 @@ impl AtomicTlbRingBuffer {
 }
 
 impl AtomicTlbRingBufferWriteGuard<'_> {
-    pub fn extend(&self, items: impl ExactSizeIterator<Item = u64>) {
+    pub fn extend(&self, items: impl ExactSizeIterator<Item = HvGvaRange>) {
         debug_assert_eq!(
             self.buf.in_progress_count.load(Ordering::Relaxed),
             self.buf.gva_list_count.load(Ordering::Relaxed)
@@ -275,7 +275,7 @@ impl AtomicTlbRingBufferWriteGuard<'_> {
         let len = items.len();
         let count = self.buf.in_progress_count.fetch_add(len, Ordering::Relaxed);
         for (i, v) in items.enumerate() {
-            self.buf.buffer[(count + i) % FLUSH_GVA_LIST_SIZE].store(v, Ordering::Relaxed);
+            self.buf.buffer[(count + i) % FLUSH_GVA_LIST_SIZE].store(v.0, Ordering::Relaxed);
         }
         self.buf.gva_list_count.fetch_add(len, Ordering::Relaxed);
     }

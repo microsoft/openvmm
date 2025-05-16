@@ -4255,15 +4255,20 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
             return Err(());
         }
 
-        let gva_list = flush_state.gva_list.write();
-        for range in gva_ranges {
-            if use_extended_range_format && range.as_extended().large_page() {
-                // TDX does not provide a way to flush large page ranges,
-                // we have to promote this request to a flush entire.
-                return Err(());
-            }
+        if use_extended_range_format
+            && gva_ranges
+                .iter()
+                .any(|range| range.as_extended().large_page())
+        {
+            // TDX does not provide a way to flush large page ranges,
+            // we have to promote this request to a flush entire.
+            return Err(());
         }
-        gva_list.extend(gva_ranges.iter().map(|range| range.0));
+
+        flush_state
+            .gva_list
+            .write()
+            .extend(gva_ranges.iter().copied());
 
         Ok(())
     }
