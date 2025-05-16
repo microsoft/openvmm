@@ -367,7 +367,7 @@ impl UefiDevice {
                     ticks = log.ticks,
                     phase = log.phase,
                     log_message = %log.message,
-                    "EFI log entry:"
+                    "EFI log entry"
                 );
             }) {
             Ok(_) => {}
