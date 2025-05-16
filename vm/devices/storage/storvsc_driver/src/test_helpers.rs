@@ -13,10 +13,14 @@ use crate::StorvscError;
 use crate::StorvscErrorInner;
 use crate::StorvscRequest;
 use crate::StorvscState;
+use futures::FutureExt;
+use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use guestmem::MemoryRead;
 use guestmem::ranges::PagedRange;
 use inspect::Inspect;
+use mesh_channel::Receiver;
+use mesh_channel::RecvError;
 use mesh_channel::Sender;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
@@ -30,6 +34,7 @@ use thiserror::Error;
 use vmbus_async::queue;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
+use vmbus_async::queue::PacketRef;
 use vmbus_async::queue::Queue;
 use vmbus_channel::RawAsyncChannel;
 use vmbus_ring::FlatRingMem;
@@ -294,6 +299,7 @@ impl<T: 'static + Send + Sync + RingMem> TestStorvscWorker<T> {
 
 pub(crate) struct TestStorvspWorker {
     task: Task<()>,
+    command_request_sender: Sender<TestStorvspCommandRequest>,
 }
 
 struct TestStorvsp {
@@ -302,11 +308,20 @@ struct TestStorvsp {
     full_request_pool: Vec<Arc<ScsiRequestAndRange>>,
     version: storvsp_protocol::ProtocolVersion,
     subchannel_count: u16,
+    command_request_receiver: Receiver<TestStorvspCommandRequest>,
     inner: TestStorvspInner,
 }
 
 struct TestStorvspInner {
     request_size: usize,
+}
+
+pub(crate) struct TestStorvspCommandRequest {
+    packet: storvsp_protocol::Packet,
+    transaction_id: u64,
+    requires_completion: bool,
+    payload: [u8; storvsp_protocol::SCSI_REQUEST_LEN_MAX],
+    payload_size: usize,
 }
 
 impl TestStorvspWorker {
@@ -316,16 +331,40 @@ impl TestStorvspWorker {
         queue: Queue<FlatRingMem>,
         full_request_pool: Vec<Arc<ScsiRequestAndRange>>,
     ) -> Self {
+        let (command_request_sender, command_request_receiver) =
+            mesh_channel::channel::<TestStorvspCommandRequest>();
         let task = spawner.spawn("test_storvsp", async move {
-            let mut worker = TestStorvsp::new(mem, queue, full_request_pool);
+            let mut worker =
+                TestStorvsp::new(mem, queue, full_request_pool, command_request_receiver);
             worker.run().await;
         });
 
-        Self { task }
+        Self {
+            task,
+            command_request_sender,
+        }
     }
 
     pub async fn teardown(self) {
         self.task.cancel().await;
+    }
+
+    pub fn send_vmbus_data_packet_no_completion<P: IntoBytes + Immutable + KnownLayout>(
+        &mut self,
+        packet: storvsp_protocol::Packet,
+        transaction_id: u64,
+        payload: &P,
+    ) {
+        let payload_bytes_slice = payload.as_bytes();
+        let mut payload_bytes = [0_u8; storvsp_protocol::SCSI_REQUEST_LEN_MAX];
+        payload_bytes[..payload_bytes_slice.len()].clone_from_slice(payload_bytes_slice);
+        self.command_request_sender.send(TestStorvspCommandRequest {
+            packet,
+            transaction_id,
+            requires_completion: false,
+            payload: payload_bytes,
+            payload_size: payload_bytes_slice.len(),
+        })
     }
 }
 
@@ -334,6 +373,7 @@ impl TestStorvsp {
         mem: GuestMemory,
         queue: Queue<FlatRingMem>,
         full_request_pool: Vec<Arc<ScsiRequestAndRange>>,
+        command_request_receiver: Receiver<TestStorvspCommandRequest>,
     ) -> Self {
         TestStorvsp {
             _mem: mem,
@@ -344,6 +384,7 @@ impl TestStorvsp {
                 major_minor: 0,
                 reserved: 0,
             },
+            command_request_receiver,
             inner: TestStorvspInner {
                 request_size: storvsp_protocol::SCSI_REQUEST_LEN_V1,
             },
@@ -541,35 +582,68 @@ impl TestStorvsp {
 
     async fn process_packets(&mut self) -> Result<(), StorvscError> {
         loop {
-            let (mut reader, mut writer) = self.queue.split();
-            let packet = reader
-                .read()
-                .await
-                .map_err(|err| StorvscError(StorvscErrorInner::Queue(err)))?;
-            let stor_packet = parse_storvsp_packet(&packet, &mut self.full_request_pool)
-                .map_err(|err| StorvscError(StorvscErrorInner::PacketError(err)))?;
-            tracing::info!("storvsp received request packet");
-
-            match stor_packet.data.clone() {
-                StorvspPacketData::ExecuteScsi(_request) => {
-                    tracing::info!("storvsp responding to EXECUTE_SRB");
-                    self.inner.send_completion(
-                        &mut writer,
-                        &stor_packet,
-                        storvsp_protocol::NtStatus::SUCCESS,
-                        &(),
-                    )?;
-                }
-                _ => {
-                    tracing::info!("storvsp received unexpected request packet type");
-                    self.inner.send_completion(
-                        &mut writer,
-                        &stor_packet,
-                        storvsp_protocol::NtStatus::INVALID_DEVICE_STATE,
-                        &(),
-                    )?;
-                }
+            enum Event<'a, M: RingMem> {
+                NewCommandRequestReceived(Result<TestStorvspCommandRequest, RecvError>),
+                VmbusPacketReceived(Result<PacketRef<'a, M>, queue::Error>),
             }
+            let (mut reader, mut writer) = self.queue.split();
+            match (
+                self.command_request_receiver
+                    .recv()
+                    .map(Event::NewCommandRequestReceived),
+                reader.read().map(Event::VmbusPacketReceived),
+            )
+                .race()
+                .await
+            {
+                Event::NewCommandRequestReceived(result) => match result {
+                    Ok(request) => self.inner.send_vmbus_packet(
+                        &mut writer.batched(),
+                        if request.requires_completion {
+                            OutgoingPacketType::InBandWithCompletion
+                        } else {
+                            OutgoingPacketType::InBandNoCompletion
+                        },
+                        request.payload_size,
+                        request.transaction_id,
+                        request.packet.operation,
+                        request.packet.status,
+                        request.payload.as_slice(),
+                    ),
+                    Err(_err) => Err(StorvscError(StorvscErrorInner::RequestError)),
+                },
+                Event::VmbusPacketReceived(result) => match result {
+                    Ok(packet) => {
+                        let stor_packet =
+                            parse_storvsp_packet(&packet, &mut self.full_request_pool)
+                                .map_err(|err| StorvscError(StorvscErrorInner::PacketError(err)))?;
+                        tracing::info!("storvsp received request packet");
+
+                        match stor_packet.data.clone() {
+                            StorvspPacketData::ExecuteScsi(_request) => {
+                                tracing::info!("storvsp responding to EXECUTE_SRB");
+                                self.inner.send_completion(
+                                    &mut writer,
+                                    &stor_packet,
+                                    storvsp_protocol::NtStatus::SUCCESS,
+                                    &(),
+                                )?;
+                            }
+                            _ => {
+                                tracing::info!("storvsp received unexpected request packet type");
+                                self.inner.send_completion(
+                                    &mut writer,
+                                    &stor_packet,
+                                    storvsp_protocol::NtStatus::INVALID_DEVICE_STATE,
+                                    &(),
+                                )?;
+                            }
+                        }
+                        Ok(())
+                    }
+                    Err(err) => Err(StorvscError(StorvscErrorInner::Queue(err))),
+                },
+            }?;
         }
     }
 }

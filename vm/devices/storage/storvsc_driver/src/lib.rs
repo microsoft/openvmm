@@ -22,6 +22,7 @@ use thiserror::Error;
 use tracing_helpers::ErrorValueExt;
 use vmbus_async::queue;
 use vmbus_async::queue::CompletionPacket;
+use vmbus_async::queue::DataPacket;
 use vmbus_async::queue::ExternalDataError;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
@@ -327,42 +328,21 @@ impl<T: Send + Sync + RingMem> Storvsc<T> {
                 &(),
             )
             .await?;
-        let properties = storvsp_protocol::ChannelProperties::ref_from_prefix(
+        let _properties = storvsp_protocol::ChannelProperties::ref_from_prefix(
             &properties_packet.data[0..properties_packet.data_size],
         )
         .map_err(|_err| StorvscError(StorvscErrorInner::UnexpectedOperation))?
         .0
         .to_owned();
 
-        // Step 4: CREATE_SUB_CHANNELS (if supported)
-        if properties.maximum_sub_channel_count > 0 {
-            self.num_sub_channels = Some(properties.maximum_sub_channel_count);
-            // Decrease by 1 until we are able to negotiate (or give up if we reach 0)
-            while self.num_sub_channels.unwrap() > 0 {
-                match self
-                    .inner
-                    .send_packet_and_expect_completion(
-                        &mut self.queue,
-                        storvsp_protocol::Operation::CREATE_SUB_CHANNELS,
-                        4,
-                        &self.num_sub_channels.unwrap(),
-                    )
-                    .await
-                {
-                    Ok(_packet) => break,
-                    Err(_err) => {
-                        self.num_sub_channels = Some(self.num_sub_channels.unwrap() - 1);
-                    }
-                };
-            }
-        }
+        // Skip subchannels because unsupported at the moment
 
-        // Step 5: END_INITIALIZATION
+        // Step 4: END_INITIALIZATION
         self.inner
             .send_packet_and_expect_completion(
                 &mut self.queue,
                 storvsp_protocol::Operation::END_INITIALIZATION,
-                5,
+                4,
                 &(),
             )
             .await?;
@@ -484,29 +464,38 @@ impl StorvscInner {
         packet: &IncomingPacket<'_, M>,
     ) -> Result<(), StorvscError> {
         let packet = parse_packet(packet)?;
-        let completion = match packet {
-            //Packet::Data(_) => Err(StorvscError::UnexpectedOperation),
-            Packet::Completion(completion) => Ok(completion),
-        }?;
+        match packet {
+            Packet::Data(data) => {
+                match data.operation {
+                    storvsp_protocol::Operation::ENUMERATE_BUS => {
+                        // Nothing to do here, and no completion is required
+                        Ok(())
+                    }
+                    _ => Err(StorvscError(StorvscErrorInner::UnexpectedOperation)),
+                }
+            }
+            Packet::Completion(completion) => {
+                // Parse ScsiRequest (contains response) from bytes
+                let result =
+                    storvsp_protocol::ScsiRequest::ref_from_bytes(completion.data.as_slice())
+                        .map_err(|_err| StorvscError(StorvscErrorInner::UnexpectedOperation))?
+                        .to_owned();
 
-        // Parse ScsiRequest (contains response) from bytes
-        let result = storvsp_protocol::ScsiRequest::ref_from_bytes(completion.data.as_slice())
-            .map_err(|_err| StorvscError(StorvscErrorInner::UnexpectedOperation))?
-            .to_owned();
+                // Match completion against pending transactions
+                match self
+                    .transactions
+                    .get_mut(completion.transaction_id as usize)
+                {
+                    Some(t) => Ok(t),
+                    None => Err(StorvscError(StorvscErrorInner::PacketError(
+                        PacketError::UnexpectedTransaction(completion.transaction_id),
+                    ))),
+                }?
+                .complete(result);
 
-        // Match completion against pending transactions
-        match self
-            .transactions
-            .get_mut(completion.transaction_id as usize)
-        {
-            Some(t) => Ok(t),
-            None => Err(StorvscError(StorvscErrorInner::PacketError(
-                PacketError::UnexpectedTransaction(completion.transaction_id),
-            ))),
-        }?
-        .complete(result);
-
-        Ok(())
+                Ok(())
+            }
+        }
     }
 
     /// Awaits the next incoming packet. Increments the count of outstanding packets when returning `Ok(Packet)`.
@@ -639,7 +628,9 @@ impl StorvscInner {
         // Wait for completion
         let completion = match self.next_packet(&mut reader).await? {
             Packet::Completion(packet) => Ok(packet),
-            //Packet::Data(_) => Err(StorvscError::PacketError(PacketError::InvalidPacketType)),
+            Packet::Data(_) => Err(StorvscError(StorvscErrorInner::PacketError(
+                PacketError::InvalidPacketType,
+            ))),
         }?;
         expect_success(
             expect_transaction_id(completion, transaction_id)
@@ -651,7 +642,7 @@ impl StorvscInner {
 
 enum Packet {
     Completion(StorvscCompletionPacket),
-    //Data(StorvscDataPacket),
+    Data(StorvscDataPacket),
 }
 
 #[derive(Debug)]
@@ -662,13 +653,24 @@ struct StorvscCompletionPacket {
     data: [u8; storvsp_protocol::SCSI_REQUEST_LEN_MAX],
 }
 
+#[derive(Debug)]
+#[allow(dead_code)]
+struct StorvscDataPacket {
+    transaction_id: Option<u64>,
+    request_size: usize,
+    operation: storvsp_protocol::Operation,
+    flags: u32,
+    status: storvsp_protocol::NtStatus,
+    data: [u8; storvsp_protocol::SCSI_REQUEST_LEN_MAX],
+}
+
 fn parse_packet<T: RingMem>(packet: &IncomingPacket<'_, T>) -> Result<Packet, StorvscError> {
     match packet {
         IncomingPacket::Completion(completion) => parse_completion(completion)
             .map_err(|err| StorvscError(StorvscErrorInner::PacketError(err))),
-        IncomingPacket::Data(_) => Err(StorvscError(StorvscErrorInner::PacketError(
-            PacketError::InvalidPacketType,
-        ))),
+        IncomingPacket::Data(data) => {
+            parse_data(data).map_err(|err| StorvscError(StorvscErrorInner::PacketError(err)))
+        }
     }
 }
 
@@ -686,6 +688,32 @@ fn parse_completion<T: RingMem>(packet: &CompletionPacket<'_, T>) -> Result<Pack
         transaction_id: packet.transaction_id(),
         status: header.status,
         data_size,
+        data,
+    }))
+}
+
+fn parse_data<T: RingMem>(packet: &DataPacket<'_, T>) -> Result<Packet, PacketError> {
+    let transaction_id = packet.transaction_id();
+
+    let mut reader = packet.reader();
+    let header: storvsp_protocol::Packet = reader.read_plain().map_err(PacketError::Access)?;
+    // You would expect that this should be limited to the current protocol
+    // version's maximum packet size, but this is not what Hyper-V does, and
+    // Linux 6.1 relies on this behavior during protocol initialization.
+    let request_size = reader.len().min(storvsp_protocol::SCSI_REQUEST_LEN_MAX);
+    let operation = header.operation;
+    let flags = header.flags;
+    let status = header.status;
+
+    let mut data = [0_u8; storvsp_protocol::SCSI_REQUEST_LEN_MAX];
+    reader.read(&mut data).map_err(PacketError::Access)?;
+
+    Ok(Packet::Data(StorvscDataPacket {
+        transaction_id,
+        request_size,
+        operation,
+        flags,
+        status,
         data,
     }))
 }
@@ -843,6 +871,41 @@ mod tests {
             .send_request(&generate_read_packet(0, 1, 2, 4096, 4096), 4096, 4096)
             .await
             .unwrap();
+
+        storvsc.teardown().await;
+        storvsp.teardown().await;
+    }
+
+    #[async_test]
+    async fn test_enumerate_bus(driver: DefaultDriver) {
+        let (guest, host) = connected_async_channels(16 * 1024);
+        let host_queue = Queue::new(host).unwrap();
+        let test_guest_mem = GuestMemory::allocate(16384);
+
+        let mut storvsp = TestStorvspWorker::start(
+            driver.clone(),
+            test_guest_mem.clone(),
+            host_queue,
+            Vec::new(),
+        );
+        let mut storvsc = TestStorvscWorker::new();
+        storvsc.start(driver.clone(), guest);
+
+        let mut timer = PolledTimer::new(&driver);
+        timer.sleep(time::Duration::from_secs(1)).await;
+
+        storvsc.stop().await;
+        assert!(storvsc.get_mut().has_negotiated);
+        storvsc.resume().await;
+
+        // Inject an ENUMERATE_BUS command on the VMBus ring
+        let enumerate_bus_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::ENUMERATE_BUS,
+            flags: 0,
+            status: storvsp_protocol::NtStatus::SUCCESS,
+        };
+        storvsp.send_vmbus_data_packet_no_completion(enumerate_bus_packet, 10, &());
+        // Nothing to evaluate here since this is a no-op without a completion
 
         storvsc.teardown().await;
         storvsp.teardown().await;
