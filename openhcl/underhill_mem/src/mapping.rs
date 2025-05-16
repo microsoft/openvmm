@@ -21,6 +21,45 @@ use std::sync::Arc;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
 
+pub struct GuestPartitionMemoryBuilder<'a> {
+    memory_layout: &'a MemoryLayout,
+    valid_memory: Option<Arc<GuestValidMemory>>,
+}
+
+impl<'a> GuestPartitionMemoryBuilder<'a> {
+    /// valid_bitmap_state is valid when allocating a tracking bitmap is needed
+    /// for memory access, and specifies the initial state of the bitmap.
+    ///
+    /// This is used to support tracking the shared/encrypted state of each
+    /// page.
+    pub fn new(
+        memory_layout: &'a MemoryLayout,
+        valid_bitmap_state: Option<bool>,
+    ) -> Result<Self, MappingError> {
+        let valid_memory = valid_bitmap_state
+            .map(|state| GuestValidMemory::new(memory_layout, state).map(Arc::new))
+            .transpose()?;
+        Ok(Self {
+            memory_layout,
+            valid_memory,
+        })
+    }
+
+    pub fn partition_valid_memory(&self) -> Option<Arc<GuestValidMemory>> {
+        self.valid_memory.clone()
+    }
+
+    pub fn build_guest_memory_mapping(
+        &self,
+        mshv_vtl_low: &MshvVtlLow,
+        memory_mapping_builder: &mut GuestMemoryMappingBuilder,
+    ) -> Result<GuestMemoryMapping, MappingError> {
+        memory_mapping_builder
+            .use_partition_valid_memory(self.valid_memory.clone())
+            .build(mshv_vtl_low, self.memory_layout)
+    }
+}
+
 /// Partition-wide (cross-vtl) tracking of valid memory that can be used in
 /// individual GuestMemoryMappings.
 #[derive(Debug)]
@@ -30,10 +69,7 @@ pub struct GuestValidMemory {
 }
 
 impl GuestValidMemory {
-    pub fn new(
-        memory_layout: &MemoryLayout,
-        valid_bitmap_state: bool,
-    ) -> Result<Self, MappingError> {
+    fn new(memory_layout: &MemoryLayout, valid_bitmap_state: bool) -> Result<Self, MappingError> {
         let valid_bitmap = {
             let mut bitmap = {
                 // Calculate the total size of the address space by looking at the ending region.
@@ -205,15 +241,9 @@ pub struct GuestMemoryMappingBuilder {
 }
 
 impl GuestMemoryMappingBuilder {
-    /// Set whether to allocate a tracking for memory access, and specify the
-    /// initial state of the bitmap.
-    ///
-    /// This is used to support tracking the shared/encrypted state of each
-    /// page.
-    ///
     /// FUTURE: use bitmaps to track VTL permissions as well, to support guest
     /// VSM for hardware-isolated VMs.
-    pub fn use_partition_valid_memory(
+    fn use_partition_valid_memory(
         &mut self,
         valid_memory: Option<Arc<GuestValidMemory>>,
     ) -> &mut Self {
@@ -284,7 +314,7 @@ impl GuestMemoryMappingBuilder {
     /// If `bitmap_state` is `Some`, a bitmap is created to track the
     /// accessibility state of each page in the lower VTL memory. The bitmap is
     /// initialized to the provided state.
-    pub fn build(
+    fn build(
         &self,
         mshv_vtl_low: &MshvVtlLow,
         memory_layout: &MemoryLayout,
