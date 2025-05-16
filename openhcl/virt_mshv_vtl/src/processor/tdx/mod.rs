@@ -4262,8 +4262,8 @@ impl<T: CpuIo> UhHypercallHandler<'_, '_, T, TdxBacked> {
                 // we have to promote this request to a flush entire.
                 return Err(());
             }
-            gva_list.push(range.0);
         }
+        gva_list.extend(gva_ranges.iter().map(|range| range.0));
 
         Ok(())
     }
