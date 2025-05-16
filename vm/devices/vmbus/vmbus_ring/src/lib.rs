@@ -482,6 +482,60 @@ impl<T: RingMem + Sync> RingMem for &'_ T {
     }
 }
 
+#[derive(Debug)]
+pub struct SingleMappedRingMem<T>(pub T);
+
+impl<T: AsRef<[AtomicU8]>> SingleMappedRingMem<T> {
+    fn control_range(&self) -> &[AtomicU8; PAGE_SIZE] {
+        self.0.as_ref()[..PAGE_SIZE].try_into().unwrap()
+    }
+
+    fn data(&self) -> &[AtomicU8] {
+        &self.0.as_ref()[PAGE_SIZE..]
+    }
+}
+
+impl<T: AsRef<[AtomicU8]> + Send> RingMem for SingleMappedRingMem<T> {
+    fn read_at(&self, mut addr: usize, data: &mut [u8]) {
+        if addr > self.len() {
+            addr -= self.len();
+        }
+        let this_data = self.data();
+        if addr + data.len() <= self.len() {
+            this_data[addr..addr + data.len()].atomic_read(data);
+        } else {
+            let data_len = data.len();
+            let (first, last) = data.split_at_mut(self.len() - addr);
+            this_data[addr..].atomic_read(first);
+            this_data[..data_len - (self.len() - addr)].atomic_read(last);
+        }
+    }
+
+    fn write_at(&self, mut addr: usize, data: &[u8]) {
+        if addr > self.len() {
+            addr -= self.len();
+        }
+        let this_data = self.data();
+        if addr + data.len() <= self.len() {
+            this_data[addr..addr + data.len()].atomic_write(data);
+        } else {
+            let (first, last) = data.split_at(self.len() - addr);
+            this_data[addr..].atomic_write(first);
+            this_data[..data.len() - (self.len() - addr)].atomic_write(last);
+        }
+    }
+
+    fn control(&self) -> &[AtomicU32; CONTROL_WORD_COUNT] {
+        self.control_range().as_atomic_slice().unwrap()[..CONTROL_WORD_COUNT]
+            .try_into()
+            .unwrap()
+    }
+
+    fn len(&self) -> usize {
+        self.data().len()
+    }
+}
+
 /// An implementation of `RingMem` over a flat allocation. Useful for tests.
 #[derive(Clone)]
 pub struct FlatRingMem {
