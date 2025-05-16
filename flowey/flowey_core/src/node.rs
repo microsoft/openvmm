@@ -1070,6 +1070,7 @@ impl<'ctx> NodeCtx<'ctx> {
     /// let read_foo = ctx.emit_rust_stepv("foo", |ctx| |rt| Ok(get_foo()));
     /// ```
     #[must_use]
+    #[track_caller]
     pub fn emit_rust_stepv<T, F, G>(&mut self, label: impl AsRef<str>, code: F) -> ReadVar<T>
     where
         T: Serialize + DeserializeOwned + 'static,
@@ -1103,6 +1104,7 @@ impl<'ctx> NodeCtx<'ctx> {
     /// let read_foo = ctx.emit_minor_rust_stepv("foo", |ctx| |rt| get_foo());
     /// ```
     #[must_use]
+    #[track_caller]
     pub fn emit_minor_rust_stepv<T, F, G>(&mut self, label: impl AsRef<str>, code: F) -> ReadVar<T>
     where
         T: Serialize + DeserializeOwned + 'static,
@@ -1140,6 +1142,7 @@ impl<'ctx> NodeCtx<'ctx> {
     }
 
     #[must_use]
+    #[track_caller]
     fn emit_rust_stepv_inner<T, F, G>(
         &mut self,
         label: impl AsRef<str>,
