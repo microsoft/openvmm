@@ -278,7 +278,7 @@ impl VarDb {
 
                 match backend {
                     EnvBackend::Ado => {
-                        println!("##vso[task.setvariable variable={env};issecret={is_secret}]");
+                        print!("##vso[task.setvariable variable={env};issecret={is_secret}]");
                         std::io::stdout().write_all(&data).unwrap();
                         println!();
                     }
