@@ -229,7 +229,7 @@ impl AtomicTlbRingBuffer {
     }
 
     fn count(&self) -> usize {
-        self.gva_list_count.load(Ordering::Relaxed)
+        self.gva_list_count.load(Ordering::Acquire)
     }
 
     pub fn write(&self) -> AtomicTlbRingBufferWriteGuard<'_> {
@@ -243,14 +243,14 @@ impl AtomicTlbRingBuffer {
     fn try_copy(&self, start_count: Wrapping<usize>, flush_addrs: &mut [u64]) -> bool {
         let mut index = start_count;
         for flush_addr in flush_addrs.iter_mut() {
-            *flush_addr = self.buffer[index.0 % FLUSH_GVA_LIST_SIZE].load(Ordering::Relaxed);
+            *flush_addr = self.buffer[index.0 % FLUSH_GVA_LIST_SIZE].load(Ordering::Acquire);
             index += 1;
         }
 
         // Check to see whether any additional entries have been added
         // that would have caused a wraparound. If so, the local list is
         // incomplete and the copy has failed.
-        if (Wrapping(self.in_progress_count.load(Ordering::Relaxed)) - start_count).0
+        if (Wrapping(self.in_progress_count.load(Ordering::Acquire)) - start_count).0
             > FLUSH_GVA_LIST_SIZE
         {
             return false;
@@ -262,8 +262,8 @@ impl AtomicTlbRingBuffer {
 impl AtomicTlbRingBufferWriteGuard<'_> {
     pub fn extend(&self, items: impl ExactSizeIterator<Item = HvGvaRange>) {
         debug_assert_eq!(
-            self.buf.in_progress_count.load(Ordering::Relaxed),
-            self.buf.gva_list_count.load(Ordering::Relaxed)
+            self.buf.in_progress_count.load(Ordering::Acquire),
+            self.buf.gva_list_count.load(Ordering::Acquire)
         );
         // Adding a new item to the buffer must be done in three steps:
         // 1. Indicate that an entry is about to be added so that any flush
@@ -273,10 +273,10 @@ impl AtomicTlbRingBufferWriteGuard<'_> {
         // 3. Increment the valid entry count so that any flush code executing
         //    simultaneously will know it is valid.
         let len = items.len();
-        let count = self.buf.in_progress_count.fetch_add(len, Ordering::Relaxed);
+        let count = self.buf.in_progress_count.fetch_add(len, Ordering::AcqRel);
         for (i, v) in items.enumerate() {
-            self.buf.buffer[(count + i) % FLUSH_GVA_LIST_SIZE].store(v.0, Ordering::Relaxed);
+            self.buf.buffer[(count + i) % FLUSH_GVA_LIST_SIZE].store(v.0, Ordering::Release);
         }
-        self.buf.gva_list_count.fetch_add(len, Ordering::Relaxed);
+        self.buf.gva_list_count.fetch_add(len, Ordering::AcqRel);
     }
 }
