@@ -262,8 +262,8 @@ impl AtomicTlbRingBuffer {
 impl AtomicTlbRingBufferWriteGuard<'_> {
     pub fn extend(&self, items: impl ExactSizeIterator<Item = HvGvaRange>) {
         debug_assert_eq!(
-            self.buf.in_progress_count.load(Ordering::Acquire),
-            self.buf.gva_list_count.load(Ordering::Acquire)
+            self.buf.in_progress_count.load(Ordering::Relaxed),
+            self.buf.gva_list_count.load(Ordering::Relaxed)
         );
         // Adding a new item to the buffer must be done in three steps:
         // 1. Indicate that an entry is about to be added so that any flush
