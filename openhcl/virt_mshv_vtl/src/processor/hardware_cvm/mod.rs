@@ -1342,7 +1342,8 @@ impl<T, B: HardwareIsolatedBacking>
             virt::IsolationType::Snp => {
                 // For VTL 1, user mode needs to explicitly register the VMSA
                 // with the hypervisor via the EnableVpVtl hypercall.
-                let vmsa_pfn = self.vp.partition.hcl.vtl1_vmsa_pfn(self.vp.inner.cpu_index);
+                let target_cpu_index = self.vp.partition.vps[vp_index as usize].cpu_index;
+                let vmsa_pfn = self.vp.partition.hcl.vtl1_vmsa_pfn(target_cpu_index);
                 let sev_control = hvdef::HvX64RegisterSevControl::new()
                     .with_enable_encrypted_state(true)
                     .with_vmsa_gpa_page_number(vmsa_pfn);
