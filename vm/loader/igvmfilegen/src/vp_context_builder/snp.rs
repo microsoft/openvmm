@@ -29,6 +29,15 @@ pub enum InjectionType {
     Restricted,
 }
 
+/// The secure AVIC.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum SecureAvic {
+    /// Offload AVIC to the hardware.
+    Enabled,
+    /// The paravisor emulates APIC.
+    Disabled,
+}
+
 /// A hardware SNP VP context, that is imported as a VMSA.
 #[derive(Debug)]
 pub struct SnpHardwareContext {
@@ -59,6 +68,7 @@ impl SnpHardwareContext {
         enlightened_uefi: bool,
         shared_gpa_boundary: u64,
         injection_type: InjectionType,
+        secure_avic: SecureAvic,
     ) -> Self {
         let mut vmsa: SevVmsa = FromZeros::new_zeroed();
 
@@ -85,6 +95,12 @@ impl SnpHardwareContext {
             if vtl < HCL_SECURE_VTL {
                 vmsa.sev_features
                     .set_alternate_injection(injection_type == InjectionType::Restricted);
+                if injection_type == InjectionType::Normal {
+                    vmsa.sev_features
+                        .set_secure_avic(secure_avic == SecureAvic::Enabled);
+                    vmsa.sev_features
+                        .set_guest_intercept_control(secure_avic == SecureAvic::Enabled);
+                }
             } else {
                 vmsa.sev_features
                     .set_restrict_injection(injection_type == InjectionType::Restricted);
@@ -92,6 +108,8 @@ impl SnpHardwareContext {
                 vmsa.sev_features.set_prevent_host_ibs(true);
                 vmsa.sev_features.set_vmsa_reg_prot(true);
                 vmsa.sev_features.set_vtom(false);
+                vmsa.sev_features
+                    .set_secure_avic(secure_avic == SecureAvic::Enabled);
                 vmsa.virtual_tom = 0;
             }
         }

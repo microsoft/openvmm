@@ -76,6 +76,7 @@ use virt_support_x86emu::emulate::emulate_io;
 use virt_support_x86emu::emulate::emulate_translate_gva;
 use virt_support_x86emu::translate::TranslationRegisters;
 use vmcore::vmtime::VmTimeAccess;
+use x86defs::ApicRegister;
 use x86defs::RFlags;
 use x86defs::X64_CR0_ET;
 use x86defs::X64_CR0_NE;
@@ -97,8 +98,6 @@ use x86defs::tdx::TdxGp;
 use x86defs::tdx::TdxInstructionInfo;
 use x86defs::tdx::TdxL2Ctls;
 use x86defs::tdx::TdxVpEnterRaxResult;
-use x86defs::vmx::ApicPage;
-use x86defs::vmx::ApicRegister;
 use x86defs::vmx::CR_ACCESS_TYPE_LMSW;
 use x86defs::vmx::CR_ACCESS_TYPE_MOV_TO_CR;
 use x86defs::vmx::CrAccessQualification;
@@ -120,6 +119,7 @@ use x86defs::vmx::SecondaryProcessorControls;
 use x86defs::vmx::VMX_ENTRY_CONTROL_LONG_MODE_GUEST;
 use x86defs::vmx::VMX_FEATURE_CONTROL_LOCKED;
 use x86defs::vmx::VmcsField;
+use x86defs::vmx::VmxApicPage;
 use x86defs::vmx::VmxEptExitQualification;
 use x86defs::vmx::VmxExit;
 use x86defs::vmx::VmxExitBasic;
@@ -3373,7 +3373,7 @@ impl UhProcessor<'_, TdxBacked> {
 
 struct TdxApicClient<'a, T> {
     partition: &'a UhPartitionInner,
-    apic_page: &'a mut ApicPage,
+    apic_page: &'a mut VmxApicPage,
     dev: &'a T,
     vmtime: &'a VmTimeAccess,
     vtl: GuestVtl,
@@ -3409,7 +3409,7 @@ impl<T: CpuIo> ApicClient for TdxApicClient<'_, T> {
     }
 }
 
-fn pull_apic_offload(page: &mut ApicPage) -> ([u32; 8], [u32; 8]) {
+fn pull_apic_offload(page: &mut VmxApicPage) -> ([u32; 8], [u32; 8]) {
     let mut irr = [0; 8];
     let mut isr = [0; 8];
     for (((irr, page_irr), isr), page_isr) in irr

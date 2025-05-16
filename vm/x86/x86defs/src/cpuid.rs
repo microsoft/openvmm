@@ -700,14 +700,18 @@ pub struct ExtendedSevFeaturesEax {
     pub vmgexit_parameter: bool,
     pub virtual_tom_msr: bool,
     pub ibs_virtualization: bool,
-    #[bits(4)]
+    #[bits(2)]
     _reserved1: u32,
+    pub guest_intercept_control: bool,
+    pub segmented_rmp: bool,
     pub vmsa_register_protection: bool,
-    #[bits(4)]
-    _reserved2: u32,
+    _reserved2: bool,
+    pub secure_avic: bool,
+    pub allowed_sev_features: bool,
+    _reserved3: bool,
     pub nested_virt_msr_snp: bool,
     #[bits(2)]
-    _reserved3: u32,
+    _reserved4: u32,
 }
 
 #[bitfield(u32)]

@@ -9663,6 +9663,7 @@ dependencies = [
  "arbitrary",
  "bitfield-struct 0.10.1",
  "open_enum",
+ "static_assertions",
  "zerocopy 0.8.24",
 ]
 
