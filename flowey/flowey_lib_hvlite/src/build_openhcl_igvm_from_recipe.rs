@@ -80,6 +80,7 @@ pub struct OpenhclIgvmRecipeDetailsLocalOnly {
     pub custom_extra_rootfs: Vec<PathBuf>,
 }
 
+#[expect(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum OpenhclIgvmRecipe {
     LocalOnlyCustom(OpenhclIgvmRecipeDetails),

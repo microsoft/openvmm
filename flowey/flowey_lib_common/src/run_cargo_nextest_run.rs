@@ -123,6 +123,7 @@ flowey_request! {
     }
 }
 
+#[expect(clippy::large_enum_variant)]
 enum RunKindDeps<C = VarNotClaimed> {
     BuildAndRun {
         params: build_params::NextestBuildParams<C>,
