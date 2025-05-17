@@ -604,6 +604,13 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         hvcall().initialize();
     }
 
+    #[cfg(target_arch = "x86_64")]
+    if p.isolation_type == IsolationType::Snp {
+        if let Some(page_number) = p.ghcb_pfn {
+            arch::snp::Ghcb::initialize(page_number);
+        }
+    }
+
     // Enable early log output if requested in the static command line.
     // Also check for confidential debug mode if we're isolated.
     let mut static_options = BootCommandLineOptions::new();
@@ -797,6 +804,13 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     log!("uninitializing hypercalls, about to jump to kernel");
     hvcall().uninitialize();
+
+    #[cfg(target_arch = "x86_64")]
+    if p.isolation_type == IsolationType::Snp {
+        if p.ghcb_pfn.is_some() {
+            arch::snp::Ghcb::uninitialize();
+        }
+    }
 
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "x86_64")] {

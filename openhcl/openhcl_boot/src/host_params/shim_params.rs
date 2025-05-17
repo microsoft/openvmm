@@ -107,6 +107,7 @@ pub struct ShimParams {
     /// Memory used by the shim.
     pub used: MemoryRange,
     pub bounce_buffer: Option<MemoryRange>,
+    pub ghcb_pfn: Option<u64>,
 }
 
 impl ShimParams {
@@ -133,6 +134,7 @@ impl ShimParams {
             used_end,
             bounce_buffer_start,
             bounce_buffer_size,
+            ghcb_pfn,
         } = raw;
 
         let isolation_type = get_isolation_type(supported_isolation_type);
@@ -166,6 +168,11 @@ impl ShimParams {
                     ..shim_base_address.wrapping_add_signed(used_end),
             ),
             bounce_buffer,
+            ghcb_pfn: if ghcb_pfn == u64::MAX {
+                None
+            } else {
+                Some(ghcb_pfn)
+            },
         }
     }
 

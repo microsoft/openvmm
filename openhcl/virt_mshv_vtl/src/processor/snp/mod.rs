@@ -477,7 +477,7 @@ impl BackingPrivate for SnpBacked {
             (
                 HvX64RegisterName::Ghcb,
                 x86defs::snp::GhcbMsr::new()
-                    .with_info(x86defs::snp::GhcbInfo::REGISTER_REQUEST.0)
+                    .with_info(x86defs::snp::GhcbInfo::REGISTER_REQUEST)
                     .with_pfn(pfns[UhDirectOverlay::Ghcb as usize])
                     .into(),
             ),
@@ -914,7 +914,7 @@ impl UhProcessor<'_, SnpBacked> {
         let ghcb_msr = x86defs::snp::GhcbMsr::from(message.ghcb_msr);
         tracing::trace!(?ghcb_msr, "vmgexit intercept");
 
-        match x86defs::snp::GhcbInfo(ghcb_msr.info()) {
+        match x86defs::snp::GhcbInfo(ghcb_msr.info().0) {
             x86defs::snp::GhcbInfo::NORMAL => {
                 assert!(message.flags.ghcb_page_valid());
                 let ghcb_pfn = ghcb_msr.pfn();

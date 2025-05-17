@@ -131,6 +131,8 @@ where
 
     let memory_size = memory_page_count * HV_PAGE_SIZE;
 
+    let mut ghcb_pfn = None;
+
     // OpenHCL is laid out as the following:
     // --- High Memory, 2MB aligned ---
     // free space
@@ -322,6 +324,39 @@ where
 
     offset += HV_PAGE_SIZE;
 
+    // For SNP, an addtional page is allocated for GHCB that is used by the
+    // shim. A static allocation inside the binary and manipulation the C-bit
+    // from inside the shim is not possible, as the shim is mapped with 2MiB
+    // pages, not using the RWX bits for different sections of the binary.
+    // Flipping the C bit for the 2MiB will sramble the contents thus scrambling
+    // much of the shim. Another page is allocated for the page table entries.
+    if isolation_type == IsolationType::Snp {
+        let additional_page_count = 3;
+        let additional_page_base = offset;
+        offset += additional_page_count * HV_PAGE_SIZE;
+        importer.import_pages(
+            additional_page_base / HV_PAGE_SIZE,
+            additional_page_count,
+            "underhill-shim-snp-spare-pages",
+            BootPageAcceptance::ExclusiveUnmeasured,
+            &[],
+        )?;
+
+        let ghcb_page_base = offset;
+        offset += HV_PAGE_SIZE;
+
+        // The GHCB page is imported as a secrets page, so it is not
+        // accessible to the shim.
+        importer.import_pages(
+            ghcb_page_base / HV_PAGE_SIZE,
+            1,
+            "underhill-shim-snp-ghcb",
+            BootPageAcceptance::Shared,
+            &[],
+        )?;
+        ghcb_pfn = Some(ghcb_page_base / HV_PAGE_SIZE);
+    }
+
     // Reserve space for the VTL2 reserved region.
     let reserved_region_size = PARAVISOR_RESERVED_VTL2_PAGE_COUNT_MAX * HV_PAGE_SIZE;
     let reserved_region_start = offset;
@@ -468,6 +503,11 @@ where
         used_end: calculate_shim_offset(offset),
         bounce_buffer_start: bounce_buffer.map_or(0, |r| calculate_shim_offset(r.start())),
         bounce_buffer_size: bounce_buffer.map_or(0, |r| r.len()),
+        ghcb_pfn: if let Some(ghcb_pfn) = ghcb_pfn {
+            ghcb_pfn
+        } else {
+            u64::MAX
+        },
     };
 
     tracing::debug!(boot_params_base, "shim gpa");
@@ -1058,6 +1098,7 @@ where
         used_end: calculate_shim_offset(next_addr),
         bounce_buffer_start: 0,
         bounce_buffer_size: 0,
+        ghcb_pfn: u64::MAX,
     };
 
     importer

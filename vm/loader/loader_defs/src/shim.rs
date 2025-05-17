@@ -53,6 +53,8 @@ pub struct ShimParamsRaw {
     pub bounce_buffer_start: i64,
     /// The size of the bounce buffer range. This is 0 if unavailable.
     pub bounce_buffer_size: u64,
+    /// The PFN of the GHCB page, all-1 pattern if unavailable.
+    pub ghcb_pfn: u64,
 }
 
 open_enum! {

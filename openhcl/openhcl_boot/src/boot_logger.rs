@@ -32,6 +32,8 @@ enum Logger {
     Serial(Serial),
     #[cfg(target_arch = "x86_64")]
     TdxSerial(Serial<TdxIoAccess>),
+    #[cfg(target_arch = "x86_64")]
+    SnpSerial(Serial<SnpIoAccess>),
     None,
 }
 
@@ -68,6 +70,8 @@ pub fn boot_logger_init(isolation_type: IsolationType, logger_type: LoggerType) 
         (IsolationType::None, LoggerType::Serial) => Logger::Serial(Serial::init()),
         #[cfg(target_arch = "x86_64")]
         (IsolationType::Tdx, LoggerType::Serial) => Logger::TdxSerial(Serial::init(TdxIoAccess)),
+        #[cfg(target_arch = "x86_64")]
+        (IsolationType::Snp, LoggerType::Serial) => Logger::SnpSerial(Serial::init(SnpIoAccess)),
         _ => Logger::None,
     };
 }
@@ -110,5 +114,6 @@ macro_rules! debug_log {
 
 // Expect unused imports because there should be no normal usage in code due to
 // lints against it in CI.
+use crate::arch::snp::SnpIoAccess;
 #[expect(unused_imports)]
 pub(crate) use debug_log;
