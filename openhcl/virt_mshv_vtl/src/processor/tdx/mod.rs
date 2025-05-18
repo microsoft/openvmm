@@ -715,6 +715,10 @@ impl HardwareIsolatedBacking for TdxBacked {
             true
         })
     }
+
+    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
+        self.untrusted_synic.as_mut()
+    }
 }
 
 /// Partition-wide shared data for TDX VPs.
@@ -1101,10 +1105,6 @@ impl BackingPrivate for TdxBacked {
 
     fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
         Some(&mut self.cvm.hv[vtl])
-    }
-
-    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
-        self.untrusted_synic.as_mut()
     }
 
     fn handle_vp_start_enable_vtl_wake(

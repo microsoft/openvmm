@@ -31,7 +31,6 @@ use hcl::ioctl::ApplyVtlProtectionsError;
 use hcl::ioctl::x64::MshvX64;
 use hcl::protocol;
 use hv1_emulator::hv::ProcessorVtlHv;
-use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::VtlSet;
 use hvdef::HV_PAGE_SIZE;
@@ -350,10 +349,6 @@ impl BackingPrivate for HypervisorBackedX86 {
     }
 
     fn hv_mut(&mut self, _vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
-        None
-    }
-
-    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
 

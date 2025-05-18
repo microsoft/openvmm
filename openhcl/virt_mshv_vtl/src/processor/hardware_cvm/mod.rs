@@ -2334,7 +2334,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
         for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
             // Process interrupts.
-
             self.update_synic(vtl, false);
 
             B::poll_apic(self, vtl, scan_irr[vtl] || *first_scan_irr)
@@ -2383,6 +2382,40 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             self.deliver_synic_messages(vtl, ready_sints);
             // Loop around to process the synic again.
         }
+    }
+
+    pub(crate) fn deliver_synic_messages(&mut self, vtl: GuestVtl, sints: u16) {
+        let proxied_sints = self.backing.cvm_state().hv[vtl].synic.proxied_sints();
+        let pending_sints =
+            self.inner.message_queues[vtl].post_pending_messages(sints, |sint, message| {
+                if proxied_sints & (1 << sint) != 0 {
+                    if let Some(synic) = self.backing.untrusted_synic_mut() {
+                        synic.post_message(
+                            sint,
+                            message,
+                            &mut self
+                                .partition
+                                .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
+                        )
+                    } else {
+                        self.partition.hcl.post_message_direct(
+                            self.inner.vp_info.base.vp_index.index(),
+                            sint,
+                            message,
+                        )
+                    }
+                } else {
+                    self.backing.cvm_state_mut().hv[vtl].synic.post_message(
+                        sint,
+                        message,
+                        &mut self
+                            .partition
+                            .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
+                    )
+                }
+            });
+
+        self.request_sint_notifications(vtl, pending_sints);
     }
 }
 

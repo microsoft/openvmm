@@ -44,6 +44,7 @@ use guestmem::GuestMemory;
 use hcl::ioctl::Hcl;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::message_queues::MessageQueues;
+use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
@@ -186,7 +187,6 @@ mod private {
     use crate::GuestVtl;
     use crate::processor::UhProcessor;
     use hv1_emulator::hv::ProcessorVtlHv;
-    use hv1_emulator::synic::ProcessorSynic;
     use hv1_structs::VtlArray;
     use inspect::InspectMut;
     use std::future::Future;
@@ -259,8 +259,6 @@ mod private {
 
         fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv>;
         fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv>;
-
-        fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
 
         fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool;
     }
@@ -477,6 +475,8 @@ trait HardwareIsolatedBacking: Backing {
         this: &mut UhProcessor<'_, Self>,
         intercept_control: HvRegisterCrInterceptControl,
     );
+
+    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -1124,49 +1124,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             devices,
         )
         .await
-    }
-
-    fn deliver_synic_messages(&mut self, vtl: GuestVtl, sints: u16) {
-        let proxied_sints = self
-            .backing
-            .hv(vtl)
-            .as_ref()
-            .map_or(!0, |hv| hv.synic.proxied_sints());
-        let pending_sints =
-            self.inner.message_queues[vtl].post_pending_messages(sints, |sint, message| {
-                if proxied_sints & (1 << sint) != 0 {
-                    if let Some(synic) = self.backing.untrusted_synic_mut().as_mut() {
-                        synic.post_message(
-                            sint,
-                            message,
-                            &mut self
-                                .partition
-                                .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
-                        )
-                    } else {
-                        self.partition.hcl.post_message_direct(
-                            self.inner.vp_info.base.vp_index.index(),
-                            sint,
-                            message,
-                        )
-                    }
-                } else {
-                    self.backing
-                        .hv_mut(vtl)
-                        .as_mut()
-                        .unwrap()
-                        .synic
-                        .post_message(
-                            sint,
-                            message,
-                            &mut self
-                                .partition
-                                .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
-                        )
-                }
-            });
-
-        self.request_sint_notifications(vtl, pending_sints);
     }
 
     #[cfg(guest_arch = "x86_64")]

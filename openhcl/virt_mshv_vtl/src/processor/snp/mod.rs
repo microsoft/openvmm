@@ -359,6 +359,10 @@ impl HardwareIsolatedBacking for SnpBacked {
             true
         })
     }
+
+    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
+        None
+    }
 }
 
 /// Partition-wide shared data for SNP VPs.
@@ -575,10 +579,6 @@ impl BackingPrivate for SnpBacked {
 
     fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
         Some(&mut self.cvm.hv[vtl])
-    }
-
-    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
-        None
     }
 
     fn handle_vp_start_enable_vtl_wake(
