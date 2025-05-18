@@ -1745,14 +1745,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
     }
 
     /// Handle checking for cross-VTL interrupts, preempting VTL 0, and setting
-    /// VINA when appropriate. The `is_interrupt_pending` function should return
-    /// true if an interrupt of appropriate priority, or an NMI, is pending for
-    /// the given VTL. The boolean specifies whether RFLAGS.IF should be checked.
-    /// Returns true if interrupt reprocessing is required.
-    pub(crate) fn cvm_handle_cross_vtl_interrupts(
-        &mut self,
-        is_interrupt_pending: impl Fn(&mut Self, GuestVtl, bool) -> bool,
-    ) -> Result<bool, UhRunVpError> {
+    /// VINA when appropriate. Returns true if interrupt reprocessing is required.
+    fn cvm_handle_cross_vtl_interrupts(&mut self, dev: &impl CpuIo) -> Result<bool, UhRunVpError> {
         let cvm_state = self.backing.cvm_state();
 
         // If VTL1 is not yet enabled, there is nothing to do.
@@ -1761,7 +1755,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         }
 
         // Check for VTL preemption - which ignores RFLAGS.IF
-        if cvm_state.exit_vtl == GuestVtl::Vtl0 && is_interrupt_pending(self, GuestVtl::Vtl1, false)
+        if cvm_state.exit_vtl == GuestVtl::Vtl0
+            && B::is_interrupt_pending(self, GuestVtl::Vtl1, false, dev)
         {
             self.raise_vtl(GuestVtl::Vtl0, GuestVtl::Vtl1, HvVtlEntryReason::INTERRUPT);
         }
@@ -1770,7 +1765,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
 
         // Check for VINA
         if self.backing.cvm_state().exit_vtl == GuestVtl::Vtl1
-            && is_interrupt_pending(self, GuestVtl::Vtl0, true)
+            && B::is_interrupt_pending(self, GuestVtl::Vtl0, true, dev)
         {
             let hv = &mut self.backing.cvm_state_mut().hv[GuestVtl::Vtl1];
             let vina = hv.synic.vina();
@@ -2342,7 +2337,8 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
         }
         *first_scan_irr = false;
 
-        B::handle_cross_vtl_interrupts(self, dev).map_err(VpHaltReason::InvalidVmState)
+        self.cvm_handle_cross_vtl_interrupts(dev)
+            .map_err(VpHaltReason::InvalidVmState)
     }
 
     fn update_synic(&mut self, vtl: GuestVtl, untrusted_synic: bool) {

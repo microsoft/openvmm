@@ -320,44 +320,44 @@ impl HardwareIsolatedBacking for SnpBacked {
             .expect("setting intercept control succeeds");
     }
 
-    fn handle_cross_vtl_interrupts(
+    fn is_interrupt_pending(
         this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        check_rflags: bool,
         dev: &impl CpuIo,
-    ) -> Result<bool, UhRunVpError> {
-        this.cvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
-            let vmsa = this.runner.vmsa_mut(vtl);
-            if vmsa.event_inject().valid()
-                && vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
-            {
-                return true;
-            }
+    ) -> bool {
+        let vmsa = this.runner.vmsa_mut(vtl);
+        if vmsa.event_inject().valid()
+            && vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
+        {
+            return true;
+        }
 
-            let vmsa_priority = vmsa.v_intr_cntrl().priority() as u32;
-            let lapic = &mut this.backing.cvm.lapics[vtl].lapic;
-            let ppr = lapic
-                .access(&mut SnpApicClient {
-                    partition: this.partition,
-                    vmsa,
-                    dev,
-                    vmtime: &this.vmtime,
-                    vtl,
-                })
-                .get_ppr();
-            let ppr_priority = ppr >> 4;
-            if vmsa_priority <= ppr_priority {
-                return false;
-            }
+        let vmsa_priority = vmsa.v_intr_cntrl().priority() as u32;
+        let lapic = &mut this.backing.cvm.lapics[vtl].lapic;
+        let ppr = lapic
+            .access(&mut SnpApicClient {
+                partition: this.partition,
+                vmsa,
+                dev,
+                vmtime: &this.vmtime,
+                vtl,
+            })
+            .get_ppr();
+        let ppr_priority = ppr >> 4;
+        if vmsa_priority <= ppr_priority {
+            return false;
+        }
 
-            let vmsa = this.runner.vmsa_mut(vtl);
-            if (check_rflags && !RFlags::from_bits(vmsa.rflags()).interrupt_enable())
-                || vmsa.v_intr_cntrl().intr_shadow()
-                || !vmsa.v_intr_cntrl().irq()
-            {
-                return false;
-            }
+        let vmsa = this.runner.vmsa_mut(vtl);
+        if (check_rflags && !RFlags::from_bits(vmsa.rflags()).interrupt_enable())
+            || vmsa.v_intr_cntrl().intr_shadow()
+            || !vmsa.v_intr_cntrl().irq()
+        {
+            return false;
+        }
 
-            true
-        })
+        true
     }
 }
 

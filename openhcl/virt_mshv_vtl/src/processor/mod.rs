@@ -446,12 +446,14 @@ trait HardwareIsolatedBacking: Backing {
     /// Vector of the event that is pending injection into the guest state, if
     /// valid.
     fn pending_event_vector(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> Option<u8>;
-    /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
-    /// Returns whether interrupt reprocessing is required.
-    fn handle_cross_vtl_interrupts(
+    /// Check if an interrupt of appropriate priority, or an NMI, is pending for
+    /// the given VTL. `check_rflags` specifies whether RFLAGS.IF should be checked.
+    fn is_interrupt_pending(
         this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        check_rflags: bool,
         dev: &impl CpuIo,
-    ) -> Result<bool, UhRunVpError>;
+    ) -> bool;
     /// Sets the pending exception for the guest state.
     ///
     /// Note that this will overwrite any existing pending exception. It will
