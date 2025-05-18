@@ -18,7 +18,7 @@ pub(crate) struct VbsIsolatedVtl1State {
     enable_vtl_protection: bool,
 }
 
-impl<'a> UhProcessor<'a, HypervisorBacked> {
+impl UhProcessor<'_, HypervisorBacked> {
     fn deliver_synic_messages(&mut self, vtl: GuestVtl, sints: u16) {
         let pending_sints =
             self.inner.message_queues[vtl].post_pending_messages(sints, |sint, message| {
