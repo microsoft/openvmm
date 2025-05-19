@@ -470,6 +470,7 @@ pub enum PageFaultAction {
     Fallback,
 }
 
+#[cfg(feature = "bitmap")]
 /// Returned by [`GuestMemoryAccess::access_bitmap`].
 pub struct BitmapInfo {
     /// A pointer to the bitmap for read access.
@@ -2262,7 +2263,6 @@ pub trait UnmapRom: Send + Sync {
 #[cfg(test)]
 #[expect(clippy::undocumented_unsafe_blocks)]
 mod tests {
-    use crate::BitmapInfo;
     use crate::GuestMemory;
     use crate::PAGE_SIZE64;
     use crate::PageFaultAction;
@@ -2277,6 +2277,7 @@ mod tests {
     /// when attempting to access them.
     pub struct GuestMemoryMapping {
         mapping: SparseMapping,
+        #[cfg(feature = "bitmap")]
         bitmap: Option<Vec<u8>>,
     }
 
@@ -2289,8 +2290,9 @@ mod tests {
             self.mapping.len() as u64
         }
 
-        fn access_bitmap(&self) -> Option<BitmapInfo> {
-            self.bitmap.as_ref().map(|bm| BitmapInfo {
+        #[cfg(feature = "bitmap")]
+        fn access_bitmap(&self) -> Option<crate::BitmapInfo> {
+            self.bitmap.as_ref().map(|bm| crate::BitmapInfo {
                 read_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
                 write_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
                 execute_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
@@ -2318,6 +2320,7 @@ mod tests {
 
         GuestMemoryMapping {
             mapping,
+            #[cfg(feature = "bitmap")]
             bitmap: None,
         }
     }
@@ -2372,6 +2375,7 @@ mod tests {
         mapping.alloc(0, len).unwrap();
         let mapping = Arc::new(GuestMemoryMapping {
             mapping,
+            #[cfg(feature = "bitmap")]
             bitmap: None,
         });
         let region_len = 1 << 30;
@@ -2392,6 +2396,7 @@ mod tests {
         gm.read_at(3 * region_len, &mut b).unwrap_err();
     }
 
+    #[cfg(feature = "bitmap")]
     #[test]
     fn test_bitmap() {
         let len = PAGE_SIZE * 4;
