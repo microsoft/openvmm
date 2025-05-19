@@ -92,7 +92,7 @@
 //! expensive on these platforms, but it is still cheaper than a mutex or
 //! reader-writer lock.
 
-// SAFETY: needed to access TLS from a remote thread and to call platform APIs
+// UNSAFETY: needed to access TLS from a remote thread and to call platform APIs
 // for issuing process-wide memory barriers.
 #![expect(unsafe_code)]
 
