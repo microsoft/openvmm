@@ -26,6 +26,7 @@ use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_init;
 use crate::boot_logger::log;
+use crate::host_params::shim_params::IsolationType;
 use crate::hypercall::hvcall;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;
@@ -37,7 +38,6 @@ use dt::BootTimes;
 use dt::write_dt;
 use host_params::COMMAND_LINE_SIZE;
 use host_params::PartitionInfo;
-use host_params::shim_params::IsolationType;
 use host_params::shim_params::ShimParams;
 use hvdef::Vtl;
 use loader_defs::linux::SETUP_DTB;
@@ -402,7 +402,10 @@ fn reserved_memory_regions(
 mod x86_boot {
     use crate::PageAlign;
     use crate::ReservedMemoryType;
+    #[cfg(target_arch = "x86_64")]
+    use crate::arch::tdx_prepare_ap_memory;
     use crate::host_params::PartitionInfo;
+    use crate::host_params::shim_params::IsolationType;
     use crate::single_threaded::OffStackRef;
     use crate::single_threaded::off_stack;
     use crate::zeroed;
@@ -501,6 +504,8 @@ mod x86_boot {
         cmdline: &str,
         setup_data_head: *const setup_data,
         setup_data_tail: &mut &mut setup_data,
+        isolation_type: IsolationType,
+        page_tables: Option<MemoryRange>,
     ) -> OffStackRef<'static, PageAlign<boot_params>> {
         let mut boot_params_storage = off_stack!(PageAlign<boot_params>, zeroed());
         let boot_params = &mut boot_params_storage.0;
@@ -539,6 +544,25 @@ mod x86_boot {
         boot_params.ext_cmd_line_ptr = (cmd_line_addr >> 32) as u32;
 
         boot_params.hdr.setup_data = (setup_data_head as u64).into();
+
+        if !isolation_type.is_hardware_isolated() || page_tables.is_none() {
+            return boot_params_storage;
+        }
+
+        // If TDX isolated, update the architectural reset vector for APs,
+        // and add the page tables to the e820 entries
+        //
+        // TODO(babayet2) this is an inappropriate place for this function
+        // see comment under tdx_prepare_ap_memory definition
+        #[cfg(target_arch = "x86_64")]
+        if isolation_type == IsolationType::Tdx {
+            tdx_prepare_ap_memory(
+                page_tables.unwrap().start(),
+                page_tables.unwrap().end(),
+                boot_params,
+            );
+        }
+
         boot_params_storage
     }
 }
@@ -593,15 +617,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Thus the fast hypercalls will fail as the the Guest ID has
     // to be set first hence initialize hypercall support
     // explicitly.
-    //
-    // In the hardware-isolated case, the hypervisor cannot
-    // access the guest registers so the fast hypercalls and
-    // any other methods of passing data to/from the hypervisor
-    // via the CPU registers (e.g. CPUID, hypercall call code or
-    // status) do not work, and the `hvcall()` doesn't have
-    // provisions for the hardware-isolated case.
-    if !p.isolation_type.is_hardware_isolated() {
-        hvcall().initialize();
+
+    if !(p.isolation_type == IsolationType::Snp) {
+        hvcall().initialize(p.isolation_type);
     }
 
     // Enable early log output if requested in the static command line.
@@ -678,8 +696,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     validate_vp_hw_ids(partition_info);
 
-    setup_vtl2_vp(partition_info);
+    setup_vtl2_vp(p.isolation_type, partition_info);
     setup_vtl2_memory(&p, partition_info);
+
     verify_imported_regions_hash(&p);
 
     let mut sidecar_params = off_stack!(PageAlign<SidecarParams>, zeroed());
@@ -743,6 +762,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         &cmdline,
         setup_data_head,
         &mut setup_data_tail,
+        p.isolation_type,
+        p.page_tables,
     );
 
     // Compute the ending boot time. This has to be before writing to device
@@ -790,6 +811,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         &cmdline,
         sidecar.as_ref(),
         boot_times,
+        p.isolation_type,
     )
     .unwrap();
 
@@ -893,12 +915,18 @@ fn main() {
 mod test {
     use super::x86_boot::E820Ext;
     use super::x86_boot::build_e820_map;
+    use crate::IsolationType;
     use crate::ReservedMemoryType;
     use crate::cmdline::BootCommandLineOptions;
     use crate::dt::write_dt;
+    use crate::dt::write_dt;
+    use crate::host_params::MAX_CPU_COUNT;
     use crate::host_params::MAX_CPU_COUNT;
     use crate::host_params::PartitionInfo;
+    use crate::host_params::PartitionInfo;
     use crate::host_params::shim_params::IsolationType;
+    use crate::host_params::shim_params::IsolationType;
+    use crate::reserved_memory_regions;
     use crate::reserved_memory_regions;
     use arrayvec::ArrayString;
     use arrayvec::ArrayVec;
@@ -983,6 +1011,7 @@ mod test {
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            IsolationType::None,
         )
         .unwrap();
     }
@@ -1056,6 +1085,7 @@ mod test {
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            IsolationType::None,
         )
         .unwrap();
 
@@ -1084,6 +1114,7 @@ mod test {
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            IsolationType::None,
         )
         .unwrap();
 
