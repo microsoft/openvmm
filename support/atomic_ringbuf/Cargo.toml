@@ -1,0 +1,14 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "atomic_ringbuf"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+inspect.workspace = true
+parking_lot.workspace = true
+
+[lints]
+workspace = true

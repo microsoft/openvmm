@@ -198,6 +198,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "atomic_ringbuf"
+version = "0.0.0"
+dependencies = [
+ "inspect",
+ "parking_lot",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7949,6 +7957,7 @@ dependencies = [
  "aarch64defs",
  "aarch64emu",
  "anyhow",
+ "atomic_ringbuf",
  "bitfield-struct 0.10.1",
  "bitvec",
  "build_rs_guest_arch",
