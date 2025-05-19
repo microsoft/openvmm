@@ -3,6 +3,10 @@
 
 //! Hypercall infrastructure.
 
+use crate::arch::hypercall::HvcallPage;
+#[cfg(target_arch = "x86_64")]
+use crate::arch::tdx::invoke_tdcall_hypercall;
+use crate::isolation::IsolationType;
 use crate::single_threaded::SingleThreaded;
 use arrayvec::ArrayVec;
 use core::cell::RefCell;
@@ -11,34 +15,12 @@ use core::mem::size_of;
 use hvdef::HV_PAGE_SIZE;
 use hvdef::Vtl;
 use hvdef::hypercall::HvInputVtl;
+#[cfg(target_arch = "x86_64")]
+use hvdef::hypercall::StartVirtualProcessorX64;
 use memory_range::MemoryRange;
 use minimal_rt::arch::hypercall::invoke_hypercall;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
-
-/// Page-aligned, page-sized buffer for use with hypercalls
-#[repr(C, align(4096))]
-struct HvcallPage {
-    buffer: [u8; HV_PAGE_SIZE as usize],
-}
-
-impl HvcallPage {
-    pub const fn new() -> Self {
-        HvcallPage {
-            buffer: [0; HV_PAGE_SIZE as usize],
-        }
-    }
-
-    /// Address of the hypercall page.
-    fn address(&self) -> u64 {
-        let addr = self.buffer.as_ptr() as u64;
-
-        // These should be page-aligned
-        assert!(addr % HV_PAGE_SIZE == 0);
-
-        addr
-    }
-}
 
 /// Static, reusable page for hypercall input
 static HVCALL_INPUT: SingleThreaded<UnsafeCell<HvcallPage>> =
@@ -50,7 +32,7 @@ static HVCALL_OUTPUT: SingleThreaded<UnsafeCell<HvcallPage>> =
 
 static HVCALL: SingleThreaded<RefCell<HvCall>> = SingleThreaded(RefCell::new(HvCall {
     initialized: false,
-    vtl: Vtl::Vtl0,
+    isolation_type: None,
 }));
 
 /// Provides mechanisms to invoke hypercalls within the boot shim.
@@ -59,7 +41,7 @@ static HVCALL: SingleThreaded<RefCell<HvCall>> = SingleThreaded(RefCell::new(HvC
 /// multi-threaded capacity (which the boot shim currently is not).
 pub struct HvCall {
     initialized: bool,
-    vtl: Vtl,
+    isolation_type: Option<IsolationType>,
 }
 
 /// Returns an [`HvCall`] instance.
@@ -85,47 +67,60 @@ impl HvCall {
     /// necessary.
     #[cfg(target_arch = "x86_64")]
     pub fn hypercall_page(&mut self) -> u64 {
-        self.init_if_needed();
+        assert!(self.initialized);
         core::ptr::addr_of!(minimal_rt::arch::hypercall::HYPERCALL_PAGE) as u64
     }
 
-    fn init_if_needed(&mut self) {
-        if !self.initialized {
-            self.initialize();
-        }
+    /// Hypercall initialization.
+    pub fn initialize(&mut self, isolation_type: IsolationType) {
+        match isolation_type {
+            #[cfg(target_arch = "x86_64")]
+            IsolationType::Tdx => {
+                self.initialize_tdx();
+            }
+            #[cfg(target_arch = "x86_64")]
+            IsolationType::Snp => (),
+            _ => {
+                if !self.initialized {
+                    // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
+                    let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
+
+                    crate::arch::hypercall::initialize(guest_os_id.into());
+
+                }
+            }
+        };
+        self.initialized = true;
     }
 
-    pub fn initialize(&mut self) {
-        assert!(!self.initialized);
+    /// Call before jumping to kernel.
+    pub fn uninitialize(&mut self, isolation_type: IsolationType) {
+        if self.initialized {
+            match isolation_type {
+                #[cfg(target_arch = "x86_64")]
+                IsolationType::Tdx => {
+                    self.uninitialize_tdx();
+                }
+                #[cfg(target_arch = "x86_64")]
+                IsolationType::Snp => (),
+                _ => {
+                    crate::arch::hypercall::uninitialize();
+                }
+            }
+        }
+        self.initialized = false;
+    }
 
-        // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
-        let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
-        crate::arch::hypercall::initialize(guest_os_id.into());
-
-        self.initialized = true;
-
-        self.vtl = self
-            .get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into())
+    /// Returns the environment's VTL.
+    pub fn vtl(&mut self) -> Vtl {
+        assert!(self.initialized);
+        self.get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into())
             .map_or(Vtl::Vtl0, |status| {
                 hvdef::HvRegisterVsmVpStatus::from(status.as_u64())
                     .active_vtl()
                     .try_into()
                     .unwrap()
-            });
-    }
-
-    /// Call before jumping to kernel.
-    pub fn uninitialize(&mut self) {
-        if self.initialized {
-            crate::arch::hypercall::uninitialize();
-            self.initialized = false;
-        }
-    }
-
-    /// Returns the environment's VTL.
-    pub fn vtl(&self) -> Vtl {
-        assert!(self.initialized);
-        self.vtl
+            })
     }
 
     /// Makes a hypercall.
@@ -135,19 +130,27 @@ impl HvCall {
         code: hvdef::HypercallCode,
         rep_count: Option<usize>,
     ) -> hvdef::hypercall::HypercallOutput {
-        self.init_if_needed();
+        assert!(self.initialized);
 
         let control = hvdef::hypercall::Control::new()
             .with_code(code.0)
             .with_rep_count(rep_count.unwrap_or_default());
 
-        // SAFETY: Invoking hypercall per TLFS spec
-        unsafe {
-            invoke_hypercall(
+        match self.isolation_type {
+            #[cfg(target_arch = "x86_64")]
+            Some(IsolationType::Tdx) => invoke_tdcall_hypercall(
                 control,
                 Self::input_page().address(),
                 Self::output_page().address(),
-            )
+            ),
+            // SAFETY: Invoking hypercall per TLFS spec
+            _ => unsafe {
+                invoke_hypercall(
+                    control,
+                    Self::input_page().address(),
+                    Self::output_page().address(),
+                )
+            },
         }
     }
 
@@ -383,6 +386,88 @@ impl HvCall {
         }
 
         Ok(())
+    }
+}
+
+// TDX specific hypercall methods
+#[cfg(target_arch = "x86_64")]
+impl HvCall {
+    pub fn initialize_tdx(&mut self) {
+        if !self.initialized {
+            self.isolation_type = Some(IsolationType::Tdx);
+
+            // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
+            let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
+
+            crate::arch::tdx::initialize_hypercalls(
+                guest_os_id.into(),
+                Self::input_page().address(),
+                Self::output_page().address(),
+            );
+        }
+    }
+
+    pub fn uninitialize_tdx(&mut self) {
+        if self.initialized {
+            assert!(self.isolation_type == Some(IsolationType::Tdx));
+            crate::arch::tdx::uninitialize_hypercalls(
+                Self::input_page().address(),
+                Self::output_page().address(),
+            );
+        }
+    }
+
+    /// Hypercall to enable VTL2 on a TDX VP
+    pub fn tdx_enable_vp_vtl2(&mut self, vp_index: u32) -> Result<(), hvdef::HvError> {
+        let header = hvdef::hypercall::EnableVpVtlX64 {
+            partition_id: hvdef::HV_PARTITION_ID_SELF,
+            vp_index,
+            // The VTL value here is just a u8 and not the otherwise usual
+            // HvInputVtl value.
+            target_vtl: Vtl::Vtl2.into(),
+            reserved: [0; 3],
+            // Context must be zeroed for the VP VTL startup hypercall on TDX
+            vp_vtl_context: zerocopy::FromZeros::new_zeroed(),
+        };
+
+        assert!(self.initialized);
+
+        header
+            .write_to_prefix(Self::input_page().buffer.as_mut_slice())
+            .expect("unable to write to hypercall page");
+
+        let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallEnableVpVtl, None);
+        match output.result() {
+            Ok(()) | Err(hvdef::HvError::VtlAlreadyEnabled) => Ok(()),
+            err => err,
+        }
+    }
+
+    /// Hypercall to start VP on TDX
+    pub fn tdx_start_vp(&mut self, vp_index: u32) -> Result<(), hvdef::HvError> {
+        assert!(self.isolation_type == Some(IsolationType::Tdx));
+        let header = StartVirtualProcessorX64 {
+            partition_id: hvdef::HV_PARTITION_ID_SELF,
+            vp_index,
+            target_vtl: Vtl::Vtl2.into(),
+            rsvd0: 0,
+            rsvd1: 0,
+            // Context must be zeroed for the AP startup hypercall on TDX
+            vp_context: zerocopy::FromZeros::new_zeroed(),
+        };
+
+        assert!(self.initialized);
+
+        // SAFETY: the input page is not concurrently accessed.
+        header
+            .write_to_prefix(Self::input_page().buffer.as_mut_slice())
+            .expect("unable to write to hypercall page");
+
+        let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallStartVirtualProcessor, None);
+        match output.result() {
+            Ok(()) | Err(hvdef::HvError::VtlAlreadyEnabled) => Ok(()),
+            err => err,
+        }
     }
 }
 

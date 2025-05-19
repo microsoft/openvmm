@@ -9,53 +9,11 @@ use crate::vp_context_builder::VpContextPageState;
 use igvm_defs::PAGE_SIZE_4K;
 use loader::importer::SegmentRegister;
 use loader::importer::X86Register;
+use loader_defs::shim::TdxTrampolineContext;
 use std::mem::offset_of;
 use x86defs::X64_EFER_LME;
 use x86defs::X86X_MSR_DEFAULT_PAT;
-use zerocopy::Immutable;
 use zerocopy::IntoBytes;
-use zerocopy::KnownLayout;
-
-/// Fields in the trampoline context must be loaded from memory by the
-/// trampoline code.
-///
-/// Note that this trampoline context must also be used for bringing up APs, as
-/// the code placed in the reset vector will use this format to figure out what
-/// register state to load.
-#[repr(C)]
-#[derive(Debug, Default, Clone, Copy, IntoBytes, Immutable, KnownLayout)]
-pub struct TdxTrampolineContext {
-    start_gate: u32,
-
-    data_selector: u16,
-    static_gdt_limit: u16,
-    static_gdt_base: u32,
-
-    task_selector: u16,
-    idtr_limit: u16,
-    idtr_base: u64,
-
-    initial_rip: u64,
-    code_selector: u16,
-    padding_2: [u16; 2],
-    gdtr_limit: u16,
-    gdtr_base: u64,
-
-    rsp: u64,
-    rbp: u64,
-    rsi: u64,
-    r8: u64,
-    r9: u64,
-    r10: u64,
-    r11: u64,
-    cr0: u64,
-    cr3: u64,
-    cr4: u64,
-    transition_cr3: u32,
-    padding_3: u32,
-
-    static_gdt: [u8; 16],
-}
 
 /// Represents a hardware context for TDX. This contains both the sets of
 /// initial registers and registers set by the trampoline code.
@@ -202,19 +160,49 @@ impl VpContextBuilder for TdxHardwareContext {
 
         byte_offset = trampoline_context.len();
 
-        // Spin forever until this processor is selected to start.
         // L0:
         let l0_offset = byte_offset;
 
-        // cmp esi, [startGate]
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x3B, 0x35]);
-        relative_offset = 0xFFFFF000 + offset_of!(TdxTrampolineContext, start_gate) as u32;
+        // test esi, esi
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x85, 0xF6]);
+
+        // jz mailbox_end
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
+        byte_offset += 1;
+        let mailbox_end = byte_offset;
+        let mailbox_begin = byte_offset;
+
+        // xor eax, eax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x31, 0xC0]);
+
+        // mov ax, [mailbox_command]
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x66, 0x8b, 0x05]);
+        relative_offset = 0xFFFFF000 + offset_of!(TdxTrampolineContext, mailbox_command) as u32;
         byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
 
-        // jne L0
+        // mov dx, 01h
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x66, 0xba, 0x01, 0x00]);
+
+        // cmp ax, dx
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x66, 0x39, 0xd0]);
+
+        // jne mailbox_begin
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x75]);
-        let jne_l0_offset = (l0_offset.wrapping_sub(byte_offset + 1)) as u8;
-        byte_offset = copy_instr(&mut reset_page, byte_offset, &[jne_l0_offset]);
+        byte_offset += 1;
+        reset_page[byte_offset.wrapping_sub(1)] = (mailbox_begin.wrapping_sub(byte_offset)) as u8;
+
+        // cmp esi, [mailbox_apic_id]
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x3b, 0x35]);
+        relative_offset = 0xFFFFF000 + offset_of!(TdxTrampolineContext, mailbox_apic_id) as u32;
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+
+        // jne mailbox_begin
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x75]);
+        byte_offset += 1;
+        reset_page[byte_offset.wrapping_sub(1)] = (mailbox_begin.wrapping_sub(byte_offset)) as u8;
+
+        // mailbox_end:
+        reset_page[mailbox_end.wrapping_sub(1)] = (byte_offset.wrapping_sub(mailbox_end)) as u8;
 
         // lgdt, [staticGdt]
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x0F, 0x01, 0x15]);
@@ -436,6 +424,38 @@ impl VpContextBuilder for TdxHardwareContext {
         }
 
         // Load entry register state and transfer to the image.
+
+        // test esi, esi
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x85, 0xF6]);
+
+        // jz L7
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x74]);
+        byte_offset += 1;
+        let l7_offset = byte_offset;
+
+        // xor rax, rax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x48, 0x31, 0xC0]);
+
+        // mov [mailbox_command], ax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x66, 0x89, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, mailbox_command) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+
+        // mov rax, [mailbox_wakeup_vector]
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x48, 0x8b, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, mailbox_wakeup_vector) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+
+        // mov [initialRip], rax
+        byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x48, 0x89, 0x05]);
+        relative_offset = (offset_of!(TdxTrampolineContext, initial_rip) as u32)
+            .wrapping_sub((byte_offset + 4) as u32);
+        byte_offset = copy_instr(&mut reset_page, byte_offset, relative_offset.as_bytes());
+
+        // L7:
+        reset_page[l7_offset.wrapping_sub(1)] = (byte_offset.wrapping_sub(l7_offset)) as u8;
 
         // mov rsp, [initialRsp]
         byte_offset = copy_instr(&mut reset_page, byte_offset, &[0x48, 0x8B, 0x25]);
