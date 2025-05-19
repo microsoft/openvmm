@@ -21,7 +21,6 @@ use std::ops::Range;
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
-use std::sync::atomic::Ordering;
 use thiserror::Error;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
@@ -328,7 +327,12 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     /// fails, then the associated `*_fallback` routine is called to handle the
     /// error.
     ///
-    /// TODO: add a synchronization scheme.
+    /// Bitmap checks are performed under the [`minircu::global()`] RCU domain,
+    /// with relaxed accesses. After a thread updates the bitmap, it must call
+    /// [`minircu::global().synchronize()`] to ensure that all threads see the
+    /// update before taking any action that depends on the bitmap update being
+    /// visible.
+    #[cfg(feature = "bitmap")]
     fn access_bitmap(&self) -> Option<BitmapInfo> {
         None
     }
@@ -491,6 +495,7 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for Arc<T> {
         self.as_ref().max_address()
     }
 
+    #[cfg(feature = "bitmap")]
     fn access_bitmap(&self) -> Option<BitmapInfo> {
         self.as_ref().access_bitmap()
     }
@@ -604,6 +609,7 @@ unsafe impl GuestMemoryAccess for GuestMemoryAccessRange {
         self.len
     }
 
+    #[cfg(feature = "bitmap")]
     fn access_bitmap(&self) -> Option<BitmapInfo> {
         let region = &self.base.regions[self.region];
         region.bitmaps.map(|bitmaps| {
@@ -758,6 +764,7 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for MultiRegionGuestMemoryAc
         unreachable!()
     }
 
+    #[cfg(feature = "bitmap")]
     fn access_bitmap(&self) -> Option<BitmapInfo> {
         unreachable!()
     }
@@ -850,7 +857,9 @@ impl<T: ?Sized> Debug for GuestMemoryInner<T> {
 #[derive(Debug, Copy, Clone, Default)]
 struct MemoryRegion {
     mapping: Option<SendPtrU8>,
+    #[cfg(feature = "bitmap")]
     bitmaps: Option<[SendPtrU8; 3]>,
+    #[cfg(feature = "bitmap")]
     bitmap_start: u8,
     len: u64,
     base_iova: Option<u64>,
@@ -886,7 +895,9 @@ unsafe impl Sync for SendPtrU8 {}
 
 impl MemoryRegion {
     fn new(imp: &impl GuestMemoryAccess) -> Self {
+        #[cfg(feature = "bitmap")]
         let bitmap_info = imp.access_bitmap();
+        #[cfg(feature = "bitmap")]
         let bitmaps = bitmap_info.as_ref().map(|bm| {
             [
                 SendPtrU8(bm.read_bitmap),
@@ -894,10 +905,13 @@ impl MemoryRegion {
                 SendPtrU8(bm.execute_bitmap),
             ]
         });
+        #[cfg(feature = "bitmap")]
         let bitmap_start = bitmap_info.map_or(0, |bi| bi.bit_offset);
         Self {
             mapping: imp.mapping().map(SendPtrU8),
+            #[cfg(feature = "bitmap")]
             bitmaps,
+            #[cfg(feature = "bitmap")]
             bitmap_start,
             len: imp.max_address(),
             base_iova: imp.base_iova(),
@@ -916,6 +930,12 @@ impl MemoryRegion {
         len: u64,
     ) -> Result<(), u64> {
         debug_assert!(self.len >= offset + len);
+        #[cfg(not(feature = "bitmap"))]
+        {
+            let _ = access_type;
+        }
+
+        #[cfg(feature = "bitmap")]
         if let Some(bitmaps) = &self.bitmaps {
             let SendPtrU8(bitmap) = bitmaps[access_type as usize];
             let start = offset / PAGE_SIZE64;
@@ -932,7 +952,7 @@ impl MemoryRegion {
                         .cast_const()
                         .cast::<AtomicU8>()
                         .add(bit_offset as usize / 8))
-                    .load(Ordering::Relaxed)
+                    .load(std::sync::atomic::Ordering::Relaxed)
                         & (1 << (bit_offset % 8))
                 };
                 if bit == 0 {
@@ -980,6 +1000,19 @@ pub enum MultiRegionError {
     },
     #[error("backing size {backing_size:#x} is too large for region size {region_size:#x}")]
     BackingTooLarge { backing_size: u64, region_size: u64 },
+}
+
+/// The RCU domain memory accesses occur under. Updates to any memory access
+/// bitmaps must be synchronized under this domain.
+///
+/// See [`GuestMemoryAccess::access_bitmap`] for more details.
+///
+/// This is currently the global domain, but this is reexported here to make
+/// calling code clearer.
+#[cfg(feature = "bitmap")]
+pub fn rcu() -> minircu::RcuDomain {
+    // Use the global domain unless we find a reason to do something else.
+    minircu::global()
 }
 
 impl GuestMemory {
@@ -1216,6 +1249,7 @@ impl GuestMemory {
     /// mapped.
     pub fn full_mapping(&self) -> Option<(*mut u8, usize)> {
         if let [region] = self.inner.regions.as_slice() {
+            #[cfg(feature = "bitmap")]
             if region.bitmaps.is_some() {
                 return None;
             }
@@ -1288,33 +1322,42 @@ impl GuestMemory {
         mut f: impl FnMut(&mut P, *mut u8) -> Result<T, sparse_mmap::MemoryError>,
         fallback: impl FnOnce(&mut P) -> Result<T, GuestMemoryBackingError>,
     ) -> Result<T, GuestMemoryBackingError> {
-        let Some(mapping) = self.mapping_range(access_type, gpa, len)? else {
-            return fallback(&mut param);
-        };
+        let op = || {
+            let Some(mapping) = self.mapping_range(access_type, gpa, len)? else {
+                return fallback(&mut param);
+            };
 
-        // Try until the fault fails to resolve.
-        loop {
-            match f(&mut param, mapping) {
-                Ok(t) => return Ok(t),
-                Err(fault) => {
-                    match self.inner.imp.page_fault(
-                        gpa + fault.offset() as u64,
-                        len - fault.offset(),
-                        access_type == AccessType::Write,
-                        false,
-                    ) {
-                        PageFaultAction::Fail(err) => {
-                            return Err(GuestMemoryBackingError::new(
-                                gpa + fault.offset() as u64,
-                                err,
-                            ));
+            // Try until the fault fails to resolve.
+            loop {
+                match f(&mut param, mapping) {
+                    Ok(t) => return Ok(t),
+                    Err(fault) => {
+                        match self.inner.imp.page_fault(
+                            gpa + fault.offset() as u64,
+                            len - fault.offset(),
+                            access_type == AccessType::Write,
+                            false,
+                        ) {
+                            PageFaultAction::Fail(err) => {
+                                return Err(GuestMemoryBackingError::new(
+                                    gpa + fault.offset() as u64,
+                                    err,
+                                ));
+                            }
+                            PageFaultAction::Retry => {}
+                            PageFaultAction::Fallback => return fallback(&mut param),
                         }
-                        PageFaultAction::Retry => {}
-                        PageFaultAction::Fallback => return fallback(&mut param),
                     }
                 }
             }
-        }
+        };
+        // If the `rcu` feature is enabled, run the function in an RCU critical
+        // section. This will allow callers to flush concurrent accesses after
+        // bitmap updates.
+        #[cfg(feature = "bitmap")]
+        return rcu().run(op);
+        #[cfg(not(feature = "bitmap"))]
+        op()
     }
 
     /// # Safety

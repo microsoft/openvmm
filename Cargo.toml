@@ -123,6 +123,7 @@ mesh_remote = { path = "support/mesh/mesh_remote" }
 mesh_rpc = { path = "support/mesh/mesh_rpc" }
 mesh_worker = { path = "support/mesh/mesh_worker" }
 mesh_tracing = { path = "support/mesh_tracing" }
+minircu = { path = "support/minircu" }
 open_enum = { path = "support/open_enum" }
 openssl_kdf = { path = "support/openssl_kdf" }
 openssl_crypto_only = { path = "support/openssl_crypto_only" }
