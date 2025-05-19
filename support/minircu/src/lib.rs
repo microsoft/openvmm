@@ -352,9 +352,17 @@ impl RcuDomain {
                 "called synchronize() inside a critical section, {this_seq:#x}",
             );
         }
+        // Update the domain's sequence number.
         let seq = self.data.seq.fetch_add(SEQ_INCREMENT, SeqCst) + SEQ_INCREMENT;
-        // Try to avoid the membarrier if possible--if all threads are quiesced,
-        // then there is no need to issue a membarrier.
+        // We need to make sure all threads are quiesced, not busy, or have
+        // observed the new sequence number. To do this, we must synchronize the
+        // global sequence number update with changes to each thread's local
+        // sequence number. To do that, we will issue a membarrier, to broadcast
+        // a memory barrier to all threads in the process.
+        //
+        // First, try to avoid the membarrier if possible--if all threads are quiesced,
+        // then there is no need to issue a membarrier, because quiesced threads will issue
+        // a memory barrier when they leave the quiesced state.
         if self
             .data
             .threads
@@ -364,6 +372,7 @@ impl RcuDomain {
         {
             return None;
         }
+        // Keep a count for diagnostics purposes.
         self.data.membarriers.fetch_add(1, Relaxed);
         sys::membarrier();
         Some(seq)
@@ -495,21 +504,36 @@ impl ThreadData {
     where
         F: FnOnce() -> R,
     {
+        // Mark the thread as busy.
         let seq = self.current_seq.load(Relaxed);
         self.current_seq.store(seq | SEQ_MASK_BUSY, Relaxed);
         if seq < SEQ_FIRST {
+            // The thread was quiesced or not registered. Register it now.
             if seq == SEQ_NONE {
                 self.start(data, seq);
+            } else {
+                debug_assert!(seq == SEQ_QUIESCED || seq & SEQ_MASK_BUSY != 0, "{seq:#x}");
             }
+            // Use a full memory barrier to ensure the write side observes that
+            // the thread is no longer quiesced before calling `f`.
             fence(SeqCst);
         }
+        // Ensure accesses in `f` are bounded by setting the busy bit. Note that
+        // this and other fences are just compiler fences; the write side must
+        // call `membarrier` to dynamically turn them into processor memory
+        // barriers, so to speak.
         sys::access_fence(Acquire);
         let r = f();
         sys::access_fence(Release);
+        // Clear the busy bit.
         self.current_seq.store(seq, Relaxed);
+        // Ensure the busy bit clear is visible to the write side, then read the
+        // new sequence number, to synchronize with the sequence update path.
         sys::access_fence(SeqCst);
         let new_seq = data.seq.load(Relaxed);
         if new_seq != seq {
+            // The domain's current sequence number has changed. Update it and
+            // wake up any waiters.
             self.update_seq(data, seq, new_seq);
         }
         r
@@ -518,12 +542,15 @@ impl ThreadData {
     #[inline(never)]
     fn start(&self, data: &'static RcuData, seq: u64) {
         if seq == SEQ_NONE {
+            // Add the thread to the list of known threads in this domain.
             assert!(self.data.get().is_none());
             data.threads.lock().push(ThreadEntry {
                 seq_ptr: TlsRef(&self.current_seq),
                 observed_seq: SEQ_NONE,
                 thread: std::thread::current(),
             });
+            // Remember the domain so that we can remove the thread from the list
+            // when it exits.
             self.data.set(Some(data));
         }
     }
@@ -539,6 +566,9 @@ impl ThreadData {
             "{new_seq}"
         );
         self.current_seq.store(new_seq, Relaxed);
+        // Wake up any waiters. We don't know how many threads are still in a
+        // critical section, so just wake up the writers every time and let them
+        // figure it out.
         data.event.notify(!0usize);
     }
 
