@@ -19,6 +19,7 @@ use core::sync::atomic::Ordering;
 use core::sync::atomic::compiler_fence;
 use memory_range::MemoryRange;
 use x86defs::X64_LARGE_PAGE_SIZE;
+use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -100,6 +101,18 @@ impl PageTableEntry {
 
     pub fn clear(&mut self) {
         self.write_pte(0);
+    }
+
+    pub fn tdx_set_shared(&mut self) {
+        let mut val = self.read_pte();
+        val |= TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
+        self.write_pte(val);
+    }
+
+    pub fn tdx_set_private(&mut self) {
+        let mut val = self.read_pte();
+        val &= !TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
+        self.write_pte(val);
     }
 }
 
@@ -205,6 +218,7 @@ unsafe fn page_table_at_address(address: u64) -> &'static mut PageTable {
 /// Returns a reference to the PDE corresponding to a virtual address.
 ///
 /// # Safety
+///
 /// This routine requires the caller to ensure that the VA is a valid one for which the paging
 /// hierarchy was configured by the file loader (the page directory must exist). If this is not
 /// true this routine will panic rather than corrupt the address space.
@@ -252,4 +266,32 @@ pub fn init_local_map(va: u64) -> LocalMap<'static> {
 
     unmap_page_helper(&local_map);
     local_map
+}
+
+/// Set the shared bit in the PDE of a large page in the local map for a given VA.
+///
+/// # Safety
+/// This routine requires the caller to pass VA that is a valid large page,
+/// and ensure that the page is one that should be shared with the host vmm
+pub unsafe fn tdx_share_large_page(va: u64) {
+    // SAFETY: See above
+    unsafe {
+        let entry = get_pde_for_va(va);
+        assert!(entry.is_present() & entry.is_large_page());
+        entry.tdx_set_shared();
+    }
+}
+
+/// Clear the shared bit in the PDE of the local map for a given VA.
+///
+/// # Safety
+/// This routine requires the caller to pass VA that is a valid large page,
+/// and ensure that the page is one that should be shared with the host vmm
+pub unsafe fn tdx_unshare_large_page(va: u64) {
+    // SAFETY: See above
+    unsafe {
+        let entry = get_pde_for_va(va);
+        assert!(entry.is_present() & entry.is_large_page());
+        entry.tdx_set_private();
+    }
 }
