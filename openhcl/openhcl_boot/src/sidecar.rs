@@ -5,8 +5,8 @@ use crate::boot_logger::log;
 use crate::host_params::MAX_CPU_COUNT;
 use crate::host_params::MAX_NUMA_NODES;
 use crate::host_params::PartitionInfo;
-use crate::host_params::shim_params::IsolationType;
 use crate::host_params::shim_params::ShimParams;
+use crate::isolation::IsolationType;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayVec;
 use memory_range::MemoryRange;
@@ -153,6 +153,7 @@ pub fn start_sidecar<'a>(
         *hypercall_page = 0;
         #[cfg(target_arch = "x86_64")]
         {
+            crate::hypercall::hvcall().initialize(IsolationType::None);
             *hypercall_page = crate::hypercall::hvcall().hypercall_page();
         }
         *enable_logging = partition_info.boot_options.sidecar_logging;
