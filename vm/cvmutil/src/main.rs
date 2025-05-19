@@ -138,15 +138,6 @@ fn create_vtpm_blob(mut tpm_engine_helper: TpmEngineHelper) {
             assert_ne!(response.out_public.size.get(), 0);
             println!("SRK public area: {:?}", response.out_public.public_area);
 
-            // Write the SRK pub to a file.
-            //let srk_pub_file = Use the input.
-            let mut srk_pub_file = File::create("srk_pub.bin").expect("failed to create file");
-            let srk_pub = response.out_public.public_area.serialize();
-            let srk_pub = srk_pub.as_slice();
-            srk_pub_file
-                .write_all(&srk_pub)
-                .expect("failed to write to file");
-
             // Do I need to do evict control here??
             // Evict the SRK handle.
             let result = tpm_engine_helper.evict_control(
@@ -212,8 +203,8 @@ fn print_vtpm_srk_pub_key_name(srkpub_path: String) {
 
     // Deserialize the srkpub to a public area.
     let public_key =
-        TpmtPublic::deserialize(&srkpub_content_buf).expect("failed to deserialize srkpub");
-    let public_area: TpmtPublic = public_key.into();
+        Tpm2bPublic::deserialize(&srkpub_content_buf).expect("failed to deserialize srkpub");
+    let public_area: TpmtPublic = public_key.public_area.into();
     // Compute SHA256 hash of the public area
     let mut hasher = Sha256::new();
     hasher.update(public_area.serialize());

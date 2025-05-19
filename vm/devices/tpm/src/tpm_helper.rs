@@ -1874,13 +1874,17 @@ pub fn ek_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
 /// Returns the public template for SRK.
 /// TODO: review the properties.
 pub fn srk_pub_template() -> Result<TpmtPublic, TpmHelperUtilityError> {
-    let symmetric = TpmtSymDefObject::new(AlgIdEnum::AES.into(), Some(128), Some(AlgIdEnum::CFB.into()));
+    let symmetric = TpmtSymDefObject::new(
+        AlgIdEnum::AES.into(),
+        Some(128),
+        Some(AlgIdEnum::CFB.into()),
+    );
 
     //let scheme = TpmtRsaScheme::new(AlgIdEnum::RSA.into(), Some(AlgIdEnum::SHA256.into()));
     // Define the RSA scheme as TPM2_ALG_NULL for general use
     let scheme = TpmtRsaScheme::new(AlgIdEnum::NULL.into(), None);
 
-    let rsa_params = TpmsRsaParams::new(symmetric, scheme, crate::RSA_2K_MODULUS_BITS, 0);
+    let rsa_params = TpmsRsaParams::new(symmetric, scheme, crate::RSA_2K_MODULUS_BITS, 65537);
 
     let object_attributes = TpmaObjectBits::new()
         .with_fixed_tpm(true)
