@@ -929,7 +929,7 @@ impl ProxyTask {
                     }
                     r = vtl2_saved_state_requests => {
                         if !self.handle_saved_state_request(r.unwrap(), 2).await {
-                            vtl2_hvsock_request_recv = None;
+                            vtl2_saved_state_recv = None;
                         }
                     }
                     complete => break 'outer,
