@@ -139,7 +139,7 @@ impl<const N: usize, T: Copy + From<u64> + Into<u64>> AtomicRingBufferWriteGuard
         // 3. Increment the valid entry count so that any readers executing
         //    simultaneously will know it is valid.
         let len = items.len();
-        let start_count = self.buf.in_progress_count.load(Ordering::Acquire);
+        let start_count = self.buf.in_progress_count.load(Ordering::Relaxed);
         let end_count = start_count.wrapping_add(len);
         self.buf
             .in_progress_count
