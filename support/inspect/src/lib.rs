@@ -70,7 +70,7 @@ pub use initiate::*;
 /// `bitflags!`) and you cannot put attributes on it.
 ///
 /// This attribute requires that there be exactly one non-skipped field. Fields
-/// of type [`PhantomData`](std::marker::PhantomData) are automatically skipped.
+/// of type [`PhantomData`](core::marker::PhantomData) are automatically skipped.
 ///
 /// Note that it is not sufficient to mark any extraneous fields' _types_ with
 /// `skip`--you must mark the individual fields with the `skip` attribute.
@@ -209,7 +209,7 @@ pub use initiate::*;
 /// ### `debug`
 ///
 /// Inspect the field by formatting it as a string, using the field's
-/// [`std::fmt::Debug`] implementation.
+/// [`core::fmt::Debug`] implementation.
 ///
 /// In general, implementing [`Inspect`] for the field should be preferred to
 /// this in order to preserve structured data.
@@ -727,7 +727,7 @@ impl Response<'_> {
         self.field(name, AsBinary(value))
     }
 
-    /// Adds a string field that implements [`std::fmt::Display`].
+    /// Adds a string field that implements [`core::fmt::Display`].
     ///
     /// This is a convenience method for `field_with(name, ||
     /// value.to_string())`. It lazily allocates the string only when the
@@ -745,7 +745,7 @@ impl Response<'_> {
         self.field_with(name, || value.to_string())
     }
 
-    /// Adds a string field that implements [`std::fmt::Debug`].
+    /// Adds a string field that implements [`core::fmt::Debug`].
     ///
     /// This is a convenience method for `field(name, format_args!("{value:?}"))`.
     ///
