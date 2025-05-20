@@ -119,6 +119,12 @@ impl HyperVVM {
             },
         )?;
 
+        // Disable secure boot
+        powershell::run_set_vm_firmware(powershell::HyperVSetVMFirmwareArgs {
+            vmid: &vmid,
+            secure_boot_template: None,
+        })?;
+
         Ok(this)
     }
 

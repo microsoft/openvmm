@@ -22,6 +22,7 @@ use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use petri_artifacts_common::tags::IsTestVmgs;
 use petri_artifacts_common::tags::MachineArch;
+use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ResolvedArtifact;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
@@ -127,17 +128,26 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    /// Enable secure boot for the VM.
+    /// Set the VM to enable secure boot and inject the templates.
     pub fn with_secure_boot(mut self) -> Self {
+        // Restrict to UEFI firmware
         if !self.firmware.is_uefi() {
             panic!("Secure boot is only supported for UEFI firmware.");
         }
+
+        // Enable secure boot
         if self.firmware.is_openhcl() {
             self.ged.as_mut().unwrap().secure_boot_enabled = true;
         } else {
             self.config.secure_boot_enabled = true;
         }
-        self
+
+        // Inject templates per os flavor
+        match self.os_flavor() {
+            OsFlavor::Windows => self.with_windows_secure_boot_template(),
+            OsFlavor::Linux => self.with_uefi_ca_template(),
+            OsFlavor::FreeBsd | OsFlavor::Uefi => self,
+        }
     }
 
     /// Inject Windows secure boot templates into the VM's UEFI.
