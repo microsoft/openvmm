@@ -793,6 +793,7 @@ impl ProxyTask {
                                     key.interface_id.into(),
                                     key.instance_id.into(),
                                     key.subchannel_index,
+                                    vtl,
                                     VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS {
                                         RingBufferGpadlHandle: open_params.ring_buffer_gpadl_id.0,
                                         DownstreamRingBufferPageOffset: open_params

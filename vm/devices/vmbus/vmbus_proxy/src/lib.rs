@@ -284,6 +284,7 @@ impl VmbusProxy {
         interface_type: GUID,
         interface_instance: GUID,
         subchannel_index: u16,
+        target_vtl: u8,
         open_params: VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS,
         open: bool,
     ) -> Result<u64> {
@@ -294,6 +295,7 @@ impl VmbusProxy {
                     InterfaceType: interface_type,
                     InterfaceInstance: interface_instance,
                     SubchannelIndex: subchannel_index,
+                    TargetVtl: target_vtl,
                     OpenParameters: open_params,
                     Open: open.into(),
                 }),

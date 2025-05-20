@@ -138,6 +138,7 @@ pub struct VMBUS_PROXY_RESTORE_CHANNEL_INPUT {
     pub InterfaceType: GUID,
     pub InterfaceInstance: GUID,
     pub SubchannelIndex: u16,
+    pub TargetVtl: u8,
     pub OpenParameters: VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS,
     pub Open: BOOLEAN,
 }
