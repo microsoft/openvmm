@@ -10,7 +10,7 @@
 //! is synchronized with a lock, but read attempts are never blocked.
 
 cfg_if::cfg_if! {
-    if #[cfg(test)] {
+    if #[cfg(all(target_arch = "x86_64", test))] { // xtask-fmt allow-target-arch dependency
         use loom::sync::Mutex;
         use loom::sync::MutexGuard;
         use loom::sync::atomic::AtomicU64;
@@ -78,7 +78,7 @@ impl<const N: usize, T: Copy + From<u64> + Into<u64>> AtomicRingBuffer<N, T> {
     /// Obtain a write lock for the buffer.
     pub fn write(&self) -> AtomicRingBufferWriteGuard<'_, N, T> {
         let write_lock = self.write_lock.lock();
-        #[cfg(test)]
+        #[cfg(all(target_arch = "x86_64", test))] // xtask-fmt allow-target-arch dependency
         let write_lock = write_lock.unwrap();
         AtomicRingBufferWriteGuard {
             buf: self,
@@ -154,8 +154,8 @@ impl<const N: usize, T: Copy + From<u64> + Into<u64>> AtomicRingBufferWriteGuard
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(all(target_arch = "x86_64", test))] // xtask-fmt allow-target-arch dependency
+mod loom_tests {
     use super::*;
     use loom::sync::Arc;
     use loom::thread;

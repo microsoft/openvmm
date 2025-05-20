@@ -11,7 +11,7 @@ cfg-if.workspace = true
 inspect.workspace = true
 parking_lot.workspace = true
 
-[dev-dependencies]
+[target.'cfg(target_arch = "x86_64")'.dev-dependencies]
 loom.workspace = true
 
 [lints]
