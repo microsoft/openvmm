@@ -26,6 +26,7 @@ use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use anyhow::Context;
 use async_trait::async_trait;
+use construct::OpenVmmSecureBootTemplate;
 use disk_backend_resources::LayeredDiskHandle;
 use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
@@ -135,6 +136,9 @@ pub struct PetriVmConfigOpenVmm {
     ged: Option<get_resources::ged::GuestEmulationDeviceHandle>,
     vtl2_settings: Option<Vtl2Settings>,
     framebuffer_access: Option<FramebufferAccess>,
+
+    // Secure boot
+    secure_boot_template: Option<OpenVmmSecureBootTemplate>,
 }
 
 #[async_trait]

@@ -44,6 +44,7 @@ impl PetriVmConfigOpenVmm {
             firmware,
             arch,
             mut config,
+            secure_boot_template,
 
             mut resources,
 
