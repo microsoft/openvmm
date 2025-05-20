@@ -27,7 +27,7 @@
 //!
 //! // Wait for all current readers to finish their critical sections.
 //! // This is typically called by writers after updating data.
-//! minircu::global().synchronize_sync();
+//! minircu::global().synchronize_blocking();
 //! ```
 //!
 //! ## Quiescing
@@ -75,7 +75,7 @@
 //! * Avoid blocking or long-running operations in critical sections as they can
 //!   delay writers or cause deadlocks.
 //! * Never call [`synchronize`](RcuDomain::synchronize) or
-//!   [`synchronize_sync`](RcuDomain::synchronize_sync) from within a critical
+//!   [`synchronize_blocking`](RcuDomain::synchronize_blocking) from within a critical
 //!   section (will panic).
 //! * For best performance, ensure all threads in your process call `quiesce`
 //!   when a thread is going to sleep or block.
@@ -299,7 +299,7 @@ impl RcuDomain {
 
     /// Runs `f` in a critical section. Calls to
     /// [`synchronize`](Self::synchronize) or
-    /// [`synchronize_sync`](Self::synchronize_sync) for the same RCU root will
+    /// [`synchronize_blocking`](Self::synchronize_blocking) for the same RCU root will
     /// block until `f` returns.
     ///
     /// In general, you should avoid blocking the thread in `f`, since that can
@@ -316,7 +316,7 @@ impl RcuDomain {
     /// Quiesce the current thread.
     ///
     /// This can speed up calls to [`synchronize`](Self::synchronize) or
-    /// [`synchronize_sync`](Self::synchronize_sync) by allowing the RCU domain
+    /// [`synchronize_blocking`](Self::synchronize_blocking) by allowing the RCU domain
     /// to skip issuing a membarrier if all threads are quiesced. In return, the
     /// first call to [`run`](Self::run) after this will be slower, as it will
     /// need to issue a memory barrier to leave the quiesced state.
@@ -415,7 +415,7 @@ impl RcuDomain {
     /// Like [`synchronize`](Self::synchronize), but blocks the current thread
     /// synchronously.
     #[track_caller]
-    pub fn synchronize_sync(self) {
+    pub fn synchronize_blocking(self) {
         let Some(seq) = self.prepare_to_wait() else {
             return;
         };

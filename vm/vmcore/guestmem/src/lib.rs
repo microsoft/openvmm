@@ -328,11 +328,11 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     /// fails, then the associated `*_fallback` routine is called to handle the
     /// error.
     ///
-    /// Bitmap checks are performed under the [`minircu::global()`] RCU domain,
-    /// with relaxed accesses. After a thread updates the bitmap to be more
-    /// restrictive, it must call [`minircu::global().synchronize()`] to ensure
-    /// that all threads see the update before taking any action that depends on
-    /// the bitmap update being visible.
+    /// Bitmap checks are performed under the [`rcu()`] RCU domain, with relaxed
+    /// accesses. After a thread updates the bitmap to be more restrictive, it
+    /// must call [`minircu::global().synchronize()`] to ensure that all threads
+    /// see the update before taking any action that depends on the bitmap
+    /// update being visible.
     #[cfg(feature = "bitmap")]
     fn access_bitmap(&self) -> Option<BitmapInfo> {
         None
@@ -575,8 +575,8 @@ pub enum PageFaultAction {
     Fallback,
 }
 
-#[cfg(feature = "bitmap")]
 /// Returned by [`GuestMemoryAccess::access_bitmap`].
+#[cfg(feature = "bitmap")]
 pub struct BitmapInfo {
     /// A pointer to the bitmap for read access.
     pub read_bitmap: NonNull<u8>,
@@ -1000,17 +1000,18 @@ unsafe impl Sync for SendPtrU8 {}
 impl MemoryRegion {
     fn new(imp: &impl GuestMemoryAccess) -> Self {
         #[cfg(feature = "bitmap")]
-        let bitmap_info = imp.access_bitmap();
-        #[cfg(feature = "bitmap")]
-        let bitmaps = bitmap_info.as_ref().map(|bm| {
-            [
-                SendPtrU8(bm.read_bitmap),
-                SendPtrU8(bm.write_bitmap),
-                SendPtrU8(bm.execute_bitmap),
-            ]
-        });
-        #[cfg(feature = "bitmap")]
-        let bitmap_start = bitmap_info.map_or(0, |bi| bi.bit_offset);
+        let (bitmaps, bitmap_start) = {
+            let bitmap_info = imp.access_bitmap();
+            let bitmaps = bitmap_info.as_ref().map(|bm| {
+                [
+                    SendPtrU8(bm.read_bitmap),
+                    SendPtrU8(bm.write_bitmap),
+                    SendPtrU8(bm.execute_bitmap),
+                ]
+            });
+            let bitmap_start = bitmap_info.map_or(0, |bi| bi.bit_offset);
+            (bitmaps, bitmap_start)
+        };
         Self {
             mapping: imp.mapping().map(SendPtrU8),
             #[cfg(feature = "bitmap")]
@@ -1035,9 +1036,7 @@ impl MemoryRegion {
     ) -> Result<(), u64> {
         debug_assert!(self.len >= offset + len);
         #[cfg(not(feature = "bitmap"))]
-        {
-            let _ = access_type;
-        }
+        let _ = access_type;
 
         #[cfg(feature = "bitmap")]
         if let Some(bitmaps) = &self.bitmaps {

@@ -538,7 +538,7 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         // order to flush any threads accessing the pages. After this, we are
         // guaranteed no threads are accessing these pages (unless the pages are
         // also locked), since no bitmap currently allows access.
-        guestmem::rcu().synchronize_sync();
+        guestmem::rcu().synchronize_blocking();
 
         if let IsolationType::Snp = self.acceptor.isolation {
             // We need to ensure that the guest TLB has been fully flushed since
