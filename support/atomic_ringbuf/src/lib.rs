@@ -16,12 +16,14 @@ cfg_if::cfg_if! {
         use loom::sync::atomic::AtomicU64;
         use loom::sync::atomic::AtomicUsize;
         use loom::sync::atomic::Ordering;
+        use loom::sync::atomic::fence;
     } else {
         use parking_lot::Mutex;
         use parking_lot::MutexGuard;
         use std::sync::atomic::AtomicU64;
         use std::sync::atomic::AtomicUsize;
         use std::sync::atomic::Ordering;
+        use std::sync::atomic::fence;
     }
 }
 
@@ -98,9 +100,10 @@ impl<const N: usize, T: Copy + From<u64> + Into<u64>> AtomicRingBuffer<N, T> {
         }
         let mut index = start_count;
         for slot in output.iter_mut() {
-            *slot = self.buffer[index % N].load(Ordering::Acquire).into();
+            *slot = self.buffer[index % N].load(Ordering::Relaxed).into();
             index = index.wrapping_add(1);
         }
+        fence(Ordering::Acquire);
 
         // Check to see whether any additional entries have been added
         // that would have caused a wraparound. If so, the local list is
