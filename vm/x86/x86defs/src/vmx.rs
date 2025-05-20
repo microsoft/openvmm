@@ -5,8 +5,10 @@
 
 // TODO: move VMX defs somewhere?
 
+use crate::ApicRegister;
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
+use static_assertions::const_assert_eq;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -497,15 +499,8 @@ pub struct SecondaryProcessorControls {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct ApicRegister {
-    pub value: u32,
-    _reserved: [u32; 3],
-}
-
-#[repr(C)]
 #[derive(Debug, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct ApicPage {
+pub struct VmxApicPage {
     pub reserved_0: [ApicRegister; 2],
     pub id: ApicRegister,
     pub version: ApicRegister,
@@ -538,3 +533,5 @@ pub struct ApicPage {
     pub reserved_3f: ApicRegister,
     pub reserved_40: [ApicRegister; 0xc0],
 }
+
+const_assert_eq!(size_of::<VmxApicPage>(), 4096);
