@@ -304,8 +304,7 @@ impl RcuDomain {
     ///
     /// In general, you should avoid blocking the thread in `f`, since that can
     /// slow calls to [`synchronize`](Self::synchronize) and can potentially
-    /// cause deadlocks. If you need to block, consider using a non-global
-    /// domain, via [`define_rcu_domain!`].
+    /// cause deadlocks.
     pub fn run<F, R>(self, f: F) -> R
     where
         F: FnOnce() -> R,
