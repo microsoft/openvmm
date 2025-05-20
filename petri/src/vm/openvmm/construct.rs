@@ -387,7 +387,7 @@ impl PetriVmConfigOpenVmm {
             OsFlavor::FreeBsd | OsFlavor::Uefi => OpenVmmSecureBootTemplate::SecureBootDisabled,
         });
 
-        let mut openvmm_config = Self {
+        Ok(Self {
             firmware,
             arch,
             config,
@@ -420,22 +420,7 @@ impl PetriVmConfigOpenVmm {
             vtl2_settings,
             framebuffer_access,
         }
-        .with_processor_topology(ProcessorTopology::default());
-
-        // Determine secure boot template based on OS flavor.
-        match openvmm_config.os_flavor() {
-            OsFlavor::Windows => {
-                openvmm_config = openvmm_config.with_windows_secure_boot_template();
-            }
-            OsFlavor::Linux => {
-                openvmm_config = openvmm_config.with_uefi_ca_template();
-            }
-            OsFlavor::FreeBsd | OsFlavor::Uefi => {
-                openvmm_config = openvmm_config.without_secure_boot();
-            }
-        }
-
-        Ok(openvmm_config)
+        .with_processor_topology(ProcessorTopology::default()))
     }
 }
 
