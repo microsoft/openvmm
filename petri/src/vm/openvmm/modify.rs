@@ -140,6 +140,19 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Disable secure boot for the VM.
+    pub fn without_secure_boot(mut self) -> Self {
+        if !self.firmware.is_uefi() {
+            panic!("Secure boot is only supported for UEFI firmware.");
+        }
+        if self.firmware.is_openhcl() {
+            self.ged.as_mut().unwrap().secure_boot_enabled = false;
+        } else {
+            self.config.secure_boot_enabled = false;
+        }
+        self
+    }
+
     /// Inject Windows secure boot templates into the VM's UEFI.
     pub fn with_windows_secure_boot_template(mut self) -> Self {
         if !self.firmware.is_uefi() {
@@ -150,6 +163,20 @@ impl PetriVmConfigOpenVmm {
                 get_resources::ged::GuestSecureBootTemplateType::MicrosoftWindows;
         } else {
             self.config.custom_uefi_vars = hyperv_secure_boot_templates::x64::microsoft_windows();
+        }
+        self
+    }
+
+    /// Inject UEFI certificate authority templates into the VM's UEFI
+    pub fn with_uefi_ca_template(mut self) -> Self {
+        if !self.firmware.is_uefi() {
+            panic!("Secure boot templates are only supported for UEFI firmware.");
+        }
+        if self.firmware.is_openhcl() {
+            self.ged.as_mut().unwrap().secure_boot_template =
+                get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy;
+        } else {
+            self.config.custom_uefi_vars = hyperv_secure_boot_templates::x64::microsoft_uefi_ca();
         }
         self
     }

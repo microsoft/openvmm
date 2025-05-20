@@ -156,6 +156,10 @@ impl PetriVmConfig for PetriVmConfigOpenVmm {
         Box::new(Self::with_windows_secure_boot_template(*self))
     }
 
+    fn with_uefi_ca_template(self: Box<Self>) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_uefi_ca_template(*self))
+    }
+
     fn with_processor_topology(
         self: Box<Self>,
         topology: ProcessorTopology,

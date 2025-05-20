@@ -37,6 +37,8 @@ pub trait PetriVmConfig: Send {
 
     /// Inject Windows secure boot templates into the VM's UEFI.
     fn with_windows_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig>;
+    /// Inject UEFI certificate authority boot template into the VM's UEFI.
+    fn with_uefi_ca_template(self: Box<Self>) -> Box<dyn PetriVmConfig>;
     /// Set the VM to use the specified processor topology.
     fn with_processor_topology(
         self: Box<Self>,
