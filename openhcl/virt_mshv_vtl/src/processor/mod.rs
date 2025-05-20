@@ -860,6 +860,10 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     .into();
             }
 
+            // Quiesce RCU before running the VP to avoid having to synchronize with
+            // this CPU during memory protection updates.
+            minircu::global().quiesce();
+
             T::run_vp(self, dev, &mut stop).await?;
             self.kernel_returns += 1;
         }
