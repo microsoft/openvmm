@@ -90,8 +90,16 @@ impl PetriVmConfig for PetriVmConfigHyperV {
         Ok((Box::new(vm), client))
     }
 
+    fn with_secure_boot(self: Box<Self>) -> Box<dyn PetriVmConfig> {
+        Box::New(Self::with_secure_boot(*self))
+    }
+
     fn with_windows_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig> {
         Box::new(Self::with_windows_secure_boot_template(*self))
+    }
+
+    fn with_uefi_ca_template(self: Box<Self>) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_uefi_ca_template(*self))
     }
 
     fn with_processor_topology(
@@ -535,12 +543,28 @@ impl PetriVmConfigHyperV {
         self
     }
 
+    /// Set the VM to enable secure boot
+    pub fn with_secure_boot(mut self) -> Self {
+        self.secure_boot = true;
+        self
+    }
+
     /// Inject Windows secure boot templates into the VM's UEFI.
     pub fn with_windows_secure_boot_template(mut self) -> Self {
         if !matches!(self.generation, powershell::HyperVGeneration::Two) {
             panic!("Secure boot templates are only supported for UEFI firmware.");
         }
         self.secure_boot_template = Some(powershell::HyperVSecureBootTemplate::MicrosoftWindows);
+        self
+    }
+
+    /// Inject UEFI CA template into the VM's UEFI
+    pub fn with_uefi_ca_template(mut self) -> Self {
+        if !matches!(self.generation, powershell::HyperVGeneration::Two) {
+            panic!("Secure boot templates are only supported for UEFI firmware.");
+        }
+        self.secure_boot_template =
+            Some(powershell::HyperVSecureBootTemplate::MicrosoftUEFICertificateAuthority);
         self
     }
 

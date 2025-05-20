@@ -67,6 +67,13 @@ async fn boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     Ok(())
 }
 
+// async fn secure_boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+//     let (vm, agent) = config.with_secure_boot().run().await?;
+//     agent.power_off().await?;
+//     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+//     Ok(())
+// }
+
 /// Basic boot test for guests that are expected to reboot
 // TODO: Remove this test and other enable Windows 11 ARM OpenVMM tests
 // once we figure out how to get the guest to not reboot via IMC or other

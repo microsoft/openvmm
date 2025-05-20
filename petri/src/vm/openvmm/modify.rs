@@ -140,19 +140,6 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    /// Disable secure boot for the VM.
-    pub fn without_secure_boot(mut self) -> Self {
-        if !self.firmware.is_uefi() {
-            panic!("Secure boot is only supported for UEFI firmware.");
-        }
-        if self.firmware.is_openhcl() {
-            self.ged.as_mut().unwrap().secure_boot_enabled = false;
-        } else {
-            self.config.secure_boot_enabled = false;
-        }
-        self
-    }
-
     /// Inject Windows secure boot templates into the VM's UEFI.
     pub fn with_windows_secure_boot_template(mut self) -> Self {
         if !self.firmware.is_uefi() {
@@ -167,7 +154,7 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    /// Inject UEFI certificate authority templates into the VM's UEFI
+    /// Inject UEFI CA template into the VM's UEFI
     pub fn with_uefi_ca_template(mut self) -> Self {
         if !self.firmware.is_uefi() {
             panic!("Secure boot templates are only supported for UEFI firmware.");

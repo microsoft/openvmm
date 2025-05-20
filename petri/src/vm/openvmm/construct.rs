@@ -62,7 +62,6 @@ use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use petri_artifacts_common::tags::MachineArch;
-use petri_artifacts_common::tags::OsFlavor;
 use pipette_client::PIPETTE_VSOCK_PORT;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
@@ -338,7 +337,6 @@ impl PetriVmConfigOpenVmm {
 
             // Reasonable defaults
             custom_uefi_vars: Default::default(),
-            secure_boot_enabled: true,
 
             // Disabled for VMM tests by default
             #[cfg(windows)]
@@ -355,6 +353,7 @@ impl PetriVmConfigOpenVmm {
             } else {
                 Some(VmgsResource::Ephemeral)
             },
+            secure_boot_enabled: false,
             debugger_rpc: None,
             generation_id_recv: None,
             rtc_delta_milliseconds: 0,
@@ -380,18 +379,10 @@ impl PetriVmConfigOpenVmm {
             None
         };
 
-        // Determine secure boot template based on OS flavor.
-        let secure_boot_template = Some(match firmware.os_flavor() {
-            OsFlavor::Windows => OpenVmmSecureBootTemplate::MicrosoftWindows,
-            OsFlavor::Linux => OpenVmmSecureBootTemplate::MicrosoftUEFICertificateAuthority,
-            OsFlavor::FreeBsd | OsFlavor::Uefi => OpenVmmSecureBootTemplate::SecureBootDisabled,
-        });
-
         Ok(Self {
             firmware,
             arch,
             config,
-            secure_boot_template,
 
             resources: PetriVmResourcesOpenVmm {
                 log_stream_tasks,
@@ -446,15 +437,6 @@ enum Device {
 enum VideoDevice {
     Vga(RomFileLocation),
     Synth(DeviceVtl, Resource<VmbusDeviceHandleKind>),
-}
-
-pub enum OpenVmmSecureBootTemplate {
-    /// Secure Boot Disabled
-    SecureBootDisabled,
-    /// Windows Secure Boot Template
-    MicrosoftWindows,
-    /// Microsoft UEFI Certificate Authority Template
-    MicrosoftUEFICertificateAuthority,
 }
 
 impl PetriVmConfigSetupCore<'_> {
