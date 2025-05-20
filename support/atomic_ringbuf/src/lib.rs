@@ -9,21 +9,32 @@
 //! for when they miss an update and the ring buffer wraps around. Writing
 //! is synchronized with a lock, but read attempts are never blocked.
 
-use inspect::Inspect;
-use parking_lot::Mutex;
-use parking_lot::MutexGuard;
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        use loom::sync::Mutex;
+        use loom::sync::MutexGuard;
+        use loom::sync::atomic::AtomicU64;
+        use loom::sync::atomic::AtomicUsize;
+        use loom::sync::atomic::Ordering;
+    } else {
+        use parking_lot::Mutex;
+        use parking_lot::MutexGuard;
+        use std::sync::atomic::AtomicU64;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+    }
+}
+
 use std::num::Wrapping;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
 
 // TODO: Support data sizes other than u64.
 
-#[derive(Debug, Inspect)]
+#[derive(Debug)]
+#[cfg_attr(not(test), derive(inspect::Inspect))]
 /// A fixed-size, multi-reader, seqlock-based, atomic ring buffer.
 pub struct AtomicRingBuffer<const N: usize, T: Copy + From<u64> + Into<u64>> {
     /// The contents of the buffer.
-    #[inspect(hex, with = "|x| inspect::iter_by_index(x.iter())")]
+    #[cfg_attr(not(test), inspect(hex, with = "|x| inspect::iter_by_index(x.iter())"))]
     buffer: Box<[AtomicU64; N]>,
     /// The number of items that have been added over the lifetime of the struct.
     list_count: AtomicUsize,
@@ -65,6 +76,8 @@ impl<const N: usize, T: Copy + From<u64> + Into<u64>> AtomicRingBuffer<N, T> {
     /// Obtain a write lock for the buffer.
     pub fn write(&self) -> AtomicRingBufferWriteGuard<'_, N, T> {
         let write_lock = self.write_lock.lock();
+        #[cfg(test)]
+        let write_lock = write_lock.unwrap();
         AtomicRingBufferWriteGuard {
             buf: self,
             _write_lock: write_lock,
@@ -133,5 +146,56 @@ impl<const N: usize, T: Copy + From<u64> + Into<u64>> AtomicRingBufferWriteGuard
             self.buf.buffer[(start_count.wrapping_add(i)) % N].store(v.into(), Ordering::Release);
         }
         self.buf.list_count.store(end_count, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use loom::sync::Arc;
+    use loom::thread;
+
+    #[test]
+    fn basic() {
+        let mut model = loom::model::Builder::new();
+        // We need to set the preemption bound in order for the
+        // possibly-endless reader loop to complete in a reasonable time.
+        // Per loom's documentation: "In practice, setting the thread pre-emption
+        // bound to 2 or 3 is enough to catch most bugs"
+        model.preemption_bound = Some(4);
+        model.check(|| {
+            const N: usize = 3;
+            let buf = Arc::new(AtomicRingBuffer::<N, u64>::new());
+
+            // Reader thread
+            let buf_r = buf.clone();
+            let t2 = thread::spawn(move || {
+                let mut out = [0u64; N];
+                let mut start = 0;
+
+                while start < N {
+                    let next_start = buf_r.count().0;
+                    if next_start == start {
+                        thread::yield_now();
+                        continue;
+                    }
+                    let ok = buf_r.try_copy(start, &mut out[start..]);
+                    assert!(ok);
+                    start = next_start;
+                }
+                assert_eq!(out, [1, 2, 3]);
+            });
+
+            // Writer thread
+            let buf_w = buf.clone();
+            let t1 = thread::spawn(move || {
+                buf_w.write().push(1);
+                buf_w.write().push(2);
+                buf_w.write().push(3);
+            });
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+        });
     }
 }

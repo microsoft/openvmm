@@ -7,8 +7,12 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
+cfg-if.workspace = true
 inspect.workspace = true
 parking_lot.workspace = true
+
+[dev-dependencies]
+loom.workspace = true
 
 [lints]
 workspace = true
