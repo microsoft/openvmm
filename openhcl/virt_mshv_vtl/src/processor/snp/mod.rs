@@ -1735,7 +1735,9 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         Some(self.vp.runner.vmsa(self.vtl).exit_info2())
     }
 
-    fn initial_gva_translation(&self) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
+    fn initial_gva_translation(
+        &mut self,
+    ) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
         None
     }
 

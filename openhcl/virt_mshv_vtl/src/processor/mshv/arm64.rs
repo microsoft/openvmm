@@ -157,6 +157,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
                 this.backing.next_deliverability_notifications;
         }
 
+        this.unlock_tlb_lock(Vtl::Vtl2);
         let intercepted = this
             .runner
             .run()
@@ -593,7 +594,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
         }
     }
 
-    fn initial_gva_translation(&self) -> Option<emulate::InitialTranslation> {
+    fn initial_gva_translation(&mut self) -> Option<emulate::InitialTranslation> {
         if (self.vp.runner.exit_message().header.typ != HvMessageType::HvMessageTypeGpaIntercept)
             && (self.vp.runner.exit_message().header.typ != HvMessageType::HvMessageTypeUnmappedGpa)
             && (self.vp.runner.exit_message().header.typ
@@ -616,13 +617,20 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
         let translate_mode = emulate::TranslateMode::try_from(message.header.intercept_access_type)
             .expect("unexpected intercept access type");
 
-        tracing::trace!(?message.guest_virtual_address, ?message.guest_physical_address, ?translate_mode, "initial translation");
-
-        Some(emulate::InitialTranslation {
+        let translation = virt_support_x86emu::emulate::InitialTranslation {
             gva: message.guest_virtual_address,
             gpa: message.guest_physical_address,
             translate_mode,
-        })
+        };
+
+        tracing::trace!(?translation, "initial translation");
+
+        // If we have a valid translation, the hypervisor must have set the TLB lock
+        // so the translation remains valid for the duration of this exit.
+        // Update our local cache appropriately.
+        self.vp.mark_tlb_locked(Vtl::Vtl2, self.vtl);
+
+        Some(translation)
     }
 
     fn interruption_pending(&self) -> bool {
@@ -653,6 +661,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
             )
         {
             // Should always be called after translate gva with the tlb lock flag
+            // or with an initial translation.
             debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vtl));
 
             let cpsr: Cpsr64 = self
@@ -707,6 +716,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
         // remains usable until the VP is resumed back to direct execution.
         control_flags.set_set_page_table_bits(true);
         control_flags.set_tlb_flush_inhibit(true);
+        self.vp.set_tlb_lock(Vtl::Vtl2, target_vtl);
 
         // In case we're not running ring 0, check privileges against VP state
         // as of when the original intercept came in - since the emulator

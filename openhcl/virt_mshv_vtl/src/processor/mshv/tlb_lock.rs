@@ -26,11 +26,10 @@ impl UhProcessor<'_, HypervisorBacked> {
     }
 
     /// Lock the TLB of the target VTL on the current VP.
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     pub(crate) fn set_tlb_lock(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) {
         debug_assert_eq!(requesting_vtl, Vtl::Vtl2);
 
-        if self.is_tlb_locked(requesting_vtl, target_vtl) {
+        if self.vtls_tlb_locked.get(requesting_vtl, target_vtl) {
             return;
         }
 
@@ -47,17 +46,30 @@ impl UhProcessor<'_, HypervisorBacked> {
         self.vtls_tlb_locked.set(requesting_vtl, target_vtl, true);
     }
 
-    /// Check the status of the TLB lock of the target VTL on the current VP.
-    pub(crate) fn is_tlb_locked(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
+    /// Mark the TLB of the target VTL on the current VP as locked without
+    /// informing the hypervisor. Only should be used when the hypervisor
+    /// is expected to have already locked the TLB.
+    pub(crate) fn mark_tlb_locked(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) {
         debug_assert_eq!(requesting_vtl, Vtl::Vtl2);
-        let local_status = self.vtls_tlb_locked.get(requesting_vtl, target_vtl);
-        // The hypervisor may lock the TLB without us knowing, but the inverse should never happen.
-        if local_status {
-            debug_assert!(self.is_tlb_locked_in_hypervisor(target_vtl))
-        };
-        local_status
+        debug_assert!(self.is_tlb_locked_in_hypervisor(target_vtl));
+        self.vtls_tlb_locked.set(requesting_vtl, target_vtl, true);
     }
 
+    /// Check the status of the TLB lock of the target VTL on the current VP.
+    #[cfg(debug_assertions)]
+    pub(crate) fn is_tlb_locked(&self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
+        debug_assert_eq!(requesting_vtl, Vtl::Vtl2);
+        let locally_locked = self.vtls_tlb_locked.get(requesting_vtl, target_vtl);
+        // The hypervisor may lock the TLB without us knowing, but the inverse should never happen.
+        if locally_locked {
+            debug_assert!(self.is_tlb_locked_in_hypervisor(target_vtl));
+            true
+        } else {
+            self.is_tlb_locked_in_hypervisor(target_vtl)
+        }
+    }
+
+    #[cfg(debug_assertions)]
     fn is_tlb_locked_in_hypervisor(&self, target_vtl: GuestVtl) -> bool {
         let name = HvAllArchRegisterName(
             HvAllArchRegisterName::VsmVpSecureConfigVtl0.0 + target_vtl as u32,
@@ -73,7 +85,6 @@ impl UhProcessor<'_, HypervisorBacked> {
 
     /// Marks the TLBs of all lower VTLs as unlocked.
     /// The hypervisor does the actual unlocking required upon VTL exit.
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     pub(crate) fn unlock_tlb_lock(&mut self, unlocking_vtl: Vtl) {
         debug_assert_eq!(unlocking_vtl, Vtl::Vtl2);
         self.vtls_tlb_locked.fill(unlocking_vtl, false);

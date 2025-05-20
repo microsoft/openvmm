@@ -118,7 +118,7 @@ impl EmulatorSupport for MockSupport {
     }
 
     /// The gva translation included in the intercept message header, if valid.
-    fn initial_gva_translation(&self) -> Option<InitialTranslation> {
+    fn initial_gva_translation(&mut self) -> Option<InitialTranslation> {
         None
     }
 
