@@ -120,7 +120,7 @@ impl<const N: usize, T: Copy + From<u64> + Into<u64>> AtomicRingBuffer<N, T> {
 impl<const N: usize, T: Copy + From<u64> + Into<u64>> AtomicRingBufferWriteGuard<'_, N, T> {
     /// Add an item to the buffer.
     ///
-    /// Note: using [`extend`] is more efficient than using this method in a loop.
+    /// Note: using [`Self::extend`] is more efficient than using this method in a loop.
     pub fn push(&self, item: T) {
         self.extend(std::iter::once(item));
     }
