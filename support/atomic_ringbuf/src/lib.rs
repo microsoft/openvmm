@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn basic() {
+    fn loom_basic() {
         loom_test(|| {
             const N: usize = 3;
             let buf = Arc::new(AtomicRingBuffer::<N, u64>::new());
@@ -210,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_writer_wraparound() {
+    fn loom_multi_writer_wraparound() {
         loom_test(|| {
             let buf = Arc::new(AtomicRingBuffer::<3, u64>::new());
 
