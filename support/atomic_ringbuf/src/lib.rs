@@ -93,12 +93,14 @@ impl<const N: usize, T: Copy + From<u64> + Into<u64>> AtomicRingBuffer<N, T> {
     /// items have been missed it will return `true`, and readers may proceed
     /// to consume the partial update.
     pub fn try_copy(&self, start_count: usize, output: &mut [T]) -> bool {
+        if output.len() > N {
+            return false;
+        }
         let mut index = start_count;
         for slot in output.iter_mut() {
-            *slot = self.buffer[index % N].load(Ordering::Relaxed).into();
+            *slot = self.buffer[index % N].load(Ordering::Acquire).into();
             index = index.wrapping_add(1);
         }
-        std::sync::atomic::fence(Ordering::Acquire);
 
         // Check to see whether any additional entries have been added
         // that would have caused a wraparound. If so, the local list is
@@ -137,11 +139,11 @@ impl<const N: usize, T: Copy + From<u64> + Into<u64>> AtomicRingBufferWriteGuard
         // 3. Increment the valid entry count so that any readers executing
         //    simultaneously will know it is valid.
         let len = items.len();
-        let start_count = self.buf.in_progress_count.load(Ordering::Relaxed);
+        let start_count = self.buf.in_progress_count.load(Ordering::Acquire);
         let end_count = start_count.wrapping_add(len);
         self.buf
             .in_progress_count
-            .store(end_count, Ordering::Relaxed);
+            .store(end_count, Ordering::Release);
         for (i, v) in items.enumerate() {
             self.buf.buffer[(start_count.wrapping_add(i)) % N].store(v.into(), Ordering::Release);
         }
@@ -155,21 +157,27 @@ mod tests {
     use loom::sync::Arc;
     use loom::thread;
 
+    fn loom_test<F>(f: F)
+    where
+        F: Fn() + Sync + Send + 'static,
+    {
+        let mut model = loom::model::Builder::new();
+        // We need to set the preemption bound in order for any
+        // possibly-endless loops to complete in a reasonable time.
+        // Per loom's documentation: "In practice, setting the thread pre-emption
+        // bound to 2 or 3 is enough to catch most bugs".
+        model.preemption_bound = Some(2);
+        model.check(f);
+    }
+
     #[test]
     fn basic() {
-        let mut model = loom::model::Builder::new();
-        // We need to set the preemption bound in order for the
-        // possibly-endless reader loop to complete in a reasonable time.
-        // Per loom's documentation: "In practice, setting the thread pre-emption
-        // bound to 2 or 3 is enough to catch most bugs"
-        model.preemption_bound = Some(4);
-        model.check(|| {
+        loom_test(|| {
             const N: usize = 3;
             let buf = Arc::new(AtomicRingBuffer::<N, u64>::new());
 
-            // Reader thread
             let buf_r = buf.clone();
-            let t2 = thread::spawn(move || {
+            let reader = thread::spawn(move || {
                 let mut out = [0u64; N];
                 let mut start = 0;
 
@@ -179,23 +187,78 @@ mod tests {
                         thread::yield_now();
                         continue;
                     }
-                    let ok = buf_r.try_copy(start, &mut out[start..]);
+                    let ok = buf_r.try_copy(start, &mut out[start..next_start]);
                     assert!(ok);
                     start = next_start;
                 }
                 assert_eq!(out, [1, 2, 3]);
             });
 
-            // Writer thread
             let buf_w = buf.clone();
-            let t1 = thread::spawn(move || {
+            let writer = thread::spawn(move || {
                 buf_w.write().push(1);
                 buf_w.write().push(2);
                 buf_w.write().push(3);
             });
 
-            t1.join().unwrap();
-            t2.join().unwrap();
+            writer.join().unwrap();
+            reader.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn multi_writer_wraparound() {
+        loom_test(|| {
+            let buf = Arc::new(AtomicRingBuffer::<3, u64>::new());
+
+            let buf_w = buf.clone();
+            let writer1 = thread::spawn(move || {
+                buf_w.write().push(1);
+                buf_w.write().push(2);
+            });
+
+            let buf_w = buf.clone();
+            let writer2 = thread::spawn(move || {
+                buf_w.write().push(3);
+                buf_w.write().push(4);
+            });
+
+            let buf_r = buf.clone();
+            let reader = thread::spawn(move || {
+                let mut out = [0u64; 4];
+                let mut start = 0;
+
+                while start < 4 {
+                    let next_start = buf_r.count().0;
+                    if next_start == start {
+                        thread::yield_now();
+                        continue;
+                    }
+                    let ok = buf_r.try_copy(start, &mut out[start..next_start]);
+                    if !ok {
+                        // A wrap around has occurred, at least one of the last
+                        // two items being written must be in the buffer. It is
+                        // possible the last one is still being added.
+                        assert!(buf_r.try_copy(1, &mut out[0..3]));
+                        out[3] = 0;
+                        assert!(out.contains(&2) || out.contains(&4));
+                        return;
+                    }
+                    start = next_start;
+                }
+                // The reader should have seen every item, but we don't know the order
+                assert!(out.contains(&1));
+                assert!(out.contains(&2));
+                assert!(out.contains(&3));
+                assert!(out.contains(&4));
+            });
+
+            writer1.join().unwrap();
+            writer2.join().unwrap();
+            reader.join().unwrap();
+
+            // Check that the ring buffer has wrapped around.
+            assert!(!buf.try_copy(0, &mut []));
         });
     }
 }
