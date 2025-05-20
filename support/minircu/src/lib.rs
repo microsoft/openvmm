@@ -64,7 +64,8 @@
 //!
 //!     // Asynchronous synchronization
 //!     global().synchronize(|duration| async move {
-//!         tokio::time::sleep(duration).await;
+//!         // This should be a sleep call, e.g. using tokio::time::sleep.
+//!         std::future::pending().await
 //!     }).await;
 //! }
 //! ```

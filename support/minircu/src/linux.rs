@@ -19,13 +19,22 @@ pub fn membarrier() {
     //
     // Luckily, in the OpenHCL environment VP threads are usually idle (to
     // prevent unnecessary scheduler ticks), so this should be a non-issue.
+    let r = match membarrier_syscall(libc::MEMBARRIER_CMD_PRIVATE_EXPEDITED) {
+        Err(err) if err.raw_os_error() == Some(libc::EPERM) => {
+            membarrier_syscall(libc::MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED)
+                .expect("failed to register for membarrier use");
+            membarrier_syscall(libc::MEMBARRIER_CMD_PRIVATE_EXPEDITED)
+        }
+        r => r,
+    };
+    r.expect("failed to issue membarrier syscall");
+}
 
+fn membarrier_syscall(cmd: libc::c_int) -> std::io::Result<()> {
     // SAFETY: no special requirements for the syscall.
-    let r = unsafe { syscall(SYS_membarrier, libc::MEMBARRIER_CMD_PRIVATE_EXPEDITED, 0, 0) };
+    let r = unsafe { syscall(SYS_membarrier, cmd, 0, 0) };
     if r < 0 {
-        panic!(
-            "membarrier syscall failed: {}",
-            std::io::Error::last_os_error()
-        );
+        return Err(std::io::Error::last_os_error());
     }
+    Ok(())
 }
