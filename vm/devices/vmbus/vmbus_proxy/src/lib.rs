@@ -296,6 +296,7 @@ impl VmbusProxy {
                     InterfaceInstance: interface_instance,
                     SubchannelIndex: subchannel_index,
                     TargetVtl: target_vtl,
+                    Padding: 0,
                     OpenParameters: open_params,
                     Open: open.into(),
                 }),
