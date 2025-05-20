@@ -13,6 +13,7 @@ use self::ranges::PagedRange;
 use inspect::Inspect;
 use pal_event::Event;
 use sparse_mmap::AsMappableRef;
+use std::any::Any;
 use std::fmt::Debug;
 use std::io;
 use std::ops::Deref;
@@ -459,6 +460,110 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     }
 }
 
+trait DynGuestMemoryAccess: 'static + Send + Sync + Any {
+    fn subrange(
+        &self,
+        offset: u64,
+        len: u64,
+        allow_preemptive_locking: bool,
+    ) -> Result<Option<GuestMemory>, GuestMemoryBackingError>;
+
+    fn page_fault(
+        &self,
+        address: u64,
+        len: usize,
+        write: bool,
+        bitmap_failure: bool,
+    ) -> PageFaultAction;
+
+    /// # Safety
+    /// See [`GuestMemoryAccess::read_fallback`].
+    unsafe fn read_fallback(
+        &self,
+        addr: u64,
+        dest: *mut u8,
+        len: usize,
+    ) -> Result<(), GuestMemoryBackingError>;
+
+    /// # Safety
+    /// See [`GuestMemoryAccess::write_fallback`].
+    unsafe fn write_fallback(
+        &self,
+        addr: u64,
+        src: *const u8,
+        len: usize,
+    ) -> Result<(), GuestMemoryBackingError>;
+
+    fn fill_fallback(&self, addr: u64, val: u8, len: usize) -> Result<(), GuestMemoryBackingError>;
+
+    fn compare_exchange_fallback(
+        &self,
+        addr: u64,
+        current: &mut [u8],
+        new: &[u8],
+    ) -> Result<bool, GuestMemoryBackingError>;
+
+    fn expose_va(&self, address: u64, len: u64) -> Result<(), GuestMemoryBackingError>;
+}
+
+impl<T: GuestMemoryAccess> DynGuestMemoryAccess for T {
+    fn subrange(
+        &self,
+        offset: u64,
+        len: u64,
+        allow_preemptive_locking: bool,
+    ) -> Result<Option<GuestMemory>, GuestMemoryBackingError> {
+        self.subrange(offset, len, allow_preemptive_locking)
+    }
+
+    fn page_fault(
+        &self,
+        address: u64,
+        len: usize,
+        write: bool,
+        bitmap_failure: bool,
+    ) -> PageFaultAction {
+        self.page_fault(address, len, write, bitmap_failure)
+    }
+
+    unsafe fn read_fallback(
+        &self,
+        addr: u64,
+        dest: *mut u8,
+        len: usize,
+    ) -> Result<(), GuestMemoryBackingError> {
+        // SAFETY: guaranteed by caller.
+        unsafe { self.read_fallback(addr, dest, len) }
+    }
+
+    unsafe fn write_fallback(
+        &self,
+        addr: u64,
+        src: *const u8,
+        len: usize,
+    ) -> Result<(), GuestMemoryBackingError> {
+        // SAFETY: guaranteed by caller.
+        unsafe { self.write_fallback(addr, src, len) }
+    }
+
+    fn fill_fallback(&self, addr: u64, val: u8, len: usize) -> Result<(), GuestMemoryBackingError> {
+        self.fill_fallback(addr, val, len)
+    }
+
+    fn compare_exchange_fallback(
+        &self,
+        addr: u64,
+        current: &mut [u8],
+        new: &[u8],
+    ) -> Result<bool, GuestMemoryBackingError> {
+        self.compare_exchange_fallback(addr, current, new)
+    }
+
+    fn expose_va(&self, address: u64, len: u64) -> Result<(), GuestMemoryBackingError> {
+        self.expose_va(address, len)
+    }
+}
+
 /// The action to take after [`GuestMemoryAccess::page_fault`] returns to
 /// continue the operation.
 pub enum PageFaultAction {
@@ -756,20 +861,7 @@ impl<T> MultiRegionGuestMemoryAccess<T> {
 }
 
 // SAFETY: `mapping()` is unreachable and panics if called.
-unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for MultiRegionGuestMemoryAccess<T> {
-    fn mapping(&self) -> Option<NonNull<u8>> {
-        unreachable!()
-    }
-
-    fn max_address(&self) -> u64 {
-        unreachable!()
-    }
-
-    #[cfg(feature = "bitmap")]
-    fn access_bitmap(&self) -> Option<BitmapInfo> {
-        unreachable!("this is never called for this type")
-    }
-
+impl<T: GuestMemoryAccess> DynGuestMemoryAccess for MultiRegionGuestMemoryAccess<T> {
     fn subrange(
         &self,
         offset: u64,
@@ -822,8 +914,19 @@ unsafe impl<T: GuestMemoryAccess> GuestMemoryAccess for MultiRegionGuestMemoryAc
         region.expose_va(offset_in_region, len)
     }
 
-    fn base_iova(&self) -> Option<u64> {
-        unreachable!()
+    fn page_fault(
+        &self,
+        address: u64,
+        len: usize,
+        write: bool,
+        bitmap_failure: bool,
+    ) -> PageFaultAction {
+        match self.region(address, len as u64) {
+            Ok((region, offset_in_region)) => {
+                region.page_fault(offset_in_region, len, write, bitmap_failure)
+            }
+            Err(err) => PageFaultAction::Fail(err.err),
+        }
     }
 }
 
@@ -838,7 +941,7 @@ pub struct GuestMemory {
     inner: Arc<GuestMemoryInner>,
 }
 
-struct GuestMemoryInner<T: ?Sized = dyn GuestMemoryAccess> {
+struct GuestMemoryInner<T: ?Sized = dyn DynGuestMemoryAccess> {
     region_def: RegionDefinition,
     regions: Vec<MemoryRegion>,
     debug_name: Arc<str>,
