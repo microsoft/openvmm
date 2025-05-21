@@ -264,7 +264,12 @@ impl UefiDevice {
 impl ChangeDeviceState for UefiDevice {
     fn start(&mut self) {}
 
-    async fn stop(&mut self) {}
+    async fn stop(&mut self) {
+        // REMOVE LATER - Process diagnostics incase we are restarting
+        // if !self.service.diagnostics.did_process {
+        self.process_diagnostics();
+        // }
+    }
 
     async fn reset(&mut self) {
         self.address = 0;
@@ -273,6 +278,13 @@ impl ChangeDeviceState for UefiDevice {
         self.service.event_log.reset();
         self.service.uefi_watchdog.watchdog.reset();
         self.service.generation_id.reset();
+
+        // REMOVE LATER - Process diagnostics incase we are restarting
+        // if !self.service.diagnostics.did_process {
+        self.process_diagnostics();
+        //}
+
+        self.service.diagnostics.reset();
     }
 }
 

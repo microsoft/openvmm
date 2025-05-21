@@ -174,7 +174,7 @@ pub struct DiagnosticsServices {
     /// The guest physical address of the diagnostics buffer
     gpa: Option<u32>,
     /// Flag to indicate if we have already processed the buffer
-    did_process: bool,
+    pub did_process: bool,
 }
 
 impl DiagnosticsServices {
