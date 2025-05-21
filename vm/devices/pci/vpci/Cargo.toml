@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 pci_core.workspace = true
+vpci_protocol.workspace = true
 
 device_emulators.workspace = true
 vmbus_channel.workspace = true
@@ -24,14 +25,12 @@ closeable_mutex.workspace = true
 guid.workspace = true
 inspect.workspace = true
 mesh.workspace = true
-open_enum.workspace = true
 pal_async.workspace = true
 task_control.workspace = true
 test_with_tracing.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
-bitfield-struct.workspace = true
 parking_lot.workspace = true
 thiserror.workspace = true
 tracelimit.workspace = true

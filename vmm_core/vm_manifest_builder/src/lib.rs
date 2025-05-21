@@ -14,6 +14,8 @@
 //! devices. In the future, it will also build handles for PCI and VMBus
 //! devices.
 
+#![forbid(unsafe_code)]
+
 use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;

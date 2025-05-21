@@ -5,6 +5,7 @@
 //! serde attribute: `#[serde(with = "serde_helpers::foo")]`
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod prelude {
     pub use serde::Deserialize;

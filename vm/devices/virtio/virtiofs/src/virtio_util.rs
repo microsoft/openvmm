@@ -78,7 +78,7 @@ impl Read for VirtioPayloadReader<'_, '_> {
             let size = cmp::min(remaining, buf.len());
             self.guest_memory
                 .read_at(payload.address + self.offset as u64, &mut buf[..size])
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
             self.offset += size;
             self.position += size;
             Ok(size)
@@ -179,7 +179,7 @@ impl Write for VirtioPayloadWriter<'_, '_> {
             let size = cmp::min(remaining, buf.len());
             self.guest_memory
                 .write_at(payload.address + self.offset as u64, &buf[..size])
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
             self.offset += size;
             Ok(size)
         } else {

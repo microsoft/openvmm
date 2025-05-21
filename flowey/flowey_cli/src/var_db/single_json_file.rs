@@ -54,16 +54,16 @@ impl SingleJsonFileVarDb {
 }
 
 impl flowey_core::node::RuntimeVarDb for SingleJsonFileVarDb {
-    fn try_get_var(&mut self, var_name: &str) -> Option<Vec<u8>> {
+    fn try_get_var(&mut self, var_name: &str) -> Option<(Vec<u8>, bool)> {
         let db = self.load_db();
-        let (is_secret, val) = db.vars.get(var_name)?;
+        let (is_secret, ref val) = *db.vars.get(var_name)?;
         let val = val.to_string();
-        if *is_secret {
+        if is_secret {
             log::debug!("[db] read var: {} = <secret>", var_name);
         } else {
             log::debug!("[db] read var: {} = {}", var_name, val);
         }
-        Some(val.into())
+        Some((val.into(), is_secret))
     }
 
     fn set_var(&mut self, var_name: &str, is_secret: bool, value: Vec<u8>) {

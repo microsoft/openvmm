@@ -12,6 +12,7 @@ use super::RequestRoot;
 use super::SensitivityLevel;
 use super::Value;
 use super::ValueKind;
+use crate::NumberFormat;
 use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::string::ToString;
@@ -397,6 +398,7 @@ impl<'a> InspectionBuilder<'a> {
             depth_with_root,
             value,
             sensitivity.unwrap_or(SensitivityLevel::Sensitive),
+            NumberFormat::default(),
         );
         obj.inspect_mut(root.request());
         (root, path_node_count(path))

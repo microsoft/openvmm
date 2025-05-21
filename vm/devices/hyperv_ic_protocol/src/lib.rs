@@ -3,6 +3,8 @@
 
 //! IC protocol definitions.
 
+#![forbid(unsafe_code)]
+
 pub mod heartbeat;
 pub mod kvp;
 pub mod shutdown;

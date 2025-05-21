@@ -50,13 +50,13 @@ struct GlobalHvState {
 
 #[derive(Inspect)]
 struct MutableHvState {
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     hypercall_reg: hvdef::hypercall::MsrHypercallContents,
     #[inspect(with = "|x| x.is_some()")]
     hypercall_page: Option<LockedPage>,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     guest_os_id: hvdef::hypercall::HvGuestOsId,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     reference_tsc_reg: hvdef::HvRegisterReferenceTsc,
     #[inspect(with = "|x| x.is_some()")]
     reference_tsc_page: Option<LockedPage>,
@@ -174,7 +174,7 @@ pub struct ProcessorVtlHv {
     guest_memory: GuestMemory,
     /// The virtual processor's synic state.
     pub synic: ProcessorSynic,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     vp_assist_page_reg: HvRegisterVpAssistPage,
     vp_assist_page: OverlayPage,
 }

@@ -90,6 +90,16 @@ pub enum PcatBootDevice {
     Network,
 }
 
+/// Guest state lifetime
+#[derive(Debug, Copy, Clone, Deserialize, Serialize, Default)]
+pub enum GuestStateLifetime {
+    #[default]
+    Default,
+    ReprovisionOnFailure,
+    Reprovision,
+    Ephemeral,
+}
+
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct HclDevicePlatformSettingsV2Static {
@@ -138,6 +148,8 @@ pub struct HclDevicePlatformSettingsV2Static {
     pub imc_enabled: bool,
     #[serde(default)]
     pub cxl_memory_enabled: bool,
+    #[serde(default)]
+    pub guest_state_lifetime: GuestStateLifetime,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]

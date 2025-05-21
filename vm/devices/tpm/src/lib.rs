@@ -10,6 +10,7 @@
 
 #![cfg(feature = "tpm")]
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod ak_cert;
 pub mod logger;
@@ -865,26 +866,34 @@ impl Tpm {
             if let Poll::Ready(result) = async_ak_cert_request.as_mut().poll(cx) {
                 // Once the received the response, update the renew time using `SystemTime::now`.
                 // DEVNOTE: The system time may not reflect the real time when suspension and resumption occur.
-                // See more details in `refresh_ak_cert_on_nv_read`.
+                // See more details in `refresh_device_attestation_data_on_nv_read`.
                 let now = std::time::SystemTime::now();
-
-                // Set the renew time regardless whether AK cert is successfully updated or not, avoiding
-                // retrying on each nv read in the case of host agent being unavailable.
-                // The next renew request will be made after `AK_CERT_RENEW_PERIOD` passes and
-                // `refresh_ak_cert_on_nv_read` is triggered.
-                self.ak_cert_renew_time = Some(now);
 
                 // Clear `async_ak_cert_request` to allow the next renewal request.
                 self.async_ak_cert_request = None;
 
-                // Parse the response. Empty response or errors indicate that the host agent is unavailable.
+                // Parse the response. Empty response indicates that the host agent is unavailable.
                 let response = match result {
-                    Ok(data) if !data.is_empty() => data,
+                    Ok(data) if !data.is_empty() => {
+                        // Set the renew time if successfully receiving the data.
+                        // The next renew request will be made after `AK_CERT_RENEW_PERIOD` passes and
+                        // `refresh_device_attestation_data_on_nv_read` is triggered.
+                        self.ak_cert_renew_time = Some(now);
+
+                        data
+                    }
                     Ok(_data) => {
                         tracelimit::warn_ratelimited!(
                             "The requested TPM AK cert is empty - now: {:?}",
                             now.duration_since(std::time::UNIX_EPOCH),
                         );
+
+                        // Set the renew time if the ak cert is empty, avoiding retrying on each nv read
+                        // in the case of host agent being unavailable.
+                        // The next renew request will be made after `AK_CERT_RENEW_PERIOD` passes and
+                        // `refresh_device_attestation_data_on_nv_read` is triggered.
+                        self.ak_cert_renew_time = Some(now);
+
                         return;
                     }
                     Err(error) => {
@@ -991,7 +1000,10 @@ impl Tpm {
             // and past hardware renewal period.
             let renew_cert_needed = (self.ak_cert_renew_time.is_none()
                 || ak_cert_renew_elapsed > AK_CERT_RENEW_PERIOD)
-                && attestation_report_renew_elapsed > REPORT_TIMER_PERIOD;
+                && (attestation_report_renew_elapsed > REPORT_TIMER_PERIOD
+                    || self.attestation_report_renew_time.is_none());
+
+            tracing::debug!(renew_cert_needed, ak_cert_renew_time =? self.ak_cert_renew_time, "tpm: cert renew check");
 
             if renew_cert_needed {
                 if let Err(e) = self.renew_ak_cert() {

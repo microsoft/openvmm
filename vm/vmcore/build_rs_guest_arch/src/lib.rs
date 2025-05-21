@@ -20,6 +20,8 @@
 //! appropriate CI coverage!).
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 #[derive(Copy, Clone, PartialEq)]
 enum GuestArch {
     X86_64,

@@ -19,9 +19,9 @@ impl InMemoryVarDb {
 }
 
 impl flowey_core::node::RuntimeVarDb for InMemoryVarDb {
-    fn try_get_var(&mut self, var_name: &str) -> Option<Vec<u8>> {
-        let (is_secret, val) = self.vars.get(var_name)?;
-        if *is_secret {
+    fn try_get_var(&mut self, var_name: &str) -> Option<(Vec<u8>, bool)> {
+        let (is_secret, ref val) = *self.vars.get(var_name)?;
+        if is_secret {
             log::debug!("[db] read var: {} = <secret>", var_name);
         } else {
             log::debug!(
@@ -30,7 +30,7 @@ impl flowey_core::node::RuntimeVarDb for InMemoryVarDb {
                 String::from_utf8_lossy(val)
             );
         }
-        Some(val.clone())
+        Some((val.clone(), is_secret))
     }
 
     fn set_var(&mut self, var_name: &str, is_secret: bool, value: Vec<u8>) {

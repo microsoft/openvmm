@@ -148,9 +148,7 @@ mod inspect_helpers {
     use super::*;
 
     pub(crate) fn bars(bars: &[u32; 6]) -> impl Inspect + '_ {
-        inspect::iter_by_index(bars)
-            .prefix("bar")
-            .map_value(inspect::AsHex)
+        inspect::AsHex(inspect::iter_by_index(bars).prefix("bar"))
     }
 }
 

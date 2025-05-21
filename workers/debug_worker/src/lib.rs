@@ -8,6 +8,7 @@
 //! guest debugger is not available or practical.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod gdb;
 

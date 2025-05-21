@@ -515,7 +515,7 @@ pub struct TdxPrivateRegs {
     pub msr_xss: u64,
     pub msr_tsc_aux: u64,
     // VP Entry flags
-    #[inspect(with = "|x| inspect::AsHex(x.into_bits())")]
+    #[inspect(hex, with = "|x| x.into_bits()")]
     pub vp_entry_flags: TdxVmFlags,
 }
 

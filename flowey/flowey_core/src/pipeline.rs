@@ -861,10 +861,7 @@ impl PipelineJobCtx<'_> {
     /// Create a new `WriteVar<SideEffect>` anchored to the pipeline job.
     pub fn new_done_handle(&mut self) -> WriteVar<crate::node::SideEffect> {
         self.pipeline.dummy_done_idx += 1;
-        crate::node::thin_air_write_runtime_var(
-            format!("start{}", self.pipeline.dummy_done_idx),
-            false,
-        )
+        crate::node::thin_air_write_runtime_var(format!("start{}", self.pipeline.dummy_done_idx))
     }
 
     /// Claim that this job will use this artifact, obtaining a path to a folder
@@ -874,10 +871,10 @@ impl PipelineJobCtx<'_> {
             .used_by_jobs
             .insert(self.job_idx);
 
-        crate::node::thin_air_read_runtime_var(
-            consistent_artifact_runtime_var_name(&self.pipeline.artifacts[artifact.idx].name, true),
-            false,
-        )
+        crate::node::thin_air_read_runtime_var(consistent_artifact_runtime_var_name(
+            &self.pipeline.artifacts[artifact.idx].name,
+            true,
+        ))
     }
 
     /// Claim that this job will publish this artifact, obtaining a path to a
@@ -889,13 +886,10 @@ impl PipelineJobCtx<'_> {
             .replace(self.job_idx);
         assert!(existing.is_none()); // PublishArtifact isn't cloneable
 
-        crate::node::thin_air_read_runtime_var(
-            consistent_artifact_runtime_var_name(
-                &self.pipeline.artifacts[artifact.idx].name,
-                false,
-            ),
+        crate::node::thin_air_read_runtime_var(consistent_artifact_runtime_var_name(
+            &self.pipeline.artifacts[artifact.idx].name,
             false,
-        )
+        ))
     }
 
     fn helper_request<R: IntoRequest>(&mut self, req: R)
@@ -914,8 +908,8 @@ impl PipelineJobCtx<'_> {
         self.pipeline.artifact_map_idx += 1;
 
         let backing_var = format!("artifact_map{}", artifact_map_idx);
-        let read_var = crate::node::thin_air_read_runtime_var(backing_var.clone(), false);
-        let write_var = crate::node::thin_air_write_runtime_var(backing_var, false);
+        let read_var = crate::node::thin_air_read_runtime_var(backing_var.clone());
+        let write_var = crate::node::thin_air_write_runtime_var(backing_var);
         (read_var, write_var)
     }
 
@@ -960,7 +954,6 @@ impl PipelineJobCtx<'_> {
                 .parameter
                 .name()
                 .to_string(),
-            false,
         )
     }
 

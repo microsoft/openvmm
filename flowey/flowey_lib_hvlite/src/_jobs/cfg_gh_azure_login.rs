@@ -37,26 +37,20 @@ impl SimpleFlowNode for Node {
         let client_id = ctx.get_gh_context_var().secret(client_id);
         let tenant_id = ctx.get_gh_context_var().secret(tenant_id);
         let subscription_id = ctx.get_gh_context_var().secret(subscription_id);
-        let (open_id_connect, write_open_id_connect) = ctx.new_secret_var();
 
-        ctx.emit_rust_step("Create OpenIDConnect Credentials", |ctx| {
+        let open_id_connect = ctx.emit_rust_stepv("Create OpenIDConnect Credentials", |ctx| {
             let client_id = client_id.claim(ctx);
             let tenant_id = tenant_id.claim(ctx);
             let subscription_id = subscription_id.claim(ctx);
-            let write_open_id_connect = write_open_id_connect.claim(ctx);
             |rt| {
                 let client_id = rt.read(client_id);
                 let tenant_id = rt.read(tenant_id);
                 let subscription_id = rt.read(subscription_id);
-                rt.write(
-                    write_open_id_connect,
-                    &flowey_lib_common::gh_task_azure_login::OpenIDConnect {
-                        client_id,
-                        tenant_id,
-                        subscription_id,
-                    },
-                );
-                Ok(())
+                Ok(flowey_lib_common::gh_task_azure_login::OpenIDConnect {
+                    client_id,
+                    tenant_id,
+                    subscription_id,
+                })
             }
         });
 

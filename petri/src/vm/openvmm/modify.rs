@@ -6,28 +6,28 @@
 use super::MANA_INSTANCE;
 use super::NIC_MAC_ADDRESS;
 use super::PetriVmConfigOpenVmm;
+use super::memdiff_disk_from_artifact;
+use crate::PetriVmgsResource;
 use crate::ProcessorTopology;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
-use disk_backend_resources::LayeredDiskHandle;
-use disk_backend_resources::layer::DiskLayerHandle;
-use disk_backend_resources::layer::RamDiskLayerHandle;
 use fs_err::File;
 use gdma_resources::GdmaDeviceHandle;
 use gdma_resources::VportDefinition;
+use get_resources::ged::IgvmAttestTestConfig;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
-use hvlite_helpers::disk::open_disk_type;
+use petri_artifacts_common::tags::IsTestVmgs;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_core::ResolvedArtifact;
-use std::path::Path;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
 use vm_resource::IntoResource;
 use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
+use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vtl2_settings_proto::Vtl2Settings;
 
@@ -192,6 +192,19 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
+    /// Set test config for the GED's IGVM attest request handler
+    pub fn with_igvm_attest_test_config(mut self, config: IgvmAttestTestConfig) -> Self {
+        if !self.firmware.is_openhcl() {
+            panic!("IGVM Attest test config is only supported for OpenHCL.")
+        };
+
+        let ged = self.ged.as_mut().expect("No GED to configure TPM");
+
+        ged.igvm_attest_test_config = Some(config);
+
+        self
+    }
+
     /// Enable a synthnic for the VM.
     ///
     /// Uses a mana emulator and the paravisor if a paravisor is present.
@@ -300,23 +313,24 @@ impl PetriVmConfigOpenVmm {
     }
 
     /// Specifies an existing VMGS file to use
-    pub fn with_vmgs(mut self, vmgs_path: impl AsRef<Path>) -> Self {
-        let vmgs_disk = LayeredDiskHandle {
-            layers: vec![
-                RamDiskLayerHandle { len: None }.into_resource().into(),
-                DiskLayerHandle(
-                    open_disk_type(vmgs_path.as_ref(), true).expect("failed to open VMGS file"),
-                )
-                .into_resource()
-                .into(),
-            ],
-        }
-        .into_resource();
+    pub fn with_vmgs<T: IsTestVmgs>(mut self, vmgs: PetriVmgsResource<T>) -> Self {
+        let vmgs = match vmgs {
+            PetriVmgsResource::Disk(disk) => {
+                VmgsResource::Disk(memdiff_disk_from_artifact(&disk.erase()).expect("open VMGS"))
+            }
+            PetriVmgsResource::ReprovisionOnFailure(disk) => VmgsResource::ReprovisionOnFailure(
+                memdiff_disk_from_artifact(&disk.erase()).expect("open VMGS"),
+            ),
+            PetriVmgsResource::Reprovision(disk) => VmgsResource::Reprovision(
+                memdiff_disk_from_artifact(&disk.erase()).expect("open VMGS"),
+            ),
+            PetriVmgsResource::Ephemeral => VmgsResource::Ephemeral,
+        };
 
         if self.firmware.is_openhcl() {
-            self.ged.as_mut().unwrap().vmgs_disk = Some(vmgs_disk);
+            self.ged.as_mut().unwrap().vmgs = vmgs;
         } else {
-            self.config.vmgs_disk = Some(vmgs_disk);
+            self.config.vmgs = Some(vmgs);
         }
         self
     }

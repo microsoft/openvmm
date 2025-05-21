@@ -7,6 +7,7 @@
 //! PCIe transport 1.0c: <https://nvmexpress.org/wp-content/uploads/NVM-Express-PCIe-Transport-Specification-1.0c-2022.10.03-Ratified.pdf>
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 #![no_std]
 
 pub mod nvm;

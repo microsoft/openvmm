@@ -9,10 +9,12 @@ use super::NoRunner;
 use super::ProcessorRunner;
 use crate::GuestVtl;
 use crate::protocol::hcl_cpu_context_aarch64;
+use hvdef::HvAarch64RegisterPage;
 use hvdef::HvArm64RegisterName;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use sidecar_client::SidecarVp;
+use std::cell::UnsafeCell;
 use thiserror::Error;
 
 /// Result when the translate gva hypercall returns a code indicating
@@ -26,9 +28,33 @@ pub struct TranslateErrorAarch64 {
 
 /// Runner backing for non-hardware-isolated ARM64 partitions.
 #[non_exhaustive]
-pub struct MshvArm64 {}
+pub struct MshvArm64<'a> {
+    reg_page: Option<&'a UnsafeCell<HvAarch64RegisterPage>>,
+}
 
-impl ProcessorRunner<'_, MshvArm64> {
+impl<'a> ProcessorRunner<'a, MshvArm64<'a>> {
+    fn reg_page(&self) -> Option<&HvAarch64RegisterPage> {
+        // SAFETY: the register page will not be concurrently accessed by the
+        // hypervisor while this VP is in VTL2.
+        let reg_page = unsafe { &*self.state.reg_page?.get() };
+        if reg_page.is_valid != 0 {
+            Some(reg_page)
+        } else {
+            None
+        }
+    }
+
+    fn reg_page_mut(&mut self) -> Option<&mut HvAarch64RegisterPage> {
+        // SAFETY: the register page will not be concurrently accessed by the
+        // hypervisor while this VP is in VTL2.
+        let reg_page = unsafe { &mut *self.state.reg_page?.get() };
+        if reg_page.is_valid != 0 {
+            Some(reg_page)
+        } else {
+            None
+        }
+    }
+
     /// Returns a reference to the current VTL's CPU context.
     pub fn cpu_context(&self) -> &hcl_cpu_context_aarch64 {
         // SAFETY: the cpu context will not be concurrently accessed by the
@@ -44,18 +70,20 @@ impl ProcessorRunner<'_, MshvArm64> {
     }
 }
 
-impl<'a> super::BackingPrivate<'a> for MshvArm64 {
-    fn new(vp: &HclVp, sidecar: Option<&SidecarVp<'_>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
+impl<'a> super::BackingPrivate<'a> for MshvArm64<'a> {
+    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
-        let super::BackingState::Mshv { reg_page: _ } = &vp.backing else {
+        let super::BackingState::MshvAarch64 { reg_page } = &vp.backing else {
             unreachable!()
         };
-        Ok(Self {})
+        Ok(Self {
+            reg_page: reg_page.as_ref().map(|x| x.as_ref()),
+        })
     }
 
     fn try_set_reg(
         runner: &mut ProcessorRunner<'a, Self>,
-        _vtl: GuestVtl,
+        vtl: GuestVtl,
         name: HvRegisterName,
         value: HvRegisterValue,
     ) -> Result<bool, super::Error> {
@@ -106,8 +134,42 @@ impl<'a> super::BackingPrivate<'a> for MshvArm64 {
             }
             _ => false,
         };
+        if set {
+            return Ok(true);
+        }
 
-        Ok(set)
+        if let Some(reg_page) = runner.reg_page_mut() {
+            if reg_page.vtl == vtl as u8 {
+                let set = match name.into() {
+                    HvArm64RegisterName::XPc => {
+                        reg_page.pc = value.as_u64();
+                        reg_page.dirty.set_instruction_pointer(true);
+                        true
+                    }
+                    HvArm64RegisterName::Cpsr => {
+                        reg_page.cpsr = value.as_u64();
+                        reg_page.dirty.set_processor_state(true);
+                        true
+                    }
+                    HvArm64RegisterName::SctlrEl1 => {
+                        reg_page.sctlr_el1 = value.as_u64();
+                        reg_page.dirty.set_control_registers(true);
+                        true
+                    }
+                    HvArm64RegisterName::TcrEl1 => {
+                        reg_page.tcr_el1 = value.as_u64();
+                        reg_page.dirty.set_control_registers(true);
+                        true
+                    }
+                    _ => false,
+                };
+                if set {
+                    return Ok(true);
+                }
+            }
+        };
+
+        Ok(false)
     }
 
     fn must_flush_regs_on(_runner: &ProcessorRunner<'a, Self>, _name: HvRegisterName) -> bool {
@@ -116,7 +178,7 @@ impl<'a> super::BackingPrivate<'a> for MshvArm64 {
 
     fn try_get_reg(
         runner: &ProcessorRunner<'a, Self>,
-        _vtl: GuestVtl,
+        vtl: GuestVtl,
         name: HvRegisterName,
     ) -> Result<Option<HvRegisterValue>, super::Error> {
         // Try to get the register from the CPU context, the fastest path.
@@ -156,8 +218,58 @@ impl<'a> super::BackingPrivate<'a> for MshvArm64 {
             }
             _ => None,
         };
-        Ok(value)
+        if value.is_some() {
+            return Ok(value);
+        }
+
+        if let Some(reg_page) = runner.reg_page() {
+            if reg_page.vtl == vtl as u8 {
+                let value = match name.into() {
+                    HvArm64RegisterName::XPc => Some(HvRegisterValue((reg_page.pc).into())),
+                    HvArm64RegisterName::Cpsr => Some(HvRegisterValue((reg_page.cpsr).into())),
+                    HvArm64RegisterName::SctlrEl1 => {
+                        Some(HvRegisterValue((reg_page.sctlr_el1).into()))
+                    }
+                    HvArm64RegisterName::TcrEl1 => Some(HvRegisterValue((reg_page.tcr_el1).into())),
+                    _ => None,
+                };
+                if value.is_some() {
+                    return Ok(value);
+                }
+            }
+        };
+        Ok(None)
     }
 
-    fn flush_register_page(_runner: &mut ProcessorRunner<'a, Self>) {}
+    fn flush_register_page(runner: &mut ProcessorRunner<'a, Self>) {
+        let Some(reg_page) = runner.reg_page_mut() else {
+            return;
+        };
+
+        // Collect any dirty registers.
+        let mut regs: Vec<(HvArm64RegisterName, HvRegisterValue)> = Vec::new();
+        if reg_page.dirty.instruction_pointer() {
+            regs.push((HvArm64RegisterName::XPc, reg_page.pc.into()));
+        }
+        if reg_page.dirty.processor_state() {
+            regs.push((HvArm64RegisterName::Cpsr, reg_page.cpsr.into()));
+        }
+        if reg_page.dirty.control_registers() {
+            regs.push((HvArm64RegisterName::SctlrEl1, reg_page.sctlr_el1.into()));
+            regs.push((HvArm64RegisterName::TcrEl1, reg_page.tcr_el1.into()));
+        }
+
+        // Disable the reg page so future writes do not use it (until the state
+        // is reset at the next VTL transition).
+        reg_page.is_valid = 0;
+        reg_page.dirty = 0.into();
+
+        // Set the registers now that the register page is marked invalid.
+        if let Err(err) = runner.set_vp_registers(GuestVtl::Vtl0, regs.as_slice()) {
+            panic!(
+                "Failed to flush register page: {}",
+                &err as &dyn std::error::Error
+            );
+        }
+    }
 }

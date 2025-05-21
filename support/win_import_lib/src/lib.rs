@@ -3,6 +3,8 @@
 
 //! Support for building import libs from .def files.
 
+#![forbid(unsafe_code)]
+
 use anyhow::Context;
 use std::process::Command;
 

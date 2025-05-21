@@ -143,24 +143,18 @@ impl Blob for HttpBlob {
             )
             .await
             .unwrap()
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            .map_err(io::Error::other)?;
 
         if !response.status().is_success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                response.status().to_string(),
-            ));
+            return Err(io::Error::other(response.status().to_string()));
         }
 
         while let Some(frame) = response.body_mut().frame().await {
-            let frame = frame.map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            let frame = frame.map_err(io::Error::other)?;
             if let Some(data) = frame.data_ref() {
                 let len = data.len();
                 if len > buf.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        "server did not respect range query",
-                    ));
+                    return Err(io::Error::other("server did not respect range query"));
                 }
                 let (this, rest) = buf.split_at_mut(len);
                 this.copy_from_slice(data);

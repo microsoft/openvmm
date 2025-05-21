@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use async_trait::async_trait;
 use guestmem::GuestMemory;

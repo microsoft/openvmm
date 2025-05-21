@@ -62,8 +62,8 @@ impl BlockingDisk {
             .await;
         guest_mem
             .read_at(0, &mut self.buffer)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Fetch error: {}", e)))?;
-        result.map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Fetch error: {}", e)))
+            .map_err(|e| io::Error::other(format!("Fetch error: {}", e)))?;
+        result.map_err(|e| io::Error::other(format!("Fetch error: {}", e)))
     }
 
     /// Writes the buffer to the disk if it is dirty.
@@ -81,7 +81,7 @@ impl BlockingDisk {
             );
             let result = future.await;
             self.buffer_dirty = false;
-            result.map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Fetch error: {}", e)))
+            result.map_err(|e| io::Error::other(format!("Fetch error: {}", e)))
         } else {
             Ok(())
         }
@@ -183,13 +183,12 @@ impl BlockingDisk {
         let future = self
             .inner
             .read_vectored(&binding, self.pos / self.inner.sector_size() as u64);
-        block_on(future)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Read error: {}", e)))?;
+        block_on(future).map_err(|e| io::Error::other(format!("Read error: {}", e)))?;
 
         // Copy the data read from guest memory to the input buffer
         guest_mem
             .read_at(0, buf)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Fetch error: {}", e)))?;
+            .map_err(|e| io::Error::other(format!("Fetch error: {}", e)))?;
         // Update the position based on the bytes read
         self.pos += buf.len() as u64;
         Ok(buf.len())
@@ -209,8 +208,7 @@ impl BlockingDisk {
         let future =
             self.inner
                 .write_vectored(&binding, self.pos / self.inner.sector_size() as u64, true);
-        block_on(future)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Write error: {}", e)))?;
+        block_on(future).map_err(|e| io::Error::other(format!("Write error: {}", e)))?;
         // Update the position based on the bytes written
         self.pos += buf.len() as u64;
         Ok(buf.len())

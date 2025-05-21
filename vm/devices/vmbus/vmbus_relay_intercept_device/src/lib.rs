@@ -215,9 +215,7 @@ struct SimpleVmbusClientDeviceTaskState {
     offer: Option<OfferInfo>,
     #[inspect(skip)]
     recv_relay: mesh::Receiver<InterceptChannelRequest>,
-    #[inspect(
-        with = "|x| x.as_ref().map(|x| inspect::iter_by_index(x.pfns()).map_value(inspect::AsHex))"
-    )]
+    #[inspect(hex, with = "|x| x.as_ref().map(|x| inspect::iter_by_index(x.pfns()))")]
     vtl_pages: Option<MemoryBlock>,
 }
 
@@ -545,6 +543,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
     /// device wrapper.
     pub async fn process_messages(&mut self, state: &mut SimpleVmbusClientDeviceTaskState) {
         loop {
+            #[expect(clippy::large_enum_variant)]
             enum Event {
                 Request(InterceptChannelRequest),
                 Revoke(()),

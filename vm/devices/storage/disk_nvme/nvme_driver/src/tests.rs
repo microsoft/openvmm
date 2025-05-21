@@ -78,7 +78,7 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
     let cap: Cap = Cap::new().with_mqes_z(max_u16);
     device.set_mock_response_u64(Some((0, cap.into())));
 
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device).await;
+    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false).await;
     assert!(driver.is_ok());
 }
 
@@ -113,7 +113,7 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
     // Setup mock response at offset 0
     let cap: Cap = Cap::new().with_mqes_z(0);
     device.set_mock_response_u64(Some((0, cap.into())));
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device).await;
+    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false).await;
 
     assert!(driver.is_err());
 }
@@ -150,7 +150,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
         .await
         .unwrap();
     let device = NvmeTestEmulatedDevice::new(nvme, msi_set, dma_client.clone());
-    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
+    let driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
         .await
         .unwrap();
     let namespace = driver.namespace(1).await.unwrap();
@@ -266,7 +266,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
         .unwrap();
 
     let device = NvmeTestEmulatedDevice::new(nvme_ctrl, msi_x, dma_client.clone());
-    let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
+    let mut nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
         .await
         .unwrap();
     let _ns1 = nvme_driver.namespace(1).await.unwrap();

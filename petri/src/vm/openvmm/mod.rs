@@ -24,11 +24,16 @@ use crate::PetriVmConfig;
 use crate::disk_image::AgentImage;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openhcl_diag::OpenHclDiagHandler;
+use anyhow::Context;
 use async_trait::async_trait;
+use disk_backend_resources::LayeredDiskHandle;
+use disk_backend_resources::layer::DiskLayerHandle;
+use disk_backend_resources::layer::RamDiskLayerHandle;
 use framebuffer::FramebufferAccess;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use hvlite_defs::config::Config;
+use hvlite_helpers::disk::open_disk_type;
 use hyperv_ic_resources::shutdown::ShutdownRpc;
 use mesh::Receiver;
 use mesh::Sender;
@@ -44,6 +49,9 @@ use pipette_client::PipetteClient;
 use std::path::PathBuf;
 use tempfile::TempPath;
 use unix_socket::UnixListener;
+use vm_resource::IntoResource;
+use vm_resource::Resource;
+use vm_resource::kind::DiskHandleKind;
 use vtl2_settings_proto::Vtl2Settings;
 
 /// The instance guid used for all of our SCSI drives.
@@ -215,4 +223,19 @@ impl PetriVmConfigOpenVmm {
     pub fn os_flavor(&self) -> OsFlavor {
         self.firmware.os_flavor()
     }
+}
+
+fn memdiff_disk_from_artifact(
+    artifact: &ResolvedArtifact,
+) -> anyhow::Result<Resource<DiskHandleKind>> {
+    let path = artifact.as_ref();
+    let disk = open_disk_type(path, true)
+        .with_context(|| format!("failed to open disk: {}", path.display()))?;
+    Ok(LayeredDiskHandle {
+        layers: vec![
+            RamDiskLayerHandle { len: None }.into_resource().into(),
+            DiskLayerHandle(disk).into_resource().into(),
+        ],
+    }
+    .into_resource())
 }

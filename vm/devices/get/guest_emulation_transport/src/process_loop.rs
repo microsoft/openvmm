@@ -133,7 +133,7 @@ fn read_host_response_validated<T: FromBytes + Immutable + KnownLayout>(
         len: buf.len(),
         response: get_protocol::HeaderHostResponse::read_from_bytes(buf)
             .unwrap()
-            .message_id,
+            .message_id(),
     })?;
 
     Ok(response)
@@ -630,8 +630,11 @@ impl HostRequestPipeAccess {
         let header = get_protocol::HeaderHostRequest::read_from_prefix(response.as_bytes())
             .unwrap()
             .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-        if id != header.message_id {
-            return Err(FatalError::ResponseHeaderMismatchId(header.message_id, id));
+        if id != header.message_id() {
+            return Err(FatalError::ResponseHeaderMismatchId(
+                header.message_id(),
+                id,
+            ));
         }
         read_host_response_validated(&response)
     }
@@ -651,7 +654,7 @@ impl HostRequestPipeAccess {
         let req_header = get_protocol::HeaderHostRequest::read_from_prefix(data.as_bytes())
             .unwrap()
             .0; // TODO: zerocopy: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-        self.recv_response_fixed_size(req_header.message_id).await
+        self.recv_response_fixed_size(req_header.message_id()).await
     }
 
     /// Sends a fail notification to the host.
@@ -748,10 +751,10 @@ impl<T: RingMem> ProcessLoop<T> {
                 });
             }
 
-            if response.message_header.message_id != version_request.message_header.message_id {
+            if response.message_header.message_id() != version_request.message_header.message_id() {
                 return Err(FatalError::ResponseHeaderMismatchId(
-                    response.message_header.message_id,
-                    version_request.message_header.message_id,
+                    response.message_header.message_id(),
+                    version_request.message_header.message_id(),
                 ));
             }
 
@@ -1261,7 +1264,7 @@ impl<T: RingMem> ProcessLoop<T> {
             ));
         }
 
-        let id = header.message_id;
+        let id = header.message_id();
         match id {
             GuestNotifications::UPDATE_GENERATION_ID => {
                 self.handle_update_generation_id(read_guest_notification(id, buf)?)?;
@@ -1317,12 +1320,14 @@ impl<T: RingMem> ProcessLoop<T> {
         }
         validate_response(header)?;
 
-        if is_secondary_host_request(header.message_id) {
+        if is_secondary_host_request(header.message_id()) {
             if !self.secondary_host_requests.is_empty() {
                 self.secondary_host_requests_read_send.send(buf.to_vec());
                 return Ok(());
             }
-            return Err(FatalError::NoPendingSecondaryHostRequest(header.message_id));
+            return Err(FatalError::NoPendingSecondaryHostRequest(
+                header.message_id(),
+            ));
         }
 
         self.read_send.send(buf.to_vec());
@@ -1595,7 +1600,7 @@ async fn request_device_platform_settings_v2(
         // capable of handling small payloads itself! We should've just "fixed"
         // `DEVICE_PLATFORM_SETTINGS_V2` before shipping... but we didn't, and
         // now we're stuck with this behavior.
-        match header.message_id {
+        match header.message_id() {
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2 => {
                 let (response, remaining) =
                     get_protocol::DevicePlatformSettingsResponseV2::read_from_prefix(
@@ -1640,7 +1645,7 @@ async fn request_device_platform_settings_v2(
             }
             _ => {
                 return Err(FatalError::ResponseHeaderMismatchId(
-                    header.message_id,
+                    header.message_id(),
                     HostRequests::DEVICE_PLATFORM_SETTINGS_V2,
                 ));
             }
@@ -1677,9 +1682,9 @@ async fn request_vmgs_read(
             response: HostRequests::VMGS_READ,
         })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
-    if response.message_header.message_id != HostRequests::VMGS_READ {
+    if response.message_header.message_id() != HostRequests::VMGS_READ {
         return Err(FatalError::ResponseHeaderMismatchId(
-            response.message_header.message_id,
+            response.message_header.message_id(),
             HostRequests::VMGS_READ,
         ));
     }
@@ -1807,7 +1812,7 @@ async fn request_saved_state(
                 response: HostRequests::RESTORE_GUEST_VTL2_STATE,
             })?; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
-        let message_id = response_header.message_header.message_id;
+        let message_id = response_header.message_header.message_id();
         if message_id != HostRequests::RESTORE_GUEST_VTL2_STATE {
             return Err(FatalError::ResponseHeaderMismatchId(
                 message_id,

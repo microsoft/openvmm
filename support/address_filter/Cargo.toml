@@ -1,0 +1,15 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "address_filter"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+inspect.workspace = true
+
+thiserror.workspace = true
+
+[lints]
+workspace = true

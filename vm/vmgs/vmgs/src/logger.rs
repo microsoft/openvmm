@@ -8,6 +8,12 @@ use std::sync::Arc;
 
 /// List of events for `VmgsLogger`.
 pub enum VmgsLogEvent {
+    /// VMGS initialization failed.
+    InitFailed,
+    /// Invalid VMGS file format.
+    InvalidFormat,
+    /// Corrupt VMGS file format.
+    CorruptFormat,
     /// Data store access failure.
     AccessFailed,
 }

@@ -58,10 +58,7 @@ pub struct Aarch64VpInfo {
     #[cfg_attr(feature = "inspect", inspect(flatten))]
     pub base: VpInfo,
     /// The MPIDR_EL1 value of the processor.
-    #[cfg_attr(
-        feature = "inspect",
-        inspect(with = "|&x| inspect::AsHex(u64::from(x))")
-    )]
+    #[cfg_attr(feature = "inspect", inspect(hex, with = "|&x| u64::from(x)"))]
     pub mpidr: MpidrEl1,
     /// GIC Redistributor Address
     #[cfg_attr(feature = "inspect", inspect(hex))]

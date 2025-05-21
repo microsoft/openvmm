@@ -8,7 +8,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-guestmem.workspace = true
+guestmem = { workspace = true, features = ["bitmap"] }
 sparse_mmap.workspace = true
 xtask_fuzz.workspace = true
 

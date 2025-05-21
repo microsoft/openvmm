@@ -3,6 +3,8 @@
 
 //! Procedural macros for TMK tests.
 
+#![forbid(unsafe_code)]
+
 use proc_macro::TokenStream;
 use quote::ToTokens;
 use quote::quote;

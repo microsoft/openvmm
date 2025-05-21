@@ -15,110 +15,76 @@ use vm_topology::processor::aarch64::Aarch64VpInfo;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Protobuf, Inspect)]
 #[mesh(package = "virt.aarch64")]
+#[inspect(hex)]
 pub struct Registers {
-    #[inspect(hex)]
     #[mesh(1)]
     pub x0: u64,
-    #[inspect(hex)]
     #[mesh(2)]
     pub x1: u64,
-    #[inspect(hex)]
     #[mesh(3)]
     pub x2: u64,
-    #[inspect(hex)]
     #[mesh(4)]
     pub x3: u64,
-    #[inspect(hex)]
     #[mesh(5)]
     pub x4: u64,
-    #[inspect(hex)]
     #[mesh(6)]
     pub x5: u64,
-    #[inspect(hex)]
     #[mesh(7)]
     pub x6: u64,
-    #[inspect(hex)]
     #[mesh(8)]
     pub x7: u64,
-    #[inspect(hex)]
     #[mesh(9)]
     pub x8: u64,
-    #[inspect(hex)]
     #[mesh(10)]
     pub x9: u64,
-    #[inspect(hex)]
     #[mesh(11)]
     pub x10: u64,
-    #[inspect(hex)]
     #[mesh(12)]
     pub x11: u64,
-    #[inspect(hex)]
     #[mesh(13)]
     pub x12: u64,
-    #[inspect(hex)]
     #[mesh(14)]
     pub x13: u64,
-    #[inspect(hex)]
     #[mesh(15)]
     pub x14: u64,
-    #[inspect(hex)]
     #[mesh(16)]
     pub x15: u64,
-    #[inspect(hex)]
     #[mesh(17)]
     pub x16: u64,
-    #[inspect(hex)]
     #[mesh(18)]
     pub x17: u64,
-    #[inspect(hex)]
     #[mesh(19)]
     pub x18: u64,
-    #[inspect(hex)]
     #[mesh(20)]
     pub x19: u64,
-    #[inspect(hex)]
     #[mesh(21)]
     pub x20: u64,
-    #[inspect(hex)]
     #[mesh(22)]
     pub x21: u64,
-    #[inspect(hex)]
     #[mesh(23)]
     pub x22: u64,
-    #[inspect(hex)]
     #[mesh(24)]
     pub x23: u64,
-    #[inspect(hex)]
     #[mesh(25)]
     pub x24: u64,
-    #[inspect(hex)]
     #[mesh(26)]
     pub x25: u64,
-    #[inspect(hex)]
     #[mesh(27)]
     pub x26: u64,
-    #[inspect(hex)]
     #[mesh(28)]
     pub x27: u64,
-    #[inspect(hex)]
     #[mesh(29)]
     pub x28: u64,
-    #[inspect(hex)]
     #[mesh(30)]
     pub fp: u64,
-    #[inspect(hex)]
     #[mesh(31)]
     pub lr: u64,
-    #[inspect(hex)]
     #[mesh(32)]
     pub sp_el0: u64,
-    #[inspect(hex)]
     #[mesh(33)]
     pub sp_el1: u64,
-    #[inspect(hex)]
     #[mesh(34)]
     pub pc: u64,
-    #[inspect(hex)]
     #[mesh(35)]
     pub cpsr: u64,
 }

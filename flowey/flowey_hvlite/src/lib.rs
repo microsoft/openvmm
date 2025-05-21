@@ -9,6 +9,7 @@
 // consistent UX across open and closed-source).
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod pipelines;
 pub mod pipelines_shared;

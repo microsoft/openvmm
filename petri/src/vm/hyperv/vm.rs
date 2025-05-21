@@ -88,15 +88,9 @@ impl HyperVVM {
 
         tracing::info!(name, vmid = vmid.to_string(), "Created Hyper-V VM");
 
-        // Remove the default network adapter
-        powershell::run_remove_vm_network_adapter(&vmid)
-            .context("remove default network adapter")?;
-
-        // Remove the default SCSI controller
-        powershell::run_remove_vm_scsi_controller(&vmid, 0)
-            .context("remove default SCSI controller")?;
-
-        Ok(Self {
+        // Instantiate this now so that its drop runs if there's a failure
+        // below.
+        let this = Self {
             name,
             vmid,
             destroyed: false,
@@ -106,7 +100,26 @@ impl HyperVVM {
             log_file,
             expected_boot_event,
             driver,
-        })
+        };
+
+        // Remove the default network adapter
+        powershell::run_remove_vm_network_adapter(&vmid)
+            .context("remove default network adapter")?;
+
+        // Remove the default SCSI controller
+        powershell::run_remove_vm_scsi_controller(&vmid, 0)
+            .context("remove default SCSI controller")?;
+
+        // Disable dynamic memory
+        powershell::run_set_vm_memory(
+            &vmid,
+            &powershell::HyperVSetVMMemoryArgs {
+                dynamic_memory_enabled: Some(false),
+                ..Default::default()
+            },
+        )?;
+
+        Ok(this)
     }
 
     /// Get the name of the VM

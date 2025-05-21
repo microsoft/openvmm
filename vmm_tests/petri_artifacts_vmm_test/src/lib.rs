@@ -380,6 +380,7 @@ pub mod artifacts {
     /// Test VMGS artifacts
     pub mod test_vmgs {
         use crate::tags::IsHostedOnHvliteAzureBlobStore;
+        use petri_artifacts_common::tags::IsTestVmgs;
         use petri_artifacts_core::declare_artifacts;
 
         declare_artifacts! {
@@ -396,6 +397,8 @@ pub mod artifacts {
             const FILENAME: &'static str = "sample-vmgs.vhd";
             const SIZE: u64 = 4194816;
         }
+
+        impl IsTestVmgs for VMGS_WITH_BOOT_ENTRY {}
     }
 
     /// TMK-related artifacts

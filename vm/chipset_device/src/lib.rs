@@ -3,6 +3,8 @@
 
 //! Types and traits to model chipset devices, and associated chipset services.
 
+#![forbid(unsafe_code)]
+
 /// Implemented by any device that is considered part of the guest's "chipset"
 /// (insofar as it exists on one or more system busses).
 //

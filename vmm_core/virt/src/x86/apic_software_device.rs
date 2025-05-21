@@ -15,9 +15,9 @@ use std::collections::HashMap;
 use std::collections::hash_map;
 use std::sync::Arc;
 use thiserror::Error;
+use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
-use vmcore::vpci_msi::VpciInterruptMapper;
 use vmcore::vpci_msi::VpciInterruptParameters;
 use x86defs::msi::MSI_ADDRESS;
 use x86defs::msi::MsiAddress;
@@ -347,8 +347,8 @@ impl MsiInterruptTarget for ApicSoftwareDevice {
     }
 }
 
-impl VpciInterruptMapper for ApicSoftwareDevice {
-    fn register_interrupt(
+impl MapVpciInterrupt for ApicSoftwareDevice {
+    async fn register_interrupt(
         &self,
         vector_count: u32,
         params: &VpciInterruptParameters<'_>,
@@ -359,7 +359,7 @@ impl VpciInterruptMapper for ApicSoftwareDevice {
             .map_err(RegisterInterruptError::new)
     }
 
-    fn unregister_interrupt(&self, address: u64, data: u32) {
+    async fn unregister_interrupt(&self, address: u64, data: u32) {
         self.table.lock().unregister_interrupt(address, data)
     }
 }

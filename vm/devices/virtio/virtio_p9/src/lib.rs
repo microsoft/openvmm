@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 #![cfg(any(windows, target_os = "linux"))]
 
 pub mod resolver;

@@ -10,7 +10,8 @@ use super::RequestRoot;
 use super::Response;
 use super::SensitivityLevel;
 use super::UpdateRequest;
-use super::Value;
+use crate::NumberFormat;
+use crate::ValueKind;
 use alloc::borrow::ToOwned;
 use alloc::string::String;
 use mesh::MeshPayload;
@@ -27,6 +28,7 @@ impl Request<'_> {
             depth: self.depth,
             node: send,
             sensitivity: self.sensitivity,
+            number_format: self.number_format,
         }
     }
 }
@@ -41,6 +43,7 @@ impl UpdateRequest<'_> {
         DeferredUpdate {
             value: self.value.to_owned(),
             node: send,
+            number_format: self.number_format,
         }
     }
 }
@@ -54,6 +57,7 @@ pub struct Deferred {
     depth: usize,
     node: mesh::OneshotSender<InternalNode>,
     sensitivity: SensitivityLevel,
+    number_format: NumberFormat,
 }
 
 impl Deferred {
@@ -74,7 +78,10 @@ impl Deferred {
     }
 
     /// Responds to the deferred request with a value.
-    pub fn value(self, value: Value) {
+    pub fn value(self, value: impl Into<ValueKind>) {
+        self.value_(value.into())
+    }
+    fn value_(self, value: ValueKind) {
         let mut root = self.root();
         root.request().value(value);
         let node = root.node;
@@ -89,6 +96,7 @@ impl Deferred {
             Ok(DeferredUpdate {
                 value: self.value.unwrap(),
                 node: self.node,
+                number_format: self.number_format,
             })
         } else {
             Err(self)
@@ -101,6 +109,7 @@ impl Deferred {
             self.depth,
             self.value.as_deref(),
             self.sensitivity,
+            self.number_format,
         )
     }
 
@@ -255,6 +264,7 @@ pub enum ExternalRequestType<'a> {
 pub struct DeferredUpdate {
     value: String,
     node: mesh::OneshotSender<InternalNode>,
+    number_format: NumberFormat,
 }
 
 impl DeferredUpdate {
@@ -264,8 +274,12 @@ impl DeferredUpdate {
     }
 
     /// Report that the update succeeded, with a new value of `value`.
-    pub fn succeed(self, value: Value) {
-        self.node.send(InternalNode::Value(value));
+    pub fn succeed(self, value: impl Into<ValueKind>) {
+        self.succeed_(value.into())
+    }
+    fn succeed_(self, value: ValueKind) {
+        self.node
+            .send(InternalNode::Value(value.with_format(self.number_format)));
     }
 
     /// Report that the update failed, with the reason in `err`.

@@ -447,7 +447,7 @@ pub struct KvmVpInner {
     eval: AtomicBool,
     vp_info: X86VpInfo,
     synic_message_queue: MessageQueues,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x.read()))")]
+    #[inspect(hex, with = "|x| u64::from(*x.read())")]
     siefp: RwLock<HvSynicSimpSiefp>,
 }
 
@@ -634,11 +634,11 @@ pub struct KvmProcessor<'a> {
     vmtime: &'a mut VmTimeAccess,
     #[inspect(iter_by_index)]
     guest_debug_db: [u64; 4],
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     scontrol: HvSynicScontrol,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     siefp: HvSynicSimpSiefp,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     simp: HvSynicSimpSiefp,
 }
 

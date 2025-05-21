@@ -18,6 +18,7 @@ use windows::Win32::System::Ioctl::FILE_READ_ACCESS;
 use windows::Win32::System::Ioctl::FILE_WRITE_ACCESS;
 use windows::Win32::System::Ioctl::METHOD_BUFFERED;
 use windows::core::GUID;
+use windows_sys::Win32::Foundation::BOOLEAN;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 
@@ -46,6 +47,9 @@ pub const IOCTL_VMBUS_PROXY_RELEASE_CHANNEL: u32 = VMBUS_PROXY_IOCTL(0x9);
 pub const IOCTL_VMBUS_PROXY_RUN_CHANNEL: u32 = VMBUS_PROXY_IOCTL(0xa);
 pub const IOCTL_VMBUS_PROXY_SET_VID_HANDLE: u32 = VMBUS_PROXY_IOCTL(0xb);
 pub const IOCTL_VMBUS_PROXY_TL_CONNECT_REQUEST: u32 = VMBUS_PROXY_IOCTL(0xc);
+pub const IOCTL_VMBUS_PROXY_RESTORE_CHANNEL: u32 = VMBUS_PROXY_IOCTL(0xd);
+pub const IOCTL_VMBUS_PROXY_REVOKE_UNCLAIMED_CHANNELS: u32 = VMBUS_PROXY_IOCTL(0xe);
+pub const IOCTL_VMBUS_PROXY_RESTORE_SET_INTERRUPT: u32 = VMBUS_PROXY_IOCTL(0xf);
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -79,7 +83,7 @@ pub const VmbusProxyActionTypeTlConnectResult: u32 = 4;
 #[derive(Copy, Clone)]
 pub struct VMBUS_PROXY_NEXT_ACTION_OUTPUT {
     pub Type: u32,
-    pub ChannelId: u64,
+    pub ProxyId: u64,
     pub u: VMBUS_PROXY_NEXT_ACTION_OUTPUT_union,
 }
 
@@ -110,8 +114,15 @@ pub struct VMBUS_PROXY_NEXT_ACTION_OUTPUT_union_TlConnectResult {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct VMBUS_PROXY_OPEN_CHANNEL_INPUT {
-    pub ChannelId: u64,
+    pub ProxyId: u64,
     pub OpenParameters: VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS,
+    pub VmmSignalEvent: u64, // BUGBUG: HANDLE
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct VMBUS_PROXY_SET_INTERRUPT_INPUT {
+    pub ProxyId: u64,
     pub VmmSignalEvent: u64, // BUGBUG: HANDLE
 }
 
@@ -123,14 +134,29 @@ pub struct VMBUS_PROXY_OPEN_CHANNEL_OUTPUT {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
+pub struct VMBUS_PROXY_RESTORE_CHANNEL_INPUT {
+    pub InterfaceType: GUID,
+    pub InterfaceInstance: GUID,
+    pub SubchannelIndex: u16,
+    pub OpenParameters: VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS,
+    pub Open: BOOLEAN,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct VMBUS_PROXY_RESTORE_CHANNEL_OUTPUT {
+    pub ProxyId: u64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
 pub struct VMBUS_PROXY_CLOSE_CHANNEL_INPUT {
-    pub ChannelId: u64,
+    pub ProxyId: u64,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, IntoBytes, Immutable)]
 pub struct VMBUS_PROXY_CREATE_GPADL_INPUT {
-    pub ChannelId: u64,
+    pub ProxyId: u64,
     pub GpadlId: u32,
     pub RangeCount: u32,
     pub RangeBufferOffset: u32,
@@ -140,20 +166,20 @@ pub struct VMBUS_PROXY_CREATE_GPADL_INPUT {
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct VMBUS_PROXY_DELETE_GPADL_INPUT {
-    pub ChannelId: u64,
+    pub ProxyId: u64,
     pub GpadlId: u32,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct VMBUS_PROXY_RELEASE_CHANNEL_INPUT {
-    pub ChannelId: u64,
+    pub ProxyId: u64,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct VMBUS_PROXY_RUN_CHANNEL_INPUT {
-    pub ChannelId: u64,
+    pub ProxyId: u64,
 }
 
 #[bitfield(u32)]

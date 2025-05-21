@@ -16,6 +16,7 @@
 
 #![cfg(target_os = "linux")]
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use anyhow::Context;
 use std::fs::File;

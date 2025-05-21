@@ -8,6 +8,7 @@
 //! for actually sharing a disk between VMs. This is just useful for testing.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use async_trait::async_trait;
 use disk_backend::Disk;

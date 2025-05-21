@@ -63,15 +63,10 @@ impl FlowNode for Node {
                         let key_vault_name = key_vault_name;
                         let sh = xshell::Shell::new()?;
                         for (secret, vars) in secrets_and_vars {
-                            for var in &vars {
-                                if !var.is_secret() {
-                                    anyhow::bail!(
-                                        "WriteVar for downloaded secret must be marked as secret"
-                                    );
-                                }
-                            }
                             let secret_value = xshell::cmd!(sh, "{az_cli_bin} keyvault secret show --name {secret} --vault-name {key_vault_name} --query value --output tsv").read()?;
-                            rt.write_all(vars, &secret_value);
+                            for var in vars {
+                                rt.write_secret(var, &secret_value);
+                            }
                         }
 
                         Ok(())

@@ -5,6 +5,7 @@ use crate::GuestEmulationDevice;
 use async_trait::async_trait;
 use disk_backend::resolve::ResolveDiskParameters;
 use get_protocol::SecureBootTemplateType;
+use get_protocol::dps_json::GuestStateLifetime;
 use get_resources::ged::GuestEmulationDeviceHandle;
 use get_resources::ged::GuestFirmwareConfig;
 use get_resources::ged::GuestSecureBootTemplateType;
@@ -22,6 +23,7 @@ use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_channel::resources::ResolveVmbusDeviceHandleParams;
 use vmbus_channel::resources::ResolvedVmbusDevice;
 use vmbus_channel::simple::SimpleDeviceWrapper;
+use vmgs_resources::VmgsResource;
 
 pub struct GuestEmulationDeviceResolver;
 
@@ -70,7 +72,16 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
             .await
             .map_err(Error::Power)?;
 
-        let vmgs_disk = if let Some(disk) = resource.vmgs_disk {
+        let (vmgs_disk, guest_state_lifetime) = match resource.vmgs {
+            VmgsResource::Disk(disk) => (Some(disk), GuestStateLifetime::Default),
+            VmgsResource::ReprovisionOnFailure(disk) => {
+                (Some(disk), GuestStateLifetime::ReprovisionOnFailure)
+            }
+            VmgsResource::Reprovision(disk) => (Some(disk), GuestStateLifetime::Reprovision),
+            VmgsResource::Ephemeral => (None, GuestStateLifetime::Ephemeral),
+        };
+
+        let vmgs_disk = if let Some(disk) = vmgs_disk {
             Some(
                 resolver
                     .resolve(
@@ -145,12 +156,14 @@ impl AsyncResolveResource<VmbusDeviceHandleKind, GuestEmulationDeviceHandle>
                 },
                 enable_battery: resource.enable_battery,
                 no_persistent_secrets: resource.no_persistent_secrets,
+                guest_state_lifetime,
             },
             halt,
             resource.firmware_event_send,
             resource.guest_request_recv,
             framebuffer_control,
             vmgs_disk,
+            resource.igvm_attest_test_config,
         );
         Ok(SimpleDeviceWrapper::new(input.driver_source.simple(), device).into())
     }

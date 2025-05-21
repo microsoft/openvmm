@@ -31,7 +31,6 @@ use hcl::ioctl::ApplyVtlProtectionsError;
 use hcl::ioctl::x64::MshvX64;
 use hcl::protocol;
 use hv1_emulator::hv::ProcessorVtlHv;
-use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::VtlSet;
 use hvdef::HV_PAGE_SIZE;
@@ -83,10 +82,10 @@ use zerocopy::KnownLayout;
 pub struct HypervisorBackedX86 {
     // VTL0 only, used for synic message and extint readiness notifications.
     // We do not currently support synic message ports or extint interrupts for VTL1.
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     deliverability_notifications: HvDeliverabilityNotificationsRegister,
     /// Next set of deliverability notifications. See register definition for details.
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     pub(super) next_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     stats: ProcessorStatsX86,
 }
@@ -324,11 +323,12 @@ impl BackingPrivate for HypervisorBackedX86 {
         Ok(())
     }
 
-    fn handle_cross_vtl_interrupts(
+    fn process_interrupts(
         _this: &mut UhProcessor<'_, Self>,
+        _scan_irr: hv1_structs::VtlArray<bool, 2>,
+        _first_scan_irr: &mut bool,
         _dev: &impl CpuIo,
-    ) -> Result<bool, UhRunVpError> {
-        // TODO WHP GUEST VSM
+    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
         Ok(false)
     }
 
@@ -352,14 +352,6 @@ impl BackingPrivate for HypervisorBackedX86 {
         None
     }
 
-    fn untrusted_synic(&self) -> Option<&ProcessorSynic> {
-        None
-    }
-
-    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
-        None
-    }
-
     fn handle_vp_start_enable_vtl_wake(
         _this: &mut UhProcessor<'_, Self>,
         _vtl: GuestVtl,
@@ -372,8 +364,6 @@ impl BackingPrivate for HypervisorBackedX86 {
         // whether VTL 1 is enabled on the vp (this can be cached).
         false
     }
-
-    fn handle_exit_activity(_this: &mut UhProcessor<'_, Self>) {}
 }
 
 fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {
@@ -794,7 +784,8 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         let msr = message.msr_number;
         match message.header.intercept_access_type {
             HvInterceptAccessType::READ => {
-                let value = match self.vp.read_msr(msr, self.intercepted_vtl) {
+                // Only supported MSRs are the crash MSRs.
+                let value = match self.vp.read_crash_msr(msr, self.intercepted_vtl) {
                     Ok(v) => v,
                     Err(MsrError::Unknown) => {
                         tracing::trace!(msr, "unknown msr read");
@@ -812,7 +803,8 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             }
             HvInterceptAccessType::WRITE => {
                 let value = (message.rax & 0xffff_ffff) | (message.rdx << 32);
-                match self.vp.write_msr(msr, value, self.intercepted_vtl) {
+                // Only supported MSRs are the crash MSRs.
+                match self.vp.write_crash_msr(msr, value, self.intercepted_vtl) {
                     Ok(()) => {}
                     Err(MsrError::Unknown) => {
                         tracing::trace!(msr, value, "unknown msr write");

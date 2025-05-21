@@ -15,6 +15,7 @@
 //! interface that SeaVGABios uses).
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod emu;
 mod non_linear;

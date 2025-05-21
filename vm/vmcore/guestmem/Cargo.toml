@@ -6,10 +6,14 @@ name = "guestmem"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+bitmap = ["dep:minircu"]
+
 [dependencies]
 inspect.workspace = true
 pal_event.workspace = true
 sparse_mmap.workspace = true
+minircu = { workspace = true, optional = true }
 
 thiserror.workspace = true
 zerocopy.workspace = true

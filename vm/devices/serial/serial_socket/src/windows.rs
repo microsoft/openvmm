@@ -54,14 +54,11 @@ enum PipeState {
 
 impl Inspect for PipeState {
     fn inspect(&self, req: inspect::Request<'_>) {
-        req.value(
-            match self {
-                PipeState::Done => "done",
-                PipeState::Listening(_) => "listening",
-                PipeState::Connected(_) => "connected",
-            }
-            .into(),
-        )
+        req.value(match self {
+            PipeState::Done => "done",
+            PipeState::Listening(_) => "listening",
+            PipeState::Connected(_) => "connected",
+        })
     }
 }
 

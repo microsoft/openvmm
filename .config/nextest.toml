@@ -29,6 +29,11 @@ path = "junit.xml"
 store-success-output = "true"
 
 [[profile.ci.overrides]]
+# allow loom based tests more time, as they take a while
+filter = 'test(loom)'
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[[profile.ci.overrides]]
 # use fuzzy-matching for the package() to allow out-of-tree tests to use the
 # same profile
 filter = 'package(~vmm_tests)'

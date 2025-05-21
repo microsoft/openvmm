@@ -144,7 +144,7 @@ impl FlowNode for Node {
                     let rust_toolchain = rt.read(rust_toolchain);
                     let flags = rt.read(flags);
                     let in_folder = rt.read(in_folder);
-                    let with_env = extra_env.map(|x| rt.read(x)).unwrap_or_default();
+                    let with_env = rt.read(extra_env).unwrap_or_default();
 
                     let crate::cfg_cargo_common_flags::Flags { locked, verbose } = flags;
 

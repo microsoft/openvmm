@@ -19,6 +19,8 @@
 //! This is separate from the synthetic device because its lifetime is separate
 //! from that of the synthetic video VMBus channel.
 
+#![forbid(unsafe_code)]
+
 use anyhow::Context;
 use chipset_device::ChipsetDevice;
 use guestmem::GuestMemory;

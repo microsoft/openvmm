@@ -8,6 +8,8 @@
 //! NOTE: this crate is no longer used by OpenVMM/OpenHCL, and only remains
 //! in-tree to support testing devices.
 
+#![forbid(unsafe_code)]
+
 pub mod device;
 pub mod services;
 

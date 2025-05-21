@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 /// Initializes compiler flags for building a minimal kernel using the
 /// `minimal_rt` crate.

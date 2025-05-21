@@ -202,7 +202,7 @@ fn apic_timer(t: TestContext<'_>) {
         s.enable_interrupts();
 
         // Wait for the timer interrupt to fire.
-        for _ in 0..1_000_000 {
+        for _ in 0..1_000_000_000 {
             if timer_fired.load(Relaxed) {
                 break;
             }

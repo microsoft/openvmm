@@ -3,6 +3,8 @@
 
 //! Implements a UART backend that communicates with the host over a VMBUS pipe.
 
+#![forbid(unsafe_code)]
+
 pub use vmbus_serial_protocol::UART_INTERFACE_INSTANCE_COM1;
 pub use vmbus_serial_protocol::UART_INTERFACE_INSTANCE_COM2;
 pub use vmbus_serial_protocol::UART_INTERFACE_INSTANCE_COM3;
@@ -171,7 +173,7 @@ enum ErrorInner {
 
 impl From<ErrorInner> for io::Error {
     fn from(value: ErrorInner) -> Self {
-        Self::new(io::ErrorKind::Other, value)
+        Self::other(value)
     }
 }
 

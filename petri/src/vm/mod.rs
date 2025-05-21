@@ -11,6 +11,7 @@ use crate::ShutdownKind;
 use async_trait::async_trait;
 use get_resources::ged::FirmwareEvent;
 use petri_artifacts_common::tags::GuestQuirks;
+use petri_artifacts_common::tags::IsTestVmgs;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
@@ -491,8 +492,20 @@ pub enum IsolationType {
 }
 
 /// Flags controlling servicing behavior.
-#[derive(Default)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct OpenHclServicingFlags {
     /// Preserve DMA memory for NVMe devices if supported.
     pub enable_nvme_keepalive: bool,
+}
+
+/// Virtual machine guest state resource
+pub enum PetriVmgsResource<T: IsTestVmgs> {
+    /// Use disk to store guest state
+    Disk(ResolvedArtifact<T>),
+    /// Use disk to store guest state, reformatting if corrupted.
+    ReprovisionOnFailure(ResolvedArtifact<T>),
+    /// Format and use disk to store guest state
+    Reprovision(ResolvedArtifact<T>),
+    /// Store guest state in memory
+    Ephemeral,
 }

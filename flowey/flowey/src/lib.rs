@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 //! The user-facing flowey API.
 //!
@@ -54,4 +55,9 @@ pub mod pipeline {
 pub mod patch {
     pub use flowey_core::patch::*;
     pub use flowey_core::register_patch;
+}
+
+/// Utility functions.
+pub mod util {
+    pub use flowey_core::util::*;
 }

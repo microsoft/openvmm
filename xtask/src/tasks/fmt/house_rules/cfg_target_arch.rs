@@ -14,6 +14,8 @@ const SUPPRESS_REASON_CPU_INTRINSIC: &str = "cpu-intrinsic";
 /// Using `target_arch` in order to implement a '*-sys'-like crate (where the
 /// structure changes depending on the host-arch)
 const SUPPRESS_REASON_SYS_CRATE: &str = "sys-crate";
+/// A dependency of this crate will not build on other target architectures
+const SUPPRESS_REASON_DEPENDENCY: &str = "dependency";
 /// One off - support for the auto-arch selection logic in
 /// `build_rs_guest_arch`.
 const SUPPRESS_REASON_ONEOFF_GUEST_ARCH_IMPL: &str = "oneoff-guest-arch-impl";
@@ -39,6 +41,7 @@ fn has_suppress(s: &str) -> bool {
         justification,
         SUPPRESS_REASON_CPU_INTRINSIC
             | SUPPRESS_REASON_SYS_CRATE
+            | SUPPRESS_REASON_DEPENDENCY
             | SUPPRESS_REASON_ONEOFF_GUEST_ARCH_IMPL
             | SUPPRESS_REASON_ONEOFF_VIRT_HVF
             | SUPPRESS_REASON_ONEOFF_FLOWEY

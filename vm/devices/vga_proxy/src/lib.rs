@@ -4,6 +4,7 @@
 //! A fake VGA device that proxies all PCI accesses to the emulated host device.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;

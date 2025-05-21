@@ -283,7 +283,8 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
             .with_guest_idle_available(true)
             .with_xmm_registers_for_fast_hypercall_available(true)
             .with_register_pat_available(true)
-            .with_fast_hypercall_output_available(true);
+            .with_fast_hypercall_output_available(true)
+            .with_translate_gva_flags_available(true);
 
         let use_apic_msrs = match self.topology.apic_mode() {
             vm_topology::processor::x86::ApicMode::XApic => {
@@ -306,7 +307,6 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
             .with_use_ex_processor_masks(true)
             .with_use_apic_msrs(use_apic_msrs)
             .with_long_spin_wait_count(!0)
-            .with_use_synthetic_cluster_ipi(true)
             .with_use_hypercall_for_remote_flush_and_local_flush_entire(true);
 
         let hardware_features = hvdef::HvHardwareFeatures::new()

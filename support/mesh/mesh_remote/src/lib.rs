@@ -7,6 +7,7 @@ mod alpc_node;
 mod common;
 mod point_to_point;
 mod protocol;
+mod test_common;
 mod unix_node;
 
 #[cfg(windows)]

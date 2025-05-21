@@ -17,8 +17,9 @@ Releases naturally fall into several phases:
 | Ask Mode          | Changes are scrutinized and only critical fixes are allowed. No new features are accepted. This is the last phase before a release is closed. |
 | Servicing         | Only essential fixes are made to support the release. a.k.a. maintenance mode      |
 
-### release/2411 process
-We track the state of candidates for a given release by tagging the PRs:
+### Release branch process
+
+We track the state of candidates for a given release by tagging the PRs with the following labels:
 
 * `backport_YYMM`: This PR (to `main`) is a candidate to be included in the `YYMM` release.
     * N.B.: A maintainer will _remove_ this tag if the fix is not accepted into the release.
@@ -28,7 +29,7 @@ We track the state of candidates for a given release by tagging the PRs:
 #### Seeking Approval for Backport
 
 To seek approval to include a change in a release branch, follow these steps:
-* Tag your to-`main` PR with `backport_YYMM`.
+* Tag your PR to `main` PR with the `backport_YYMM` label.
 * Cherry-pick the change to the appropriate `release/YYMM` branch in your fork and stage a PR to that same branch in the main repository.
 
 Please reach out to the maintainers before staging that PR if you have any doubts.
@@ -37,7 +38,9 @@ Please reach out to the maintainers before staging that PR if you have any doubt
 
 | Release | Phase | Notes |
 |--------|-------|-------|
-| release/2411 | Ask Mode | |
- 
+| release/2411 | Servicing | |
+| release/2505 | Stabilization | |
+
 ## Depending on Releases
+
 We welcome feedback, especially if you would like to depend on a reliable release process. Please reach out!

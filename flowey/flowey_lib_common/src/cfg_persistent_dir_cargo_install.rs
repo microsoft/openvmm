@@ -27,7 +27,7 @@ impl FlowNode for Node {
                 .map(|x| x.0.claim(ctx))
                 .collect::<Vec<_>>();
             |rt| {
-                let persistent_dir = persistent_dir.map(|x| rt.read(x));
+                let persistent_dir = rt.read(persistent_dir);
                 for var in requests {
                     rt.write(var, &persistent_dir)
                 }

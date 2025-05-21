@@ -7,6 +7,8 @@
 //! be used for debugging (hence the name). It offers no flow control
 //! mechanisms, or any method of reading data into the Guest.
 
+#![forbid(unsafe_code)]
+
 pub mod resolver;
 
 use chipset_device::ChipsetDevice;

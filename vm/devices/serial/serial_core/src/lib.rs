@@ -3,6 +3,8 @@
 
 //! Core types shared by serial port implementations and users.
 
+#![forbid(unsafe_code)]
+
 pub mod disconnected;
 pub mod resources;
 pub mod serial_io;

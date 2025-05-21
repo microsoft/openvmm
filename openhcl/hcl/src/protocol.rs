@@ -275,3 +275,21 @@ pub struct tdx_vp_context {
 
 const _: () = assert!(core::mem::offset_of!(tdx_vp_context, gpr_list) + 272 == 512);
 const _: () = assert!(size_of::<tdx_vp_context>() == 1024);
+
+#[bitfield(u64)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct hcl_kick_cpus_flags {
+    #[bits(1)]
+    pub wait_for_other_cpus: bool,
+    #[bits(1)]
+    pub cancel_run: bool,
+    #[bits(62)]
+    reserved: u64,
+}
+
+#[repr(C)]
+pub struct hcl_kick_cpus {
+    pub len: u64,
+    pub cpu_mask: *const u8,
+    pub flags: hcl_kick_cpus_flags,
+}

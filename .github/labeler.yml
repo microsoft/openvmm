@@ -4,3 +4,6 @@ Guide:
 
 release_2411:
  - base-branch: 'release/2411'
+
+release_2505:
+ - base-branch: 'release/2505'
