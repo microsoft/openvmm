@@ -30,6 +30,7 @@ vmcore.workspace = true
 x86defs.workspace = true
 x86emu.workspace = true
 
+atomic_ringbuf.workspace = true
 inspect_counters.workspace = true
 inspect = { workspace = true, features = ["std"] }
 mesh.workspace = true

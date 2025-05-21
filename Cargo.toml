@@ -90,6 +90,7 @@ pipette_protocol = { path = "petri/pipette_protocol" }
 # support crates
 address_filter = { path = "support/address_filter" }
 arc_cyclic_builder = { path = "support/arc_cyclic_builder" }
+atomic_ringbuf = { path = "support/atomic_ringbuf" }
 cache_topology = { path = "support/cache_topology" }
 closeable_mutex = { path = "support/closeable_mutex" }
 ci_logger = { path = "support/ci_logger" }
@@ -462,6 +463,7 @@ libfuzzer-sys = "0.4"
 libtest-mimic = "0.8"
 linkme = "0.3.9"
 log = "0.4"
+loom = "0.7.2"
 macaddr = "1.0"
 mbrman = "0.5"
 mimalloc = { version = "0.1.39", default-features = false }
@@ -594,6 +596,10 @@ lto = 'fat'
 # FUTURE: rewrite relocator in asm to avoid depending on this.
 [profile.dev.package.minimal_rt]
 opt-level = 1
+
+# Optimize loom even in the dev profile, as otherwise tests just take too long.
+[profile.dev.package.loom]
+opt-level = 3
 
 [patch.crates-io]
 # Pending <https://github.com/ferrilab/bitvec/pull/273>
