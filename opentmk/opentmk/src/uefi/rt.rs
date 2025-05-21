@@ -10,8 +10,6 @@ use core::arch::asm;
 #[panic_handler]
 fn panic_handler(panic: &core::panic::PanicInfo<'_>) -> ! {
     log::error!("Panic at runtime: {}", panic);
-    unsafe {
-        asm!("int 8H");
-    }
+    log::warn!("TEST_END");
     loop {}
 }
