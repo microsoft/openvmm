@@ -467,12 +467,32 @@ use core::num::Wrapping;
 
 /// An inspection request.
 pub struct Request<'a> {
-    path: &'a str,
-    depth: usize,
+    params: RequestParams<'a>,
     node: &'a mut InternalNode,
+}
+
+struct RootParams<'a> {
+    full_path: &'a str,
     value: Option<&'a str>,
     sensitivity: SensitivityLevel,
+}
+
+#[derive(Copy, Clone)]
+struct RequestParams<'a> {
+    root: &'a RootParams<'a>,
+    path_start: usize,
+    depth: usize,
     number_format: NumberFormat,
+}
+
+impl<'a> RequestParams<'a> {
+    fn path(&self) -> &'a str {
+        &self.root.full_path[self.path_start..]
+    }
+
+    fn is_leaf(&self) -> bool {
+        self.path_start >= self.root.full_path.len()
+    }
 }
 
 #[cfg_attr(
@@ -486,16 +506,6 @@ enum NumberFormat {
     Hex,
     Binary,
     Counter,
-}
-
-#[cfg(any(feature = "defer", feature = "initiate"))]
-struct RequestRoot<'a> {
-    path: &'a str,
-    node: InternalNode,
-    depth: usize,
-    value: Option<&'a str>,
-    sensitivity: SensitivityLevel,
-    number_format: NumberFormat,
 }
 
 /// The sensitivity level for an inspection node or request.
@@ -527,56 +537,20 @@ pub enum SensitivityLevel {
     Sensitive,
 }
 
-#[cfg(any(feature = "defer", feature = "initiate"))]
-impl<'a> RequestRoot<'a> {
-    fn new(
-        path: &'a str,
-        depth: usize,
-        value: Option<&'a str>,
-        sensitivity: SensitivityLevel,
-        number_format: NumberFormat,
-    ) -> Self {
-        Self {
-            path,
-            node: InternalNode::Unevaluated,
-            depth,
-            value,
-            sensitivity,
-            number_format,
-        }
-    }
-
-    fn request(&mut self) -> Request<'_> {
-        Request::new(
-            self.path,
-            self.depth,
-            &mut self.node,
-            self.value,
-            self.sensitivity,
-            self.number_format,
-        )
-    }
-}
-
 /// A type used to build an inspection response.
 pub struct Response<'a> {
-    /// Full remaining path, including leading `/`s.
-    path: &'a str,
-    /// Cache of remaining path without leading '/'s.
-    path_without_slashes: Option<&'a str>,
-    depth: usize,
-    cell: &'a mut InternalNode,
-    value: Option<&'a str>,
-    sensitivity: SensitivityLevel,
-    number_format: NumberFormat,
+    params: RequestParams<'a>,
+    /// Remaining path without leading '/'s.
+    path_without_slashes: &'a str,
+    children: Option<&'a mut Vec<InternalEntry>>,
 }
 
 #[derive(Debug)]
-enum Action<'a, 'b> {
+enum Action<'a> {
     Process {
         name: &'a str,
         sensitivity: SensitivityLevel,
-        new_path: &'b str,
+        new_path_start: usize,
         new_depth: usize,
     },
     Skip,
@@ -586,17 +560,16 @@ enum Action<'a, 'b> {
     },
 }
 
-impl<'a, 'b> Action<'a, 'b> {
+impl<'a> Action<'a> {
     // Determine which action to take for the field with `name`, given the
     // remaining `path` and the remaining `depth`.
-    fn eval(child: Child<'a>, resp: &Response<'b>) -> Self {
-        let path = resp.path_without_slashes.unwrap();
-        if resp.depth == 0 {
+    fn eval(child: Child<'a>, params: &RequestParams<'_>, path: &str) -> Self {
+        if params.depth == 0 {
             // Don't return any subfields if the depth is exhausted, since depth
             // exhausted will be reported for the current node.
             return Self::Skip;
         }
-        if resp.sensitivity < child.sensitivity {
+        if params.root.sensitivity < child.sensitivity {
             // Don't return any subfields if the request's sensitivity level is too low.
             return Self::Skip;
         }
@@ -607,8 +580,8 @@ impl<'a, 'b> Action<'a, 'b> {
                 Self::Process {
                     name: child.name,
                     sensitivity: child.sensitivity,
-                    new_path: rest,
-                    new_depth: resp.depth,
+                    new_path_start: params.root.full_path.len() - rest.len(),
+                    new_depth: params.depth,
                 }
             } else {
                 // Mismatch, e.g. name is "foo", path is "foobar", or this is a
@@ -628,12 +601,12 @@ impl<'a, 'b> Action<'a, 'b> {
                 &child.name[path.len() + 1..]
             };
             // Ensure there is enough depth for the name.
-            match remaining_name.match_indices('/').nth(resp.depth - 1) {
+            match remaining_name.match_indices('/').nth(params.depth - 1) {
                 None => Self::Process {
                     name: child.name,
                     sensitivity: child.sensitivity,
-                    new_path: "",
-                    new_depth: resp.depth - 1,
+                    new_path_start: params.root.full_path.len(),
+                    new_depth: params.depth - 1,
                 },
                 Some((n, _)) => Self::DepthExhausted {
                     name: &child.name[..child.name.len() - remaining_name.len() + n],
@@ -822,36 +795,33 @@ impl Response<'_> {
     }
 
     fn child_request(&mut self, child: Child<'_>) -> Option<Request<'_>> {
-        if self.path_without_slashes.is_none() {
-            self.path_without_slashes = Some(self.path.trim_start_matches('/'));
-        }
-
-        match Action::eval(child, self) {
+        let children = &mut **self.children.as_mut()?;
+        let action = Action::eval(child, &self.params, self.path_without_slashes);
+        match action {
             Action::Process {
                 name,
                 sensitivity,
-                new_path,
+                new_path_start,
                 new_depth,
             } => {
-                let children = self.cell.as_dir();
                 children.push(InternalEntry {
                     name: name.to_owned(),
                     node: InternalNode::Unevaluated,
                     sensitivity,
                 });
                 let entry = children.last_mut().unwrap();
-                Some(Request::new(
-                    new_path,
-                    new_depth,
-                    &mut entry.node,
-                    self.value,
-                    self.sensitivity,
-                    self.number_format,
-                ))
+                Some(
+                    RequestParams {
+                        path_start: new_path_start,
+                        depth: new_depth,
+                        ..self.params
+                    }
+                    .request(&mut entry.node),
+                )
             }
             Action::Skip => None,
             Action::DepthExhausted { name, sensitivity } => {
-                self.cell.as_dir().push(InternalEntry {
+                children.push(InternalEntry {
                     name: name.to_owned(),
                     node: InternalNode::DepthExhausted,
                     sensitivity,
@@ -1008,88 +978,70 @@ assert_eq!(
     /// Inspects an object and merges its responses into this node without
     /// creating a child node.
     pub fn merge(&mut self, mut child: impl InspectMut) -> &mut Self {
-        child.inspect_mut(self.request());
+        if let Some(req) = self.request() {
+            child.inspect_mut(req);
+        }
         self
     }
 
     /// Gets another request for this response. The response to that request
     /// will be merged into this response.
-    pub fn request(&mut self) -> Request<'_> {
-        let children = self.cell.as_dir();
+    fn request(&mut self) -> Option<Request<'_>> {
+        let children = &mut **self.children.as_mut()?;
         children.push(InternalEntry {
             name: String::new(),
             node: InternalNode::Unevaluated,
             sensitivity: SensitivityLevel::Unspecified,
         });
         let entry = children.last_mut().unwrap();
-        Request::new(
-            self.path,
-            self.depth,
-            &mut entry.node,
-            self.value,
-            self.sensitivity,
-            self.number_format,
-        )
+        Some(self.params.request(&mut entry.node))
     }
 }
 
-impl Drop for Response<'_> {
-    fn drop(&mut self) {
-        if self.depth > 0 {
-            // Ensure the children node was created.
-            let _ = self.cell.as_dir();
-        } else {
-            // No children were collected, but this node had to be inspected in
-            // case it was a value and not a directory node.
-            *self.cell = InternalNode::DepthExhausted;
-        }
+impl<'a> RequestParams<'a> {
+    fn inspect(self, mut obj: impl InspectMut) -> InternalNode {
+        self.with(|req| {
+            obj.inspect_mut(req);
+        })
+    }
+
+    fn with(self, f: impl FnOnce(Request<'_>)) -> InternalNode {
+        let mut node = InternalNode::Unevaluated;
+        f(self.request(&mut node));
+        node
+    }
+
+    fn request(self, node: &'a mut InternalNode) -> Request<'a> {
+        Request { params: self, node }
     }
 }
 
 impl<'a> Request<'a> {
-    fn new(
-        path: &'a str,
-        depth: usize,
-        cell: &'a mut InternalNode,
-        value: Option<&'a str>,
-        sensitivity: SensitivityLevel,
-        number_format: NumberFormat,
-    ) -> Self {
-        Self {
-            path,
-            depth,
-            node: cell,
-            value,
-            sensitivity,
-            number_format,
-        }
-    }
-
     /// Sets numeric values to be displayed in decimal format.
     #[must_use]
     pub fn with_decimal_format(mut self) -> Self {
-        self.number_format = NumberFormat::Decimal;
+        self.params.number_format = NumberFormat::Decimal;
         self
     }
 
     /// Sets numeric values to be displayed in hexadecimal format.
     #[must_use]
     pub fn with_hex_format(mut self) -> Self {
-        self.number_format = NumberFormat::Hex;
+        self.params.number_format = NumberFormat::Hex;
         self
     }
 
     /// Sets numeric values to be displayed in binary format.
     #[must_use]
     pub fn with_binary_format(mut self) -> Self {
-        self.number_format = NumberFormat::Binary;
+        self.params.number_format = NumberFormat::Binary;
         self
     }
 
     /// Sets numeric values to be displayed as counters.
     #[must_use]
     pub fn with_counter_format(mut self) -> Self {
-        self.number_format = NumberFormat::Counter;
+        self.params.number_format = NumberFormat::Counter;
         self
     }
 
@@ -1098,9 +1050,9 @@ impl<'a> Request<'a> {
         self.value_(value.into());
     }
     fn value_(self, value: ValueKind) {
-        let node = if self.path.is_empty() {
-            if self.value.is_none() {
-                InternalNode::Value(value.with_format(self.number_format))
+        let node = if self.params.is_leaf() {
+            if self.params.root.value.is_none() {
+                InternalNode::Value(value.with_format(self.params.number_format))
             } else {
                 InternalNode::Failed(InternalError::Immutable)
             }
@@ -1114,14 +1066,14 @@ impl<'a> Request<'a> {
     ///
     /// If this is not an update request, returns `Err(self)`.
     pub fn update(self) -> Result<UpdateRequest<'a>, Self> {
-        if let Some(value) = self.value {
-            if !self.path.is_empty() {
+        if let Some(value) = self.params.root.value {
+            if !self.params.is_leaf() {
                 return Err(self);
             }
             Ok(UpdateRequest {
                 node: self.node,
                 value,
-                number_format: self.number_format,
+                number_format: self.params.number_format,
             })
         } else {
             Err(self)
@@ -1132,14 +1084,22 @@ impl<'a> Request<'a> {
     ///
     /// Returns an object that can be used to provide the inspection results.
     pub fn respond(self) -> Response<'a> {
+        let children = if self.params.depth > 0 {
+            *self.node = InternalNode::Dir(Vec::new());
+            let InternalNode::Dir(children) = self.node else {
+                unreachable!()
+            };
+            Some(children)
+        } else {
+            // No children will be collected, but this node had to be inspected
+            // in case it was a value and not a directory node.
+            *self.node = InternalNode::DepthExhausted;
+            None
+        };
         Response {
-            path: self.path,
-            path_without_slashes: None,
-            depth: self.depth,
-            cell: self.node,
-            value: self.value,
-            sensitivity: self.sensitivity,
-            number_format: self.number_format,
+            params: self.params,
+            path_without_slashes: self.params.path().trim_start_matches('/'),
+            children,
         }
     }
 
@@ -1150,12 +1110,12 @@ impl<'a> Request<'a> {
 
     /// If true, this is an update request.
     pub fn is_update(&self) -> bool {
-        self.value.is_some()
+        self.params.root.value.is_some()
     }
 
     /// Gets the sensitivity level for this request.
     pub fn sensitivity(&self) -> SensitivityLevel {
-        self.sensitivity
+        self.params.root.sensitivity
     }
 }
 
@@ -1681,14 +1641,14 @@ macro_rules! hexbincount {
     ($tr:ident, $fmt:expr) => {
         impl<T: Inspect> Inspect for $tr<T> {
             fn inspect(&self, mut req: Request<'_>) {
-                req.number_format = $fmt;
+                req.params.number_format = $fmt;
                 self.0.inspect(req);
             }
         }
 
         impl<T: InspectMut> InspectMut for $tr<T> {
             fn inspect_mut(&mut self, mut req: Request<'_>) {
-                req.number_format = $fmt;
+                req.params.number_format = $fmt;
                 self.0.inspect_mut(req);
             }
         }
@@ -1903,21 +1863,6 @@ struct InternalEntry {
     name: String,
     node: InternalNode,
     sensitivity: SensitivityLevel,
-}
-
-impl InternalNode {
-    fn as_dir(&mut self) -> &mut Vec<InternalEntry> {
-        match self {
-            Self::Dir(children) => children,
-            _ => {
-                *self = Self::Dir(Vec::new());
-                let Self::Dir(children) = self else {
-                    unreachable!()
-                };
-                children
-            }
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -2424,11 +2369,9 @@ mod tests {
     #[test]
     fn test_merge() {
         let mut obj = adhoc(|req| {
-            req.respond()
-                .field("a", 1)
-                .request()
-                .respond()
-                .field("b", 2);
+            req.respond().field("a", 1).merge(adhoc(|req| {
+                req.respond().field("b", 2);
+            }));
         });
 
         inspect_sync_expect(

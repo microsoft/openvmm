@@ -3663,8 +3663,8 @@ impl InspectTaskMut<Coordinator> for CoordinatorState {
             });
 
             // Get the shared channel state from the primary channel.
-            {
-                let deferred = resp.request().defer();
+            resp.merge(inspect::adhoc_mut(|req| {
+                let deferred = req.defer();
                 coordinator.workers[0].update_with(|_, worker| {
                     if let Some(state) = worker.and_then(|worker| worker.state.ready()) {
                         deferred.respond(|resp| {
@@ -3677,7 +3677,7 @@ impl InspectTaskMut<Coordinator> for CoordinatorState {
                         });
                     }
                 })
-            }
+            }));
         }
     }
 }

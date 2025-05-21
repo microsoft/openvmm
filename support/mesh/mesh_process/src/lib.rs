@@ -535,17 +535,19 @@ impl MeshInner {
                                         &host.pid.to_string(),
                                         SensitivityLevel::Safe,
                                         &mut inspect::adhoc(|req| {
-                                            let mut resp = req.respond();
-                                            resp.merge(&HostInspect {
-                                                name: &host.name,
-                                                node_id: host.node_id,
-                                                #[cfg(target_os = "linux")]
-                                                rlimit: inspect_rlimit::InspectRlimit::for_pid(
-                                                    host.pid,
-                                                ),
-                                            });
-                                            host.send
-                                                .send(HostRequest::Inspect(resp.request().defer()));
+                                            req.respond()
+                                                .merge(&HostInspect {
+                                                    name: &host.name,
+                                                    node_id: host.node_id,
+                                                    #[cfg(target_os = "linux")]
+                                                    rlimit: inspect_rlimit::InspectRlimit::for_pid(
+                                                        host.pid,
+                                                    ),
+                                                })
+                                                .merge(inspect::adhoc(|req| {
+                                                    host.send
+                                                        .send(HostRequest::Inspect(req.defer()));
+                                                }));
                                         }),
                                     );
                                 }

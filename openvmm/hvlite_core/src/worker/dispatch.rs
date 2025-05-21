@@ -2557,9 +2557,9 @@ impl LoadedVm {
                 while let Some(rpc) = worker_rpc.next().await {
                     match rpc {
                         WorkerRpc::Inspect(req) => req.respond(|resp| {
-                            worker_rpc_send.send(WorkerRpc::Inspect(
-                                resp.merge(&state_units).request().defer(),
-                            ));
+                            resp.merge(&state_units).merge(inspect::adhoc(|req| {
+                                worker_rpc_send.send(WorkerRpc::Inspect(req.defer()));
+                            }));
                         }),
                         rpc => worker_rpc_send.send(rpc),
                     }
