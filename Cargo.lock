@@ -7978,6 +7978,7 @@ dependencies = [
  "bitvec",
  "build_rs_guest_arch",
  "cfg-if",
+ "cvm_tracing",
  "fs-err",
  "guestmem",
  "hcl",

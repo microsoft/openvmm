@@ -41,6 +41,7 @@ use super::UhVpInner;
 use crate::ExitActivity;
 use crate::GuestVtl;
 use crate::WakeReason;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::GuestMemory;
 use hcl::ioctl::Hcl;
 use hcl::ioctl::ProcessorRunner;
@@ -1049,7 +1050,26 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                     control: self.crash_control,
                     parameters: self.crash_reg,
                 };
-                tracelimit::info_ratelimited!(?crash, "Guest has reported system crash");
+                tracelimit::warn_ratelimited!(?crash, "Guest has reported system crash");
+
+                if crash.control.crash_message() {
+                    let message_gpa = crash.parameters[3];
+                    let message_size = crash.parameters[4];
+                    let mut message = vec![0; message_size as usize];
+                    match self.partition.gm[vtl].read_at(message_gpa, &mut message) {
+                        Ok(()) => {
+                            let message = String::from_utf8_lossy(&message).into_owned();
+                            tracelimit::warn_ratelimited!(
+                                CVM_CONFIDENTIAL,
+                                message,
+                                "Guest has reported a system crash message"
+                            );
+                        }
+                        Err(e) => {
+                            tracelimit::warn_ratelimited!(?e, "Failed to read crash message");
+                        }
+                    }
+                }
 
                 self.partition.crash_notification_send.send(crash);
             }

@@ -737,7 +737,7 @@ impl LoadedVm {
     }
 
     fn notify_of_vtl_crash(&self, vtl_crash: VtlCrash) {
-        tracing::info!("Notifying the host of the guest system crash {vtl_crash:x?}");
+        tracelimit::info_ratelimited!("Notifying the host of the guest system crash");
 
         let VtlCrash {
             vp_index,
