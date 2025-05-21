@@ -5,7 +5,6 @@
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
-// #![warn(missing_docs)] // TODO MCR
 
 use mesh::MeshPayload;
 use vm_resource::ResourceId;

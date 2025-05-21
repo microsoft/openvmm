@@ -28,7 +28,6 @@ impl RunContext<'_> {
             topology: &self.state.processor_topology,
             cvm_cpuid_info: None,
             snp_secrets: None,
-            env_cvm_guest_vsm: false,
             vtom: None,
             handle_synic: true,
             no_sidecar_hotplug: false,

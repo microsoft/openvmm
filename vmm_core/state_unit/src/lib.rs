@@ -28,6 +28,8 @@
 //! This model allows for asynchronous, highly concurrent state changes, and it
 //! works across process boundaries thanks to `mesh`.
 
+#![forbid(unsafe_code)]
+
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::join_all;
@@ -81,11 +83,6 @@ pub enum StateRequest {
     /// Restore state of a stopped unit.
     Restore(FailableRpc<SavedStateBlob, ()>),
 
-    /// Perform any post-restore actions.
-    ///
-    /// Sent after all dependencies have been restored but before starting.
-    PostRestore(FailableRpc<(), ()>),
-
     /// Inspect state.
     Inspect(inspect::Deferred),
 }
@@ -117,13 +114,6 @@ pub trait StateUnit: InspectMut {
     ///
     /// Must only be called while stopped.
     async fn restore(&mut self, buffer: SavedStateBlob) -> Result<(), RestoreError>;
-
-    /// Complete the restore process, after all dependencies have been restored.
-    ///
-    /// Must only be called while stopped.
-    async fn post_restore(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
 }
 
 /// Runs a simple unit that only needs to respond to state requests.
@@ -175,8 +165,7 @@ impl StateRequest {
             | StateRequest::Stop(_)
             | StateRequest::Reset(_)
             | StateRequest::Save(_)
-            | StateRequest::Restore(_)
-            | StateRequest::PostRestore(_) => {
+            | StateRequest::Restore(_) => {
                 // Handle for concurrent inspect requests.
                 enum Event {
                     OpDone,
@@ -208,10 +197,6 @@ impl StateRequest {
                 rpc.handle_failable(async |buffer| unit.restore(buffer).await)
                     .await
             }
-            StateRequest::PostRestore(rpc) => {
-                rpc.handle_failable(async |()| unit.post_restore().await)
-                    .await
-            }
             StateRequest::Inspect(req) => req.inspect(unit),
         }
     }
@@ -233,7 +218,6 @@ enum State {
     Resetting,
     Saving,
     Restoring,
-    PostRestoring,
 }
 
 #[derive(Debug)]
@@ -632,30 +616,6 @@ impl StateUnits {
 
         check("restore", r)?;
 
-        self.post_restore().await?;
-        Ok(())
-    }
-
-    /// Completes the restore operation on all state units.
-    ///
-    /// Panics if running.
-    async fn post_restore(&mut self) -> Result<(), StateTransitionError> {
-        // Post-restore in any order because all state should be up-to-date
-        // after restore.
-        let r = self
-            .run_op(
-                "post_restore",
-                None,
-                State::Stopped,
-                State::PostRestoring,
-                State::Stopped,
-                StateRequest::PostRestore,
-                |_, _| Some(()),
-                |_| &[],
-            )
-            .await;
-
-        check("post_restore", r)?;
         Ok(())
     }
 
@@ -1092,10 +1052,6 @@ mod tests {
                 Err(RestoreError::SavedStateNotSupported)
             }
         }
-
-        async fn post_restore(&mut self) -> anyhow::Result<()> {
-            Ok(())
-        }
     }
 
     impl InspectMut for TestUnit {
@@ -1129,10 +1085,6 @@ mod tests {
 
             self.dep.store(true, Ordering::Relaxed);
 
-            Ok(())
-        }
-
-        async fn post_restore(&mut self) -> anyhow::Result<()> {
             Ok(())
         }
     }

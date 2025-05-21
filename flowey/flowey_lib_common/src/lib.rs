@@ -8,7 +8,6 @@
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
-// #![warn(missing_docs)] // TODO: lots to do here
 
 pub mod _util;
 pub mod ado_task_azure_key_vault;

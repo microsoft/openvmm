@@ -4,6 +4,7 @@
 //! Module used to parse the host parameters used to setup Underhill. These are
 //! provided via a device tree IGVM parameter.
 
+use crate::cmdline::BootCommandLineOptions;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use host_fdt_parser::CpuEntry;
@@ -94,6 +95,8 @@ pub struct PartitionInfo {
     pub vtl0_alias_map: Option<u64>,
     /// Host is compatible with DMA preservation / NVMe keep-alive.
     pub nvme_keepalive: bool,
+    /// Parsed boot command line options.
+    pub boot_options: BootCommandLineOptions,
 }
 
 impl PartitionInfo {
@@ -125,6 +128,7 @@ impl PartitionInfo {
             entropy: None,
             vtl0_alias_map: None,
             nvme_keepalive: false,
+            boot_options: BootCommandLineOptions::new(),
         }
     }
 

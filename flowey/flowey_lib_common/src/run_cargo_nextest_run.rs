@@ -231,7 +231,7 @@ impl FlowNode for Node {
                 move |rt| {
                     let working_dir = rt.read(working_dir);
                     let config_file = rt.read(config_file);
-                    let mut with_env = extra_env.map(|x| rt.read(x)).unwrap_or_default();
+                    let mut with_env = rt.read(extra_env).unwrap_or_default();
 
                     // first things first - determine if junit is supported by
                     // the profile, and if so, where the output if going to be.

@@ -48,14 +48,17 @@ pub struct ProcessorSynic {
 
 #[derive(Inspect)]
 struct SintState {
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     siefp: HvSynicSimpSiefp,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     simp: HvSynicSimpSiefp,
     simp_page: OverlayPage,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     scontrol: hvdef::HvSynicScontrol,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(|x| inspect::AsHex(u64::from(*x)))")]
+    #[inspect(
+        hex,
+        with = "|x| inspect::iter_by_index(x).map_value(|x| u64::from(*x))"
+    )]
     sint: [hvdef::HvSynicSint; NUM_SINTS],
     pending_sints: u16,
     ready_sints: u16,
@@ -77,7 +80,7 @@ impl Default for SintState {
 
 #[derive(Default, Inspect)]
 struct Timer {
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     config: HvSynicStimerConfig,
     count: u64,
     reevaluate: bool,
@@ -89,7 +92,10 @@ struct SharedProcessorState {
     online: bool,
     enabled: bool,
     siefp_page: OverlayPage,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(|x| inspect::AsHex(u64::from(*x)))")]
+    #[inspect(
+        hex,
+        with = "|x| inspect::iter_by_index(x).map_value(|x| u64::from(*x))"
+    )]
     sint: [hvdef::HvSynicSint; NUM_SINTS],
 }
 

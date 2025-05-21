@@ -97,12 +97,6 @@ pub struct Options {
     #[clap(long, conflicts_with("get"))]
     pub no_get: bool,
 
-    /// The disk to use for the GET VMGS.
-    ///
-    /// If this is not provided, then a 4MB RAM disk will be used.
-    #[clap(long)]
-    pub get_vmgs: Option<DiskCliKind>,
-
     /// disable the VTL0 alias map presented to VTL2 by default
     #[clap(long, requires("vtl2"))]
     pub no_alias_map: bool,
@@ -392,9 +386,28 @@ flags:
     #[clap(long, value_parser = vmbus_core::parse_vmbus_version)]
     pub vmbus_max_version: Option<u32>,
 
-    /// path to vmgs file. if no file is provided, fallback to in-memory vmgs implementation
-    #[clap(long, value_name = "PATH")]
-    pub vmgs_file: Option<PathBuf>,
+    /// The disk to use for the VMGS.
+    ///
+    /// If this is not provided, guest state will be stored in memory.
+    #[clap(long_help = r#"
+e.g: --vmgs memdiff:file:/path/to/file.vmgs
+
+syntax: \<path\> | kind:<arg>[,flag]
+
+valid disk kinds:
+    `mem:<len>`                    memory backed disk
+        <len>: length of ramdisk, e.g.: `1G`
+    `memdiff:<disk>`               memory backed diff disk
+        <disk>: lower disk, e.g.: `file:base.img`
+    `file:\<path\>`                  file-backed disk
+        \<path\>: path to file
+
+flags:
+    `fmt`                          reprovision the VMGS before boot
+    `fmt-on-fail`                  reprovision the VMGS before boot if it is corrupted
+"#)]
+    #[clap(long)]
+    pub vmgs: Option<VmgsCli>,
 
     /// VGA firmware file
     #[clap(long, requires("pcat"), value_name = "FILE")]
@@ -655,8 +668,11 @@ pub enum DiskCliKind {
     },
     // prwrap:<kind>
     PersistentReservationsWrapper(Box<DiskCliKind>),
-    // file:<path>
-    File(PathBuf),
+    // file:<path>[;create=<len>]
+    File {
+        path: PathBuf,
+        create_with_len: Option<u64>,
+    },
     // blob:<type>:<url>
     Blob {
         kind: BlobKind,
@@ -682,37 +698,52 @@ pub enum BlobKind {
     Vhd1,
 }
 
+fn parse_path_and_len(arg: &str) -> anyhow::Result<(PathBuf, Option<u64>)> {
+    Ok(match arg.split_once(';') {
+        Some((path, len)) => {
+            let Some(len) = len.strip_prefix("create=") else {
+                anyhow::bail!("invalid syntax after ';', expected 'create=<len>'")
+            };
+
+            let len: u64 = if len == "VMGS_DEFAULT" {
+                vmgs_format::VMGS_DEFAULT_CAPACITY
+            } else {
+                parse_memory(len)?
+            };
+
+            (path.into(), Some(len))
+        }
+        None => (arg.into(), None),
+    })
+}
+
 impl FromStr for DiskCliKind {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> anyhow::Result<Self> {
         let disk = match s.split_once(':') {
             // convenience support for passing bare paths as file disks
-            None => DiskCliKind::File(PathBuf::from(s)),
+            None => {
+                let (path, create_with_len) = parse_path_and_len(s)?;
+                DiskCliKind::File {
+                    path,
+                    create_with_len,
+                }
+            }
             Some((kind, arg)) => match kind {
                 "mem" => DiskCliKind::Memory(parse_memory(arg)?),
                 "memdiff" => DiskCliKind::MemoryDiff(Box::new(arg.parse()?)),
-                "sql" => match arg.split_once(';') {
-                    Some((path, len)) => {
-                        let Some(len) = len.strip_prefix("create=") else {
-                            anyhow::bail!("invalid syntax after ';', expected 'create=<len>'")
-                        };
-
-                        DiskCliKind::Sqlite {
-                            path: path.into(),
-                            create_with_len: Some(parse_memory(len)?),
-                        }
+                "sql" => {
+                    let (path, create_with_len) = parse_path_and_len(arg)?;
+                    DiskCliKind::Sqlite {
+                        path,
+                        create_with_len,
                     }
-                    None => DiskCliKind::Sqlite {
-                        path: arg.into(),
-                        create_with_len: None,
-                    },
-                },
+                }
                 "sqldiff" => {
                     let (path_and_opts, kind) =
                         arg.split_once(':').context("expected path[;opts]:kind")?;
                     let disk = Box::new(kind.parse()?);
-
                     match path_and_opts.split_once(';') {
                         Some((path, create)) => {
                             if create != "create" {
@@ -742,7 +773,13 @@ impl FromStr for DiskCliKind {
                     }
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),
-                "file" => DiskCliKind::File(PathBuf::from(arg)),
+                "file" => {
+                    let (path, create_with_len) = parse_path_and_len(s)?;
+                    DiskCliKind::File {
+                        path,
+                        create_with_len,
+                    }
+                }
                 "blob" => {
                     let (blob_kind, url) = arg.split_once(':').context("expected kind:url")?;
                     let blob_kind = match blob_kind {
@@ -772,9 +809,12 @@ impl FromStr for DiskCliKind {
                     //
                     // in this case, we actually want to treat that leading `d:` as part of the
                     // path, rather than as a disk with `kind == 'd'`
-                    let path_buf = PathBuf::from(s);
-                    if path_buf.has_root() {
-                        DiskCliKind::File(path_buf)
+                    let (path, create_with_len) = parse_path_and_len(s)?;
+                    if path.has_root() {
+                        DiskCliKind::File {
+                            path,
+                            create_with_len,
+                        }
                     } else {
                         anyhow::bail!("invalid disk kind {kind}");
                     }
@@ -782,6 +822,40 @@ impl FromStr for DiskCliKind {
             },
         };
         Ok(disk)
+    }
+}
+
+#[derive(Clone)]
+pub struct VmgsCli {
+    pub kind: DiskCliKind,
+    pub provision: ProvisionVmgs,
+}
+
+#[derive(Copy, Clone)]
+pub enum ProvisionVmgs {
+    OnEmpty,
+    OnFailure,
+    True,
+}
+
+impl FromStr for VmgsCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let (kind, opt) = s
+            .split_once(',')
+            .map(|(k, o)| (k, Some(o)))
+            .unwrap_or((s, None));
+        let kind = kind.parse()?;
+
+        let provision = match opt {
+            None => ProvisionVmgs::OnEmpty,
+            Some("fmt-on-fail") => ProvisionVmgs::OnFailure,
+            Some("fmt") => ProvisionVmgs::True,
+            Some(opt) => anyhow::bail!("unknown option: '{opt}'"),
+        };
+
+        Ok(VmgsCli { kind, provision })
     }
 }
 

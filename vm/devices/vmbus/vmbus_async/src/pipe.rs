@@ -68,7 +68,7 @@ impl From<Error> for io::Error {
             Error::ChannelClosed => {
                 io::Error::new(io::ErrorKind::ConnectionReset, Error::ChannelClosed)
             }
-            err => io::Error::new(io::ErrorKind::Other, err),
+            err => io::Error::other(err),
         }
     }
 }

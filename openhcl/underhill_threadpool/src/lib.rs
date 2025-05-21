@@ -151,7 +151,7 @@ impl ThreadpoolBuilder {
             let online_cpus = fs_err::read_to_string("/sys/devices/system/cpu/online")?;
             affinity
                 .set_mask_list(&online_cpus)
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                .map_err(io::Error::other)?;
         }
 
         // Set the current thread's affinity so that allocations for the worker

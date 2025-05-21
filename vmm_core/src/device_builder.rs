@@ -34,7 +34,7 @@ pub async fn build_vpci_device(
         u64,
     ) -> anyhow::Result<(
         Arc<dyn MsiInterruptTarget>,
-        Arc<dyn VpciInterruptMapper>,
+        VpciInterruptMapper,
     )>,
 ) -> anyhow::Result<()> {
     let device_name = format!("{}:vpci-{instance_id}", resource.id());
