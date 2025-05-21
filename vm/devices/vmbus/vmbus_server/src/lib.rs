@@ -134,6 +134,7 @@ pub struct VmbusServerBuilder<'a, T: Spawn> {
     send_messages_while_stopped: bool,
 }
 
+#[expect(clippy::large_enum_variant)]
 #[derive(mesh::MeshPayload)]
 /// The request to send to the proxy to set or clear its saved state cache.
 pub enum SavedStateRequest {
