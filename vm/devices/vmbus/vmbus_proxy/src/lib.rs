@@ -253,6 +253,7 @@ impl VmbusProxy {
                 proxyioctl::IOCTL_VMBUS_PROXY_OPEN_CHANNEL,
                 StaticIoctlBuffer(proxyioctl::VMBUS_PROXY_OPEN_CHANNEL_INPUT {
                     ProxyId: id,
+                    Padding: 0,
                     OpenParameters: *params,
                     VmmSignalEvent: handle,
                 }),
@@ -299,6 +300,7 @@ impl VmbusProxy {
                     Padding: 0,
                     OpenParameters: open_params,
                     Open: open.into(),
+                    Padding2: [0; 3],
                 }),
                 StaticIoctlBuffer(zeroed::<proxyioctl::VMBUS_PROXY_RESTORE_CHANNEL_OUTPUT>()),
             )
@@ -371,6 +373,7 @@ impl VmbusProxy {
                 StaticIoctlBuffer(proxyioctl::VMBUS_PROXY_DELETE_GPADL_INPUT {
                     ProxyId: id,
                     GpadlId: gpadl_id,
+                    Padding: 0,
                 }),
                 (),
             )
@@ -389,6 +392,7 @@ impl VmbusProxy {
                     Flags: proxyioctl::VMBUS_PROXY_TL_CONNECT_REQUEST_FLAGS::new()
                         .with_hosted_silo_unaware(request.hosted_silo_unaware),
                     Vtl: vtl,
+                    Padding: [0; 3],
                 }),
                 (),
             )

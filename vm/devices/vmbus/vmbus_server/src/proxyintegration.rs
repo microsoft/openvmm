@@ -219,6 +219,7 @@ impl ProxyTask {
                     RingBufferGpadlHandle: open_request.open_data.ring_gpadl_id.0,
                     DownstreamRingBufferPageOffset: open_request.open_data.ring_offset,
                     NodeNumber: 0, // BUGBUG: NUMA
+                    Padding: 0,
                 },
                 maybe_wrapped.event(),
             )
@@ -799,6 +800,7 @@ impl ProxyTask {
                                         DownstreamRingBufferPageOffset: open_params
                                             .downstream_ring_buffer_page_offset,
                                         NodeNumber: 0, // BUGBUG: NUMA
+                                        Padding: 0,
                                     },
                                     channel.saved_open(),
                                 )
