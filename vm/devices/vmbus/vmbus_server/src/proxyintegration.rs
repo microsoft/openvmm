@@ -777,7 +777,7 @@ impl ProxyTask {
                 let mut proxy_ids: HashMap<u32, u64> = HashMap::new();
                 tracing::trace!("restoring channels...");
 
-                rpc.handle_failable(async |saved_state: SavedState| {
+                rpc.handle_failable(async |saved_state| {
                     // Restore channel state in the proxy for each channel in the SavedState.
                     if let Some(channels) = saved_state.channels() {
                         for channel in channels {
@@ -844,7 +844,7 @@ impl ProxyTask {
                         return Err(anyhow!("No channels exist in the saved state"));
                     }
 
-                    *saved_state_option = Some(saved_state);
+                    *saved_state_option = Some(*saved_state);
                     Ok(())
                 })
                 .await;
