@@ -134,11 +134,10 @@ pub struct VmbusServerBuilder<'a, T: Spawn> {
     send_messages_while_stopped: bool,
 }
 
-#[expect(clippy::large_enum_variant)]
 #[derive(mesh::MeshPayload)]
 /// The request to send to the proxy to set or clear its saved state cache.
 pub enum SavedStateRequest {
-    Set(FailableRpc<channels::SavedState, ()>),
+    Set(FailableRpc<Box<channels::SavedState>, ()>),
     Clear(Rpc<(), ()>),
 }
 
@@ -210,13 +209,12 @@ impl From<ModifyConnectionRequest> for ModifyRelayRequest {
     }
 }
 
-#[expect(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum VmbusRequest {
     Reset(Rpc<(), ()>),
-    Inspect(inspect::Deferred),
+    Inspect(Box<inspect::Deferred>),
     Save(Rpc<(), SavedState>),
-    Restore(Rpc<SavedState, Result<(), RestoreError>>),
+    Restore(Rpc<Box<SavedState>, Result<(), RestoreError>>),
     Start,
     Stop(Rpc<(), ()>),
 }
@@ -237,7 +235,8 @@ pub(crate) enum OfferRequest {
 
 impl Inspect for VmbusServer {
     fn inspect(&self, req: inspect::Request<'_>) {
-        self.task_send.send(VmbusRequest::Inspect(req.defer()));
+        self.task_send
+            .send(VmbusRequest::Inspect(Box::new(req.defer())));
     }
 }
 
@@ -575,7 +574,7 @@ impl VmbusServer {
 
     pub async fn restore(&self, state: SavedState) -> Result<(), RestoreError> {
         self.task_send
-            .call(VmbusRequest::Restore, state)
+            .call(VmbusRequest::Restore, Box::new(state))
             .await
             .unwrap()
     }
@@ -972,12 +971,12 @@ impl ServerTask {
                 lost_synic_bug_fixed: true,
             }),
             VmbusRequest::Restore(rpc) => {
-                rpc.handle(async |state: SavedState| {
+                rpc.handle(async |state| {
                     self.unstick_on_start = !state.lost_synic_bug_fixed;
                     if let Some(sender) = &self.inner.saved_state_notify {
                         tracing::trace!("sending saved state to proxy");
                         if let Err(err) = sender
-                            .call_failable(SavedStateRequest::Set, state.server.clone())
+                            .call_failable(SavedStateRequest::Set, Box::new(state.server.clone()))
                             .await
                         {
                             tracing::error!(
