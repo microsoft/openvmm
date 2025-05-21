@@ -928,9 +928,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             idle_control,
             kernel_returns: 0,
             crash_reg: [0; hvdef::HV_X64_GUEST_CRASH_PARAMETER_MSRS],
-            crash_control: hvdef::GuestCrashCtl::new()
-                .with_crash_notify(true)
-                .with_crash_message(true),
+            crash_control: hvdef::GuestCrashCtl::new(),
             _not_send: PhantomData,
             backing,
             shared: backing_shared,
@@ -1068,7 +1066,12 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     #[cfg(guest_arch = "x86_64")]
     fn read_crash_msr(&self, msr: u32, _vtl: GuestVtl) -> Result<u64, MsrError> {
         let v = match msr {
-            hvdef::HV_X64_MSR_GUEST_CRASH_CTL => self.crash_control.into(),
+            // Reads of CRASH_CTL report our supported capabilities, not the
+            // current value.
+            hvdef::HV_X64_MSR_GUEST_CRASH_CTL => hvdef::GuestCrashCtl::new()
+                .with_crash_notify(true)
+                .with_crash_message(true)
+                .into(),
             hvdef::HV_X64_MSR_GUEST_CRASH_P0 => self.crash_reg[0],
             hvdef::HV_X64_MSR_GUEST_CRASH_P1 => self.crash_reg[1],
             hvdef::HV_X64_MSR_GUEST_CRASH_P2 => self.crash_reg[2],
