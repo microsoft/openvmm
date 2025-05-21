@@ -22,3 +22,4 @@ pub mod tmk_assert;
 pub mod tmk_logger;
 pub mod hypercall;
 pub mod context;
+pub mod tmkdefs;

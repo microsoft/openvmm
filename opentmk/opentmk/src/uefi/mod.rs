@@ -7,14 +7,18 @@ pub mod init;
 mod rt;
 mod tests;
 
-use crate::tmk_assert::AssertResult;
+use crate::tmk_assert;
 use init::init;
 use uefi::entry;
 use uefi::Status;
 
 #[entry]
 fn uefi_main() -> Status {
-    init().expect_assert("Failed to initialize environment");
+    let r= init();
+    tmk_assert!(r.is_ok(), "init should succeed");
+
+    log::warn!("TEST_START");
     tests::run_test();
+    log::warn!("TEST_END");
     Status::SUCCESS
 }

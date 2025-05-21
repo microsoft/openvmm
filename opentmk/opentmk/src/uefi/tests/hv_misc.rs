@@ -4,6 +4,7 @@
 // This test is to verify that the VTL protections are working as expected.
 // The stack values in VTL0 are changing after interrupt handling in VTL1.
 use crate::tmk_assert::{AssertOption, AssertResult};
+use crate::tmkdefs::TmkResult;
 use sync_nostd::{Channel, Receiver, Sender};
 use crate::uefi::alloc::{ALLOCATOR, SIZE_1MB};
 use crate::{context, uefi::hypvctx};
@@ -26,7 +27,7 @@ use uefi::Status;
 static mut HEAPX: RefCell<*mut u8> = RefCell::new(0 as *mut u8);
 static mut CON: AtomicI32 = AtomicI32::new(0);
 
-pub fn exec(ctx: &mut hypvctx::HvTestCtx ) {
+pub fn exec<T>(ctx: &mut T) where T: TestCtxTrait<T> {
     log::info!("ctx ptr: {:p}", &ctx as *const _);
 
     let mut vp_count = ctx.get_vp_count();
@@ -39,7 +40,7 @@ pub fn exec(ctx: &mut hypvctx::HvTestCtx ) {
     ctx.setup_partition_vtl(Vtl::Vtl1);
 
     ctx.start_on_vp(
-        VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut dyn TestCtxTrait| {
+        VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut T|{
             log::info!("successfully started running VTL1 on vp0.");
             ctx.setup_secure_intercept(0x30);
             ctx.set_interrupt_idx(0x30, || {
@@ -49,7 +50,9 @@ pub fn exec(ctx: &mut hypvctx::HvTestCtx ) {
                 hv_test_ctx.init();
 
                 let c = hv_test_ctx.get_register(HvAllArchRegisterName::VsmVpStatus.0);
-
+                tmk_assert!(c.is_ok(), "read should succeed");
+                
+                let c = c.unwrap();
                 let cp = HvRegisterVsmVpStatus::from_bits(c as u64);
 
                 log::info!("VSM VP Status: {:?}", cp);
@@ -85,7 +88,7 @@ pub fn exec(ctx: &mut hypvctx::HvTestCtx ) {
         }),
     );
 
-    ctx.queue_command_vp(VpExecutor::new(0, Vtl::Vtl1).command(move |ctx| {
+    ctx.queue_command_vp(VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
         log::info!("successfully started running VTL1 on vp0.");
         ctx.switch_to_low_vtl();
     }));

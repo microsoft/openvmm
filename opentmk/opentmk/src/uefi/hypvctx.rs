@@ -1,13 +1,13 @@
 use crate::{
-    context::{TestCtxTrait, VpExecutor},
+    context::{TestCtxTrait, VpExecutor, VtlPlatformTrait},
     hypercall::HvCall,
+    tmkdefs::{TmkError, TmkErrorType, TmkResult},
 };
 use crate::uefi::alloc::ALLOCATOR;
-use crate::tmk_assert::AssertResult;
-use crate::tmk_assert::AssertOption;
-use alloc::collections::btree_map::BTreeMap;
+
+use alloc::collections::{btree_map::BTreeMap, btree_set::BTreeSet};
 use alloc::collections::linked_list::LinkedList;
-use alloc::{boxed::Box, vec::Vec};
+use alloc::boxed::Box;
 use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
 use core::ops::Range;
@@ -20,7 +20,7 @@ use sync_nostd::Mutex;
 const ALIGNMENT: usize = 4096;
 
 type ComandTable =
-    BTreeMap<u32, LinkedList<(Box<dyn FnOnce(&mut dyn TestCtxTrait) + 'static>, Vtl)>>;
+    BTreeMap<u32, LinkedList<(Box<dyn FnOnce(&mut HvTestCtx) + 'static>, Vtl)>>;
 static mut CMD: Mutex<ComandTable> = Mutex::new(BTreeMap::new());
 
 #[allow(static_mut_refs)]
@@ -40,7 +40,7 @@ fn register_command_queue(vp_index: u32) {
 
 pub struct HvTestCtx {
     pub hvcall: HvCall,
-    pub vp_runing: Vec<(u32, (bool, bool))>,
+    pub vp_runing: BTreeSet<u32>,
     pub my_vp_idx: u32,
     pub my_vtl: Vtl,
 }
@@ -116,25 +116,22 @@ impl Drop for HvTestCtx {
 ///
 /// - `get_current_vtl(&self) -> Vtl`:
 ///   Returns the current Virtual Trust Level (VTL).
-impl TestCtxTrait for HvTestCtx {
-    fn start_on_vp(&mut self, cmd: VpExecutor) {
+impl TestCtxTrait<HvTestCtx> for HvTestCtx {
+    fn start_on_vp(&mut self, cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
         let (vp_index, vtl, cmd) = cmd.get();
-        let cmd = cmd.expect_assert("error: failed to get command as cmd is none");
+        let cmd = cmd.ok_or_else(|| TmkError(TmkErrorType::InvalidParameter))?;
         if vtl >= Vtl::Vtl2 {
             panic!("error: can't run on vtl2");
         }
-        let is_vp_running = self.vp_runing.iter_mut().find(|x| x.0 == vp_index);
-
+        let is_vp_running = self.vp_runing.get(&vp_index);
         if let Some(_running_vtl) = is_vp_running {
             log::debug!("both vtl0 and vtl1 are running for VP: {:?}", vp_index);
         } else {
             if vp_index == 0 {
                 let vp_context = self
-                    .get_default_context()
-                    .expect("error: failed to get default context");
+                    .get_default_context()?;
                 self.hvcall
-                    .enable_vp_vtl(0, Vtl::Vtl1, Some(vp_context))
-                    .expect("error: failed to enable vtl1");
+                    .enable_vp_vtl(0, Vtl::Vtl1, Some(vp_context))?;
 
                 cmdt().lock().get_mut(&vp_index).unwrap().push_back((
                     Box::new(move |ctx| {
@@ -143,20 +140,14 @@ impl TestCtxTrait for HvTestCtx {
                     Vtl::Vtl1,
                 ));
                 self.switch_to_high_vtl();
-                self.vp_runing.push((vp_index, (true, true)));
+                self.vp_runing.insert(vp_index);
             } else {
                 cmdt().lock().get_mut(&self.my_vp_idx).unwrap().push_back((
                     Box::new(move |ctx| {
-                        ctx.enable_vp_vtl_with_default_context(vp_index, Vtl::Vtl1);
-                        ctx.start_running_vp_with_default_context(VpExecutor::new(
+                        _ = ctx.enable_vp_vtl_with_default_context(vp_index, Vtl::Vtl1);
+                        _ = ctx.start_running_vp_with_default_context(VpExecutor::new(
                             vp_index,
-                            Vtl::Vtl1,
-                        ));
-                        cmdt().lock().get_mut(&vp_index).unwrap().push_back((
-                            Box::new(move |ctx| {
-                                ctx.set_default_ctx_to_vp(vp_index, Vtl::Vtl0);
-                            }),
-                            Vtl::Vtl1,
+                            Vtl::Vtl0,
                         ));
                         ctx.switch_to_low_vtl();
                     }),
@@ -164,7 +155,7 @@ impl TestCtxTrait for HvTestCtx {
                 ));
 
                 self.switch_to_high_vtl();
-                self.vp_runing.push((vp_index, (true, true)));
+                self.vp_runing.insert(vp_index);
             }
         }
         cmdt()
@@ -179,17 +170,19 @@ impl TestCtxTrait for HvTestCtx {
                 self.switch_to_high_vtl();
             }
         }
+        Ok(())
     }
 
-    fn queue_command_vp(&mut self, cmd: VpExecutor) {
+    fn queue_command_vp(&mut self, cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
         let (vp_index, vtl, cmd) = cmd.get();
         let cmd =
-            cmd.expect_assert("error: failed to get command as cmd is none with queue command vp");
+            cmd.ok_or_else(|| TmkError(TmkErrorType::QueueCommandFailed))?;
         cmdt()
             .lock()
             .get_mut(&vp_index)
             .unwrap()
             .push_back((cmd, vtl));
+        Ok(())
     }
 
     fn switch_to_high_vtl(&mut self) {
@@ -200,27 +193,27 @@ impl TestCtxTrait for HvTestCtx {
         HvCall::vtl_return();
     }
 
-    fn setup_partition_vtl(&mut self, vtl: Vtl) {
+    fn setup_partition_vtl(&mut self, vtl: Vtl) -> TmkResult<()> {
         self.hvcall
-            .enable_partition_vtl(hvdef::HV_PARTITION_ID_SELF, vtl)
-            .expect_assert("Failed to enable VTL1 for the partition");
+            .enable_partition_vtl(hvdef::HV_PARTITION_ID_SELF, vtl)?;
         log::info!("enabled vtl protections for the partition.");
+        Ok(())
     }
-    fn setup_interrupt_handler(&mut self) {
+    fn setup_interrupt_handler(&mut self) -> TmkResult<()> {
         crate::arch::interrupt::init();
+        Ok(())
     }
 
-    fn setup_vtl_protection(&mut self) {
+    fn setup_vtl_protection(&mut self) -> TmkResult<()> {
         self.hvcall
-            .enable_vtl_protection(HvInputVtl::CURRENT_VTL)
-            .expect_assert("Failed to enable VTL protection, vtl1");
+            .enable_vtl_protection(HvInputVtl::CURRENT_VTL)?;
 
         log::info!("enabled vtl protections for the partition.");
+        Ok(())
     }
 
-    fn setup_secure_intercept(&mut self, interrupt_idx: u8) {
-        let layout = Layout::from_size_align(4096, ALIGNMENT)
-            .expect_assert("error: failed to create layout for SIMP page");
+    fn setup_secure_intercept(&mut self, interrupt_idx: u8) -> TmkResult<()> {
+        let layout = Layout::from_size_align(4096, ALIGNMENT).or_else(|_| Err(TmkError(TmkErrorType::AllocationFailed)))?;
 
         let ptr = unsafe { ALLOCATOR.alloc(layout) };
         let gpn = (ptr as u64) >> 12;
@@ -235,43 +228,44 @@ impl TestCtxTrait for HvTestCtx {
         reg.set_masked(false);
         reg.set_auto_eoi(true);
 
-        self.write_msr(hvdef::HV_X64_MSR_SINT0, reg.into());
+        self.write_msr(hvdef::HV_X64_MSR_SINT0, reg.into())?;
         log::info!("Successfuly set the SINT0 register.");
+        Ok(())
     }
 
-    fn apply_vtl_protection_for_memory(&mut self, range: Range<u64>, vtl: Vtl) {
+    fn apply_vtl_protection_for_memory(&mut self, range: Range<u64>, vtl: Vtl) -> TmkResult<()> {
         self.hvcall
-            .apply_vtl_protections(MemoryRange::new(range), vtl)
-            .expect_assert("Failed to apply VTL protections");
+            .apply_vtl_protections(MemoryRange::new(range), vtl)?;
+        Ok(())
     }
 
-    fn write_msr(&mut self, msr: u32, value: u64) {
+    fn write_msr(&mut self, msr: u32, value: u64) -> TmkResult<()> {
         unsafe { write_msr(msr, value) };
+        Ok(())
     }
 
-    fn read_msr(&mut self, msr: u32) -> u64 {
-        unsafe { read_msr(msr) }
+    fn read_msr(&mut self, msr: u32) -> TmkResult<u64> {
+        let r = unsafe { read_msr(msr) };
+        Ok(r)
     }
 
-    fn start_running_vp_with_default_context(&mut self, cmd: VpExecutor) {
+    fn start_running_vp_with_default_context(&mut self, cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
         let (vp_index, vtl, _cmd) = cmd.get();
         let vp_ctx = self
-            .get_default_context()
-            .expect_assert("error: failed to get default context");
+            .get_default_context()?;
         self.hvcall
-            .start_virtual_processor(vp_index, vtl, Some(vp_ctx))
-            .expect_assert("error: failed to start vp");
+            .start_virtual_processor(vp_index, vtl, Some(vp_ctx))?;
+        Ok(())
     }
 
-    fn set_default_ctx_to_vp(&mut self, vp_index: u32, vtl: Vtl) {
+    fn set_default_ctx_to_vp(&mut self, vp_index: u32, vtl: Vtl) -> TmkResult<()> {
         let i: u8 = match vtl {
             Vtl::Vtl0 => 0,
             Vtl::Vtl1 => 1,
             Vtl::Vtl2 => 2,
         };
         let vp_context = self
-            .get_default_context()
-            .expect_assert("error: failed to get default context");
+            .get_default_context()?;
         self.hvcall
             .set_vp_registers(
                 vp_index,
@@ -281,22 +275,22 @@ impl TestCtxTrait for HvTestCtx {
                         .with_use_target_vtl(true),
                 ),
                 Some(vp_context),
-            )
-            .expect_assert("error: failed to set vp registers");
+            )?;
+        Ok(())
     }
 
-    fn enable_vp_vtl_with_default_context(&mut self, vp_index: u32, vtl: Vtl) {
+    fn enable_vp_vtl_with_default_context(&mut self, vp_index: u32, vtl: Vtl) -> TmkResult<()> {
         let vp_ctx = self
-            .get_default_context()
-            .expect_assert("error: failed to get default context");
+            .get_default_context()?;
         self.hvcall
-            .enable_vp_vtl(vp_index, vtl, Some(vp_ctx))
-            .expect_assert("error: failed to enable vp vtl");
+            .enable_vp_vtl(vp_index, vtl, Some(vp_ctx))?;
+        Ok(())
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn()) {
+    fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn()) -> TmkResult<()> {
         crate::arch::interrupt::set_handler(interrupt_idx, handler);
+        Ok(())
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -322,33 +316,33 @@ impl TestCtxTrait for HvTestCtx {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn get_register(&mut self, reg: u32) -> u128 {
+    fn get_register(&mut self, reg: u32) -> TmkResult<u128> {
         use hvdef::HvX64RegisterName;
 
         let reg = HvX64RegisterName(reg);
-        self.hvcall
-            .get_register(reg.into(), None)
-            .expect_assert("error: failed to get register")
-            .as_u128()
+        let val = self.hvcall
+            .get_register(reg.into(), None)?
+            .as_u128();
+        Ok(val)
     }
 
     #[cfg(target_arch = "aarch64")]
-    fn get_register(&mut self, reg: u32) -> u128 {
+    fn get_register(&mut self, reg: u32) -> TmkResult<u128> {
         use hvdef::HvAarch64RegisterName;
 
         let reg = HvAarch64RegisterName(reg);
-        self.hvcall
-            .get_register(reg.into(), None)
-            .expect_assert("error: failed to get register")
-            .as_u128()
+        let val = self.hvcall
+            .get_register(reg.into(), None)?
+            .as_u128();
+        Ok(val)
     }
 
-    fn get_current_vp(&self) -> u32 {
-        self.my_vp_idx
+    fn get_current_vp(&self) -> TmkResult<u32> {
+        Ok(self.my_vp_idx)
     }
 
-    fn get_current_vtl(&self) -> Vtl {
-        self.my_vtl
+    fn get_current_vtl(&self) -> TmkResult<Vtl> {
+        Ok(self.my_vtl)
     }
 }
 
@@ -356,7 +350,7 @@ impl HvTestCtx {
     pub const fn new() -> Self {
         HvTestCtx {
             hvcall: HvCall::new(),
-            vp_runing: Vec::new(),
+            vp_runing: BTreeSet::new(),
             my_vp_idx: 0,
             my_vtl: Vtl::Vtl0,
         }
@@ -383,7 +377,7 @@ impl HvTestCtx {
 
         loop {
             let mut vtl: Option<Vtl> = None;
-            let mut cmd: Option<Box<dyn FnOnce(&mut dyn TestCtxTrait) + 'static>> = None;
+            let mut cmd: Option<Box<dyn FnOnce(&mut HvTestCtx) + 'static>> = None;
 
             {
                 let mut cmdt = cmdt().lock();
@@ -417,12 +411,12 @@ impl HvTestCtx {
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn get_default_context(&mut self) -> Result<InitialVpContextX64, bool> {
+    fn get_default_context(&mut self) -> Result<InitialVpContextX64, TmkError> {
         return self.run_fn_with_current_context(HvTestCtx::exec_handler);
     }
 
     #[cfg(target_arch = "x86_64")]
-    fn run_fn_with_current_context(&mut self, func: fn()) -> Result<InitialVpContextX64, bool> {
+    fn run_fn_with_current_context(&mut self, func: fn()) -> Result<InitialVpContextX64, TmkError> {
         use super::alloc::SIZE_1MB;
 
         let mut vp_context: InitialVpContextX64 = self
@@ -433,7 +427,7 @@ impl HvTestCtx {
             .expect("Failed to create layout for stack allocation");
         let allocated_stack_ptr = unsafe { ALLOCATOR.alloc(stack_layout) };
         if allocated_stack_ptr.is_null() {
-            return Err(false);
+            return Err(TmkErrorType::AllocationFailed.into());
         }
         let stack_size = stack_layout.size();
         let stack_top = allocated_stack_ptr as u64 + stack_size as u64;
@@ -442,5 +436,80 @@ impl HvTestCtx {
         vp_context.rip = fn_address;
         vp_context.rsp = stack_top;
         Ok(vp_context)
+    }
+}
+
+impl From<hvdef::HvError> for TmkError {
+    fn from(e: hvdef::HvError) -> Self {
+        log::debug!("Converting hvdef::HvError::{:?} to TmkError", e);
+        let tmk_error_type = match e {
+            hvdef::HvError::InvalidHypercallCode => TmkErrorType::InvalidHypercallCode,
+            hvdef::HvError::InvalidHypercallInput => TmkErrorType::InvalidHypercallInput,
+            hvdef::HvError::InvalidAlignment => TmkErrorType::InvalidAlignment,
+            hvdef::HvError::InvalidParameter => TmkErrorType::InvalidParameter,
+            hvdef::HvError::AccessDenied => TmkErrorType::AccessDenied,
+            hvdef::HvError::InvalidPartitionState => TmkErrorType::InvalidPartitionState,
+            hvdef::HvError::OperationDenied => TmkErrorType::OperationDenied,
+            hvdef::HvError::UnknownProperty => TmkErrorType::UnknownProperty,
+            hvdef::HvError::PropertyValueOutOfRange => TmkErrorType::PropertyValueOutOfRange,
+            hvdef::HvError::InsufficientMemory => TmkErrorType::InsufficientMemory,
+            hvdef::HvError::PartitionTooDeep => TmkErrorType::PartitionTooDeep,
+            hvdef::HvError::InvalidPartitionId => TmkErrorType::InvalidPartitionId,
+            hvdef::HvError::InvalidVpIndex => TmkErrorType::InvalidVpIndex,
+            hvdef::HvError::NotFound => TmkErrorType::NotFound,
+            hvdef::HvError::InvalidPortId => TmkErrorType::InvalidPortId,
+            hvdef::HvError::InvalidConnectionId => TmkErrorType::InvalidConnectionId,
+            hvdef::HvError::InsufficientBuffers => TmkErrorType::InsufficientBuffers,
+            hvdef::HvError::NotAcknowledged => TmkErrorType::NotAcknowledged,
+            hvdef::HvError::InvalidVpState => TmkErrorType::InvalidVpState,
+            hvdef::HvError::Acknowledged => TmkErrorType::Acknowledged,
+            hvdef::HvError::InvalidSaveRestoreState => TmkErrorType::InvalidSaveRestoreState,
+            hvdef::HvError::InvalidSynicState => TmkErrorType::InvalidSynicState,
+            hvdef::HvError::ObjectInUse => TmkErrorType::ObjectInUse,
+            hvdef::HvError::InvalidProximityDomainInfo => TmkErrorType::InvalidProximityDomainInfo,
+            hvdef::HvError::NoData => TmkErrorType::NoData,
+            hvdef::HvError::Inactive => TmkErrorType::Inactive,
+            hvdef::HvError::NoResources => TmkErrorType::NoResources,
+            hvdef::HvError::FeatureUnavailable => TmkErrorType::FeatureUnavailable,
+            hvdef::HvError::PartialPacket => TmkErrorType::PartialPacket,
+            hvdef::HvError::ProcessorFeatureNotSupported => TmkErrorType::ProcessorFeatureNotSupported,
+            hvdef::HvError::ProcessorCacheLineFlushSizeIncompatible => TmkErrorType::ProcessorCacheLineFlushSizeIncompatible,
+            hvdef::HvError::InsufficientBuffer => TmkErrorType::InsufficientBuffer,
+            hvdef::HvError::IncompatibleProcessor => TmkErrorType::IncompatibleProcessor,
+            hvdef::HvError::InsufficientDeviceDomains => TmkErrorType::InsufficientDeviceDomains,
+            hvdef::HvError::CpuidFeatureValidationError => TmkErrorType::CpuidFeatureValidationError,
+            hvdef::HvError::CpuidXsaveFeatureValidationError => TmkErrorType::CpuidXsaveFeatureValidationError,
+            hvdef::HvError::ProcessorStartupTimeout => TmkErrorType::ProcessorStartupTimeout,
+            hvdef::HvError::SmxEnabled => TmkErrorType::SmxEnabled,
+            hvdef::HvError::InvalidLpIndex => TmkErrorType::InvalidLpIndex,
+            hvdef::HvError::InvalidRegisterValue => TmkErrorType::InvalidRegisterValue,
+            hvdef::HvError::InvalidVtlState => TmkErrorType::InvalidVtlState,
+            hvdef::HvError::NxNotDetected => TmkErrorType::NxNotDetected,
+            hvdef::HvError::InvalidDeviceId => TmkErrorType::InvalidDeviceId,
+            hvdef::HvError::InvalidDeviceState => TmkErrorType::InvalidDeviceState,
+            hvdef::HvError::PendingPageRequests => TmkErrorType::PendingPageRequests,
+            hvdef::HvError::PageRequestInvalid => TmkErrorType::PageRequestInvalid,
+            hvdef::HvError::KeyAlreadyExists => TmkErrorType::KeyAlreadyExists,
+            hvdef::HvError::DeviceAlreadyInDomain => TmkErrorType::DeviceAlreadyInDomain,
+            hvdef::HvError::InvalidCpuGroupId => TmkErrorType::InvalidCpuGroupId,
+            hvdef::HvError::InvalidCpuGroupState => TmkErrorType::InvalidCpuGroupState,
+            hvdef::HvError::OperationFailed => TmkErrorType::OperationFailed,
+            hvdef::HvError::NotAllowedWithNestedVirtActive => TmkErrorType::NotAllowedWithNestedVirtActive,
+            hvdef::HvError::InsufficientRootMemory => TmkErrorType::InsufficientRootMemory,
+            hvdef::HvError::EventBufferAlreadyFreed => TmkErrorType::EventBufferAlreadyFreed,
+            hvdef::HvError::Timeout => TmkErrorType::Timeout,
+            hvdef::HvError::VtlAlreadyEnabled => TmkErrorType::VtlAlreadyEnabled,
+            hvdef::HvError::UnknownRegisterName => TmkErrorType::UnknownRegisterName,
+            // Add any other specific mappings here if hvdef::HvError has more variants
+            _ => {
+                log::warn!(
+                    "Unhandled hvdef::HvError variant: {:?}. Mapping to TmkErrorType::OperationFailed.",
+                    e
+                );
+                TmkErrorType::OperationFailed // Generic fallback
+            }
+        };
+        log::debug!("Mapped hvdef::HvError::{:?} to TmkErrorType::{:?}", e, tmk_error_type);
+        TmkError(tmk_error_type)
     }
 }

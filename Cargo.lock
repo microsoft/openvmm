@@ -4791,14 +4791,16 @@ dependencies = [
  "hvdef",
  "lazy_static",
  "linked_list_allocator",
+ "log",
  "memory_range",
  "minimal_rt",
  "minimal_rt_build",
  "serde",
  "serde_json",
- "spin 0.10.0",
+ "sync_nostd",
  "uefi",
  "x86_64",
+ "x86defs",
  "zerocopy 0.8.14",
 ]
 
@@ -6536,6 +6538,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "sync_nostd"
+version = "0.1.0"
+dependencies = [
+ "spin 0.10.0",
 ]
 
 [[package]]

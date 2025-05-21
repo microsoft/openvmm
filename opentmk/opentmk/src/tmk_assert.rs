@@ -1,4 +1,4 @@
-use core::{any::type_name, fmt::Write};
+use core::fmt::Write;
 use alloc::string::{String, ToString};
 use serde::Serialize;
 use serde_json::json;
@@ -62,54 +62,54 @@ pub trait AssertOption<T> {
     fn expect_assert(self, message: &str) -> T;
 }
 
-impl<T> AssertOption<T> for Option<T> {
-    fn expect_assert(self, message: &str) -> T {
-        match self {
-            Some(value) => value,
-            None => {
-                let call: &core::panic::Location<'_> = core::panic::Location::caller();
-                let file_line = format!("{}:{}", call.file(), call.line());
-                let expn = type_name::<Option<T>>();
-                let js = format_assert_json_string(expn, true, file_line, false, &message);
-                write_str(&js);
-                panic!("Assertion failed: {}", message);
-            }
-        }
-    }
-}
+// impl<T> AssertOption<T> for Option<T> {
+//     fn expect_assert(self, message: &str) -> T {
+//         match self {
+//             Some(value) => value,
+//             None => {
+//                 let call: &core::panic::Location<'_> = core::panic::Location::caller();
+//                 let file_line = format!("{}:{}", call.file(), call.line());
+//                 let expn = type_name::<Option<T>>();
+//                 let js = format_assert_json_string(expn, true, file_line, false, &message);
+//                 write_str(&js);
+//                 panic!("Assertion failed: {}", message);
+//             }
+//         }
+//     }
+// }
 
-impl<T, E> AssertResult<T, E> for Result<T, E>
-where
-    E: core::fmt::Debug,
-{
-    fn unpack_assert(self) -> T {
-        match self {
-            Ok(value) => value,
-            Err(err) => {
-                let call: &core::panic::Location<'_> = core::panic::Location::caller();
-                let file_line = format!("{}:{}", call.file(), call.line());
-                let expn = type_name::<Result<T, E>>();
-                let js =
-                    format_assert_json_string(expn, true, file_line, false, &"ResultTest");
-                write_str(&js);
-                panic!("Assertion failed: {:?}", err);
-            }
-        }
-    }
-    fn expect_assert(self, message: &str) -> T {
-        match self {
-            Ok(value) => {
-                log::info!("result is ok, condition not met for: {}", message);
-                value
-            }
-            Err(err) => {
-                let call: &core::panic::Location<'_> = core::panic::Location::caller();
-                let file_line = format!("{}:{}", call.file(), call.line());
-                let expn = type_name::<Result<T, E>>();
-                let js = format_assert_json_string(expn, true, file_line, false, &message);
-                write_str(&js);
-                panic!("Assertion failed: {:?}", err);
-            }
-        }
-    }
-}
+// impl<T, E> AssertResult<T, E> for Result<T, E>
+// where
+//     E: core::fmt::Debug,
+// {
+//     fn unpack_assert(self) -> T {
+//         match self {
+//             Ok(value) => value,
+//             Err(err) => {
+//                 let call: &core::panic::Location<'_> = core::panic::Location::caller();
+//                 let file_line = format!("{}:{}", call.file(), call.line());
+//                 let expn = type_name::<Result<T, E>>();
+//                 let js =
+//                     format_assert_json_string(expn, true, file_line, false, &"ResultTest");
+//                 write_str(&js);
+//                 panic!("Assertion failed: {:?}", err);
+//             }
+//         }
+//     }
+//     fn expect_assert(self, message: &str) -> T {
+//         match self {
+//             Ok(value) => {
+//                 log::info!("result is ok, condition not met for: {}", message);
+//                 value
+//             }
+//             Err(err) => {
+//                 let call: &core::panic::Location<'_> = core::panic::Location::caller();
+//                 let file_line = format!("{}:{}", call.file(), call.line());
+//                 let expn = type_name::<Result<T, E>>();
+//                 let js = format_assert_json_string(expn, true, file_line, false, &message);
+//                 write_str(&js);
+//                 panic!("Assertion failed: {:?}", err);
+//             }
+//         }
+//     }
+// }
