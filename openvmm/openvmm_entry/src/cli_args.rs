@@ -1018,7 +1018,7 @@ impl FromStr for DebugconSerialConfigCli {
     }
 }
 
-/// (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | none)
+/// (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | file=\<path\> | none)
 #[derive(Clone)]
 pub enum SerialConfigCli {
     None,
@@ -1027,6 +1027,7 @@ pub enum SerialConfigCli {
     Stderr,
     Pipe(PathBuf),
     Tcp(SocketAddr),
+    File(PathBuf),
 }
 
 impl FromStr for SerialConfigCli {
@@ -1045,6 +1046,10 @@ impl FromStr for SerialConfigCli {
             "none" => SerialConfigCli::None,
             "console" => SerialConfigCli::Console,
             "stderr" => SerialConfigCli::Stderr,
+            "file" => match first_value {
+                Some(path) => SerialConfigCli::File(path.into()),
+                None => Err("invalid serial configuration: file requires a value")?,
+            },
             "term" => match first_value {
                 Some(path) => {
                     // If user supplies a name key, use it to title the window
