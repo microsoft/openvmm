@@ -146,7 +146,9 @@ impl PetriVmConfigOpenVmm {
         match self.os_flavor() {
             OsFlavor::Windows => self.with_windows_secure_boot_template(),
             OsFlavor::Linux => self.with_uefi_ca_template(),
-            OsFlavor::FreeBsd | OsFlavor::Uefi => self,
+            OsFlavor::FreeBsd | OsFlavor::Uefi => {
+                panic!("Secure boot is not supported for this OS flavor.")
+            }
         }
     }
 
