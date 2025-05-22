@@ -212,7 +212,7 @@ impl From<ModifyConnectionRequest> for ModifyRelayRequest {
 #[derive(Debug)]
 enum VmbusRequest {
     Reset(Rpc<(), ()>),
-    Inspect(Box<inspect::Deferred>),
+    Inspect(inspect::Deferred),
     Save(Rpc<(), SavedState>),
     Restore(Rpc<Box<SavedState>, Result<(), RestoreError>>),
     Start,
