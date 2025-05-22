@@ -81,9 +81,9 @@ impl Inspect for NvmeManager {
             Err(req) => req.value(""),
         });
         // Send the remaining fields directly to the worker.
-        self.client
-            .sender
-            .send(Request::Inspect(resp.request().defer()));
+        resp.merge(inspect::adhoc(|req| {
+            self.client.sender.send(Request::Inspect(req.defer()))
+        }));
     }
 }
 

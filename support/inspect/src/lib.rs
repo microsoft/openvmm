@@ -999,6 +999,7 @@ assert_eq!(
 }
 
 impl<'a> RequestParams<'a> {
+    #[cfg_attr(not(any(feature = "defer", feature = "initiate")), expect(dead_code))]
     fn inspect(self, mut obj: impl InspectMut) -> InternalNode {
         self.with(|req| {
             obj.inspect_mut(req);
