@@ -542,6 +542,11 @@ pub struct Response<'a> {
     params: RequestParams<'a>,
     /// Remaining path without leading '/'s.
     path_without_slashes: &'a str,
+    /// The list of inspected children.
+    ///
+    /// This is `None` when the depth is exhaused (in which case all children
+    /// are ignored--the response object was just created to report that this
+    /// node in the inspect tree is a directory and not a value).
     children: Option<&'a mut Vec<InternalEntry>>,
 }
 
@@ -986,6 +991,9 @@ assert_eq!(
 
     /// Gets another request for this response. The response to that request
     /// will be merged into this response.
+    ///
+    /// Returns `None` if the depth is already exhausted, in which case there is
+    /// no need (or ability--requests must have nodes) to propagate the request.
     fn request(&mut self) -> Option<Request<'_>> {
         let children = &mut **self.children.as_mut()?;
         children.push(InternalEntry {
