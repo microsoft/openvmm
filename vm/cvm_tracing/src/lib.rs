@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Implements a tracing filter to restrict logging of events to only those
-//! that are marked as [`CVM_ALLOWED`].
+//! Implements a tracing filter to restrict logging of events that are marked
+//! as [`CVM_CONFIDENTIAL`].
 
 // How it works:
 // The magic value [`tracing::field::Empty`] will cause that field to be omitted
@@ -24,7 +24,7 @@ pub const CVM_ALLOWED: Empty = Empty;
 /// not be logged out of a confidential environment.
 pub const CVM_CONFIDENTIAL: Empty = Empty;
 
-/// A tracing filter that will only allow events that are marked as [`CVM_ALLOWED`].
+/// A tracing filter that will block events that are marked as [`CVM_CONFIDENTIAL`].
 pub fn confidential_event_filter<S: Subscriber>() -> impl Filter<S> {
     FilterFn::new(move |m| m.fields().field("CVM_CONFIDENTIAL").is_none())
 }
