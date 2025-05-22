@@ -235,8 +235,7 @@ pub(crate) enum OfferRequest {
 
 impl Inspect for VmbusServer {
     fn inspect(&self, req: inspect::Request<'_>) {
-        self.task_send
-            .send(VmbusRequest::Inspect(Box::new(req.defer())));
+        self.task_send.send(VmbusRequest::Inspect(req.defer()));
     }
 }
 
