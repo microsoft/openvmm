@@ -119,11 +119,13 @@ impl HyperVVM {
             },
         )?;
 
-        // Disable secure boot
-        powershell::run_set_vm_firmware(powershell::HyperVSetVMFirmwareArgs {
-            vmid: &vmid,
-            secure_boot_template: None,
-        })?;
+        // Disable secure boot for generation 2 VMs
+        if generation == powershell::HyperVGeneration::Gen2 {
+            powershell::run_set_vm_firmware(powershell::HyperVSetVMFirmwareArgs {
+                vmid: &vmid,
+                secure_boot_template: None,
+            })?;
+        }
 
         Ok(this)
     }
