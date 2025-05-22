@@ -24,17 +24,13 @@ use slab::Slab;
 use std::sync::Arc;
 
 /// The mapping manager.
-#[derive(Debug)]
+#[derive(Debug, Inspect)]
 pub struct MappingManager {
+    #[inspect(
+        flatten,
+        with = "|x| inspect::send(&x.req_send, MappingRequest::Inspect)"
+    )]
     client: MappingManagerClient,
-}
-
-impl Inspect for MappingManager {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.client
-            .req_send
-            .send(MappingRequest::Inspect(req.defer()));
-    }
 }
 
 impl MappingManager {

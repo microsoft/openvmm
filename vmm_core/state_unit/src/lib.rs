@@ -334,9 +334,7 @@ impl Inspect for Inner {
                     });
                 }
                 resp.field("unit_state", unit.state)
-                    .merge(inspect::adhoc(|req| {
-                        unit.send.send(StateRequest::Inspect(req.defer()))
-                    }));
+                    .merge(&inspect::send(&unit.send, StateRequest::Inspect));
             });
         }
     }

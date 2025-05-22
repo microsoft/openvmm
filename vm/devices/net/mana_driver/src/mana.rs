@@ -48,17 +48,16 @@ enum LinkStatus {
 }
 
 /// A MANA device.
+#[derive(Inspect)]
 pub struct ManaDevice<T: DeviceBacking> {
+    #[inspect(skip)]
     inner: Arc<Inner<T>>,
+    #[inspect(skip)]
     inspect_task: Task<()>,
+    #[inspect(skip)]
     hwc_task: Option<Task<()>>,
+    #[inspect(flatten, send = "|x| x")]
     inspect_send: mesh::Sender<inspect::Deferred>,
-}
-
-impl<T: DeviceBacking> Inspect for ManaDevice<T> {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.inspect_send.send(req.defer());
-    }
 }
 
 struct Inner<T: DeviceBacking> {

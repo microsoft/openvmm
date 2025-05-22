@@ -35,15 +35,10 @@ impl From<RpcError<vmgs::Error>> for VmgsClientError {
 }
 
 /// Client to interact with a backend-agnostic VMGS instance.
-#[derive(Clone)]
+#[derive(Clone, Inspect)]
 pub struct VmgsClient {
+    #[inspect(flatten, send = "VmgsBrokerRpc::Inspect")]
     pub(crate) control: mesh_channel::Sender<VmgsBrokerRpc>,
-}
-
-impl Inspect for VmgsClient {
-    fn inspect(&self, req: inspect::Request<'_>) {
-        self.control.send(VmgsBrokerRpc::Inspect(req.defer()));
-    }
 }
 
 impl VmgsClient {
