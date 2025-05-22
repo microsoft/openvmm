@@ -26,7 +26,7 @@ pub const CVM_CONFIDENTIAL: Empty = Empty;
 
 /// A tracing filter that will only allow events that are marked as [`CVM_ALLOWED`].
 pub fn confidential_event_filter<S: Subscriber>() -> impl Filter<S> {
-    FilterFn::new(move |m| m.fields().field("CVM_ALLOWED").is_some())
+    FilterFn::new(move |m| m.fields().field("CVM_CONFIDENTIAL").is_none())
 }
 
 #[cfg(test)]
@@ -96,6 +96,6 @@ mod test {
     fn it_works() {
         let (count, subscriber) = create_test_subscriber();
         log_test_events(subscriber);
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 5);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 10);
     }
 }
