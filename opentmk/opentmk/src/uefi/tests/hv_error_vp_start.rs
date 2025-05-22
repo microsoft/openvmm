@@ -1,8 +1,7 @@
 use hvdef::Vtl;
 use sync_nostd::Channel;
 
-use crate::{context::{VirtualProcessorPlatformTrait, VpExecutor, VtlPlatformTrait}, tmk_assert, tmkdefs::TmkErrorType};
-
+use crate::{context::{VirtualProcessorPlatformTrait, VpExecutor, VtlPlatformTrait}, tmk_assert};
 
 pub fn exec<T>(ctx: &mut T)
 where

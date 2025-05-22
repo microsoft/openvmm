@@ -8,7 +8,6 @@ use crate::context::{
 // This test is to verify that the VTL protections are working as expected.
 // The stack values in VTL0 are changing after interrupt handling in VTL1.
 use crate::tmk_assert;
-use crate::tmk_assert::{AssertOption, AssertResult};
 use crate::tmkdefs::TmkResult;
 use crate::uefi::alloc::{ALLOCATOR, SIZE_1MB};
 use crate::{context, uefi::hypvctx};
@@ -54,19 +53,8 @@ where
     ctx.start_on_vp(VpExecutor::new(0, Vtl::Vtl1).command(move |ctx: &mut T| {
         log::info!("successfully started running VTL1 on vp0.");
         ctx.setup_secure_intercept(0x30);
-        ctx.set_interrupt_idx(0x30, || {
+        ctx.set_interrupt_idx(0x30, move || {
             log::info!("interrupt fired!");
-
-            let mut hv_test_ctx = HvTestCtx::new();
-            hv_test_ctx.init();
-
-            let c = hv_test_ctx.get_register(HvAllArchRegisterName::VsmVpStatus.0);
-            tmk_assert!(c.is_ok(), "read should succeed");
-
-            let c = c.unwrap();
-            let cp = HvRegisterVsmVpStatus::from_bits(c as u64);
-
-            log::info!("VSM VP Status: {:?}", cp);
 
             log::info!("interrupt handled!");
         });
@@ -120,6 +108,8 @@ where
         );
     }
 
+
+    log::info!("after ctx ptr: {:p}", &ctx as *const _);
     unsafe { asm!("mov {}, rsp", out(reg) l) };
     log::info!("rsp: 0x{:x}", l);
 

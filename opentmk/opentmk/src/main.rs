@@ -3,6 +3,7 @@
 #![no_std]
 #![allow(unsafe_code)]
 #![feature(abi_x86_interrupt)]
+#![feature(naked_functions)]
 
 #![doc = include_str!("../README.md")]
 

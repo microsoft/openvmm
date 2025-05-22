@@ -1,11 +1,33 @@
 use core::fmt::Write;
 
-use alloc::{fmt::format, string::{String, ToString}};
+use alloc::{
+    fmt::format,
+    string::{String, ToString},
+};
 use log::SetLoggerError;
-use serde_json::json;
 use sync_nostd::{Mutex, MutexGuard};
 
 use crate::arch::serial::{InstrIoAccess, Serial};
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct LogEntry {
+    log_type: &'static str,
+    level: String,
+    message: String,
+    line: String,
+}
+
+impl LogEntry {
+    fn new(level: log::Level, message: &String, line: &String) -> Self {
+        LogEntry {
+            log_type: "log",
+            level: level.as_str().to_string(),
+            message: message.clone(),
+            line: line.clone(),
+        }
+    }
+}
 
 pub fn format_log_string_to_json(
     message: &String,
@@ -13,12 +35,8 @@ pub fn format_log_string_to_json(
     terminate_new_line: bool,
     level: log::Level,
 ) -> String {
-    let out = json!({
-        "type:": "log",
-        "level": level.as_str(),
-        "message": message,
-        "line": line,
-    });
+    let log_entry = LogEntry::new(level, message, line);
+    let out = serde_json::to_string(&log_entry).unwrap();
     let mut out = out.to_string();
     if terminate_new_line {
         out.push('\n');
@@ -40,7 +58,10 @@ where
         }
     }
 
-    pub fn get_writter(&self) -> MutexGuard<'_, T> where T: Write + Send {
+    pub fn get_writter(&self) -> MutexGuard<'_, T>
+    where
+        T: Write + Send,
+    {
         self.writter.lock()
     }
 }

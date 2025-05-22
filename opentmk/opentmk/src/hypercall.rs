@@ -6,6 +6,8 @@
 #![allow(dead_code)]
 use arrayvec::ArrayVec;
 use core::mem::size_of;
+use core::sync::atomic::AtomicBool;
+use core::sync::atomic::Ordering;
 use hvdef::hypercall::EnablePartitionVtlFlags;
 use hvdef::hypercall::HvInputVtl;
 use hvdef::hypercall::InitialVpContextX64;
@@ -114,10 +116,11 @@ impl HvcallPage {
 /// page, and the output page, so this should not be used in any
 /// multi-threaded capacity (which the boot shim currently is not).
 pub struct HvCall {
-    initialized: bool,
     input_page: HvcallPage,
     output_page: HvcallPage,
 }
+
+static HV_PAGE_INIT_STATUS: AtomicBool = AtomicBool::new(false);
 
 #[expect(unsafe_code)]
 impl HvCall {
@@ -257,8 +260,6 @@ impl HvCall {
         code: hvdef::HypercallCode,
         rep_count: Option<usize>,
     ) -> hvdef::hypercall::HypercallOutput {
-        self.init_if_needed();
-
         let control: hvdef::hypercall::Control = hvdef::hypercall::Control::new()
             .with_code(code.0)
             .with_rep_count(rep_count.unwrap_or_default());
@@ -501,21 +502,17 @@ impl HvCall {
         Ok(())
     }
 
-    /// Initializes the hypercall interface if it hasn't been already.
-    fn init_if_needed(&mut self) {
-        if !self.initialized {
-            self.initialize();
-        }
-    }
-
     /// Initializes the hypercall interface.
     pub fn initialize(&mut self) {
-        assert!(!self.initialized);
-
+        let init = HV_PAGE_INIT_STATUS.load(Ordering::SeqCst);
+        if init {
+            return;
+        }
         // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
         let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
         crate::arch::hypercall::initialize(guest_os_id.into());
-        self.initialized = true;
+        
+        HV_PAGE_INIT_STATUS.swap(true, Ordering::SeqCst);
     }
 
     /// Returns a mutable reference to the hypercall input page.
@@ -526,7 +523,6 @@ impl HvCall {
     /// Creates a new `HvCall` instance.
     pub const fn new() -> Self {
         HvCall {
-            initialized: false,
             input_page: HvcallPage::new(),
             output_page: HvcallPage::new(),
         }
@@ -707,15 +703,15 @@ impl HvCall {
 
     /// Call before jumping to kernel.
     pub fn uninitialize(&mut self) {
-        if self.initialized {
+        let init = HV_PAGE_INIT_STATUS.load(Ordering::SeqCst);
+        if init {
             crate::arch::hypercall::uninitialize();
-            self.initialized = false;
+            HV_PAGE_INIT_STATUS.swap(false, Ordering::SeqCst);
         }
     }
 
     /// Returns the environment's VTL.
     pub fn vtl(&mut self) -> Vtl {
-        assert!(self.initialized);
         self
             .get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into(), None)
             .map_or(Vtl::Vtl0, |status| {

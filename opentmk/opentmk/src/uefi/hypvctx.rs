@@ -47,14 +47,11 @@ pub struct HvTestCtx {
     pub my_vtl: Vtl,
 }
 
-impl Drop for HvTestCtx {
-    fn drop(&mut self) {
-        self.hvcall.uninitialize();
-    }
-}
-
-
 impl SecureInterceptPlatformTrait for HvTestCtx {
+    /// Configure the Secure Interrupt Message Page (SIMP) and the first
+    /// SynIC interrupt (SINT0) so that the hypervisor can vector
+    /// hypervisor side notifications back to the guest.  
+    /// Returns [`TmkResult::Err`] if the allocation of the SIMP buffer fails.
     fn setup_secure_intercept(&mut self, interrupt_idx: u8) -> TmkResult<()> {
         let layout = Layout::from_size_align(4096, ALIGNMENT)
             .or_else(|_| Err(TmkError(TmkErrorType::AllocationFailed)))?;
@@ -78,9 +75,10 @@ impl SecureInterceptPlatformTrait for HvTestCtx {
     }
 }
 
-
-
 impl InterruptPlatformTrait for HvTestCtx {
+    /// Install an interrupt handler for the supplied vector on x86-64.
+    /// For non-x86-64 targets the call returns
+    /// [`TmkErrorType::NotImplemented`].
     fn set_interrupt_idx(&mut self, interrupt_idx: u8, handler: fn()) -> TmkResult<()> {
         #[cfg(target_arch = "x86_64")]
         {
@@ -94,29 +92,31 @@ impl InterruptPlatformTrait for HvTestCtx {
         }
     }
 
+    /// Initialise the minimal in-guest interrupt infrastructure
+    /// (IDT/GIC, etc. depending on architecture).
     fn setup_interrupt_handler(&mut self) -> TmkResult<()> {
         crate::arch::interrupt::init();
         Ok(())
     }
 }
 
-
-
 impl MsrPlatformTrait for HvTestCtx {
+    /// Read an MSR directly from the CPU and return the raw value.
     fn read_msr(&mut self, msr: u32) -> TmkResult<u64> {
         let r = unsafe { read_msr(msr) };
         Ok(r)
     }
 
+    /// Write an MSR directly on the CPU.
     fn write_msr(&mut self, msr: u32, value: u64) -> TmkResult<()> {
         unsafe { write_msr(msr, value) };
         Ok(())
     }
 }
 
-
-
 impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
+    /// Fetch the content of the specified architectural register from
+    /// the current VTL for the executing VP.
     fn get_register(&mut self, reg: u32) -> TmkResult<u128> {
         #[cfg(target_arch = "x86_64")]
         {
@@ -140,6 +140,8 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         }
     }
 
+    /// Return the number of logical processors present in the machine
+    /// by issuing the `cpuid` leaf 1 call on x86-64.
     fn get_vp_count(&self) -> TmkResult<u32> {
         #[cfg(target_arch = "x86_64")]
         {
@@ -166,6 +168,9 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         }
     }
 
+    /// Push a command onto the per-VP linked-list so it will be executed
+    /// by the busy-loop running in `exec_handler`. No scheduling happens
+    /// here – we simply enqueue.
     fn queue_command_vp(&mut self, cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
         let (vp_index, vtl, cmd) = cmd.get();
         let cmd = cmd.ok_or_else(|| TmkError(TmkErrorType::QueueCommandFailed))?;
@@ -177,6 +182,15 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         Ok(())
     }
 
+    /// Ensure the target VP is running in the requested VTL and queue
+    /// the command for execution.  
+    /// – If the VP is not yet running, it is started with a default
+    ///   context.  
+    /// – If the command targets a different VTL than the current one,
+    ///   control is switched via `vtl_call` / `vtl_return` so that the
+    ///   executor loop can pick the command up.  
+    /// in short every VP acts as an executor engine and
+    /// spins in `exec_handler` waiting for work.
     fn start_on_vp(&mut self, cmd: VpExecutor<HvTestCtx>) -> TmkResult<()> {
         let (vp_index, vtl, cmd) = cmd.get();
         let cmd = cmd.ok_or_else(|| TmkError(TmkErrorType::InvalidParameter))?;
@@ -248,6 +262,8 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         Ok(())
     }
 
+    /// Start the given VP in the current VTL using a freshly captured
+    /// context and *do not* queue any additional work.
     fn start_running_vp_with_default_context(
         &mut self,
         cmd: VpExecutor<HvTestCtx>,
@@ -259,28 +275,35 @@ impl VirtualProcessorPlatformTrait<HvTestCtx> for HvTestCtx {
         Ok(())
     }
 
+    /// Return the index of the VP that is currently executing this code.
     fn get_current_vp(&self) -> TmkResult<u32> {
         Ok(self.my_vp_idx)
     }
 }
 
 impl VtlPlatformTrait for HvTestCtx {
+    /// Apply VTL protections to the supplied GPA range so that only the
+    /// provided VTL can access it.
     fn apply_vtl_protection_for_memory(&mut self, range: Range<u64>, vtl: Vtl) -> TmkResult<()> {
         self.hvcall
             .apply_vtl_protections(MemoryRange::new(range), vtl)?;
         Ok(())
     }
 
+    /// Enable the specified VTL on a VP and seed it with a default
+    /// context captured from the current execution environment.
     fn enable_vp_vtl_with_default_context(&mut self, vp_index: u32, vtl: Vtl) -> TmkResult<()> {
         let vp_ctx = self.get_default_context()?;
         self.hvcall.enable_vp_vtl(vp_index, vtl, Some(vp_ctx))?;
         Ok(())
     }
 
+    /// Return the VTL in which the current code is running.
     fn get_current_vtl(&self) -> TmkResult<Vtl> {
         Ok(self.my_vtl)
     }
 
+    /// Inject a default context into an already existing VP/VTL pair.
     fn set_default_ctx_to_vp(&mut self, vp_index: u32, vtl: Vtl) -> TmkResult<()> {
         let i: u8 = match vtl {
             Vtl::Vtl0 => 0,
@@ -300,6 +323,7 @@ impl VtlPlatformTrait for HvTestCtx {
         Ok(())
     }
 
+    /// Enable VTL support for the entire partition.
     fn setup_partition_vtl(&mut self, vtl: Vtl) -> TmkResult<()> {
         self.hvcall
             .enable_partition_vtl(hvdef::HV_PARTITION_ID_SELF, vtl)?;
@@ -307,21 +331,28 @@ impl VtlPlatformTrait for HvTestCtx {
         Ok(())
     }
 
+    /// Turn on VTL protections for the currently running VTL.
     fn setup_vtl_protection(&mut self) -> TmkResult<()> {
         self.hvcall.enable_vtl_protection(HvInputVtl::CURRENT_VTL)?;
         log::info!("enabled vtl protections for the partition.");
         Ok(())
     }
 
+    /// Switch execution from the current (low) VTL to the next higher
+    /// one (`vtl_call`).
     fn switch_to_high_vtl(&mut self) {
         HvCall::vtl_call();
     }
 
+    /// Return from a high VTL back to the low VTL (`vtl_return`).
     fn switch_to_low_vtl(&mut self) {
         HvCall::vtl_return();
     }
 }
+
 impl HvTestCtx {
+    /// Construct an *un-initialised* test context.  
+    /// Call [`HvTestCtx::init`] before using the value.
     pub const fn new() -> Self {
         HvTestCtx {
             hvcall: HvCall::new(),
@@ -331,6 +362,10 @@ impl HvTestCtx {
         }
     }
 
+    /// Perform the one-time initialisation sequence:  
+    /// – initialise the hypercall page,  
+    /// – discover the VP count and create command queues,  
+    /// – record the current VTL.
     pub fn init(&mut self) -> TmkResult<()> {
         self.hvcall.initialize();
         let vp_count = self.get_vp_count()?;
@@ -341,6 +376,9 @@ impl HvTestCtx {
         Ok(())
     }
 
+    /// Busy-loop executor that runs on every VP.  
+    /// Extracts commands from the per-VP queue and executes them in the
+    /// appropriate VTL, switching VTLs when necessary.
     fn exec_handler() {
         let mut ctx = HvTestCtx::new();
         ctx.init().expect("error: failed to init on a VP");
@@ -359,6 +397,7 @@ impl HvTestCtx {
                 let mut cmdt = cmdt().lock();
                 let d = cmdt.get_mut(&ctx.my_vp_idx);
                 if d.is_some() {
+                    log::info!("vp: {} has commands to execute", ctx.my_vp_idx);
                     let d = d.unwrap();
                     if !d.is_empty() {
                         let (_c, v) = d.front().unwrap();
@@ -387,11 +426,15 @@ impl HvTestCtx {
     }
 
     #[cfg(target_arch = "x86_64")]
+    /// Capture the current VP context, patch the entry point and stack
+    /// so that the new VP starts in `exec_handler`.
     fn get_default_context(&mut self) -> Result<InitialVpContextX64, TmkError> {
         return self.run_fn_with_current_context(HvTestCtx::exec_handler);
     }
 
     #[cfg(target_arch = "x86_64")]
+    /// Helper to wrap an arbitrary function inside a captured VP context
+    /// that can later be used to start a new VP/VTL instance.
     fn run_fn_with_current_context(&mut self, func: fn()) -> Result<InitialVpContextX64, TmkError> {
         use super::alloc::SIZE_1MB;
 
