@@ -545,7 +545,7 @@ async fn run_control(
                             .sensitivity_child("uhdiag", SensitivityLevel::Safe, |req| {
                                 inspect_internal::inspect_internal_diagnostics(
                                     req,
-                                    diag_reinspect_send.clone(),
+                                    &diag_reinspect_send,
                                     driver.clone(),
                                 )
                             });

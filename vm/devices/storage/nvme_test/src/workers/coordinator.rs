@@ -33,9 +33,11 @@ use vmcore::vm_task::VmTaskDriver;
 use vmcore::vm_task::VmTaskDriverSource;
 
 pub struct NvmeWorkers {
+    #[inspect(skip)]
     _task: Task<()>,
+    #[inspect(flatten, send = "CoordinatorRequest::Inspect")]
     send: mesh::Sender<CoordinatorRequest>,
-    doorbells: Arc<RwLock<DoorbellMemory>>,
+    doorbells: Vec<Arc<DoorbellRegister>>,
     state: EnableState,
 }
 
@@ -45,12 +47,6 @@ enum EnableState {
     Enabling(PendingRpc<()>),
     Enabled,
     Resetting(PendingRpc<()>),
-}
-
-impl InspectMut for NvmeWorkers {
-    fn inspect_mut(&mut self, req: inspect::Request<'_>) {
-        self.send.send(CoordinatorRequest::Inspect(req.defer()));
-    }
 }
 
 impl NvmeWorkers {
