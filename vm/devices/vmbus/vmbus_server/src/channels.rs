@@ -984,9 +984,11 @@ impl ChannelList {
                     // Merge in the inspection state from outside. Skip this if
                     // the channel is revoked (and not reoffered) since in that
                     // case the caller won't recognize the channel ID.
-                    if !matches!(channel.state, ChannelState::Revoked) {
-                        notifier.inspect(version, offer_id, resp.request());
-                    }
+                    resp.merge(inspect::adhoc(|req| {
+                        if !matches!(channel.state, ChannelState::Revoked) {
+                            notifier.inspect(version, offer_id, req);
+                        }
+                    }));
                 },
             );
         }
