@@ -1887,7 +1887,7 @@ mod save_restore {
             #[mesh(24)]
             pub(super) crash_reg: Option<[u64; 5]>,
             #[mesh(25)]
-            pub(super) crash_control: u64,
+            pub(super) _crash_control: u64, // No longer needed
             #[mesh(26)]
             pub(super) msr_mtrr_def_type: u64,
             #[mesh(27)]
@@ -2005,7 +2005,6 @@ mod save_restore {
                     },
                 // Saved
                 crash_reg,
-                crash_control,
                 // Runtime glue
                 partition: _,
                 idle_control: _,
@@ -2058,7 +2057,7 @@ mod save_restore {
                 dr6: dr6_shared.then(|| values[4].as_u64()),
                 startup_suspend,
                 crash_reg: Some(*crash_reg),
-                crash_control: crash_control.into_bits(),
+                _crash_control: 0,
                 msr_mtrr_def_type,
                 fixed_mtrrs: Some(fixed_mtrrs),
                 variable_mtrrs: Some(variable_mtrrs),
@@ -2094,7 +2093,7 @@ mod save_restore {
                 dr6,
                 startup_suspend,
                 crash_reg,
-                crash_control,
+                _crash_control,
                 msr_mtrr_def_type,
                 fixed_mtrrs,
                 variable_mtrrs,
@@ -2138,7 +2137,6 @@ mod save_restore {
                 .copy_from_slice(&fx_state);
 
             self.crash_reg = crash_reg.unwrap_or_default();
-            self.crash_control = crash_control.into();
 
             // Previous versions of Underhill did not save the MTRRs.
             // If we get a restore state with them missing then assume they weren't
