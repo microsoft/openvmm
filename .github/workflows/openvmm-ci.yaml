@@ -30,7 +30,7 @@ jobs:
       - name: Download matching artifacts
         run: |
           mkdir -p results
-          gh run download $RunId -p "*-vmm-tests-logs" -D results
+          gh run -R microsoft/openvmm download $RunId -p "*-vmm-tests-logs" -D results
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
