@@ -110,7 +110,7 @@ impl FlowNode for Node {
                 }
                 FlowBackend::Local => {
                     if let Some(output_dir) = output_dir.clone() {
-                        ctx.emit_rust_step(step_name, |ctx| {
+                        use_side_effects.push(ctx.emit_rust_step(step_name, |ctx| {
                             let output_dir = output_dir.claim(ctx);
                             let has_junit_xml = has_junit_xml.claim(ctx);
                             let junit_xml = junit_xml.claim(ctx);
@@ -129,13 +129,16 @@ impl FlowNode for Node {
 
                                 Ok(())
                             }
-                        });
+                        }));
+                    } else {
+                        use_side_effects.push(has_junit_xml.into_side_effect());
+                        use_side_effects.push(junit_xml.into_side_effect());
                     }
                 }
             }
 
             for (attachment_label, (attachment_path, publish_on_ado)) in attachments {
-                let step_name = format!("publish test results: {attachment_label} ({label})");
+                let step_name = format!("publish test results: {label} ({attachment_label})");
                 let artifact_name = format!("{label}-{attachment_label}");
 
                 let attachment_exists = attachment_path.map(ctx, |p| {
@@ -199,7 +202,7 @@ impl FlowNode for Node {
                     }
                     FlowBackend::Local => {
                         if let Some(output_dir) = output_dir.clone() {
-                            ctx.emit_rust_step(step_name, |ctx| {
+                            use_side_effects.push(ctx.emit_rust_step(step_name, |ctx| {
                                 let output_dir = output_dir.claim(ctx);
                                 let attachment_exists = attachment_exists.claim(ctx);
                                 let attachment_path = attachment_path.claim(ctx);
@@ -218,8 +221,11 @@ impl FlowNode for Node {
 
                                     Ok(())
                                 }
-                            });
+                            }));
+                        } else {
+                            use_side_effects.push(attachment_exists.into_side_effect());
                         }
+                        use_side_effects.push(attachment_path_string.into_side_effect());
                     }
                 }
             }
