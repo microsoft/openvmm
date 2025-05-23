@@ -7,6 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+cvm_tracing.workspace = true
 hv1_structs.workspace = true
 hvdef.workspace = true
 pal.workspace = true

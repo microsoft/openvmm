@@ -24,6 +24,7 @@ use crate::protocol::MSHV_APIC_PAGE_OFFSET;
 use crate::protocol::hcl_intr_offload_flags;
 use crate::protocol::hcl_run;
 use bitvec::vec::BitVec;
+use cvm_tracing::CVM_ALLOWED;
 use deferred::RegisteredDeferredActions;
 use deferred::push_deferred_action;
 use deferred::register_deferred_actions;
@@ -924,7 +925,7 @@ impl MshvHvcall {
             - size_of::<hvdef::hypercall::AcceptGpaPages>())
             / size_of::<u64>();
 
-        let span = tracing::span!(tracing::Level::INFO, "accept_pages", ?range);
+        let span = tracing::info_span!("accept_pages", CVM_ALLOWED, ?range);
         let _enter = span.enter();
 
         let mut current_page = range.start() / HV_PAGE_SIZE;
@@ -1343,7 +1344,7 @@ impl MshvHvcall {
             - size_of::<hvdef::hypercall::ModifyVtlProtectionMask>())
             / size_of::<u64>();
 
-        let span = tracing::span!(tracing::Level::INFO, "modify_vtl_protection_mask", ?range);
+        let span = tracing::info_span!("modify_vtl_protection_mask", CVM_ALLOWED, ?range);
         let _enter = span.enter();
 
         let start = range.start() / HV_PAGE_SIZE;

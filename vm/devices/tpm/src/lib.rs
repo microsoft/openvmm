@@ -27,6 +27,8 @@ use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::GuestMemory;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -559,10 +561,8 @@ impl Tpm {
                 .initialize_guest_secret_key(&guest_secret_key)
             {
                 // Failures are non-fatal as the feature is not necessary for booting.
-                tracing::error!(
-                    error = &e as &dyn std::error::Error,
-                    "Failed to initialize guest secret key"
-                );
+                tracing::error!(CVM_ALLOWED, "Failed to initialize guest secret key");
+                tracing::error!(CVM_CONFIDENTIAL, error = &e as &dyn std::error::Error);
             }
         }
 
@@ -591,7 +591,10 @@ impl Tpm {
             let io_command = match self.current_io_command {
                 Some(cmd) => cmd,
                 None => {
-                    tracelimit::warn_ratelimited!("Invalid tpm IO data port read (no command set)");
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        "Invalid tpm IO data port read (no command set)"
+                    );
                     return IoResult::Ok;
                 }
             };
@@ -607,7 +610,11 @@ impl Tpm {
                     io_port_interface::TcgProtocol::Tcg2 as u32
                 }
                 _ => {
-                    tracelimit::warn_ratelimited!(?io_command, "Invalid tpm IO data read");
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        ?io_command,
+                        "Invalid tpm IO data read"
+                    );
                     return IoResult::Ok;
                 }
             }
@@ -642,6 +649,7 @@ impl Tpm {
                 Some(cmd) => cmd,
                 None => {
                     tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
                         "Invalid tpm IO data port write (no command set)"
                     );
                     return IoResult::Ok;
@@ -671,7 +679,11 @@ impl Tpm {
                     self.ppi_state.tpm_capability_hash_alg_bitmap = val;
                 }
                 other => {
-                    tracelimit::warn_ratelimited!(?other, "unimplemented TpmIoCommand");
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        ?other,
+                        "unimplemented TpmIoCommand"
+                    );
                     update_ppi = false;
                 }
             };
@@ -683,9 +695,10 @@ impl Tpm {
                 );
                 if let Err(e) = res {
                     tracing::warn!(
-                        error = &e as &dyn std::error::Error,
+                        CVM_ALLOWED,
                         "could not persist ppi state to non-volatile store"
                     );
+                    tracing::warn!(CVM_CONFIDENTIAL, error = &e as &dyn std::error::Error);
                 }
             }
         };
@@ -713,7 +726,7 @@ impl Tpm {
                 self.ppi_state.ppi_set_operation_arg3_integer2,
             )?,
             other => {
-                tracelimit::warn_ratelimited!(?other, "unknown pending PPI operation");
+                tracelimit::warn_ratelimited!(CVM_ALLOWED, ?other, "unknown pending PPI operation");
                 0
             }
         };
@@ -735,6 +748,7 @@ impl Tpm {
             Err(error) => {
                 if let TpmCommandError::TpmCommandFailed { response_code } = error {
                     tracelimit::error_ratelimited!(
+                        CVM_ALLOWED,
                         err = &error as &dyn std::error::Error,
                         "tpm PcrAllocateCmd failed"
                     );
@@ -770,7 +784,7 @@ impl Tpm {
             self.tpm_engine_helper
                 .initialize_tpm_engine()
                 .map_err(TpmErrorKind::InitializeTpmEngine)?;
-            tracelimit::info_ratelimited!("tpm reset after sending PcrAllocateCmd");
+            tracelimit::info_ratelimited!(CVM_ALLOWED, "tpm reset after sending PcrAllocateCmd");
         }
 
         Ok(response_code)
@@ -884,6 +898,7 @@ impl Tpm {
                     }
                     Ok(_data) => {
                         tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
                             "The requested TPM AK cert is empty - now: {:?}",
                             now.duration_since(std::time::UNIX_EPOCH),
                         );
@@ -898,6 +913,7 @@ impl Tpm {
                     }
                     Err(error) => {
                         tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
                             error,
                             "Failed to request new TPM AK cert - now: {:?}",
                             now.duration_since(std::time::UNIX_EPOCH),
@@ -917,6 +933,7 @@ impl Tpm {
                     &response,
                 ) {
                     tracelimit::error_ratelimited!(
+                        CVM_ALLOWED,
                         error = &e as &dyn std::error::Error,
                         "Failed write new TPM AK cert to NV index"
                     );
@@ -980,6 +997,7 @@ impl Tpm {
                     Ok(ak_cert_request) => {
                         if let Err(e) = self.renew_attestation_report(&ak_cert_request) {
                             tracelimit::error_ratelimited!(
+                                CVM_ALLOWED,
                                 error = &e as &dyn std::error::Error,
                                 "Error while renewing the attestation report on NvRead"
                             );
@@ -987,6 +1005,7 @@ impl Tpm {
                     }
                     Err(e) => {
                         tracelimit::error_ratelimited!(
+                            CVM_ALLOWED,
                             error = &e as &dyn std::error::Error,
                             "Error while creating ak cert request for renewing the attestation report"
                         );
@@ -1008,6 +1027,7 @@ impl Tpm {
             if renew_cert_needed {
                 if let Err(e) = self.renew_ak_cert() {
                     tracelimit::error_ratelimited!(
+                        CVM_ALLOWED,
                         error = &e as &dyn std::error::Error,
                         "Error while renewing AK cert on NvRead"
                     );
@@ -1201,6 +1221,7 @@ impl MmioIntercept for Tpm {
 
                     if let Err(e) = res {
                         tracelimit::error_ratelimited!(
+                            CVM_ALLOWED,
                             error = &e as &dyn std::error::Error,
                             "Failed to read TPM command from guest memory"
                         );
@@ -1232,6 +1253,7 @@ impl MmioIntercept for Tpm {
                         &mut self.tpm_engine_helper.reply_buffer,
                     ) {
                         tracelimit::error_ratelimited!(
+                            CVM_ALLOWED,
                             error = &e as &dyn std::error::Error,
                             "Error while executing TPM command"
                         );
@@ -1253,6 +1275,7 @@ impl MmioIntercept for Tpm {
 
                     if let Err(e) = res {
                         tracelimit::error_ratelimited!(
+                            CVM_ALLOWED,
                             error = &e as &dyn std::error::Error,
                             "Failed to write TPM reply into guest memory"
                         );
@@ -1267,10 +1290,8 @@ impl MmioIntercept for Tpm {
 
         let res = pal_async::local::block_on(self.flush_pending_nvram());
         if let Err(e) = res {
-            tracing::warn!(
-                error = &e as &dyn std::error::Error,
-                "could not commit nvram to non-volatile store"
-            );
+            tracing::warn!(CVM_ALLOWED, "could not commit nvram to non-volatile store");
+            tracing::warn!(CVM_CONFIDENTIAL, error = &e as &dyn std::error::Error);
         };
 
         IoResult::Ok
