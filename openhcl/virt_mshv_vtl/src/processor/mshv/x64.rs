@@ -1815,6 +1815,7 @@ mod save_restore {
     use super::UhProcessor;
     use anyhow::Context;
     use hcl::GuestVtl;
+    use hvdef::HV_X64_MSR_GUEST_CRASH_CTL;
     use hvdef::HvInternalActivityRegister;
     use hvdef::HvX64RegisterName;
     use hvdef::Vtl;
@@ -1877,17 +1878,25 @@ mod save_restore {
             pub(super) dr2: u64,
             #[mesh(21)]
             pub(super) dr3: u64,
+
+            /// Only set when the DR6_SHARED capability is present
             #[mesh(22)]
-            pub(super) dr6: Option<u64>, // only set when the DR6_SHARED capability is present
+            pub(super) dr6: Option<u64>,
+
             /// If VTL0 should be in the startup suspend state. Older underhill
             /// versions do not save this property, so maintain the old buggy
             /// behavior for those cases its not present in the saved state.
             #[mesh(23)]
             pub(super) startup_suspend: Option<bool>,
+
             #[mesh(24)]
             pub(super) crash_reg: Option<[u64; 5]>,
+
+            /// This value is ignored going forward, but may still be read by downlevel
+            /// versions.
             #[mesh(25)]
-            pub(super) _crash_control: u64, // No longer needed
+            pub(super) crash_control: u64,
+
             #[mesh(26)]
             pub(super) msr_mtrr_def_type: u64,
             #[mesh(27)]
@@ -1987,6 +1996,12 @@ mod save_restore {
                 .context("failed to get MTRRs")
                 .map_err(SaveError::Other)?;
 
+            // This value is ignored during restore, but may still be read by downlevel
+            // versions. Set it to the correct hardcoded read value as a best effort for them.
+            let crash_control = self
+                .read_crash_msr(HV_X64_MSR_GUEST_CRASH_CTL, GuestVtl::Vtl0)
+                .unwrap();
+
             let UhProcessor {
                 _not_send,
                 inner:
@@ -2057,7 +2072,7 @@ mod save_restore {
                 dr6: dr6_shared.then(|| values[4].as_u64()),
                 startup_suspend,
                 crash_reg: Some(*crash_reg),
-                _crash_control: 0,
+                crash_control,
                 msr_mtrr_def_type,
                 fixed_mtrrs: Some(fixed_mtrrs),
                 variable_mtrrs: Some(variable_mtrrs),
@@ -2093,7 +2108,7 @@ mod save_restore {
                 dr6,
                 startup_suspend,
                 crash_reg,
-                _crash_control,
+                crash_control: _crash_control,
                 msr_mtrr_def_type,
                 fixed_mtrrs,
                 variable_mtrrs,
