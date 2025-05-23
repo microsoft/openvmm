@@ -1,0 +1,24 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "storage_tests"
+edition.workspace = true
+rust-version.workspace = true
+
+[dev-dependencies]
+disklayer_ram.workspace = true
+guestmem.workspace = true
+pal_async.workspace = true
+scsi_defs.workspace = true
+scsidisk.workspace = true
+storvsc_driver.workspace = true
+storvsp.workspace = true
+storvsp_protocol.workspace = true
+storvsp_resources.workspace = true
+test_with_tracing.workspace = true
+vmbus_channel.workspace = true
+zerocopy.workspace = true
+
+[lints]
+workspace = true

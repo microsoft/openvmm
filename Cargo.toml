@@ -34,6 +34,7 @@ members = [
   "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
   "vm/devices/storage/scsi_buffers/fuzz",
+  "vm/devices/storage/storage_tests",
   "vm/devices/storage/storvsp/fuzz",
   "vm/vmcore/guestmem/fuzz",
   "vm/x86/x86emu/fuzz",
@@ -281,6 +282,7 @@ scsi_core = { path = "vm/devices/storage/scsi_core" }
 scsi_defs = { path = "vm/devices/storage/scsi_defs" }
 scsidisk = { path = "vm/devices/storage/scsidisk" }
 scsidisk_resources = { path = "vm/devices/storage/scsidisk_resources" }
+storvsc_driver = { path = "vm/devices/storage/storvsc_driver" }
 storvsp = { path = "vm/devices/storage/storvsp" }
 storvsp_protocol = { path = "vm/devices/storage/storvsp_protocol" }
 storvsp_resources = { path = "vm/devices/storage/storvsp_resources" }
