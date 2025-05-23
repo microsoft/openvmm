@@ -3,6 +3,7 @@
 
 //! AMD SEV-SNP specific definitions.
 
+use crate::X64_PAGE_SIZE;
 use bitfield_struct::bitfield;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -447,12 +448,112 @@ pub const GHCB_DATA_PAGE_STATE_MASK: u64 = 0x00F;
 pub const GHCB_DATA_PAGE_STATE_LARGE_PAGE: u64 = 0x010;
 
 open_enum::open_enum! {
+    #[derive(FromBytes, IntoBytes)]
     pub enum GhcbUsage: u32 {
         BASE = 0,
         HYPERCALL = 1,
         VTL_RETURN = 2,
+        INVALID = !0,
     }
 }
+
+impl GhcbUsage {
+    pub const fn into_bits(self) -> u32 {
+        self.0
+    }
+
+    pub const fn from_bits(bits: u32) -> Self {
+        Self(bits)
+    }
+}
+
+open_enum::open_enum! {
+    #[derive(FromBytes, IntoBytes)]
+    pub enum GhcbProtocolVersion: u16 {
+        V1 = 1,
+        V2 = 2,
+    }
+}
+
+impl GhcbProtocolVersion {
+    pub const fn into_bits(self) -> u16 {
+        self.0
+    }
+
+    pub const fn from_bits(bits: u16) -> Self {
+        Self(bits)
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes)]
+pub struct GhcbSaveArea {
+    pub reserved_0x0: [u8; 203],
+    pub cpl: u8,
+    pub reserved_0xcc: [u8; 116],
+    pub xss: u64,
+    pub reserved_0x148: [u8; 24],
+    pub dr7: u64,
+    pub reserved_0x168: [u8; 16],
+    pub rip: u64,
+    pub reserved_0x180: [u8; 88],
+    pub rsp: u64,
+    pub reserved_0x1e0: [u8; 24],
+    pub rax: u64,
+    pub reserved_0x200: [u8; 264],
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rbx: u64,
+    pub reserved_0x320: [u8; 8],
+    pub rbp: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    pub reserved_0x380: [u8; 16],
+    pub sw_exit_code: u64,
+    pub sw_exit_info1: u64,
+    pub sw_exit_info2: u64,
+    pub sw_scratch: u64,
+    pub reserved_0x3b0: [u8; 56],
+    pub xcr0: u64,
+    pub valid_bitmap0: u64,
+    pub valid_bitmap1: u64,
+    pub x87_state_gpa: u64,
+}
+
+#[repr(C, align(4096))]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes)]
+pub struct GhcbPage {
+    pub save: GhcbSaveArea,
+    pub reserved_save: [u8; 2048 - size_of::<GhcbSaveArea>()],
+    pub shared_buffer: [u8; 2032],
+    pub reserved_0xff0: [u8; 10],
+    pub protocol_version: GhcbProtocolVersion,
+    pub ghcb_usage: GhcbUsage,
+}
+
+const _: () = assert!(size_of::<GhcbPage>() == X64_PAGE_SIZE as usize);
+
+pub const GHCB_PAGE_HV_HYPERCALL_DATA_SIZE: usize = 4072;
+
+/// GHCB layout for the secure enlightened Hyper-V hypercalls.
+#[repr(C, align(4096))]
+#[derive(Debug, Copy, Clone, IntoBytes, FromBytes)]
+pub struct GhcbPageHvHypercall {
+    pub data: [u8; GHCB_PAGE_HV_HYPERCALL_DATA_SIZE],
+    pub output_gpa: u64,
+    pub io: u64,
+    pub reserved: u64,
+}
+
+const _: () = assert!(size_of::<GhcbPageHvHypercall>() == X64_PAGE_SIZE as usize);
 
 /// Struct representing GHCB hypercall parameters. These are located at the GHCB
 /// page starting at [`GHCB_PAGE_HYPERCALL_PARAMETERS_OFFSET`].

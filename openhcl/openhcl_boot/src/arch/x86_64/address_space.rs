@@ -24,21 +24,21 @@ use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
 
-const X64_PTE_PRESENT: u64 = 1;
-const X64_PTE_READ_WRITE: u64 = 1 << 1;
-const X64_PTE_ACCESSED: u64 = 1 << 5;
+pub const X64_PTE_PRESENT: u64 = 1;
+pub const X64_PTE_READ_WRITE: u64 = 1 << 1;
+pub const X64_PTE_ACCESSED: u64 = 1 << 5;
 const X64_PTE_DIRTY: u64 = 1 << 6;
 const X64_PTE_LARGE_PAGE: u64 = 1 << 7;
-const X64_PTE_CONFIDENTIAL: u64 = 1 << 51;
+pub const X64_PTE_CONFIDENTIAL: u64 = 1 << 51;
 
-const PAGE_TABLE_ENTRY_COUNT: usize = 512;
+pub const PAGE_TABLE_ENTRY_COUNT: usize = 512;
 
-const X64_PAGE_SHIFT: u64 = 12;
-const X64_PTE_BITS: u64 = 9;
+pub const X64_PAGE_SHIFT: u64 = 12;
+pub const X64_PTE_BITS: u64 = 9;
 
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
 #[repr(transparent)]
-struct PageTableEntry {
+pub struct PageTableEntry {
     entry: u64,
 }
 #[derive(Debug, Copy, Clone)]
@@ -105,7 +105,7 @@ impl PageTableEntry {
 
 #[repr(C)]
 #[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
-struct PageTable {
+pub struct PageTable {
     entries: [PageTableEntry; PAGE_TABLE_ENTRY_COUNT],
 }
 

@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 aarch64defs.workspace = true
+bitfield-struct.workspace = true
 minimal_rt.workspace = true
 underhill_confidentiality.workspace = true
 host_fdt_parser.workspace = true
