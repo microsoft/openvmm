@@ -50,15 +50,21 @@ impl UhProcessor<'_, HypervisorBacked> {
     /// Check the status of the TLB lock of the target VTL on the current VP.
     pub(crate) fn is_tlb_locked(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
         debug_assert_eq!(requesting_vtl, Vtl::Vtl2);
-        let local_status = self.vtls_tlb_locked.get(requesting_vtl, target_vtl);
+        let locally_locked = self.vtls_tlb_locked.get(requesting_vtl, target_vtl);
         // The hypervisor may lock the TLB without us knowing, but the inverse should never happen.
-        if local_status {
-            debug_assert!(self.is_tlb_locked_in_hypervisor(target_vtl))
-        };
-        local_status
+        #[expect(
+            clippy::debug_assert_with_mut_call,
+            reason = "just sanity checking, but the function can update the cached value in the non-debug-assert branch"
+        )]
+        if locally_locked {
+            debug_assert!(self.is_tlb_locked_in_hypervisor(requesting_vtl, target_vtl));
+            true
+        } else {
+            self.is_tlb_locked_in_hypervisor(requesting_vtl, target_vtl)
+        }
     }
 
-    fn is_tlb_locked_in_hypervisor(&self, target_vtl: GuestVtl) -> bool {
+    fn is_tlb_locked_in_hypervisor(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
         let name = HvAllArchRegisterName(
             HvAllArchRegisterName::VsmVpSecureConfigVtl0.0 + target_vtl as u32,
         );
@@ -68,7 +74,14 @@ impl UhProcessor<'_, HypervisorBacked> {
             .get_vp_register(name, HvInputVtl::CURRENT_VTL)
             .expect("failure is a misconfiguration");
         let config = hvdef::HvRegisterVsmVpSecureVtlConfig::from(result.as_u64());
-        config.tlb_locked()
+        let result = config.tlb_locked();
+        // The hypervisor may lock the TLB without us knowing, but the inverse should never happen.
+        if result {
+            self.vtls_tlb_locked.set(requesting_vtl, target_vtl, true);
+        } else {
+            debug_assert!(!self.vtls_tlb_locked.get(requesting_vtl, target_vtl));
+        }
+        result
     }
 
     /// Marks the TLBs of all lower VTLs as unlocked.
