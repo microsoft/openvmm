@@ -37,7 +37,7 @@ jobs:
       - name: Upload to Azure Blob Storage
         run: |
           az storage blob upload-batch \
-            --destination https://openvmmghtestresults.blob.core.windows.net/results
+            --destination https://openvmmghtestresults.blob.core.windows.net/results \
             --destination-path "ci/$RunId" \
             --source results \
             --auth-mode login \
