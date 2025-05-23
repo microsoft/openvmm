@@ -18,7 +18,6 @@ cfg_if::cfg_if! {
         use crate::VtlCrash;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
-        use cvm_tracing::CVM_CONFIDENTIAL;
         use hv1_emulator::synic::ProcessorSynic;
         use hvdef::HvRegisterCrInterceptControl;
         use hvdef::HvX64RegisterName;
@@ -43,6 +42,7 @@ use crate::ExitActivity;
 use crate::GuestVtl;
 use crate::WakeReason;
 use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::GuestMemory;
 use hcl::ioctl::Hcl;
 use hcl::ioctl::ProcessorRunner;
