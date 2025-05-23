@@ -254,7 +254,10 @@ impl UefiDevice {
                     );
                 }
             }
-            UefiCommand::SET_EFI_DIAGNOSTICS_GPA => self.service.diagnostics.set_gpa(data),
+            UefiCommand::SET_EFI_DIAGNOSTICS_GPA => {
+                tracing::info!("Setting GPA for EFI diagnostics to {:#x}", data);
+                self.service.diagnostics.set_gpa(data);
+            }
             UefiCommand::PROCESS_EFI_DIAGNOSTICS => self.process_diagnostics(),
             _ => tracelimit::warn_ratelimited!(addr, data, "unknown uefi write"),
         }
