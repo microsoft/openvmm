@@ -7532,6 +7532,7 @@ dependencies = [
  "vmsocket",
  "vnc_worker_defs",
  "vpci",
+ "vpci_client",
  "watchdog_core",
  "watchdog_vmgs_format",
  "x86defs",
@@ -8404,9 +8405,11 @@ dependencies = [
  "thiserror 2.0.12",
  "tracelimit",
  "tracing",
+ "user_driver",
  "vmbus_async",
  "vmbus_channel",
  "vmbus_core",
+ "vmbus_ring",
  "vmcore",
  "zerocopy 0.8.24",
 ]
@@ -9045,12 +9048,79 @@ dependencies = [
 ]
 
 [[package]]
+name = "vpci_client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chipset_device",
+ "closeable_mutex",
+ "futures",
+ "futures-concurrency",
+ "guestmem",
+ "guid",
+ "inspect",
+ "mesh",
+ "pal_async",
+ "parking_lot",
+ "pci_core",
+ "slab",
+ "task_control",
+ "test_with_tracing",
+ "thiserror 2.0.12",
+ "tracelimit",
+ "tracing",
+ "vmbus_async",
+ "vmbus_channel",
+ "vmbus_core",
+ "vmbus_ring",
+ "vmcore",
+ "vpci",
+ "vpci_protocol",
+ "zerocopy 0.8.24",
+]
+
+[[package]]
 name = "vpci_protocol"
 version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.10.1",
  "guid",
  "open_enum",
+ "zerocopy 0.8.24",
+]
+
+[[package]]
+name = "vpci_relay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chipset_device",
+ "closeable_mutex",
+ "futures",
+ "futures-concurrency",
+ "guestmem",
+ "guid",
+ "inspect",
+ "mesh",
+ "pal_async",
+ "parking_lot",
+ "pci_core",
+ "slab",
+ "task_control",
+ "test_with_tracing",
+ "thiserror 2.0.12",
+ "tracelimit",
+ "tracing",
+ "vmbus_async",
+ "vmbus_channel",
+ "vmbus_core",
+ "vmbus_ring",
+ "vmcore",
+ "vpci",
+ "vpci_client",
+ "vpci_protocol",
  "zerocopy 0.8.24",
 ]
 

@@ -635,6 +635,7 @@ mod x86 {
                 }
                 ExitReason::Hypercall(info) => {
                     crate::hypercalls::WhpHypercallExit::handle(self, dev, info, exit.vp_context)
+                        .await
                         .map_err(VpHaltReason::Hypervisor)?;
                     &mut self.state.exits.hypercall
                 }

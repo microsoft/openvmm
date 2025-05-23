@@ -25,6 +25,7 @@ use hvdef::hypercall::HostVisibilityType;
 use hvdef::hypercall::HvRegisterAssoc;
 use hvdef::hypercall::HypercallOutput;
 use hvdef::hypercall::VtlPermissionSet;
+use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
 /// Implements the `HvPostMessage` hypercall.
@@ -1008,6 +1009,65 @@ impl<T: SendSyntheticClusterIpiEx> HypercallDispatch<HvSendSyntheticClusterIpiEx
                 header.vector,
                 header.flags,
                 ProcessorSet::from_processor_masks(header.vp_set_valid_banks_mask, input)
+                    .ok_or(HvError::InvalidParameter)?,
+            )
+        })
+    }
+}
+
+/// Implements the `HvMemoryMappedIoRead` hypercall.
+pub type HvMemoryMappedIoRead = SimpleHypercall<
+    defs::MemoryMappedIoRead,
+    defs::MemoryMappedIoReadOutput,
+    { HypercallCode::HvCallMemoryMappedIoRead.0 },
+>;
+
+/// Implements the `HvMemoryMappedIoRead` hypercall.
+pub trait MemoryMappedIoRead {
+    /// Reads from a memory-mapped I/O region.
+    fn mmio_read(&mut self, gpa: u64, data: &mut [u8]) -> HvResult<()>;
+}
+
+impl<T: MemoryMappedIoRead> HypercallDispatch<HvMemoryMappedIoRead> for T {
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        HvMemoryMappedIoRead::run(params, |input| {
+            if input.reserved_z0 != 0 {
+                return Err(HvError::InvalidParameter);
+            }
+            let mut output = defs::MemoryMappedIoReadOutput::new_zeroed();
+            self.mmio_read(
+                input.gpa,
+                output
+                    .data
+                    .get_mut(..input.access_width as usize)
+                    .ok_or(HvError::InvalidParameter)?,
+            )?;
+            Ok(output)
+        })
+    }
+}
+
+/// Defines the `HvMemoryMappedIoWrite` hypercall.
+pub type HvMemoryMappedIoWrite =
+    SimpleHypercall<defs::MemoryMappedIoWrite, (), { HypercallCode::HvCallMemoryMappedIoWrite.0 }>;
+
+/// Implements the `HvMemoryMappedIoWrite` hypercall.
+pub trait MemoryMappedIoWrite {
+    /// Writes to a memory-mapped I/O region.
+    fn mmio_write(&mut self, gpa: u64, data: &[u8]) -> HvResult<()>;
+}
+
+impl<T: MemoryMappedIoWrite> HypercallDispatch<HvMemoryMappedIoWrite> for T {
+    fn dispatch(&mut self, params: HypercallParameters<'_>) -> HypercallOutput {
+        HvMemoryMappedIoWrite::run(params, |input| {
+            if input.reserved_z0 != 0 {
+                return Err(HvError::InvalidParameter);
+            }
+            self.mmio_write(
+                input.gpa,
+                input
+                    .data
+                    .get(..input.access_width as usize)
                     .ok_or(HvError::InvalidParameter)?,
             )
         })
