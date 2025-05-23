@@ -764,7 +764,7 @@ impl<T: RingMem> ProcessLoop<T> {
                 .map_err(|_| FatalError::InvalidResponse)?;
 
             if version_accepted {
-                tracing::info!("[GET] version negotiated: {:?}", protocol);
+                tracing::info!(?protocol, "[GET] version negotiated");
 
                 return Ok(protocol);
             }
@@ -1297,8 +1297,8 @@ impl<T: RingMem> ProcessLoop<T> {
             }
             invalid_notification => {
                 tracing::error!(
-                    "[HOST GET] ignoring invalid guest notification: {:?}",
-                    invalid_notification
+                    ?invalid_notification,
+                    "[HOST GET] ignoring invalid guest notification",
                 );
             }
         }

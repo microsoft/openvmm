@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use cvm_tracing::CVM_ALLOWED;
 use vmcore::non_volatile_store::NonVolatileStore;
 use watchdog_core::platform::WatchdogPlatform;
 use watchdog_vmgs_format::WatchdogVmgsFormatStore;
@@ -39,6 +40,7 @@ impl WatchdogPlatform for UnderhillWatchdog {
         let res = self.store.set_boot_failure().await;
         if let Err(e) = res {
             tracing::error!(
+                CVM_ALLOWED,
                 error = &e as &dyn std::error::Error,
                 "error persisting watchdog status"
             );
@@ -61,6 +63,7 @@ impl WatchdogPlatform for UnderhillWatchdog {
             Ok(status) => status,
             Err(e) => {
                 tracing::error!(
+                    CVM_ALLOWED,
                     error = &e as &dyn std::error::Error,
                     "error reading watchdog status"
                 );

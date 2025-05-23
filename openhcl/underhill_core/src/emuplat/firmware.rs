@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use cvm_tracing::CVM_ALLOWED;
 #[cfg(guest_arch = "x86_64")]
 use firmware_pcat::PcatEvent;
 #[cfg(guest_arch = "x86_64")]
@@ -62,6 +63,7 @@ impl firmware_uefi::platform::nvram::VsmConfig for UnderhillVsmConfig {
         if let Some(partition) = self.partition.upgrade() {
             if let Err(err) = partition.revoke_guest_vsm() {
                 tracing::warn!(
+                    CVM_ALLOWED,
                     error = &err as &dyn std::error::Error,
                     "failed to revoke guest vsm"
                 );

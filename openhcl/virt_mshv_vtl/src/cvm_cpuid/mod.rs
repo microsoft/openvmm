@@ -7,6 +7,7 @@
 
 use self::tdx::TdxCpuidInitializer;
 use core::arch::x86_64::CpuidResult;
+use cvm_tracing::CVM_ALLOWED;
 use masking::CpuidResultMask;
 use snp::SnpCpuidInitializer;
 use std::collections::BTreeMap;
@@ -285,6 +286,7 @@ impl CpuidResults {
 
                         if skipped {
                             tracing::warn!(
+                                CVM_ALLOWED,
                                 "cpuid result for leaf {} subleaf {} specified multiple times, ignoring duplicate with eax {}, ebx {}, ecx {}, edx {}",
                                 leaf.0,
                                 subleaf,

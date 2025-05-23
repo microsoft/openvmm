@@ -45,6 +45,7 @@ use anyhow::Context as AnyhowContext;
 use bitfield_struct::bitfield;
 use bitvec::boxed::BitBox;
 use bitvec::vec::BitVec;
+use cvm_tracing::CVM_ALLOWED;
 use guestmem::GuestMemory;
 use hcl::GuestVtl;
 use hcl::ioctl::Hcl;
@@ -970,6 +971,7 @@ impl virt::Synic for UhPartition {
         let vtl = GuestVtl::try_from(vtl).expect("higher vtl not configured");
         let Some(vp) = self.inner.vp(vp_index) else {
             tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
                 vp = vp_index.index(),
                 "invalid vp target for post_message"
             );
@@ -1260,6 +1262,7 @@ impl UhPartitionInner {
                 vtl,
             ) {
                 tracelimit::warn_ratelimited!(
+                    CVM_ALLOWED,
                     error = &err as &dyn std::error::Error,
                     address = request.address,
                     data = request.data,
@@ -1877,7 +1880,7 @@ impl UhProtoPartition<'_> {
                 .rmp_query();
 
                 if !rmp_query {
-                    tracing::info!("rmp query not supported, cannot enable vsm");
+                    tracing::info!(CVM_ALLOWED, "rmp query not supported, cannot enable vsm");
                     return Ok(false);
                 }
             }
@@ -2155,7 +2158,10 @@ impl UhPartitionInner {
                     // Probably a build that doesn't support range wrapping yet.
                     // Don't try again.
                     SKIP_RANGE.store(true, Ordering::Relaxed);
-                    tracing::warn!("old hypervisor build; using slow path for intercept ranges");
+                    tracing::warn!(
+                        CVM_ALLOWED,
+                        "old hypervisor build; using slow path for intercept ranges"
+                    );
                 }
                 Err(err) => {
                     panic!("io port range registration failure: {err:?}");

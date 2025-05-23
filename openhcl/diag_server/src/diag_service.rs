@@ -546,7 +546,7 @@ impl DiagServiceHandler {
     }
 
     async fn handle_update(&self, request: &UpdateRequest) -> anyhow::Result<UpdateResponse2> {
-        tracing::info!(
+        tracing::debug!(
             path = request.path.as_str(),
             value = request.value.as_str(),
             "update request"

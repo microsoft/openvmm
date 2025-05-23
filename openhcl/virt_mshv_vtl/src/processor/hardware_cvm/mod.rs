@@ -19,6 +19,7 @@ use crate::WakeReason;
 use crate::processor::HardwareIsolatedBacking;
 use crate::processor::UhHypercallHandler;
 use crate::validate_vtl_gpa_flags;
+use cvm_tracing::CVM_ALLOWED;
 use guestmem::GuestMemory;
 use hv1_emulator::RequestInterrupt;
 use hv1_hypercall::HvRepResult;
@@ -410,6 +411,7 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             }
             _ => {
                 tracing::error!(
+                    CVM_ALLOWED,
                     ?name,
                     "guest invoked getvpregister with unsupported register"
                 );
@@ -636,7 +638,8 @@ impl<T, B: HardwareIsolatedBacking> UhHypercallHandler<'_, '_, T, B> {
             }
             _ => {
                 tracing::error!(
-                    ?reg,
+                    CVM_ALLOWED,
+                    reg = ?reg.name,
                     "guest invoked SetVpRegisters with unsupported register",
                 );
                 Err(HvError::InvalidParameter)
@@ -967,13 +970,17 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlCall for UhHypercallHandle
         // Only allowed from VTL 0
         if self.intercepted_vtl != GuestVtl::Vtl0 {
             tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
                 "vtl call not allowed from vtl {:?}",
                 self.intercepted_vtl
             );
             false
         } else if self.vp.backing.cvm_state().vtl1.is_none() {
             // VTL 1 must be active on the vp
-            tracelimit::warn_ratelimited!("vtl call not allowed because vtl 1 is not enabled");
+            tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
+                "vtl call not allowed because vtl 1 is not enabled"
+            );
             false
         } else {
             true
@@ -993,6 +1000,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::VtlReturn for UhHypercallHand
     fn is_vtl_return_allowed(&self) -> bool {
         if self.intercepted_vtl != GuestVtl::Vtl1 {
             tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
                 "vtl return not allowed from vtl {:?}",
                 self.intercepted_vtl
             );
@@ -1252,7 +1260,7 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::EnablePartitionVtl
 
         tracing::debug!("Successfully granted vtl 1 access to lower vtl memory");
 
-        tracing::info!("Enabled vtl 1 on the partition");
+        tracing::info!(CVM_ALLOWED, "Enabled vtl 1 on the partition");
 
         Ok(())
     }
@@ -2307,6 +2315,7 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             // same instruction again, providing another opportunity to
             // deliver the intercept.
             tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
                 error = &e as &dyn std::error::Error,
                 ?vtl,
                 ?message,
@@ -2435,25 +2444,29 @@ pub(crate) fn validate_xsetbv_exit(input: XsetbvExitInput) -> Option<u64> {
     } = input;
 
     if rcx != 0 {
-        tracelimit::warn_ratelimited!(rcx, "xsetbv exit: rcx is not set to 0");
+        tracelimit::warn_ratelimited!(CVM_ALLOWED, rcx, "xsetbv exit: rcx is not set to 0");
         return None;
     }
 
     if cpl != 0 {
-        tracelimit::warn_ratelimited!(cpl, "xsetbv exit: invalid cpl");
+        tracelimit::warn_ratelimited!(CVM_ALLOWED, cpl, "xsetbv exit: invalid cpl");
         return None;
     }
 
     let osxsave_flag = cr4 & x86defs::X64_CR4_OSXSAVE;
     if osxsave_flag == 0 {
-        tracelimit::warn_ratelimited!(cr4, "xsetbv exit: cr4 osxsave not set");
+        tracelimit::warn_ratelimited!(CVM_ALLOWED, cr4, "xsetbv exit: cr4 osxsave not set");
         return None;
     }
 
     let xfem = (rdx << 32) | (rax & 0xffffffff);
 
     if (xfem & x86defs::xsave::XFEATURE_X87) == 0 {
-        tracelimit::warn_ratelimited!(xfem, "xsetbv exit: xfem legacy x87 bit not set");
+        tracelimit::warn_ratelimited!(
+            CVM_ALLOWED,
+            xfem,
+            "xsetbv exit: xfem legacy x87 bit not set"
+        );
         return None;
     }
 

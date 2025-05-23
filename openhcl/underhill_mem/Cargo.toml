@@ -18,6 +18,7 @@ virt_mshv_vtl.workspace = true
 vm_topology.workspace = true
 x86defs.workspace = true
 
+cvm_tracing.workspace = true
 inspect.workspace = true
 pal_async.workspace = true
 sparse_mmap.workspace = true

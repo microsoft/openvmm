@@ -4,6 +4,7 @@
 //! Code to spawn VP tasks and run VPs.
 
 use anyhow::Context;
+use cvm_tracing::CVM_ALLOWED;
 use futures::future::try_join_all;
 use pal_async::task::Spawn;
 use pal_async::task::SpawnLocal;
@@ -228,7 +229,7 @@ impl VpSpawner {
                                     None
                                 };
 
-                                tracing::info!(cpu = self.cpu, "onlining sidecar VP");
+                                tracing::info!(CVM_ALLOWED, cpu = self.cpu, "onlining sidecar VP");
                                 online_cpu(self.cpu).await;
 
                                 // Respawn the VP on the new thread.
@@ -255,7 +256,7 @@ async fn online_cpu(cpu: u32) {
         .name(format!("online-{cpu}"))
         .spawn(move || {
             send.send({
-                let _span = tracing::info_span!("online_cpu", cpu).entered();
+                let _span = tracing::info_span!("online_cpu", CVM_ALLOWED, cpu).entered();
                 underhill_threadpool::set_cpu_online(cpu)
             })
         })
