@@ -26,7 +26,7 @@ use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_init;
 use crate::boot_logger::log;
-use crate::hypercall::hvcall;
+use crate::hypercall::HvCall;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
@@ -586,23 +586,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     if p.isolation_type == IsolationType::None {
         enable_enlightened_panic();
     }
-
-    // The support code for the fast hypercalls does not set
-    // the Guest ID if it is not set yet as opposed to the slow
-    // hypercall code path where that is done automatically.
-    // Thus the fast hypercalls will fail as the the Guest ID has
-    // to be set first hence initialize hypercall support
-    // explicitly.
-    //
-    // In the hardware-isolated case, the hypervisor cannot
-    // access the guest registers so the fast hypercalls and
-    // any other methods of passing data to/from the hypervisor
-    // via the CPU registers (e.g. CPUID, hypercall call code or
-    // status) do not work, and the `hvcall()` doesn't have
-    // provisions for the hardware-isolated case.
-    if !p.isolation_type.is_hardware_isolated() {
-        hvcall().initialize();
-    }
+    let mut hvcall = HvCall::new(p.isolation_type);
 
     // Enable early log output if requested in the static command line.
     // Also check for confidential debug mode if we're isolated.
@@ -630,9 +614,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     // Fill out the non-devicetree derived parts of PartitionInfo.
     if !p.isolation_type.is_hardware_isolated()
-        && hvcall().vtl() == Vtl::Vtl2
+        && hvcall.vtl() == Vtl::Vtl2
         && hvdef::HvRegisterVsmCapabilities::from(
-            hvcall()
+            hvcall
                 .get_register(hvdef::HvAllArchRegisterName::VsmCapabilities.into())
                 .expect("failed to query vsm capabilities")
                 .as_u64(),
@@ -676,10 +660,10 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         panic!("no cpus");
     }
 
-    validate_vp_hw_ids(partition_info);
+    validate_vp_hw_ids(&mut hvcall, partition_info);
 
-    setup_vtl2_vp(partition_info);
-    setup_vtl2_memory(&p, partition_info);
+    setup_vtl2_vp(&mut hvcall, partition_info);
+    setup_vtl2_memory(&mut hvcall, &p, partition_info);
     verify_imported_regions_hash(&p);
 
     let mut sidecar_params = off_stack!(PageAlign<SidecarParams>, zeroed());
@@ -689,6 +673,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         partition_info,
         &mut sidecar_params.0,
         &mut sidecar_output.0,
+        hvcall.hypercall_page().unwrap_or(0),
     );
 
     let mut cmdline = off_stack!(ArrayString<COMMAND_LINE_SIZE>, ArrayString::new_const());
@@ -796,7 +781,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     rt::verify_stack_cookie();
 
     log!("uninitializing hypercalls, about to jump to kernel");
-    hvcall().uninitialize();
+    hvcall.uninitialize();
 
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "x86_64")] {
@@ -833,7 +818,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 /// Ensure that mshv VP indexes for the CPUs listed in the partition info
 /// correspond to the N in the cpu@N devicetree node name. OpenVMM assumes that
 /// this will be the case.
-fn validate_vp_hw_ids(partition_info: &PartitionInfo) {
+fn validate_vp_hw_ids(hvcall: &mut HvCall, partition_info: &PartitionInfo) {
     use host_params::MAX_CPU_COUNT;
     use hypercall::HwId;
 
@@ -849,7 +834,7 @@ fn validate_vp_hw_ids(partition_info: &PartitionInfo) {
         return;
     }
 
-    if hvcall().vtl() != Vtl::Vtl2 {
+    if hvcall.vtl() != Vtl::Vtl2 {
         // If we're not using guest VSM, then the guest won't communicate
         // directly with the hypervisor, so we can choose the VP indexes
         // ourselves.
@@ -863,7 +848,7 @@ fn validate_vp_hw_ids(partition_info: &PartitionInfo) {
     hw_ids.extend(partition_info.cpus.iter().map(|c| c.reg as _));
     let mut vp_indexes = off_stack!(ArrayVec<u32, MAX_CPU_COUNT>, ArrayVec::new_const());
     vp_indexes.clear();
-    if let Err(err) = hvcall().get_vp_index_from_hw_id(&hw_ids, &mut vp_indexes) {
+    if let Err(err) = hvcall.get_vp_index_from_hw_id(&hw_ids, &mut vp_indexes) {
         panic!(
             "failed to get VP index for hardware ID {:#x}: {}",
             hw_ids[vp_indexes.len().min(hw_ids.len() - 1)],
