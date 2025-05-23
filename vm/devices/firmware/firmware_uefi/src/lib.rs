@@ -267,6 +267,7 @@ impl ChangeDeviceState for UefiDevice {
     async fn stop(&mut self) {
         // REMOVE LATER - Process diagnostics incase we are restarting
         // if !self.service.diagnostics.did_process {
+        tracing::info!("Processing diagnostics on shutdown");
         self.process_diagnostics();
         // }
     }
@@ -281,6 +282,7 @@ impl ChangeDeviceState for UefiDevice {
 
         // REMOVE LATER - Process diagnostics incase we are restarting
         // if !self.service.diagnostics.did_process {
+        tracing::info!("Processing diagnostics on reset");
         self.process_diagnostics();
         //}
 

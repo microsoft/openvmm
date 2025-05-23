@@ -172,7 +172,7 @@ pub enum DiagnosticsError {
 #[derive(Inspect)]
 pub struct DiagnosticsServices {
     /// The guest physical address of the diagnostics buffer
-    gpa: Option<u32>,
+    pub gpa: Option<u32>,
     /// Flag to indicate if we have already processed the buffer
     pub did_process: bool,
 }
