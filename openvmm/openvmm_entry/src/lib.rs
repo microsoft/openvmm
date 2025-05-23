@@ -253,13 +253,11 @@ fn vm_config_from_command_line(
             }
             SerialConfigCli::File(path) => {
                 let (config, serial) = serial_io::anonymous_serial_pair(&serial_driver)?;
+                let file = fs_err::File::create(path).context("failed to create file")?;
+
                 thread::Builder::new()
                     .name(name.to_owned())
                     .spawn(move || {
-                        let file = fs_err::File::create(path)
-                            .context("failed to create file")
-                            .unwrap();
-
                         let _ = block_on(futures::io::copy(serial, &mut AllowStdIo::new(file)));
                     })
                     .unwrap();
@@ -318,9 +316,7 @@ fn vm_config_from_command_line(
             }
             SerialConfigCli::File(path) => {
                 let mut io = SerialIo::new().context("creating serial IO")?;
-                let file = fs_err::File::create(path)
-                    .context("failed to create file")
-                    .unwrap();
+                let file = fs_err::File::create(path).context("failed to create file")?;
                 io.spawn_copy_out(name, file);
                 // Ensure there is no input so that the serial devices don't see
                 // EOF and think the port is disconnected.
