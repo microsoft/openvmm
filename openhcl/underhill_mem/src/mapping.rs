@@ -27,8 +27,9 @@ pub struct GuestPartitionMemoryBuilder<'a> {
 }
 
 impl<'a> GuestPartitionMemoryBuilder<'a> {
-    /// valid_bitmap_state is valid when allocating a tracking bitmap is needed
-    /// for memory access, and specifies the initial state of the bitmap.
+    /// If `valid_bitmap_state` is `Some`, a bitmap is created to track the
+    /// accessibility state of each page in the lower VTL memory. The bitmap is
+    /// initialized to the provided state.
     ///
     /// This is used to support tracking the shared/encrypted state of each
     /// page.
@@ -45,10 +46,13 @@ impl<'a> GuestPartitionMemoryBuilder<'a> {
         })
     }
 
+    /// Returns the built partition-wide valid memory.
     pub fn partition_valid_memory(&self) -> Option<Arc<GuestValidMemory>> {
         self.valid_memory.clone()
     }
 
+    /// Build a [`GuestMemoryMapping`], feeding in any related partition-wide
+    /// state.
     pub fn build_guest_memory_mapping(
         &self,
         mshv_vtl_low: &MshvVtlLow,
@@ -98,11 +102,13 @@ impl GuestValidMemory {
         })
     }
 
+    /// Update the bitmap to reflect the validity of the given range.
     pub fn update_valid(&self, range: MemoryRange, state: bool) {
         let _lock = self.valid_bitmap_lock.lock();
         self.valid_bitmap.update(range, state);
     }
 
+    /// Check if the given page is valid.
     pub(crate) fn check_valid(&self, gpn: u64) -> bool {
         self.valid_bitmap.page_state(gpn)
     }
@@ -129,6 +135,8 @@ pub struct GuestMemoryMapping {
     registrar: Option<MemoryRegistrar<MshvVtlWithPolicy>>,
 }
 
+/// Bitmap implementation using sparse mapping that can be used to track page
+/// states.
 #[derive(Debug)]
 struct GuestMemoryBitmap {
     bitmap: SparseMapping,
@@ -403,6 +411,7 @@ impl GuestMemoryMapping {
         }
     }
 
+    /// Zero the given range of memory.
     pub(crate) fn zero_range(
         &self,
         range: MemoryRange,
