@@ -141,7 +141,7 @@ impl crate::Vtl2Settings {
                         hasher.update(raw_bytes);
                         let attested_settings: Vtl2AttestedSettings = Self::read(raw_bytes)?;
                         let mut settings: crate::Vtl2AttestedSettings = attested_settings.into();
-                        settings.init_data_hash = Some(hasher.finish().to_vec());
+                        settings.init_data_hash = Some(hasher.finish());
                         external_attested_settings = Some(settings);
                     }
                 }
