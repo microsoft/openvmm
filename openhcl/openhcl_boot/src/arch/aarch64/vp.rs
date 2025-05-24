@@ -4,9 +4,10 @@
 //! Setting up VTL2 VPs
 
 use crate::PartitionInfo;
+use crate::host_params::shim_params::IsolationType;
 use crate::hypercall::hvcall;
 
-pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
+pub fn setup_vtl2_vp(_isolation_type: IsolationType, partition_info: &PartitionInfo) {
     // VTL2 kernel boot processor will try to remote read the GICR before AP's are
     // brought up. But, the hypervisor doesn't set the GICR overlay pages until the
     // Enable VP VTL hypercall has been made. Without the VP VTLs setup, accessing

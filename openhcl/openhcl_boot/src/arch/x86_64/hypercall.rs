@@ -7,7 +7,6 @@ use minimal_rt::arch::hypercall::HYPERCALL_PAGE;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
 
-/// Writes an MSR to tell the hypervisor the OS ID for the boot shim.
 fn report_os_id(guest_os_id: u64) {
     // SAFETY: Using the contract established in the Hyper-V TLFS.
     unsafe {
@@ -44,11 +43,13 @@ pub(crate) fn initialize(guest_os_id: u64) {
     // We are assuming we are running under a Microsoft hypervisor, so there is
     // no need to check any cpuid leaves.
     report_os_id(guest_os_id);
+
     write_hypercall_msr(true);
 }
 
 /// Call before jumping to kernel.
 pub(crate) fn uninitialize() {
-    write_hypercall_msr(false);
     report_os_id(0);
+
+    write_hypercall_msr(false);
 }

@@ -6,9 +6,13 @@
 use super::address_space::LocalMap;
 use super::address_space::init_local_map;
 use crate::ShimParams;
+use crate::arch::tdx::tdx_prepare_ap_trampoline;
 use crate::host_params::PartitionInfo;
-use crate::host_params::shim_params::IsolationType;
 use crate::hypercall::hvcall;
+use crate::isolation::IsolationType;
+use loader_defs::linux::E820_RESERVED;
+use loader_defs::linux::boot_params;
+use loader_defs::linux::e820entry;
 use memory_range::MemoryRange;
 use sha2::Digest;
 use sha2::Sha384;
@@ -17,6 +21,7 @@ use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 
 /// On isolated systems, transitions all VTL2 RAM to be private and accepted, with the appropriate
 /// VTL permissions applied.
+/// For TDX-isolated partitions, this function returns input and outpute pages to be used for hypercalls  
 pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInfo) {
     // Only if the partition is VBS-isolated, accept memory and apply vtl 2 protections here.
     // Non-isolated partitions can undergo servicing, and additional information
@@ -270,4 +275,32 @@ pub fn verify_imported_regions_hash(shim_params: &ShimParams) {
     if hasher.finalize().as_slice() != shim_params.imported_regions_hash() {
         panic!("Imported regions hash mismatch");
     }
+}
+
+/// Mark the page tables region of openhcl as E820-reserved,
+/// as otherwise the L1-VMM will while APs are spinning in the reset vector
+pub fn tdx_prepare_ap_memory(
+    page_tables_address_start: u64,
+    page_tables_address_end: u64,
+    boot_params: &mut boot_params,
+) {
+    add_page_to_e820_entry(
+        boot_params,
+        page_tables_address_start,
+        page_tables_address_end - page_tables_address_start,
+        E820_RESERVED,
+    );
+
+    tdx_prepare_ap_trampoline();
+}
+
+/// Mark the given entry in the E820 map as reserved
+fn add_page_to_e820_entry(boot_params: &mut boot_params, addr: u64, size: u64, typ: u32) {
+    let entry = &mut boot_params.e820_map[boot_params.e820_entries as usize];
+    *entry = e820entry {
+        addr: addr.into(),
+        size: size.into(),
+        typ: typ.into(),
+    };
+    boot_params.e820_entries += 1;
 }

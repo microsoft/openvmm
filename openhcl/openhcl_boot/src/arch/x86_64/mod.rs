@@ -13,8 +13,9 @@ pub mod tdx;
 mod vp;
 mod vsm;
 
-use crate::host_params::shim_params::IsolationType;
+use crate::isolation::IsolationType;
 pub use memory::setup_vtl2_memory;
+pub use memory::tdx_prepare_ap_memory;
 pub use memory::verify_imported_regions_hash;
 use safe_intrinsics::cpuid;
 pub use vp::setup_vtl2_vp;
