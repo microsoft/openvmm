@@ -58,9 +58,14 @@ jobs:
             --source results \
             --auth-mode login
 
+          passed=true
+          if [ -n "$TESTS_FAILED" ]; then
+            passed=false
+          fi
+          echo "{\"passed\": $passed}" > results.json
           az storage blob upload \
             --blob-url "$BASE_URL/runs/$UPLOAD_PATH" \
-            --file /dev/null \
+            --file results.json \
             --auth-mode login
         env:
           run_id: ${{ github.event.workflow_run.id }}
