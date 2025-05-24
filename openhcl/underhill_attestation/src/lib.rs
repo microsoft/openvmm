@@ -1025,7 +1025,7 @@ fn get_derived_keys_by_id(
 /// Takes the asserted InitData hash and the appropriate
 /// TEE call interface as arguments.
 /// Returns Ok(()) if the hashes match, or an error if they do not.
-pub fn verify_init_data(
+fn verify_init_data_inner(
     asserted_init_data: [u8; 32],
     tee_call: &dyn TeeCall,
 ) -> Result<(), InitDataError> {
@@ -1064,7 +1064,38 @@ pub fn verify_init_data(
             }
         }
         _ => {
-            return Err(InitDataError::UnsupportedAttestationType(attestation_type));
+            // Unsupported attestation type
+            // Do not fail as this is not fatal
+            tracing::info!(
+                CVM_ALLOWED,
+                "Unsupported attestation type: {:?}",
+                attestation_type
+            );
+            return Ok(());
+        }
+    }
+}
+
+pub fn verify_init_data(
+    asserted_init_data: [u8; 32],
+    tee_type: AttestationType,
+) -> Result<(), Error> {
+    match tee_type {
+        AttestationType::Snp => {
+            let tee_call: Box<dyn TeeCall> = Box::new(tee_call::SnpCall);
+            verify_init_data_inner(asserted_init_data, tee_call.as_ref())
+                .map_err(|e| Error::from(AttestationErrorInner::InitDataAssertionFail(e)))
+        }
+        AttestationType::Tdx => {
+            let tee_call: Box<dyn TeeCall> = Box::new(tee_call::TdxCall);
+            verify_init_data_inner(asserted_init_data, tee_call.as_ref())
+                .map_err(|e| Error::from(AttestationErrorInner::InitDataAssertionFail(e)))
+        }
+        _ => {
+            // Unsupported attestation type
+            // Do not fail as this is not fatal
+            tracing::info!(CVM_ALLOWED, "Unsupported attestation type: {:?}", tee_type);
+            Ok(())
         }
     }
 }
@@ -1885,20 +1916,20 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_init_data() {
+    fn test_verify_init_data_inner() {
         let asserted_init_data = [0u8; 32];
 
         let mock_call: Box<dyn TeeCall> = Box::new(MockSnpTeeCall {});
-        let result = verify_init_data(asserted_init_data, mock_call.as_ref());
+        let result = verify_init_data_inner(asserted_init_data, mock_call.as_ref());
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_verify_init_data_fail() {
+    fn test_verify_init_data_inner_fail() {
         let asserted_init_data = [1u8; 32];
 
         let mock_call: Box<dyn TeeCall> = Box::new(MockSnpTeeCall {});
-        let result = verify_init_data(asserted_init_data, mock_call.as_ref());
+        let result = verify_init_data_inner(asserted_init_data, mock_call.as_ref());
         assert!(result.is_err_and(|e| { matches!(e, InitDataError::InitDataAssertionFail) }));
     }
 }
