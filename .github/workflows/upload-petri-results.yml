@@ -29,7 +29,7 @@ jobs:
 
       - name: Download matching artifacts
         run: |
-          if [ "${{ github.event.workflow_run.event }}" = "pull_request" ]; then
+          if [ "$event" = "pull_request" ]; then
             echo "UPLOAD_PATH=pr/$run_id" >> "$GITHUB_ENV"
           else
             echo "UPLOAD_PATH=ci/$head_branch/$run_id" >> "$GITHUB_ENV"
@@ -44,6 +44,7 @@ jobs:
             echo TESTS_FAILED=1 >> $GITHUB_ENV
           fi
         env:
+          event: ${{ github.event.workflow_run.event }}
           repo: ${{ github.event.workflow_run.repository.full_name }}
           run_id: ${{ github.event.workflow_run.id }}
           head_branch: ${{ github.event.workflow_run.head_branch }}
@@ -56,7 +57,7 @@ jobs:
             --destination-path "$UPLOAD_PATH" \
             --source results \
             --auth-mode login \
-            --pattern "*/petri.jsonl"
+            --pattern "*/petri.*"
         env:
           run_id: ${{ github.event.workflow_run.id }}
 
