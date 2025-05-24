@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Petri test results</title>
+    <style type="text/css">
+        body {
+            font-family: monospace;
+            font-size: 14px;
+        }
+
+        #logContainer table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        #logContainer th,
+        #logContainer td {
+            border: 1px solid #ddd;
+            padding: 6px 10px;
+            text-align: left;
+        }
+
+        #logContainer thead {
+            background-color: #f0f0f0;
+            font-weight: bold;
+        }
+
+        #logContainer tr.selected {
+            outline: 2px solid #007acc;
+            outline-offset: -2px;
+        }
+
+        /* Zebra striping for rows */
+        #logContainer tbody tr:nth-child(even) {
+            background-color: #fafafa;
+        }
+
+        #logContainer tbody tr:nth-child(odd) {
+            background-color: #ffffff;
+        }
+
+        /* Severity-based highlighting */
+        #logContainer tr.severity-ERROR td {
+            border-left: 4px solid #d00;
+            color: #900;
+        }
+
+        #logContainer tr.severity-WARN td {
+            border-left: 4px solid #d98e00;
+            color: #a65f00;
+        }
+
+        #logContainer tr.severity-INFO td {
+            border-left: 4px solid #007acc;
+            color: #004e7a;
+        }
+
+        #logContainer tr.severity-DEBUG td {
+            border-left: 4px solid #888;
+            color: #555;
+        }
+
+        #logContainer td.timestamp {
+            white-space: nowrap;
+        }
+
+        #filterBar {
+            position: sticky;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: white;
+            display: flex;
+            justify-content: space-between;
+            /* left + right */
+            align-items: center;
+            padding: 8px 16px;
+            border-bottom: 1px solid #ccc;
+            z-index: 10;
+            box-sizing: border-box;
+        }
+
+        #testName {
+            font-weight: bold;
+            font-size: 16px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 50%;
+        }
+
+        #filterWrapper {
+            position: relative;
+            display: inline-block;
+        }
+
+        #search {
+            font-size: 14px;
+            padding: 6px 28px 6px 10px;
+            /* leave space for the X */
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-family: monospace;
+            min-width: 200px;
+        }
+
+        #clearFilter {
+            position: absolute;
+            right: 6px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            font-size: 16px;
+            color: #888;
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+        }
+
+        #clearFilter:hover {
+            color: #000;
+        }
+    </style>
+    <script>
+        function removeTimestamp(orig, entryTimestamp) {
+            const message = orig.trim();
+            const i = message.indexOf(" ");
+            if (i === -1) {
+                return orig;
+            }
+            let ts = message.slice(0, i);
+            if (ts.endsWith("s")) {
+                const secs = parseFloat(ts.slice(0, -1));
+                if (!isNaN(secs)) {
+                    return message.slice(i + 1);
+                }
+            }
+
+            if (ts.startsWith("[")) {
+                ts = ts.slice(1, -1);
+            }
+            const parsedTs = new Date(ts);
+            if (isNaN(parsedTs.getTime())) {
+                return orig;
+            }
+            parsedTs.setMilliseconds(0);
+            const truncatedTs = new Date(entryTimestamp.getTime());
+            truncatedTs.setMilliseconds(0);
+            if (parsedTs.getTime() !== truncatedTs.getTime()) {
+                return orig;
+            }
+            return message.slice(i + 1);
+        }
+
+        function replaceSeverity(orig, severity) {
+            // If the message starts with a severity level, remove it and also return it.
+            const severityLevels = ["ERROR", "WARN", "INFO", "DEBUG"];
+            const message = orig.trim();
+            for (const level of severityLevels) {
+                if (message.startsWith(level)) {
+                    return {
+                        message: message.slice(level.length + 1),
+                        severity: level
+                    };
+                }
+            }
+            // If no severity level is found, return the original message.
+            return {
+                message: orig,
+                severity: severity,
+            };
+        }
+
+        function formatRelative(from, to) {
+            const deltaMs = new Date(to) - new Date(from);
+            const sec = (deltaMs % 1000000) / 1000;
+            const min = Math.floor((deltaMs / 60000) % 60);
+            const hr = Math.floor(deltaMs / 3600000);
+
+            return `${hr > 0 ? hr + 'h ' : ''}${min}m ${sec}s`;
+        }
+
+        function ansiToHtml(str) {
+            const ANSI_STYLE_MAP = {
+                // Text styles
+                '1': 'font-weight: bold',
+                '3': 'font-style: italic',
+                '4': 'text-decoration: underline',
+
+                // Foreground colors
+                '30': 'color: black', '31': 'color: red', '32': 'color: green',
+                '33': 'color: #b58900', '34': 'color: blue', '35': 'color: magenta',
+                '36': 'color: cyan', '37': 'color: white',
+
+                '90': 'color: gray', '91': 'color: lightcoral', '92': 'color: lightgreen',
+                '93': 'color: gold', '94': 'color: lightskyblue', '95': 'color: plum',
+                '96': 'color: lightcyan', '97': 'color: white',
+
+                // Reset foreground
+                '39': 'color: inherit'
+            };
+
+            const ESC = '\u001b';
+            const ESC_REGEX = /\u001b\[([0-9;]*)m/g;
+
+            let result = '';
+            let lastIndex = 0;
+            let currentStyles = [];
+
+            const flush = (text) => {
+                if (!text) return;
+                if (currentStyles.length > 0) {
+                    result += `<span style="${currentStyles.join('; ')}">${escapeHtml(text)}</span>`;
+                } else {
+                    result += escapeHtml(text);
+                }
+            };
+
+            const escapeHtml = (text) => text
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+
+            for (const match of str.matchAll(ESC_REGEX)) {
+                const [fullMatch, codeStr] = match;
+                const index = match.index;
+
+                // Flush plain text before this escape sequence
+                flush(str.slice(lastIndex, index));
+
+                // Update styles
+                const codes = codeStr.split(';');
+                for (const code of codes) {
+                    if (code === '0') {
+                        currentStyles = [];
+                        continue;
+                    }
+                    const style = ANSI_STYLE_MAP[code];
+                    if (style) {
+                        // Replace style of the same type
+                        const type = style.split(':')[0];
+                        currentStyles = currentStyles.filter(s => !s.startsWith(type));
+                        currentStyles.push(style);
+                    }
+                }
+
+                lastIndex = index + fullMatch.length;
+            }
+
+            // Flush any trailing text
+            flush(str.slice(lastIndex));
+            return result;
+        }
+
+        let logEntries = [];
+
+        function getTestResults(run, job, test) {
+            const url = `https://openvmmghtestresults.blob.core.windows.net/results/${run}/${job}/${test}/petri.jsonl`;
+            console.log(url);
+            fetch(url)
+                .then(response => response.text())
+                .then(data => {
+                    let lines = data.split("\n").filter(line => line.trim() !== "").map(line => JSON.parse(line));
+                    lines.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+                    let start;
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i];
+
+                        const timestamp = line.timestamp;
+                        let message = line.message || "";
+                        let severity = line.severity || "INFO";
+                        const source = line.source || "unknown";
+
+                        if (!line.message) {
+                            console.log(line);
+                            continue;
+                        }
+
+                        if (!start) {
+                            start = line.timestamp;
+                        }
+                        const relative = formatRelative(start, timestamp);
+
+                        message = removeTimestamp(message, new Date(line.timestamp));
+
+                        const r = replaceSeverity(message, severity);
+                        message = r.message;
+                        severity = r.severity;
+
+                        message = ansiToHtml(message);
+
+                        logEntries.push({
+                            timestamp: timestamp,
+                            relative: relative,
+                            severity: severity,
+                            source: source,
+                            message: message
+                        });
+                    }
+
+                    prepTestResults();
+
+                })
+                .catch(error => console.error('Error fetching test results:', error));
+        }
+
+        function prepTestResults() {
+            const container = document.getElementById("logContainer");
+            container.innerHTML = `<table>
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Severity</th>
+                                <th>Source</th>
+                                <th>Message</th>
+                            </tr>
+                        </thead>
+                        <tbody id="logBody">
+                        </tbody>
+                        </table>
+                        `;
+
+            // Clear on X click
+            document.getElementById("clearFilter").addEventListener('click', () => {
+                input.value = '';
+                renderLogTable(logEntries);
+                input.focus();
+            });
+
+            document.addEventListener('keydown', (e) => {
+                const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+                const isF = e.key === 'f' || e.key === 'F';
+
+                if ((isMac && e.metaKey && isF) || (!isMac && e.ctrlKey && isF)) {
+                    e.preventDefault();
+                    searchInput.focus();
+                    searchInput.select();
+                    return;
+                }
+
+                if (e.key === 'Escape') {
+                    if (searchInput.value) {
+                        searchInput.value = '';
+                        renderLogs(logEntries);
+                    } else {
+                        searchInput.blur();
+                    }
+                }
+            });
+
+            renderLogs(logEntries);
+            const searchInput = document.getElementById("search");
+            searchInput.addEventListener("input", function () {
+                const tokens = tokenizeSearchQuery(this.value);
+                const filteredLogs = logEntries.filter(log => rowMatchesQuery(log, tokens));
+                renderLogs(filteredLogs);
+            });
+
+            enableRowSelectionAndCopy(container);
+
+        }
+
+        function renderLogs(filteredLogs) {
+            let html = "";
+            for (const log of filteredLogs) {
+                html += `<tr class="severity-${log.severity}">
+                        <td class="timestamp" title="${log.timestamp}">${log.relative}</td>
+                        <td>${log.severity}</td>
+                        <td>${log.source}</td>
+                        <td>${log.message}</td>
+                    </tr>`;
+
+            }
+            const logBody = document.getElementById("logBody");
+            logBody.innerHTML = html;
+        }
+
+        function tokenizeSearchQuery(query) {
+            // If there's an unmatched quote, pretend it's closed at the end
+            const quoteCount = (query.match(/"/g) || []).length;
+            if (quoteCount % 2 !== 0) {
+                query += '"';
+            }
+            const regex = /"([^"]+)"|(\S+)/g;
+            const tokens = [];
+            let match;
+            while ((match = regex.exec(query))) {
+                tokens.push(match[1] || match[2]);
+            }
+            return tokens;
+        }
+
+        function rowMatchesQuery(log, tokens) {
+            return tokens.every(token => {
+                const [prefix, ...rest] = token.split(':');
+                const term = rest.join(':').toLowerCase();
+
+                if (prefix === 'source') {
+                    return log.source.toLowerCase().includes(term);
+                } else if (prefix === 'severity') {
+                    return log.severity.toLowerCase().includes(term);
+                } else if (prefix === 'message') {
+                    return log.message.toLowerCase().includes(term);
+                } else {
+                    // general match
+                    return (
+                        log.source.toLowerCase().includes(token.toLowerCase()) ||
+                        log.severity.toLowerCase().includes(token.toLowerCase()) ||
+                        log.message.toLowerCase().includes(token.toLowerCase())
+                    );
+                }
+            });
+        }
+
+        function enableRowSelectionAndCopy(container) {
+            let selectedRow = null;
+
+            container.addEventListener('click', (e) => {
+                const row = e.target.closest('tr');
+                if (!row || !row.parentElement.matches('tbody')) return;
+
+                // Remove previous selection
+                if (selectedRow) selectedRow.classList.remove('selected');
+
+                // Select new row
+                selectedRow = row;
+                selectedRow.classList.add('selected');
+            });
+
+            document.addEventListener('copy', (e) => {
+                if (!selectedRow) return;
+                const selection = window.getSelection();
+                if (selection && selection.toString().trim()) return; // user selected text, let it be
+
+                // Copy text content of row, tab-separated
+                const cells = Array.from(selectedRow.querySelectorAll('td'));
+                const text = cells.map(td => td.textContent.trim()).join('\t');
+
+                e.clipboardData.setData('text/plain', text);
+                e.preventDefault();
+            });
+        }
+
+        window.onload = function () {
+            const urlParams = new URLSearchParams(window.location.search);
+            const run = urlParams.get('run');
+            const test = urlParams.get('test');
+            const job = urlParams.get('job');
+            if (!run || !test || !job) {
+                document.getElementById("runName").innerText = "No test specified";
+                return;
+            }
+            document.getElementById("runName").innerHTML = `<a href="index.html?run=${encodeURIComponent(run)}">${run}</a>`;
+            document.getElementById("jobName").innerText = job;
+            document.getElementById("testName").innerText = test;
+            document.getElementById("logContainer").innerText = "Loading...";
+            getTestResults(run, job, test);
+        };
+    </script>
+
+</head>
+
+<body>
+    <h1 id="runName">Loading</h1>
+    <h2 id="jobName"></h2>
+    <div id="filterBar">
+        <div id="testName"></div>
+        <div id="filterWrapper">
+            <input type="text" id="search" placeholder="Filter logs…" />
+            <button id="clearFilter" title="Clear filter">&times;</button>
+        </div>
+    </div>
+    <div id="logContainer"></div>
+</body>
+
+</html>
