@@ -1,0 +1,79 @@
+name: Upload Petri Test Results
+
+on:
+  workflow_run:
+    types: completed
+    workflows:
+      - "[flowey] OpenVMM CI"
+      - "[flowey] OpenVMM PR"
+
+permissions:
+  id-token: write
+  contents: read
+  actions: read  # Needed to download artifacts from other runs
+  pull-requests: write # Needed to create PR comments
+
+jobs:
+  upload-logs:
+    runs-on: ubuntu-latest
+    env:
+      BASE_URL: https://openvmmghtestresults.blob.core.windows.net/results
+
+    steps:
+      - name: Authenticate to Azure
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.OPENVMM_TEST_RESULT_CLIENT_ID }}
+          tenant-id: ${{ secrets.OPENVMM_TENANT_ID }}
+          subscription-id: ${{ secrets.OPENVMM_SUBSCRIPTION_ID }}
+
+      - name: Download matching artifacts
+        run: |
+          if [ "${{ github.event.workflow_run.event }}" = "pull_request" ]; then
+            echo "UPLOAD_PATH=pr/$run_id" >> "$GITHUB_ENV"
+          else
+            echo "UPLOAD_PATH=ci/$head_branch/$run_id" >> "$GITHUB_ENV"
+          fi
+          mkdir -p results
+          gh run \
+            -R "$repo" \
+            download "$run_id" \
+            -p "*-vmm-tests-logs" \
+            -D results
+          if find results -name petri.failed; then
+            echo TESTS_FAILED=1 >> $GITHUB_ENV
+          fi
+        env:
+          repo: ${{ github.event.workflow_run.repository.full_name }}
+          run_id: ${{ github.event.workflow_run.id }}
+          head_branch: ${{ github.event.workflow_run.head_branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload to Azure Blob Storage
+        run: |
+          az storage blob upload-batch \
+            --destination "$BASE_URL" \
+            --destination-path "$UPLOAD_PATH" \
+            --source results \
+            --auth-mode login \
+            --pattern "*/petri.jsonl"
+        env:
+          run_id: ${{ github.event.workflow_run.id }}
+
+      - name: Report failing tests
+        if: ${{ github.event.workflow_run.event == 'pull_request' && env.TESTS_FAILED == '1' }}
+        run: |
+          gh pr comment \
+            -R "$repo" \
+            "$pr" \
+            -F - <<EOF
+          At least one Petri test failed, [logs uploaded]($BASE_URL/$UPLOAD_PATH).
+
+          (Note that the link above is not particularly functional yet, since
+          this is just to the blob directory where the logs are uploaded.)
+          EOF
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          repo: ${{ github.event.workflow_run.repository.full_name }}
+          pr: ${{ github.event.workflow_run.pull_requests[0].number }}
+          run_id: ${{ github.event.workflow_run.id }}
