@@ -31,10 +31,6 @@ impl ChipsetPlusSynic {
 }
 
 impl CpuIo for ChipsetPlusSynic {
-    fn is_mmio(&self, address: u64) -> bool {
-        self.chipset.is_mmio(address)
-    }
-
     fn acknowledge_pic_interrupt(&self) -> Option<u8> {
         self.chipset.acknowledge_pic_interrupt()
     }
