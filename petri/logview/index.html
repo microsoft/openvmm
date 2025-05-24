@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Petri test results</title>
+    <style type="text/css">
+        body {
+            font-family: monospace;
+            font-size: 14px;
+        }
+    </style>
+    <script>
+        const baseUrl = "https://openvmmghtestresults.blob.core.windows.net/results";
+
+        function parseBlobs(xmlText) {
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+            const blobs = xmlDoc.getElementsByTagName("Blob");
+            let blobNames = [];
+            for (let i = 0; i < blobs.length; i++) {
+                const name = blobs[i].getElementsByTagName("Name")[0].textContent;
+                const date = new Date(blobs[i].getElementsByTagName("Creation-Time")[0].textContent);
+                blobNames.push({
+                    name: name,
+                    creationTime: date,
+                });
+            }
+            return blobNames;
+        }
+
+        // Get the blob list, which is in XML via a GET request.
+        function getTestList(runName) {
+            const url = `${baseUrl}?restype=container&comp=list&showonly=files&prefix=${encodeURIComponent(runName)}`;
+            fetch(url)
+                .then(response => response.text())
+                .then(data => {
+                    let blobs = parseBlobs(data);
+                    let run = {};
+                    for (const blob of blobs) {
+                        const nameParts = blob.name.split("/");
+                        let fileName = nameParts[nameParts.length - 1];
+                        if (fileName !== "petri.jsonl") {
+                            continue;
+                        }
+                        const testName = nameParts[nameParts.length - 2];
+                        const jobName = nameParts[nameParts.length - 3];
+                        const path = nameParts.slice(0, -3).join("/");
+                        const url = `test.html?run=${path}&job=${jobName}&test=${testName}`;
+                        if (!run[jobName]) {
+                            run[jobName] = {
+                                failed: false,
+                                tests: [],
+                            };
+                        }
+                        let job = run[jobName];
+                        const failed = Math.random() < 0.1; // TODO
+                        job.failed |= failed;
+                        job.tests.push({
+                            name: testName,
+                            url: url,
+                            failed: failed,
+                        });
+                    }
+
+                    let failedHtml = "";
+                    let passingHtml = "";
+
+                    for (const job in run) {
+                        run[job].tests.sort((a, b) => {
+                            if (a.failed !== b.failed) {
+                                return a.failed ? -1 : 1; // Failed tests first.
+                            }
+                            return a.name.localeCompare(b.name); // Then by name.
+                        });
+                        let thisHtml = `<li>${job}<ul>`;
+                        for (const test of run[job].tests) {
+                            let icon = test.failed ? "&#10060;" : "&#9989;"; // Cross for failed, check for passed.
+                            thisHtml += `<li><a href="${test.url}">${icon} ${test.name}</a></li>`;
+                        }
+                        thisHtml += "</ul></li>";
+                        if (run[job].failed) {
+                            failedHtml += thisHtml;
+                        } else {
+                            passingHtml += thisHtml;
+                        }
+                    }
+
+                    let html = `<h2>Failed jobs</h2>
+                        <ul>${failedHtml}</ul>
+                        <h2>Passing jobs</h2>
+                        <ul>${passingHtml}</ul>`;
+
+                    document.getElementById("runList").innerHTML = html;
+                })
+                .catch(error => console.error('Error fetching blob list:', error));
+        }
+
+        function getRunList() {
+            const url = `${baseUrl}?restype=container&comp=list&showonly=files&prefix=runs/`;
+            fetch(url)
+                .then(response => response.text())
+                .then(data => {
+                    const blobs = parseBlobs(data);
+                    const runs = blobs.map(blob => {
+                        // Remove runs/ prefix.
+                        return {
+                            name: blob.name.replace(/^runs\//, ''),
+                            creationTime: blob.creationTime
+                        };
+                    });
+                    runs.sort((a, b) => b.creationTime - a.creationTime); // Sort by creation time, newest first.
+                    let html = `<table>
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Run</th>
+                            </tr>
+                        </thead>
+                        <tbody>`;
+                    for (const run of runs) {
+                        html += `<tr>
+                            <td>${run.creationTime.toLocaleString()}</td>
+                            <td><a href="?run=${encodeURIComponent(run.name)}">${run.name}</a></td>
+                        </tr>`;
+                    }
+                    html += "</table>";
+                    if (runs.length === 0) {
+                        html = "No runs found.";
+                    }
+                    document.getElementById("runList").innerHTML = html;
+                })
+                .catch(error => console.error('Error fetching run list:', error));
+        }
+
+        window.onload = function () {
+            const urlParams = new URLSearchParams(window.location.search);
+            const run = urlParams.get('run');
+            document.getElementById("runList").innerText = "Loading...";
+            if (run) {
+                document.getElementById("runName").innerText = run;
+                document.getElementById("backToRuns").innerHTML = `<a href="?">All runs</a>`;
+                getTestList(run);
+            } else {
+                document.getElementById("runName").innerText = "Runs";
+                getRunList();
+            }
+        };
+    </script>
+</head>
+
+<body>
+    <h1 id="runName">Loading</h1>
+    <div id="backToRuns"></div>
+    <div id="runList"></div>
+</body>
+
+</html>
