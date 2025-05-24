@@ -17,7 +17,7 @@ use hvdef::hypercall::HvInputVtl;
 use hvdef::hypercall::StartVirtualProcessorX64;
 use memory_range::MemoryRange;
 
-use crate::host_params::shim_params::IsolationType;
+use crate::isolation::IsolationType;
 use minimal_rt::arch::hypercall::invoke_hypercall;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
@@ -57,7 +57,7 @@ static HVCALL_OUTPUT: SingleThreaded<UnsafeCell<HvcallPage>> =
 static HVCALL: SingleThreaded<RefCell<HvCall>> = SingleThreaded(RefCell::new(HvCall {
     initialized: false,
     vtl: Vtl::Vtl0,
-    isolation_type: IsolationType::None,
+    isolation_type: None,
 }));
 
 /// Provides mechanisms to invoke hypercalls within the boot shim.
@@ -67,7 +67,7 @@ static HVCALL: SingleThreaded<RefCell<HvCall>> = SingleThreaded(RefCell::new(HvC
 pub struct HvCall {
     initialized: bool,
     vtl: Vtl,
-    isolation_type: IsolationType,
+    isolation_type: Option<IsolationType>,
 }
 
 /// Returns an [`HvCall`] instance.
@@ -93,29 +93,18 @@ impl HvCall {
     /// necessary.
     #[cfg(target_arch = "x86_64")]
     pub fn hypercall_page(&mut self) -> u64 {
-        self.init_if_needed();
+        assert!(self.initialized);
         core::ptr::addr_of!(minimal_rt::arch::hypercall::HYPERCALL_PAGE) as u64
     }
 
-    fn init_if_needed(&mut self) {
+    /// Hypercall initialization.
+    pub fn initialize(&mut self) {
         if !self.initialized {
             // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
             let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
 
-            let (input_page, output_page) = match self.isolation_type {
-                IsolationType::Tdx => (
-                    Some(Self::input_page().address()),
-                    Some(Self::output_page().address()),
-                ),
-                _ => (None, None),
-            };
+            crate::arch::hypercall::initialize(guest_os_id.into());
 
-            crate::arch::hypercall::initialize(
-                guest_os_id.into(),
-                self.isolation_type,
-                input_page,
-                output_page,
-            );
             self.initialized = true;
             self.vtl = self
                 .get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into())
@@ -128,21 +117,10 @@ impl HvCall {
         }
     }
 
-    /// Hypercall initialization.
-    pub fn initialize(&mut self, isolation: IsolationType) {
-        self.isolation_type = isolation;
-
-        self.init_if_needed();
-    }
-
     /// Call before jumping to kernel.
     pub fn uninitialize(&mut self) {
         if self.initialized {
-            crate::arch::hypercall::uninitialize(
-                self.isolation_type,
-                Some(Self::input_page().address()),
-                Some(Self::output_page().address()),
-            );
+            crate::arch::hypercall::uninitialize();
             self.initialized = false;
         }
     }
@@ -160,7 +138,7 @@ impl HvCall {
         code: hvdef::HypercallCode,
         rep_count: Option<usize>,
     ) -> hvdef::hypercall::HypercallOutput {
-        self.init_if_needed();
+        assert!(self.initialized);
 
         let control = hvdef::hypercall::Control::new()
             .with_code(code.0)
@@ -168,7 +146,7 @@ impl HvCall {
 
         // SAFETY: Invoking hypercall per TLFS spec
         match self.isolation_type {
-            IsolationType::Tdx => invoke_tdcall_hypercall(
+            Some(IsolationType::Tdx) => invoke_tdcall_hypercall(
                 control,
                 Self::input_page().address(),
                 Self::output_page().address(),
@@ -468,6 +446,46 @@ impl HvCall {
         }
 
         Ok(())
+    }
+}
+
+// TDX specific hypercall methods
+#[cfg(target_arch = "x86_64")]
+impl HvCall {
+    pub fn initialize_tdx(&mut self) {
+        if !self.initialized {
+            self.isolation_type = Some(IsolationType::Tdx);
+
+            // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
+            let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
+
+            crate::arch::tdx::initialize_hypercalls(
+                guest_os_id.into(),
+                Self::input_page().address(),
+                Self::output_page().address(),
+            );
+
+            self.initialized = true;
+            self.vtl = self
+                .get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into())
+                .map_or(Vtl::Vtl0, |status| {
+                    hvdef::HvRegisterVsmVpStatus::from(status.as_u64())
+                        .active_vtl()
+                        .try_into()
+                        .unwrap()
+                });
+        }
+    }
+
+    pub fn uninitialize_tdx(&mut self) {
+        if self.initialized {
+            assert!(self.isolation_type == Some(IsolationType::Tdx));
+            crate::arch::tdx::uninitialize_hypercalls(
+                Self::input_page().address(),
+                Self::output_page().address(),
+            );
+            self.initialized = false;
+        }
     }
 }
 

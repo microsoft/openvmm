@@ -8,7 +8,7 @@ use crate::MAX_RESERVED_MEM_RANGES;
 use crate::ReservedMemoryType;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::PartitionInfo;
-use crate::host_params::shim_params::IsolationType;
+use crate::isolation::IsolationType;
 use crate::sidecar::SidecarConfig;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;

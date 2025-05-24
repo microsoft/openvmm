@@ -4,8 +4,8 @@
 //! Setting up VTL2 VPs
 
 use crate::host_params::PartitionInfo;
-use crate::host_params::shim_params::IsolationType;
 use crate::hvcall;
+use crate::isolation::IsolationType;
 
 /// VTL2 VP setup for x86_64
 ///

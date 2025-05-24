@@ -3,9 +3,12 @@
 
 //! TDX support.
 
+use crate::arch::x86_64::address_space::tdx_share_large_page;
+use crate::arch::x86_64::address_space::tdx_unshare_large_page;
 use crate::single_threaded::SingleThreaded;
 use core::arch::asm;
 use core::cell::Cell;
+use loader_defs::shim::TdxTrampolineContext;
 use memory_range::MemoryRange;
 use safe_intrinsics::cpuid;
 use tdcall::AcceptPagesError;
@@ -14,8 +17,62 @@ use tdcall::TdcallInput;
 use tdcall::TdcallOutput;
 use tdcall::tdcall_hypercall;
 use tdcall::tdcall_map_gpa;
-use tdcall::tdcall_rdmsr;
+use tdcall::tdcall_wrmsr;
+use x86defs::tdx::RESET_VECTOR_PAGE;
 use x86defs::tdx::TdVmCallR10Result;
+
+pub fn report_os_id(guest_os_id: u64) {
+    tdcall_wrmsr(
+        &mut TdcallInstruction,
+        hvdef::HV_X64_MSR_GUEST_OS_ID,
+        guest_os_id,
+    )
+    .unwrap();
+}
+
+pub fn initialize_hypercalls(guest_os_id: u64, input_page: u64, output_page: u64) {
+    // We are assuming we are running under a Microsoft hypervisor, so there is
+    // no need to check any cpuid leaves.
+    report_os_id(guest_os_id);
+
+    // SAFETY: The hypercall i/o pages are valid virtual addresses owned by the caller
+    unsafe {
+        tdx_share_large_page(input_page);
+        tdx_share_large_page(output_page);
+    }
+
+    //// Enable host visibility for hypercall page
+    let input_page_range = MemoryRange::new(input_page..input_page + 4096);
+    let output_page_range = MemoryRange::new(output_page..output_page + 4096);
+    change_page_visibility(input_page_range, true);
+    change_page_visibility(output_page_range, true);
+}
+
+pub fn uninitialize_hypercalls(input_page: u64, output_page: u64) {
+    report_os_id(0);
+
+    // SAFETY: The hypercall i/o pages are valid virtual addresses owned by the caller
+    unsafe {
+        tdx_unshare_large_page(input_page);
+        tdx_unshare_large_page(output_page);
+    }
+
+    // Disable host visibility for hypercall page
+    let input_page_range = MemoryRange::new(input_page..input_page + 4096);
+    change_page_visibility(input_page_range, false);
+    let output_page_range = MemoryRange::new(output_page..output_page + 4096);
+    change_page_visibility(output_page_range, false);
+    accept_pages(input_page_range).expect("accepting vtl 2 memory must not fail");
+    accept_pages(output_page_range).expect("accepting vtl 2 memory must not fail");
+
+    // SAFETY: Flush TLB
+    unsafe {
+        asm! {
+            "mov rax, cr3",
+            "mov cr3, rax"
+        }
+    }
+}
 
 /// Perform a tdcall instruction with the specified inputs.
 fn tdcall(input: TdcallInput) -> TdcallOutput {
@@ -101,13 +158,6 @@ impl minimal_rt::arch::IoAccess for TdxIoAccess {
     }
 }
 
-/// Reads MSR using TDCALL
-fn read_msr_tdcall(msr_index: u32) -> u64 {
-    let mut msr_value: u64 = 0;
-    tdcall_rdmsr(&mut TdcallInstruction, msr_index, &mut msr_value).unwrap();
-    msr_value
-}
-
 pub fn invoke_tdcall_hypercall(
     control: hvdef::hypercall::Control,
     input_page: u64,
@@ -143,4 +193,19 @@ pub fn get_tdx_tsc_reftime() -> Option<u64> {
         return Some(count_100ns as u64);
     }
     None
+}
+
+/// Update the TdxTrampolineContext, setting the necessary control registers for AP startup,
+/// and ensuring that LGDT will be skipped, so the GDT page does not need to be added to the
+/// e820 entries
+pub fn tdx_prepare_ap_trampoline() {
+    let context_ptr: *mut TdxTrampolineContext = RESET_VECTOR_PAGE as *mut TdxTrampolineContext;
+    // SAFETY: The TdxTrampolineContext is known to be stored at the architectural reset vector address
+    let tdxcontext: &mut TdxTrampolineContext = unsafe { context_ptr.as_mut().unwrap() };
+    tdxcontext.gdtr_limit = 0;
+    tdxcontext.idtr_limit = 0;
+    tdxcontext.code_selector = 0;
+    tdxcontext.task_selector = 0;
+    tdxcontext.cr0 |= x86defs::X64_CR0_PG | x86defs::X64_CR0_PE | x86defs::X64_CR0_NE;
+    tdxcontext.cr4 |= x86defs::X64_CR4_PAE | x86defs::X64_CR4_MCE;
 }
