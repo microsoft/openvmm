@@ -14,6 +14,7 @@ pub use init::Init;
 pub use init::MemoryMappings;
 pub use init::init;
 
+use cvm_tracing::CVM_ALLOWED;
 use guestmem::PAGE_SIZE;
 use guestmem::ranges::PagedRange;
 use hcl::GuestVtl;
@@ -71,6 +72,7 @@ impl RegisterMemory for MshvVtlWithPolicy {
             // TODO: remove this once the kernel driver tracks registration
             Err(err) if self.ignore_registration_failure => {
                 tracing::warn!(
+                    CVM_ALLOWED,
                     error = &err as &dyn std::error::Error,
                     "registration failure, could be expected"
                 );

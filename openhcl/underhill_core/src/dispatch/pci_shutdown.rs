@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use blocking::unblock;
+use cvm_tracing::CVM_ALLOWED;
 use fs_err::PathExt;
 use futures::future::try_join_all;
 use std::os::unix::prelude::*;
@@ -47,6 +48,7 @@ pub async fn shutdown_pci_devices() -> Result<(), ShutdownError> {
                 unblock(move || fs_err::write(driver_link.join("unbind"), pci_id.as_bytes()))
                     .instrument(tracing::info_span!(
                         "unbind_pci_device",
+                        CVM_ALLOWED,
                         driver = driver_name.as_ref(),
                         pci_id = pci_id_str.as_str(),
                     ))

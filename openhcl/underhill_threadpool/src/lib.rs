@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+use cvm_tracing::CVM_ALLOWED;
 use inspect::Inspect;
 use loan_cell::LoanCell;
 use pal::unix::affinity::CpuSet;
@@ -163,6 +164,7 @@ impl ThreadpoolBuilder {
                 // because the thread will probably get allocated with the wrong node,
                 // but it's recoverable.
                 tracing::warn!(
+                    CVM_ALLOWED,
                     cpu,
                     error = &err as &dyn std::error::Error,
                     "could not set package affinity for thread pool thread"

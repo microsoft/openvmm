@@ -7,6 +7,7 @@ use crate::HardwareIsolatedMemoryProtector;
 use crate::MemoryAcceptor;
 use crate::mapping::GuestMemoryMapping;
 use anyhow::Context;
+use cvm_tracing::CVM_ALLOWED;
 use futures::future::try_join_all;
 use guestmem::GuestMemory;
 use hcl::ioctl::MshvHvcall;
@@ -111,7 +112,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
 
             tracing::debug!("Applying VTL2 protections");
             apply_vtl2_protections(boot_init.tp, boot_init.vtl2_memory)
-                .instrument(tracing::info_span!("apply_vtl2_protections"))
+                .instrument(tracing::info_span!("apply_vtl2_protections", CVM_ALLOWED))
                 .await?;
         } else {
             // Prepare VTL0 memory for mapping.
@@ -209,7 +210,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // kernel-registered RAM.
         tracing::debug!("Building VTL0 memory map");
         let vtl0_mapping = Arc::new({
-            let _span = tracing::info_span!("map_vtl0_memory").entered();
+            let _span = tracing::info_span!("map_vtl0_memory", CVM_ALLOWED).entered();
             GuestMemoryMapping::builder(0)
                 .dma_base_address(None) // prohibit direct DMA attempts until TDISP is supported
                 .use_bitmap(Some(true))
@@ -282,7 +283,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // bounce buffering.
         tracing::debug!("Building shared memory map");
         let shared_mapping = Arc::new({
-            let _span = tracing::info_span!("map_shared_memory").entered();
+            let _span = tracing::info_span!("map_shared_memory", CVM_ALLOWED).entered();
             GuestMemoryMapping::builder(shared_offset)
                 .shared(true)
                 .use_bitmap(Some(false))
@@ -325,7 +326,8 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             // applied because the lower VTLs are not running yet.
             //
             // TODO: perform lazily
-            let _span = tracing::info_span!("zeroing lower vtl memory for SNP").entered();
+            let _span =
+                tracing::info_span!("zeroing lower vtl memory for SNP", CVM_ALLOWED).entered();
 
             tracing::debug!("zeroing lower vtl memory for SNP");
             for range in validated_ranges {
@@ -370,7 +372,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
     } else {
         tracing::debug!("Creating VTL0 guest memory");
         let vtl0_mapping = {
-            let _span = tracing::info_span!("map_vtl0_memory").entered();
+            let _span = tracing::info_span!("map_vtl0_memory", CVM_ALLOWED).entered();
             let base_address = params.vtl0_alias_map_bit.unwrap_or(0);
             Arc::new(
                 GuestMemoryMapping::builder(base_address)
@@ -399,6 +401,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
                     // On ARM, the alias map is not exposed: see
                     // underhill_core::init::vtl0_alias_map_bit.
                     tracing::warn!(
+                        CVM_ALLOWED,
                         "cannot safely support VTL 1 without using the alias map; Guest VSM not supported"
                     );
                     None
@@ -406,7 +409,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             } else {
                 tracing::debug!("Creating VTL 1 memory map");
 
-                let _span = tracing::info_span!("map_vtl1_memory").entered();
+                let _span = tracing::info_span!("map_vtl1_memory", CVM_ALLOWED).entered();
                 let vtl1_mapping = GuestMemoryMapping::builder(0)
                     .for_kernel_access(true)
                     .dma_base_address(Some(0))
@@ -420,10 +423,10 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         };
 
         let vtl1_gm = if let Some(vtl1_mapping) = &vtl1_mapping {
-            tracing::info!("VTL 1 memory map created");
+            tracing::info!(CVM_ALLOWED, "VTL 1 memory map created");
             Some(GuestMemory::new("vtl1", vtl1_mapping.clone()))
         } else {
-            tracing::info!("Skipping VTL 1 memory map creation");
+            tracing::info!(CVM_ALLOWED, "Skipping VTL 1 memory map creation");
             None
         };
 

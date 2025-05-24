@@ -6,6 +6,7 @@
 use super::UhRunVpError;
 use crate::UhProcessor;
 use crate::processor::HardwareIsolatedBacking;
+use cvm_tracing::CVM_ALLOWED;
 use hcl::GuestVtl;
 use virt::Processor;
 use virt::vp::MpState;
@@ -27,7 +28,7 @@ pub(crate) trait ApicBacking<'b, B: HardwareIsolatedBacking> {
     fn handle_interrupt(&mut self, vtl: GuestVtl, vector: u8) -> Result<(), UhRunVpError>;
 
     fn handle_extint(&mut self, vtl: GuestVtl) -> Result<(), UhRunVpError> {
-        tracelimit::warn_ratelimited!(?vtl, "extint not supported");
+        tracelimit::warn_ratelimited!(CVM_ALLOWED, ?vtl, "extint not supported");
         Ok(())
     }
 }
