@@ -72,10 +72,7 @@ jobs:
             -R "$repo" \
             "$pr" \
             -F - <<EOF
-          At least one Petri test failed, [logs uploaded]($BASE_URL/$UPLOAD_PATH).
-
-          (Note that the link above is not particularly functional yet, since
-          this is just to the blob directory where the logs are uploaded.)
+          [At least one Petri test failed.](https://openvmm.dev/test-results/index.html?run=$UPLOAD_PATH)
           EOF
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
