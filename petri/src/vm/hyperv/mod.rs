@@ -481,14 +481,14 @@ impl PetriVmConfigHyperV {
 
         let mut log_tasks = Vec::new();
 
-        let serial_pipe_path = vm.set_vm_com_port(1)?;
+        let guest_serial_pipe_path = vm.set_vm_com_port(1)?;
         let serial_log_file = self.log_source.log_file("guest")?;
         log_tasks.push(self.driver.spawn("guest-log", {
             let driver = self.driver.clone();
             async move {
                 let serial = diag_client::hyperv::open_serial_port(
                     &driver,
-                    diag_client::hyperv::ComPortAccessInfo::PortPipePath(&serial_pipe_path),
+                    diag_client::hyperv::ComPortAccessInfo::PortPipePath(&guest_serial_pipe_path),
                 )
                 .await?;
                 crate::log_stream(serial_log_file, PolledPipe::new(&driver, serial)?).await
@@ -497,21 +497,52 @@ impl PetriVmConfigHyperV {
 
         let openhcl_diag_handler = if self.openhcl_igvm.is_some() {
             let openhcl_log_file = self.log_source.log_file("openhcl")?;
-            log_tasks.push(self.driver.spawn("openhcl-log", {
-                let driver = self.driver.clone();
-                let vmid = *vm.vmid();
-                async move {
-                    let diag_client = diag_client::DiagClient::from_hyperv_id(driver.clone(), vmid);
-                    loop {
-                        diag_client.wait_for_server().await?;
-                        crate::kmsg_log_task(
-                            openhcl_log_file.clone(),
-                            diag_client.kmsg(true).await?,
+
+            // Attempt to enable COM3 and use that to get KMSG logs, otherwise
+            // fall back to use diag_client.
+            //
+            // Hyper-V VBS VMs don't work with COM3 enabled for some reason.
+            let is_not_vbs = !matches!(
+                self.guest_state_isolation_type,
+                powershell::HyperVGuestStateIsolationType::Vbs
+            );
+            let openhcl_serial_pipe_path = is_not_vbs.then(|| vm.set_vm_com_port(3).ok()).flatten();
+
+            if let Some(openhcl_serial_pipe_path) = openhcl_serial_pipe_path {
+                log_tasks.push(self.driver.spawn("openhcl-log", {
+                    let driver = self.driver.clone();
+                    async move {
+                        let serial = diag_client::hyperv::open_serial_port(
+                            &driver,
+                            diag_client::hyperv::ComPortAccessInfo::PortPipePath(
+                                &openhcl_serial_pipe_path,
+                            ),
                         )
-                        .await?
+                        .await?;
+                        crate::log_stream(openhcl_log_file, PolledPipe::new(&driver, serial)?).await
                     }
-                }
-            }));
+                }));
+            } else {
+                tracing::warn!("falling back to getting kmsg logs from diag_client");
+
+                log_tasks.push(self.driver.spawn("openhcl-log", {
+                    let driver = self.driver.clone();
+                    let vmid = *vm.vmid();
+                    async move {
+                        let diag_client =
+                            diag_client::DiagClient::from_hyperv_id(driver.clone(), vmid);
+                        loop {
+                            diag_client.wait_for_server().await?;
+                            crate::kmsg_log_task(
+                                openhcl_log_file.clone(),
+                                diag_client.kmsg(true).await?,
+                            )
+                            .await?
+                        }
+                    }
+                }));
+            }
+
             Some(OpenHclDiagHandler::new(
                 diag_client::DiagClient::from_hyperv_id(self.driver.clone(), *vm.vmid()),
             ))
