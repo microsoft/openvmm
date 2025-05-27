@@ -13,6 +13,9 @@
     <script>
         const baseUrl = "https://openvmmghtestresults.blob.core.windows.net/results";
 
+        const cross = "&#10060;"; // Cross for failed tests
+        const check = "&#9989;"; // Check for passed tests
+
         function parseBlobs(xmlText) {
             const parser = new DOMParser();
             const xmlDoc = parser.parseFromString(xmlText, "text/xml");
@@ -21,7 +24,11 @@
             for (const blob of blobs) {
                 const name = blob.getElementsByTagName("Name")[0].textContent;
                 const date = new Date(blob.getElementsByTagName("Creation-Time")[0].textContent);
-                const metadata = blob.getElementsByTagName("Metadata").map(m => m.textContent);
+                let metadata = {};
+                for (const meta of blob.getElementsByTagName("Metadata")) {
+                    const child = meta.children[0];
+                    metadata[child.tagName] = child.textContent;
+                }
                 blobNames.push({
                     name: name,
                     creationTime: date,
@@ -81,7 +88,7 @@
                         });
                         let thisHtml = `<li>${job}<ul>`;
                         for (const test of run[job].tests) {
-                            let icon = test.failed ? "&#10060;" : "&#9989;"; // Cross for failed, check for passed.
+                            let icon = test.failed ? cross : check;
                             thisHtml += `<li><a href="${test.url}">${icon} ${test.name}</a></li>`;
                         }
                         thisHtml += "</ul></li>";
@@ -112,7 +119,8 @@
                         // Remove runs/ prefix.
                         return {
                             name: blob.name.replace(/^runs\//, ''),
-                            creationTime: blob.creationTime
+                            creationTime: blob.creationTime,
+                            failed: blob.metadata["petrifailed"],
                         };
                     });
                     runs.sort((a, b) => b.creationTime - a.creationTime); // Sort by creation time, newest first.
@@ -121,14 +129,16 @@
                             <tr>
                                 <th>Time</th>
                                 <th>Run</th>
+                                <th>Failed</th>
                             </tr>
                         </thead>
                         <tbody>`;
                     for (const run of runs) {
-                        const marker = run.metadata["petrifailed"] > 0 ? "&#10060;" : "&#9989;"; // Cross for failed runs, check for passing runs.
+                        const marker = run.failed > 0 ? cross : check;
                         html += `<tr>
                             <td>${run.creationTime.toLocaleString()}</td>
                             <td><a href="?run=${encodeURIComponent(run.name)}">${run.name} ${marker}</a></td>
+                            <td>${run.failed}</td>
                         </tr>`;
                     }
                     html += "</table>";
