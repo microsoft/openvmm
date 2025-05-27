@@ -46,7 +46,8 @@
             font-weight: bold;
         }
 
-        #logContainer tr.selected {
+        /* Don't select the screenshot column */
+        #logContainer tr.selected td:nth-child(-n+4) {
             outline: 2px solid #007acc;
             outline-offset: -2px;
         }
@@ -343,7 +344,6 @@
                     }
 
                     prepTestResults();
-
                 })
                 .catch(error => console.error('Error fetching test results:', error));
         }
@@ -413,7 +413,7 @@
         function renderLogs(filteredLogs) {
             let html = "";
             filteredLogs.forEach((log, i) => {
-                html += `<tr class="severity-${log.severity}" data-log-index="${i}">
+                html += `<tr class="severity-${log.severity}" id="log-${i}"  data-log-index="${i}">
                         <td title="${log.timestamp}">${log.relative}</td>
                         <td>${log.severity}</td>
                         <td>${log.source}</td>
@@ -505,6 +505,16 @@
         function enableRowSelectionAndCopy(container) {
             let selectedRow = null;
 
+            const hash = location.hash;
+            if (hash.startsWith('#log-')) {
+                selectedRow = document.querySelector(hash);
+                if (selectedRow) {
+                    // Scroll into view and simulate selection
+                    selectedRow.scrollIntoView({ block: 'center' });
+                    selectedRow.classList.add('selected');
+                }
+            }
+
             container.addEventListener('click', (e) => {
                 const row = e.target.closest('tr');
                 if (!row || !row.parentElement.matches('tbody')) return;
@@ -515,6 +525,7 @@
                 // Select new row
                 selectedRow = row;
                 selectedRow.classList.add('selected');
+                history.replaceState(null, '', `#${row.id}`);
             });
 
             document.addEventListener('copy', (e) => {
