@@ -57,17 +57,19 @@ impl UhProcessor<'_, HypervisorBacked> {
 
     /// Check the status of the TLB lock of the target VTL on the current VP.
     pub(crate) fn is_tlb_locked(&self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
+        // This function should only be called in debug assertions.
         assert!(cfg!(debug_assertions));
         debug_assert_eq!(requesting_vtl, Vtl::Vtl2);
-        let locally_locked = self.vtls_tlb_locked.get(requesting_vtl, target_vtl);
+        let local_status = self.vtls_tlb_locked.get(requesting_vtl, target_vtl);
         // The hypervisor may lock the TLB without us knowing, but the inverse should never happen.
-        if locally_locked {
+        if local_status {
             debug_assert!(self.is_tlb_locked_in_hypervisor(target_vtl));
         }
-        locally_locked
+        local_status
     }
 
     fn is_tlb_locked_in_hypervisor(&self, target_vtl: GuestVtl) -> bool {
+        // This function should only be called in debug assertions.
         assert!(cfg!(debug_assertions));
         let name = HvAllArchRegisterName(
             HvAllArchRegisterName::VsmVpSecureConfigVtl0.0 + target_vtl as u32,
