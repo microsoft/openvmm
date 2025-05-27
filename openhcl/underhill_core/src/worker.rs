@@ -700,7 +700,7 @@ impl UhVmNetworkSettings {
                     let nic = channel.remove().await.revoke().await;
                     nic.shutdown()
                 }
-                .instrument(tracing::info_span!("nic_shutdown",CVM_ALLOWED,  %instance_id))
+                .instrument(tracing::info_span!("nic_shutdown", CVM_ALLOWED, %instance_id))
                 .await
             }))
             .await;
@@ -710,7 +710,7 @@ impl UhVmNetworkSettings {
                 manager
                     .complete(keep_vf_alive)
                     .instrument(
-                        tracing::info_span!("vf_manager_shutdown",CVM_ALLOWED,  %instance_id),
+                        tracing::info_span!("vf_manager_shutdown", CVM_ALLOWED, %instance_id),
                     )
                     .await
             },

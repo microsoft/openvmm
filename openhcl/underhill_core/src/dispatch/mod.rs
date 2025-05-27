@@ -521,7 +521,7 @@ impl LoadedVm {
                 if let Some(network_settings) = self.network_settings.as_mut() {
                     network_settings
                         .unload_for_servicing()
-                        .instrument(tracing::info_span!("shutdown_mana",CVM_ALLOWED))
+                        .instrument(tracing::info_span!("shutdown_mana", CVM_ALLOWED))
                         .await;
                 }
             };
@@ -531,7 +531,7 @@ impl LoadedVm {
                 if let Some(nvme_manager) = self.nvme_manager.take() {
                     nvme_manager
                         .shutdown(nvme_keepalive)
-                        .instrument(tracing::info_span!("shutdown_nvme_vfio",CVM_ALLOWED,  %correlation_id, %nvme_keepalive))
+                        .instrument(tracing::info_span!("shutdown_nvme_vfio", CVM_ALLOWED, %correlation_id, %nvme_keepalive))
                         .await;
                 }
             };
@@ -540,7 +540,7 @@ impl LoadedVm {
             // restart.
             let shutdown_pci = async {
                 pci_shutdown::shutdown_pci_devices()
-                    .instrument(tracing::info_span!("shutdown_pci_devices",CVM_ALLOWED))
+                    .instrument(tracing::info_span!("shutdown_pci_devices", CVM_ALLOWED))
                     .await
             };
 
@@ -549,7 +549,7 @@ impl LoadedVm {
 
             Ok(state)
         }
-        .instrument(tracing::info_span!("servicing_save_vtl2",CVM_ALLOWED,  %correlation_id))
+        .instrument(tracing::info_span!("servicing_save_vtl2", CVM_ALLOWED, %correlation_id))
         .await;
 
         let mut state = match r {
