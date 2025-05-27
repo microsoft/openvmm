@@ -40,9 +40,8 @@ jobs:
             download "$run_id" \
             -p "*-vmm-tests-logs" \
             -D results
-          if find results -name petri.failed; then
-            echo TESTS_FAILED=1 >> $GITHUB_ENV
-          fi
+          FAIL_COUNT=$(find results -name petri.failed | wc -l)
+          echo "FAIL_COUNT=$FAIL_COUNT" >> $GITHUB_ENV
         env:
           event: ${{ github.event.workflow_run.event }}
           repo: ${{ github.event.workflow_run.repository.full_name }}
@@ -58,20 +57,16 @@ jobs:
             --source results \
             --auth-mode login
 
-          passed=true
-          if [ -n "$TESTS_FAILED" ]; then
-            passed=false
-          fi
-          echo "{\"passed\": $passed}" > results.json
           az storage blob upload \
             --blob-url "$BASE_URL/runs/$UPLOAD_PATH" \
-            --file results.json \
+            --file /dev/null \
+            --metadata petrifailed="$FAIL_COUNT" \
             --auth-mode login
         env:
           run_id: ${{ github.event.workflow_run.id }}
 
       - name: Report failing tests
-        if: ${{ github.event.workflow_run.event == 'pull_request' && env.TESTS_FAILED == '1' }}
+        if: ${{ github.event.workflow_run.event == 'pull_request' && env.FAIL_COUNT > 0 }}
         run: |
           gh pr comment \
             -R "$repo" \
