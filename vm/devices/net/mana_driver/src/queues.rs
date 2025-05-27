@@ -181,7 +181,7 @@ impl<T: IntoBytes + FromBytes + Immutable + KnownLayout> CqEq<T> {
             None
         } else if owner_count == cur_owner_count & OWNER_MASK as u8 {
             let qe = self.read_next::<T>(0);
-            self.next = self.next.wrapping_add(size_of_val(&qe) as u32);
+            self.next = self.next.wrapping_add(size_of::<T>() as u32);
             Some(qe)
         } else {
             tracing::error!(next = self.next, owner_count, queue_type = ?self.queue_type, id = self.id, "eq/cq wrapped");
@@ -319,9 +319,9 @@ impl Wq {
 
     /// Pushes a new work queue entry with an inline out-of-band buffer and
     /// external data via a scatter-gather list.
-    pub fn push<I: IntoIterator<Item = Sge>>(
+    pub fn push<I: IntoIterator<Item = Sge>, O: IntoBytes + Immutable + KnownLayout>(
         &mut self,
-        oob: &(impl IntoBytes + Immutable + KnownLayout),
+        oob: &O,
         sgl: I,
         client_oob_in_sgl: Option<u8>,
         gd_client_unit_data: u16,
@@ -330,13 +330,13 @@ impl Wq {
         I::IntoIter: ExactSizeIterator,
     {
         let sgl = sgl.into_iter();
-        let oob_size = match size_of_val(oob) {
+        let oob_size = match size_of::<O>() {
             0 | 8 => CLIENT_OOB_8,
             24 => CLIENT_OOB_24,
             32 => CLIENT_OOB_32,
             _ => panic!("invalid oob size"),
         };
-        let len = Self::entry_size(size_of_val(oob), sgl.len());
+        let len = Self::entry_size(size_of::<O>(), sgl.len());
         if self.available() < len {
             return Err(QueueFull);
         }
@@ -353,7 +353,7 @@ impl Wq {
 
         self.write_tail(0, hdr.as_bytes());
 
-        let offset = match size_of_val(oob) {
+        let offset = match size_of::<O>() {
             0 => 16,
             8 => {
                 self.write_tail(8, oob.as_bytes());

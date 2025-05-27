@@ -2978,7 +2978,7 @@ fn write_rndis_message<T: IntoBytes + Immutable + KnownLayout>(
     extra: usize,
     payload: &T,
 ) -> Result<usize, AccessError> {
-    let message_length = size_of::<rndisprot::MessageHeader>() + size_of_val(payload) + extra;
+    let message_length = size_of::<rndisprot::MessageHeader>() + size_of::<T>() + extra;
     writer.write(
         rndisprot::MessageHeader {
             message_type,
@@ -3329,7 +3329,9 @@ impl Adapter {
     ) -> Result<(), OidError> {
         // Vmswitch doesn't validate the NDIS header on this object, so read it manually.
         let mut params = rndisprot::NdisReceiveScaleParameters::new_zeroed();
-        let len = reader.len().min(size_of_val(&params));
+        let len = reader
+            .len()
+            .min(size_of::<rndisprot::NdisReceiveScaleParameters>());
         reader.clone().read(&mut params.as_mut_bytes()[..len])?;
 
         if ((params.flags & NDIS_RSS_PARAM_FLAG_DISABLE_RSS) != 0)
@@ -3547,7 +3549,7 @@ fn read_ndis_object<T: IntoBytes + FromBytes + Debug + Immutable + KnownLayout>(
 ) -> Result<T, OidError> {
     let mut buffer = T::new_zeroed();
     let sent_size = reader.len();
-    let len = sent_size.min(size_of_val(&buffer));
+    let len = sent_size.min(size_of::<T>());
     reader.read(&mut buffer.as_mut_bytes()[..len])?;
     validate_ndis_object_header(
         &rndisprot::NdisObjectHeader::read_from_prefix(buffer.as_bytes())

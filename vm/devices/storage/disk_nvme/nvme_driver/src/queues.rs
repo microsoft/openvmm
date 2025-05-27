@@ -61,7 +61,7 @@ impl SubmissionQueue {
             return Err(QueueFull);
         }
         self.mem
-            .write_obj(self.tail as usize * size_of_val(&command), &command);
+            .write_obj(self.tail as usize * size_of::<spec::Command>(), &command);
         self.tail = next_tail;
         Ok(())
     }

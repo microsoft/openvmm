@@ -78,7 +78,7 @@ impl Namespace {
         }
         *id = nvm::NamespaceIdentificationDescriptor {
             nidt: nvm::NamespaceIdentifierType::NSGUID.0,
-            nidl: size_of_val(&nid) as u8,
+            nidl: 0x10,
             rsvd: [0, 0],
             nid,
         };
@@ -183,11 +183,10 @@ impl Namespace {
                 let cdw10 = nvm::Cdw10Dsm::from(command.cdw10);
                 let cdw11 = nvm::Cdw11Dsm::from(command.cdw11);
                 // TODO: zerocopy: manual: review carefully! (https://github.com/microsoft/openvmm/issues/759)
-                let mut dsm_ranges =
-                    <[nvm::DsmRange]>::new_box_zeroed_with_elems(cdw10.nr_z() as usize + 1)
-                        .unwrap();
+                let count = cdw10.nr_z() as usize + 1;
+                let mut dsm_ranges = <[nvm::DsmRange]>::new_box_zeroed_with_elems(count).unwrap();
                 let prp =
-                    PrpRange::parse(&self.mem, size_of_val(dsm_ranges.as_ref()), command.dptr)?;
+                    PrpRange::parse(&self.mem, count * size_of::<nvm::DsmRange>(), command.dptr)?;
                 prp.read(&self.mem, dsm_ranges.as_mut_bytes())?;
                 tracing::debug!(nsid = self.nsid, ?cdw11, ?dsm_ranges, "dsm");
                 if cdw11.ad() {

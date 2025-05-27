@@ -71,7 +71,7 @@ impl IcPipe {
 
                 let header = hyperv_ic_protocol::Header {
                     message_type: MessageType::VERSION_NEGOTIATION,
-                    message_size: (size_of_val(&message)
+                    message_size: (size_of::<hyperv_ic_protocol::NegotiateMessage>()
                         + size_of_val(FRAMEWORK_VERSIONS)
                         + size_of_val(message_versions)) as u16,
                     status: Status::SUCCESS,

@@ -32,6 +32,7 @@ use gdma_defs::Wqe;
 use gdma_defs::access::WqeAccess;
 use gdma_defs::bnic as bnic_defs;
 use gdma_defs::bnic::ManaDestroyWqobjReq;
+use gdma_defs::bnic::ManaQueryFilterStateResponse;
 use gdma_defs::bnic::ManaTxShortOob;
 use gdma_defs::bnic::Tristate;
 use guestmem::GuestMemory;
@@ -242,7 +243,7 @@ impl BasicNic {
                 };
 
                 write.write(resp.as_bytes())?;
-                size_of_val(&resp)
+                size_of::<ManaQueryDeviceCfgResp>()
             }
             ManaCommandCode::MANA_CONFIG_VPORT_TX => {
                 let req: ManaConfigVportReq = read
@@ -259,7 +260,7 @@ impl BasicNic {
                     reserved: 0,
                 };
                 write.write(resp.as_bytes())?;
-                size_of_val(&resp)
+                size_of::<ManaConfigVportResp>()
             }
             ManaCommandCode::MANA_CREATE_WQ_OBJ => {
                 let req: ManaCreateWqobjReq =
@@ -311,7 +312,7 @@ impl BasicNic {
                 // Take ownership of the DMA regions.
                 state.remove_dma_region(req.wq_gdma_region).unwrap();
                 state.remove_dma_region(req.cq_gdma_region).unwrap();
-                size_of_val(&resp)
+                size_of::<ManaCreateWqobjResp>()
             }
             ManaCommandCode::MANA_DESTROY_WQ_OBJ => {
                 let req: ManaDestroyWqobjReq = read
@@ -411,13 +412,13 @@ impl BasicNic {
                     .get_mut(req.vport as usize)
                     .context("invalid vport")?;
 
-                let resp = gdma_defs::bnic::ManaQueryFilterStateResponse {
+                let resp = ManaQueryFilterStateResponse {
                     direction_to_vtl0: 0,
                     reserved: [0; 7],
                 };
 
                 write.write(resp.as_bytes())?;
-                size_of_val(&resp)
+                size_of::<ManaQueryFilterStateResponse>()
             }
             ManaCommandCode::MANA_QUERY_VPORT_CONFIG => {
                 let req: ManaQueryVportCfgReq = read
@@ -439,7 +440,7 @@ impl BasicNic {
                 };
 
                 write.write(resp.as_bytes())?;
-                size_of_val(&resp)
+                size_of::<ManaQueryVportCfgResp>()
             }
             ManaCommandCode::MANA_VTL2_ASSIGN_SERIAL_NUMBER => {
                 let req: ManaSetVportSerialNo =

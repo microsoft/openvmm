@@ -22,7 +22,11 @@ impl Namespace {
     ) -> Result<(), NvmeError> {
         let cdw10 = nvm::Cdw10ReservationRegister::from(command.cdw10);
         let mut data = nvm::ReservationRegister::new_zeroed();
-        let range = PrpRange::parse(&self.mem, size_of_val(&data), command.dptr)?;
+        let range = PrpRange::parse(
+            &self.mem,
+            size_of::<nvm::ReservationRegister>(),
+            command.dptr,
+        )?;
         range.read(&self.mem, data.as_mut_bytes())?;
 
         let current_key = (!cdw10.iekey()).then_some(data.crkey);
@@ -134,7 +138,11 @@ impl Namespace {
     ) -> Result<(), NvmeError> {
         let cdw10 = nvm::Cdw10ReservationAcquire::from(command.cdw10);
         let mut data = nvm::ReservationAcquire::new_zeroed();
-        let range = PrpRange::parse(&self.mem, size_of_val(&data), command.dptr)?;
+        let range = PrpRange::parse(
+            &self.mem,
+            size_of::<nvm::ReservationAcquire>(),
+            command.dptr,
+        )?;
         range.read(&self.mem, data.as_mut_bytes())?;
 
         // According to the spec, this is never to be set.
@@ -175,7 +183,11 @@ impl Namespace {
     ) -> Result<(), NvmeError> {
         let cdw10 = nvm::Cdw10ReservationRelease::from(command.cdw10);
         let mut data = nvm::ReservationRelease::new_zeroed();
-        let range = PrpRange::parse(&self.mem, size_of_val(&data), command.dptr)?;
+        let range = PrpRange::parse(
+            &self.mem,
+            size_of::<nvm::ReservationRelease>(),
+            command.dptr,
+        )?;
         range.read(&self.mem, data.as_mut_bytes())?;
 
         // According to the spec, this is never to be set.

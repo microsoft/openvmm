@@ -48,6 +48,7 @@ use scsi_core::AsyncScsiDisk;
 use scsi_core::Request;
 use scsi_core::ScsiResult;
 use scsi_defs as scsi;
+use scsi_defs::SenseData;
 use scsidisk::illegal_request_sense;
 use slab::Slab;
 use std::collections::hash_map::Entry;
@@ -452,21 +453,24 @@ impl WorkerInner {
             status,
         };
 
-        let packet_size = size_of_val(&header) + request_size;
+        let packet_size = size_of::<storvsp_protocol::Packet>() + request_size;
 
         // Zero pad or truncate the payload to the queue's packet size. This is
         // necessary because Windows guests check that each packet's size is
         // exactly the largest possible packet size for the negotiated protocol
         // version.
-        let len = size_of_val(&header) + size_of_val(payload);
+        let len = size_of::<storvsp_protocol::Packet>() + payload.len();
         let padding = [0; storvsp_protocol::SCSI_REQUEST_LEN_MAX];
         let (payload_bytes, padding_bytes) = if len > packet_size {
-            (&payload[..packet_size - size_of_val(&header)], &[][..])
+            (
+                &payload[..packet_size - size_of::<storvsp_protocol::Packet>()],
+                &[][..],
+            )
         } else {
             (payload, &padding[..packet_size - len])
         };
         assert_eq!(
-            size_of_val(&header) + payload_bytes.len() + padding_bytes.len(),
+            size_of::<storvsp_protocol::Packet>() + payload_bytes.len() + padding_bytes.len(),
             packet_size
         );
         writer
@@ -1253,7 +1257,7 @@ impl WorkerInner {
         let status = convert_srb_status_to_nt_status(result.srb_status);
         let mut payload = [0; 0x14];
         if let Some(sense) = result.sense_data {
-            payload[..size_of_val(&sense)].copy_from_slice(sense.as_bytes());
+            payload[..size_of::<SenseData>()].copy_from_slice(sense.as_bytes());
             tracing::trace!(sense_info = ?payload, sense_key = payload[2], asc = payload[12], "execute_scsi");
         };
         let response = storvsp_protocol::ScsiRequest {

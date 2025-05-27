@@ -25,7 +25,6 @@ use inspect::InspectMut;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use std::io::IoSlice;
-use std::mem::size_of_val;
 use task_control::Cancelled;
 use task_control::StopTask;
 use thiserror::Error;
@@ -245,9 +244,8 @@ impl ShutdownGuestChannel {
         };
         let response = hyperv_ic_protocol::Header {
             message_type: hyperv_ic_protocol::MessageType::VERSION_NEGOTIATION,
-            message_size: (size_of_val(&message)
-                + size_of_val(&framework_version)
-                + size_of_val(&message_version)) as u16,
+            message_size: (size_of::<hyperv_ic_protocol::NegotiateMessage>()
+                + (2 * size_of::<hyperv_ic_protocol::Version>())) as u16,
             status: Status::SUCCESS,
             transaction_id: header.transaction_id,
             flags: hyperv_ic_protocol::HeaderFlags::new()

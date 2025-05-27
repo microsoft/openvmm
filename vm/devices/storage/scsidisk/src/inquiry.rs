@@ -89,16 +89,17 @@ fn write_vpd_page<T: ?Sized + IntoBytes + Immutable + KnownLayout>(
     page_code: u8,
     page_data: &T,
 ) -> Result<usize, ScsiError> {
+    let size_of_data = size_of_val(page_data);
     let header = scsi::VpdPageHeader {
         device_type: scsi::DIRECT_ACCESS_DEVICE,
         page_code,
         reserved: 0,
-        page_length: size_of_val(page_data).try_into().unwrap(),
+        page_length: size_of_data.try_into().unwrap(),
     };
 
     let tx = std::cmp::min(
         allocation_length,
-        size_of_val(&header) + size_of_val(page_data),
+        size_of::<scsi::VpdPageHeader>() + size_of_data,
     );
 
     let mut writer = external_data.writer();
@@ -107,7 +108,7 @@ fn write_vpd_page<T: ?Sized + IntoBytes + Immutable + KnownLayout>(
         .map_err(ScsiError::MemoryAccess)?;
 
     writer
-        .write(&page_data.as_bytes()[..tx - size_of_val(&header)])
+        .write(&page_data.as_bytes()[..tx - size_of_data])
         .map_err(ScsiError::MemoryAccess)?;
 
     Ok(tx)
@@ -454,7 +455,7 @@ impl SimpleScsiDisk {
             ..INQUIRY_DATA_TEMPLATE
         };
 
-        let tx = std::cmp::min(allocation_length, size_of_val(&page));
+        let tx = std::cmp::min(allocation_length, size_of::<scsi::InquiryData>());
         external_data
             .writer()
             .write(&page.as_bytes()[..tx])

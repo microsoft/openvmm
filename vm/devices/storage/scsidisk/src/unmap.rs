@@ -33,7 +33,7 @@ fn validate_unmap_list_header(
             .unwrap()
             .0; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
     let unmap_list_header_length = unmap_list_header.data_length.get() as usize; // TODO: zerocopy: from-prefix (read_from_prefix): use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-    let expected = allocation_length - size_of_val(&unmap_list_header.data_length);
+    let expected = allocation_length - 2; // 2 bytes for the header length field itself
     if unmap_list_header_length != expected {
         tracelimit::error_ratelimited!(unmap_list_header_length, expected, "validate_unmap_error");
         return Err(ScsiError::IllegalRequest(AdditionalSenseCode::INVALID_CDB));

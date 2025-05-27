@@ -302,16 +302,17 @@ fn write_vpd_page<T: ?Sized + IntoBytes + Immutable + KnownLayout>(
     page_code: u8,
     page_data: &T,
 ) -> Result<usize, ScsiDvdError> {
+    let size_of_data = size_of_val(page_data);
     let header = scsi::VpdPageHeader {
         device_type: scsi::READ_ONLY_DIRECT_ACCESS_DEVICE,
         page_code,
         reserved: 0,
-        page_length: size_of_val(page_data).try_into().unwrap(),
+        page_length: size_of_data.try_into().unwrap(),
     };
 
     let tx = std::cmp::min(
         allocation_length,
-        size_of_val(&header) + size_of_val(page_data),
+        size_of::<scsi::VpdPageHeader>() + size_of_data,
     );
 
     let mut writer = external_data.writer();
@@ -320,7 +321,7 @@ fn write_vpd_page<T: ?Sized + IntoBytes + Immutable + KnownLayout>(
         .map_err(ScsiDvdError::MemoryAccess)?;
 
     writer
-        .write(&page_data.as_bytes()[..tx - size_of_val(&header)])
+        .write(&page_data.as_bytes()[..tx - size_of::<scsi::VpdPageHeader>()])
         .map_err(ScsiDvdError::MemoryAccess)?;
 
     Ok(tx)
@@ -483,14 +484,17 @@ impl SimpleScsiDvd {
             let header_size = self.iso_init_event_header(
                 external_data,
                 allocation_length,
-                (size_of::<scsi::NotificationEventStatusHeader>() + size_of_val(&media_status)
+                (size_of::<scsi::NotificationEventStatusHeader>()
+                    + size_of::<scsi::NotificationMediaStatus>()
                     - size_of::<u16>()) as u16,
                 false,
                 scsi::NOTIFICATION_MEDIA_STATUS_CLASS_EVENTS,
             )?;
 
-            let body_size =
-                std::cmp::min(size_of_val(&media_status), allocation_length - header_size);
+            let body_size = std::cmp::min(
+                size_of::<scsi::NotificationMediaStatus>(),
+                allocation_length - header_size,
+            );
 
             external_data
                 .subrange(header_size, external_data.len() - header_size)
@@ -522,14 +526,14 @@ impl SimpleScsiDvd {
                     external_data,
                     allocation_length,
                     (size_of::<scsi::NotificationEventStatusHeader>()
-                        + size_of_val(&operational_status)
+                        + size_of::<scsi::NotificationOperationalStatus>()
                         - size_of::<u16>()) as u16,
                     false,
                     scsi::NOTIFICATION_OPERATIONAL_CHANGE_CLASS_EVENTS,
                 )?;
 
                 let body_size = std::cmp::min(
-                    size_of_val(&operational_status),
+                    size_of::<scsi::NotificationOperationalStatus>(),
                     allocation_length - header_size,
                 );
                 external_data
@@ -586,13 +590,13 @@ impl SimpleScsiDvd {
                     external_data,
                     allocation_length,
                     (size_of::<scsi::NotificationEventStatusHeader>()
-                        + size_of_val(&external_status)
+                        + size_of::<scsi::NotificationExternalStatus>()
                         - size_of::<u16>()) as u16,
                     false,
                     scsi::NOTIFICATION_EXTERNAL_REQUEST_CLASS_EVENTS,
                 )?;
                 let body_size = std::cmp::min(
-                    size_of_val(&external_status),
+                    size_of::<scsi::NotificationExternalStatus>(),
                     allocation_length - header_size,
                 );
                 external_data
@@ -623,7 +627,7 @@ impl SimpleScsiDvd {
                     priority: 0.into(),
                 };
                 let body_size = std::cmp::min(
-                    size_of_val(&multi_host_status),
+                    size_of::<scsi::NotificationMultiHostStatus>(),
                     allocation_length - header_size,
                 );
                 external_data
@@ -639,7 +643,8 @@ impl SimpleScsiDvd {
                 let header_size = self.iso_init_event_header(
                     external_data,
                     allocation_length,
-                    (size_of::<scsi::NotificationEventStatusHeader>() + size_of_val(&media_status)
+                    (size_of::<scsi::NotificationEventStatusHeader>()
+                        + size_of::<scsi::NotificationMultiHostStatus>()
                         - size_of::<u16>()) as u16,
                     false,
                     scsi::NOTIFICATION_MEDIA_STATUS_CLASS_EVENTS,
@@ -651,8 +656,10 @@ impl SimpleScsiDvd {
                     .status_info
                     .set_media_present(self.media_state.lock().drive_state.medium_present());
                 let datab: &[u8] = media_status.as_bytes();
-                let body_size =
-                    std::cmp::min(size_of_val(&media_status), allocation_length - header_size);
+                let body_size = std::cmp::min(
+                    size_of::<scsi::NotificationMediaStatus>(),
+                    allocation_length - header_size,
+                );
                 external_data
                     .subrange(header_size, external_data.len() - header_size)
                     .writer()
@@ -676,7 +683,10 @@ impl SimpleScsiDvd {
                     device_busy_status: scsi::NOTIFICATION_BUSY_STATUS_NO_EVENT,
                     time: 0.into(),
                 };
-                let body_size = std::cmp::min(size_of_val(&data), allocation_length - header_size);
+                let body_size = std::cmp::min(
+                    size_of::<scsi::NotificationBusyStatus>(),
+                    allocation_length - header_size,
+                );
                 external_data
                     .subrange(header_size, external_data.len() - header_size)
                     .writer()

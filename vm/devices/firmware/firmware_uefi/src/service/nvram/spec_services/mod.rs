@@ -728,7 +728,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                 // split off the variable-length WIN_CERTIFICATE_UEFI_GUID cert
                 // data from the variable length payload
                 let (pkcs7_data, var_data) = {
-                    let auth_info_offset = size_of_val(&auth_hdr.timestamp);
+                    let auth_info_offset = size_of::<EFI_VARIABLE_AUTHENTICATION_2>();
 
                     // use the header's length value to extract the
                     // WIN_CERTIFICATE_UEFI_GUID struct + variable length payload
@@ -948,7 +948,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                 // auth header and go on to actually performing the requested
                 // operation of the remaining payload.
                 let total_auth_hdr_len =
-                    size_of_val(&auth_hdr.timestamp) + (auth_info.header.length as usize);
+                    size_of::<EFI_VARIABLE_AUTHENTICATION_2>() + (auth_info.header.length as usize);
 
                 (
                     in_data_size - total_auth_hdr_len as u32,

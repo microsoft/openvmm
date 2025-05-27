@@ -651,7 +651,11 @@ async fn run_receive(
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
         match header.packet_type {
             protocol::PacketType::EVENT => {
-                local_node.event(remote_id, &buf[size_of_val(&header)..], &mut fds);
+                local_node.event(
+                    remote_id,
+                    &buf[size_of::<protocol::PacketHeader>()..],
+                    &mut fds,
+                );
                 fds.clear();
             }
             protocol::PacketType::RELEASE_FDS => {

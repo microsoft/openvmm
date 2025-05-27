@@ -436,7 +436,8 @@ impl UefiDevice {
         use uefi_specs::hyperv::nvram::NvramCommand;
         use uefi_specs::hyperv::nvram::NvramVariableCommand;
 
-        let command_addr = desc_addr + size_of_val(&desc) as u64;
+        let command_addr =
+            desc_addr + size_of::<uefi_specs::hyperv::nvram::NvramCommandDescriptor>() as u64;
 
         let (status, err) = match desc.command {
             NvramCommand::GET_VARIABLE => {

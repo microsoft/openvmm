@@ -284,10 +284,9 @@ impl SimpleScsiDisk {
         let lba_status_descriptors_length =
             lba_descriptors_used * size_of::<scsi::LbaStatusDescriptor>();
         let mut lba_status_list_header = scsi::LbaStatusListHeader::new_zeroed();
-        lba_status_list_header.parameter_length = ((lba_status_descriptors_length
-            + size_of_val(&lba_status_list_header.reserved))
-            as u32)
-            .into();
+        // Add a u32 for reserved header space
+        lba_status_list_header.parameter_length =
+            ((lba_status_descriptors_length + size_of::<u32>()) as u32).into();
 
         buffer[0..size_of::<scsi::LbaStatusListHeader>()]
             .copy_from_slice(lba_status_list_header.as_bytes());

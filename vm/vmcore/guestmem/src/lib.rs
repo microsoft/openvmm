@@ -1657,7 +1657,7 @@ impl GuestMemory {
         current: T,
         new: T,
     ) -> Result<Result<T, T>, GuestMemoryError> {
-        let len = size_of_val(&new);
+        let len = size_of::<T>();
         self.with_op(
             Some((gpa, len as u64)),
             GuestMemoryOperation::CompareExchange,

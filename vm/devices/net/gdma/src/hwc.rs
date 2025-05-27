@@ -226,7 +226,7 @@ impl HwControl {
                 .context("reading request message header")?;
 
             let mut read = MemoryRead::limit(read, hdr.req.msg_size as usize);
-            read.skip(size_of_val(&hdr))
+            read.skip(size_of::<GdmaReqHdr>())
                 .context("message size too small")?;
 
             let mut write = MemoryWrite::limit(rqe.access(&queues.gm), hdr.resp.msg_size as usize);
@@ -274,7 +274,7 @@ impl HwControl {
 
             let rx_oob = HwcRxOob {
                 wqe_addr_low_or_offset: rqe_offset,
-                tx_oob_data_size: (size_of_val(&resp) + response_len) as u32,
+                tx_oob_data_size: (size_of::<GdmaRespHdr>() + response_len) as u32,
                 ..FromZeros::new_zeroed()
             };
 
@@ -317,7 +317,7 @@ impl HwControl {
                 write
                     .write(resp.as_bytes())
                     .context("writing verify vf driver response")?;
-                size_of_val(&resp)
+                size_of::<GdmaVerifyVerResp>()
             }
             GdmaRequestType::GDMA_QUERY_MAX_RESOURCES => {
                 let resp = GdmaQueryMaxResourcesResp {
@@ -336,7 +336,7 @@ impl HwControl {
                 write
                     .write(resp.as_bytes())
                     .context("writing query max response")?;
-                size_of_val(&resp)
+                size_of::<GdmaQueryMaxResourcesResp>()
             }
             GdmaRequestType::GDMA_LIST_DEVICES => {
                 let mut resp = GdmaListDevicesResp {
@@ -349,7 +349,7 @@ impl HwControl {
                 write
                     .write(resp.as_bytes())
                     .context("writing gdma list response")?;
-                size_of_val(&resp)
+                size_of::<GdmaListDevicesResp>()
             }
             GdmaRequestType::GDMA_REGISTER_DEVICE => {
                 if hdr.dev_id != BNIC_DEV_ID {
@@ -371,7 +371,7 @@ impl HwControl {
                 write
                     .write(resp.as_bytes())
                     .context("writing register device response")?;
-                size_of_val(&resp)
+                size_of::<GdmaRegisterDeviceResp>()
             }
             GdmaRequestType::GDMA_CREATE_DMA_REGION => {
                 let req: GdmaCreateDmaRegionReq =
@@ -391,7 +391,7 @@ impl HwControl {
                 write
                     .write(resp.as_bytes())
                     .context("writing dma region response")?;
-                size_of_val(&resp)
+                size_of::<GdmaCreateDmaRegionResp>()
             }
             GdmaRequestType::GDMA_CREATE_QUEUE => {
                 let req: GdmaCreateQueueReq = read.read_plain().context("reading queue request")?;
@@ -414,7 +414,7 @@ impl HwControl {
 
                 // Take ownership of the DMA region.
                 self.state.remove_dma_region(req.gdma_region).unwrap();
-                size_of_val(&resp)
+                size_of::<GdmaCreateQueueResp>()
             }
             GdmaRequestType::GDMA_DISABLE_QUEUE => {
                 let req: GdmaDisableQueueReq = read

@@ -240,7 +240,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         let num_msix = 1;
         let mut interrupt0 = device.map_interrupt(0, 0)?;
         let mut map = RegMap::new_zeroed();
-        for i in 0..size_of_val(&map) / 4 {
+        for i in 0..size_of::<RegMap>() / 4 {
             let v = bar0_mapping.read_u32(i * 4);
             // Unmapped device memory will return -1 on reads, so check the first 32
             // bits for this condition to get a clear error message early.
@@ -661,7 +661,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             msg_type: req_msg_type,
             msg_version: req_msg_version,
             hwc_msg_id: 0,
-            msg_size: (size_of::<GdmaReqHdr>() + size_of_val(&req)) as u32,
+            msg_size: (size_of::<GdmaReqHdr>() + size_of::<Req>()) as u32,
         };
         let expected_resp_hdr = GdmaMsgHdr {
             msg_type: resp_msg_type,
@@ -684,7 +684,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         );
         self.dma_buffer.write_obj(REQUEST_PAGE * PAGE_SIZE, &hdr);
         self.dma_buffer
-            .write_obj(REQUEST_PAGE * PAGE_SIZE + size_of_val(&hdr), &req);
+            .write_obj(REQUEST_PAGE * PAGE_SIZE + size_of::<GdmaReqHdr>(), &req);
 
         let oob = HwcTxOob {
             flags3: HwcTxOobFlags3::new().with_vscq_id(self.cq.id()),
@@ -700,7 +700,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                     [Sge {
                         address: self.dma_buffer.pfns()[REQUEST_PAGE] * PAGE_SIZE64,
                         mem_key: self.gpa_mkey,
-                        size: (size_of_val(&hdr) + size_of_val(&req)) as u32,
+                        size: (size_of::<GdmaReqHdr>() + size_of::<Req>()) as u32,
                     }],
                     None,
                     0,
@@ -718,7 +718,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                     hdr.activity_id,
                     sgl_phys_addr,
                     req_phys_addr,
-                    size_of_val(&hdr) + size_of_val(&req),
+                    size_of::<GdmaReqHdr>() + size_of::<Req>(),
                     mem_key,
                 )
             };
@@ -750,7 +750,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
 
             let resp = self
                 .dma_buffer
-                .read_obj::<Resp>(RESPONSE_PAGE * PAGE_SIZE + size_of_val(&resp_hdr));
+                .read_obj::<Resp>(RESPONSE_PAGE * PAGE_SIZE + size_of::<GdmaRespHdr>());
             Ok(resp)
         };
         let resp = match hw_access.await {
