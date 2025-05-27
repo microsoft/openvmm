@@ -2,7 +2,8 @@ name: Upload Petri Test Results
 
 on:
   workflow_run:
-    types: [completed]
+    types:
+      - completed
     workflows:
       - '[flowey] OpenVMM CI'
       - '[flowey] OpenVMM PR'
