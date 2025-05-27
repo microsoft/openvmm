@@ -18,12 +18,14 @@
             const xmlDoc = parser.parseFromString(xmlText, "text/xml");
             const blobs = xmlDoc.getElementsByTagName("Blob");
             let blobNames = [];
-            for (let i = 0; i < blobs.length; i++) {
-                const name = blobs[i].getElementsByTagName("Name")[0].textContent;
-                const date = new Date(blobs[i].getElementsByTagName("Creation-Time")[0].textContent);
+            for (const blob of blobs) {
+                const name = blob.getElementsByTagName("Name")[0].textContent;
+                const date = new Date(blob.getElementsByTagName("Creation-Time")[0].textContent);
+                const metadata = blob.getElementsByTagName("Metadata").map(m => m.textContent);
                 blobNames.push({
                     name: name,
                     creationTime: date,
+                    metadata: metadata,
                 });
             }
             return blobNames;
@@ -40,8 +42,13 @@
                     for (const blob of blobs) {
                         const nameParts = blob.name.split("/");
                         let fileName = nameParts[nameParts.length - 1];
-                        if (fileName !== "petri.jsonl") {
-                            continue;
+                        let failed;
+                        if (fileName === "petri.passed") {
+                            failed = false;
+                        } else if (fileName === "petri.failed") {
+                            failed = true;
+                        } else {
+                            continue; // Not a test result file.
                         }
                         const testName = nameParts[nameParts.length - 2];
                         const jobName = nameParts[nameParts.length - 3];
@@ -54,7 +61,6 @@
                             };
                         }
                         let job = run[jobName];
-                        const failed = Math.random() < 0.1; // TODO
                         job.failed |= failed;
                         job.tests.push({
                             name: testName,
@@ -97,7 +103,7 @@
         }
 
         function getRunList() {
-            const url = `${baseUrl}?restype=container&comp=list&showonly=files&prefix=runs/`;
+            const url = `${baseUrl}?restype=container&comp=list&showonly=files&include=metadata&prefix=runs/`;
             fetch(url)
                 .then(response => response.text())
                 .then(data => {
@@ -119,9 +125,10 @@
                         </thead>
                         <tbody>`;
                     for (const run of runs) {
+                        const marker = run.metadata["petrifailed"] > 0 ? "&#10060;" : "&#9989;"; // Cross for failed runs, check for passing runs.
                         html += `<tr>
                             <td>${run.creationTime.toLocaleString()}</td>
-                            <td><a href="?run=${encodeURIComponent(run.name)}">${run.name}</a></td>
+                            <td><a href="?run=${encodeURIComponent(run.name)}">${run.name} ${marker}</a></td>
                         </tr>`;
                     }
                     html += "</table>";
