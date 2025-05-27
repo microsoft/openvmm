@@ -31,9 +31,13 @@ jobs:
       - name: Download matching artifacts
         run: |
           if [ "$event" = "pull_request" ]; then
-            echo "UPLOAD_PATH=pr/$run_id" >> "$GITHUB_ENV"
+            # Get the associated PR number. Work around GitHub Actions often not
+            # populating the `pull_requests` array. See
+            # <https://github.com/orgs/community/discussions/25220>.
+            pr=$(gh pr view --repo "${repo}" "${head_branch}" --json number --jq .number)
+            echo "SOURCE_PR=$pr" >> "$GITHUB_ENV"
           else
-            echo "UPLOAD_PATH=ci/$head_branch/$run_id" >> "$GITHUB_ENV"
+            echo "SOURCE_PR=" >> "$GITHUB_ENV"
           fi
           mkdir -p results
           gh run \
@@ -43,52 +47,53 @@ jobs:
             -D results
           FAIL_COUNT=$(find results -name petri.failed | wc -l)
           echo "FAIL_COUNT=$FAIL_COUNT" >> $GITHUB_ENV
+          echo "SOURCE_BRANCH=$head_branch" >> "$GITHUB_ENV"
         env:
           event: ${{ github.event.workflow_run.event }}
           repo: ${{ github.event.workflow_run.repository.full_name }}
           run_id: ${{ github.event.workflow_run.id }}
-          head_branch: ${{ github.event.workflow_run.head_branch }}
+          # If the PR is from a fork, prefix it with `<owner-login>:`.
+          head_branch: |-
+            ${{
+              (github.event.workflow_run.head_repository.owner.login != github.event.workflow_run.repository.owner.login)
+                && format('{0}:{1}', github.event.workflow_run.head_repository.owner.login, github.event.workflow_run.head_branch)
+                || github.event.workflow_run.head_branch
+            }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload to Azure Blob Storage
         run: |
           az storage blob upload-batch \
             --destination "$BASE_URL" \
-            --destination-path "$UPLOAD_PATH" \
+            --destination-path "$run_id" \
             --source results \
             --auth-mode login
+
+          metadata="petrifailed=$FAIL_COUNT ghbranch=$SOURCE_BRANCH"
+          if [ -n "$SOURCE_PR" ]; then
+            metadata="$metadata ghpr=$SOURCE_PR"
+          fi
 
           # Store a metadata blob in a separate portion of the hierarchy so that
           # it can be cheaply queried.
           az storage blob upload \
-            --blob-url "$BASE_URL/runs/$UPLOAD_PATH" \
+            --blob-url "$BASE_URL/runs/$run_id" \
             --file /dev/null \
-            --metadata petrifailed="$FAIL_COUNT" \
+            --metadata "$metadata" \
             --auth-mode login
         env:
           run_id: ${{ github.event.workflow_run.id }}
 
       - name: Report failing tests
-        if: ${{ github.event.workflow_run.event == 'pull_request' && env.FAIL_COUNT > 0 }}
+        if: ${{ env.SOURCE_PR && env.FAIL_COUNT > 0 }}
         run: |
-          # Get the associated PR number. Work around GitHub Actions often not
-          # populating the `pull_requests` array. See
-          # <https://github.com/orgs/community/discussions/25220>.
-          pr=$(gh pr view --repo "${repo}" "${pr_branch}" --json number --jq .number)
           gh pr comment \
             -R "$repo" \
-            "$pr" \
+            "$SOURCE_PR" \
             -F - <<EOF
-          [At least one Petri test failed.](https://openvmm.dev/test-results/index.html?run=$UPLOAD_PATH)
+          [At least one Petri test failed.](https://openvmm.dev/test-results/index.html?run=$run_id)
           EOF
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           repo: ${{ github.event.workflow_run.repository.full_name }}
           run_id: ${{ github.event.workflow_run.id }}
-          # If the PR is from a fork, prefix it with `<owner-login>:`.
-          pr_branch: |-
-            ${{
-              (github.event.workflow_run.head_repository.owner.login != github.event.workflow_run.repository.owner.login)
-                && format('{0}:{1}', github.event.workflow_run.head_repository.owner.login, github.event.workflow_run.head_branch)
-                || github.event.workflow_run.head_branch
-            }}

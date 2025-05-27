@@ -9,6 +9,16 @@
             font-family: monospace;
             font-size: 14px;
         }
+
+        table {
+            border-collapse: collapse;
+        }
+
+        th, td {
+            border: 1px solid #ddd;
+            padding: 6px 10px;
+            text-align: left;
+        }
     </style>
     <script>
         const baseUrl = "https://openvmmghtestresults.blob.core.windows.net/results";
@@ -120,7 +130,9 @@
                         return {
                             name: blob.name.replace(/^runs\//, ''),
                             creationTime: blob.creationTime,
-                            failed: blob.metadata["petrifailed"],
+                            failed: blob.metadata["petrifailed"] || "",
+                            branch: blob.metadata["ghbranch"] || "",
+                            pr: blob.metadata["ghpr"],
                         };
                     });
                     runs.sort((a, b) => b.creationTime - a.creationTime); // Sort by creation time, newest first.
@@ -128,17 +140,25 @@
                         <thead>
                             <tr>
                                 <th>Time</th>
-                                <th>Run</th>
+                                <th>Results</th>
                                 <th>Failed</th>
+                                <th>PR</th>
+                                <th>Branch</th>
+                                <th>GitHub Run</th>
                             </tr>
                         </thead>
                         <tbody>`;
                     for (const run of runs) {
                         const marker = run.failed > 0 ? cross : check;
+                        const pr = run.pr ? `<a href="https://github.com/microsoft/openvmm/pull/${run.pr}">#${run.pr}</a>` : "";
+                        const run_id = run.name.split("/").pop();
                         html += `<tr>
                             <td>${run.creationTime.toLocaleString()}</td>
-                            <td><a href="?run=${encodeURIComponent(run.name)}">${run.name} ${marker}</a></td>
+                            <td>${marker} <a href="?run=${encodeURIComponent(run.name)}">${run.name}</a></td>
                             <td>${run.failed}</td>
+                            <td>${pr}</td>
+                            <td>${run.branch}</td>
+                            <td><a href="https://github.com/microsoft/openvmm/actions/runs/${run_id}">${run_id}</a></td>
                         </tr>`;
                     }
                     html += "</table>";
