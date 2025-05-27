@@ -98,6 +98,7 @@ pub struct EmuTranslateResult {
 }
 
 /// The translation, if any, provided in the intercept message and provided by [`EmulatorSupport`].
+#[derive(Debug)]
 pub struct InitialTranslation {
     /// GVA for the translation
     pub gva: u64,

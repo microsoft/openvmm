@@ -617,7 +617,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
         let translate_mode = emulate::TranslateMode::try_from(message.header.intercept_access_type)
             .expect("unexpected intercept access type");
 
-        let translation = virt_support_x86emu::emulate::InitialTranslation {
+        let translation = emulate::InitialTranslation {
             gva: message.guest_virtual_address,
             gpa: message.guest_physical_address,
             translate_mode,
@@ -716,7 +716,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
         // remains usable until the VP is resumed back to direct execution.
         control_flags.set_set_page_table_bits(true);
         control_flags.set_tlb_flush_inhibit(true);
-        self.vp.set_tlb_lock(Vtl::Vtl2, target_vtl);
+        self.vp.set_tlb_lock(Vtl::Vtl2, GuestVtl::Vtl0);
 
         // In case we're not running ring 0, check privileges against VP state
         // as of when the original intercept came in - since the emulator
