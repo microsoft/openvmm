@@ -91,7 +91,7 @@ jobs:
             -R "$repo" \
             "$SOURCE_PR" \
             -F - <<EOF
-          [At least one Petri test failed.](https://openvmm.dev/test-results/index.html?run=$run_id)
+          [At least one Petri test failed.](https://openvmm.dev/test-results/?run=$run_id)
           EOF
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
