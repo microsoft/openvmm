@@ -8,7 +8,6 @@ use crate::UhProcessor;
 use hcl::GuestVtl;
 use hvdef::HvAllArchRegisterName;
 use hvdef::Vtl;
-use hvdef::hypercall::HvInputVtl;
 
 impl UhProcessor<'_, HypervisorBacked> {
     /// Causes the specified VTL on the current VP to wait on all TLB locks.
@@ -57,28 +56,26 @@ impl UhProcessor<'_, HypervisorBacked> {
     }
 
     /// Check the status of the TLB lock of the target VTL on the current VP.
-    #[cfg(debug_assertions)]
     pub(crate) fn is_tlb_locked(&self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
+        assert!(cfg!(debug_assertions));
         debug_assert_eq!(requesting_vtl, Vtl::Vtl2);
         let locally_locked = self.vtls_tlb_locked.get(requesting_vtl, target_vtl);
         // The hypervisor may lock the TLB without us knowing, but the inverse should never happen.
         if locally_locked {
             debug_assert!(self.is_tlb_locked_in_hypervisor(target_vtl));
-            true
-        } else {
-            self.is_tlb_locked_in_hypervisor(target_vtl)
         }
+        locally_locked
     }
 
-    #[cfg(debug_assertions)]
     fn is_tlb_locked_in_hypervisor(&self, target_vtl: GuestVtl) -> bool {
+        assert!(cfg!(debug_assertions));
         let name = HvAllArchRegisterName(
             HvAllArchRegisterName::VsmVpSecureConfigVtl0.0 + target_vtl as u32,
         );
         let result = self
             .partition
             .hcl
-            .get_vp_register(name, HvInputVtl::CURRENT_VTL)
+            .get_vp_register(name, hvdef::hypercall::HvInputVtl::CURRENT_VTL)
             .expect("failure is a misconfiguration");
         let config = hvdef::HvRegisterVsmVpSecureVtlConfig::from(result.as_u64());
         config.tlb_locked()
