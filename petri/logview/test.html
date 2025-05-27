@@ -334,6 +334,7 @@
                         message = ansiToHtml(message);
 
                         logEntries.push({
+                            index: i,
                             timestamp: timestamp,
                             relative: relative,
                             severity: severity,
@@ -413,7 +414,7 @@
         function renderLogs(filteredLogs) {
             let html = "";
             filteredLogs.forEach((log, i) => {
-                html += `<tr class="severity-${log.severity}" id="log-${i}"  data-log-index="${i}">
+                html += `<tr class="severity-${log.severity}" id="log-${log.index}" data-log-index="${i}">
                         <td title="${log.timestamp}">${log.relative}</td>
                         <td>${log.severity}</td>
                         <td>${log.source}</td>
