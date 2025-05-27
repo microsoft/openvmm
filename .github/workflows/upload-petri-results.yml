@@ -4,8 +4,8 @@ on:
   workflow_run:
     types: [completed]
     workflows:
-      - "[flowey] OpenVMM CI"
-      - "[flowey] OpenVMM PR"
+      - '[flowey] OpenVMM CI'
+      - '[flowey] OpenVMM PR'
 
 permissions:
   id-token: write
