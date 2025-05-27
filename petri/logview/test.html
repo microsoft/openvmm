@@ -397,11 +397,7 @@
                     } else if (searchInput === document.activeElement) {
                         searchInput.blur();
                     } else if (selectedRow) {
-                        if (selectedRow.tr) {
-                            selectedRow.tr.classList.remove('selected');
-                        }
-                        selectedRow = null;
-                        history.replaceState(null, '', window.location.pathname);
+                        deselectRow();
                     }
                 }
             });
@@ -527,6 +523,14 @@
             history.replaceState(null, '', `#${tr.id}`);
         }
 
+        function deselectRow() {
+            if (selectedRow?.tr) {
+                selectedRow.tr.classList.remove('selected');
+            }
+            selectedRow = null;
+            history.replaceState(null, '', '#');
+        }
+
         function enableRowSelectionAndCopy(container) {
             const hash = location.hash;
             if (hash.startsWith('#log-')) {
@@ -541,7 +545,11 @@
             container.addEventListener('click', (e) => {
                 const row = e.target.closest('tr');
                 if (!row || !row.parentElement.matches('tbody')) return;
-                selectRow(row);
+                if (row === selectedRow?.tr) {
+                    deselectRow();
+                } else {
+                    selectRow(row);
+                }
             });
 
             document.addEventListener('copy', (e) => {
