@@ -57,6 +57,8 @@ jobs:
             --source results \
             --auth-mode login
 
+          # Store a metadata blob in a separate portion of the hierarchy so that
+          # it can be cheaply queried.
           az storage blob upload \
             --blob-url "$BASE_URL/runs/$UPLOAD_PATH" \
             --file /dev/null \
