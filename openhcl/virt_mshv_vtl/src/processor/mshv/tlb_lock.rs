@@ -26,6 +26,7 @@ impl UhProcessor<'_, HypervisorBacked> {
     }
 
     /// Lock the TLB of the target VTL on the current VP.
+    #[expect(dead_code)]
     pub(crate) fn set_tlb_lock(&mut self, requesting_vtl: Vtl, target_vtl: GuestVtl) {
         debug_assert_eq!(requesting_vtl, Vtl::Vtl2);
 
