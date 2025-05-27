@@ -292,6 +292,8 @@
         }
 
         let logEntries = [];
+        let selectedId = null;
+        let selectedRow = null;
         const baseUrl = "https://openvmmghtestresults.blob.core.windows.net/results/";
 
         function getTestResults(run, job, test) {
@@ -393,8 +395,15 @@
                     if (searchInput.value) {
                         searchInput.value = '';
                         renderLogs(logEntries);
-                    } else {
+                    } else if (searchInput === document.activeElement) {
                         searchInput.blur();
+                    } else if (selectedId) {
+                        if (selectedRow) {
+                            selectedRow.classList.remove('selected');
+                        }
+                        selectedId = null;
+                        selectedRow = null;
+                        history.replaceState(null, '', window.location.pathname);
                     }
                 }
             });
@@ -425,6 +434,14 @@
             });
             const logBody = document.getElementById("logBody");
             logBody.innerHTML = html;
+            selectedRow = null;
+            if (selectedId) {
+                const row = document.getElementById(selectedId);
+                if (row) {
+                    selectRow(row);
+                    row.scrollIntoView({ block: 'center' });
+                }
+            }
             insertFloatingScreenshots(filteredLogs);
         }
 
@@ -503,30 +520,31 @@
             });
         }
 
-        function enableRowSelectionAndCopy(container) {
-            let selectedRow = null;
+        function selectRow(row) {
+            if (selectedRow) {
+                selectedRow.classList.remove('selected');
+            }
+            selectedId = row.id;
+            selectedRow = row;
+            selectedRow.classList.add('selected');
+            history.replaceState(null, '', `#${row.id}`);
+        }
 
+        function enableRowSelectionAndCopy(container) {
             const hash = location.hash;
             if (hash.startsWith('#log-')) {
-                selectedRow = document.querySelector(hash);
-                if (selectedRow) {
+                let row = document.querySelector(hash);
+                if (row) {
                     // Scroll into view and simulate selection
-                    selectedRow.scrollIntoView({ block: 'center' });
-                    selectedRow.classList.add('selected');
+                    row.scrollIntoView({ block: 'center' });
+                    selectRow(row);
                 }
             }
 
             container.addEventListener('click', (e) => {
                 const row = e.target.closest('tr');
                 if (!row || !row.parentElement.matches('tbody')) return;
-
-                // Remove previous selection
-                if (selectedRow) selectedRow.classList.remove('selected');
-
-                // Select new row
-                selectedRow = row;
-                selectedRow.classList.add('selected');
-                history.replaceState(null, '', `#${row.id}`);
+                selectRow(row);
             });
 
             document.addEventListener('copy', (e) => {
