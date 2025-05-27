@@ -292,7 +292,6 @@
         }
 
         let logEntries = [];
-        let selectedId = null;
         let selectedRow = null;
         const baseUrl = "https://openvmmghtestresults.blob.core.windows.net/results/";
 
@@ -397,11 +396,10 @@
                         renderLogs(logEntries);
                     } else if (searchInput === document.activeElement) {
                         searchInput.blur();
-                    } else if (selectedId) {
-                        if (selectedRow) {
-                            selectedRow.classList.remove('selected');
+                    } else if (selectedRow) {
+                        if (selectedRow.tr) {
+                            selectedRow.tr.classList.remove('selected');
                         }
-                        selectedId = null;
                         selectedRow = null;
                         history.replaceState(null, '', window.location.pathname);
                     }
@@ -434,12 +432,12 @@
             });
             const logBody = document.getElementById("logBody");
             logBody.innerHTML = html;
-            selectedRow = null;
-            if (selectedId) {
-                const row = document.getElementById(selectedId);
-                if (row) {
-                    selectRow(row);
-                    row.scrollIntoView({ block: 'center' });
+            if (selectedRow) {
+                selectedRow.tr = null;
+                const tr = document.getElementById(selectedRow.id);
+                if (tr) {
+                    selectRow(tr);
+                    tr.scrollIntoView({ block: 'center' });
                 }
             }
             insertFloatingScreenshots(filteredLogs);
@@ -520,14 +518,13 @@
             });
         }
 
-        function selectRow(row) {
-            if (selectedRow) {
-                selectedRow.classList.remove('selected');
+        function selectRow(tr) {
+            if (selectedRow?.tr) {
+                selectedRow.tr.classList.remove('selected');
             }
-            selectedId = row.id;
-            selectedRow = row;
-            selectedRow.classList.add('selected');
-            history.replaceState(null, '', `#${row.id}`);
+            selectedRow = { id: tr.id, tr: tr };
+            tr.classList.add('selected');
+            history.replaceState(null, '', `#${tr.id}`);
         }
 
         function enableRowSelectionAndCopy(container) {
@@ -548,12 +545,13 @@
             });
 
             document.addEventListener('copy', (e) => {
-                if (!selectedRow) return;
+                const tr = selectedRow?.tr;
+                if (!tr) return;
                 const selection = window.getSelection();
                 if (selection && selection.toString().trim()) return; // user selected text, let it be
 
                 // Copy text content of row, tab-separated
-                const cells = Array.from(selectedRow.querySelectorAll('td'));
+                const cells = Array.from(tr.querySelectorAll('td'));
                 const text = cells.map(td => td.textContent.trim()).join('\t');
 
                 e.clipboardData.setData('text/plain', text);
