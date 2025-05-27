@@ -71,6 +71,10 @@ jobs:
       - name: Report failing tests
         if: ${{ github.event.workflow_run.event == 'pull_request' && env.FAIL_COUNT > 0 }}
         run: |
+          # Get the associated PR number. Work around GitHub Actions often not
+          # populating the `pull_requests` array. See
+          # <https://github.com/orgs/community/discussions/25220>.
+          pr=$(gh pr view --repo "${repo}" "${pr_branch}" --json number --jq .number)
           gh pr comment \
             -R "$repo" \
             "$pr" \
@@ -80,5 +84,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           repo: ${{ github.event.workflow_run.repository.full_name }}
-          pr: ${{ github.event.workflow_run.pull_requests[0].number }}
           run_id: ${{ github.event.workflow_run.id }}
+          # If the PR is from a fork, prefix it with `<owner-login>:`.
+          pr_branch: |-
+            ${{
+              (github.event.workflow_run.head_repository.owner.login != github.event.workflow_run.repository.owner.login)
+                && format('{0}:{1}', github.event.workflow_run.head_repository.owner.login, github.event.workflow_run.head_branch)
+                || github.event.workflow_run.head_branch
+            }}
