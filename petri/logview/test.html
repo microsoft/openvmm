@@ -10,9 +10,14 @@
             font-size: 14px;
         }
 
+        #logContainer {
+            box-sizing: border-box;
+        }
+
         #logContainer table {
-            width: 100%;
             border-collapse: collapse;
+            overflow: clip;
+            word-break: break-word;
         }
 
         #logContainer th,
@@ -20,6 +25,20 @@
             border: 1px solid #ddd;
             padding: 6px 10px;
             text-align: left;
+            white-space: nowrap;
+        }
+
+        #logContainer col.screenshot {
+            width: 120px;
+        }
+
+        #logContainer td.screenshot {
+            border-top: 1px solid white;
+            border-bottom: 1px solid white;
+        }
+
+        #logContainer td.message {
+            white-space: normal;
         }
 
         #logContainer thead {
@@ -33,7 +52,7 @@
         }
 
         /* Zebra striping for rows */
-        #logContainer tbody tr:nth-child(even) {
+        #logContainer tbody tr:nth-child(even) td:not(.screenshot) {
             background-color: #fafafa;
         }
 
@@ -60,10 +79,6 @@
         #logContainer tr.severity-DEBUG td {
             border-left: 4px solid #888;
             color: #555;
-        }
-
-        #logContainer td.timestamp {
-            white-space: nowrap;
         }
 
         #filterBar {
@@ -122,6 +137,26 @@
 
         #clearFilter:hover {
             color: #000;
+        }
+
+        #screenshotModal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background-color: rgba(0, 0, 0, 0.25);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+
+        #screenshotModal img {
+            max-width: 90%;
+            max-height: 90%;
+            box-shadow: 0 0 12px rgba(0, 0, 0, 0.8);
+            border-radius: 6px;
         }
     </style>
     <script>
@@ -256,10 +291,10 @@
         }
 
         let logEntries = [];
+        const baseUrl = "https://openvmmghtestresults.blob.core.windows.net/results/";
 
         function getTestResults(run, job, test) {
-            const url = `https://openvmmghtestresults.blob.core.windows.net/results/${run}/${job}/${test}/petri.jsonl`;
-            console.log(url);
+            const url = `${baseUrl}/${run}/${job}/${test}/petri.jsonl`;
             fetch(url)
                 .then(response => response.text())
                 .then(data => {
@@ -273,6 +308,11 @@
                         let message = line.message || "";
                         let severity = line.severity || "INFO";
                         const source = line.source || "unknown";
+
+                        if (line.attachment && line.attachment.endsWith(".png") && logEntries.length > 0) {
+                            logEntries[logEntries.length - 1].screenshot = new URL(line.attachment, url);
+                            continue;
+                        }
 
                         if (!line.message) {
                             console.log(line);
@@ -297,7 +337,8 @@
                             relative: relative,
                             severity: severity,
                             source: source,
-                            message: message
+                            message: message,
+                            screenshot: null,
                         });
                     }
 
@@ -311,22 +352,28 @@
             const container = document.getElementById("logContainer");
             container.innerHTML = `<table>
                         <thead>
+                            <colgroup>
+                                <col span="4" />
+                                <col class="screenshot" />
+                            </colgroup>
                             <tr>
                                 <th>Timestamp</th>
                                 <th>Severity</th>
                                 <th>Source</th>
                                 <th>Message</th>
+                                <th>Screenshot</th>
                             </tr>
                         </thead>
                         <tbody id="logBody">
                         </tbody>
                         </table>
+                        <div id="floatingScreenshots"></div>
                         `;
 
             // Clear on X click
             document.getElementById("clearFilter").addEventListener('click', () => {
                 input.value = '';
-                renderLogTable(logEntries);
+                renderLogs(logEntries);
                 input.focus();
             });
 
@@ -360,22 +407,62 @@
             });
 
             enableRowSelectionAndCopy(container);
-
+            setupModalSupport();
         }
 
         function renderLogs(filteredLogs) {
             let html = "";
-            for (const log of filteredLogs) {
-                html += `<tr class="severity-${log.severity}">
-                        <td class="timestamp" title="${log.timestamp}">${log.relative}</td>
+            filteredLogs.forEach((log, i) => {
+                html += `<tr class="severity-${log.severity}" data-log-index="${i}">
+                        <td title="${log.timestamp}">${log.relative}</td>
                         <td>${log.severity}</td>
                         <td>${log.source}</td>
-                        <td>${log.message}</td>
+                        <td class="message">${log.message}</td>
+                        <td class="screenshot"></td>
                     </tr>`;
 
-            }
+            });
             const logBody = document.getElementById("logBody");
             logBody.innerHTML = html;
+            insertFloatingScreenshots(filteredLogs);
+        }
+
+        function insertFloatingScreenshots(logs) {
+            const container = document.getElementById('logContainer');
+            const screenshots = document.getElementById('floatingScreenshots');
+            screenshots.innerHTML = ''; // Clear previous screenshots
+
+            logs.forEach((log, i) => {
+                if (!log.screenshot || i == 0) return;
+
+                const prevRow = container.querySelector(`tr[data-log-index="${i - 1}"]`);
+                const nextRow = container.querySelector(`tr[data-log-index="${i + 1}"]`);
+                const prevBox = prevRow?.getBoundingClientRect();
+                const nextBox = nextRow?.getBoundingClientRect();
+
+                if (!prevBox || !nextBox) {
+                    return;
+                }
+
+                const containerBox = container.getBoundingClientRect();
+                const offsetTop = (prevBox.bottom + nextBox.top) / 2 - containerBox.top;
+
+                const img = document.createElement('img');
+                img.src = log.screenshot;
+                img.alt = 'screenshot';
+                img.classList.add('screenshot-thumb');
+                img.style.position = 'absolute';
+                img.style.top = `${offsetTop}px`;
+                img.style.right = '8px';
+                img.style.width = '120px';
+                img.style.border = '1px solid #ccc';
+                img.style.borderRadius = '4px';
+                img.style.boxShadow = '0 2px 6px rgba(0,0,0,0.1)';
+                img.style.zIndex = '5';
+                img.style.cursor = 'zoom-in';
+
+                screenshots.appendChild(img);
+            });
         }
 
         function tokenizeSearchQuery(query) {
@@ -444,6 +531,27 @@
             });
         }
 
+        function setupModalSupport() {
+            const modal = document.getElementById('screenshotModal');
+            const modalImg = document.getElementById('modalImage');
+
+            document.addEventListener('click', (e) => {
+                if (e.target.matches('.screenshot-thumb')) {
+                    if (e.ctrlKey || e.metaKey) {
+                        // Ctrl+click or Cmd+click opens in a new tab
+                        window.open(e.target.src, '_blank');
+                    } else {
+                        // Regular click opens in modal
+                        modalImg.src = e.target.src;
+                        modal.style.display = 'flex';
+                    }
+                } else if (e.target === modal || e.target === modalImg) {
+                    modal.style.display = 'none';
+                    modalImg.src = '';
+                }
+            });
+        }
+
         window.onload = function () {
             const urlParams = new URLSearchParams(window.location.search);
             const run = urlParams.get('run');
@@ -474,6 +582,9 @@
         </div>
     </div>
     <div id="logContainer"></div>
+    <div id="screenshotModal" style="display: none;">
+        <img id="modalImage" src="" alt="screenshot" />
+    </div>
 </body>
 
 </html>
