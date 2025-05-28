@@ -182,7 +182,7 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
 
     pub fn new_line(&mut self, id: LineSetId, name: &str, vector: u32) -> LineInterrupt {
         let (line_set, _) = self.builder.line_set(id.clone());
-        let line = match line_set.new_line(vector, format!("{}:{}", self.dev_name, name)) {
+        match line_set.new_line(vector, format!("{}:{}", self.dev_name, name)) {
             Ok(line) => {
                 self.line_set_dependencies.push(id);
                 line
@@ -193,8 +193,7 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
                 self.line_error.get_or_insert(err);
                 LineInterrupt::detached()
             }
-        };
-        line
+        }
     }
 
     pub fn add_line_target(
