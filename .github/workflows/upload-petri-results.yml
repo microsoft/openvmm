@@ -45,8 +45,11 @@ jobs:
             download "$run_id" \
             -p "*-vmm-tests-logs" \
             -D results
-          FAIL_COUNT=$(find results -name petri.failed | wc -l)
-          echo "FAIL_COUNT=$FAIL_COUNT" >> $GITHUB_ENV
+          test_count=$(find results -name petri.jsonl | wc -l)
+          PASS_COUNT=$(find results -name petri.passed | wc -l)
+          FAIL_COUNT=$((test_count - PASS_COUNT))
+          echo "FAIL_COUNT=$FAIL_COUNT" >> "$GITHUB_ENV"
+          echo "PASS_COUNT=$PASS_COUNT" >> "$GITHUB_ENV"
           echo "SOURCE_BRANCH=$head_branch" >> "$GITHUB_ENV"
         env:
           event: ${{ github.event.workflow_run.event }}
@@ -74,9 +77,11 @@ jobs:
           az storage blob upload \
             --blob-url "$BASE_URL/runs/$run_id" \
             --file /dev/null \
-            --metadata petrifailed=$FAIL_COUNT \
-              ghbranch=$SOURCE_BRANCH \
-              ghpr=$SOURCE_PR \
+            --metadata \
+              "petrifailed=$FAIL_COUNT" \
+              "petripassed=$PASS_COUNT" \
+              "ghbranch=$SOURCE_BRANCH" \
+              "ghpr=$SOURCE_PR" \
             --auth-mode login
         env:
           run_id: ${{ github.event.workflow_run.id }}

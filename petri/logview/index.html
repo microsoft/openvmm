@@ -60,55 +60,71 @@
                     for (const blob of blobs) {
                         const nameParts = blob.name.split("/");
                         let fileName = nameParts[nameParts.length - 1];
-                        let failed;
+                        let passed;
+                        // If a folder contains petri.jsonl, it is a test result
+                        // folder. If it also contains petri.passed, it is a
+                        // passing test. Don't look for petri.failed, since
+                        // timed out tests won't have this file.
                         if (fileName === "petri.passed") {
-                            failed = false;
-                        } else if (fileName === "petri.failed") {
-                            failed = true;
+                            passed = true;
+                        } else if (fileName === "petri.jsonl") {
+                            passed = false;
                         } else {
                             continue; // Not a test result file.
                         }
-                        const testName = nameParts[nameParts.length - 2];
+                        const rawTestName = nameParts[nameParts.length - 2];
                         const jobName = nameParts[nameParts.length - 3];
                         const path = nameParts.slice(0, -3).join("/");
-                        const url = `test.html?run=${encodeURIComponent(path)}&job=${encodeURIComponent(jobName)}&test=${encodeURIComponent(testName)}`;
+                        const url = `test.html?run=${encodeURIComponent(path)}&job=${encodeURIComponent(jobName)}&test=${encodeURIComponent(rawTestName)}`;
                         if (!run[jobName]) {
                             run[jobName] = {
-                                failed: false,
-                                tests: [],
+                                tests: {},
                             };
                         }
                         let job = run[jobName];
-                        job.failed |= failed;
-                        job.tests.push({
-                            name: convertTestName(testName),
-                            url: url,
-                            failed: failed,
-                        });
+                        const testName = convertTestName(rawTestName);
+                        let test = job.tests[testName];
+                        if (test) {
+                            test.passed |= passed;
+                        } else {
+                            job.tests[testName] = {
+                                name: testName,
+                                url: url,
+                                passed: passed,
+                            };
+                        }
                     }
 
                     let failedList = document.getElementById("failedList");
                     let passingList = document.getElementById("passingList");
 
                     for (const job in run) {
-                        run[job].tests.sort((a, b) => {
-                            if (a.failed !== b.failed) {
-                                return a.failed ? -1 : 1; // Failed tests first.
+                        const tests = Object.values(run[job].tests);
+                        tests.sort((a, b) => {
+                            if (a.passed !== b.passed) {
+                                return a.passed ? 1 : -1; // Failed tests first.
                             }
                             return a.name.localeCompare(b.name); // Then by name.
                         });
 
-                        let tests = node("ul");
-                        for (const test of run[job].tests) {
-                            let icon = test.failed ? cross : check;
-                            tests.append(node("li", {}, node("a", { href: test.url }, `${icon} ${test.name}`)));
+                        const testsNode = node("ul");
+                        for (const test of tests) {
+                            let icon = test.passed ? check : cross;
+                            testsNode.append(node("li", {}, node("a", { href: test.url }, `${icon} ${test.name}`)));
                         }
-                        const n = node("li", {}, tests);
-                        if (run[job].failed) {
-                            failedList.append(n);
+                        const n = node("h3", {}, job);
+                        if (tests.some(t => !t.passed)) {
+                            failedList.append(n, testsNode);
                         } else {
-                            passingList.append(n);
+                            passingList.append(n, testsNode);
                         }
+                    }
+
+                    if (failedList.children.length === 0) {
+                        failedList.textContent = "No failed jobs.";
+                    }
+                    if (passingList.children.length === 0) {
+                        passingList.textContent = "No passing jobs.";
                     }
 
                     document.getElementById("jobList").style.display = "block";
@@ -129,6 +145,7 @@
                             name: blob.name.replace(/^runs\//, ''),
                             creationTime: blob.creationTime,
                             failed: blob.metadata["petrifailed"] || "",
+                            passed: blob.metadata["petripassed"] || "",
                             branch: blob.metadata["ghbranch"] || "",
                             pr: blob.metadata["ghpr"],
                         };
@@ -143,6 +160,7 @@
                             node("td", {}, run.creationTime.toLocaleString()),
                             node("td", {}, marker + " ", node("a", { href: `?run=${encodeURIComponent(run.name)}` }, run.name)),
                             node("td", {}, run.failed),
+                            node("td", {}, run.passed + run.failed),
                             node("td", {}, pr),
                             node("td", {}, run.branch),
                             node("td", {}, node("a", { href: `https://github.com/microsoft/openvmm/actions/runs/${encodeURIComponent(run_id)}` }, run_id)));
@@ -163,6 +181,7 @@
             document.getElementById("loading").style.display = "block";
             if (run) {
                 document.getElementById("runName").innerText = run;
+                document.getElementById("allRuns").style.display = "block";
                 getTestList(run);
             } else {
                 document.getElementById("runName").innerText = "Runs";
@@ -174,9 +193,8 @@
 
 <body>
     <h1 id="runName">Loading</h1>
-    <div id="loading" style="display: none;">
-        Loading...
-    </div>
+    <a href="?" id="allRuns" style="display: none;">All runs</a>
+    <h2 id="loading" style="display: none;">Loading...</h2>
     <div id="runList" style="display: none;">
         <table>
             <thead>
@@ -184,6 +202,7 @@
                     <th>Time</th>
                     <th>Results</th>
                     <th>Failed</th>
+                    <th>Total</th>
                     <th>PR</th>
                     <th>Branch</th>
                     <th>GitHub Run</th>
@@ -194,11 +213,10 @@
         </table>
     </div>
     <div id="jobList" style="display: none;">
-        <a href="?">All runs</a>
         <h2>Failed jobs</h2>
-        <ul id="failedList"></ul>
+        <div id="failedList"></div>
         <h2>Passing jobs</h2>
-        <ul id="passingList"></ul>
+        <div id="passingList"></div>
     </div>
 </body>
 
