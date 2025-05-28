@@ -3,7 +3,7 @@
 
 [package]
 name = "mdbook-openvmm-shim"
-edition = "2021"
+edition = "2024"
 
 [package.metadata.xtask.house-rules]
 # emits a binary, where kebab-case is more natural

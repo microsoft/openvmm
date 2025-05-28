@@ -17,7 +17,7 @@ use std::cell::RefCell;
 struct WrappedExecutor(RefCell<DefaultPool>);
 
 impl AsyncExecutor for &'_ WrappedExecutor {
-    fn block_on<T>(&self, future: impl std::future::Future<Output = T>) -> T {
+    fn block_on<T>(&self, future: impl Future<Output = T>) -> T {
         self.0.borrow_mut().run_until(future)
     }
 }
