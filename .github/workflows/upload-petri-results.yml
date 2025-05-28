@@ -69,17 +69,14 @@ jobs:
             --source results \
             --auth-mode login
 
-          metadata="petrifailed=$FAIL_COUNT ghbranch=$SOURCE_BRANCH"
-          if [ -n "$SOURCE_PR" ]; then
-            metadata="$metadata ghpr=$SOURCE_PR"
-          fi
-
           # Store a metadata blob in a separate portion of the hierarchy so that
           # it can be cheaply queried.
           az storage blob upload \
             --blob-url "$BASE_URL/runs/$run_id" \
             --file /dev/null \
-            --metadata "$metadata" \
+            --metadata petrifailed=$FAIL_COUNT \
+              ghbranch=$SOURCE_BRANCH \
+              ghpr=$SOURCE_PR \
             --auth-mode login
         env:
           run_id: ${{ github.event.workflow_run.id }}

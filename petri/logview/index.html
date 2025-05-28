@@ -36,8 +36,9 @@
                 const date = new Date(blob.getElementsByTagName("Creation-Time")[0].textContent);
                 let metadata = {};
                 for (const meta of blob.getElementsByTagName("Metadata")) {
-                    const child = meta.children[0];
-                    metadata[child.tagName] = child.textContent;
+                    for (const child of meta.children) {
+                        metadata[child.tagName] = child.textContent;
+                    }
                 }
                 blobNames.push({
                     name: name,
