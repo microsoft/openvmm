@@ -986,7 +986,7 @@ impl HclNetworkVFManager {
     ) -> anyhow::Result<Box<dyn netvsp::VirtualFunction>>
     where
         F: Fn(bool) -> R + Sync + Send + 'static,
-        R: std::future::Future<Output = bool> + Send,
+        R: Future<Output = bool> + Send,
     {
         let (tx_update, rx_update) = mesh::channel();
         let guest_state = self
@@ -1095,7 +1095,7 @@ impl<F> HclNetworkVFManagerInstance<F> {
 impl<F, R> netvsp::VirtualFunction for HclNetworkVFManagerInstance<F>
 where
     F: Fn(bool) -> R + Sync + Send + 'static,
-    R: std::future::Future<Output = bool> + Send,
+    R: Future<Output = bool> + Send,
 {
     async fn id(&self) -> Option<u32> {
         self.guest_state.vtl0_vfid().await

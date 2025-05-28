@@ -113,7 +113,7 @@ impl HvsockRelay {
         &self,
         ctx: &mut CancelContext,
         service_id: Guid,
-    ) -> impl std::future::Future<Output = anyhow::Result<UnixStream>> + Send + use<> {
+    ) -> impl Future<Output = anyhow::Result<UnixStream>> + Send + use<> {
         let inner = self.inner.clone();
         let host_send = self.host_send.clone();
         let (send, recv) = mesh::oneshot();
