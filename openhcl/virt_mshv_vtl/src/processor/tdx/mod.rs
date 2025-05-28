@@ -2375,15 +2375,11 @@ impl UhProcessor<'_, TdxBacked> {
         gpa: u64,
         ept_info: VmxEptExitQualification,
     ) -> Result<(), VpHaltReason<UhRunVpError>> {
-        // vtom may be 0 if we are hiding isolation
         let vtom = self.partition.caps.vtom.unwrap_or(0);
         let is_shared = (gpa & vtom) == vtom && vtom != 0;
         let canonical_gpa = gpa & !vtom;
 
-        // Only emulate the access if the gpa is expected to be accessible. This
-        // means, the gpa was described to VTL0 in some form as memory or mmio,
-        // and the hardware did not generate an exit for a private/shared
-        // violation.
+        // Only emulate the access if the gpa is mmio or outside of ram.
         let address_type = self
             .partition
             .lower_vtl_memory_layout
@@ -2419,7 +2415,7 @@ impl UhProcessor<'_, TdxBacked> {
                     // protections or MNF.
                     //
                     // If we entered this path, it means the bitmap check on
-                    // `check_gpa_readable` failed so we can assume that if the
+                    // `check_gpa_readable` failed, so we can assume that if the
                     // address is shared, the actual state of the page is
                     // private, and vice versa. This is because the address
                     // should have already been checked to be valid memory
@@ -2430,19 +2426,40 @@ impl UhProcessor<'_, TdxBacked> {
                         ?ept_info,
                         "guest accessed inaccessible gpa, injecting MC"
                     );
+
+                    // TODO: Implement IA32_MCG_STATUS MSR for more reporting
                     self.inject_mc(intercepted_vtl);
                 }
             }
             None => {
-                // The guest should never attempt to access address that are not
-                // described in mmio or ram. Inject a machine check.
-                tracelimit::warn_ratelimited!(
-                    gpa,
-                    is_shared,
-                    ?ept_info,
-                    "guest accessed gpa not described in memory layout, injecting MC"
-                );
-                self.inject_mc(intercepted_vtl);
+                if !self.cvm_partition().hide_isolation {
+                    // TODO: Addresses outside of ram and mmio probably should
+                    // not be accessed by the guest, if it has been told about
+                    // isolation. While it's okay as we will return FFs or
+                    // discard writes for addresses that are not mmio, we should
+                    // think if instead we should also inject a machine check
+                    // for such accesses. The guest should not access any
+                    // addresses not described to it.
+                    //
+                    // For now, log that the guest did this.
+                    tracelimit::warn_ratelimited!(
+                        gpa,
+                        is_shared,
+                        ?ept_info,
+                        "guest accessed gpa not described in memory layout, emulating anyways"
+                    );
+                }
+
+                // Emulate the access.
+                self.emulate(
+                    dev,
+                    self.backing.vtls[intercepted_vtl]
+                        .interruption_information
+                        .valid(),
+                    intercepted_vtl,
+                    TdxEmulationCache::default(),
+                )
+                .await?;
             }
         }
 
