@@ -68,6 +68,7 @@ use virt_support_x86emu::emulate::EmulatorSupport;
 use virt_support_x86emu::emulate::TranslateGvaSupport;
 use virt_support_x86emu::emulate::TranslateMode;
 use virt_support_x86emu::translate::TranslationRegisters;
+use vm_topology::memory::AddressType;
 use vmcore::vmtime::VmTimeAccess;
 use vtl_array::VtlArray;
 use x86defs::apic::X2APIC_MSR_BASE;
@@ -125,11 +126,21 @@ impl TdxExit<'_> {
     fn qualification(&self) -> u64 {
         self.0.rcx
     }
-    fn gla(&self) -> u64 {
-        self.0.rdx
+    fn gla(&self) -> Option<u64> {
+        // Only valid for EPT exits.
+        if self.code().vmx_exit().basic_reason() == VmxExitBasic::EPT_VIOLATION {
+            Some(self.0.rdx)
+        } else {
+            None
+        }
     }
-    fn gpa(&self) -> u64 {
-        self.0.r8
+    fn gpa(&self) -> Option<u64> {
+        // Only valid for EPT exits.
+        if self.code().vmx_exit().basic_reason() == VmxExitBasic::EPT_VIOLATION {
+            Some(self.0.r8)
+        } else {
+            None
+        }
     }
     fn _exit_interruption_info(&self) -> InterruptionInformation {
         (self.0.r9 as u32).into()
@@ -1631,55 +1642,25 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.exit_stats.wbinvd
             }
             VmxExitBasic::EPT_VIOLATION => {
-                // TODO TDX: If this is an access to a shared gpa, we need to
-                // check the intercept page to see if this is a real exit or
-                // spurious. This exit is only real if the hypervisor has
-                // delivered an intercept message for this GPA.
-                //
-                // However, at this point the kernel has cleared that
-                // information so some kind of redesign is required to figure
-                // this out.
-                //
-                // For now, we instead treat EPTs on readable RAM as spurious
-                // and log appropriately. This check is also not entirely
-                // sufficient, as it may be a write access where the page is
-                // protected, but we don't yet support MNF/guest VSM so this is
-                // okay enough.
-                let is_readable_ram =
-                    self.partition.gm[intercepted_vtl].check_gpa_readable(exit_info.gpa());
-                if is_readable_ram {
-                    tracelimit::warn_ratelimited!(
-                        gpa = exit_info.gpa(),
-                        "possible spurious EPT violation, ignoring"
-                    );
+                let gpa = exit_info.gpa().expect("is EPT exit");
+                let ept_info = VmxEptExitQualification::from(exit_info.qualification());
+                // If this was an EPT violation while handling an iret, and
+                // that iret cleared the NMI blocking state, restore it.
+                if !next_interruption.valid() && ept_info.nmi_unmasking_due_to_iret() {
+                    let mask = Interruptibility::new().with_blocked_by_nmi(true);
+                    let value = Interruptibility::new().with_blocked_by_nmi(true);
+                    let old_interruptibility: Interruptibility = self
+                        .runner
+                        .write_vmcs32(
+                            intercepted_vtl,
+                            VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY,
+                            mask.into(),
+                            value.into(),
+                        )
+                        .into();
+                    assert!(!old_interruptibility.blocked_by_nmi());
                 } else {
-                    // If this was an EPT violation while handling an iret, and
-                    // that iret cleared the NMI blocking state, restore it.
-                    if !next_interruption.valid() {
-                        let ept_info = VmxEptExitQualification::from(exit_info.qualification());
-                        if ept_info.nmi_unmasking_due_to_iret() {
-                            let mask = Interruptibility::new().with_blocked_by_nmi(true);
-                            let value = Interruptibility::new().with_blocked_by_nmi(true);
-                            let old_interruptibility: Interruptibility = self
-                                .runner
-                                .write_vmcs32(
-                                    GuestVtl::Vtl0,
-                                    VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY,
-                                    mask.into(),
-                                    value.into(),
-                                )
-                                .into();
-                            assert!(!old_interruptibility.blocked_by_nmi());
-                        }
-                    }
-
-                    // Emulate the access.
-                    self.emulate(
-                        dev,
-                        self.backing.interruption_information.valid(),
-                        intercepted_vtl,
-                    )
-                    .await?;
+                    self.handle_ept(intercepted_vtl, dev, gpa, ept_info).await?;
                 }
 
                 &mut self.backing.exit_stats.ept_violation
@@ -1924,6 +1905,103 @@ impl UhProcessor<'_, TdxBacked> {
             .with_interruption_type(INTERRUPT_TYPE_HARDWARE_EXCEPTION)
             .with_deliver_error_code(true);
         self.backing.exception_error_code = 0;
+    }
+
+    fn inject_mc(&mut self, _vtl: GuestVtl) {
+        self.backing.interruption_information = InterruptionInformation::new()
+            .with_valid(true)
+            .with_vector(x86defs::Exception::MACHINE_CHECK.0)
+            .with_interruption_type(INTERRUPT_TYPE_HARDWARE_EXCEPTION);
+    }
+
+    async fn handle_ept(
+        &mut self,
+        intercepted_vtl: GuestVtl,
+        dev: &impl CpuIo,
+        gpa: u64,
+        ept_info: VmxEptExitQualification,
+    ) -> Result<(), VpHaltReason<UhRunVpError>> {
+        let vtom = self.partition.caps.vtom.unwrap_or(0);
+        let is_shared = (gpa & vtom) == vtom && vtom != 0;
+        let canonical_gpa = gpa & !vtom;
+
+        // Only emulate the access if the gpa is mmio or outside of ram.
+        let address_type = self
+            .partition
+            .lower_vtl_memory_layout
+            .probe_address(canonical_gpa);
+
+        match address_type {
+            Some(AddressType::Mmio) => {
+                // Emulate the access.
+                self.emulate(
+                    dev,
+                    self.backing.interruption_information.valid(),
+                    intercepted_vtl,
+                )
+                .await?;
+            }
+            Some(AddressType::Ram) => {
+                // TODO TDX: This path changes when we support VTL page
+                // protections and MNF. That will require injecting events to
+                // VTL1 or other handling.
+                //
+                // For now, we just check if the exit was suprious or if we
+                // should inject a machine check. An exit is considered spurious
+                // if the gpa is accessible.
+                if self.partition.gm[intercepted_vtl].check_gpa_readable(gpa) {
+                    tracelimit::warn_ratelimited!(gpa, "possible spurious EPT violation, ignoring");
+                } else {
+                    // TODO: It would be better to show what exact bitmap check
+                    // failed, but that requires some refactoring of how the
+                    // different bitmaps are stored. Do this when we support VTL
+                    // protections or MNF.
+                    //
+                    // If we entered this path, it means the bitmap check on
+                    // `check_gpa_readable` failed, so we can assume that if the
+                    // address is shared, the actual state of the page is
+                    // private, and vice versa. This is because the address
+                    // should have already been checked to be valid memory
+                    // described to the guest or not.
+                    tracelimit::warn_ratelimited!(
+                        gpa,
+                        is_shared,
+                        ?ept_info,
+                        "guest accessed inaccessible gpa, injecting MC"
+                    );
+
+                    // TODO: Implement IA32_MCG_STATUS MSR for more reporting
+                    self.inject_mc(intercepted_vtl);
+                }
+            }
+            None => {
+                // TODO: Addresses outside of ram and mmio probably should
+                // not be accessed by the guest, if it has been told about
+                // isolation. While it's okay as we will return FFs or
+                // discard writes for addresses that are not mmio, we should
+                // consider if instead we should also inject a machine check
+                // for such accesses. The guest should not access any
+                // addresses not described to it.
+                //
+                // For now, log that the guest did this.
+                tracelimit::warn_ratelimited!(
+                    gpa,
+                    is_shared,
+                    ?ept_info,
+                    "guest accessed gpa not described in memory layout, emulating anyways"
+                );
+
+                // Emulate the access.
+                self.emulate(
+                    dev,
+                    self.backing.interruption_information.valid(),
+                    intercepted_vtl,
+                )
+                .await?;
+            }
+        }
+
+        Ok(())
     }
 
     fn handle_tdvmcall(&mut self, dev: &impl CpuIo, intercepted_vtl: GuestVtl) {
@@ -2312,7 +2390,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
     }
 
     fn physical_address(&self) -> Option<u64> {
-        Some(TdxExit(self.vp.runner.tdx_vp_enter_exit_info()).gpa())
+        TdxExit(self.vp.runner.tdx_vp_enter_exit_info()).gpa()
     }
 
     fn initial_gva_translation(&self) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
@@ -2321,8 +2399,8 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
 
         if ept_info.gva_valid() {
             Some(virt_support_x86emu::emulate::InitialTranslation {
-                gva: exit_info.gla(),
-                gpa: exit_info.gpa(),
+                gva: exit_info.gla().expect("already validated EPT exit"),
+                gpa: exit_info.gpa().expect("already validated EPT exit"),
                 translate_mode: match ept_info.access_mask() {
                     0x1 => TranslateMode::Read,
                     // As defined in "Table 28-7. Exit Qualification for EPT
