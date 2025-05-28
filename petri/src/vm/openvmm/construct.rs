@@ -505,19 +505,6 @@ impl PetriVmConfigSetupCore<'_> {
     }
 
     fn load_firmware(&self) -> anyhow::Result<LoadMode> {
-        // Forward OPENVMM_LOG and OPENVMM_SHOW_SPANS to OpenHCL if they're set.
-        let openhcl_tracing =
-            if let Ok(x) = std::env::var("OPENVMM_LOG").or_else(|_| std::env::var("HVLITE_LOG")) {
-                format!("OPENVMM_LOG={x}")
-            } else {
-                "OPENVMM_LOG=debug".to_owned()
-            };
-        let openhcl_show_spans = if let Ok(x) = std::env::var("OPENVMM_SHOW_SPANS") {
-            format!("OPENVMM_SHOW_SPANS={x}")
-        } else {
-            "OPENVMM_SHOW_SPANS=true".to_owned()
-        };
-
         Ok(match (self.arch, &self.firmware) {
             (MachineArch::X86_64, Firmware::LinuxDirect { kernel, initrd }) => {
                 let kernel = File::open(kernel.clone())
@@ -591,8 +578,17 @@ impl PetriVmConfigSetupCore<'_> {
                 Firmware::OpenhclLinuxDirect { igvm_path, .. }
                 | Firmware::OpenhclUefi { igvm_path, .. },
             ) => {
-                let mut cmdline =
-                    format!("panic=-1 reboot=triple {openhcl_tracing} {openhcl_show_spans}");
+                // Forward RUST_BACKTRACE, OPENVMM_LOG, and OPENVMM_SHOW_SPANS to OpenHCL
+                // if they're set, with reasonable test defaults otherwise.
+                let openhcl_tracing = std::env::var("OPENVMM_LOG")
+                    .or_else(|_| std::env::var("HVLITE_LOG"))
+                    .unwrap_or("debug".into());
+                let openhcl_show_spans =
+                    std::env::var("OPENVMM_SHOW_SPANS").unwrap_or("true".into());
+                let openhcl_backtrace = std::env::var("RUST_BACKTRACE").unwrap_or("1".into());
+                let mut cmdline = format!(
+                    "panic=-1 reboot=triple OPENVMM_LOG={openhcl_tracing} OPENVMM_SHOW_SPANS={openhcl_show_spans} RUST_BACKTRACE={openhcl_backtrace}"
+                );
 
                 let isolated = match self.firmware {
                     Firmware::OpenhclLinuxDirect { .. } => {
