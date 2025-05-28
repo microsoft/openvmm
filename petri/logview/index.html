@@ -20,9 +20,8 @@
             text-align: left;
         }
     </style>
+    <script src="common.js"></script>
     <script>
-        const baseUrl = "https://openvmmghtestresults.blob.core.windows.net/results";
-
         const cross = "&#10060;"; // Cross for failed tests
         const check = "&#9989;"; // Check for passed tests
 
@@ -80,7 +79,7 @@
                         let job = run[jobName];
                         job.failed |= failed;
                         job.tests.push({
-                            name: testName,
+                            name: convertTestName(testName),
                             url: url,
                             failed: failed,
                         });

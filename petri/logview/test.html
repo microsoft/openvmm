@@ -160,6 +160,7 @@
             border-radius: 6px;
         }
     </style>
+    <script src="common.js"></script>
     <script>
         function removeTimestamp(orig, entryTimestamp) {
             const message = orig.trim();
@@ -293,10 +294,8 @@
 
         let logEntries = [];
         let selectedRow = null;
-        const baseUrl = "https://openvmmghtestresults.blob.core.windows.net/results/";
 
-        function getTestResults(run, job, test) {
-            const url = `${baseUrl}/${run}/${job}/${test}/petri.jsonl`;
+        function getTestResults(url) {
             fetch(url)
                 .then(response => response.text())
                 .then(data => {
@@ -597,14 +596,14 @@
                 document.getElementById("runName").innerText = "No test specified";
                 return;
             }
+            const url = `${baseUrl}/${run}/${job}/${test}/petri.jsonl`;
             document.getElementById("runName").innerHTML = `<a href="index.html?run=${encodeURIComponent(run)}">${run}</a>`;
             document.getElementById("jobName").innerText = job;
-            document.getElementById("testName").innerText = test;
+            document.getElementById("testName").innerText = convertTestName(test);
             document.getElementById("logContainer").innerText = "Loading...";
-            getTestResults(run, job, test);
+            getTestResults(url);
         };
     </script>
-
 </head>
 
 <body>
