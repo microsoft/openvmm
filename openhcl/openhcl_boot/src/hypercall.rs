@@ -22,16 +22,21 @@ use minimal_rt::arch::hypercall::invoke_hypercall;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
-/// 2MB-aligned, page-sized buffer for use with hypercalls
+/// 2MB-aligned, large page sized buffer for use with hypercalls
+///
+/// The hypercall page is 4KB in the standard setting, but we allocate a large page for
+/// TDX compatibility. This is because The underlying static page is mapped in the
+/// shim's virtual memory hieararchy as a large page, making 2-MB the minimum shareable
+/// memory size between the TDX-enabled shim and hypervisor
 #[repr(C, align(0x200000))]
 struct HvcallPage {
-    buffer: [u8; HV_PAGE_SIZE as usize],
+    buffer: [u8; x86defs::X64_LARGE_PAGE_SIZE as usize],
 }
 
 impl HvcallPage {
     pub const fn new() -> Self {
         HvcallPage {
-            buffer: [0; HV_PAGE_SIZE as usize],
+            buffer: [0; x86defs::X64_LARGE_PAGE_SIZE as usize],
         }
     }
 
@@ -40,7 +45,7 @@ impl HvcallPage {
         let addr = self.buffer.as_ptr() as u64;
 
         // These should be page-aligned
-        assert!(addr % HV_PAGE_SIZE == 0);
+        assert!(addr % x86defs::X64_LARGE_PAGE_SIZE == 0);
 
         addr
     }
