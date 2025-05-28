@@ -240,6 +240,25 @@ pub fn write_dt(
         .add_str(p_compatible, "microsoft,hyperv")?;
     root_builder = hypervisor_builder.end_node()?;
 
+    #[cfg(target_arch = "x86_64")]
+    if isolation_type == IsolationType::Tdx {
+        let mut mailbox_builder = root_builder
+            .start_node("reserved-memory")?
+            .add_u32(p_address_cells, 2)?
+            .add_u32(p_size_cells, 1)?
+            .add_null(p_ranges)?;
+
+        let name = format_fixed!(32, "wakeup_table@{:x}", RESET_VECTOR_PAGE);
+        let mailbox_addr_builder = mailbox_builder
+            .start_node(name.as_ref())?
+            .add_str(p_compatible, "intel,wakeup-mailbox")?
+            .add_u32_array(p_reg, &[0x0, RESET_VECTOR_PAGE.try_into().unwrap(), 0x1000])?;
+
+        mailbox_builder = mailbox_addr_builder.end_node()?;
+
+        root_builder = mailbox_builder.end_node()?;
+    }
+
     // For ARM v8, always specify two register cells, which can accommodate
     // higher number of VPs.
     let address_cells = if cfg!(target_arch = "aarch64") { 2 } else { 1 };
@@ -247,17 +266,6 @@ pub fn write_dt(
         .start_node("cpus")?
         .add_u32(p_address_cells, address_cells)?
         .add_u32(p_size_cells, 0)?;
-
-    #[cfg(target_arch = "x86_64")]
-    //TODO(babayet2)
-    //The mailbox structure in the DT is being discussed on the linux side
-    //Revisit this when it is finalized
-    if isolation_type == IsolationType::Tdx {
-        let p_enable_method = cpu_builder.add_string("enable-method")?;
-        let p_mailbox_addr = cpu_builder.add_string("wakeup-mailbox-addr")?;
-        cpu_builder = cpu_builder.add_str(p_enable_method, "acpi-wakeup-mailbox")?;
-        cpu_builder = cpu_builder.add_u64(p_mailbox_addr, RESET_VECTOR_PAGE)?;
-    }
 
     // Add a CPU node for each cpu.
     for (vp_index, cpu_entry) in partition_info.cpus.iter().enumerate() {

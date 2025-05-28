@@ -3,10 +3,10 @@
 
 //! Dispatcher for isolation-specific initialization functions
 
+use crate::PartitionInfo;
 #[cfg(target_arch = "x86_64")]
 use crate::get_tdx_tsc_reftime;
 use crate::hvcall;
-use crate::PartitionInfo;
 
 /// Isolation type of the partition
 ///
