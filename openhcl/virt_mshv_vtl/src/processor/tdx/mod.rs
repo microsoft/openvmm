@@ -166,11 +166,21 @@ impl TdxExit<'_> {
     fn qualification(&self) -> u64 {
         self.0.rcx
     }
-    fn gla(&self) -> u64 {
-        self.0.rdx
+    fn gla(&self) -> Option<u64> {
+        // Only valid for EPT exits.
+        if self.code().vmx_exit().basic_reason() == VmxExitBasic::EPT_VIOLATION {
+            Some(self.0.rdx)
+        } else {
+            None
+        }
     }
-    fn gpa(&self) -> u64 {
-        self.0.r8
+    fn gpa(&self) -> Option<u64> {
+        // Only valid for EPT exits.
+        if self.code().vmx_exit().basic_reason() == VmxExitBasic::EPT_VIOLATION {
+            Some(self.0.r8)
+        } else {
+            None
+        }
     }
     fn _exit_interruption_info(&self) -> InterruptionInformation {
         (self.0.r9 as u32).into()
@@ -1998,7 +2008,7 @@ impl UhProcessor<'_, TdxBacked> {
                 &mut self.backing.vtls[intercepted_vtl].exit_stats.wbinvd
             }
             VmxExitBasic::EPT_VIOLATION => {
-                let gpa = exit_info.gpa();
+                let gpa = exit_info.gpa().expect("is EPT exit");
                 let ept_info = VmxEptExitQualification::from(exit_info.qualification());
                 // If this was an EPT violation while handling an iret, and
                 // that iret cleared the NMI blocking state, restore it.
@@ -2437,7 +2447,7 @@ impl UhProcessor<'_, TdxBacked> {
                     // not be accessed by the guest, if it has been told about
                     // isolation. While it's okay as we will return FFs or
                     // discard writes for addresses that are not mmio, we should
-                    // think if instead we should also inject a machine check
+                    // consider if instead we should also inject a machine check
                     // for such accesses. The guest should not access any
                     // addresses not described to it.
                     //
@@ -2869,7 +2879,7 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
     }
 
     fn physical_address(&self) -> Option<u64> {
-        Some(TdxExit(self.vp.runner.tdx_vp_enter_exit_info()).gpa())
+        TdxExit(self.vp.runner.tdx_vp_enter_exit_info()).gpa()
     }
 
     fn initial_gva_translation(
@@ -2882,8 +2892,8 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, TdxBacked> {
             && ept_info.gva_valid()
         {
             Some(virt_support_x86emu::emulate::InitialTranslation {
-                gva: exit_info.gla(),
-                gpa: exit_info.gpa(),
+                gva: exit_info.gla().expect("already validated EPT exit"),
+                gpa: exit_info.gpa().expect("already validated EPT exit"),
                 translate_mode: match ept_info.access_mask() {
                     0x1 => TranslateMode::Read,
                     // As defined in "Table 28-7. Exit Qualification for EPT
