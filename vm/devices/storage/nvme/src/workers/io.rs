@@ -14,6 +14,7 @@ use crate::queue::SubmissionQueue;
 use crate::spec;
 use crate::spec::nvm;
 use crate::workers::MAX_DATA_TRANSFER_SIZE;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use futures_concurrency::future::Race;
 use guestmem::GuestMemory;
 use inspect::Inspect;
@@ -111,7 +112,11 @@ impl AsyncRun<IoState> for IoHandler {
         let mem = self.mem.clone();
         stop.until_stopped(async {
             if let Err(err) = self.process(state, &mem).await {
-                tracing::error!(error = &err as &dyn std::error::Error, "io handler failed");
+                tracing::error!(
+                    CVM_CONFIDENTIAL,
+                    error = &err as &dyn std::error::Error,
+                    "io handler failed"
+                );
             }
         })
         .await

@@ -13,6 +13,7 @@ use crate::protocol::DeviceHeadReg;
 use crate::protocol::ErrorReg;
 use crate::protocol::IdeCommand;
 use crate::protocol::Status;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use guestmem::AlignedHeapMemory;
@@ -723,7 +724,7 @@ impl HardDrive {
 
     fn handle_io_completion(&mut self, result: Result<(), DiskError>) {
         let command = self.state.command.as_ref().unwrap();
-        tracing::trace!(io_type = ?command.io_type, path = %self.disk_path, ?result, "io completion");
+        tracing::trace!(CVM_CONFIDENTIAL, io_type = ?command.io_type, path = %self.disk_path, ?result, "io completion");
 
         let result = match command.io_type {
             IoType::Read => match result {
@@ -1136,7 +1137,7 @@ impl HardDrive {
         match io_type {
             IoPortData::Read(ref mut data) => {
                 current_buffer[..length as usize].atomic_read(&mut data[..length as usize]);
-                tracing::trace!(?data, "data payload");
+                tracing::trace!(CVM_CONFIDENTIAL, ?data, "data payload");
             }
             IoPortData::Write(data) => {
                 current_buffer[..length as usize].atomic_write(&data[..length as usize]);

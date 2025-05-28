@@ -17,6 +17,7 @@ fuzz_helpers = []
 
 [dependencies]
 
+cvm_tracing.workspace = true
 disklayer_ram = { workspace = true, optional = true } # For `ioperf` modules
 scsi_buffers.workspace = true
 scsi_core.workspace = true

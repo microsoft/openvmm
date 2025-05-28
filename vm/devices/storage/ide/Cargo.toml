@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 chipset_device.workspace = true
+cvm_tracing.workspace = true
 disk_backend.workspace = true
 ide_resources.workspace = true
 inspect.workspace = true

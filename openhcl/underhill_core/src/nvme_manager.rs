@@ -9,6 +9,7 @@ use crate::nvme_manager::save_restore::NvmeSavedDiskConfig;
 use crate::servicing::NvmeSavedState;
 use anyhow::Context;
 use async_trait::async_trait;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;
 use futures::StreamExt;
@@ -113,7 +114,7 @@ impl NvmeManager {
                     .instrument(tracing::info_span!("nvme_manager_restore"))
                     .await
                 {
-                    tracing::error!("failed to restore nvme manager: {}", e);
+                    tracing::error!(CVM_CONFIDENTIAL, "failed to restore nvme manager: {}", e);
                 }
             };
             worker.run(recv).await

@@ -11,6 +11,7 @@ use crate::driver::save_restore::SavedNamespaceData;
 use crate::queue_pair::Issuer;
 use crate::queue_pair::RequestError;
 use crate::queue_pair::admin_cmd;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::GuestMemory;
 use guestmem::ranges::PagedRange;
 use inspect::Inspect;
@@ -596,6 +597,7 @@ impl DynamicState {
                 }
                 Err(err) => {
                     tracing::warn!(
+                        CVM_CONFIDENTIAL,
                         nsid,
                         error = &err as &dyn std::error::Error,
                         "failed to query namespace during rescan"

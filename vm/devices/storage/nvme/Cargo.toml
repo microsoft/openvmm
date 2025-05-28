@@ -7,6 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+cvm_tracing.workspace = true
 disk_backend.workspace = true
 nvme_common.workspace = true
 nvme_resources.workspace = true

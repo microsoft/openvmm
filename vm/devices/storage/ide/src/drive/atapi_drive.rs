@@ -11,6 +11,7 @@ use crate::protocol::DeviceHeadReg;
 use crate::protocol::ErrorReg;
 use crate::protocol::IdeCommand;
 use crate::protocol::Status;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
 use guestmem::ranges::PagedRange;
@@ -308,7 +309,7 @@ impl AtapiDrive {
     }
 
     pub fn write_register(&mut self, register: DriveRegister, data: u8) {
-        tracing::trace!(path = ?self.disk_path, ?register, ?data, "write_register");
+        tracing::trace!(CVM_CONFIDENTIAL, path = ?self.disk_path, ?register, ?data, "write_register");
         let regs = &mut self.state.regs;
         match register {
             DriveRegister::ErrorFeatures => regs.features = data,
@@ -519,11 +520,11 @@ impl AtapiDrive {
         match io_type {
             IoPortData::Read(ref mut data) => {
                 current_buffer[..length as usize].atomic_read(&mut data[..length as usize]);
-                tracing::trace!(?data, "data payload");
+                tracing::trace!(CVM_CONFIDENTIAL, ?data, "data payload");
             }
             IoPortData::Write(data) => {
                 current_buffer[..length as usize].atomic_write(&data[..length as usize]);
-                tracing::trace!(?current_buffer, ?data, "data_port_io");
+                tracing::trace!(CVM_CONFIDENTIAL, ?current_buffer, ?data, "data_port_io");
             }
         }
 
@@ -725,7 +726,7 @@ impl AtapiDrive {
         let mut cdb = [0_u8; size_of::<scsi::Cdb16>()];
         // Copy from CommandPacket into the CDB.
         buffer_ptr.atomic_read(&mut cdb[..len]);
-        tracing::debug!(path = ?self.disk_path, ?buffer_ptr, ?cdb, "Handle ATAPI packet command");
+        tracing::debug!(CVM_CONFIDENTIAL, path = ?self.disk_path, ?buffer_ptr, ?cdb, "Handle ATAPI packet command");
 
         self.state.buffer = None;
         let request = scsi_core::Request { cdb, srb_flags: 0 };
@@ -745,7 +746,7 @@ impl AtapiDrive {
         };
 
         if sense != Sense::default() {
-            tracing::debug!(path = ?self.disk_path, ?sense, "Issue ATAPI command error");
+            tracing::debug!(CVM_CONFIDENTIAL, path = ?self.disk_path, ?sense, "Issue ATAPI command error");
             return self.signal_atapi_command_done(sense);
         }
 

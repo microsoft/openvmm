@@ -43,6 +43,7 @@ use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::poll_device::PollDevice;
 use core::sync::atomic::Ordering;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use disk_backend::Disk;
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
@@ -684,7 +685,7 @@ impl PortIoIntercept for FloppyDiskController {
             _ => return IoResult::Err(IoError::InvalidRegister),
         };
 
-        tracing::trace!(?offset, ?data, "floppy pio read");
+        tracing::trace!(CVM_CONFIDENTIAL, ?offset, ?data, "floppy pio read");
 
         IoResult::Ok
     }
@@ -696,7 +697,7 @@ impl PortIoIntercept for FloppyDiskController {
 
         let data = data[0];
         let offset = RegisterOffset(io_port % 0x10);
-        tracing::trace!(?offset, ?data, "floppy pio write");
+        tracing::trace!(CVM_CONFIDENTIAL, ?offset, ?data, "floppy pio write");
         match offset {
             RegisterOffset::STATUS_A | RegisterOffset::STATUS_B => {
                 tracelimit::warn_ratelimited!(
@@ -706,12 +707,16 @@ impl PortIoIntercept for FloppyDiskController {
                 );
             }
             RegisterOffset::TAPE_DRIVE => {
-                tracing::debug!(?data, "write to obsolete tape drive register");
+                tracing::debug!(
+                    CVM_CONFIDENTIAL,
+                    ?data,
+                    "write to obsolete tape drive register"
+                );
             } // Do nothing. This port is obsolete.
             RegisterOffset::CONFIG_CONTROL => {
                 // This controls the data transfer rate which is not
                 // interesting to us. We will just ignore it.
-                tracing::debug!(?data, "write to control register");
+                tracing::debug!(CVM_CONFIDENTIAL, ?data, "write to control register");
             }
             RegisterOffset::DATA_RATE => {
                 const FLOPPY_DSR_DISK_RESET_MASK: u8 = 0x80; // DSR = Data-rate Select Register ("software" reset)
@@ -1046,7 +1051,7 @@ impl FloppyDiskController {
 
     fn handle_io_completion(&mut self, result: Result<(), disk_backend::DiskError>) {
         let command = self.state.pending_command;
-        tracing::trace!(?command, ?result, "io completion");
+        tracing::trace!(CVM_CONFIDENTIAL, ?command, ?result, "io completion");
 
         let result = match command {
             FloppyCommand::READ_NORMAL_DATA
@@ -1371,7 +1376,7 @@ impl FloppyDiskController {
         // we want this to be below update of input buffer so that we
         // don't otherwise misreport what the command byte is
         // side effect is multiple trace lines of one command issue
-        tracing::trace!(
+        tracing::trace!(CVM_CONFIDENTIAL,
             ?data,
             ?self.state.input_bytes,
             "floppy byte (cmd or param)"
@@ -1399,7 +1404,7 @@ impl FloppyDiskController {
             return;
         }
 
-        tracing::trace!(
+        tracing::trace!(CVM_CONFIDENTIAL,
             ?command,
             input_bytes = ?self.state.input_bytes,
             "executing floppy command"
@@ -1518,7 +1523,7 @@ impl FloppyDiskController {
             command
         };
 
-        tracing::trace!(
+        tracing::trace!(CVM_CONFIDENTIAL,
             main_status = ?self.state.main_status,
             digital_output = ?self.state.digital_output,
             sense_output = ?self.state.sense_output,
@@ -1807,7 +1812,14 @@ impl FloppyDiskController {
 
         let lba = (cylinder * 2 + head) * self.state.internals.sectors_per_track as u64;
 
-        tracing::trace!(?cylinder, ?head, ?lba, ?buffer_ptr, "Format: ");
+        tracing::trace!(
+            CVM_CONFIDENTIAL,
+            ?cylinder,
+            ?head,
+            ?lba,
+            ?buffer_ptr,
+            "Format: "
+        );
 
         self.set_io(async move |disk| {
             let buffers = command_buffer.buffers(0, size, false);

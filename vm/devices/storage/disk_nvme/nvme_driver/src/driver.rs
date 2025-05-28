@@ -16,6 +16,7 @@ use crate::queue_pair::admin_cmd;
 use crate::registers::Bar0;
 use crate::registers::DeviceRegisters;
 use anyhow::Context as _;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use futures::StreamExt;
 use futures::future::join_all;
 use inspect::Inspect;
@@ -32,7 +33,6 @@ use task_control::InspectTask;
 use task_control::TaskControl;
 use thiserror::Error;
 use tracing::Instrument;
-use tracing::info_span;
 use user_driver::DeviceBacking;
 use user_driver::backoff::Backoff;
 use user_driver::interrupt::DeviceInterrupt;
@@ -192,6 +192,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             Ok(()) => Ok(this),
             Err(err) => {
                 tracing::error!(
+                    CVM_CONFIDENTIAL,
                     error = err.as_ref() as &dyn std::error::Error,
                     "device initialization failed, shutting down"
                 );
@@ -430,6 +431,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             async move {
                 if let Err(err) = handle_asynchronous_events(&admin, &rescan_event).await {
                     tracing::error!(
+                        CVM_CONFIDENTIAL,
                         error = err.as_ref() as &dyn std::error::Error,
                         "asynchronous event failure, not processing any more"
                     );
@@ -648,6 +650,7 @@ impl<T: DeviceBacking> NvmeDriver<T> {
             async move {
                 if let Err(err) = handle_asynchronous_events(&admin, &rescan_event).await {
                     tracing::error!(
+                        CVM_CONFIDENTIAL,
                         error = err.as_ref() as &dyn std::error::Error,
                         "asynchronous event failure, not processing any more"
                     );
@@ -839,7 +842,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
 
         let issuer = match self
             .create_io_queue(state, cpu)
-            .instrument(info_span!("create_nvme_io_queue", cpu))
+            .instrument(tracing::info_span!("create_nvme_io_queue", cpu))
             .await
         {
             Ok(issuer) => issuer,
@@ -853,6 +856,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     .unwrap();
 
                 tracing::error!(
+                    CVM_CONFIDENTIAL,
                     cpu,
                     fallback_cpu,
                     error = err.as_ref() as &dyn std::error::Error,
@@ -960,6 +964,7 @@ impl<T: DeviceBacking> DriverWorkerTask<T> {
                     .await
                 {
                     tracing::error!(
+                        CVM_CONFIDENTIAL,
                         error = &err as &dyn std::error::Error,
                         "failed to delete completion queue in teardown path"
                     );

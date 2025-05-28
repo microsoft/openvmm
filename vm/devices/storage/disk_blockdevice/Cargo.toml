@@ -12,6 +12,7 @@ nvme_common.workspace = true
 nvme_spec.workspace = true
 scsi_buffers.workspace = true
 
+cvm_tracing.workspace = true
 hvdef.workspace = true
 mesh.workspace = true
 guestmem.workspace = true

@@ -1186,6 +1186,7 @@ dependencies = [
  "async-trait",
  "bitfield-struct 0.10.1",
  "blocking",
+ "cvm_tracing",
  "disk_backend",
  "event-listener",
  "fs-err",
@@ -1774,6 +1775,7 @@ dependencies = [
  "arrayvec",
  "bitfield-struct 0.10.1",
  "chipset_device",
+ "cvm_tracing",
  "disk_backend",
  "guestmem",
  "inspect",
@@ -1793,6 +1795,7 @@ dependencies = [
  "arrayvec",
  "bitfield-struct 0.10.1",
  "chipset_device",
+ "cvm_tracing",
  "inspect",
  "mesh",
  "open_enum",
@@ -3295,6 +3298,7 @@ version = "0.0.0"
 dependencies = [
  "bitfield-struct 0.10.1",
  "chipset_device",
+ "cvm_tracing",
  "disk_backend",
  "disk_file",
  "guestmem",
@@ -4629,6 +4633,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "chipset_device",
+ "cvm_tracing",
  "device_emulators",
  "disk_backend",
  "event-listener",
@@ -4672,6 +4677,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chipset_device",
+ "cvm_tracing",
  "disklayer_ram",
  "event-listener",
  "futures",
@@ -6109,6 +6115,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "cvm_tracing",
  "disk_backend",
  "disk_prwrap",
  "futures",
@@ -6609,6 +6616,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "criterion",
+ "cvm_tracing",
  "disklayer_ram",
  "event-listener",
  "fast_select",

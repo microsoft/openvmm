@@ -23,6 +23,7 @@ use crate::queue::QueueError;
 use crate::queue::ShadowDoorbell;
 use crate::queue::SubmissionQueue;
 use crate::spec;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use disk_backend::Disk;
 use futures::FutureExt;
 use futures::SinkExt;
@@ -1079,6 +1080,7 @@ impl AsyncRun<AdminState> for AdminHandler {
             let event = stop.until_stopped(self.next_event(state)).await?;
             if let Err(err) = self.process_event(state, event).await {
                 tracing::error!(
+                    CVM_CONFIDENTIAL,
                     error = &err as &dyn std::error::Error,
                     "admin queue failure"
                 );

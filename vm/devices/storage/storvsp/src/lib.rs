@@ -20,6 +20,7 @@ use crate::ring::gparange::GpnList;
 use crate::ring::gparange::MultiPagedRangeBuf;
 use anyhow::Context as _;
 use async_trait::async_trait;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use fast_select::FastSelect;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -423,9 +424,9 @@ fn parse_packet<T: RingMem>(
     };
 
     if let PacketData::ExecuteScsi(_) = data {
-        tracing::trace!(transaction_id, ?data, "parse_packet");
+        tracing::trace!(CVM_CONFIDENTIAL, transaction_id, ?data, "parse_packet");
     } else {
-        tracing::debug!(transaction_id, ?data, "parse_packet");
+        tracing::debug!(CVM_CONFIDENTIAL, transaction_id, ?data, "parse_packet");
     }
 
     Ok(Packet {
@@ -825,7 +826,11 @@ impl<T: 'static + Send + Sync + RingMem> AsyncRun<Worker<T>> for WorkerState {
 
         match stop.until_stopped(fut).await? {
             Ok(_) => {}
-            Err(e) => tracing::error!(error = e.as_error(), "process_packets error"),
+            Err(e) => tracing::error!(
+                CVM_CONFIDENTIAL,
+                error = e.as_error(),
+                "process_packets error"
+            ),
         }
         Ok(())
     }
@@ -1254,7 +1259,7 @@ impl WorkerInner {
         let mut payload = [0; 0x14];
         if let Some(sense) = result.sense_data {
             payload[..size_of_val(&sense)].copy_from_slice(sense.as_bytes());
-            tracing::trace!(sense_info = ?payload, sense_key = payload[2], asc = payload[12], "execute_scsi");
+            tracing::trace!(CVM_CONFIDENTIAL, sense_info = ?payload, sense_key = payload[2], asc = payload[12], "execute_scsi");
         };
         let response = storvsp_protocol::ScsiRequest {
             length: size_of::<storvsp_protocol::ScsiRequest>() as u16,

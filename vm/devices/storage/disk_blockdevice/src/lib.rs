@@ -16,6 +16,7 @@ mod nvme;
 use anyhow::Context;
 use async_trait::async_trait;
 use blocking::unblock;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
 use disk_backend::UnmapBehavior;
@@ -326,6 +327,7 @@ impl BlockDevice {
     fn handle_resize(&self) {
         if let Err(err) = self.handle_resize_inner() {
             tracing::error!(
+                CVM_CONFIDENTIAL,
                 error = &err as &dyn std::error::Error,
                 "failed to update disk size"
             );

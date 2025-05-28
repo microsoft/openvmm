@@ -5,6 +5,7 @@ use super::ScsiError;
 use super::SimpleScsiDisk;
 use crate::UNMAP_RANGE_DESCRIPTOR_COUNT_MAX;
 use crate::scsi;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::MemoryRead;
 use scsi::AdditionalSenseCode;
 use scsi_buffers::RequestBuffers;
@@ -218,7 +219,7 @@ impl SimpleScsiDisk {
                 .unmap(start_lba, lba_count, block_level_only)
                 .await
             {
-                tracing::debug!(error = ?e, "Unmap failures ignored")
+                tracing::debug!(CVM_CONFIDENTIAL, error = ?e, "Unmap failures ignored")
             }
         }
     }
