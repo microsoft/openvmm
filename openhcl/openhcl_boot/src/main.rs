@@ -21,7 +21,6 @@ mod sidecar;
 mod single_threaded;
 
 use crate::arch::setup_vtl2_memory;
-use crate::arch::setup_vtl2_vp;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
@@ -682,7 +681,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     validate_vp_hw_ids(partition_info);
 
-    setup_vtl2_vp(p.isolation_type, partition_info);
+    p.isolation_type.setup_vtl2_vp(partition_info);
     setup_vtl2_memory(&p, partition_info);
 
     verify_imported_regions_hash(&p);
@@ -904,13 +903,9 @@ mod test {
     use crate::ReservedMemoryType;
     use crate::cmdline::BootCommandLineOptions;
     use crate::dt::write_dt;
-    use crate::dt::write_dt;
     use crate::host_params::MAX_CPU_COUNT;
-    use crate::host_params::MAX_CPU_COUNT;
-    use crate::host_params::PartitionInfo;
     use crate::host_params::PartitionInfo;
     use crate::isolation::IsolationType;
-    use crate::reserved_memory_regions;
     use crate::reserved_memory_regions;
     use arrayvec::ArrayString;
     use arrayvec::ArrayVec;

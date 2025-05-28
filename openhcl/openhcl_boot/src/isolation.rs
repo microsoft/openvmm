@@ -3,8 +3,10 @@
 
 //! Dispatcher for isolation-specific initialization functions
 
+#[cfg(target_arch = "x86_64")]
 use crate::get_tdx_tsc_reftime;
 use crate::hvcall;
+use crate::PartitionInfo;
 
 /// Isolation type of the partition
 ///
@@ -43,9 +45,11 @@ impl IsolationType {
 
     pub fn initialize_hypercalls(&self) {
         match self {
+            #[cfg(target_arch = "x86_64")]
             IsolationType::Tdx => {
                 hvcall().initialize_tdx();
             }
+            #[cfg(target_arch = "x86_64")]
             IsolationType::Snp => (),
             _ => {
                 hvcall().initialize();
@@ -55,12 +59,26 @@ impl IsolationType {
 
     pub fn uninitialize_hypercalls(&self) {
         match self {
+            #[cfg(target_arch = "x86_64")]
             IsolationType::Tdx => {
                 hvcall().uninitialize_tdx();
             }
+            #[cfg(target_arch = "x86_64")]
             IsolationType::Snp => (),
             _ => {
                 hvcall().uninitialize();
+            }
+        }
+    }
+
+    pub fn setup_vtl2_vp(&self, partition_info: &PartitionInfo) {
+        match self {
+            #[cfg(target_arch = "x86_64")]
+            IsolationType::Tdx => {
+                crate::arch::tdx::setup_vtl2_vp(partition_info);
+            }
+            _ => {
+                crate::arch::setup_vtl2_vp(partition_info);
             }
         }
     }

@@ -144,14 +144,14 @@ impl HvCall {
             .with_code(code.0)
             .with_rep_count(rep_count.unwrap_or_default());
 
-        // SAFETY: Invoking hypercall per TLFS spec
         match self.isolation_type {
+            #[cfg(target_arch = "x86_64")]
             Some(IsolationType::Tdx) => invoke_tdcall_hypercall(
                 control,
                 Self::input_page().address(),
                 Self::output_page().address(),
-            )
-            .into(),
+            ),
+            // SAFETY: Invoking hypercall per TLFS spec
             _ => unsafe {
                 invoke_hypercall(
                     control,

@@ -5,6 +5,8 @@
 
 use crate::arch::x86_64::address_space::tdx_share_large_page;
 use crate::arch::x86_64::address_space::tdx_unshare_large_page;
+use crate::host_params::PartitionInfo;
+use crate::hvcall;
 use crate::single_threaded::SingleThreaded;
 use core::arch::asm;
 use core::cell::Cell;
@@ -208,4 +210,19 @@ pub fn tdx_prepare_ap_trampoline() {
     tdxcontext.task_selector = 0;
     tdxcontext.cr0 |= x86defs::X64_CR0_PG | x86defs::X64_CR0_PE | x86defs::X64_CR0_NE;
     tdxcontext.cr4 |= x86defs::X64_CR4_PAE | x86defs::X64_CR4_MCE;
+}
+
+pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
+    for cpu in 1..partition_info.cpus.len() {
+        hvcall()
+            .enable_vp_vtl(cpu as u32)
+            .expect("enabling vp should not fail");
+    }
+
+    // Start VPs on Tdx-isolated VMs by sending TDVMCALL-based hypercall HvCallStartVirtualProcessor
+    for cpu in 1..partition_info.cpus.len() {
+        hvcall()
+            .start_vp(cpu as u32)
+            .expect("start vp should not fail");
+    }
 }
