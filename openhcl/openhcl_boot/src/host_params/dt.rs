@@ -391,10 +391,10 @@ fn topology_from_host_dt(
 
     // Decide if we will reserve memory for a VTL2 private pool. Parse this
     // from the final command line.
-    let enable_vtl2_gpa_pool =
-        crate::cmdline::parse_boot_command_line(cmdline).enable_vtl2_gpa_pool;
+    let mut parsed_cmdline = BootCommandLineOptions::new();
+    parsed_cmdline.parse(cmdline);
 
-    if let Some(pool_size) = enable_vtl2_gpa_pool {
+    if let Some(pool_size) = parsed_cmdline.enable_vtl2_gpa_pool {
         // Reserve the specified number of pages for the pool.
         //
         // BUGBUG: Select the range excluding the persisted region at the
