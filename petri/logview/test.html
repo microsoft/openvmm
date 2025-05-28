@@ -220,7 +220,7 @@
             return `${hr > 0 ? hr + 'h ' : ''}${min}m ${sec}s`;
         }
 
-        function ansiToHtml(str) {
+        function ansiToSpan(str) {
             const ANSI_STYLE_MAP = {
                 // Text styles
                 '1': 'font-weight: bold',
@@ -243,23 +243,18 @@
             const ESC = '\u001b';
             const ESC_REGEX = /\u001b\[([0-9;]*)m/g;
 
-            let result = '';
+            let result = node("span");
             let lastIndex = 0;
             let currentStyles = [];
 
             const flush = (text) => {
                 if (!text) return;
                 if (currentStyles.length > 0) {
-                    result += `<span style="${currentStyles.join('; ')}">${escapeHtml(text)}</span>`;
+                    result.append(node("span", { style: currentStyles.join('; ') }, text));
                 } else {
-                    result += escapeHtml(text);
+                    result.append(text);
                 }
             };
-
-            const escapeHtml = (text) => text
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
 
             for (const match of str.matchAll(ESC_REGEX)) {
                 const [fullMatch, codeStr] = match;
@@ -331,7 +326,7 @@
                         message = r.message;
                         severity = r.severity;
 
-                        message = ansiToHtml(message);
+                        const messageNode = ansiToSpan(message);
 
                         logEntries.push({
                             index: i,
@@ -339,7 +334,8 @@
                             relative: relative,
                             severity: severity,
                             source: source,
-                            message: message,
+                            messageNode: messageNode,
+                            messageText: messageNode.textContent.toLowerCase(),
                             screenshot: null,
                         });
                     }
@@ -350,26 +346,9 @@
         }
 
         function prepTestResults() {
+            document.getElementById("loading").style.display = 'none';
             const container = document.getElementById("logContainer");
-            container.innerHTML = `<table>
-                        <thead>
-                            <colgroup>
-                                <col span="4" />
-                                <col class="screenshot" />
-                            </colgroup>
-                            <tr>
-                                <th>Timestamp</th>
-                                <th>Severity</th>
-                                <th>Source</th>
-                                <th>Message</th>
-                                <th>Screenshot</th>
-                            </tr>
-                        </thead>
-                        <tbody id="logBody">
-                        </tbody>
-                        </table>
-                        <div id="floatingScreenshots"></div>
-                        `;
+            container.style.display = 'block';
 
             // Clear on X click
             document.getElementById("clearFilter").addEventListener('click', () => {
@@ -414,19 +393,24 @@
         }
 
         function renderLogs(filteredLogs) {
-            let html = "";
+            let rows = [];
             filteredLogs.forEach((log, i) => {
-                html += `<tr class="severity-${log.severity}" id="log-${log.index}" data-log-index="${i}">
-                        <td title="${log.timestamp}">${log.relative}</td>
-                        <td>${log.severity}</td>
-                        <td>${log.source}</td>
-                        <td class="message">${log.message}</td>
-                        <td class="screenshot"></td>
-                    </tr>`;
-
+                let tr = node("tr",
+                    {
+                        class: `severity-${log.severity}`,
+                        id: `log-${log.index}`,
+                        dataset: { row: i },
+                    },
+                    node("td", { title: log.timestamp }, log.relative),
+                    node("td", {}, log.severity),
+                    node("td", {}, log.source),
+                    node("td", { class: "message" }, log.messageNode),
+                    node("td", { class: "screenshot" }, "")
+                );
+                rows.push(tr);
             });
             const logBody = document.getElementById("logBody");
-            logBody.innerHTML = html;
+            logBody.replaceChildren(...rows);
             if (selectedRow) {
                 selectedRow.tr = null;
                 const tr = document.getElementById(selectedRow.id);
@@ -441,13 +425,13 @@
         function insertFloatingScreenshots(logs) {
             const container = document.getElementById('logContainer');
             const screenshots = document.getElementById('floatingScreenshots');
-            screenshots.innerHTML = ''; // Clear previous screenshots
+            screenshots.replaceChildren(); // Clear previous screenshots
 
             logs.forEach((log, i) => {
                 if (!log.screenshot || i == 0) return;
 
-                const prevRow = container.querySelector(`tr[data-log-index="${i - 1}"]`);
-                const nextRow = container.querySelector(`tr[data-log-index="${i + 1}"]`);
+                const prevRow = container.querySelector(`tr[data-row="${i - 1}"]`);
+                const nextRow = container.querySelector(`tr[data-row="${i + 1}"]`);
                 const prevBox = prevRow?.getBoundingClientRect();
                 const nextBox = nextRow?.getBoundingClientRect();
 
@@ -458,21 +442,23 @@
                 const containerBox = container.getBoundingClientRect();
                 const offsetTop = (prevBox.bottom + nextBox.top) / 2 - containerBox.top;
 
-                const img = document.createElement('img');
-                img.src = log.screenshot;
-                img.alt = 'screenshot';
-                img.classList.add('screenshot-thumb');
-                img.style.position = 'absolute';
-                img.style.top = `${offsetTop}px`;
-                img.style.right = '8px';
-                img.style.width = '120px';
-                img.style.border = '1px solid #ccc';
-                img.style.borderRadius = '4px';
-                img.style.boxShadow = '0 2px 6px rgba(0,0,0,0.1)';
-                img.style.zIndex = '5';
-                img.style.cursor = 'zoom-in';
-
-                screenshots.appendChild(img);
+                const img = node("img", {
+                    src: log.screenshot,
+                    alt: 'screenshot',
+                    class: 'screenshot-thumb',
+                    style: {
+                        position: 'absolute',
+                        top: `${offsetTop}px`,
+                        right: '8px',
+                        width: '120px',
+                        border: '1px solid #ccc',
+                        borderRadius: '4px',
+                        boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
+                        zIndex: '5',
+                        cursor: 'zoom-in'
+                    }
+                });
+                screenshots.append(img);
             });
         }
 
@@ -501,13 +487,13 @@
                 } else if (prefix === 'severity') {
                     return log.severity.toLowerCase().includes(term);
                 } else if (prefix === 'message') {
-                    return log.message.toLowerCase().includes(term);
+                    return log.messageText.includes(term);
                 } else {
                     // general match
                     return (
                         log.source.toLowerCase().includes(token.toLowerCase()) ||
                         log.severity.toLowerCase().includes(token.toLowerCase()) ||
-                        log.message.toLowerCase().includes(token.toLowerCase())
+                        log.messageText.includes(token.toLowerCase())
                     );
                 }
             });
@@ -597,10 +583,10 @@
                 return;
             }
             const url = `${baseUrl}/${run}/${job}/${test}/petri.jsonl`;
-            document.getElementById("runName").innerHTML = `<a href="index.html?run=${encodeURIComponent(run)}">${run}</a>`;
+            document.getElementById("runName").replaceChildren(node("a", { href: `index.html?run=${encodeURIComponent(run)}` }, run));
             document.getElementById("jobName").innerText = job;
             document.getElementById("testName").innerText = convertTestName(test);
-            document.getElementById("logContainer").innerText = "Loading...";
+            document.getElementById("loading").style.display = 'block';
             getTestResults(url);
         };
     </script>
@@ -616,7 +602,27 @@
             <button id="clearFilter" title="Clear filter">&times;</button>
         </div>
     </div>
-    <div id="logContainer"></div>
+    <div id="loading" style="display: none;">Loading...</div>
+    <div id="logContainer" style="display: none;">
+        <table>
+            <thead>
+                <colgroup>
+                    <col span="4" />
+                    <col class="screenshot" />
+                </colgroup>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Severity</th>
+                    <th>Source</th>
+                    <th>Message</th>
+                    <th>Screenshot</th>
+                </tr>
+            </thead>
+            <tbody id="logBody">
+            </tbody>
+        </table>
+        <div id="floatingScreenshots"></div>
+    </div>
     <div id="screenshotModal" style="display: none;">
         <img id="modalImage" src="" alt="screenshot" />
     </div>

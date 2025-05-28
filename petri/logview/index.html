@@ -14,7 +14,8 @@
             border-collapse: collapse;
         }
 
-        th, td {
+        th,
+        td {
             border: 1px solid #ddd;
             padding: 6px 10px;
             text-align: left;
@@ -22,8 +23,8 @@
     </style>
     <script src="common.js"></script>
     <script>
-        const cross = "&#10060;"; // Cross for failed tests
-        const check = "&#9989;"; // Check for passed tests
+        const cross = "\u274C"; // Cross for failed tests
+        const check = "\u2705"; // Check for passed tests
 
         function parseBlobs(xmlText) {
             const parser = new DOMParser();
@@ -70,7 +71,7 @@
                         const testName = nameParts[nameParts.length - 2];
                         const jobName = nameParts[nameParts.length - 3];
                         const path = nameParts.slice(0, -3).join("/");
-                        const url = `test.html?run=${path}&job=${jobName}&test=${testName}`;
+                        const url = `test.html?run=${encodeURIComponent(path)}&job=${encodeURIComponent(jobName)}&test=${encodeURIComponent(testName)}`;
                         if (!run[jobName]) {
                             run[jobName] = {
                                 failed: false,
@@ -86,8 +87,8 @@
                         });
                     }
 
-                    let failedHtml = "";
-                    let passingHtml = "";
+                    let failedList = document.getElementById("failedList");
+                    let passingList = document.getElementById("passingList");
 
                     for (const job in run) {
                         run[job].tests.sort((a, b) => {
@@ -96,25 +97,22 @@
                             }
                             return a.name.localeCompare(b.name); // Then by name.
                         });
-                        let thisHtml = `<li>${job}<ul>`;
+
+                        let tests = node("ul");
                         for (const test of run[job].tests) {
                             let icon = test.failed ? cross : check;
-                            thisHtml += `<li><a href="${test.url}">${icon} ${test.name}</a></li>`;
+                            tests.append(node("li", {}, node("a", { href: test.url }, `${icon} ${test.name}`)));
                         }
-                        thisHtml += "</ul></li>";
+                        const n = node("li", {}, tests);
                         if (run[job].failed) {
-                            failedHtml += thisHtml;
+                            failedList.append(n);
                         } else {
-                            passingHtml += thisHtml;
+                            passingList.append(n);
                         }
                     }
 
-                    let html = `<h2>Failed jobs</h2>
-                        <ul>${failedHtml}</ul>
-                        <h2>Passing jobs</h2>
-                        <ul>${passingHtml}</ul>`;
-
-                    document.getElementById("runList").innerHTML = html;
+                    document.getElementById("jobList").style.display = "block";
+                    document.getElementById("loading").style.display = "none";
                 })
                 .catch(error => console.error('Error fetching blob list:', error));
         }
@@ -136,36 +134,25 @@
                         };
                     });
                     runs.sort((a, b) => b.creationTime - a.creationTime); // Sort by creation time, newest first.
-                    let html = `<table>
-                        <thead>
-                            <tr>
-                                <th>Time</th>
-                                <th>Results</th>
-                                <th>Failed</th>
-                                <th>PR</th>
-                                <th>Branch</th>
-                                <th>GitHub Run</th>
-                            </tr>
-                        </thead>
-                        <tbody>`;
+                    const runListBody = document.getElementById("runListBody");
                     for (const run of runs) {
                         const marker = run.failed > 0 ? cross : check;
-                        const pr = run.pr ? `<a href="https://github.com/microsoft/openvmm/pull/${run.pr}">#${run.pr}</a>` : "";
+                        const pr = run.pr ? node("a", { href: `https://github.com/microsoft/openvmm/pull/${encodeURIComponent(run.pr)}` }, `#${run.pr}`) : "";
                         const run_id = run.name.split("/").pop();
-                        html += `<tr>
-                            <td>${run.creationTime.toLocaleString()}</td>
-                            <td>${marker} <a href="?run=${encodeURIComponent(run.name)}">${run.name}</a></td>
-                            <td>${run.failed}</td>
-                            <td>${pr}</td>
-                            <td>${run.branch}</td>
-                            <td><a href="https://github.com/microsoft/openvmm/actions/runs/${run_id}">${run_id}</a></td>
-                        </tr>`;
+                        let tr = node("tr", {},
+                            node("td", {}, run.creationTime.toLocaleString()),
+                            node("td", {}, marker + " ", node("a", { href: `?run=${encodeURIComponent(run.name)}` }, run.name)),
+                            node("td", {}, run.failed),
+                            node("td", {}, pr),
+                            node("td", {}, run.branch),
+                            node("td", {}, node("a", { href: `https://github.com/microsoft/openvmm/actions/runs/${encodeURIComponent(run_id)}` }, run_id)));
+                        runListBody.append(tr);
                     }
-                    html += "</table>";
                     if (runs.length === 0) {
-                        html = "No runs found.";
+                        document.getElementById("runList").textContent = "No runs found.";
                     }
-                    document.getElementById("runList").innerHTML = html;
+                    document.getElementById("runList").style.display = "block";
+                    document.getElementById("loading").style.display = "none";
                 })
                 .catch(error => console.error('Error fetching run list:', error));
         }
@@ -173,10 +160,9 @@
         window.onload = function () {
             const urlParams = new URLSearchParams(window.location.search);
             const run = urlParams.get('run');
-            document.getElementById("runList").innerText = "Loading...";
+            document.getElementById("loading").style.display = "block";
             if (run) {
                 document.getElementById("runName").innerText = run;
-                document.getElementById("backToRuns").innerHTML = `<a href="?">All runs</a>`;
                 getTestList(run);
             } else {
                 document.getElementById("runName").innerText = "Runs";
@@ -188,8 +174,32 @@
 
 <body>
     <h1 id="runName">Loading</h1>
-    <div id="backToRuns"></div>
-    <div id="runList"></div>
+    <div id="loading" style="display: none;">
+        Loading...
+    </div>
+    <div id="runList" style="display: none;">
+        <table>
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Results</th>
+                    <th>Failed</th>
+                    <th>PR</th>
+                    <th>Branch</th>
+                    <th>GitHub Run</th>
+                </tr>
+            </thead>
+            <tbody id="runListBody">
+            </tbody>
+        </table>
+    </div>
+    <div id="jobList" style="display: none;">
+        <a href="?">All runs</a>
+        <h2>Failed jobs</h2>
+        <ul id="failedList"></ul>
+        <h2>Passing jobs</h2>
+        <ul id="passingList"></ul>
+    </div>
 </body>
 
 </html>
