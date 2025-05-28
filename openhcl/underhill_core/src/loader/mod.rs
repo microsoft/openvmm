@@ -36,12 +36,13 @@ pub enum LoadKind {
     Uefi,
     Pcat,
     Linux,
+    StaticElf,
 }
 
 impl From<LoadKind> for FirmwareType {
     fn from(value: LoadKind) -> Self {
         match value {
-            LoadKind::None | LoadKind::Linux => FirmwareType::None,
+            LoadKind::None | LoadKind::Linux | LoadKind::StaticElf => FirmwareType::None,
             LoadKind::Uefi => FirmwareType::Uefi,
             LoadKind::Pcat => FirmwareType::Pcat,
         }
@@ -116,6 +117,16 @@ pub fn load(
         LoadKind::None => {
             tracing::info!("loading nothing into VTL0");
             VpContext::Vbs(Vec::new())
+        }
+        LoadKind::StaticElf => {
+            tracing::info!("loading static ELF into VTL0");
+
+            // Static ELF image is already loaded into guest memory.
+            let static_elf_info = vtl0_info
+                .supports_static_elf
+                .as_ref()
+                .ok_or(Error::LinuxSupport)?;
+            static_elf_info.vp_context.clone()
         }
         LoadKind::Uefi => {
             tracing::info!("loading UEFI into VTL0");
