@@ -1370,11 +1370,23 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::NPF if has_intercept => {
-                // Determine whether an NPF needs to be handled. If not, assume this fault is spurious
-                // and that the instruction can be retried. The intercept itself may be presented by the
-                // hypervisor as either a GPA intercept or an exception intercept.
-                // The hypervisor configures the NPT to generate a #VC inside the guest for accesses to
-                // unmapped memory. This means that accesses to unmapped memory for lower VTLs will be
+                // TODO SNP: This code needs to be fixed to not rely on the
+                // hypervisor message to check the validity of the NPF, rather
+                // we should look at the SNP hardware exit info only like we do
+                // with TDX.
+                //
+                // TODO SNP: This code should be fixed so we do not attempt to
+                // emulate a NPF with an address that has the wrong shared bit,
+                // as this will cause the emulator to raise an internal error,
+                // and instead inject a machine check like TDX.
+                //
+                // Determine whether an NPF needs to be handled. If not, assume
+                // this fault is spurious and that the instruction can be
+                // retried. The intercept itself may be presented by the
+                // hypervisor as either a GPA intercept or an exception
+                // intercept. The hypervisor configures the NPT to generate a
+                // #VC inside the guest for accesses to unmapped memory. This
+                // means that accesses to unmapped memory for lower VTLs will be
                 // forwarded to underhill as a #VC exception.
                 let exit_info2 = vmsa.exit_info2();
                 let interruption_pending = vmsa.event_inject().valid()

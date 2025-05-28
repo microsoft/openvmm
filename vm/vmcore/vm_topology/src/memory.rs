@@ -100,6 +100,15 @@ fn validate_ranges_core<T>(ranges: &[T], getter: impl Fn(&T) -> &MemoryRange) ->
     Ok(())
 }
 
+/// The type backing an address.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum AddressType {
+    /// The address describes ram.
+    Ram,
+    /// The address describes mmio.
+    Mmio,
+}
+
 impl MemoryLayout {
     /// Makes a new memory layout for a guest with `ram_size` bytes of memory
     /// and MMIO gaps at the locations specified by `gaps`.
@@ -282,6 +291,27 @@ impl MemoryLayout {
     pub fn end_of_ram_or_mmio(&self) -> u64 {
         std::cmp::max(self.mmio.last().expect("mmio set").end(), self.end_of_ram())
     }
+
+    /// Probe a given address to see if it is in the memory layout described by
+    /// `self`. Returns the [`AddressType`] of the address if it is in the
+    /// layout.
+    ///
+    /// This does not check the vtl2_range.
+    pub fn probe_address(&self, address: u64) -> Option<AddressType> {
+        let ranges = self
+            .ram
+            .iter()
+            .map(|r| (&r.range, AddressType::Ram))
+            .chain(self.mmio.iter().map(|r| (r, AddressType::Mmio)));
+
+        for (range, address_type) in ranges {
+            if range.contains_addr(address) {
+                return Some(address_type);
+            }
+        }
+
+        None
+    }
 }
 
 #[cfg(test)]
@@ -385,5 +415,44 @@ mod tests {
             MemoryRange::new(3 * GB..4 * GB),
         ];
         MemoryLayout::new_from_ranges(ram, mmio).unwrap_err();
+    }
+
+    #[test]
+    fn probe_address() {
+        let mmio = &[
+            MemoryRange::new(GB..2 * GB),
+            MemoryRange::new(3 * GB..4 * GB),
+        ];
+        let ram = &[
+            MemoryRangeWithNode {
+                range: MemoryRange::new(0..GB),
+                vnode: 0,
+            },
+            MemoryRangeWithNode {
+                range: MemoryRange::new(2 * GB..3 * GB),
+                vnode: 0,
+            },
+            MemoryRangeWithNode {
+                range: MemoryRange::new(4 * GB..TB + 2 * GB),
+                vnode: 0,
+            },
+        ];
+
+        let layout = MemoryLayout::new_from_ranges(ram, mmio).unwrap();
+
+        assert_eq!(layout.probe_address(0), Some(AddressType::Ram));
+        assert_eq!(layout.probe_address(256), Some(AddressType::Ram));
+        assert_eq!(layout.probe_address(2 * GB), Some(AddressType::Ram));
+        assert_eq!(layout.probe_address(4 * GB), Some(AddressType::Ram));
+        assert_eq!(layout.probe_address(TB), Some(AddressType::Ram));
+        assert_eq!(layout.probe_address(TB + 1), Some(AddressType::Ram));
+
+        assert_eq!(layout.probe_address(GB), Some(AddressType::Mmio));
+        assert_eq!(layout.probe_address(GB + 123), Some(AddressType::Mmio));
+        assert_eq!(layout.probe_address(3 * GB), Some(AddressType::Mmio));
+
+        assert_eq!(layout.probe_address(TB + 2 * GB), None);
+        assert_eq!(layout.probe_address(TB + 3 * GB), None);
+        assert_eq!(layout.probe_address(4 * TB), None);
     }
 }
