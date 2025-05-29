@@ -56,6 +56,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "address_filter"
+version = "0.0.0"
+dependencies = [
+ "inspect",
+ "thiserror 2.0.12",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -188,6 +196,16 @@ name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
+
+[[package]]
+name = "atomic_ringbuf"
+version = "0.0.0"
+dependencies = [
+ "cfg-if",
+ "inspect",
+ "loom",
+ "parking_lot",
+]
 
 [[package]]
 name = "autocfg"
@@ -1832,6 +1850,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
 ]
 
 [[package]]
@@ -2424,6 +2443,7 @@ dependencies = [
  "mesh",
  "thiserror 2.0.12",
  "vm_resource",
+ "vmgs_resources",
 ]
 
 [[package]]
@@ -2576,6 +2596,7 @@ dependencies = [
  "vmbus_channel",
  "vmbus_ring",
  "vmcore",
+ "vmgs_resources",
  "zerocopy 0.8.24",
 ]
 
@@ -2661,6 +2682,7 @@ name = "guestmem"
 version = "0.0.0"
 dependencies = [
  "inspect",
+ "minircu",
  "pal_event",
  "sparse_mmap",
  "thiserror 2.0.12",
@@ -2734,6 +2756,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "bitfield-struct 0.10.1",
+ "bitvec",
  "build_rs_guest_arch",
  "fs-err",
  "getrandom 0.3.2",
@@ -3013,6 +3036,7 @@ dependencies = [
  "vmcore",
  "vmgs",
  "vmgs_broker",
+ "vmgs_resources",
  "vmm_core",
  "vmm_core_defs",
  "vmotherboard",
@@ -3046,6 +3070,7 @@ dependencies = [
  "virt_whp",
  "vm_resource",
  "vmbus_proxy",
+ "vmgs_resources",
  "vmm_core_defs",
  "vmotherboard",
 ]
@@ -3526,9 +3551,9 @@ checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 
 [[package]]
 name = "jiff"
-version = "0.2.10"
+version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a064218214dc6a10fbae5ec5fa888d80c45d611aba169222fc272072bf7aef6"
+checksum = "a194df1107f33c79f4f93d02c80798520551949d59dfad22b6157048a88cca93"
 dependencies = [
  "jiff-static",
  "jiff-tzdb-platform",
@@ -3541,9 +3566,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-static"
-version = "0.2.10"
+version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "199b7932d97e325aff3a7030e141eafe7f2c6268e1d1b24859b753a627f45254"
+checksum = "6c6e1db7ed32c6c71b759497fae34bf7933636f75a251b9e736555da426f6442"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4088,6 +4113,7 @@ dependencies = [
 name = "mesh_remote"
 version = "0.0.0"
 dependencies = [
+ "event-listener",
  "futures",
  "futures-concurrency",
  "libc",
@@ -4191,6 +4217,19 @@ dependencies = [
 [[package]]
 name = "minimal_rt_build"
 version = "0.0.0"
+
+[[package]]
+name = "minircu"
+version = "0.0.0"
+dependencies = [
+ "event-listener",
+ "libc",
+ "pal_async",
+ "parking_lot",
+ "test_with_tracing",
+ "tracelimit",
+ "windows-sys 0.59.0",
+]
 
 [[package]]
 name = "miniz_oxide"
@@ -4901,7 +4940,6 @@ dependencies = [
  "dirs",
  "disk_backend_resources",
  "disk_crypt_resources",
- "disk_vhd1",
  "firmware_uefi_custom_vars",
  "floppy_resources",
  "framebuffer",
@@ -5413,6 +5451,7 @@ dependencies = [
  "vmbus_serial_resources",
  "vmcore",
  "vmgs_format",
+ "vmgs_resources",
  "vmm_core_defs",
  "vmotherboard",
  "vmsocket",
@@ -6686,6 +6725,7 @@ version = "0.0.0"
 dependencies = [
  "hvdef",
  "memory_range",
+ "thiserror 2.0.12",
  "tracing",
  "x86defs",
 ]
@@ -7392,6 +7432,7 @@ dependencies = [
  "guest_emulation_transport",
  "guestmem",
  "guid",
+ "hcl",
  "hcl_compat_uefi_nvram_storage",
  "hvdef",
  "hyperv_ic_guest",
@@ -7932,10 +7973,12 @@ dependencies = [
  "aarch64defs",
  "aarch64emu",
  "anyhow",
+ "atomic_ringbuf",
  "bitfield-struct 0.10.1",
  "bitvec",
  "build_rs_guest_arch",
  "cfg-if",
+ "cvm_tracing",
  "fs-err",
  "guestmem",
  "hcl",
@@ -7948,6 +7991,7 @@ dependencies = [
  "libc",
  "memory_range",
  "mesh",
+ "minircu",
  "pal",
  "pal_async",
  "pal_uring",
@@ -7991,6 +8035,7 @@ dependencies = [
 name = "virt_support_apic"
 version = "0.0.0"
 dependencies = [
+ "address_filter",
  "bitfield-struct 0.10.1",
  "hvdef",
  "inspect",
@@ -8413,6 +8458,7 @@ dependencies = [
  "vmbus_core",
  "widestring",
  "windows 0.59.0",
+ "windows-sys 0.59.0",
  "zerocopy 0.8.24",
 ]
 
@@ -8854,6 +8900,7 @@ dependencies = [
 name = "vmotherboard"
 version = "0.0.0"
 dependencies = [
+ "address_filter",
  "anyhow",
  "arc_cyclic_builder",
  "async-trait",
@@ -8972,7 +9019,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "bitfield-struct 0.10.1",
  "chipset_arc_mutex_device",
  "chipset_device",
  "closeable_mutex",
@@ -8982,7 +9028,6 @@ dependencies = [
  "hvdef",
  "inspect",
  "mesh",
- "open_enum",
  "pal_async",
  "parking_lot",
  "pci_core",
@@ -8995,6 +9040,17 @@ dependencies = [
  "vmbus_channel",
  "vmbus_ring",
  "vmcore",
+ "vpci_protocol",
+ "zerocopy 0.8.24",
+]
+
+[[package]]
+name = "vpci_protocol"
+version = "0.0.0"
+dependencies = [
+ "bitfield-struct 0.10.1",
+ "guid",
+ "open_enum",
  "zerocopy 0.8.24",
 ]
 

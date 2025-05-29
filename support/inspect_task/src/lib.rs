@@ -3,6 +3,8 @@
 
 //! Logic for inspecting the task list.
 
+#![forbid(unsafe_code)]
+
 use inspect::Inspect;
 use pal_async::task::TaskData;
 use pal_async::task::TaskList;

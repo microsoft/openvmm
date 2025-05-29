@@ -935,7 +935,9 @@ impl EmulatorSupport for MshvEmulationState<'_> {
         }
     }
 
-    fn initial_gva_translation(&self) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
+    fn initial_gva_translation(
+        &mut self,
+    ) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
         if (self.message.header.message_type != HvMessageType::HvMessageTypeGpaIntercept.0)
             && (self.message.header.message_type != HvMessageType::HvMessageTypeUnmappedGpa.0)
             && (self.message.header.message_type != HvMessageType::HvMessageTypeUnacceptedGpa.0)

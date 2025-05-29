@@ -95,7 +95,7 @@ fn try_get_flowey_log(job_idx: usize) -> anyhow::Result<Option<String>> {
     if std::env::var("FLOWEY_LOG").is_err() {
         let log_level = var_db::open_var_db(job_idx)?
             .try_get_var("FLOWEY_LOG")
-            .map(|val| {
+            .map(|(val, _)| {
                 serde_json::from_slice::<String>(&val)
                     .expect("found FLOWEY_LOG in db, but it wasn't a json string!")
             });

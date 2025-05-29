@@ -174,7 +174,7 @@ struct RunState {
     active_vtl: Vtl,
     enabled_vtls: VtlSet,
     runnable_vtls: VtlSet,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     vtl2_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     vtl2_wakeup_vmtime: Option<VmTimeAccess>,
     #[inspect(skip)]
@@ -202,7 +202,7 @@ struct PerVtlRunState {
     #[cfg(guest_arch = "x86_64")]
     lapic: Option<apic::ApicState>,
     hv: Option<ProcessorVtlHv>,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     deliverability_notifications: HvDeliverabilityNotificationsRegister,
     // Only used when `hv` is `None`.
     vp_assist_page: u64,
@@ -464,6 +464,8 @@ impl virt::ScrubVtl for WhpPartition {
         assert!(!self.inner.isolation.is_isolated());
         assert_eq!(vtl, Vtl::Vtl2);
 
+        tracing::info!(?vtl, "scrubbing partition");
+
         let vtl2 = self.inner.vtl2.as_ref().ok_or(Error::NoVtl2)?;
 
         // Preserve VTL2 reference time across the scrub to match hypervisor
@@ -622,8 +624,6 @@ impl virt::BindProcessor for WhpProcessorBinder {
                 .vtl2
                 .as_ref()
                 .map(|vtl2| &vtl2.vplcs[self.index.index() as usize]),
-
-            tlb_lock: false,
         };
 
         let vp_info = &vp.inner.vp_info;
@@ -675,11 +675,6 @@ pub struct WhpProcessor<'a> {
     state: RunState,
     vplc0: &'a Vplc,
     vplc2: Option<&'a Vplc>,
-
-    /// Whether the VTL 0 TLB is locked by VTL 2 or not.
-    // TODO: This doesn't actually control anything, we just
-    // track it so we can report it back correctly when asked.
-    tlb_lock: bool,
 }
 
 #[derive(Copy, Clone)]

@@ -99,7 +99,12 @@ impl RequestAkCert for TpmRequestAkCertHelper {
             .get_client
             .igvm_attest(agent_data, request, AK_CERT_RESPONSE_BUFFER_SIZE)
             .await?;
-        let payload = underhill_attestation::parse_ak_cert_response(&result.response)?;
+        let payload = if !result.response.is_empty() {
+            underhill_attestation::parse_ak_cert_response(&result.response)?
+        } else {
+            // Let the caller to handle the empty response.
+            vec![]
+        };
 
         Ok(payload)
     }

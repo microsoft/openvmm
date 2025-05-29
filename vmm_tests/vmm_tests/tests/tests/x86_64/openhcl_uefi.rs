@@ -52,7 +52,7 @@ async fn nvme_relay_servicing_core(
     // Test that inspect serialization works with the old version.
     vm.test_inspect_openhcl().await?;
 
-    vm.restart_openhcl(new_openhcl, flags).await?;
+    vm.restart_openhcl(&new_openhcl, flags).await?;
 
     agent.ping().await?;
 
@@ -102,7 +102,7 @@ async fn nvme_keepalive(
 ) -> Result<(), anyhow::Error> {
     nvme_relay_servicing_core(
         config,
-        "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
+        "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off", // disable sidecar until #1345 is fixed
         igvm_file,
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,

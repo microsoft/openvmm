@@ -1,27 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+pub use flowey::util::copy_dir_all;
+
 use flowey::node::prelude::FlowPlatformKind;
 use flowey::node::prelude::RustRuntimeServices;
-use std::path::Path;
 
 pub mod cargo_output;
 pub mod extract;
 pub mod wslpath;
-
-pub fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> std::io::Result<()> {
-    fs_err::create_dir_all(&dst)?;
-    for entry in fs_err::read_dir(src.as_ref())? {
-        let entry = entry?;
-        let dst = dst.as_ref().join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir_all(entry.path(), dst)?;
-        } else {
-            fs_err::copy(entry.path(), dst)?;
-        }
-    }
-    Ok(())
-}
 
 // include a "dummy" _rt argument to enforce that this helper should only be
 // used in runtime contexts, and not during flow compile-time.

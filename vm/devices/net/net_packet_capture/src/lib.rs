@@ -4,6 +4,7 @@
 //! `pcapng` compatible packet capture endpoint implementation.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use async_trait::async_trait;
 use futures::FutureExt;

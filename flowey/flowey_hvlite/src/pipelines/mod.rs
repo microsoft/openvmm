@@ -4,6 +4,7 @@
 use flowey::pipeline::prelude::*;
 use restore_packages::RestorePackagesCli;
 
+pub mod build_docs;
 pub mod build_igvm;
 pub mod checkin_gates;
 pub mod custom_vmfirmwareigvm_dll;
@@ -33,6 +34,7 @@ pub enum OpenvmmPipelines {
 #[derive(clap::Subcommand)]
 pub enum OpenvmmPipelinesCi {
     CheckinGates(checkin_gates::CheckinGatesCli),
+    BuildDocs(build_docs::BuildDocsCli),
 }
 
 impl IntoPipeline for OpenvmmPipelines {
@@ -60,6 +62,7 @@ impl IntoPipeline for OpenvmmPipelines {
 
             OpenvmmPipelines::Ci(cmd) => match cmd {
                 OpenvmmPipelinesCi::CheckinGates(cmd) => cmd.into_pipeline(pipeline_hint),
+                OpenvmmPipelinesCi::BuildDocs(cmd) => cmd.into_pipeline(pipeline_hint),
             },
             OpenvmmPipelines::RestorePackages(cmd) => cmd.into_pipeline(pipeline_hint),
         }

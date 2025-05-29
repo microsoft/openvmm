@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use petri_artifacts_common::tags::IsTestIso;
 use petri_artifacts_common::tags::IsTestVhd;
@@ -406,6 +407,9 @@ fn parse_vhd(input: ParseStream<'_>, generation: Generation) -> syn::Result<Imag
         )),
         "ubuntu_2404_server_aarch64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64
+        )),
+        "windows_11_enterprise_aarch64" => Ok(image_info!(
+            ::petri_artifacts_vmm_test::artifacts::test_vhd::WINDOWS_11_ENTERPRISE_AARCH64
         )),
         _ => Err(Error::new(word.span(), "unrecognized vhd")),
     }

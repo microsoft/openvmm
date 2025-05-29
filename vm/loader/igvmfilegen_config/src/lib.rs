@@ -5,6 +5,7 @@
 //! manifest file used by the file builder.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use serde::Deserialize;
 use serde::Serialize;
