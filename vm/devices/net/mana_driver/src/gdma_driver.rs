@@ -221,7 +221,9 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
         const LOG_CTX: &str = "After GdmaDriver destroy HWC";
         let header = match self.wait_for_vf_to_own_shmem(LOG_CTX) {
             Some(hdr) => hdr,
-            None => { return; }
+            None => {
+                return;
+            }
         };
         if !header.is_response() {
             tracing::error!("{}: expected response", LOG_CTX);
