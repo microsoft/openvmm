@@ -557,7 +557,7 @@ impl IntoPipeline for CheckinGatesCli {
                 };
 
             let (pub_kernel_baseline, _use_kernel_baseline) =
-                if matches!(config, PipelineConfig::Pr) {
+                if matches!(config, PipelineConfig::Ci) {
                     let (p, u) = pipeline.new_typed_artifact(format!("{arch_tag}-kernel-baseline"));
                     (Some(p), Some(u))
                 } else {

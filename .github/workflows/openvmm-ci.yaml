@@ -4500,6 +4500,8 @@ jobs:
         cat <<'EOF' | flowey v 8 'verbose' update
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-kernel-baseline"
+        echo "$AgentTempDirNormal/publish_artifacts/aarch64-kernel-baseline" | flowey v 8 'artifact_publish_from_aarch64-kernel-baseline' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-pipette"
         echo "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-pipette" | flowey v 8 'artifact_publish_from_aarch64-linux-musl-pipette' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/aarch64-linux-musl-tmk_vmm"
@@ -4740,9 +4742,20 @@ jobs:
         flowey e 8 flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline 0
         flowey e 8 flowey_core::pipeline::artifact::publish 2
       shell: bash
+    - name: unpack kernel package
+      run: |-
+        flowey e 8 flowey_lib_hvlite::download_openhcl_kernel_package 2
+        flowey e 8 flowey_core::pipeline::artifact::publish 3
+      shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 8 flowey_lib_common::cache 3
       shell: bash
+    - name: 🌼📦 Publish aarch64-kernel-baseline
+      uses: actions/upload-artifact@v4
+      with:
+        name: aarch64-kernel-baseline
+        path: ${{ runner.temp }}/publish_artifacts/aarch64-kernel-baseline/
+        include-hidden-files: true
     - name: 🌼📦 Publish aarch64-linux-musl-pipette
       uses: actions/upload-artifact@v4
       with:
@@ -4850,6 +4863,8 @@ jobs:
         cat <<'EOF' | flowey v 9 'verbose' update
         ${{ inputs.verbose != '' && inputs.verbose || 'false' }}
         EOF
+        mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-kernel-baseline"
+        echo "$AgentTempDirNormal/publish_artifacts/x64-kernel-baseline" | flowey v 9 'artifact_publish_from_x64-kernel-baseline' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-pipette"
         echo "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-pipette" | flowey v 9 'artifact_publish_from_x64-linux-musl-pipette' --is-raw-string update
         mkdir -p "$AgentTempDirNormal/publish_artifacts/x64-linux-musl-tmk_vmm"
@@ -5183,9 +5198,20 @@ jobs:
         flowey e 9 flowey_lib_hvlite::_jobs::build_and_publish_openvmm_hcl_baseline 0
         flowey e 9 flowey_core::pipeline::artifact::publish 2
       shell: bash
+    - name: unpack kernel package
+      run: |-
+        flowey e 9 flowey_lib_hvlite::download_openhcl_kernel_package 3
+        flowey e 9 flowey_core::pipeline::artifact::publish 3
+      shell: bash
     - name: 'validate cache entry: gh-release-download'
       run: flowey e 9 flowey_lib_common::cache 3
       shell: bash
+    - name: 🌼📦 Publish x64-kernel-baseline
+      uses: actions/upload-artifact@v4
+      with:
+        name: x64-kernel-baseline
+        path: ${{ runner.temp }}/publish_artifacts/x64-kernel-baseline/
+        include-hidden-files: true
     - name: 🌼📦 Publish x64-linux-musl-pipette
       uses: actions/upload-artifact@v4
       with:
