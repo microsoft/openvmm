@@ -9,6 +9,10 @@ use crate::queues::Eq;
 use crate::queues::Wq;
 use crate::resources::Resource;
 use crate::resources::ResourceArena;
+use crate::save_restore::DoorbellSavedState;
+use crate::save_restore::GdmaDriverSavedState;
+use crate::save_restore::InterruptSavedState;
+use crate::save_restore::SavedMemoryState;
 use anyhow::Context;
 use futures::FutureExt;
 use gdma_defs::Cqe;
@@ -118,6 +122,13 @@ impl<T: DeviceRegisterIo + Inspect> Doorbell for Bar0<T> {
         safe_intrinsics::store_fence();
         self.mem.write_u64(offset as usize, value);
     }
+
+    fn save(&self, doorbell_id: Option<u64>) -> DoorbellSavedState {
+        DoorbellSavedState {
+            doorbell_id: doorbell_id.unwrap(),
+            page_count: self.page_count(),
+        }
+    }
 }
 
 #[derive(Inspect)]
@@ -148,6 +159,8 @@ pub struct GdmaDriver<T: DeviceBacking> {
     hwc_warning_time_in_ms: u32,
     hwc_timeout_in_ms: u32,
     hwc_failure: bool,
+    db_id: u32,
+    state_saved: bool,
 }
 
 const EQ_PAGE: usize = 0;
@@ -163,9 +176,17 @@ const RWQE_SIZE: u32 = 32;
 
 impl<T: DeviceBacking> Drop for GdmaDriver<T> {
     fn drop(&mut self) {
+        tracing::debug!(?self.state_saved, ?self.hwc_failure, "dropping gdma driver");
+
+        // Don't destroy anything if we're saving its state for restoration.
+        if self.state_saved {
+            return;
+        }
+
         if self.hwc_failure {
             return;
         }
+
         let data = self
             .bar0
             .mem
@@ -230,61 +251,26 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         self.bar0.clone() as _
     }
 
-    pub async fn new(driver: &impl Driver, mut device: T, num_vps: u32) -> anyhow::Result<Self> {
-        let bar0_mapping = device.map_bar(0)?;
-        let bar0_len = bar0_mapping.len();
-        if bar0_len < size_of::<RegMap>() {
-            anyhow::bail!("bar0 ({} bytes) too small for reg map", bar0_mapping.len());
-        }
+    pub async fn new(
+        driver: &impl Driver,
+        mut device: T,
+        num_vps: u32,
+        dma_buffer: Option<MemoryBlock>,
+    ) -> anyhow::Result<Self> {
+        let (bar0_mapping, map) = Self::init(&mut device)?;
+
         // Only allocate the HWC interrupt now. Rest will be allocated later.
         let num_msix = 1;
         let mut interrupt0 = device.map_interrupt(0, 0)?;
-        let mut map = RegMap::new_zeroed();
-        for i in 0..size_of_val(&map) / 4 {
-            let v = bar0_mapping.read_u32(i * 4);
-            // Unmapped device memory will return -1 on reads, so check the first 32
-            // bits for this condition to get a clear error message early.
-            if i == 0 && v == !0 {
-                anyhow::bail!("bar0 read returned -1, device is not present");
-            }
-            map.as_mut_bytes()[i * 4..(i + 1) * 4].copy_from_slice(&v.to_ne_bytes());
-        }
 
-        tracing::debug!(?map, "register map");
-
-        // Log on unknown major version numbers. This is not necessarily an
-        // error, so continue.
-        if map.major_version_number != 0 && map.major_version_number != 1 {
-            tracing::warn!(
-                major = map.major_version_number,
-                minor = map.minor_version_number,
-                micro = map.micro_version_number,
-                "unrecognized major version"
-            );
-        }
-
-        if map.vf_gdma_sriov_shared_sz != 32 {
-            anyhow::bail!(
-                "unexpected shared memory size: {}",
-                map.vf_gdma_sriov_shared_sz
-            );
-        }
-
-        if (bar0_len as u64).saturating_sub(map.vf_gdma_sriov_shared_reg_start)
-            < map.vf_gdma_sriov_shared_sz as u64
-        {
-            anyhow::bail!(
-                "bar0 ({} bytes) too small for shared memory at {}",
-                bar0_mapping.len(),
-                map.vf_gdma_sriov_shared_reg_start
-            );
-        }
-
-        let dma_client = device.dma_client();
-
-        let dma_buffer = dma_client
-            .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
-            .context("failed to allocate DMA buffer")?;
+        let dma_buffer = if let Some(dma_buffer) = dma_buffer {
+            dma_buffer
+        } else {
+            let dma_client = device.dma_client();
+            dma_client
+                .allocate_dma_buffer(NUM_PAGES * PAGE_SIZE)
+                .context("failed to allocate DMA buffer")?
+        };
 
         let pages = dma_buffer.pfns();
 
@@ -475,6 +461,8 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             hwc_warning_time_in_ms: HWC_WARNING_TIME_IN_MS,
             hwc_timeout_in_ms: HWC_TIMEOUT_DEFAULT_IN_MS,
             hwc_failure: false,
+            state_saved: false,
+            db_id,
         };
 
         this.push_rqe();
@@ -495,6 +483,182 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             .max_eq
             .min(max_vf_resources.max_sq)
             .min(max_vf_resources.max_rq);
+
+        Ok(this)
+    }
+
+    #[allow(dead_code)]
+    pub async fn save(mut self) -> anyhow::Result<GdmaDriverSavedState> {
+        self.state_saved = true;
+
+        let doorbell = self.bar0.save(Some(self.db_id as u64));
+        let interrupt_config = self
+            .interrupts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, interrupt)| {
+                if interrupt.is_some() {
+                    Some(InterruptSavedState {
+                        msix_index: index as u32,
+                        cpu: index as u32,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(GdmaDriverSavedState {
+            mem: SavedMemoryState {
+                base_pfn: self.dma_buffer.pfns()[0],
+                len: self.dma_buffer.len(),
+            },
+            eq: self.eq.save(),
+            cq: self.cq.save(),
+            rq: self.rq.save(),
+            sq: self.sq.save(),
+            db_id: doorbell.doorbell_id,
+            gpa_mkey: self.gpa_mkey,
+            pdid: self._pdid,
+            eq_id_msix: self.eq_id_msix.clone(),
+            hwc_activity_id: self.hwc_activity_id,
+            num_msix: self.num_msix,
+            min_queue_avail: self.min_queue_avail,
+            link_toggle: self.link_toggle.clone(),
+            hwc_failure: self.hwc_failure,
+            interrupt_config,
+        })
+    }
+
+    pub fn init(device: &mut T) -> anyhow::Result<(<T as DeviceBacking>::Registers, RegMap)> {
+        let bar0_mapping = device.map_bar(0)?;
+        let bar0_len = bar0_mapping.len();
+        if bar0_len < size_of::<RegMap>() {
+            anyhow::bail!("bar0 ({} bytes) too small for reg map", bar0_mapping.len());
+        }
+
+        let mut map = RegMap::new_zeroed();
+        for i in 0..size_of_val(&map) / 4 {
+            let v = bar0_mapping.read_u32(i * 4);
+            // Unmapped device memory will return -1 on reads, so check the first 32
+            // bits for this condition to get a clear error message early.
+            if i == 0 && v == !0 {
+                anyhow::bail!("bar0 read returned -1, device is not present");
+            }
+            map.as_mut_bytes()[i * 4..(i + 1) * 4].copy_from_slice(&v.to_ne_bytes());
+        }
+
+        tracing::debug!(?map, "register map");
+
+        // Log on unknown major version numbers. This is not necessarily an
+        // error, so continue.
+        if map.major_version_number != 0 && map.major_version_number != 1 {
+            tracing::warn!(
+                major = map.major_version_number,
+                minor = map.minor_version_number,
+                micro = map.micro_version_number,
+                "unrecognized major version"
+            );
+        }
+
+        if map.vf_gdma_sriov_shared_sz != 32 {
+            anyhow::bail!(
+                "unexpected shared memory size: {}",
+                map.vf_gdma_sriov_shared_sz
+            );
+        }
+
+        if (bar0_len as u64).saturating_sub(map.vf_gdma_sriov_shared_reg_start)
+            < map.vf_gdma_sriov_shared_sz as u64
+        {
+            anyhow::bail!(
+                "bar0 ({} bytes) too small for shared memory at {}",
+                bar0_mapping.len(),
+                map.vf_gdma_sriov_shared_reg_start
+            );
+        }
+
+        Ok((bar0_mapping, map))
+    }
+
+    #[allow(dead_code)]
+    pub async fn restore(
+        saved_state: GdmaDriverSavedState,
+        mut device: T,
+        dma_buffer: MemoryBlock,
+    ) -> anyhow::Result<Self> {
+        tracing::info!("restoring gdma driver");
+
+        let (bar0_mapping, map) = Self::init(&mut device)?;
+        let doorbell_shift = map.vf_db_page_sz.trailing_zeros();
+
+        let bar0 = Arc::new(Bar0 {
+            mem: bar0_mapping,
+            map,
+            doorbell_shift,
+        });
+
+        let eq = Eq::restore_eq(
+            dma_buffer.subblock(0, PAGE_SIZE),
+            saved_state.eq,
+            DoorbellPage::new(bar0.clone(), saved_state.db_id as u32)?,
+        );
+
+        let db_id = saved_state.db_id;
+        let cq = Cq::restore_cq(
+            dma_buffer.subblock(CQ_PAGE * PAGE_SIZE, PAGE_SIZE),
+            saved_state.cq,
+            DoorbellPage::new(bar0.clone(), saved_state.db_id as u32)?,
+        );
+
+        let rq = Wq::restore_rq(
+            dma_buffer.subblock(RQ_PAGE * PAGE_SIZE, PAGE_SIZE),
+            saved_state.rq,
+            DoorbellPage::new(bar0.clone(), saved_state.db_id as u32)?,
+        )?;
+
+        let sq = Wq::restore_sq(
+            dma_buffer.subblock(SQ_PAGE * PAGE_SIZE, PAGE_SIZE),
+            saved_state.sq,
+            DoorbellPage::new(bar0.clone(), saved_state.db_id as u32)?,
+        )?;
+
+        let mut interrupts = vec![None; saved_state.num_msix as usize];
+        for int_state in &saved_state.interrupt_config {
+            let interrupt = device.map_interrupt(int_state.msix_index, int_state.cpu)?;
+
+            interrupts[int_state.msix_index as usize] = Some(interrupt);
+        }
+
+        let mut this = Self {
+            device: Some(device),
+            bar0,
+            dma_buffer,
+            interrupts,
+            eq,
+            cq,
+            rq,
+            sq,
+            test_events: 0,
+            eq_armed: true,
+            cq_armed: true,
+            gpa_mkey: saved_state.gpa_mkey,
+            _pdid: saved_state.pdid,
+            eq_id_msix: saved_state.eq_id_msix,
+            num_msix: saved_state.num_msix,
+            min_queue_avail: saved_state.min_queue_avail,
+            hwc_activity_id: saved_state.hwc_activity_id,
+            link_toggle: saved_state.link_toggle,
+            hwc_subscribed: false,
+            hwc_warning_time_in_ms: HWC_WARNING_TIME_IN_MS,
+            hwc_timeout_in_ms: HWC_TIMEOUT_DEFAULT_IN_MS,
+            hwc_failure: saved_state.hwc_failure,
+            state_saved: false,
+            db_id: db_id as u32,
+        };
+
+        this.eq.arm();
+        this.cq.arm();
 
         Ok(this)
     }
