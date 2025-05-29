@@ -258,10 +258,7 @@ impl FlowNode for Node {
                     )?;
 
                     let output = OpenhclKernelPackageOutput {
-                        vmlinux_dbg: extract_dir
-                            .join("build/native/bin")
-                            .join("x64")
-                            .join("vmlinux.dbg"),
+                        vmlinux_dbg: extract_dir.join("vmlinux.dbg"),
                     };
 
                     println!("vmlinux_dbg: {:?}", output.vmlinux_dbg);
