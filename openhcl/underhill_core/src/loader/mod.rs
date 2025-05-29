@@ -12,8 +12,8 @@ use guestmem::GuestMemory;
 use hvdef::HV_PAGE_SIZE;
 use igvm_defs::MemoryMapEntryType;
 use loader::importer::Register;
-use loader::uefi::config;
 use loader::uefi::IMAGE_SIZE;
+use loader::uefi::config;
 use loader_defs::paravisor::PageRegionDescriptor;
 use memory_range::MemoryRange;
 #[cfg(guest_arch = "x86_64")]
@@ -76,6 +76,9 @@ pub enum Error {
     InvalidAcpiTableLength,
     #[error("invalid acpi table: unknown header signature {0:?}")]
     InvalidAcpiTableSignature([u8; 4]),
+    #[cfg(guest_arch = "x86_64")]
+    #[error("acpi tables require at least two mmio ranges")]
+    UnsupportedMmio,
 }
 
 pub const PV_CONFIG_BASE_PAGE: u64 = if cfg!(guest_arch = "x86_64") {
@@ -91,6 +94,8 @@ pub struct Config {
     /// A string to append to the current VTL0 command line. Currently only used
     /// when booting linux directly.
     pub cmdline_append: CString,
+    /// Disable the UEFI frontpage or not, if loading UEFI.
+    pub disable_uefi_frontpage: bool,
 }
 
 /// Load VTL0 based on measured config. Returns any VP state that should be set.
@@ -127,6 +132,7 @@ pub fn load(
                 platform_config,
                 caps,
                 isolated,
+                config.disable_uefi_frontpage,
             )?;
             uefi_info.vp_context.clone()
         }
@@ -271,6 +277,10 @@ fn load_linux(params: LoadLinuxParams<'_>) -> Result<VpContext, Error> {
         acpi_irq: crate::worker::SYSTEM_IRQ_ACPI,
     };
 
+    if mem_layout.mmio().len() < 2 {
+        return Err(Error::UnsupportedMmio);
+    }
+
     let acpi_tables = acpi_builder.build_acpi_tables(ACPI_BASE, |mem_layout, dsdt| {
         dsdt.add_apic();
 
@@ -403,6 +413,7 @@ pub fn write_uefi_config(
     platform_config: &DevicePlatformSettings,
     caps: &virt::PartitionCapabilities,
     isolated: bool,
+    disable_frontpage: bool,
 ) -> Result<(), Error> {
     use guest_emulation_transport::api::platform_settings::UefiConsoleMode;
 
@@ -412,7 +423,7 @@ pub fn write_uefi_config(
     // - Data that we generate ourselves
     cfg.add(&config::Entropy({
         let mut entropy = [0; 64];
-        getrandom::getrandom(&mut entropy).expect("rng failure");
+        getrandom::fill(&mut entropy).expect("rng failure");
         entropy
     }));
 
@@ -541,11 +552,9 @@ pub fn write_uefi_config(
         &platform_config.smbios.chassis_asset_tag,
     );
 
-    cfg.add({
-        &config::NvdimmCount {
-            count: platform_config.general.nvdimm_count,
-            padding: [0; 3],
-        }
+    cfg.add(&config::NvdimmCount {
+        count: platform_config.general.nvdimm_count,
+        padding: [0; 3],
     });
 
     if let Some(instance_guid) = platform_config.general.vpci_instance_filter {
@@ -612,6 +621,10 @@ pub fn write_uefi_config(
         #[cfg(not(guest_arch = "x86_64"))]
         let _ = caps;
 
+        // Frontpage is disabled if either the host requests it, or the openhcl
+        // cmdline specifies it.
+        flags.set_disable_frontpage(disable_frontpage || platform_config.general.disable_frontpage);
+
         flags.set_console(match platform_config.general.console_mode {
             UefiConsoleMode::Default => config::ConsolePort::Default,
             UefiConsoleMode::COM1 => config::ConsolePort::Com1,
@@ -629,7 +642,6 @@ pub fn write_uefi_config(
 
         flags.set_pause_after_boot_failure(platform_config.general.pause_after_boot_failure);
         flags.set_pxe_ip_v6(platform_config.general.pxe_ip_v6);
-        flags.set_disable_frontpage(platform_config.general.disable_frontpage);
         flags.set_media_present_enabled_by_default(
             platform_config.general.media_present_enabled_by_default,
         );
@@ -647,6 +659,7 @@ pub fn write_uefi_config(
         }
 
         flags.set_cxl_memory_enabled(platform_config.general.cxl_memory_enabled);
+        flags.set_default_boot_always_attempt(platform_config.general.default_boot_always_attempt);
 
         // Some settings do not depend on host config
 

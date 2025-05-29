@@ -10,7 +10,6 @@
 
 #![no_std]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
@@ -292,14 +291,13 @@ pub struct CpuEntry {
 }
 
 impl<
-        'a,
-        'b,
-        const MAX_MEMORY_ENTRIES: usize,
-        const MAX_CPU_ENTRIES: usize,
-        const MAX_COMMAND_LINE_SIZE: usize,
-        const MAX_ENTROPY_SIZE: usize,
-    >
-    ParsedDeviceTree<MAX_MEMORY_ENTRIES, MAX_CPU_ENTRIES, MAX_COMMAND_LINE_SIZE, MAX_ENTROPY_SIZE>
+    'a,
+    'b,
+    const MAX_MEMORY_ENTRIES: usize,
+    const MAX_CPU_ENTRIES: usize,
+    const MAX_COMMAND_LINE_SIZE: usize,
+    const MAX_ENTROPY_SIZE: usize,
+> ParsedDeviceTree<MAX_MEMORY_ENTRIES, MAX_CPU_ENTRIES, MAX_COMMAND_LINE_SIZE, MAX_ENTROPY_SIZE>
 {
     /// Create an empty parsed device tree structure. This is used to construct
     /// a valid instance to pass into [`Self::parse`].
@@ -340,7 +338,7 @@ impl<
                 return Err(ErrorKind::Node {
                     parent_name: "",
                     error: e,
-                })
+                });
             }
         };
 
@@ -356,7 +354,7 @@ impl<
                     return Err(ErrorKind::MemoryRegOverlap {
                         lower: memory[index],
                         upper: entry,
-                    })
+                    });
                 }
                 Err(index) => index,
             };
@@ -955,7 +953,7 @@ fn parse_simple_bus<'a>(
                     return Err(ErrorKind::UnexpectedVmbusVtl {
                         node_name: child.name,
                         vtl,
-                    })
+                    });
                 }
             }
         }
@@ -1079,11 +1077,11 @@ mod inspect_helpers {
         // TODO: inspect::AsDebug would work here once
         // https://github.com/kupiakos/open-enum/pull/13 is merged.
         inspect::adhoc(|req| match *typ {
-            MemoryMapEntryType::MEMORY => req.value("MEMORY".into()),
-            MemoryMapEntryType::PERSISTENT => req.value("PERSISTENT".into()),
-            MemoryMapEntryType::PLATFORM_RESERVED => req.value("PLATFORM_RESERVED".into()),
-            MemoryMapEntryType::VTL2_PROTECTABLE => req.value("VTL2_PROTECTABLE".into()),
-            _ => req.value(typ.0.into()),
+            MemoryMapEntryType::MEMORY => req.value("MEMORY"),
+            MemoryMapEntryType::PERSISTENT => req.value("PERSISTENT"),
+            MemoryMapEntryType::PLATFORM_RESERVED => req.value("PLATFORM_RESERVED"),
+            MemoryMapEntryType::VTL2_PROTECTABLE => req.value("VTL2_PROTECTABLE"),
+            _ => req.value(typ.0),
         })
     }
 

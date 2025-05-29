@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use crate::Table;
 use crate::packed_nums::u16_ne;
 use crate::packed_nums::u32_ne;
-use crate::Table;
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
 use zerocopy::FromBytes;

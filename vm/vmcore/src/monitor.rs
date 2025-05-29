@@ -1,15 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Types for supporting hypervisor monitor pages.
+
+use hvdef::HV_PAGE_SIZE;
 use hvdef::HvMonitorPage;
 use hvdef::HvMonitorPageSmall;
-use hvdef::HV_PAGE_SIZE;
 use inspect::Inspect;
 use std::mem::offset_of;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
@@ -116,7 +118,11 @@ impl MonitorPage {
     /// # Panics
     ///
     /// Panics if monitor_id is already in use.
-    pub fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send> {
+    pub fn register_monitor(
+        &self,
+        monitor_id: MonitorId,
+        connection_id: u32,
+    ) -> Box<dyn Sync + Send> {
         self.monitors.set(monitor_id, Some(connection_id));
 
         tracing::trace!(monitor_id = monitor_id.0, "registered monitor");

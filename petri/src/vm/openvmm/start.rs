@@ -6,10 +6,10 @@
 use super::PetriVmConfigOpenVmm;
 use super::PetriVmOpenVmm;
 use super::PetriVmResourcesOpenVmm;
-use crate::worker::Worker;
 use crate::Firmware;
 use crate::PetriLogFile;
 use crate::PetriLogSource;
+use crate::worker::Worker;
 use anyhow::Context;
 use diag_client::DiagClient;
 use disk_backend_resources::FileDiskHandle;
@@ -20,11 +20,11 @@ use image::ColorType;
 use mesh_process::Mesh;
 use mesh_process::ProcessConfig;
 use mesh_worker::WorkerHost;
+use pal_async::DefaultDriver;
 use pal_async::pipe::PolledPipe;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_async::timer::PolledTimer;
-use pal_async::DefaultDriver;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use pipette_client::PipetteClient;
@@ -53,6 +53,43 @@ impl PetriVmConfigOpenVmm {
             vtl2_settings,
             framebuffer_access,
         } = self;
+
+        if firmware.is_openhcl() {
+            // Add a pipette disk for VTL 2
+            const UH_CIDATA_SCSI_INSTANCE: Guid =
+                guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7c");
+
+            let uh_agent_disk = resources
+                .openhcl_agent_image
+                .as_ref()
+                .unwrap()
+                .build()
+                .context("failed to build agent image")?;
+
+            config.vmbus_devices.push((
+                DeviceVtl::Vtl2,
+                ScsiControllerHandle {
+                    instance_id: UH_CIDATA_SCSI_INSTANCE,
+                    max_sub_channel_count: 1,
+                    io_queue_depth: None,
+                    devices: vec![ScsiDeviceAndPath {
+                        path: ScsiPath {
+                            path: 0,
+                            target: 0,
+                            lun: 0,
+                        },
+                        device: SimpleScsiDiskHandle {
+                            read_only: true,
+                            parameters: Default::default(),
+                            disk: FileDiskHandle(uh_agent_disk.into_file()).into_resource(),
+                        }
+                        .into_resource(),
+                    }],
+                    requests: None,
+                }
+                .into_resource(),
+            ));
+        }
 
         // Add the GED and VTL 2 settings.
         if let Some(mut ged) = ged {
@@ -89,6 +126,7 @@ impl PetriVmConfigOpenVmm {
 
         let mut vm = PetriVmOpenVmm::new(
             super::runtime::PetriVmInner {
+                arch,
                 resources,
                 mesh,
                 worker,
@@ -188,44 +226,6 @@ impl PetriVmConfigOpenVmm {
             ));
         }
 
-        if self.firmware.is_openhcl() {
-            // Add a second pipette disk for VTL 2
-            const UH_CIDATA_SCSI_INSTANCE: Guid =
-                guid::guid!("766e96f8-2ceb-437e-afe3-a93169e48a7c");
-
-            let uh_agent_disk = self
-                .resources
-                .openhcl_agent_image
-                .as_ref()
-                .unwrap()
-                .build()
-                .context("failed to build agent image")?;
-
-            self.config.vmbus_devices.push((
-                DeviceVtl::Vtl2,
-                ScsiControllerHandle {
-                    instance_id: UH_CIDATA_SCSI_INSTANCE,
-                    max_sub_channel_count: 1,
-                    io_queue_depth: None,
-                    devices: vec![ScsiDeviceAndPath {
-                        path: ScsiPath {
-                            path: 0,
-                            target: 0,
-                            lun: 0,
-                        },
-                        device: SimpleScsiDiskHandle {
-                            read_only: true,
-                            parameters: Default::default(),
-                            disk: FileDiskHandle(uh_agent_disk.into_file()).into_resource(),
-                        }
-                        .into_resource(),
-                    }],
-                    requests: None,
-                }
-                .into_resource(),
-            ));
-        }
-
         let is_linux_direct = self.firmware.is_linux_direct();
 
         // Start the VM.
@@ -277,11 +277,11 @@ impl PetriVmConfigOpenVmm {
             let mut timer = PolledTimer::new(driver);
             let log_source = log_source.clone();
             tasks.push(driver.spawn("petri-watchdog-screenshot", async move {
-                let mut count = 0;
+                let mut image = Vec::new();
+                let mut last_image = Vec::new();
                 loop {
                     timer.sleep(Duration::from_secs(2)).await;
-                    count += 1;
-                    tracing::info!(count, "Taking screenshot.");
+                    tracing::info!("Taking screenshot.");
 
                     // Our framebuffer uses 4 bytes per pixel, approximating an
                     // BGRA image, however it only actually contains BGR data.
@@ -293,7 +293,7 @@ impl PetriVmConfigOpenVmm {
                     let (widthsize, heightsize) = (width as usize, height as usize);
                     let len = widthsize * heightsize * BYTES_PER_PIXEL;
 
-                    let mut image = vec![0; len];
+                    image.resize(len, 0);
                     for (i, line) in
                         (0..height).zip(image.chunks_exact_mut(widthsize * BYTES_PER_PIXEL))
                     {
@@ -302,6 +302,11 @@ impl PetriVmConfigOpenVmm {
                             pixel.swap(0, 2);
                             pixel[3] = 0xFF;
                         }
+                    }
+
+                    if image == last_image {
+                        tracing::info!("No change in framebuffer, skipping screenshot.");
+                        continue;
                     }
 
                     let r = log_source
@@ -321,8 +326,9 @@ impl PetriVmConfigOpenVmm {
                     if let Err(e) = r {
                         tracing::error!(?e, "Failed to save screenshot");
                     } else {
-                        tracing::info!(count, "Screenshot saved.");
+                        tracing::info!("Screenshot saved.");
                     }
+                    std::mem::swap(&mut image, &mut last_image);
                 }
             }));
         }

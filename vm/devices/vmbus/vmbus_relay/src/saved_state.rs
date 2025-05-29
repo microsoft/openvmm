@@ -4,6 +4,7 @@
 use crate::ChannelId;
 use crate::ChannelInfo;
 use crate::InterceptChannelRequest;
+use crate::InterruptRelay;
 use crate::RelayChannelRequest;
 use crate::RelayChannelTask;
 use crate::RelayTask;
@@ -11,16 +12,21 @@ use anyhow::Context as _;
 use anyhow::Result;
 use mesh::payload::Protobuf;
 use mesh::rpc::RpcSend;
+use pal_event::Event;
+use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
-use vmbus_core::VersionInfo;
-use vmcore::save_restore::SavedStateBlob;
+use vmbus_channel::bus::ChannelServerRequest;
+use vmbus_channel::bus::OpenResult;
+use vmbus_client as client;
+use vmcore::interrupt::Interrupt;
+use vmcore::notify::Notify;
 use vmcore::save_restore::SavedStateRoot;
 
 impl RelayTask {
     pub async fn handle_save(&self) -> SavedState {
         assert!(!self.running);
 
-        let client_saved_state = self.vmbus_client.save().await;
         let channels = futures::future::join_all(
             self.channels
                 .iter()
@@ -33,8 +39,6 @@ impl RelayTask {
 
         SavedState {
             use_interrupt_relay: self.use_interrupt_relay.load(Ordering::SeqCst),
-            relay_state: RelayState::save(&self.relay_state),
-            client_saved_state,
             channels,
         }
     }
@@ -42,53 +46,35 @@ impl RelayTask {
     pub async fn handle_restore(&mut self, state: SavedState) -> Result<()> {
         let SavedState {
             use_interrupt_relay,
-            relay_state,
-            client_saved_state,
-            mut channels,
+            channels,
         } = state;
 
         self.use_interrupt_relay
             .store(use_interrupt_relay, Ordering::SeqCst);
-        let (version, offers) = self.vmbus_client.restore(client_saved_state).await?;
-        // Start the client now so that we can issue per-channel operations.
-        self.vmbus_client.start();
-        let r = async {
-            self.relay_state = relay_state.restore(version);
-            channels.sort_by_key(|k| k.channel_id);
-            for offer in offers {
-                let offer_info = offer.offer.offer;
-                let channel = channels
-                    .binary_search_by_key(&offer_info.channel_id.0, |k| k.channel_id)
-                    .ok()
-                    .and_then(|i| {
-                        if offer.open || channels[i].intercepted {
-                            Some(&channels[i])
-                        } else {
-                            None
-                        }
-                    });
 
-                self.handle_offer(offer.offer, Some((offer.open, channel)))
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "failed to restore {{{}}}-{{{}}}-{}",
-                            offer_info.interface_id,
-                            offer_info.instance_id,
-                            offer_info.subchannel_index
-                        )
-                    })?;
+        for saved_channel in channels {
+            let Some(channel) = self.channels.get_mut(&ChannelId(saved_channel.channel_id)) else {
+                tracing::info!(
+                    channel_id = saved_channel.channel_id,
+                    "channel not found during restore, probably revoked"
+                );
+                continue;
+            };
+            match channel {
+                ChannelInfo::Relay(info) => {
+                    info.relay_request_send
+                        .call_failable(RelayChannelRequest::Restore, saved_channel)
+                        .await?;
+                }
+                ChannelInfo::Intercept(id) => {
+                    if saved_channel.is_open {
+                        anyhow::bail!("cannot restore intercepted channel {id}");
+                    }
+                }
             }
-            Ok(())
         }
-        .await;
 
-        // Close any channels that weren't restored.
-        self.vmbus_client.post_restore().await;
-
-        // Stop the client to keep the state machine in a consistent state.
-        self.vmbus_client.stop().await;
-        r
+        Ok(())
     }
 
     async fn save_channel_state(
@@ -136,6 +122,7 @@ impl RelayTask {
                     event_flag: None,
                     intercepted: true,
                     intercepted_save_state,
+                    is_open: false,
                 })
             }
         }
@@ -154,7 +141,94 @@ impl RelayChannelTask {
                 .map(|interrupt| interrupt.event_flag),
             intercepted: false,
             intercepted_save_state: Vec::new(),
+            is_open: self.channel.is_open,
         }
+    }
+
+    pub(crate) async fn handle_restore(&mut self, state: Channel) -> Result<()> {
+        let Channel {
+            channel_id: _,
+            event_flag,
+            intercepted,
+            intercepted_save_state: _,
+            is_open,
+        } = state;
+
+        if intercepted {
+            anyhow::bail!("cannot restore an intercepted channel");
+        }
+
+        // FUTURE: restore vmbus_client before vmbus_server to avoid this
+        // indirection. This requires vmbus_client saving/restoring the
+        // connection ID itself.
+        let restored_interrupt = Arc::new(OnceLock::<Interrupt>::new());
+        let guest_to_host_interrupt = Interrupt::from_fn({
+            let x = restored_interrupt.clone();
+            move || {
+                if let Some(x) = x.get() {
+                    x.deliver();
+                }
+            }
+        });
+
+        let open_result = is_open.then(|| OpenResult {
+            guest_to_host_interrupt,
+        });
+        let result = self
+            .channel
+            .server_request_send
+            .call(ChannelServerRequest::Restore, open_result)
+            .await
+            .context("Failed to send restore request")?
+            .map_err(|err| {
+                anyhow::Error::from(err).context("failed to restore vmbus relay channel")
+            })?;
+
+        if let Some(request) = result.open_request {
+            let use_interrupt_relay = self.channel.use_interrupt_relay.load(Ordering::SeqCst);
+            if use_interrupt_relay && event_flag.is_none() {
+                anyhow::bail!("using an interrupt relay but no event flag was provided");
+            }
+            let (incoming_event, notify) = if use_interrupt_relay {
+                let event = Event::new();
+                let notify = Notify::from_event(event.clone())
+                    .pollable(self.driver.as_ref())
+                    .context("failed to create polled notify")?;
+                Some((event, notify))
+            } else {
+                None
+            }
+            .unzip();
+
+            let opened = self
+                .channel
+                .request_send
+                .call_failable(
+                    client::ChannelRequest::Restore,
+                    client::RestoreRequest {
+                        connection_id: request.open_data.connection_id,
+                        redirected_event_flag: event_flag,
+                        incoming_event,
+                    },
+                )
+                .await
+                .context("client failed to restore channel")?;
+
+            if let Some(notify) = notify {
+                self.channel.interrupt_relay = Some(InterruptRelay {
+                    event_flag: event_flag.unwrap(),
+                    notify,
+                    interrupt: request.interrupt,
+                });
+            }
+
+            restored_interrupt
+                .set(opened.guest_to_host_signal)
+                .ok()
+                .unwrap();
+        }
+
+        Ok(())
     }
 }
 
@@ -162,71 +236,23 @@ impl RelayChannelTask {
 #[mesh(package = "vmbus.relay")]
 pub struct SavedState {
     #[mesh(1)]
-    use_interrupt_relay: bool,
-    #[mesh(2)]
-    relay_state: RelayState,
-    #[mesh(3)]
-    client_saved_state: vmbus_client::SavedState,
-    #[mesh(4)]
-    channels: Vec<Channel>,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq, Protobuf)]
-#[mesh(package = "vmbus.relay")]
-enum RelayState {
-    #[mesh(1)]
-    Disconnected,
-    #[mesh(2)]
-    Connected,
-}
-
-impl RelayState {
-    fn save(value: &super::RelayState) -> Self {
-        match value {
-            super::RelayState::Disconnected => RelayState::Disconnected,
-            // The version is not saved, but recovered from the client.
-            super::RelayState::Connected(_) => RelayState::Connected,
-        }
-    }
-
-    fn restore(self, version: Option<VersionInfo>) -> super::RelayState {
-        match self {
-            RelayState::Connected => {
-                super::RelayState::Connected(version.expect("Relay connected but client is not."))
-            }
-            RelayState::Disconnected => super::RelayState::Disconnected,
-        }
-    }
+    pub(crate) use_interrupt_relay: bool,
+    // Fields 2, 3, and 4 are used by the legacy saved state but are ignored here.
+    #[mesh(5)]
+    pub(crate) channels: Vec<Channel>,
 }
 
 #[derive(Clone, Protobuf)]
 #[mesh(package = "vmbus.relay")]
-pub struct Channel {
+pub(crate) struct Channel {
     #[mesh(1)]
-    pub channel_id: u32,
+    pub(crate) channel_id: u32,
     #[mesh(2)]
-    pub event_flag: Option<u16>,
+    pub(crate) event_flag: Option<u16>,
     #[mesh(3)]
-    pub intercepted: bool,
+    pub(crate) intercepted: bool,
     #[mesh(4)]
-    pub intercepted_save_state: Vec<u8>,
-}
-
-impl Channel {
-    pub fn try_get_intercept_save_state(&self) -> Option<SavedStateBlob> {
-        if self.intercepted_save_state.is_empty() {
-            return None;
-        }
-        match mesh_protobuf::decode(self.intercepted_save_state.as_slice()) {
-            Ok(result) => Some(result),
-            Err(err) => {
-                tracing::error!(
-                    err = &err as &dyn std::error::Error,
-                    channel_id = self.channel_id,
-                    "Failed to decode save state for intercepted device"
-                );
-                None
-            }
-        }
-    }
+    pub(crate) intercepted_save_state: Vec<u8>,
+    #[mesh(5)]
+    pub(crate) is_open: bool,
 }

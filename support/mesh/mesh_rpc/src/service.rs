@@ -6,16 +6,16 @@
 pub use grpc::Code;
 pub use grpc::Status;
 use mesh::local_node::Port;
+use mesh::payload::DefaultEncoding;
+use mesh::payload::MessageDecode;
+use mesh::payload::MessageEncode;
+use mesh::payload::Result;
 use mesh::payload::encoding::MessageEncoding;
 use mesh::payload::protobuf::FieldSizer;
 use mesh::payload::protobuf::FieldWriter;
 use mesh::payload::protobuf::MessageReader;
 use mesh::payload::protobuf::MessageSizer;
 use mesh::payload::protobuf::MessageWriter;
-use mesh::payload::DefaultEncoding;
-use mesh::payload::MessageDecode;
-use mesh::payload::MessageEncode;
-use mesh::payload::Result;
 use mesh::resource::Resource;
 
 mod grpc {

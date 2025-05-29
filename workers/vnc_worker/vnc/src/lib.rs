@@ -3,14 +3,17 @@
 
 //! A VNC server implementation.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 mod rfb;
 mod scancode;
-use futures::channel::mpsc;
-use futures::future::OptionFuture;
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::channel::mpsc;
+use futures::future::OptionFuture;
 use pal_async::socket::PolledSocket;
 use thiserror::Error;
 use zerocopy::FromZeros;

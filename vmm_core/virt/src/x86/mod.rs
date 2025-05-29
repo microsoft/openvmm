@@ -11,10 +11,10 @@ use crate::state::StateElement;
 use inspect::Inspect;
 use mesh_protobuf::Protobuf;
 use std::fmt::Debug;
+use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::x86::ApicMode;
 use vm_topology::processor::x86::X86Topology;
 use vm_topology::processor::x86::X86VpInfo;
-use vm_topology::processor::ProcessorTopology;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::cpuid::SgxCpuidSubleafEax;
 use x86defs::cpuid::Vendor;
@@ -75,6 +75,8 @@ pub struct X86PartitionCapabilities {
     /// a power of 2, if present.
     #[inspect(hex)]
     pub vtom: Option<u64>,
+    /// The physical address width of the CPU, as reported by CPUID.
+    pub physical_address_width: u8,
 
     /// The hypervisor can freeze time across state manipulation.
     pub can_freeze_time: bool,
@@ -113,6 +115,7 @@ impl X86PartitionCapabilities {
             sgx: false,
             tsc_aux: false,
             vtom: None,
+            physical_address_width: max_physical_address_size_from_cpuid(&mut *f),
             can_freeze_time: false,
             xsaves_state_bv_broken: false,
             dr6_tsx_broken: false,
@@ -163,13 +166,12 @@ impl X86PartitionCapabilities {
         if xsave {
             let result = f(CpuidFunction::ExtendedStateEnumeration.0, 0);
             this.xsave.features = result[0] as u64 | ((result[3] as u64) << 32);
-            this.xsave.standard_len = result[2];
+            let standard_len = result[2];
 
             let result = f(CpuidFunction::ExtendedStateEnumeration.0, 1);
             this.xsave.supervisor_features = result[2] as u64 | ((result[3] as u64) << 32);
 
             let mut n = (this.xsave.features | this.xsave.supervisor_features) & !3;
-            let mut total = XSAVE_VARIABLE_OFFSET as u32;
             while n != 0 {
                 let i = n.trailing_zeros();
                 n -= 1 << i;
@@ -179,13 +181,16 @@ impl X86PartitionCapabilities {
                     len: result[0],
                     align: result[2] & 2 != 0,
                 };
-                if feature.align {
-                    total = (total + 63) & !63;
-                }
-                total += feature.len;
                 this.xsave.feature_info[i as usize] = feature;
             }
-            this.xsave.compact_len = total;
+            this.xsave.compact_len = this.xsave.compact_len_for(!0);
+            this.xsave.standard_len = this.xsave.standard_len_for(!0);
+            assert!(
+                this.xsave.standard_len <= standard_len,
+                "advertised xsave length ({}) too small for features, requires ({}) bytes",
+                standard_len,
+                this.xsave.standard_len
+            );
         }
 
         // Hypervisor info.
@@ -270,6 +275,33 @@ pub struct XsaveFeature {
     pub offset: u32,
     pub len: u32,
     pub align: bool,
+}
+
+impl XsaveCapabilities {
+    pub fn standard_len_for(&self, xfem: u64) -> u32 {
+        let mut len = XSAVE_VARIABLE_OFFSET as u32;
+        for i in 2..63 {
+            if xfem & (1 << i) != 0 {
+                let feature = &self.feature_info[i as usize];
+                len = len.max(feature.offset + feature.len);
+            }
+        }
+        len
+    }
+
+    pub fn compact_len_for(&self, xfem: u64) -> u32 {
+        let mut len = XSAVE_VARIABLE_OFFSET as u32;
+        for i in 2..63 {
+            if xfem & (1 << i) != 0 {
+                let feature = &self.feature_info[i as usize];
+                if feature.align {
+                    len = (len + 63) & !63;
+                }
+                len += feature.len;
+            }
+        }
+        len
+    }
 }
 
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Protobuf, Inspect)]
@@ -455,7 +487,7 @@ impl TryFrom<usize> for BreakpointSize {
 }
 
 /// Query the max physical address size of the system.
-pub fn max_physical_address_size_from_cpuid(cpuid: &dyn Fn(u32, u32) -> [u32; 4]) -> u8 {
+pub fn max_physical_address_size_from_cpuid(mut cpuid: impl FnMut(u32, u32) -> [u32; 4]) -> u8 {
     const DEFAULT_PHYSICAL_ADDRESS_SIZE: u8 = 32;
 
     let max_extended = {

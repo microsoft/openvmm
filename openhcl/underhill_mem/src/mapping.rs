@@ -4,9 +4,9 @@
 // UNSAFETY: Implementing GuestMemoryAccess.
 #![expect(unsafe_code)]
 
-use crate::registrar::MemoryRegistrar;
 use crate::MshvVtlWithPolicy;
 use crate::RegistrationError;
+use crate::registrar::MemoryRegistrar;
 use guestmem::GuestMemoryAccess;
 use guestmem::GuestMemoryBackingError;
 use guestmem::PAGE_SIZE;
@@ -164,7 +164,7 @@ impl GuestMemoryMappingBuilder {
         tracing::trace!(?mapping, "map_lower_vtl_memory mapping");
 
         let bitmap = if self.bitmap_state.is_some() {
-            let bitmap = SparseMapping::new((address_space_size as usize / PAGE_SIZE + 7) / 8)
+            let bitmap = SparseMapping::new((address_space_size as usize / PAGE_SIZE).div_ceil(8))
                 .map_err(MappingError::BitmapReserve)?;
             bitmap
                 .map_zero(0, bitmap.len())
@@ -276,6 +276,7 @@ impl GuestMemoryMapping {
         }
     }
 
+    /// Read the bitmap for `gpn`.
     pub(crate) fn check_bitmap(&self, gpn: u64) -> bool {
         let bitmap = self.bitmap.as_ref().unwrap();
         let mut b = 0;

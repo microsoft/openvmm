@@ -8,6 +8,7 @@
 //! better integration testing within the OpenVMM CI, and is not at
 //! feature-parity with the implementation in Hyper-V.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod resolver;
@@ -20,24 +21,28 @@ use core::mem::size_of;
 use disk_backend::Disk;
 use futures::FutureExt;
 use futures::StreamExt;
-use get_protocol::dps_json::HclSecureBootTemplateId;
-use get_protocol::dps_json::PcatBootDevice;
 use get_protocol::BatteryStatusFlags;
 use get_protocol::BatteryStatusNotification;
+use get_protocol::GspCleartextContent;
+use get_protocol::GspExtendedStatusFlags;
 use get_protocol::HeaderGeneric;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
 use get_protocol::IgvmAttestRequest;
+use get_protocol::MAX_PAYLOAD_SIZE;
 use get_protocol::RegisterState;
 use get_protocol::SaveGuestVtl2StateFlags;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::StartVtl0Status;
 use get_protocol::UefiConsoleMode;
 use get_protocol::VmgsIoStatus;
-use get_protocol::MAX_PAYLOAD_SIZE;
+use get_protocol::dps_json::GuestStateLifetime;
+use get_protocol::dps_json::HclSecureBootTemplateId;
+use get_protocol::dps_json::PcatBootDevice;
 use get_resources::ged::FirmwareEvent;
 use get_resources::ged::GuestEmulationRequest;
 use get_resources::ged::GuestServicingFlags;
+use get_resources::ged::IgvmAttestTestConfig;
 use get_resources::ged::ModifyVtl2SettingsError;
 use get_resources::ged::SaveRestoreError;
 use get_resources::ged::Vtl0StartError;
@@ -45,12 +50,16 @@ use guestmem::GuestMemory;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use jiff::Zoned;
+use jiff::civil::DateTime;
+use jiff::civil::date;
+use jiff::tz::TimeZone;
 use mesh::error::RemoteError;
 use mesh::rpc::Rpc;
+use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestAkCertResponseHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestHeader;
 use openhcl_attestation_protocol::igvm_attest::get::IgvmAttestRequestType;
-use openhcl_attestation_protocol::igvm_attest::get::AK_CERT_RESPONSE_HEADER_VERSION;
 use power_resources::PowerRequest;
 use power_resources::PowerRequestClient;
 use scsi_buffers::OwnedRequestBuffers;
@@ -60,12 +69,12 @@ use thiserror::Error;
 use video_core::FramebufferControl;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::pipe::MessagePipe;
+use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::bus::ChannelType;
 use vmbus_channel::bus::OfferParams;
 use vmbus_channel::channel::ChannelOpenError;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
 use vmbus_channel::simple::SimpleVmbusDevice;
-use vmbus_channel::RawAsyncChannel;
 use vmbus_ring::RingMem;
 use vmcore::save_restore::SavedStateNotSupported;
 use zerocopy::FromBytes;
@@ -103,6 +112,11 @@ enum Error {
     UnsupportedIgvmAttestRequestType(u32),
     #[error("failed to write to shared memory")]
     SharedMemoryWriteFailed(#[source] guestmem::GuestMemoryError),
+    #[error("invalid igvm attest state: {state:?}, test config: {test_config:?}")]
+    InvalidIgvmAttestState {
+        state: IgvmAttestState,
+        test_config: Option<IgvmAttestTestConfig>,
+    },
 }
 
 impl From<task_control::Cancelled> for Error {
@@ -134,6 +148,11 @@ pub struct GuestConfig {
     pub secure_boot_template: SecureBootTemplateType,
     /// Enable battery.
     pub enable_battery: bool,
+    /// Suppress attestation.
+    pub no_persistent_secrets: bool,
+    /// Guest state lifetime
+    #[inspect(debug)]
+    pub guest_state_lifetime: GuestStateLifetime,
 }
 
 #[derive(Debug, Clone, Inspect)]
@@ -149,6 +168,8 @@ pub enum GuestFirmwareConfig {
         /// Where to send UEFI console output
         #[inspect(debug)]
         console_mode: UefiConsoleMode,
+        /// Perform a default boot even if boot entries exist and fail
+        default_boot_always_attempt: bool,
     },
     Pcat {
         #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDebug)")]
@@ -175,6 +196,17 @@ pub enum GuestEvent {
     BootAttempt,
 }
 
+/// Simple state machine to support AK cert preserving test.
+// TODO: add more states to cover other test scenarios.
+#[derive(Debug, Clone, Copy)]
+enum IgvmAttestState {
+    Init,
+    SendEmptyAkCert,
+    SendInvalidAkCert,
+    SendValidAkCert,
+    Done,
+}
+
 /// VMBUS device that implements the host side of the Guest Emulation Transport protocol.
 #[derive(InspectMut)]
 pub struct GuestEmulationDevice {
@@ -196,6 +228,13 @@ pub struct GuestEmulationDevice {
     #[inspect(with = "Option::is_some")]
     save_restore_buf: Option<Vec<u8>>,
     last_save_restore_buf_len: usize,
+
+    #[inspect(skip)]
+    igvm_attest_test_config: Option<IgvmAttestTestConfig>,
+
+    /// State machine for `handle_igvm_attest`
+    #[inspect(skip)]
+    igvm_attest_state: IgvmAttestState,
 }
 
 #[derive(Inspect)]
@@ -215,6 +254,7 @@ impl GuestEmulationDevice {
         guest_request_recv: mesh::Receiver<GuestEmulationRequest>,
         framebuffer_control: Option<Box<dyn FramebufferControl>>,
         vmgs_disk: Option<Disk>,
+        igvm_attest_test_config: Option<IgvmAttestTestConfig>,
     ) -> Self {
         Self {
             config,
@@ -229,6 +269,8 @@ impl GuestEmulationDevice {
             save_restore_buf: None,
             waiting_for_vtl0_start: Vec::new(),
             last_save_restore_buf_len: 0,
+            igvm_attest_state: IgvmAttestState::Init,
+            igvm_attest_test_config,
         }
     }
 
@@ -236,6 +278,55 @@ impl GuestEmulationDevice {
         if let Some(sender) = &self.firmware_event_send {
             sender.send(event);
         }
+    }
+
+    /// Update IGVM Attest state machine based on IGVM Attest test config.
+    fn update_igvm_attest_state(&mut self) -> Result<(), Error> {
+        match self.igvm_attest_test_config {
+            // No test config set, default to sending valid AK cert for now.
+            None => self.igvm_attest_state = IgvmAttestState::SendValidAkCert,
+            // State machine for testing retrying AK cert request after failing attempt.
+            Some(IgvmAttestTestConfig::AkCertRequestFailureAndRetry) => {
+                match self.igvm_attest_state {
+                    IgvmAttestState::Init => {
+                        self.igvm_attest_state = IgvmAttestState::SendEmptyAkCert
+                    }
+                    IgvmAttestState::SendEmptyAkCert => {
+                        self.igvm_attest_state = IgvmAttestState::SendInvalidAkCert
+                    }
+                    IgvmAttestState::SendInvalidAkCert => {
+                        self.igvm_attest_state = IgvmAttestState::SendValidAkCert
+                    }
+                    IgvmAttestState::SendValidAkCert => {
+                        self.igvm_attest_state = IgvmAttestState::Done
+                    }
+                    IgvmAttestState::Done => {}
+                }
+            }
+            // State machine for testing AK cert persistency across boots.
+            Some(IgvmAttestTestConfig::AkCertPersistentAcrossBoot) => {
+                match self.igvm_attest_state {
+                    IgvmAttestState::Init => {
+                        self.igvm_attest_state = IgvmAttestState::SendValidAkCert
+                    }
+                    IgvmAttestState::SendValidAkCert => {
+                        self.igvm_attest_state = IgvmAttestState::SendEmptyAkCert
+                    }
+                    IgvmAttestState::SendEmptyAkCert => {
+                        self.igvm_attest_state = IgvmAttestState::Done
+                    }
+                    IgvmAttestState::Done => {}
+                    _ => {
+                        return Err(Error::InvalidIgvmAttestState {
+                            state: self.igvm_attest_state,
+                            test_config: self.igvm_attest_test_config,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -308,10 +399,7 @@ pub struct GedChannel<T: RingMem = GpadlRingMem> {
     vtl0_start_report: Option<Result<(), Vtl0StartError>>,
     #[inspect(with = "Option::is_some")]
     modify: Option<Rpc<(), Result<(), ModifyVtl2SettingsError>>>,
-    // TODO: allow unused temporarily as a follow up change will use it to
-    // implement AK cert renewal.
     #[inspect(skip)]
-    #[allow(dead_code)]
     gm: GuestMemory,
 }
 
@@ -362,7 +450,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                         .await?
                         .map_err(Error::Vmbus)?;
 
-                    if version_request.message_header.message_id != HostRequests::VERSION {
+                    if version_request.message_header.message_id() != HostRequests::VERSION {
                         return Err(Error::InvalidSequence);
                     }
 
@@ -567,7 +655,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
         state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
-        match header.message_id {
+        match header.message_id() {
             HostRequests::TIME => self.handle_time()?,
             HostRequests::BIOS_BOOT_FINALIZE => self.handle_bios_boot_finalize(message_buf)?,
             HostRequests::VMGS_GET_DEVICE_INFO => self.handle_vmgs_get_device_info(state)?,
@@ -580,7 +668,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostRequests::GUEST_STATE_PROTECTION_BY_ID => {
                 self.handle_guest_state_protection_by_id()?;
             }
-            HostRequests::IGVM_ATTEST => self.handle_igvm_attest(message_buf)?,
+            HostRequests::IGVM_ATTEST => self.handle_igvm_attest(message_buf, state)?,
             HostRequests::DEVICE_PLATFORM_SETTINGS_V2 => {
                 self.handle_device_platform_settings_v2(state)?
             }
@@ -595,7 +683,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             HostRequests::CREATE_RAM_GPA_RANGE => self.handle_create_ram_gpa_range(message_buf)?,
             HostRequests::RESET_RAM_GPA_RANGE => self.handle_reset_ram_gpa_range(message_buf)?,
             _ => {
-                tracing::error!(message_id = ?header.message_id, "unexpected message");
+                tracing::error!(message_id = ?header.message_id(), "unexpected message");
                 return Err(Error::InvalidSequence);
             }
         };
@@ -617,20 +705,23 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     }
 
     fn handle_time(&mut self) -> Result<(), Error> {
-        const WINDOWS_EPOCH: time::OffsetDateTime = time::macros::datetime!(1601-01-01 0:00 UTC);
+        const WINDOWS_EPOCH: DateTime = date(1601, 1, 1).at(0, 0, 0, 0);
+
+        let now = Zoned::now();
 
         // utc in TimeResponse is in units of 100ns since the windows epoch
-        let now_utc = time::OffsetDateTime::now_utc();
-        let since_win_epoch = now_utc - WINDOWS_EPOCH;
-        let since_win_epoch: i64 = (since_win_epoch.whole_nanoseconds() / 100)
-            .try_into()
-            .unwrap();
+        let since_win_epoch = (WINDOWS_EPOCH
+            .to_zoned(TimeZone::UTC)
+            .expect("windows epoch value to be valid")
+            .timestamp()
+            .duration_until(now.timestamp())
+            .as_nanos()
+            / 100) as i64;
 
-        // time_zone is in minutes between UTC and local time (as stored
+        // tz_offset is in minutes between UTC and local time (as stored
         // in a windows TIME_ZONE_INFORMATION struct)
-        let local_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
-        let time_zone = local_offset.whole_minutes();
-        let response = get_protocol::TimeResponse::new(0, since_win_epoch, time_zone, false);
+        let tz_offset = (now.offset().seconds() / 60) as i16;
+        let response = get_protocol::TimeResponse::new(0, since_win_epoch, tz_offset, false);
 
         self.channel
             .try_send(response.as_bytes())
@@ -806,7 +897,8 @@ impl<T: RingMem + Unpin> GedChannel<T> {
     fn handle_guest_state_protection_by_id(&mut self) -> Result<(), Error> {
         let response = get_protocol::GuestStateProtectionByIdResponse {
             message_header: HeaderGeneric::new(HostRequests::GUEST_STATE_PROTECTION_BY_ID),
-            ..get_protocol::GuestStateProtectionByIdResponse::new_zeroed()
+            seed: GspCleartextContent::new_zeroed(),
+            extended_status_flags: GspExtendedStatusFlags::new().with_no_registry_file(true),
         };
         self.channel
             .try_send(response.as_bytes())
@@ -816,7 +908,13 @@ impl<T: RingMem + Unpin> GedChannel<T> {
 
     /// Stub implementation that simulates the behavior of GED and the host agent.
     /// Used only for test scenarios such as VMM tests.
-    fn handle_igvm_attest(&mut self, message_buf: &[u8]) -> Result<(), Error> {
+    fn handle_igvm_attest(
+        &mut self,
+        message_buf: &[u8],
+        state: &mut GuestEmulationDevice,
+    ) -> Result<(), Error> {
+        tracing::info!(state = ?state.igvm_attest_state, test_config = ?state.igvm_attest_test_config, "Handle IGVM Attest request");
+
         let request = IgvmAttestRequest::read_from_prefix(message_buf)
             .map_err(|_| Error::MessageTooSmall)?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
@@ -833,26 +931,67 @@ impl<T: RingMem + Unpin> GedChannel<T> {
             .map_err(|_| Error::MessageTooSmall)?
             .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
 
+        // Determine the first state before handling the request
+        if matches!(state.igvm_attest_state, IgvmAttestState::Init) {
+            state.update_igvm_attest_state()?;
+            tracing::info!(state = ?state.igvm_attest_state, test_config = ?state.igvm_attest_test_config, "Update init state");
+        }
+
         let response = match request_payload.request_type {
-            IgvmAttestRequestType::AK_CERT_REQUEST => {
-                let data = vec![0xab; 2500];
-                let header = IgvmAttestAkCertResponseHeader {
-                    data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>()) as u32,
-                    version: AK_CERT_RESPONSE_HEADER_VERSION,
-                };
-                let payload = [header.as_bytes(), &data].concat();
-
-                self.gm
-                    .write_at(request.shared_gpa[0], &payload)
-                    .map_err(Error::SharedMemoryWriteFailed)?;
-
-                get_protocol::IgvmAttestResponse {
-                    message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
-                    length: payload.len() as u32,
+            IgvmAttestRequestType::AK_CERT_REQUEST => match state.igvm_attest_state {
+                IgvmAttestState::SendEmptyAkCert => {
+                    tracing::info!("Send an empty response for AK_CERT_REQEUST");
+                    get_protocol::IgvmAttestResponse {
+                        message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
+                        length: 0,
+                    }
                 }
-            }
+                IgvmAttestState::SendInvalidAkCert => {
+                    tracing::info!("Return an invalid response for AK_CERT_REQUEST");
+                    get_protocol::IgvmAttestResponse {
+                        message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
+                        length: get_protocol::IGVM_ATTEST_VMWP_GENERIC_ERROR_CODE as u32,
+                    }
+                }
+                IgvmAttestState::SendValidAkCert => {
+                    let data = vec![0xab; 2500];
+                    let header = IgvmAttestAkCertResponseHeader {
+                        data_size: (data.len() + size_of::<IgvmAttestAkCertResponseHeader>())
+                            as u32,
+                        version: AK_CERT_RESPONSE_HEADER_VERSION,
+                    };
+                    let payload = [header.as_bytes(), &data].concat();
+
+                    self.gm
+                        .write_at(request.shared_gpa[0], &payload)
+                        .map_err(Error::SharedMemoryWriteFailed)?;
+
+                    tracing::info!("Send a response for AK_CERT_REQEUST");
+
+                    get_protocol::IgvmAttestResponse {
+                        message_header: HeaderGeneric::new(HostRequests::IGVM_ATTEST),
+                        length: payload.len() as u32,
+                    }
+                }
+                IgvmAttestState::Done => {
+                    tracing::info!("Bypass AK_CERT_REQEUST");
+
+                    return Ok(());
+                }
+                _ => {
+                    return Err(Error::InvalidIgvmAttestState {
+                        state: state.igvm_attest_state,
+                        test_config: state.igvm_attest_test_config,
+                    });
+                }
+            },
             ty => return Err(Error::UnsupportedIgvmAttestRequestType(ty.0)),
         };
+
+        // Update state
+        state.update_igvm_attest_state()?;
+
+        tracing::info!(state = ?state.igvm_attest_state, test_config = ?state.igvm_attest_test_config, "Update init state");
 
         self.channel
             .try_send(response.as_bytes())
@@ -933,7 +1072,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 framebuffer_control.map(gpa).await;
                 get_protocol::MapFramebufferStatus::SUCCESS
             } else {
-                tracing::warn!("Guest requested framebuffer mapping but no framebuffer control was provided to the GET");
+                tracing::warn!(
+                    "Guest requested framebuffer mapping but no framebuffer control was provided to the GET"
+                );
                 get_protocol::MapFramebufferStatus::FAILURE
             },
         );
@@ -953,7 +1094,9 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 framebuffer_control.unmap().await;
                 get_protocol::UnmapFramebufferStatus::SUCCESS
             } else {
-                tracing::warn!("Guest requested framebuffer mapping but no framebuffer control was provided to the GET");
+                tracing::warn!(
+                    "Guest requested framebuffer mapping but no framebuffer control was provided to the GET"
+                );
                 get_protocol::UnmapFramebufferStatus::FAILURE
             },
         );
@@ -996,7 +1139,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         message_buf: &[u8],
         state: &mut GuestEmulationDevice,
     ) -> Result<(), Error> {
-        match header.message_id {
+        match header.message_id() {
             HostNotifications::POWER_OFF => {
                 self.handle_power_off(state);
             }
@@ -1200,12 +1343,14 @@ impl<T: RingMem + Unpin> GedChannel<T> {
         let firmware_mode_is_pcat;
         let pcat_boot_device_order;
         let uefi_console_mode;
+        let default_boot_always_attempt;
         match state.config.firmware {
             GuestFirmwareConfig::Uefi {
                 enable_vpci_boot,
                 firmware_debug,
                 disable_frontpage: v_disable_frontpage,
                 console_mode,
+                default_boot_always_attempt: v_default_boot_always_attempt,
             } => {
                 vpci_boot_enabled = enable_vpci_boot;
                 enable_firmware_debugging = firmware_debug;
@@ -1213,6 +1358,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 firmware_mode_is_pcat = false;
                 pcat_boot_device_order = None;
                 uefi_console_mode = Some(console_mode);
+                default_boot_always_attempt = v_default_boot_always_attempt;
             }
             GuestFirmwareConfig::Pcat { boot_order } => {
                 vpci_boot_enabled = false;
@@ -1221,6 +1367,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                 firmware_mode_is_pcat = true;
                 pcat_boot_device_order = Some(boot_order);
                 uefi_console_mode = None;
+                default_boot_always_attempt = false;
             }
         }
 
@@ -1259,8 +1406,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     vmbus_redirection_enabled: state.config.vmbus_redirection,
                     vtl2_settings: state.config.vtl2_settings.clone(),
                     firmware_mode_is_pcat,
-                    // no_persist_secrets must be set to True in order to skip attestation.
-                    no_persistent_secrets: true,
+                    no_persistent_secrets: state.config.no_persistent_secrets,
                     legacy_memory_map: false,
                     pause_after_boot_failure: false,
                     pxe_ip_v6: false,
@@ -1268,6 +1414,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     disable_sha384_pcr: false,
                     media_present_enabled_by_default: false,
                     memory_protection_mode: 0,
+                    default_boot_always_attempt,
                     vpci_boot_enabled,
                     vpci_instance_filter: None,
                     num_lock_enabled: false,
@@ -1277,6 +1424,7 @@ impl<T: RingMem + Unpin> GedChannel<T> {
                     always_relay_host_mmio: false,
                     imc_enabled: false,
                     cxl_memory_enabled: false,
+                    guest_state_lifetime: state.config.guest_state_lifetime,
                 },
                 dynamic: get_protocol::dps_json::HclDevicePlatformSettingsV2Dynamic {
                     is_servicing_scenario: state.save_restore_buf.is_some(),

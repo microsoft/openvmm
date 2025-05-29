@@ -3,6 +3,8 @@
 
 //! ACPI types.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
 #![no_std]
 
 #[cfg(feature = "alloc")]

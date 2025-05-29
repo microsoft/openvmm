@@ -80,6 +80,7 @@ mod macros {
                 )*
 
                 /// Save all state that can be restored by a call to restore.
+                #[allow(unused_mut)]
                 fn save_all(&mut self) -> Result<$save_state, $crate::state::StateError<Self::Error>> {
                     let mut save_state = $save_state::default();
                     $(
@@ -92,6 +93,7 @@ mod macros {
                 }
 
                 /// Restore state elements saved in save state.
+                #[allow(unused_variables)]
                 fn restore_all(&mut self, state: &$save_state) -> Result<(), $crate::state::StateError<Self::Error>> {
                     $(
                         if let Some(value) = state.$get.as_ref() {
@@ -124,6 +126,7 @@ mod macros {
                 }
 
                 /// Validates that all state elements are in their initial state (after machine reset).
+                #[allow(unused_variables)]
                 fn check_reset_all(&mut self, vp_info: &$vp) {
                     $(
                         if <$ty as $crate::state::StateElement<$caps, $vp>>::can_compare(self.caps()) && <$ty as $crate::state::StateElement<$caps, $vp>>::is_present(self.caps()) {
@@ -132,13 +135,16 @@ mod macros {
                     )*
                 }
 
-                fn inspect_all(&mut self, req: ::inspect::Request<'_>) {
-                    let mut resp = req.respond();
-                    $(
-                        if <$ty as $crate::state::StateElement<$caps, $vp>>::is_present(self.caps()) {
-                            resp.field_with($id, || self.$get().ok());
-                        }
-                    )*
+                #[allow(unused_variables, unused_mut)]
+                fn inspect_all(&mut self) -> impl ::inspect::InspectMut {
+                    inspect::adhoc_mut(|req| {
+                        let mut resp = req.respond();
+                        $(
+                            if <$ty as $crate::state::StateElement<$caps, $vp>>::is_present(self.caps()) {
+                                resp.field_with($id, || self.$get().ok());
+                            }
+                        )*
+                    })
                 }
             }
 

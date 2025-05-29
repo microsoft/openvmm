@@ -4,13 +4,12 @@
 //! Resource definitions for the GET family of devices.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 /// Guest Emulation Log device resources.
 pub mod gel {
     use mesh::MeshPayload;
-    use vm_resource::kind::VmbusDeviceHandleKind;
     use vm_resource::ResourceId;
+    use vm_resource::kind::VmbusDeviceHandleKind;
 
     /// Handle to a guest emulation log device.
     #[derive(MeshPayload)]
@@ -23,11 +22,11 @@ pub mod gel {
 
 /// Guest crash device resources.
 pub mod crash {
-    use mesh::rpc::FailableRpc;
     use mesh::MeshPayload;
+    use mesh::rpc::FailableRpc;
     use std::fs::File;
-    use vm_resource::kind::VmbusDeviceHandleKind;
     use vm_resource::ResourceId;
+    use vm_resource::kind::VmbusDeviceHandleKind;
 
     /// Handle to a guest crash dump device.
     #[derive(MeshPayload)]
@@ -45,16 +44,16 @@ pub mod crash {
 
 /// Guest Emulation Device resources.
 pub mod ged {
+    use mesh::MeshPayload;
     use mesh::error::RemoteError;
     use mesh::payload::Protobuf;
     use mesh::rpc::Rpc;
-    use mesh::MeshPayload;
     use thiserror::Error;
-    use vm_resource::kind::DiskHandleKind;
-    use vm_resource::kind::FramebufferHandleKind;
-    use vm_resource::kind::VmbusDeviceHandleKind;
     use vm_resource::Resource;
     use vm_resource::ResourceId;
+    use vm_resource::kind::FramebufferHandleKind;
+    use vm_resource::kind::VmbusDeviceHandleKind;
+    use vmgs_resources::VmgsResource;
 
     /// A resource handle for a guest emulation device.
     #[derive(MeshPayload)]
@@ -72,9 +71,7 @@ pub mod ged {
         /// Encoded VTL2 settings.
         pub vtl2_settings: Option<Vec<u8>>,
         /// The disk to back the GET's VMGS interface.
-        ///
-        /// If `None`, then VMGS services will not be provided to the guest.
-        pub vmgs_disk: Option<Resource<DiskHandleKind>>,
+        pub vmgs: VmgsResource,
         /// Framebuffer device control.
         pub framebuffer: Option<Resource<FramebufferHandleKind>>,
         /// Access to VTL2 functionality.
@@ -87,6 +84,10 @@ pub mod ged {
         pub secure_boot_template: GuestSecureBootTemplateType,
         /// Enable battery.
         pub enable_battery: bool,
+        /// Suppress attestation and disable TPM state persistence.
+        pub no_persistent_secrets: bool,
+        /// Test configuration for IGVM Attest message.
+        pub igvm_attest_test_config: Option<IgvmAttestTestConfig>,
     }
 
     /// The firmware and chipset configuration for the guest.
@@ -102,6 +103,8 @@ pub mod ged {
             disable_frontpage: bool,
             /// Where to send UEFI console output
             console_mode: UefiConsoleMode,
+            /// Perform a default boot even if boot entries exist and fail
+            default_boot_always_attempt: bool,
         },
         /// Boot from PC/AT BIOS with Hyper-V generation 1 devices.
         Pcat {
@@ -216,5 +219,15 @@ pub mod ged {
         NoBootDevice,
         /// A boot attempt was made.
         BootAttempt,
+    }
+
+    /// Configuration to the GED's IGVM Attest request handler
+    /// for test scenarios.
+    #[derive(Debug, MeshPayload, Copy, Clone)]
+    pub enum IgvmAttestTestConfig {
+        /// Config for testing AK cert retry after failure.
+        AkCertRequestFailureAndRetry,
+        /// Config for testing AK cert persistency across boots.
+        AkCertPersistentAcrossBoot,
     }
 }

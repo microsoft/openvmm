@@ -9,10 +9,23 @@ use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum IgvmfilegenOutput {
-    LinuxBin { bin: PathBuf, dbg: PathBuf },
-    WindowsBin { exe: PathBuf, pdb: PathBuf },
+    LinuxBin {
+        #[serde(rename = "igvmfilegen")]
+        bin: PathBuf,
+        #[serde(rename = "igvmfilegen.dbg")]
+        dbg: PathBuf,
+    },
+    WindowsBin {
+        #[serde(rename = "igvmfilegen.exe")]
+        exe: PathBuf,
+        #[serde(rename = "igvmfilegen.pdb")]
+        pdb: PathBuf,
+    },
 }
+
+impl Artifact for IgvmfilegenOutput {}
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct IgvmfilegenBuildParams {
@@ -63,7 +76,7 @@ impl FlowNode for Node {
                 output: v,
             });
 
-            ctx.emit_rust_step("report built igvmfilegen", |ctx| {
+            ctx.emit_minor_rust_step("report built igvmfilegen", |ctx| {
                 let outvars = outvars.claim(ctx);
                 let output = output.claim(ctx);
                 move |rt| {
@@ -83,8 +96,6 @@ impl FlowNode for Node {
                     for var in outvars {
                         rt.write(var, &output);
                     }
-
-                    Ok(())
                 }
             });
         }

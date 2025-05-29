@@ -171,13 +171,13 @@ pub fn authenticate_variable(
 }
 
 mod pkcs7_details {
-    use der::asn1::AnyRef;
-    use der::asn1::ContextSpecific;
-    use der::asn1::ObjectIdentifier;
     use der::Encode;
     use der::Sequence;
     use der::TagMode;
     use der::TagNumber;
+    use der::asn1::AnyRef;
+    use der::asn1::ContextSpecific;
+    use der::asn1::ObjectIdentifier;
 
     #[derive(Copy, Clone, Debug, Eq, PartialEq, Sequence)]
     struct ContentInfo<'a> {

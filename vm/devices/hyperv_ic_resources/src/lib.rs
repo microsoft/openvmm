@@ -4,6 +4,7 @@
 //! Resource definitions for Hyper-V ICs.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
+pub mod kvp;
 pub mod shutdown;
+pub mod timesync;

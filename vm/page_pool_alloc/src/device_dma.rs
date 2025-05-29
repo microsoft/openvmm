@@ -8,8 +8,8 @@
 // `base()..len()` mapped for the lifetime of the struct.
 #![expect(unsafe_code)]
 
-use crate::PagePoolHandle;
 use crate::PAGE_SIZE;
+use crate::PagePoolHandle;
 use user_driver::memory::MappedDmaTarget;
 
 /// Page pool memory representing a DMA buffer useable by devices.

@@ -6,11 +6,11 @@ use crate::GedChannel;
 use crate::GuestConfig;
 use crate::GuestEmulationDevice;
 use crate::GuestFirmwareConfig;
-use get_protocol::test_utilities::TEST_VMGS_CAPACITY;
 use get_protocol::HostNotifications;
 use get_protocol::HostRequests;
 use get_protocol::SecureBootTemplateType;
 use get_protocol::UefiConsoleMode;
+use get_protocol::test_utilities::TEST_VMGS_CAPACITY;
 use get_resources::ged::GuestEmulationRequest;
 use get_resources::ged::GuestServicingFlags;
 use guestmem::GuestMemory;
@@ -99,7 +99,7 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                 .await
                 .map_err(Error::Vmbus)?;
 
-            if version_request.message_header.message_id != HostRequests::VERSION {
+            if version_request.message_header.message_id() != HostRequests::VERSION {
                 return Err(Error::InvalidSequence);
             }
 
@@ -136,7 +136,7 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
             if header.message_type == get_protocol::MessageTypes::HOST_NOTIFICATION {
                 let header: get_protocol::HeaderHostNotification =
                     header.try_into().expect("valid host request");
-                match header.message_id {
+                match header.message_id() {
                     HostNotifications::EVENT_LOG => {
                         let notification = get_protocol::EventLogNotification::read_from_prefix(
                             &message_buf[..size_of::<get_protocol::EventLogNotification>()],
@@ -170,7 +170,7 @@ impl<T: RingMem + Unpin> TestGedChannel<T> {
                             get_protocol::MessageTypes::HOST_RESPONSE => {
                                 let header: get_protocol::HeaderHostRequest =
                                     header.try_into().expect("valid host request");
-                                match header.message_id {
+                                match header.message_id() {
                                     HostRequests::VMGS_READ => {
                                         let request_size =
                                             size_of::<get_protocol::VmgsReadRequest>();
@@ -242,6 +242,7 @@ pub fn create_host_channel(
             enable_vpci_boot: false,
             disable_frontpage: false,
             console_mode: UefiConsoleMode::DEFAULT,
+            default_boot_always_attempt: false,
         },
         com1: true,
         com2: true,
@@ -251,6 +252,8 @@ pub fn create_host_channel(
         secure_boot_enabled: false,
         secure_boot_template: SecureBootTemplateType::SECURE_BOOT_DISABLED,
         enable_battery: false,
+        no_persistent_secrets: true,
+        guest_state_lifetime: Default::default(),
     };
 
     let halt_reason = Arc::new(Mutex::new(None));
@@ -273,6 +276,7 @@ pub fn create_host_channel(
         recv,
         None,
         Some(disklayer_ram::ram_disk(TEST_VMGS_CAPACITY as u64, false).unwrap()),
+        None,
     );
 
     if let Some(ged_responses) = ged_responses {
@@ -333,7 +337,7 @@ pub struct TestGedClient {
     sender: mesh::Sender<GuestEmulationRequest>,
 }
 
-#[allow(dead_code)] // Tasks are spawned and just need to be held.
+#[expect(dead_code)] // Tasks are spawned and just need to be held.
 enum TestTask {
     Test(Task<Result<(), Error>>),
     Prod(TaskControl<GuestEmulationDevice, GedChannel<FlatRingMem>>),

@@ -30,9 +30,9 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 
 /// Token to return in [`IoResult::Defer`](super::IoResult::Defer) for deferred
 /// IOs.

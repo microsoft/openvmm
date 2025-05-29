@@ -6,6 +6,9 @@
 //! See <https://www.kernel.org/doc/Documentation/ABI/testing/dev-kmsg> for
 //! documentation on the kmsg entry format.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 use std::fmt::Display;
 use std::time::Duration;
 use thiserror::Error;

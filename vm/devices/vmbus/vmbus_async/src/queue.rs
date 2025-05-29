@@ -9,31 +9,31 @@ use super::core::ReadState;
 use super::core::WriteState;
 use crate::core::PollError;
 use futures::FutureExt;
-use guestmem::ranges::PagedRange;
 use guestmem::AccessError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use ring::OutgoingPacketType;
 use ring::TransferPageRange;
 use smallvec::smallvec;
-use std::future::poll_fn;
 use std::future::Future;
+use std::future::poll_fn;
 use std::ops::Deref;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
+use std::task::ready;
 use thiserror::Error;
-use vmbus_channel::connected_async_channels;
 use vmbus_channel::RawAsyncChannel;
+use vmbus_channel::connected_async_channels;
 use vmbus_ring as ring;
-use vmbus_ring::gparange::zeroed_gpn_list;
-use vmbus_ring::gparange::GpnList;
-use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmbus_ring::FlatRingMem;
 use vmbus_ring::IncomingPacketType;
 use vmbus_ring::IncomingRing;
 use vmbus_ring::RingMem;
+use vmbus_ring::gparange::GpnList;
+use vmbus_ring::gparange::MultiPagedRangeBuf;
+use vmbus_ring::gparange::zeroed_gpn_list;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
@@ -756,10 +756,10 @@ pub fn connected_queues(ring_size: usize) -> (Queue<FlatRingMem>, Queue<FlatRing
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
     use pal_async::timer::PolledTimer;
-    use pal_async::DefaultDriver;
     use ring::OutgoingPacketType;
     use std::future::poll_fn;
     use std::time::Duration;
@@ -964,9 +964,11 @@ mod tests {
     async fn test_ring_full(driver: DefaultDriver) {
         let (mut host_queue, mut guest_queue) = connected_queues(4096);
 
-        assert!(poll_fn(|cx| host_queue.split().1.poll_ready(cx, 4000))
-            .now_or_never()
-            .is_some());
+        assert!(
+            poll_fn(|cx| host_queue.split().1.poll_ready(cx, 4000))
+                .now_or_never()
+                .is_some()
+        );
 
         host_queue
             .split()

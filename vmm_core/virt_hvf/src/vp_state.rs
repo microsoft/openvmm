@@ -3,12 +3,12 @@
 
 //! VP state handling.
 
-use crate::abi;
 use crate::Error;
 use crate::HvfProcessor;
+use crate::abi;
 use hvdef::HvArm64RegisterName;
-use virt::aarch64::vp::AccessVpState;
 use virt::aarch64::Aarch64PartitionCapabilities;
+use virt::aarch64::vp::AccessVpState;
 use virt::state::HvRegisterState;
 
 enum Reg {
@@ -117,7 +117,7 @@ impl AccessVpState for HvfVpStateAccess<'_, '_> {
     }
 
     fn commit(&mut self) -> Result<(), Self::Error> {
-        todo!()
+        Ok(())
     }
 
     fn registers(&mut self) -> Result<virt::aarch64::vp::Registers, Self::Error> {

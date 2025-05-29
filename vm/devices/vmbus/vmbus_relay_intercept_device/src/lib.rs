@@ -8,6 +8,7 @@
 //! SimpleVmbusClientDeviceWrapper instance.
 
 #![cfg(target_os = "linux")]
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod ring_buffer;
@@ -21,8 +22,8 @@ use guid::Guid;
 use inspect::InspectMut;
 use mesh::rpc::RpcSend;
 use pal_async::driver::SpawnDriver;
-use std::future::pending;
 use std::future::Future;
+use std::future::pending;
 use std::pin::pin;
 use std::sync::Arc;
 use task_control::AsyncRun;
@@ -31,13 +32,13 @@ use task_control::InspectTaskMut;
 use task_control::StopTask;
 use task_control::TaskControl;
 use tracing::Instrument;
-use user_driver::memory::MemoryBlock;
 use user_driver::DmaClient;
-use vmbus_channel::bus::GpadlRequest;
-use vmbus_channel::bus::OpenData;
+use user_driver::memory::MemoryBlock;
 use vmbus_channel::ChannelClosed;
 use vmbus_channel::RawAsyncChannel;
 use vmbus_channel::SignalVmbusChannel;
+use vmbus_channel::bus::GpadlRequest;
+use vmbus_channel::bus::OpenData;
 use vmbus_client::ChannelRequest;
 use vmbus_client::OfferInfo;
 use vmbus_client::OpenOutput;
@@ -214,9 +215,7 @@ struct SimpleVmbusClientDeviceTaskState {
     offer: Option<OfferInfo>,
     #[inspect(skip)]
     recv_relay: mesh::Receiver<InterceptChannelRequest>,
-    #[inspect(
-        with = "|x| x.as_ref().map(|x| inspect::iter_by_index(x.pfns()).map_value(inspect::AsHex))"
-    )]
+    #[inspect(hex, with = "|x| x.as_ref().map(|x| inspect::iter_by_index(x.pfns()))")]
     vtl_pages: Option<MemoryBlock>,
 }
 
@@ -387,7 +386,11 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
         // available everywhere.
         {
             let offer = state.offer.as_ref().expect("device opened");
-            offer.request_send.send(ChannelRequest::Close);
+            offer
+                .request_send
+                .call(ChannelRequest::Close, ())
+                .await
+                .ok();
         }
         // N.B. This will wait for a TeardownGpadl response which can be used
         // as a signal that the channel is closed and the ring buffers are no
@@ -540,6 +543,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
     /// device wrapper.
     pub async fn process_messages(&mut self, state: &mut SimpleVmbusClientDeviceTaskState) {
         loop {
+            #[expect(clippy::large_enum_variant)]
             enum Event {
                 Request(InterceptChannelRequest),
                 Revoke(()),
@@ -581,7 +585,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
                     self.handle_start(state).await;
                 }
                 Event::Request(InterceptChannelRequest::Stop(rpc)) => {
-                    rpc.handle(|()| self.handle_stop(state)).await;
+                    rpc.handle(async |()| self.handle_stop(state).await).await;
                 }
                 Event::Request(InterceptChannelRequest::Save(rpc)) => {
                     rpc.handle_sync(|()| self.handle_save());

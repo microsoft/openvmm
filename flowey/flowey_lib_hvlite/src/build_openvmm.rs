@@ -24,10 +24,23 @@ pub struct OpenvmmBuildParams {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum OpenvmmOutput {
-    WindowsBin { exe: PathBuf, pdb: PathBuf },
-    LinuxBin { bin: PathBuf, dbg: PathBuf },
+    WindowsBin {
+        #[serde(rename = "openvmm.exe")]
+        exe: PathBuf,
+        #[serde(rename = "openvmm.pdb")]
+        pdb: PathBuf,
+    },
+    LinuxBin {
+        #[serde(rename = "openvmm")]
+        bin: PathBuf,
+        #[serde(rename = "openvmm.dbg")]
+        dbg: PathBuf,
+    },
 }
+
+impl Artifact for OpenvmmOutput {}
 
 flowey_request! {
     pub struct Request {
@@ -120,7 +133,7 @@ impl FlowNode for Node {
                 output: v,
             });
 
-            ctx.emit_rust_step("report built openvmm", |ctx| {
+            ctx.emit_minor_rust_step("report built openvmm", |ctx| {
                 let openvmm_bin = openvmm_bin.claim(ctx);
                 let output = output.claim(ctx);
                 move |rt| {
@@ -138,8 +151,6 @@ impl FlowNode for Node {
                     };
 
                     rt.write(openvmm_bin, &output);
-
-                    Ok(())
                 }
             });
         }

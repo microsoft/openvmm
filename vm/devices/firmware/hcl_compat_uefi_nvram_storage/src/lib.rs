@@ -14,7 +14,7 @@
 //! which means it's invalid to reference it as a `&[u16]`, or any similar
 //! wrapper type (e.g: `widestring::U16CStr`).
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod storage_backend;
 
@@ -22,11 +22,11 @@ use guid::Guid;
 use std::fmt::Debug;
 use storage_backend::StorageBackend;
 use ucs2::Ucs2LeSlice;
-use uefi_nvram_storage::in_memory;
+use uefi_nvram_storage::EFI_TIME;
 use uefi_nvram_storage::NextVariable;
 use uefi_nvram_storage::NvramStorage;
 use uefi_nvram_storage::NvramStorageError;
-use uefi_nvram_storage::EFI_TIME;
+use uefi_nvram_storage::in_memory;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
@@ -192,7 +192,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
                 _ => {
                     return Err(NvramStorageError::Load(
                         format!("unknown header type: {:?}", header.header_type).into(),
-                    ))
+                    ));
                 }
             }
 
@@ -520,16 +520,14 @@ mod test {
         let timestamp = EFI_TIME::default();
 
         let name_ok = Ucs2LeVec::from_vec_with_nul(
-            std::iter::repeat([0, b'a'])
-                .take((EFI_MAX_VARIABLE_NAME_SIZE / 2) - 1)
+            std::iter::repeat_n([0, b'a'], (EFI_MAX_VARIABLE_NAME_SIZE / 2) - 1)
                 .chain(Some([0, 0]))
                 .flat_map(|x| x.into_iter())
                 .collect(),
         )
         .unwrap();
         let name_too_big = Ucs2LeVec::from_vec_with_nul(
-            std::iter::repeat([0, b'a'])
-                .take(EFI_MAX_VARIABLE_NAME_SIZE / 2)
+            std::iter::repeat_n([0, b'a'], EFI_MAX_VARIABLE_NAME_SIZE / 2)
                 .chain(Some([0, 0]))
                 .flat_map(|x| x.into_iter())
                 .collect(),

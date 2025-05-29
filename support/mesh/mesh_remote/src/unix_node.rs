@@ -21,17 +21,17 @@ mod memfd;
 
 use crate::common::InvitationAddress;
 use crate::protocol;
+use futures::FutureExt;
+use futures::StreamExt;
 use futures::channel::mpsc;
 use futures::future;
 use futures::future::BoxFuture;
-use futures::FutureExt;
-use futures::StreamExt;
 use io::ErrorKind;
-use mesh_channel::channel;
-use mesh_channel::oneshot;
 use mesh_channel::OneshotReceiver;
 use mesh_channel::OneshotSender;
 use mesh_channel::RecvError;
+use mesh_channel::channel;
+use mesh_channel::oneshot;
 use mesh_node::common::Address;
 use mesh_node::common::NodeId;
 use mesh_node::common::PortId;
@@ -55,8 +55,8 @@ use socket2::Socket;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::future::poll_fn;
 use std::future::Future;
+use std::future::poll_fn;
 use std::io;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
@@ -539,30 +539,34 @@ async fn run_connection(
     handle: RemoteNodeHandle,
 ) {
     let mut retained_fds = VecDeque::new();
-    let mut recv = pin!(async {
-        let r = run_receive(&local_node, &remote_id, &socket, &send_send).await;
-        match &r {
-            Ok(_) => {
-                tracing::debug!("incoming socket disconnected");
+    let mut recv = pin!(
+        async {
+            let r = run_receive(&local_node, &remote_id, &socket, &send_send).await;
+            match &r {
+                Ok(_) => {
+                    tracing::debug!("incoming socket disconnected");
+                }
+                Err(err) => {
+                    tracing::error!(error = err as &dyn std::error::Error, "error receiving");
+                }
             }
-            Err(err) => {
-                tracing::error!(error = err as &dyn std::error::Error, "error receiving");
+            r
+        }
+        .fuse()
+    );
+    let mut send = pin!(
+        async {
+            match run_send(send_recv, &socket, &mut retained_fds).await {
+                Ok(_) => {
+                    tracing::debug!("sending is done");
+                }
+                Err(err) => {
+                    tracing::error!(error = &err as &dyn std::error::Error, "failed send");
+                }
             }
         }
-        r
-    }
-    .fuse());
-    let mut send = pin!(async {
-        match run_send(send_recv, &socket, &mut retained_fds).await {
-            Ok(_) => {
-                tracing::debug!("sending is done");
-            }
-            Err(err) => {
-                tracing::error!(error = &err as &dyn std::error::Error, "failed send");
-            }
-        }
-    }
-    .fuse());
+        .fuse()
+    );
     let r = futures::select! { // race semantics
         r = recv => {
             // Notify the remote node that no more data will be sent.
@@ -715,10 +719,7 @@ async fn run_send(
             }
             SenderCommand::ReleaseFds { count } => {
                 if retained_fds.len() < count {
-                    return Err(io::Error::new(
-                        ErrorKind::Other,
-                        ProtocolError::ReleasingTooManyFds,
-                    ));
+                    return Err(io::Error::other(ProtocolError::ReleasingTooManyFds));
                 }
                 retained_fds.drain(..count);
             }
@@ -1222,9 +1223,6 @@ fn try_recv(socket: &Socket, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::R
 
     // On Linux, automatically set O_CLOEXEC on incoming fds.
     #[cfg(target_os = "linux")]
-    // Ignore libc misuse of deprecated warning, the flags below are not really
-    // deprecated.
-    #[allow(deprecated)]
     let flags = libc::MSG_CMSG_CLOEXEC;
     #[cfg(not(target_os = "linux"))]
     let flags = 0;
@@ -1268,10 +1266,6 @@ fn try_recv(socket: &Socket, buf: &mut [u8], fds: &mut Vec<OsResource>) -> io::R
     }
 
     // Check for truncation only after taking ownership of the fds.
-    //
-    // Ignore libc misuse of deprecated warning, the flags below are not really
-    // deprecated.
-    #[allow(deprecated)]
     if hdr.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0 {
         return Err(io::Error::from_raw_os_error(libc::EMSGSIZE));
     }
@@ -1295,10 +1289,10 @@ fn set_cloexec(fd: impl AsFd) {
 #[cfg(test)]
 mod tests {
     use crate::unix::UnixNode;
-    use mesh_channel::channel;
     use mesh_channel::RecvError;
-    use pal_async::async_test;
+    use mesh_channel::channel;
     use pal_async::DefaultDriver;
+    use pal_async::async_test;
     use test_with_tracing::test;
 
     #[async_test]
@@ -1335,6 +1329,21 @@ mod tests {
         assert_eq!(v, v2);
         follower.shutdown().await;
         leader.shutdown().await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[async_test]
+    async fn test_message_sizes(driver: DefaultDriver) {
+        let (p1, p2) = mesh_node::local_node::Port::new_pair();
+        let (p3, p4) = mesh_node::local_node::Port::new_pair();
+        let node1 = UnixNode::new(driver.clone());
+        let invitation = node1.invite(p2).await.unwrap();
+        let _node2 = UnixNode::join(driver.clone(), invitation, p3)
+            .await
+            .unwrap();
+
+        crate::test_common::test_message_sizes(p1, p4, 0..=super::MAX_SMALL_EVENT_SIZE + 0x1000)
+            .await;
     }
 
     #[async_test]

@@ -5,15 +5,17 @@
 
 #![warn(missing_docs)]
 
-use self::snp::SnpCpuidSupport;
 use self::tdx::TdxCpuidInitializer;
-use self::tdx::TdxCpuidSupport;
 use core::arch::x86_64::CpuidResult;
 use masking::CpuidResultMask;
 use snp::SnpCpuidInitializer;
-use std::boxed::Box;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use thiserror::Error;
+use virt::CpuidLeaf;
+use virt::CpuidLeafSet;
+use vm_topology::processor::ProcessorTopology;
+use vm_topology::processor::x86::X86Topology;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
 use x86defs::snp::HvPspCpuidPage;
@@ -28,7 +30,6 @@ mod tests;
 struct ExtendedTopologyResult {
     subleaf0: Option<CpuidResult>,
     subleaf1: Option<CpuidResult>,
-    vps_per_socket: u32,
 }
 
 /// Architecture-specific behaviors for initializing cpuid results
@@ -58,9 +59,6 @@ trait CpuidArchInitializer {
 
     /// Processes extended state enumeration subleaves 2+. result is a helper
     /// for retrieving the result of a given subleaf.
-    //
-    // (TODO TDX: This will be to populate them, will need to update the
-    // signature to pass CpuidResults as a mutable reference)
     fn process_extended_state_subleaves(
         &self,
         results: &mut CpuidSubtable,
@@ -85,26 +83,29 @@ trait CpuidArchInitializer {
 
     /// Whether TSC aux virtualization is supported
     fn supports_tsc_aux_virtualization(&self, results: &CpuidResults) -> bool;
-}
 
-/// Architecture-specific behaviors for cpuid results during runtime
-trait CpuidArchSupport: Sync + Send {
-    /// Get the cpuid result of the leaf/subleaf but modified based on guest
-    /// context
-    fn process_guest_result(
-        &self,
-        leaf: CpuidFunction,
-        subleaf: u32,
-        result: &mut CpuidResult,
-        guest_state: &CpuidGuestState,
-        vps_per_socket: u32,
-    );
+    /// Returns the synthetic hypervisor cpuid leafs for the architecture.
+    fn hv_cpuid_leaves(&self) -> [(CpuidFunction, CpuidResult); 5];
 }
 
 /// Initialization parameters per isolation type for parsing cpuid results
 pub enum CpuidResultsIsolationType<'a> {
-    Snp { cpuid_pages: &'a [u8] },
-    Tdx,
+    Snp {
+        cpuid_pages: &'a [u8],
+        access_vsm: bool,
+        vtom: u64,
+    },
+    Tdx {
+        topology: &'a ProcessorTopology<X86Topology>,
+        access_vsm: bool,
+        vtom: u64,
+    },
+}
+
+impl CpuidResultsIsolationType<'_> {
+    pub fn build(self) -> Result<CpuidLeafSet, CpuidResultsError> {
+        Ok(CpuidLeafSet::new(CpuidResults::new(self)?.to_leaves()))
+    }
 }
 
 /// Errors that can be returned from validating the results of topology-related
@@ -178,14 +179,14 @@ pub struct ParsedCpuidEntry {
 }
 
 /// Prepares and caches the results that should be returned for hardware CVMs.
-pub struct CpuidResults {
+struct CpuidResults {
     results: HashMap<CpuidFunction, CpuidEntry>,
     max_extended_state: u64,
-    arch_support: Box<dyn CpuidArchSupport>,
-    vps_per_socket: u32,
 }
 
-type CpuidSubtable = HashMap<u32, CpuidResult>;
+// NOTE: Because subtables are used to calculate certain values _in order_ such
+// as xsave, the data structure used must provide inorder traversal.
+type CpuidSubtable = BTreeMap<u32, CpuidResult>;
 
 /// Entry in [`CpuidResults`] for caching leaf value or its subleaves.
 enum CpuidEntry {
@@ -193,22 +194,7 @@ enum CpuidEntry {
     Subtable(CpuidSubtable),
 }
 
-/// Guest state needed to compute the cpuid result for a specific execution
-/// state
-pub struct CpuidGuestState {
-    pub xfem: u64,
-    pub xss: u64,
-    pub cr4: u64,
-    pub apic_id: u32,
-}
-
 const MAX_EXTENDED_STATE_ENUMERATION_SUBLEAF: u32 = 63;
-const ZERO_CPUID_RESULT: CpuidResult = CpuidResult {
-    eax: 0,
-    ebx: 0,
-    ecx: 0,
-    edx: 0,
-};
 
 const CPUID_LEAF_B_MAX_SUBLEAF_INDEX: u32 = 1;
 const CPUID_LEAF_B_LEVEL_NUMBER_SMT: u8 = 0;
@@ -217,23 +203,29 @@ const CPUID_LEAF_B_LEVEL_NUMBER_CORE: u8 = 1;
 const CPUID_LEAF_B_LEVEL_TYPE_CORE: u8 = 2;
 
 impl CpuidResults {
-    pub fn new(params: CpuidResultsIsolationType<'_>) -> Result<Self, CpuidResultsError> {
-        let (arch_initializer, arch_support) = match params {
-            CpuidResultsIsolationType::Snp { cpuid_pages } => {
+    fn new(params: CpuidResultsIsolationType<'_>) -> Result<Self, CpuidResultsError> {
+        let snp_init;
+        let tdx_init;
+        let arch_initializer = match params {
+            CpuidResultsIsolationType::Snp {
+                cpuid_pages,
+                access_vsm,
+                vtom,
+            } => {
                 assert!(
                     cpuid_pages.len() % size_of::<HvPspCpuidPage>() == 0 && !cpuid_pages.is_empty()
                 );
 
-                let snp_init: Box<dyn CpuidArchInitializer> =
-                    Box::new(SnpCpuidInitializer::new(cpuid_pages));
-                let snp_support: Box<dyn CpuidArchSupport> = Box::new(SnpCpuidSupport);
-
-                (snp_init, snp_support)
+                snp_init = SnpCpuidInitializer::new(cpuid_pages, access_vsm, vtom);
+                &snp_init as &dyn CpuidArchInitializer
             }
-            CpuidResultsIsolationType::Tdx => {
-                let tdx_init: Box<dyn CpuidArchInitializer> = Box::new(TdxCpuidInitializer {});
-                let tdx_support: Box<dyn CpuidArchSupport> = Box::new(TdxCpuidSupport);
-                (tdx_init, tdx_support)
+            CpuidResultsIsolationType::Tdx {
+                topology,
+                access_vsm,
+                vtom,
+            } => {
+                tdx_init = TdxCpuidInitializer::new(topology, access_vsm, vtom);
+                &tdx_init as &dyn CpuidArchInitializer
             }
         };
 
@@ -265,7 +257,7 @@ impl CpuidResults {
             result,
         } in arch_initializer.cpuid_info()
         {
-            if let Some(mask) = Self::leaf_mask(leaf, subleaf, arch_initializer.as_ref()) {
+            if let Some(mask) = Self::leaf_mask(leaf, subleaf, arch_initializer) {
                 let masked_result = {
                     let mut masked = mask.apply_mask(&result);
                     if leaf == CpuidFunction::ExtendedStateEnumeration && subleaf == 0 {
@@ -292,13 +284,20 @@ impl CpuidResults {
                         }
 
                         if skipped {
-                            tracing::warn!("cpuid result for leaf {} subleaf {} specified multiple times, ignoring duplicate with eax {}, ebx {}, ecx {}, edx {}",
-                                leaf.0, subleaf, result.eax, result.ebx, result.ecx, result.edx);
+                            tracing::warn!(
+                                "cpuid result for leaf {} subleaf {} specified multiple times, ignoring duplicate with eax {}, ebx {}, ecx {}, edx {}",
+                                leaf.0,
+                                subleaf,
+                                result.eax,
+                                result.ebx,
+                                result.ecx,
+                                result.edx
+                            );
                         }
                     }
                     std::collections::hash_map::Entry::Vacant(entry) => {
                         if mask.is_subleaf() {
-                            let subtable = HashMap::from([(subleaf, masked_result)]);
+                            let subtable = BTreeMap::from([(subleaf, masked_result)]);
                             entry.insert(CpuidEntry::Subtable(subtable));
                         } else {
                             entry.insert(CpuidEntry::Leaf(masked_result));
@@ -310,71 +309,21 @@ impl CpuidResults {
             }
         }
 
+        for (function, result) in arch_initializer.hv_cpuid_leaves() {
+            results.insert(function, CpuidEntry::Leaf(result));
+        }
+
         let mut cached_results = Self {
             results,
             max_extended_state: 0, // will get updated as part of update_extended_state
-            arch_support,
-            vps_per_socket: 0, // will get updated as part of update_extended_topology
         };
 
         // Validate results before updating leaves because the updates might
         // have a dependency on certain leaves existing.
-        cached_results.validate_results(arch_initializer.as_ref())?;
-        cached_results.update_results(arch_initializer.as_ref())?;
+        cached_results.validate_results(arch_initializer)?;
+        cached_results.update_results(arch_initializer)?;
 
         Ok(cached_results)
-    }
-
-    /// Retrieves the registered cpuid result for a given leaf/subleaf combination, if supported.
-    pub fn registered_result(&self, leaf: CpuidFunction, subleaf: u32) -> CpuidResult {
-        self.leaf_result_ref(leaf, Some(subleaf), false)
-            .map_or(ZERO_CPUID_RESULT, |&result| result)
-    }
-
-    /// Retrieves the cpuid result of a given leaf/subleaf, tailored to the provided execution state
-    pub fn guest_result(
-        &self,
-        leaf: CpuidFunction,
-        subleaf: u32,
-        guest_state: &CpuidGuestState,
-    ) -> CpuidResult {
-        let mut result = self.registered_result(leaf, subleaf);
-
-        match leaf {
-            CpuidFunction::VersionAndFeatures => {
-                result.ecx = cpuid::VersionAndFeaturesEcx::from(result.ecx)
-                    .with_os_xsave(guest_state.cr4 & x86defs::X64_CR4_OSXSAVE != 0)
-                    .with_x2_apic(true)
-                    .into();
-                result.ebx = cpuid::VersionAndFeaturesEbx::from(result.ebx)
-                    .with_initial_apic_id(guest_state.apic_id as u8)
-                    .into();
-            }
-            CpuidFunction::ExtendedTopologyEnumeration => {
-                if subleaf <= CPUID_LEAF_B_MAX_SUBLEAF_INDEX {
-                    result.edx = guest_state.apic_id;
-                }
-            }
-            CpuidFunction::ExtendedStateEnumeration => {
-                if subleaf == 0 {
-                    result.ebx = self.xsave_size(guest_state.xfem); // XsaveMaxSizeEnabled
-                } else if subleaf == 1
-                    && cpuid::ExtendedStateEnumerationSubleaf1Eax::from(result.eax).xsave_s()
-                {
-                    // XsavesMaxSizeEnabled
-                    result.ebx = self.compacted_xsave_size(guest_state.xfem | guest_state.xss);
-                }
-            }
-            _ => self.arch_support.process_guest_result(
-                leaf,
-                subleaf,
-                &mut result,
-                guest_state,
-                self.vps_per_socket,
-            ),
-        }
-
-        result
     }
 
     /// Gets an immutable reference to a (sub)leaf's result. Not all callers may
@@ -591,10 +540,9 @@ impl CpuidResults {
         Ok(())
     }
 
-    fn calculate_xsave_size<F>(&self, mask: u64, area_size_fn: F) -> u32
-    where
-        F: Fn(u32, CpuidResult) -> u32,
-    {
+    /// Calculates the save area size required for the specified mask of XSAVE
+    /// features
+    fn xsave_size(&self, mask: u64) -> u32 {
         let mut area_size = xsave::XSAVE_MINIMUM_XSAVE_AREA_SIZE;
         let summary_mask = mask & !xsave::X86X_XSAVE_LEGACY_FEATURES;
 
@@ -610,7 +558,7 @@ impl CpuidResults {
 
             for (subleaf, result) in extended_state_subtable {
                 if (1u64 << subleaf) & summary_mask != 0 {
-                    area_size = area_size_fn(area_size, *result);
+                    area_size = area_size.max(result.eax + result.ebx);
                 }
             }
         } else {
@@ -618,49 +566,6 @@ impl CpuidResults {
         }
 
         area_size
-    }
-
-    /// Calculates the save area size required for the specified mask of XSAVE
-    /// features
-    pub fn xsave_size(&self, xfem: u64) -> u32 {
-        let area_size_fn = |current_area_size: u32,
-                            CpuidResult {
-                                eax: feature_size,
-                                ebx: feature_offset,
-                                ecx: _,
-                                edx: _,
-                            }|
-         -> u32 { current_area_size.max(feature_size + feature_offset) };
-
-        self.calculate_xsave_size(xfem, area_size_fn)
-    }
-
-    /// calculates the save area size required to save the specified set of user
-    /// and supervisor XSAVE state components in compacted format.
-    fn compacted_xsave_size(&self, mask: u64) -> u32 {
-        let area_size_fn = |current_area_size: u32,
-                            CpuidResult {
-                                eax: feature_size,
-                                ebx: _,
-                                ecx,
-                                edx: _,
-                            }|
-         -> u32 {
-            let mut area_size = current_area_size;
-            // TODO: u32::next_multiple_of is currently unstable
-            let round_up = |value: u32, alignment: u32| -> u32 {
-                (value + (alignment - 1)) & !(alignment - 1)
-            };
-
-            if cpuid::ExtendedStateEnumerationSubleafNEcx::from(ecx).aligned() {
-                area_size = round_up(area_size, xsave::XSAVE_REQUIRED_XSAVE_AREA_ALIGNMENT);
-            }
-
-            area_size += feature_size; // eax is feature size
-            area_size
-        };
-
-        self.calculate_xsave_size(mask, area_size_fn)
     }
 
     fn update_extended_topology(
@@ -700,8 +605,6 @@ impl CpuidResults {
                 .expect("validated this exists")) = subleaf1;
         }
 
-        self.vps_per_socket = extended_topology.vps_per_socket;
-
         Ok(())
     }
 
@@ -726,5 +629,23 @@ impl CpuidResults {
         }
 
         extended_address_space_sizes.ebx = updated_sizes.into();
+    }
+
+    /// Returns a flag list of CPUID leaves.
+    ///
+    /// The resulting sort order is unspecified.
+    pub fn to_leaves(&self) -> Vec<CpuidLeaf> {
+        let mut leaves = Vec::new();
+        for (&leaf, entry) in &self.results {
+            match entry {
+                CpuidEntry::Leaf(r) => {
+                    leaves.push(CpuidLeaf::new(leaf.0, [r.eax, r.ebx, r.ecx, r.edx]))
+                }
+                CpuidEntry::Subtable(table) => leaves.extend(table.iter().map(|(&subleaf, r)| {
+                    CpuidLeaf::new(leaf.0, [r.eax, r.ebx, r.ecx, r.edx]).indexed(subleaf)
+                })),
+            }
+        }
+        leaves
     }
 }

@@ -3,11 +3,10 @@
 
 //! Wait-related functionality.
 
-use crate::any::AsAny;
 use crate::driver::Driver;
 use crate::driver::PollImpl;
-use std::future::poll_fn;
 use std::future::Future;
+use std::future::poll_fn;
 use std::io;
 #[cfg(unix)]
 use std::os::unix::prelude::*;
@@ -38,7 +37,7 @@ pub trait WaitDriver: Unpin {
 pub const MAXIMUM_WAIT_READ_SIZE: usize = 8;
 
 /// A trait for polling the state of waits.
-pub trait PollWait: Unpin + Send + Sync + AsAny {
+pub trait PollWait: Unpin + Send + Sync {
     /// Polls a wait for completion, consuming the object's wait signal.
     ///
     /// Depending on the wait object, this may fail. For platform events (e.g.,

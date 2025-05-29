@@ -6,14 +6,14 @@ mod partition_memory_map;
 pub use partition_memory_map::PartitionMemoryMap;
 pub use vm_topology::processor::VpIndex;
 
+use crate::CpuidLeaf;
+use crate::PartitionCapabilities;
 use crate::io::CpuIo;
 use crate::irqcon::ControlGic;
 use crate::irqcon::IoApicRouting;
 use crate::irqcon::MsiRequest;
 use crate::x86::DebugState;
 use crate::x86::HardwareBreakpoint;
-use crate::CpuidLeaf;
-use crate::PartitionCapabilities;
 use guestmem::DoorbellRegistration;
 use guestmem::GuestMemory;
 use hvdef::Vtl;
@@ -24,22 +24,23 @@ use pci_core::msi::MsiInterruptTarget;
 use std::cell::Cell;
 use std::convert::Infallible;
 use std::fmt::Debug;
-use std::future::poll_fn;
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::pin;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::task::Poll;
 use std::task::Waker;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::ProcessorTopology;
 use vmcore::monitor::MonitorId;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::synic::GuestEventPort;
 use vmcore::vmtime::VmTimeSource;
+use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
-use vmcore::vpci_msi::VpciInterruptMapper;
 use vmcore::vpci_msi::VpciInterruptParameters;
 
 pub type Error = anyhow::Error;
@@ -92,7 +93,7 @@ impl IsolationType {
 pub struct UnexpectedIsolationType;
 
 impl IsolationType {
-    pub fn from_hv(
+    pub const fn from_hv(
         value: hvdef::HvPartitionIsolationType,
     ) -> Result<Self, UnexpectedIsolationType> {
         match value {
@@ -104,7 +105,7 @@ impl IsolationType {
         }
     }
 
-    pub fn to_hv(self) -> hvdef::HvPartitionIsolationType {
+    pub const fn to_hv(self) -> hvdef::HvPartitionIsolationType {
         match self {
             IsolationType::None => hvdef::HvPartitionIsolationType::NONE,
             IsolationType::Vbs => hvdef::HvPartitionIsolationType::VBS,
@@ -145,6 +146,9 @@ pub struct PartitionConfig<'a> {
     pub guest_memory: &'a GuestMemory,
     /// Cpuid leaves to add to the default CPUID results.
     pub cpuid: &'a [CpuidLeaf],
+    /// The offset of the VTL0 alias map. This maps VTL0's view of memory into
+    /// VTL2 at the specified offset (which must be a power of 2).
+    pub vtl0_alias_map: Option<u64>,
 }
 
 /// Trait for a prototype partition, one that is partially created but still
@@ -164,7 +168,12 @@ pub trait ProtoPartition {
     #[cfg(guest_arch = "x86_64")]
     fn cpuid(&self, eax: u32, ecx: u32) -> [u32; 4];
 
-    /// The number of bits of a physical address.
+    /// The maximum physical address width that processors and devices for this
+    /// partition can access.
+    ///
+    /// This may be smaller than what is reported to the guest via architectural
+    /// interfaces by default, and it may be larger or smaller than what the VMM
+    /// ultimately chooses to report to the guest.
     fn max_physical_address_size(&self) -> u8;
 
     /// Constructs the full partition.
@@ -221,9 +230,6 @@ pub struct LateMapVtl0MemoryConfig {
 /// VTL2 configuration.
 #[derive(Debug)]
 pub struct Vtl2Config {
-    /// Enable the VTL0 alias map. This maps VTL0's view of memory in VTL2 at
-    /// the highest legal physical address bit.
-    pub vtl0_alias_map: bool,
     /// If set, map VTL0 memory late after VTL2 has started. The current
     /// heuristic is to defer mapping VTL0 memory until the first
     /// [`hvdef::HypercallCode::HvCallModifyVtlProtectionMask`] hypercall is
@@ -408,7 +414,7 @@ pub trait Processor: InspectMut {
     ///
     /// Returns when an error occurs, the VP halts, or the VP is requested to
     /// stop via `stop`.
-    #[allow(async_fn_in_trait)] // don't or want Send bound
+    #[expect(async_fn_in_trait)] // don't need or want Send bound
     async fn run_vp(
         &mut self,
         stop: StopVp<'_>,
@@ -582,7 +588,9 @@ pub trait PartitionMemoryMapper {
 
 pub trait Hv1 {
     type Error: std::error::Error + Send + Sync + 'static;
-    type Device: VpciInterruptMapper + MsiInterruptTarget;
+    type Device: MapVpciInterrupt + MsiInterruptTarget;
+
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource>;
 
     fn new_virtual_device(
         &self,
@@ -595,8 +603,8 @@ pub trait DeviceBuilder: Hv1 {
 
 pub enum UnimplementedDevice {}
 
-impl VpciInterruptMapper for UnimplementedDevice {
-    fn register_interrupt(
+impl MapVpciInterrupt for UnimplementedDevice {
+    async fn register_interrupt(
         &self,
         _vector_count: u32,
         _params: &VpciInterruptParameters<'_>,
@@ -604,7 +612,7 @@ impl VpciInterruptMapper for UnimplementedDevice {
         match *self {}
     }
 
-    fn unregister_interrupt(&self, _address: u64, _data: u32) {
+    async fn unregister_interrupt(&self, _address: u64, _data: u32) {
         match *self {}
     }
 }
@@ -634,7 +642,13 @@ pub trait Synic: Send + Sync {
     fn post_message(&self, vtl: Vtl, vp: VpIndex, sint: u8, typ: u32, payload: &[u8]);
 
     /// Creates a [`GuestEventPort`] for signaling VMBus channels in the guest.
-    fn new_guest_event_port(&self) -> Box<dyn GuestEventPort>;
+    fn new_guest_event_port(
+        &self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Box<dyn GuestEventPort>;
 
     /// Returns whether callers should pass an OS event when creating event
     /// ports, as opposed to passing a function to call.
@@ -658,8 +672,8 @@ pub trait SynicMonitor: Synic {
     /// # Panics
     ///
     /// Panics if monitor_id is already in use.
-    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send>;
+    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Sync + Send>;
 
     /// Sets the GPA of the monitor page currently in use.
-    fn set_monitor_page(&self, gpa: Option<u64>) -> anyhow::Result<()>;
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()>;
 }

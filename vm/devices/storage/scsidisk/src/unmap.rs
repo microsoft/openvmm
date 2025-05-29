@@ -3,8 +3,8 @@
 
 use super::ScsiError;
 use super::SimpleScsiDisk;
-use crate::scsi;
 use crate::UNMAP_RANGE_DESCRIPTOR_COUNT_MAX;
+use crate::scsi;
 use guestmem::MemoryRead;
 use scsi::AdditionalSenseCode;
 use scsi_buffers::RequestBuffers;

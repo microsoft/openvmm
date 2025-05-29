@@ -4,7 +4,6 @@
 //! Implementation of the Underhill guest crash device, used by
 //! `underhill_crash` to send user-mode crash dumps to the host.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod resolver;

@@ -8,9 +8,9 @@ use arrayvec::ArrayVec;
 use core::cell::RefCell;
 use core::cell::UnsafeCell;
 use core::mem::size_of;
-use hvdef::hypercall::HvInputVtl;
-use hvdef::Vtl;
 use hvdef::HV_PAGE_SIZE;
+use hvdef::Vtl;
+use hvdef::hypercall::HvInputVtl;
 use memory_range::MemoryRange;
 use minimal_rt::arch::hypercall::invoke_hypercall;
 use zerocopy::FromBytes;
@@ -152,7 +152,6 @@ impl HvCall {
     }
 
     /// Hypercall for setting a register to a value.
-    #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
     pub fn set_register(
         &mut self,
         name: hvdef::HvRegisterName,
@@ -218,7 +217,7 @@ impl HvCall {
     }
 
     /// Hypercall to apply vtl protections to the pages from address start to end
-    #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     pub fn apply_vtl2_protections(&mut self, range: MemoryRange) -> Result<(), hvdef::HvError> {
         const HEADER_SIZE: usize = size_of::<hvdef::hypercall::ModifyVtlProtectionMask>();
         const MAX_INPUT_ELEMENTS: usize = (HV_PAGE_SIZE as usize - HEADER_SIZE) / size_of::<u64>();
@@ -290,7 +289,7 @@ impl HvCall {
 
     /// Hypercall to accept vtl2 pages from address start to end with VTL 2
     /// protections and no host visibility
-    #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(target_arch = "aarch64", expect(dead_code))]
     pub fn accept_vtl2_pages(
         &mut self,
         range: MemoryRange,

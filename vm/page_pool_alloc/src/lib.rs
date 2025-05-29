@@ -4,8 +4,6 @@
 //! This module implements a page memory allocator for allocating pages from a
 //! given portion of the guest address space.
 
-#![warn(missing_docs)]
-
 mod device_dma;
 
 pub use device_dma::PagePoolDmaBuffer;
@@ -16,24 +14,24 @@ use inspect::Response;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
 use safeatomic::AtomicSliceOps;
-use sparse_mmap::alloc_shared_memory;
 use sparse_mmap::Mappable;
 use sparse_mmap::MappableRef;
 use sparse_mmap::SparseMapping;
+use sparse_mmap::alloc_shared_memory;
 use std::fmt::Debug;
 use std::num::NonZeroU64;
-use std::sync::atomic::AtomicU8;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU8;
 use thiserror::Error;
 
 const PAGE_SIZE: u64 = 4096;
 
 /// Save restore suport for [`PagePool`].
 pub mod save_restore {
+    use super::PAGE_SIZE;
     use super::PagePool;
     use super::Slot;
     use super::SlotState;
-    use super::PAGE_SIZE;
     use crate::ResolvedSlotState;
     use memory_range::MemoryRange;
     use mesh::payload::Protobuf;
@@ -448,6 +446,7 @@ pub trait PoolSource: Inspect + Send + Sync {
 pub struct TestMapper {
     #[inspect(skip)]
     mem: Mappable,
+    len: usize,
 }
 
 impl TestMapper {
@@ -456,7 +455,15 @@ impl TestMapper {
         let len = (size_pages * PAGE_SIZE) as usize;
         let fd = alloc_shared_memory(len).context("creating shared mem")?;
 
-        Ok(Self { mem: fd })
+        Ok(Self { mem: fd, len })
+    }
+
+    /// Returns [`SparseMapping`] that maps starting at page 0.
+    pub fn sparse_mapping(&self) -> SparseMapping {
+        let mappable = self.mappable();
+        let mapping = SparseMapping::new(self.len).unwrap();
+        mapping.map_file(0, self.len, mappable, 0, true).unwrap();
+        mapping
     }
 
     fn inspect_extra(&self, resp: &mut Response<'_>) {
@@ -802,6 +809,39 @@ impl PagePoolAllocator {
             mapping_offset: slot.mapping_offset,
         })
     }
+
+    /// Restore all pending allocs
+    pub fn restore_pending_allocs(&self) -> Vec<PagePoolHandle> {
+        let mut inner = self.inner.state.lock();
+        let inner = &mut *inner;
+        let mut slots: Vec<&mut Slot> = inner
+            .slots
+            .iter_mut()
+            .filter(|slot| {
+                if let SlotState::AllocatedPendingRestore {
+                    device_id: slot_device_id,
+                    tag: _,
+                } = &slot.state
+                {
+                    return inner.device_ids[self.device_id].name() == *slot_device_id;
+                }
+                false
+            })
+            .collect();
+
+        slots
+            .iter_mut()
+            .map(|slot| {
+                slot.state.restore_allocated(self.device_id);
+                PagePoolHandle {
+                    inner: self.inner.clone(),
+                    base_pfn: slot.base_pfn,
+                    size_pages: slot.size_pages,
+                    mapping_offset: slot.mapping_offset,
+                }
+            })
+            .collect()
+    }
 }
 
 impl Drop for PagePoolAllocator {
@@ -835,36 +875,22 @@ impl user_driver::DmaClient for PagePoolAllocator {
         alloc.into_memory_block()
     }
 
-    /// Restore a dma buffer in the predefined location with the given `len` in
-    /// bytes.
-    fn attach_dma_buffer(
-        &self,
-        len: usize,
-        base_pfn: u64,
-    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        if len as u64 % PAGE_SIZE != 0 {
-            anyhow::bail!("not a page-size multiple");
-        }
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
+        let allocs = self.restore_pending_allocs();
 
-        let size_pages = NonZeroU64::new(len as u64 / PAGE_SIZE)
-            .context("allocation of size 0 not supported")?;
-
-        let alloc = self
-            .restore_alloc(base_pfn, size_pages)
-            .context("failed to restore allocation")?;
-
-        // Preserve the existing contents of memory and do not zero the restored
-        // allocation.
-        alloc.into_memory_block()
+        allocs
+            .into_iter()
+            .map(|alloc| alloc.into_memory_block())
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod test {
+    use crate::PAGE_SIZE;
     use crate::PagePool;
     use crate::PoolSource;
     use crate::TestMapper;
-    use crate::PAGE_SIZE;
     use inspect::Inspect;
     use memory_range::MemoryRange;
     use safeatomic::AtomicSliceOps;
@@ -1002,6 +1028,90 @@ mod test {
     }
 
     #[test]
+    fn test_save_restore_all_pending() {
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+
+        let a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
+        let a1_pfn = a1.base_pfn();
+        let a1_size = a1.size_pages;
+
+        let a2 = alloc
+            .alloc(15.try_into().unwrap(), "alloc2".into())
+            .unwrap();
+        let a2_pfn = a2.base_pfn();
+        let a2_size = a2.size_pages;
+
+        let state = pool.save().unwrap();
+
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
+        pool.restore(state).unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+
+        let restored = alloc.restore_pending_allocs();
+        assert!(
+            restored
+                .iter()
+                .any(|a| a.base_pfn == a1_pfn && a.size_pages == a1_size),
+            "matching allocation not found for a1"
+        );
+
+        assert!(
+            restored
+                .iter()
+                .any(|a| a.base_pfn == a2_pfn && a.size_pages == a2_size),
+            "matching allocation not found for a2"
+        );
+
+        pool.validate_restore(false).unwrap();
+    }
+
+    #[test]
+    fn test_save_restore_all_pending_other_allocator() {
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
+        let alloc = pool.allocator("test".into()).unwrap();
+
+        let a1 = alloc.alloc(5.try_into().unwrap(), "alloc1".into()).unwrap();
+        let a1_pfn = a1.base_pfn();
+        let a1_size = a1.size_pages;
+
+        let a2 = alloc
+            .alloc(15.try_into().unwrap(), "alloc2".into())
+            .unwrap();
+        let a2_pfn = a2.base_pfn();
+        let a2_size = a2.size_pages;
+
+        let state = pool.save().unwrap();
+
+        let mut pool =
+            PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
+        pool.restore(state).unwrap();
+        let alloc = pool.allocator("test2".into()).unwrap();
+
+        let restored = alloc.restore_pending_allocs();
+        assert_eq!(
+            restored
+                .iter()
+                .any(|a| a.base_pfn == a1_pfn && a.size_pages == a1_size),
+            false,
+            "matching allocation found for a1 for wrong allocator"
+        );
+
+        assert_eq!(
+            restored
+                .iter()
+                .any(|a| a.base_pfn == a2_pfn && a.size_pages == a2_size),
+            false,
+            "matching allocation found for a2 for wrong allocator"
+        );
+
+        assert!(pool.validate_restore(false).is_err());
+    }
+
+    #[test]
     fn test_save_restore_unmatched_allocations() {
         let mut pool =
             PagePool::new(&[MemoryRange::from_4k_gpn_range(10..30)], big_test_mapper()).unwrap();
@@ -1035,9 +1145,11 @@ mod test {
         pool.restore(state).unwrap();
 
         let alloc = pool.allocator("test2".into()).unwrap();
-        assert!(alloc
-            .restore_alloc(a1.base_pfn, a1.size_pages.try_into().unwrap())
-            .is_err());
+        assert!(
+            alloc
+                .restore_alloc(a1.base_pfn, a1.size_pages.try_into().unwrap())
+                .is_err()
+        );
     }
 
     #[test]

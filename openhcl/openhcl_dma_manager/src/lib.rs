@@ -7,7 +7,6 @@
 
 #![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use anyhow::Context;
 use hcl_mapper::HclMapper;
@@ -18,8 +17,8 @@ use page_pool_alloc::PagePool;
 use page_pool_alloc::PagePoolAllocator;
 use page_pool_alloc::PagePoolAllocatorSpawner;
 use std::sync::Arc;
-use user_driver::lockmem::LockedMemorySpawner;
 use user_driver::DmaClient;
+use user_driver::lockmem::LockedMemorySpawner;
 
 /// Save restore support for [`OpenhclDmaManager`].
 pub mod save_restore {
@@ -74,7 +73,7 @@ pub mod save_restore {
                 (Some(_), None) => {
                     return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
                         "saved state for shared pool but no shared pool"
-                    )))
+                    )));
                 }
                 (None, Some(_)) => {
                     // It's possible that previously we did not have a shared
@@ -92,7 +91,7 @@ pub mod save_restore {
                 (Some(_), None) => {
                     return Err(RestoreError::InvalidSavedState(anyhow::anyhow!(
                         "saved state for private pool but no private pool"
-                    )))
+                    )));
                 }
                 (None, Some(_)) => {
                     // It's possible that previously we did not have a private
@@ -421,21 +420,13 @@ impl DmaClientBacking {
         }
     }
 
-    fn attach_dma_buffer(
-        &self,
-        len: usize,
-        base_pfn: u64,
-    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
         match self {
-            DmaClientBacking::SharedPool(allocator) => allocator.attach_dma_buffer(len, base_pfn),
-            DmaClientBacking::PrivatePool(allocator) => allocator.attach_dma_buffer(len, base_pfn),
-            DmaClientBacking::LockedMemory(spawner) => spawner.attach_dma_buffer(len, base_pfn),
-            DmaClientBacking::PrivatePoolLowerVtl(spawner) => {
-                spawner.attach_dma_buffer(len, base_pfn)
-            }
-            DmaClientBacking::LockedMemoryLowerVtl(spawner) => {
-                spawner.attach_dma_buffer(len, base_pfn)
-            }
+            DmaClientBacking::SharedPool(allocator) => allocator.attach_pending_buffers(),
+            DmaClientBacking::PrivatePool(allocator) => allocator.attach_pending_buffers(),
+            DmaClientBacking::LockedMemory(spawner) => spawner.attach_pending_buffers(),
+            DmaClientBacking::PrivatePoolLowerVtl(spawner) => spawner.attach_pending_buffers(),
+            DmaClientBacking::LockedMemoryLowerVtl(spawner) => spawner.attach_pending_buffers(),
         }
     }
 }
@@ -456,11 +447,7 @@ impl DmaClient for OpenhclDmaClient {
         self.backing.allocate_dma_buffer(total_size)
     }
 
-    fn attach_dma_buffer(
-        &self,
-        len: usize,
-        base_pfn: u64,
-    ) -> anyhow::Result<user_driver::memory::MemoryBlock> {
-        self.backing.attach_dma_buffer(len, base_pfn)
+    fn attach_pending_buffers(&self) -> anyhow::Result<Vec<user_driver::memory::MemoryBlock>> {
+        self.backing.attach_pending_buffers()
     }
 }

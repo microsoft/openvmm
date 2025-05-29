@@ -3,30 +3,32 @@
 
 //! Integration tests for hvlite's TTRPC interface.
 
-#![cfg_attr(guest_arch = "aarch64", allow(unused_imports))]
-
 use anyhow::Context;
 use guid::Guid;
 use hvlite_ttrpc_vmservice as vmservice;
+use pal_async::DefaultPool;
 use pal_async::pipe::PolledPipe;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
-use pal_async::DefaultPool;
 use petri::ResolvedArtifact;
 use petri_artifacts_vmm_test::artifacts;
 use std::io::Read;
 use std::process::Stdio;
 use unix_socket::UnixStream;
 
-#[cfg(guest_arch = "x86_64")]
 petri::test!(test_ttrpc_interface, |resolver| {
+    // Only supported on x86_64 for now.
+    if petri_artifacts_common::tags::MachineArch::host()
+        != petri_artifacts_common::tags::MachineArch::X86_64
+    {
+        return None;
+    }
     let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
-    let kernel = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_X64);
-    let initrd = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_X64);
-    [openvmm.erase(), kernel.erase(), initrd.erase()]
+    let kernel = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_NATIVE);
+    let initrd = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_NATIVE);
+    Some([openvmm.erase(), kernel.erase(), initrd.erase()])
 });
 
-#[cfg(guest_arch = "x86_64")]
 fn test_ttrpc_interface(
     params: petri::PetriTestParams<'_>,
     [openvmm, kernel_path, initrd_path]: [ResolvedArtifact; 3],
@@ -50,7 +52,7 @@ fn test_ttrpc_interface(
     let mut b = [0];
     assert_eq!(stdout.read(&mut b)?, 0);
 
-    DefaultPool::run_with(|driver| async {
+    DefaultPool::run_with(async |driver| {
         let driver = driver;
         let _stderr_task = driver.spawn(
             "stderr",

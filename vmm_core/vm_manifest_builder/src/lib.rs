@@ -14,6 +14,8 @@
 //! devices. In the future, it will also build handles for PCI and VMBus
 //! devices.
 
+#![forbid(unsafe_code)]
+
 use chipset_resources::battery::BatteryDeviceHandleAArch64;
 use chipset_resources::battery::BatteryDeviceHandleX64;
 use chipset_resources::battery::HostBatteryUpdate;
@@ -26,11 +28,11 @@ use serial_debugcon_resources::SerialDebugconDeviceHandle;
 use serial_pl011_resources::SerialPl011DeviceHandle;
 use std::iter::zip;
 use thiserror::Error;
-use vm_resource::kind::SerialBackendHandle;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
-use vmotherboard::options::BaseChipsetManifest;
+use vm_resource::kind::SerialBackendHandle;
 use vmotherboard::ChipsetDeviceHandle;
+use vmotherboard::options::BaseChipsetManifest;
 
 /// Builder for a VM manifest.
 pub struct VmManifestBuilder {

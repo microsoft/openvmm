@@ -45,8 +45,5 @@ unstable_whp = ["openvmm_entry/unstable_whp", "openvmm_resources/unstable_whp"]
 openvmm_entry.workspace = true
 openvmm_resources.workspace = true
 
-[target.'cfg(windows)'.dependencies]
-win_prng_support.workspace = true
-
 [lints]
 workspace = true

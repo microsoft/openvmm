@@ -10,10 +10,10 @@
 #[doc(hidden)]
 pub use xshell_macros::__cmd;
 
+use crate::PipetteClient;
 use crate::process::Command;
 use crate::process::Output;
 use crate::process::Stdio;
-use crate::PipetteClient;
 use anyhow::Context;
 use futures::AsyncWriteExt;
 use futures_concurrency::future::Join;

@@ -1,8 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(dead_code)]
-#![allow(unused_macros)]
+#![expect(dead_code)]
 
 use guid::Guid;
 use static_assertions::const_assert_eq;

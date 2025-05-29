@@ -4,7 +4,6 @@
 //! A simple asynchronous task model for execution that needs to be started,
 //! stopped, mutated, and inspected.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use fast_select::FastSelect;
@@ -13,10 +12,10 @@ use inspect::InspectMut;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
-use std::future::poll_fn;
 use std::future::Future;
-use std::pin::pin;
+use std::future::poll_fn;
 use std::pin::Pin;
+use std::pin::pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -52,7 +51,7 @@ pub struct Cancelled;
 /// A future indicating that the task should return for event processing or
 /// because the task was stopped.
 pub struct StopTask<'a> {
-    inner: &'a mut (dyn 'a + Send + PollReady),
+    inner: &'a mut (dyn 'a + Send + Future<Output = ()> + Unpin),
     fast_select: &'a mut FastSelect,
 }
 
@@ -64,13 +63,11 @@ struct StopTaskInner<'a, T, S> {
     shared: &'a Mutex<Shared<T, S>>,
 }
 
-trait PollReady {
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()>;
-}
+impl<T: AsyncRun<S>, S> Future for StopTaskInner<'_, T, S> {
+    type Output = ();
 
-impl<T: AsyncRun<S>, S> PollReady for StopTaskInner<'_, T, S> {
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        let mut shared = self.shared.lock();
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let mut shared = self.get_mut().shared.lock();
         if !shared.calls.is_empty() || shared.stop {
             return Poll::Ready(());
         }
@@ -86,6 +83,19 @@ impl<T: AsyncRun<S>, S> PollReady for StopTaskInner<'_, T, S> {
 }
 
 impl StopTask<'_> {
+    /// Runs `f`, providing access to `stop` via a `StopTask` passed to `f`.
+    pub async fn run_with<R>(
+        mut stop: impl Send + Future<Output = ()> + Unpin,
+        f: impl AsyncFnOnce(&mut StopTask<'_>) -> R,
+    ) -> R {
+        let mut fast_select: FastSelect = FastSelect::new();
+        let mut stop = StopTask {
+            inner: &mut stop,
+            fast_select: &mut fast_select,
+        };
+        f(&mut stop).await
+    }
+
     /// Runs `fut` until the task is requested to stop.
     ///
     /// If `fut` completes, then `Ok(_)` is returned.
@@ -95,9 +105,10 @@ impl StopTask<'_> {
     pub async fn until_stopped<F: Future>(&mut self, fut: F) -> Result<F::Output, Cancelled> {
         // Wrap the cancel task in a FastSelect to avoid taking the channel lock
         // at each wakeup.
-        let mut cancel = pin!(self
-            .fast_select
-            .select((poll_fn(|cx| self.inner.poll_ready(cx)),)));
+        let mut cancel = pin!(
+            self.fast_select
+                .select((poll_fn(|cx| Pin::new(&mut self.inner).poll(cx)),))
+        );
 
         let mut fut = pin!(fut);
 
@@ -119,7 +130,7 @@ impl Future for StopTask<'_> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.inner.poll_ready(cx)
+        Pin::new(&mut self.inner).poll(cx)
     }
 }
 
@@ -280,7 +291,7 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
                 ..
             } => false,
             Inner::WithState {
-                activity: Activity::Running { .. },
+                activity: Activity::Running,
                 ..
             } => true,
             Inner::Invalid => unreachable!(),
@@ -331,7 +342,7 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
                 ..
             } => task_and_state,
             Inner::WithState {
-                activity: Activity::Running { .. },
+                activity: Activity::Running,
                 ..
             } => panic!("attempt to access running task"),
             Inner::Invalid => unreachable!(),
@@ -351,7 +362,7 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
                 ..
             } => task_and_state,
             Inner::WithState {
-                activity: Activity::Running { .. },
+                activity: Activity::Running,
                 ..
             } => panic!("attempt to access running task"),
             Inner::Invalid => unreachable!(),
@@ -371,7 +382,7 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
                 ..
             } => task_and_state,
             Inner::WithState {
-                activity: Activity::Running { .. },
+                activity: Activity::Running,
                 ..
             } => panic!("attempt to extract running task"),
             Inner::Invalid => unreachable!(),
@@ -393,7 +404,7 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
                 activity, shared, ..
             } => match activity {
                 Activity::Stopped(task_and_state) => f(task_and_state),
-                Activity::Running { .. } => Shared::push_call(shared, Box::new(f)),
+                Activity::Running => Shared::push_call(shared, Box::new(f)),
             },
             Inner::Invalid => unreachable!(),
         }
@@ -463,49 +474,47 @@ impl<T: AsyncRun<S>, S: 'static + Send> TaskControl<T, S> {
     }
 
     async fn run(shared: Arc<Mutex<Shared<T, S>>>) {
-        let mut fast_select = FastSelect::new();
-        let mut calls = Vec::new();
-        loop {
-            let (mut task_and_state, stop) = poll_fn(|cx| {
-                let mut shared = shared.lock();
-                let has_work = shared
-                    .task_and_state
-                    .as_ref()
-                    .is_some_and(|ts| !shared.calls.is_empty() || (!shared.stop && !ts.done));
-                if !has_work {
-                    shared.inner_waker = Some(cx.waker().clone());
-                    return Poll::Pending;
+        StopTask::run_with(StopTaskInner { shared: &shared }, async |stop_task| {
+            let mut calls = Vec::new();
+            loop {
+                let (mut task_and_state, stop) = poll_fn(|cx| {
+                    let mut shared = shared.lock();
+                    let has_work = shared
+                        .task_and_state
+                        .as_ref()
+                        .is_some_and(|ts| !shared.calls.is_empty() || (!shared.stop && !ts.done));
+                    if !has_work {
+                        shared.inner_waker = Some(cx.waker().clone());
+                        return Poll::Pending;
+                    }
+                    calls.append(&mut shared.calls);
+                    Poll::Ready((shared.task_and_state.take().unwrap(), shared.stop))
+                })
+                .await;
+
+                for call in calls.drain(..) {
+                    call(&mut task_and_state);
                 }
-                calls.append(&mut shared.calls);
-                Poll::Ready((shared.task_and_state.take().unwrap(), shared.stop))
-            })
-            .await;
 
-            for call in calls.drain(..) {
-                call(&mut task_and_state);
-            }
+                if !stop && !task_and_state.done {
+                    task_and_state.done = task_and_state
+                        .task
+                        .run(&mut *stop_task, task_and_state.state.as_mut().unwrap())
+                        .await
+                        .is_ok();
+                }
 
-            if !stop && !task_and_state.done {
-                let mut stop_task = StopTask {
-                    inner: &mut StopTaskInner { shared: &shared },
-                    fast_select: &mut fast_select,
+                let waker = {
+                    let mut shared = shared.lock();
+                    shared.task_and_state = Some(task_and_state);
+                    shared.outer_waker.take()
                 };
-                task_and_state.done = task_and_state
-                    .task
-                    .run(&mut stop_task, task_and_state.state.as_mut().unwrap())
-                    .await
-                    .is_ok();
+                if let Some(waker) = waker {
+                    waker.wake();
+                }
             }
-
-            let waker = {
-                let mut shared = shared.lock();
-                shared.task_and_state = Some(task_and_state);
-                shared.outer_waker.take()
-            };
-            if let Some(waker) = waker {
-                waker.wake();
-            }
-        }
+        })
+        .await
     }
 
     /// Stops the task, waiting for it to be cancelled.
@@ -575,8 +584,8 @@ mod tests {
     use crate::StopTask;
     use crate::TaskControl;
     use futures::FutureExt;
-    use pal_async::async_test;
     use pal_async::DefaultDriver;
+    use pal_async::async_test;
     use std::task::Poll;
 
     struct Foo(u32);

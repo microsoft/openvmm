@@ -14,6 +14,8 @@ const SUPPRESS_REASON_CPU_INTRINSIC: &str = "cpu-intrinsic";
 /// Using `target_arch` in order to implement a '*-sys'-like crate (where the
 /// structure changes depending on the host-arch)
 const SUPPRESS_REASON_SYS_CRATE: &str = "sys-crate";
+/// A dependency of this crate will not build on other target architectures
+const SUPPRESS_REASON_DEPENDENCY: &str = "dependency";
 /// One off - support for the auto-arch selection logic in
 /// `build_rs_guest_arch`.
 const SUPPRESS_REASON_ONEOFF_GUEST_ARCH_IMPL: &str = "oneoff-guest-arch-impl";
@@ -22,8 +24,10 @@ const SUPPRESS_REASON_ONEOFF_GUEST_ARCH_IMPL: &str = "oneoff-guest-arch-impl";
 const SUPPRESS_REASON_ONEOFF_VIRT_HVF: &str = "oneoff-virt-hvf";
 /// One off - used as part of flowey CI infra
 const SUPPRESS_REASON_ONEOFF_FLOWEY: &str = "oneoff-flowey";
-/// One off - used by petri to select a native openvmm executable
-const SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_OPENVMM: &str = "oneoff-petri-native-openvmm";
+/// One off - used by petri to select native test dependencies
+const SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_TEST_DEPS: &str = "oneoff-petri-native-test-deps";
+/// Onee off - used by petri to return the host architecture for test filtering
+const SUPPRESS_REASON_ONEOFF_PETRI_HOST_ARCH: &str = "oneoff-petri-host-arch";
 
 fn has_suppress(s: &str) -> bool {
     let Some((_, after)) = s.split_once(SUPPRESS) else {
@@ -37,10 +41,12 @@ fn has_suppress(s: &str) -> bool {
         justification,
         SUPPRESS_REASON_CPU_INTRINSIC
             | SUPPRESS_REASON_SYS_CRATE
+            | SUPPRESS_REASON_DEPENDENCY
             | SUPPRESS_REASON_ONEOFF_GUEST_ARCH_IMPL
             | SUPPRESS_REASON_ONEOFF_VIRT_HVF
             | SUPPRESS_REASON_ONEOFF_FLOWEY
-            | SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_OPENVMM
+            | SUPPRESS_REASON_ONEOFF_PETRI_NATIVE_TEST_DEPS
+            | SUPPRESS_REASON_ONEOFF_PETRI_HOST_ARCH
     );
 
     if !ok {
@@ -74,7 +80,7 @@ pub fn check_cfg_target_arch(path: &Path, _fix: bool) -> anyhow::Result<()> {
     //
     // openhcl_boot uses target_arch liberally, since it runs in VTL2 entirely
     // in-service to the VTL2 linux kernel, which will always be native-arch.
-    // Similar for the sidecar kernel. And minimal_rt provides the
+    // Similar for the sidecar kernel and TMKs. And minimal_rt provides the
     // (arch-specific) runtime for both of them.
     //
     // safe_intrinsics performs architecture-specific operations that require
@@ -82,11 +88,15 @@ pub fn check_cfg_target_arch(path: &Path, _fix: bool) -> anyhow::Result<()> {
     //
     // the whp/kvm crates are inherently arch-specific, as they contain
     // low-level bindings to a particular platform's virtualization APIs
+    //
+    // The TMK-related crates run in the guest and are inherently arch-specific.
     if path.starts_with("guest_test_uefi")
         || path.starts_with("openhcl/openhcl_boot")
         || path.starts_with("openhcl/minimal_rt")
         || path.starts_with("openhcl/sidecar")
         || path.starts_with("support/safe_intrinsics")
+        || path.starts_with("tmk/simple_tmk")
+        || path.starts_with("tmk/tmk_core")
         || path.starts_with("vm/whp")
         || path.starts_with("vm/kvm")
     {

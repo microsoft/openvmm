@@ -11,6 +11,7 @@ use crate::run_cargo_build::common::CommonTriple;
 use crate::run_cargo_nextest_run::NextestProfile;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
+use vmm_test_images::KnownTestArtifacts;
 
 flowey_request! {
     pub struct Params {
@@ -26,6 +27,8 @@ flowey_request! {
         pub nextest_filter_expr: Option<String>,
         /// If the VMM tests requires openhcl - specify a custom target for it.
         pub openhcl_custom_target: Option<CommonTriple>,
+        /// Test artifacts to download
+        pub test_artifacts: Vec<KnownTestArtifacts>,
 
         /// Whether the job should fail if any test has failed
         pub fail_job_on_test_fail: bool,
@@ -47,7 +50,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<crate::build_openvmm::Node>();
         ctx.import::<crate::build_pipette::Node>();
-        ctx.import::<crate::download_openvmm_vmm_tests_vhds::Node>();
+        ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
     }
@@ -60,6 +63,7 @@ impl SimpleFlowNode for Node {
             nextest_profile,
             nextest_filter_expr,
             openhcl_custom_target,
+            test_artifacts,
             fail_job_on_test_fail,
             artifact_dir,
             done,
@@ -83,6 +87,7 @@ impl SimpleFlowNode for Node {
                 linux: CommonTriple::X86_64_LINUX_MUSL,
                 openhcl_recipies: &[
                     OpenhclIgvmRecipe::X64,
+                    OpenhclIgvmRecipe::X64Devkern,
                     OpenhclIgvmRecipe::X64TestLinuxDirect,
                     OpenhclIgvmRecipe::X64Cvm,
                 ],
@@ -128,6 +133,7 @@ impl SimpleFlowNode for Node {
             let (_read_built_openvmm_hcl, built_openvmm_hcl) = ctx.new_var();
             let (read_built_openhcl_igvm, built_openhcl_igvm) = ctx.new_var();
             let (_read_built_openhcl_boot, built_openhcl_boot) = ctx.new_var();
+            let (_read_built_sidecar, built_sidecar) = ctx.new_var();
             ctx.req(crate::build_openhcl_igvm_from_recipe::Request {
                 profile: match profile {
                     CommonProfile::Release => {
@@ -140,7 +146,7 @@ impl SimpleFlowNode for Node {
                 built_openvmm_hcl,
                 built_openhcl_boot,
                 built_openhcl_igvm,
-                built_sidecar: None,
+                built_sidecar,
             });
 
             register_openhcl_igvm_files.push(read_built_openhcl_igvm.map(ctx, {
@@ -158,7 +164,7 @@ impl SimpleFlowNode for Node {
         });
 
         let register_pipette_linux_musl = ctx.reqv(|v| crate::build_pipette::Request {
-            target: targets.linux,
+            target: targets.linux.clone(),
             profile,
             pipette: v,
         });
@@ -169,28 +175,30 @@ impl SimpleFlowNode for Node {
             guest_test_uefi: v,
         });
 
-        match arch {
-            CommonArch::X86_64 => {
-                ctx.requests::<crate::download_openvmm_vmm_tests_vhds::Node>([
-                    crate::download_openvmm_vmm_tests_vhds::Request::DownloadVhds(vec![
-                        vmm_test_images::KnownVhd::FreeBsd13_2,
-                        vmm_test_images::KnownVhd::Gen1WindowsDataCenterCore2022,
-                        vmm_test_images::KnownVhd::Gen2WindowsDataCenterCore2022,
-                        vmm_test_images::KnownVhd::Ubuntu2204Server,
-                    ]),
-                ]);
+        let register_tmks = ctx.reqv(|v| crate::build_tmks::Request {
+            arch,
+            profile,
+            tmks: v,
+        });
 
-                ctx.requests::<crate::download_openvmm_vmm_tests_vhds::Node>([
-                    crate::download_openvmm_vmm_tests_vhds::Request::DownloadIsos(vec![
-                        vmm_test_images::KnownIso::FreeBsd13_2,
-                    ]),
-                ]);
-            }
-            CommonArch::Aarch64 => {}
-        }
+        let register_tmk_vmm = ctx.reqv(|v| crate::build_tmk_vmm::Request {
+            profile,
+            target: targets.linux.clone(),
+            unstable_whp: false,
+            tmk_vmm: v,
+        });
+
+        let register_tmk_vmm_linux_musl = ctx.reqv(|v| crate::build_tmk_vmm::Request {
+            profile,
+            target: targets.linux,
+            unstable_whp: false,
+            tmk_vmm: v,
+        });
+
+        ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(test_artifacts));
 
         let disk_images_dir =
-            ctx.reqv(crate::download_openvmm_vmm_tests_vhds::Request::GetDownloadFolder);
+            ctx.reqv(crate::download_openvmm_vmm_tests_artifacts::Request::GetDownloadFolder);
 
         let test_content_dir = ctx.persistent_dir().ok_or(anyhow::anyhow!(
             "build and run VMM tests only works locally"
@@ -208,6 +216,9 @@ impl SimpleFlowNode for Node {
             register_pipette_windows: Some(register_pipette_windows),
             register_pipette_linux_musl: Some(register_pipette_linux_musl),
             register_guest_test_uefi: Some(register_guest_test_uefi),
+            register_tmks: Some(register_tmks),
+            register_tmk_vmm: Some(register_tmk_vmm),
+            register_tmk_vmm_linux_musl: Some(register_tmk_vmm_linux_musl),
             disk_images_dir: Some(disk_images_dir),
             register_openhcl_igvm_files: Some(register_openhcl_igvm_files),
             get_test_log_path: Some(get_test_log_path),
@@ -229,20 +240,15 @@ impl SimpleFlowNode for Node {
 
         let mut side_effects = Vec::new();
 
-        // TODO: Get correct path on linux and more reliably on windows
-        let crash_dumps_path = ReadVar::from_static(PathBuf::from(match ctx.platform().kind() {
-            FlowPlatformKind::Windows => r#"C:\Users\cloudtest\AppData\Local\CrashDumps"#,
-            FlowPlatformKind::Unix => "/will/not/exist",
-        }));
+        // Bind the externally generated output paths together with the results
+        // to create a dependency on the VMM tests having actually run.
+        let test_log_path = test_log_path.depending_on(ctx, &results);
 
         let junit_xml = results.map(ctx, |r| r.junit_xml);
         let reported_results = ctx.reqv(|v| flowey_lib_common::publish_test_results::Request {
             junit_xml,
             test_label: junit_test_label,
-            attachments: BTreeMap::from([
-                ("logs".to_string(), (test_log_path, false)),
-                ("crash-dumps".to_string(), (crash_dumps_path, true)),
-            ]),
+            attachments: BTreeMap::from([("logs".to_string(), (test_log_path, false))]),
             output_dir: artifact_dir,
             done: v,
         });

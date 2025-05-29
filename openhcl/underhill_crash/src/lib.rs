@@ -4,6 +4,7 @@
 //! This module implements sending crash dump files to the host.
 
 #![cfg(target_os = "linux")]
+#![expect(missing_docs)]
 // UNSAFETY: Calling libc functions to gather system information, and manipulating
 // stdout & stderr.
 #![expect(unsafe_code)]
@@ -22,12 +23,12 @@ use crate::elf::Elf64_Phdr;
 use crate::elf::PT_NOTE;
 use crate::proto::check_header;
 use crate::proto::make_header;
-use fs_err::os::unix::fs::OpenOptionsExt;
 use fs_err::File;
-use futures::io::AllowStdIo;
+use fs_err::os::unix::fs::OpenOptionsExt;
 use futures::AsyncRead;
 use futures::AsyncReadExt;
 use futures::FutureExt;
+use futures::io::AllowStdIo;
 use get_protocol::crash;
 use get_protocol::crash::Header;
 use libc::O_NONBLOCK;
@@ -39,7 +40,6 @@ use std::io::ErrorKind;
 use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::pin::pin;
-use tracing_subscriber::fmt::time::uptime;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::async_dgram::AsyncSendExt;
 use vmbus_async::pipe::MessagePipe;
@@ -124,6 +124,7 @@ async fn send_dump(
     mut pipe: MessagePipe<MappedRingMem>,
     dump_stream: &mut (impl AsyncRead + Unpin),
     os_version: &OsVersionInfo,
+    include_kmsg: bool,
 ) -> anyhow::Result<()> {
     let (mut reader, mut writer) = pipe.split();
 
@@ -188,8 +189,10 @@ async fn send_dump(
             max_dump_size as usize,
         );
 
-        if let Err(e) = streamer.insert_kmsg_note(&mut buf).await {
-            tracing::error!("Error occurred while adding kmsg note: {:?}", e);
+        if include_kmsg {
+            if let Err(e) = streamer.insert_kmsg_note(&mut buf).await {
+                tracing::error!("Error occurred while adding kmsg note: {:?}", e);
+            }
         }
 
         if let Err(e) = streamer.stream_all(&mut buf).await {
@@ -248,12 +251,14 @@ pub fn main() -> ! {
     let options = Options::parse();
 
     // Now set stderr and stdout to /dev/ttyprintk to catch any other output.
-    let ttyprintk = OpenOptions::new().write(true).open("/dev/ttyprintk");
-    if let Ok(ttyprintk) = &ttyprintk {
-        // SAFETY: calling as documented.
-        unsafe {
-            libc::dup2(ttyprintk.as_raw_fd(), STDOUT_FILENO);
-            libc::dup2(ttyprintk.as_raw_fd(), STDERR_FILENO);
+    if !options.no_redirect {
+        let ttyprintk = OpenOptions::new().write(true).open("/dev/ttyprintk");
+        if let Ok(ttyprintk) = &ttyprintk {
+            // SAFETY: calling as documented.
+            unsafe {
+                libc::dup2(ttyprintk.as_raw_fd(), STDOUT_FILENO);
+                libc::dup2(ttyprintk.as_raw_fd(), STDERR_FILENO);
+            }
         }
     }
 
@@ -265,10 +270,16 @@ pub fn main() -> ! {
             tracing::Level::INFO
         })
         .log_internal_errors(true)
-        .with_timer(uptime())
+        .with_timer(tracing_subscriber::fmt::time::uptime())
         .compact()
         .with_ansi(false)
         .init();
+
+    // We should have checks in our callers so this is never hit, but let's be safe.
+    if underhill_confidentiality::confidential_filtering_enabled() {
+        tracing::info!("crash reporting disabled due to CVM");
+        std::process::exit(libc::EXIT_FAILURE);
+    }
 
     let os_version = OsVersionInfo::new();
 
@@ -298,13 +309,13 @@ pub fn main() -> ! {
 
     // Send the dump file
 
-    if let Err(e) = block_with_io(|driver| async move {
+    if let Err(e) = block_with_io(async |driver| {
         let mut dump_stream = AllowStdIo::new(std::io::stdin());
         let pipe = vmbus_user_channel::message_pipe(
             &driver,
             vmbus_user_channel::open_uio_device(&crash::CRASHDUMP_GUID)?,
         )?;
-        send_dump(pipe, &mut dump_stream, &os_version).await?;
+        send_dump(pipe, &mut dump_stream, &os_version, !options.no_kmsg).await?;
 
         Ok::<(), anyhow::Error>(())
     }) {

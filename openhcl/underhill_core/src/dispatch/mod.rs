@@ -7,8 +7,9 @@ mod pci_shutdown;
 pub mod vtl2_settings_worker;
 
 use self::vtl2_settings_worker::DeviceInterfaces;
-use crate::emuplat::netvsp::RuntimeSavedState;
+use crate::ControlRequest;
 use crate::emuplat::EmuplatServicing;
+use crate::emuplat::netvsp::RuntimeSavedState;
 use crate::nvme_manager::NvmeManager;
 use crate::options::TestScenarioConfig;
 use crate::reference_time::ReferenceTime;
@@ -18,7 +19,6 @@ use crate::servicing::ServicingState;
 use crate::vmbus_relay_unit::VmbusRelayHandle;
 use crate::worker::FirmwareType;
 use crate::worker::NetworkSettingsError;
-use crate::ControlRequest;
 use anyhow::Context;
 use async_trait::async_trait;
 use futures::FutureExt;
@@ -33,12 +33,12 @@ use hyperv_ic_resources::shutdown::ShutdownRpc;
 use hyperv_ic_resources::shutdown::ShutdownType;
 use igvm_defs::MemoryMapEntryType;
 use inspect::Inspect;
+use mesh::CancelContext;
+use mesh::MeshPayload;
 use mesh::error::RemoteError;
 use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use mesh::CancelContext;
-use mesh::MeshPayload;
 use mesh_worker::WorkerRpc;
 use net_packet_capture::PacketCaptureParams;
 use openhcl_dma_manager::DmaClientSpawner;
@@ -52,8 +52,8 @@ use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::instrument;
 use tracing::Instrument;
+use tracing::instrument;
 use uevent::UeventListener;
 use underhill_threadpool::AffinitizedThreadpool;
 use virt::IsolationType;
@@ -68,9 +68,9 @@ use vmm_core::partition_unit::PartitionUnit;
 use vmm_core::vmbus_unit::ChannelUnit;
 use vmm_core::vmbus_unit::VmbusServerHandle;
 use vmotherboard::ChipsetDevices;
-use vtl2_settings_worker::handle_vtl2_config_rpc;
 use vtl2_settings_worker::Vtl2ConfigNicRpc;
 use vtl2_settings_worker::Vtl2SettingsWorker;
+use vtl2_settings_worker::handle_vtl2_config_rpc;
 
 #[derive(MeshPayload)]
 pub enum UhVmRpc {
@@ -143,6 +143,7 @@ pub(crate) struct LoadedVm {
     pub nvme_manager: Option<NvmeManager>,
     pub emuplat_servicing: EmuplatServicing,
     pub device_interfaces: Option<DeviceInterfaces>,
+    pub vmbus_client: Option<vmbus_client::VmbusClient>,
     /// Memory map with IGVM types for each range.
     pub vtl0_memory_map: Vec<(MemoryRangeWithNode, MemoryMapEntryType)>,
 
@@ -315,7 +316,7 @@ impl LoadedVm {
                 }
                 Event::UhVmRpc(msg) => match msg {
                     UhVmRpc::Resume(rpc) => {
-                        rpc.handle(|()| async {
+                        rpc.handle(async |()| {
                             if !self.state_units.is_running() {
                                 self.start(None).await;
                                 true
@@ -325,9 +326,9 @@ impl LoadedVm {
                         })
                         .await
                     }
-                    UhVmRpc::Pause(rpc) => rpc.handle(|()| self.stop()).await,
+                    UhVmRpc::Pause(rpc) => rpc.handle(async |()| self.stop().await).await,
                     UhVmRpc::Save(rpc) => {
-                        rpc.handle_failable(|()| async {
+                        rpc.handle_failable(async |()| {
                             let running = self.stop().await;
                             let r = self.save(None, false).await;
                             if running {
@@ -338,10 +339,11 @@ impl LoadedVm {
                         .await
                     }
                     UhVmRpc::ClearHalt(rpc) => {
-                        rpc.handle(|()| self.partition_unit.clear_halt()).await
+                        rpc.handle(async |()| self.partition_unit.clear_halt().await)
+                            .await
                     }
                     UhVmRpc::PacketCapture(rpc) => {
-                        rpc.handle_failable(|params| async {
+                        rpc.handle_failable(async |params| {
                             let network_settings = self
                                 .network_settings
                                 .as_ref()
@@ -380,7 +382,7 @@ impl LoadedVm {
                     }
                 }
                 Event::ShutdownRequest(rpc) => {
-                    rpc.handle(|msg| async {
+                    rpc.handle(async |msg| {
                         if matches!(msg.shutdown_type, ShutdownType::Hibernate) {
                             self.handle_hibernate_request(false).await;
                         }
@@ -495,7 +497,7 @@ impl LoadedVm {
         let nvme_keepalive = self.nvme_keep_alive && capabilities_flags.enable_nvme_keepalive();
 
         // Do everything before the log flush under a span.
-        let mut state = async {
+        let r = async {
             if !self.stop().await {
                 // This should only occur if you tried to initiate a
                 // servicing operation after manually pausing underhill
@@ -544,14 +546,23 @@ impl LoadedVm {
             Ok(state)
         }
         .instrument(tracing::info_span!("servicing_save_vtl2", %correlation_id))
-        .await?;
+        .await;
+
+        let mut state = match r {
+            Ok(state) => state,
+            Err(err) => {
+                self.resume_drivers();
+                return Err(err);
+            }
+        };
+
         // Tell the initial process to flush all logs. Any logs
         // emitted after this point may be lost.
         state.init_state.flush_logs_result = Some({
-            // Only wait up to a second (which is still
+            // Only wait up to a half second (which is still
             // a long time!) to prevent delays from
             // introducing longer blackouts.
-            let ctx = CancelContext::new().with_timeout(Duration::from_secs(1));
+            let ctx = CancelContext::new().with_timeout(Duration::from_millis(500));
 
             let now = std::time::Instant::now();
             let call = self
@@ -633,6 +644,21 @@ impl LoadedVm {
         }
     }
 
+    /// Called after a failed servicing operation.
+    ///
+    /// FUTURE: model the drivers as "driver" state units (as opposed to guest
+    /// VM state units) so that we have a consistent way to model their state
+    /// transitions.
+    fn resume_drivers(&mut self) {
+        if let Some(client) = &mut self.vmbus_client {
+            client.start();
+        }
+
+        // BUGBUG: resume the other drivers. This only becomes a problem once
+        // nvme keepalive is enabled, since otherwise no other drivers have been
+        // stopped.
+    }
+
     async fn save(
         &mut self,
         _deadline: Option<std::time::Instant>,
@@ -670,7 +696,14 @@ impl LoadedVm {
             None
         };
 
-        Ok(ServicingState {
+        let vmbus_client = if let Some(vmbus_client) = &mut self.vmbus_client {
+            vmbus_client.stop().await;
+            Some(vmbus_client.save().await)
+        } else {
+            None
+        };
+
+        let mut state = ServicingState {
             init_state: servicing::ServicingInitState {
                 firmware_type: self.firmware_type.into(),
                 vm_stop_reference_time: self.last_state_unit_stop.unwrap().as_100ns(),
@@ -681,9 +714,15 @@ impl LoadedVm {
                 overlay_shutdown_device: self.shutdown_relay.is_some(),
                 nvme_state,
                 dma_manager_state,
+                vmbus_client,
             },
             units,
-        })
+        };
+
+        state
+            .fix_pre_save()
+            .context("failed to fix up servicing state before save")?;
+        Ok(state)
     }
 
     #[instrument(skip(self))]
@@ -698,7 +737,7 @@ impl LoadedVm {
     }
 
     fn notify_of_vtl_crash(&self, vtl_crash: VtlCrash) {
-        tracing::info!("Notifying the host of the guest system crash {vtl_crash:x?}");
+        tracelimit::info_ratelimited!("Notifying the host of the guest system crash");
 
         let VtlCrash {
             vp_index,
@@ -785,11 +824,11 @@ mod inspect_helpers {
         // TODO: inspect::AsDebug would work here once
         // https://github.com/kupiakos/open-enum/pull/15 is merged.
         inspect::adhoc(|req| match *typ {
-            MemoryMapEntryType::MEMORY => req.value("MEMORY".into()),
-            MemoryMapEntryType::PERSISTENT => req.value("PERSISTENT".into()),
-            MemoryMapEntryType::PLATFORM_RESERVED => req.value("PLATFORM_RESERVED".into()),
-            MemoryMapEntryType::VTL2_PROTECTABLE => req.value("VTL2_PROTECTABLE".into()),
-            _ => req.value(typ.0.into()),
+            MemoryMapEntryType::MEMORY => req.value("MEMORY"),
+            MemoryMapEntryType::PERSISTENT => req.value("PERSISTENT"),
+            MemoryMapEntryType::PLATFORM_RESERVED => req.value("PLATFORM_RESERVED"),
+            MemoryMapEntryType::VTL2_PROTECTABLE => req.value("VTL2_PROTECTABLE"),
+            _ => req.value(typ.0),
         })
     }
 
@@ -801,7 +840,7 @@ mod inspect_helpers {
                 entry.range,
                 inspect::adhoc(|req| {
                     req.respond()
-                        .field("length", inspect::AsHex(entry.range.len()))
+                        .hex("length", entry.range.len())
                         .field("type", inspect_memory_map_entry_type(typ))
                         .field("vnode", entry.vnode);
                 }),

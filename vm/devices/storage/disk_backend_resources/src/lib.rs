@@ -3,17 +3,16 @@
 
 //! Disk resources, for use with [`vm_resource`].
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod layer;
 
 use mesh::MeshPayload;
-use vm_resource::kind::DiskHandleKind;
-use vm_resource::kind::DiskLayerHandleKind;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::DiskLayerHandleKind;
 
 // Define config types here so that you don't have to pull in the individual
 // crates just to describe the configuration.

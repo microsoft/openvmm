@@ -26,28 +26,27 @@
 // reorganizing and refactoring the code to be more Rust-y, there's still quite
 // a ways to go.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use self::floppy_sizes::FloppyImageType;
-use self::protocol::FloppyCommand;
-use self::protocol::RegisterOffset;
 use self::protocol::FLOPPY_TOTAL_CYLINDERS;
+use self::protocol::FloppyCommand;
 use self::protocol::INVALID_COMMAND_STATUS;
+use self::protocol::RegisterOffset;
 use self::protocol::STANDARD_FLOPPY_SECTOR_SIZE;
 use arrayvec::ArrayVec;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use core::sync::atomic::Ordering;
 use disk_backend::Disk;
-use guestmem::ranges::PagedRange;
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use inspect::InspectMut;
 use scsi_buffers::RequestBuffers;
@@ -1095,8 +1094,7 @@ impl FloppyDiskController {
             Some(r) => r,
             None => {
                 tracelimit::error_ratelimited!("request_dma for read failed");
-                return Err(disk_backend::DiskError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Err(disk_backend::DiskError::Io(std::io::Error::other(
                     "request_dma for read failed",
                 )));
             }
@@ -1413,7 +1411,10 @@ impl FloppyDiskController {
         // through which is not a sense-interrupt-status and there
         // is already an interrupt pending, we will deassert the INT signal.
         if self.state.interrupt_level && command != FloppyCommand::SENSE_INTERRUPT_STATUS {
-            tracing::trace!(?command, "Floppy interrupt level was high before command execution. Now de-asserting interrupt");
+            tracing::trace!(
+                ?command,
+                "Floppy interrupt level was high before command execution. Now de-asserting interrupt"
+            );
             self.lower_interrupt();
             self.state.main_status.set_active_drives(0);
         }
@@ -1613,7 +1614,7 @@ impl FloppyDiskController {
         let command_buffer = self.command_buffer.access();
 
         tracing::trace!(lba, size, "starting disk read");
-        self.set_io(|disk| async move {
+        self.set_io(async move |disk| {
             let buffers = command_buffer.buffers(0, size as usize, true);
             disk.read_vectored(&buffers, lba).await
         });
@@ -1715,7 +1716,7 @@ impl FloppyDiskController {
             return false;
         }
 
-        self.set_io(|disk| async move {
+        self.set_io(async move |disk| {
             let buffers = command_buffer.buffers(0, size as usize, false);
             let result = disk.write_vectored(&buffers, lba, false).await;
             if let Err(err) = result {
@@ -1808,7 +1809,7 @@ impl FloppyDiskController {
 
         tracing::trace!(?cylinder, ?head, ?lba, ?buffer_ptr, "Format: ");
 
-        self.set_io(|disk| async move {
+        self.set_io(async move |disk| {
             let buffers = command_buffer.buffers(0, size, false);
             let result = disk.write_vectored(&buffers, lba, false).await;
             if let Err(err) = result {

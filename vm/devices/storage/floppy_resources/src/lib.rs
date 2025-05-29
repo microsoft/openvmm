@@ -7,11 +7,10 @@
 //! controllers, at which point this crate name makes sense.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use mesh::MeshPayload;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::Resource;
+use vm_resource::kind::DiskHandleKind;
 
 /// The configuration for a floppy disk.
 #[derive(Debug, MeshPayload)]

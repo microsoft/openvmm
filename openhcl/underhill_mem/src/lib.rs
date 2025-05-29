@@ -1,38 +1,38 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg(target_os = "linux")]
-#![warn(missing_docs)]
-
 //! Underhill VM memory management.
+
+#![cfg(target_os = "linux")]
 
 mod init;
 mod mapping;
 mod registrar;
 
-pub use init::init;
+pub use init::BootInit;
 pub use init::Init;
 pub use init::MemoryMappings;
+pub use init::init;
 
-use guestmem::ranges::PagedRange;
 use guestmem::PAGE_SIZE;
-use hcl::ioctl::snp::SnpPageError;
+use guestmem::ranges::PagedRange;
+use hcl::GuestVtl;
 use hcl::ioctl::AcceptPagesError;
 use hcl::ioctl::ApplyVtlProtectionsError;
 use hcl::ioctl::Mshv;
 use hcl::ioctl::MshvHvcall;
 use hcl::ioctl::MshvVtl;
-use hcl::GuestVtl;
+use hcl::ioctl::snp::SnpPageError;
 use hv1_structs::VtlArray;
-use hvdef::hypercall::AcceptMemoryType;
-use hvdef::hypercall::HostVisibilityType;
-use hvdef::hypercall::HvInputVtl;
+use hvdef::HV_MAP_GPA_PERMISSIONS_ALL;
+use hvdef::HV_PAGE_SIZE;
 use hvdef::HvError;
 use hvdef::HvMapGpaFlags;
 use hvdef::HypercallCode;
 use hvdef::Vtl;
-use hvdef::HV_MAP_GPA_PERMISSIONS_ALL;
-use hvdef::HV_PAGE_SIZE;
+use hvdef::hypercall::AcceptMemoryType;
+use hvdef::hypercall::HostVisibilityType;
+use hvdef::hypercall::HvInputVtl;
 use mapping::GuestMemoryMapping;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
@@ -179,6 +179,14 @@ impl GpaVtlPermissions {
     }
 }
 
+/// Error returned when modifying gpa visibility.
+#[derive(Debug, Error)]
+#[error("failed to modify gpa visibility, elements successfully processed {processed}")]
+pub struct ModifyGpaVisibilityError {
+    source: HvError,
+    processed: usize,
+}
+
 /// Interface to accept and manipulate lower VTL memory acceptance and page
 /// protections.
 ///
@@ -258,9 +266,13 @@ impl MemoryAcceptor {
         &self,
         host_visibility: HostVisibilityType,
         gpns: &[u64],
-    ) -> Result<(), HvError> {
+    ) -> Result<(), ModifyGpaVisibilityError> {
         self.mshv_hvcall
             .modify_gpa_visibility(host_visibility, gpns)
+            .map_err(|(e, processed)| ModifyGpaVisibilityError {
+                source: e,
+                processed,
+            })
     }
 
     /// Apply the initial protections on lower-vtl memory.
@@ -520,7 +532,14 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             clear_bitmap.update_bitmap(range, false);
         }
 
-        // TODO SNP: flush concurrent accessors.
+        // There may be other threads concurrently accessing these pages. We
+        // cannot change the page visibility state until these threads have
+        // stopped those accesses. Flush the RCU domain that `guestmem` uses in
+        // order to flush any threads accessing the pages. After this, we are
+        // guaranteed no threads are accessing these pages (unless the pages are
+        // also locked), since no bitmap currently allows access.
+        guestmem::rcu().synchronize_blocking();
+
         if let IsolationType::Snp = self.acceptor.isolation {
             // We need to ensure that the guest TLB has been fully flushed since
             // the unaccept operation is not guaranteed to do so in hardware,
@@ -543,12 +562,62 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         } else {
             HostVisibilityType::PRIVATE
         };
-        if let Err(err) = self.acceptor.modify_gpa_visibility(host_visibility, &gpns) {
-            if shared {
-                panic!("the hypervisor refused to transition pages to shared, we cannot safely roll back: {:?}", err);
+
+        let (result, ranges) = match self.acceptor.modify_gpa_visibility(host_visibility, &gpns) {
+            Ok(()) => {
+                // All gpns succeeded, so the whole set of ranges should be
+                // processed.
+                (Ok(()), ranges)
             }
-            todo!("roll back bitmap changes and report partial success");
-        }
+            Err(err) => {
+                if shared {
+                    // A transition from private to shared should always
+                    // succeed. There is no safe rollback path, so we must
+                    // panic.
+                    panic!(
+                        "the hypervisor refused to transition pages to shared, we cannot safely roll back: {:?}",
+                        err
+                    );
+                }
+
+                // Only some ranges succeeded. Recreate ranges based on which
+                // gpns succeeded, for further processing.
+                let (successful_gpns, failed_gpns) = gpns.split_at(err.processed);
+                let ranges = PagedRange::new(
+                    0,
+                    successful_gpns.len() * PagedRange::PAGE_SIZE,
+                    successful_gpns,
+                )
+                .unwrap()
+                .ranges()
+                .map(|r| r.map(|r| MemoryRange::new(r.start..r.end)))
+                .collect::<Result<Vec<_>, _>>()
+                .expect("previous gpns was already checked");
+
+                // Roll back the cleared bitmap for failed gpns, as they should
+                // be still in their original state of shared.
+                let rollback_ranges =
+                    PagedRange::new(0, failed_gpns.len() * PagedRange::PAGE_SIZE, failed_gpns)
+                        .unwrap()
+                        .ranges()
+                        .map(|r| r.map(|r| MemoryRange::new(r.start..r.end)))
+                        .collect::<Result<Vec<_>, _>>()
+                        .expect("previous gpns was already checked");
+
+                for &range in &rollback_ranges {
+                    clear_bitmap.update_bitmap(range, true);
+                }
+
+                // Figure out the index of the gpn that failed, in the
+                // pre-filtered list that will be reported back to the caller.
+                let failed_index = orig_gpns
+                    .iter()
+                    .position(|gpn| *gpn == failed_gpns[0])
+                    .expect("failed gpn should be present in the list");
+
+                (Err((err.source, failed_index)), ranges)
+            }
+        };
 
         if !shared {
             // Accept the pages so that the guest can use them.
@@ -600,7 +669,9 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             }
         }
 
-        Ok(())
+        // Return the original result of the underlying page visibility
+        // transition call to the caller.
+        result
     }
 
     fn query_host_visibility(
@@ -756,11 +827,12 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
     ) {
         // Should already have written contents to the page via the guest
         // memory object, confirming that this is a guest page
-        assert!(self
-            .layout
-            .ram()
-            .iter()
-            .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE)));
+        assert!(
+            self.layout
+                .ram()
+                .iter()
+                .any(|r| r.range.contains_addr(gpn * HV_PAGE_SIZE))
+        );
 
         let inner = self.inner.lock();
 

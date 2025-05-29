@@ -8,8 +8,6 @@
 //! Follows the xtask workflow/convention, as described at
 //! <https://github.com/matklad/cargo-xtask>
 
-#![warn(missing_docs)]
-
 use anyhow::Context;
 use clap::Parser;
 use clap::Subcommand;
@@ -76,7 +74,6 @@ struct Cli {
     run_on_save: bool,
 }
 
-#[expect(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Commands {
     #[clap(hide = true)]
@@ -84,10 +81,6 @@ enum Commands {
     #[clap(hide = true)]
     Complete(clap_dyn_complete::Complete),
     Completions(completions::Completions),
-
-    // deprecated
-    #[clap(hide = true)]
-    BuildIgvm(tasks::BuildIgvm),
 
     Fmt(tasks::Fmt),
     Fuzz(tasks::Fuzz),
@@ -153,7 +146,6 @@ fn try_main() -> anyhow::Result<()> {
             Ok(())
         }
 
-        Commands::BuildIgvm(task) => task.run(ctx),
         Commands::Fmt(task) => task.run(ctx),
         Commands::Fuzz(task) => task.run(ctx),
         Commands::GuestTest(task) => task.run(ctx),

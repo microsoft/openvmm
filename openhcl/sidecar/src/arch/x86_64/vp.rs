@@ -4,15 +4,15 @@
 //! Sidecar code that runs on the APs, after initialization. This code all runs
 //! with per-AP page tables, concurrently with the main kernel.
 
+use super::CommandErrorWriter;
+use super::VSM_CAPABILITIES;
+use super::VTL_RETURN_OFFSET;
+use super::VpGlobals;
 use super::addr_space;
 use super::get_hv_vp_register;
 use super::hypercall;
 use super::log;
 use super::set_hv_vp_register;
-use super::CommandErrorWriter;
-use super::VpGlobals;
-use super::VSM_CAPABILITIES;
-use super::VTL_RETURN_OFFSET;
 use core::fmt::Write;
 use core::mem::size_of;
 use core::ptr::addr_of;
@@ -20,16 +20,16 @@ use core::sync::atomic::AtomicU8;
 use core::sync::atomic::Ordering::Acquire;
 use core::sync::atomic::Ordering::Relaxed;
 use core::sync::atomic::Ordering::Release;
-use hvdef::hypercall::HvInputVtl;
-use hvdef::hypercall::HvRegisterAssoc;
-use hvdef::hypercall::TranslateVirtualAddressX64;
+use hvdef::HV_PAGE_SHIFT;
+use hvdef::HV_PARTITION_ID_SELF;
+use hvdef::HV_VP_INDEX_SELF;
 use hvdef::HvStatus;
 use hvdef::HvVtlEntryReason;
 use hvdef::HvX64RegisterName;
 use hvdef::HypercallCode;
-use hvdef::HV_PAGE_SHIFT;
-use hvdef::HV_PARTITION_ID_SELF;
-use hvdef::HV_VP_INDEX_SELF;
+use hvdef::hypercall::HvInputVtl;
+use hvdef::hypercall::HvRegisterAssoc;
+use hvdef::hypercall::TranslateVirtualAddressX64;
 use minimal_rt::arch::hypercall::HYPERCALL_PAGE;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;

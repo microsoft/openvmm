@@ -6,24 +6,26 @@
 //! This emulates the local APIC, as documented by the Intel SDM. It supports
 //! both legacy (MMIO) and X2APIC (MSR) modes.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+use address_filter::AddressFilter;
 use bitfield_struct::bitfield;
 use inspect::Inspect;
 use inspect_counters::Counter;
 use parking_lot::RwLock;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
-use virt::x86::vp::ApicRegisters;
 use virt::x86::MsrError;
-use vm_topology::processor::x86::X86VpInfo;
+use virt::x86::vp::ApicRegisters;
 use vm_topology::processor::VpIndex;
+use vm_topology::processor::x86::X86VpInfo;
 use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeAccess;
+use x86defs::X86X_MSR_APIC_BASE;
+use x86defs::apic::APIC_BASE_PAGE;
 use x86defs::apic::ApicBase;
 use x86defs::apic::ApicRegister;
 use x86defs::apic::Dcr;
@@ -34,14 +36,12 @@ use x86defs::apic::Icr;
 use x86defs::apic::Lvt;
 use x86defs::apic::Svr;
 use x86defs::apic::TimerMode;
-use x86defs::apic::X2ApicLogicalId;
-use x86defs::apic::XApicClusterLogicalId;
-use x86defs::apic::APIC_BASE_PAGE;
 use x86defs::apic::X2APIC_MSR_BASE;
 use x86defs::apic::X2APIC_MSR_END;
+use x86defs::apic::X2ApicLogicalId;
+use x86defs::apic::XApicClusterLogicalId;
 use x86defs::msi::MsiAddress;
 use x86defs::msi::MsiData;
-use x86defs::X86X_MSR_APIC_BASE;
 
 const NANOS_PER_TICK: u64 = 5; // 200Mhz
 const TIMER_FREQUENCY: u64 = 1_000_000_000 / NANOS_PER_TICK;
@@ -79,13 +79,13 @@ pub struct LocalApic {
     cluster_mode: bool,
     #[inspect(hex)]
     svr: u32,
-    #[inspect(with = "|x| inspect::iter_by_index(x.to_bits()).map_value(inspect::AsHex)")]
+    #[inspect(hex, with = "|x| inspect::iter_by_index(x.to_bits())")]
     isr: IsrStack,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     irr: [u32; 8],
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     tmr: [u32; 8],
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     auto_eoi: [u32; 8],
     next_irr: Option<u8>,
     #[inspect(hex)]
@@ -98,7 +98,7 @@ pub struct LocalApic {
     lvt_thermal: u32,
     #[inspect(hex)]
     lvt_pmc: u32,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     lvt_lint: [u32; 2],
     #[inspect(hex)]
     lvt_error: u32,
@@ -212,21 +212,25 @@ impl IsrStack {
 }
 
 #[derive(Debug, Inspect)]
+#[inspect(extra = "inspect_address_filter")]
 struct SharedState {
     vp_index: VpIndex,
-    #[inspect(
-        with = "|x| inspect::iter_by_index(x).map_value(|x| inspect::AsHex(x.load(Ordering::Relaxed)))"
-    )]
+    #[inspect(hex, iter_by_index)]
     tmr: [AtomicU32; 8],
-    #[inspect(
-        with = "|x| inspect::iter_by_index(x).map_value(|x| inspect::AsHex(x.load(Ordering::Relaxed)))"
-    )]
+    #[inspect(hex, iter_by_index)]
     new_irr: [AtomicU32; 8],
-    #[inspect(
-        with = "|x| inspect::iter_by_index(x).map_value(|x| inspect::AsHex(x.load(Ordering::Relaxed)))"
-    )]
+    #[inspect(hex, iter_by_index)]
     auto_eoi: [AtomicU32; 8],
     work: AtomicU32,
+    software_enabled_on_reset: bool,
+
+    // Handled in inspect_address_filter
+    #[inspect(skip)]
+    vector_filter: RwLock<AddressFilter<u8>>,
+}
+
+fn inspect_address_filter(this: &SharedState, resp: &mut inspect::Response<'_>) {
+    resp.field_mut("vector_filter", &mut *this.vector_filter.write());
 }
 
 #[bitfield(u32)]
@@ -337,13 +341,15 @@ impl LocalApicSet {
     }
 
     /// Adds an APIC for the specified VP to the set.
-    pub fn add_apic(&self, vp: &X86VpInfo) -> LocalApic {
+    pub fn add_apic(&self, vp: &X86VpInfo, software_enabled_on_reset: bool) -> LocalApic {
         let shared = Arc::new(SharedState {
             vp_index: vp.base.vp_index,
             tmr: Default::default(),
             new_irr: Default::default(),
             auto_eoi: Default::default(),
             work: 0.into(),
+            software_enabled_on_reset,
+            vector_filter: RwLock::new(AddressFilter::new(false)),
         });
 
         {
@@ -772,7 +778,7 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
                 TIMER_FREQUENCY
             }
             hvdef::HV_X64_MSR_EOI if self.apic.global.hyperv_enlightenments => {
-                return Err(MsrError::InvalidAccess)
+                return Err(MsrError::InvalidAccess);
             }
             hvdef::HV_X64_MSR_ICR if self.apic.global.hyperv_enlightenments => {
                 if !self.apic.hardware_enabled() {
@@ -795,13 +801,14 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
                 // The APIC may be disabled by this, so we need IRR/ISR local to
                 // be reset.
                 self.ensure_state_local();
-                match self.apic.set_apic_base_inner(value) {
-                    Ok(()) => self.client.set_apic_base(self.apic.apic_base),
-                    Err(err) => tracelimit::warn_ratelimited!(
+                self.apic.set_apic_base_inner(value).map_err(|err| {
+                    tracelimit::warn_ratelimited!(
                         error = &err as &dyn std::error::Error,
                         "invalid apic base write"
-                    ),
-                }
+                    );
+                    MsrError::InvalidAccess
+                })?;
+                self.client.set_apic_base(self.apic.apic_base);
             }
             X2APIC_MSR_BASE..=X2APIC_MSR_END if self.apic.x2apic_enabled() => {
                 let register = ApicRegister((msr - X2APIC_MSR_BASE) as u8);
@@ -814,7 +821,7 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
                 }
             }
             hvdef::HV_X64_MSR_APIC_FREQUENCY if self.apic.global.hyperv_enlightenments => {
-                return Err(MsrError::InvalidAccess)
+                return Err(MsrError::InvalidAccess);
             }
             hvdef::HV_X64_MSR_EOI if self.apic.global.hyperv_enlightenments => {
                 if !self.apic.hardware_enabled() {
@@ -1069,7 +1076,17 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
     }
 
     fn handle_ipi(&mut self, icr: Icr) {
-        tracing::trace!(?icr, vp = self.apic.shared.vp_index.index(), "ipi");
+        if tracing::enabled!(tracing::Level::TRACE) {
+            if !self
+                .apic
+                .shared
+                .vector_filter
+                .read()
+                .filtered(&icr.vector(), false)
+            {
+                tracing::trace!(?icr, vp = self.apic.shared.vp_index.index(), "ipi");
+            }
+        }
 
         let delivery_mode = DeliveryMode(icr.delivery_mode());
         match delivery_mode {
@@ -1160,14 +1177,18 @@ impl SharedState {
         level_triggered: bool,
         auto_eoi: bool,
     ) -> bool {
-        tracing::trace!(
-            software_enabled,
-            ?delivery_mode,
-            vector,
-            level_triggered,
-            vp = self.vp_index.index(),
-            "interrupt"
-        );
+        if tracing::enabled!(tracing::Level::TRACE) {
+            if !self.vector_filter.read().filtered(&vector, false) {
+                tracing::trace!(
+                    software_enabled,
+                    ?delivery_mode,
+                    vector,
+                    level_triggered,
+                    vp = self.vp_index.index(),
+                    "interrupt"
+                );
+            }
+        }
 
         match delivery_mode {
             DeliveryMode::FIXED | DeliveryMode::LOWEST_PRIORITY => {
@@ -1329,6 +1350,9 @@ pub struct ApicWork {
 /// An error writing the APIC base MSR.
 #[derive(Debug, Error)]
 pub enum InvalidApicBase {
+    /// Reserved bits set.
+    #[error("reserved bits set")]
+    ReservedBits,
     /// Invalid x2apic state.
     #[error("invalid x2apic state")]
     InvalidX2Apic,
@@ -1387,9 +1411,18 @@ impl LocalApic {
     fn set_apic_base_inner(&mut self, apic_base: u64) -> Result<(), InvalidApicBase> {
         let current = ApicBase::from(self.apic_base);
 
-        // Only allow changing the enable and x2apic enable bits.
-        let new = ApicBase::from(apic_base);
-        let new = current.with_enable(new.enable()).with_x2apic(new.x2apic());
+        let requested = ApicBase::from(apic_base);
+        let allowed = ApicBase::new()
+            .with_enable(true)
+            .with_x2apic(true)
+            .with_base_page(0xffffff)
+            .with_bsp(true);
+        if u64::from(requested) & !u64::from(allowed) != 0 {
+            return Err(InvalidApicBase::ReservedBits);
+        }
+
+        // Ignore writes to the BSP bit.
+        let new = requested.with_bsp(current.bsp());
 
         tracing::debug!(
             ?current,
@@ -1473,7 +1506,8 @@ impl LocalApic {
         r
     }
 
-    fn next_irr(&self) -> Option<u8> {
+    /// Returns the next pending interrupt vector, if any.
+    pub fn next_irr(&self) -> Option<u8> {
         if !self.software_enabled() {
             return None;
         }
@@ -1713,7 +1747,7 @@ impl LocalApic {
 
     fn reset_registers(&mut self) {
         let Self {
-            shared: _,
+            shared,
             global: _,
             apic_base: _,
             base_address: _,
@@ -1748,7 +1782,7 @@ impl LocalApic {
 
         *ldr = 0;
         *cluster_mode = false;
-        *svr = 0xff;
+        *svr = u32::from(Svr::from(0xff).with_enable(shared.software_enabled_on_reset));
         isr.clear();
         *esr = 0;
         *icr = 0;

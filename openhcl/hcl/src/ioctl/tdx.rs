@@ -3,17 +3,18 @@
 
 //! Backing for TDX partitions.
 
-use super::hcl_tdcall;
-use super::mshv_tdcall;
+use super::Hcl;
 use super::HclVp;
 use super::MshvVtl;
 use super::NoRunner;
 use super::ProcessorRunner;
+use super::hcl_tdcall;
+use super::mshv_tdcall;
+use crate::GuestVtl;
 use crate::protocol::tdx_tdg_vp_enter_exit_info;
 use crate::protocol::tdx_vp_context;
 use crate::protocol::tdx_vp_state;
 use crate::protocol::tdx_vp_state_flags;
-use crate::GuestVtl;
 use hv1_structs::VtlArray;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
@@ -21,10 +22,10 @@ use memory_range::MemoryRange;
 use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use std::os::fd::AsRawFd;
+use tdcall::Tdcall;
 use tdcall::tdcall_vp_invgla;
 use tdcall::tdcall_vp_rd;
 use tdcall::tdcall_vp_wr;
-use tdcall::Tdcall;
 use x86defs::tdx::TdCallResult;
 use x86defs::tdx::TdCallResultCode;
 use x86defs::tdx::TdGlaVmAndFlags;
@@ -34,6 +35,7 @@ use x86defs::tdx::TdgMemPageGpaAttr;
 use x86defs::tdx::TdxContextCode;
 use x86defs::tdx::TdxExtendedFieldCode;
 use x86defs::tdx::TdxGlaListInfo;
+use x86defs::tdx::TdxGp;
 use x86defs::tdx::TdxL2Ctls;
 use x86defs::tdx::TdxL2EnterGuestState;
 use x86defs::tdx::TdxVmFlags;
@@ -173,7 +175,7 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     /// the given [`TdxPrivateRegs`].
     pub fn read_private_regs(&self, regs: &mut TdxPrivateRegs) {
         let TdxL2EnterGuestState {
-            gps: _gps, // Shared between VTLs
+            gps, // Shared between VTLs except for RSP
             rflags,
             rip,
             ssp,
@@ -183,6 +185,7 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
         } = self.tdx_enter_guest_state();
         regs.rflags = *rflags;
         regs.rip = *rip;
+        regs.rsp = gps[TdxGp::RSP];
         regs.ssp = *ssp;
         regs.rvi = *rvi;
         regs.svi = *svi;
@@ -213,6 +216,7 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
         let TdxPrivateRegs {
             rflags,
             rip,
+            rsp,
             ssp,
             rvi,
             svi,
@@ -231,6 +235,7 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
         enter_guest_state.ssp = *ssp;
         enter_guest_state.rvi = *rvi;
         enter_guest_state.svi = *svi;
+        enter_guest_state.gps[TdxGp::RSP] = *rsp;
 
         let vp_state = self.tdx_vp_state_mut();
         vp_state.msr_kernel_gs_base = *msr_kernel_gs_base;
@@ -243,28 +248,10 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
         *self.tdx_vp_entry_flags_mut() = *vp_entry_flags;
     }
 
-    fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {
-        let class_code = match vtl {
-            GuestVtl::Vtl0 => TdVpsClassCode::VMCS_1,
-            GuestVtl::Vtl1 => TdVpsClassCode::VMCS_2,
-        };
-        let field_size = match field.field_width() {
-            x86defs::vmx::FieldWidth::Width16 => x86defs::tdx::FieldSize::Size16Bit,
-            x86defs::vmx::FieldWidth::Width32 => x86defs::tdx::FieldSize::Size32Bit,
-            x86defs::vmx::FieldWidth::Width64 => x86defs::tdx::FieldSize::Size64Bit,
-            x86defs::vmx::FieldWidth::WidthNatural => x86defs::tdx::FieldSize::Size64Bit,
-        };
-        TdxExtendedFieldCode::new()
-            .with_context_code(TdxContextCode::TD_VCPU)
-            .with_class_code(class_code.0)
-            .with_field_code(field.into())
-            .with_field_size(field_size)
-    }
-
     fn write_vmcs(&mut self, vtl: GuestVtl, field: VmcsField, mask: u64, value: u64) -> u64 {
         tdcall_vp_wr(
             &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
-            Self::vmcs_field_code(field, vtl),
+            vmcs_field_code(field, vtl),
             value,
             mask,
         )
@@ -274,7 +261,7 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     fn read_vmcs(&self, vtl: GuestVtl, field: VmcsField) -> u64 {
         tdcall_vp_rd(
             &mut MshvVtlTdcall(&self.hcl.mshv_vtl),
-            Self::vmcs_field_code(field, vtl),
+            vmcs_field_code(field, vtl),
         )
         .expect("fatal vmcs access failure")
     }
@@ -348,6 +335,31 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
         self.read_vmcs(vtl, field) as u16
     }
 
+    /// Sets the MSR bitmap intercept bit for the given MSR index.
+    ///
+    /// Panics if there is an error in the TDX module when writing the bit.
+    pub fn set_msr_bit(&self, vtl: GuestVtl, msr_index: u32, write: bool, intercept: bool) {
+        let mut word_index = (msr_index & 0xFFFF) / 64;
+
+        if msr_index & 0x80000000 == 0x80000000 {
+            assert!((0xC0000000..=0xC0001FFF).contains(&msr_index));
+            word_index += 0x80;
+        } else {
+            assert!(msr_index <= 0x00001FFF);
+        }
+
+        if write {
+            word_index += 0x100;
+        }
+
+        self.write_msr_bitmap(
+            vtl,
+            word_index,
+            1 << (msr_index as u64 & 0x3F),
+            if intercept { !0 } else { 0 },
+        );
+    }
+
     /// Writes 64-bit word with index `i` of the MSR bitmap.
     ///
     /// Only updates the bits that are set in `mask`. Returns the old value of
@@ -411,8 +423,26 @@ impl<'a> ProcessorRunner<'a, Tdx<'a>> {
     }
 }
 
+fn vmcs_field_code(field: VmcsField, vtl: GuestVtl) -> TdxExtendedFieldCode {
+    let class_code = match vtl {
+        GuestVtl::Vtl0 => TdVpsClassCode::VMCS_1,
+        GuestVtl::Vtl1 => TdVpsClassCode::VMCS_2,
+    };
+    let field_size = match field.field_width() {
+        x86defs::vmx::FieldWidth::Width16 => x86defs::tdx::FieldSize::Size16Bit,
+        x86defs::vmx::FieldWidth::Width32 => x86defs::tdx::FieldSize::Size32Bit,
+        x86defs::vmx::FieldWidth::Width64 => x86defs::tdx::FieldSize::Size64Bit,
+        x86defs::vmx::FieldWidth::WidthNatural => x86defs::tdx::FieldSize::Size64Bit,
+    };
+    TdxExtendedFieldCode::new()
+        .with_context_code(TdxContextCode::TD_VCPU)
+        .with_class_code(class_code.0)
+        .with_field_code(field.into())
+        .with_field_size(field_size)
+}
+
 impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
-    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>) -> Result<Self, NoRunner> {
+    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'_>>, hcl: &Hcl) -> Result<Self, NoRunner> {
         assert!(sidecar.is_none());
         let super::BackingState::Tdx {
             vtl0_apic_page,
@@ -421,6 +451,17 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
         else {
             return Err(NoRunner::MismatchedIsolation);
         };
+
+        // Register the VTL 1 APIC page with the TD module.
+        // The VTL 0 APIC page is registered by the kernel.
+        let vtl1_apic_page_addr = vtl1_apic_page.pfns()[0] * user_driver::memory::PAGE_SIZE64;
+        tdcall_vp_wr(
+            &mut MshvVtlTdcall(&hcl.mshv_vtl),
+            vmcs_field_code(VmcsField::VMX_VMCS_VIRTUAL_APIC_PAGE, GuestVtl::Vtl1),
+            vtl1_apic_page_addr,
+            !0,
+        )
+        .expect("failed registering VTL1 APIC page");
 
         // SAFETY: The mapping is held for the appropriate lifetime, and the
         // APIC page is never accessed as any other type, or by any other location.
@@ -432,7 +473,7 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
     }
 
     fn try_set_reg(
-        _runner: &mut ProcessorRunner<'_, Self>,
+        _runner: &mut ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         _name: HvRegisterName,
         _value: HvRegisterValue,
@@ -440,17 +481,19 @@ impl<'a> super::private::BackingPrivate<'a> for Tdx<'a> {
         Ok(false)
     }
 
-    fn must_flush_regs_on(_runner: &ProcessorRunner<'_, Self>, _name: HvRegisterName) -> bool {
+    fn must_flush_regs_on(_runner: &ProcessorRunner<'a, Self>, _name: HvRegisterName) -> bool {
         false
     }
 
     fn try_get_reg(
-        _runner: &ProcessorRunner<'_, Self>,
+        _runner: &ProcessorRunner<'a, Self>,
         _vtl: GuestVtl,
         _name: HvRegisterName,
     ) -> Result<Option<HvRegisterValue>, super::Error> {
         Ok(None)
     }
+
+    fn flush_register_page(_runner: &mut ProcessorRunner<'a, Self>) {}
 }
 
 /// Private registers that are copied to/from the kernel's shared run page.
@@ -460,6 +503,7 @@ pub struct TdxPrivateRegs {
     // Registers on [`TdxL2EnterGuestState`].
     pub rflags: u64,
     pub rip: u64,
+    pub rsp: u64,
     pub ssp: u64,
     pub rvi: u8,
     pub svi: u8,
@@ -471,17 +515,18 @@ pub struct TdxPrivateRegs {
     pub msr_xss: u64,
     pub msr_tsc_aux: u64,
     // VP Entry flags
-    #[inspect(with = "|x| inspect::AsHex(x.into_bits())")]
+    #[inspect(hex, with = "|x| x.into_bits()")]
     pub vp_entry_flags: TdxVmFlags,
 }
 
 impl TdxPrivateRegs {
     /// Creates a new register set with the given values.
     /// Other values are initialized to zero.
-    pub fn new(rflags: u64, rip: u64, vtl: GuestVtl) -> Self {
+    pub fn new(vtl: GuestVtl) -> Self {
         Self {
-            rflags,
-            rip,
+            rflags: x86defs::RFlags::at_reset().into(),
+            rip: 0,
+            rsp: 0,
             ssp: 0,
             rvi: 0,
             svi: 0,

@@ -1,16 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![allow(dead_code)] // Translated protocol structs
-
 use bitfield_struct::bitfield;
 use guid::Guid;
 use open_enum::open_enum;
-use zerocopy::little_endian::U64 as u64_le;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
+use zerocopy::little_endian::U64 as u64_le;
 
 pub const INTERFACE_TYPE: Guid = guid::guid!("c376c1c3-d276-48d2-90a9-c04748072c60");
 pub const IMC_INSTANCE: Guid = guid::guid!("c4e5e7d1-d748-4afc-979d-683167910a55");

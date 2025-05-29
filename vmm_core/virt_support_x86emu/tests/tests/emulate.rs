@@ -6,12 +6,12 @@ use guestmem::GuestMemory;
 use iced_x86::code_asm::CodeAssembler;
 use pal_async::async_test;
 use virt::VpIndex;
-use virt_support_x86emu::emulate::emulate;
 use virt_support_x86emu::emulate::EmuTranslateError;
 use virt_support_x86emu::emulate::EmuTranslateResult;
 use virt_support_x86emu::emulate::EmulatorSupport;
-use x86defs::cpuid::Vendor;
+use virt_support_x86emu::emulate::emulate;
 use x86defs::RFlags;
+use x86defs::cpuid::Vendor;
 use x86emu::Gp;
 use x86emu::Segment;
 
@@ -99,7 +99,9 @@ impl EmulatorSupport for MockSupport {
     }
 
     /// The gva translation included in the intercept message header, if valid.
-    fn initial_gva_translation(&self) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
+    fn initial_gva_translation(
+        &mut self,
+    ) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
         None
     }
 

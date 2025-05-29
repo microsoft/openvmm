@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use bitfield_struct::bitfield;
+use chipset_device::ChipsetDevice;
 use chipset_device::interrupt::AcknowledgePicInterrupt;
 use chipset_device::interrupt::LineInterruptTarget;
 use chipset_device::io::IoError;
@@ -9,7 +10,6 @@ use chipset_device::io::IoResult;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
-use chipset_device::ChipsetDevice;
 use inspect::Inspect;
 use inspect::InspectMut;
 use inspect_counters::Counter;
@@ -555,10 +555,10 @@ struct Ocw3 {
 
 mod save_restore {
     use super::DualPic;
+    use super::IRQ_MASK;
     use super::InitStage;
     use super::Ocw3;
     use super::Pic;
-    use super::IRQ_MASK;
     use thiserror::Error;
     use vmcore::save_restore::RestoreError;
     use vmcore::save_restore::SaveError;

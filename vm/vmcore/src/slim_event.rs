@@ -5,8 +5,8 @@
 
 use futures::Stream;
 use parking_lot::Mutex;
-use std::future::poll_fn;
 use std::future::Future;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
@@ -25,6 +25,7 @@ struct State {
 }
 
 impl SlimEvent {
+    /// Returns a new event.
     pub fn new() -> Self {
         Self::default()
     }
@@ -90,8 +91,8 @@ impl Stream for SlimEventStream<'_> {
 #[cfg(test)]
 mod tests {
     use crate::slim_event::SlimEvent;
-    use futures::executor::block_on;
     use futures::FutureExt;
+    use futures::executor::block_on;
 
     #[test]
     fn test() {

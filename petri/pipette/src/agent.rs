@@ -9,15 +9,16 @@ use anyhow::Context;
 use futures::future::FutureExt;
 use futures_concurrency::future::RaceOk;
 use mesh_remote::PointToPointMesh;
+use pal_async::DefaultDriver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::timer::PolledTimer;
-use pal_async::DefaultDriver;
 use pipette_protocol::DiagnosticFile;
 use pipette_protocol::PipetteBootstrap;
 use pipette_protocol::PipetteRequest;
 use socket2::Socket;
 use std::time::Duration;
+use std::time::SystemTime;
 use unicycle::FuturesUnordered;
 use vmsocket::VmAddress;
 use vmsocket::VmSocket;
@@ -30,7 +31,6 @@ pub struct Agent {
     watch_send: mesh::OneshotSender<()>,
 }
 
-#[allow(dead_code)] // Not used on all platforms yet
 #[derive(Clone)]
 pub struct DiagnosticSender(mesh::Sender<DiagnosticFile>);
 
@@ -129,7 +129,7 @@ async fn connect_client(driver: &DefaultDriver) -> anyhow::Result<PolledSocket<S
 async fn handle_request(
     driver: &DefaultDriver,
     req: PipetteRequest,
-    _diag_file_send: DiagnosticSender, // Not used on all platforms yet
+    _diag_file_send: DiagnosticSender,
 ) {
     match req {
         PipetteRequest::Ping(rpc) => rpc.handle_sync(|()| {
@@ -173,31 +173,32 @@ async fn handle_request(
         }
         PipetteRequest::ReadFile(rpc) => rpc.handle_failable(read_file).await,
         PipetteRequest::WriteFile(rpc) => rpc.handle_failable(write_file).await,
+        PipetteRequest::GetTime(rpc) => rpc.handle_sync(|()| SystemTime::now().into()),
     }
 }
 
-async fn read_file(mut request: pipette_protocol::ReadFileRequest) -> anyhow::Result<()> {
+async fn read_file(mut request: pipette_protocol::ReadFileRequest) -> anyhow::Result<u64> {
     tracing::debug!(path = request.path, "Beginning file read request");
     let file = fs_err::File::open(request.path)?;
-    futures::io::copy(&mut futures::io::AllowStdIo::new(file), &mut request.sender).await?;
+    let n = futures::io::copy(&mut futures::io::AllowStdIo::new(file), &mut request.sender).await?;
     tracing::debug!("file read request complete");
-    Ok(())
+    Ok(n)
 }
 
-async fn write_file(mut request: pipette_protocol::WriteFileRequest) -> anyhow::Result<()> {
+async fn write_file(mut request: pipette_protocol::WriteFileRequest) -> anyhow::Result<u64> {
     tracing::debug!(path = request.path, "Beginning file write request");
     let file = fs_err::File::create(request.path)?;
-    futures::io::copy(
+    let n = futures::io::copy(
         &mut request.receiver,
         &mut futures::io::AllowStdIo::new(file),
     )
     .await?;
     tracing::debug!("file write request complete");
-    Ok(())
+    Ok(n)
 }
 
 impl DiagnosticSender {
-    #[allow(dead_code)] // Not used on all platforms yet
+    #[cfg_attr(not(windows), expect(dead_code))]
     pub async fn send(&self, filename: &str) -> anyhow::Result<()> {
         tracing::debug!(filename, "Beginning diagnostic file request");
         let file = fs_err::File::open(filename)?;

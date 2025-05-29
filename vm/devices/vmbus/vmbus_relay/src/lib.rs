@@ -1,36 +1,47 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+//! Implements a vmbus channel relay, which consumes channels from the host
+//! vmbus control plane (via [`vmbus_client`]) and relays them as channels to
+//! the guest OS (via [`vmbus_server`]).
+//!
+//! This is used to allow the paravisor to implement the vmbus control plane
+//! while still passing through channels from the host, without any paravisor
+//! presence in the data plane.
+
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod legacy_saved_state;
 mod saved_state;
+
+pub use saved_state::SavedState;
 
 use anyhow::Context;
 use anyhow::Result;
 use client::ModifyConnectionRequest;
-use futures::future::join_all;
-use futures::future::BoxFuture;
-use futures::future::OptionFuture;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::future::BoxFuture;
+use futures::future::OptionFuture;
+use futures::future::join_all;
 use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
+use mesh::rpc::FailableRpc;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pal_event::Event;
-use saved_state::SavedState;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::sync::OnceLock;
 use unicycle::FuturesUnordered;
 use vmbus_channel::bus::ChannelRequest;
 use vmbus_channel::bus::ChannelServerRequest;
@@ -39,16 +50,15 @@ use vmbus_channel::bus::ModifyRequest;
 use vmbus_channel::bus::OpenRequest;
 use vmbus_channel::bus::OpenResult;
 use vmbus_client as client;
-use vmbus_client::VmbusClient;
-use vmbus_client::VmbusClientBuilder;
+use vmbus_core::HvsockConnectRequest;
+use vmbus_core::HvsockConnectResult;
+use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::FeatureFlags;
 use vmbus_core::protocol::GpadlId;
-use vmbus_core::HvsockConnectRequest;
-use vmbus_core::HvsockConnectResult;
-use vmbus_core::VersionInfo;
 use vmbus_server::HvsockRelayChannelHalf;
+use vmbus_server::MnfUsage;
 use vmbus_server::ModifyConnectionResponse;
 use vmbus_server::OfferInfo;
 use vmbus_server::OfferParamsInternal;
@@ -72,8 +82,6 @@ const REQUIRED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
     .with_guest_specified_signal_parameters(true)
     .with_modify_connection(true);
 
-const VMBUS_RELAY_CLIENT_ID: Guid = guid::guid!("ceb1cd55-6a3b-41c5-9473-4dd30624c3d8");
-
 /// Represents a relay between a vmbus server on the host, and the vmbus server running in
 /// Underhill, allowing offers from the host and offers from Underhill to be mixed.
 ///
@@ -82,40 +90,47 @@ const VMBUS_RELAY_CLIENT_ID: Guid = guid::guid!("ceb1cd55-6a3b-41c5-9473-4dd3062
 pub struct HostVmbusTransport {
     _relay_task: Task<()>,
     task_send: mesh::Sender<TaskRequest>,
-    from_handle_send: Option<mesh::Sender<RequestFromHandle>>,
 }
 
 impl HostVmbusTransport {
     /// Create a new instance of the host vmbus relay.
-    pub fn new(
+    pub async fn new(
         driver: impl SpawnDriver + Clone,
         control: Arc<VmbusServerControl>,
         channel: VmbusRelayChannelHalf,
         hvsock_relay: HvsockRelayChannelHalf,
-        vmbus_client: VmbusClientBuilder,
+        vmbus_client: client::VmbusClientAccess,
+        connection: client::ConnectResult,
+        intercept_list: Vec<(Guid, mesh::Sender<InterceptChannelRequest>)>,
     ) -> Result<Self> {
-        let (offer_send, offer_recv) = mesh::channel();
-        let vmbus_client = vmbus_client.build(&driver, offer_send);
+        if connection.version.feature_flags & REQUIRED_FEATURE_FLAGS != REQUIRED_FEATURE_FLAGS {
+            anyhow::bail!(
+                "host must support required feature flags. \
+                 Required: {REQUIRED_FEATURE_FLAGS:?}, actual: {:?}.",
+                connection.version.feature_flags
+            );
+        }
 
         let mut relay_task = RelayTask::new(
             Arc::new(driver.clone()),
-            vmbus_client,
             control,
             channel.response_send,
             hvsock_relay,
+            vmbus_client,
+            connection.version,
         );
 
+        relay_task.intercept_channels.extend(intercept_list);
+
+        for offer in connection.offers {
+            relay_task.handle_offer(offer).await?;
+        }
+
         let (task_send, task_recv) = mesh::channel();
-        let (from_handle_send, from_handle_recv) = mesh::channel();
 
         let relay_task = driver.spawn("vmbus hcl relay", async move {
             relay_task
-                .run(
-                    channel.request_receive,
-                    offer_recv,
-                    task_recv,
-                    from_handle_recv,
-                )
+                .run(channel.request_receive, connection.offer_recv, task_recv)
                 .await
                 .unwrap()
         });
@@ -123,7 +138,6 @@ impl HostVmbusTransport {
         Ok(Self {
             _relay_task: relay_task,
             task_send,
-            from_handle_send: Some(from_handle_send),
         })
     }
 
@@ -144,10 +158,6 @@ impl HostVmbusTransport {
             .call(TaskRequest::Restore, state)
             .await
             .unwrap()
-    }
-
-    pub fn take_handle_sender(&mut self) -> mesh::Sender<RequestFromHandle> {
-        self.from_handle_send.take().unwrap()
     }
 }
 
@@ -178,6 +188,7 @@ enum RelayChannelRequest {
     Start,
     Stop(Rpc<(), ()>),
     Save(Rpc<(), saved_state::Channel>),
+    Restore(FailableRpc<saved_state::Channel, ()>),
     Inspect(inspect::Deferred),
 }
 
@@ -186,7 +197,8 @@ impl Debug for RelayChannelRequest {
         match self {
             RelayChannelRequest::Start => f.pad("Start"),
             RelayChannelRequest::Stop(..) => f.pad("Stop"),
-            RelayChannelRequest::Save(..) => f.pad("Save channel"),
+            RelayChannelRequest::Save(..) => f.pad("Save"),
+            RelayChannelRequest::Restore(..) => f.pad("Restore"),
             RelayChannelRequest::Inspect(..) => f.pad("Inspect"),
         }
     }
@@ -194,7 +206,6 @@ impl Debug for RelayChannelRequest {
 
 struct RelayChannelInfo {
     relay_request_send: mesh::Sender<RelayChannelRequest>,
-    server_request_send: mesh::Sender<ChannelServerRequest>,
 }
 
 impl Inspect for RelayChannelInfo {
@@ -240,6 +251,8 @@ struct RelayChannel {
     /// Receives requests from the server.
     #[inspect(skip)]
     server_request_recv: mesh::Receiver<ChannelRequest>,
+    #[inspect(skip)]
+    server_request_send: mesh::Sender<ChannelServerRequest>,
     /// Closed when the channel has been revoked.
     #[inspect(skip)]
     revoke_recv: mesh::OneshotReceiver<()>,
@@ -256,6 +269,7 @@ struct RelayChannel {
     /// `vmbus_server`.
     #[inspect(skip)]
     gpadls_tearing_down: FuturesUnordered<BoxFuture<'static, ()>>,
+    is_open: bool,
 }
 
 #[derive(InspectMut)]
@@ -304,18 +318,22 @@ impl RelayChannelTask {
             });
         }
 
+        self.channel.is_open = true;
+
         Ok(OpenResult {
             guest_to_host_interrupt: opened.guest_to_host_signal,
         })
     }
 
-    fn handle_close_channel(&mut self) {
-        let _ = &self
-            .channel
+    async fn handle_close_channel(&mut self) {
+        self.channel
             .request_send
-            .send(client::ChannelRequest::Close);
+            .call(client::ChannelRequest::Close, ())
+            .await
+            .ok();
 
         self.channel.interrupt_relay = None;
+        self.channel.is_open = false;
     }
 
     /// Relay gpadl request from VTL0 to the Host and respond with gpadl created.
@@ -367,7 +385,7 @@ impl RelayChannelTask {
         tracing::trace!(request = ?request, "received channel request");
         match request {
             ChannelRequest::Open(rpc) => {
-                rpc.handle(|open_request| async move {
+                rpc.handle(async |open_request| {
                     self.handle_open_channel(&open_request)
                         .await
                         .inspect_err(|err| {
@@ -382,7 +400,7 @@ impl RelayChannelTask {
                 .await;
             }
             ChannelRequest::Gpadl(rpc) => {
-                rpc.handle(|gpadl| async move {
+                rpc.handle(async |gpadl| {
                     let id = gpadl.id;
                     self.handle_gpadl(gpadl)
                         .await
@@ -399,24 +417,22 @@ impl RelayChannelTask {
                 .await;
             }
             ChannelRequest::Close(rpc) => {
-                rpc.handle(|()| async move { self.handle_close_channel() })
+                rpc.handle(async |()| self.handle_close_channel().await)
                     .await;
             }
             ChannelRequest::TeardownGpadl(rpc) => {
                 self.handle_gpadl_teardown(rpc);
             }
             ChannelRequest::Modify(rpc) => {
-                rpc.handle(|request| async move {
-                    self.handle_modify_channel(request).await.unwrap_or(-1)
-                })
-                .await;
+                rpc.handle(async |request| self.handle_modify_channel(request).await.unwrap_or(-1))
+                    .await;
             }
         }
 
         Ok(())
     }
 
-    fn handle_relay_request(&mut self, request: RelayChannelRequest) {
+    async fn handle_relay_request(&mut self, request: RelayChannelRequest) {
         tracing::trace!(
             channel_id = self.channel.channel_id.0,
             ?request,
@@ -427,12 +443,16 @@ impl RelayChannelTask {
             RelayChannelRequest::Start => self.running = true,
             RelayChannelRequest::Stop(rpc) => rpc.handle_sync(|()| self.running = false),
             RelayChannelRequest::Save(rpc) => rpc.handle_sync(|_| self.handle_save()),
+            RelayChannelRequest::Restore(rpc) => {
+                rpc.handle_failable(async |state| self.handle_restore(state).await)
+                    .await
+            }
             RelayChannelRequest::Inspect(deferred) => deferred.inspect(self),
         }
     }
 
     /// Request dispatch loop
-    async fn run(&mut self) {
+    async fn run(mut self) {
         loop {
             let mut relay_event = OptionFuture::from(
                 self.channel
@@ -452,7 +472,7 @@ impl RelayChannelTask {
                         Some(request) => {
                             // Needed to avoid conflicting &mut self borrow.
                             drop(relay_event);
-                            self.handle_relay_request(request);
+                            self.handle_relay_request(request).await;
                         }
                         None => {
                             break;
@@ -491,6 +511,22 @@ impl RelayChannelTask {
         while let Some(()) = self.channel.gpadls_tearing_down.next().await {}
 
         tracing::debug!(channel_id = %self.channel.channel_id.0, "dropped channel");
+
+        // Dropping the channel would revoke it, but since that's not synchronized there's a chance
+        // we reoffer the channel before the server receives the revoke. Using the request ensures
+        // that won't happen.
+        if let Err(err) = self
+            .channel
+            .server_request_send
+            .call(ChannelServerRequest::Revoke, ())
+            .await
+        {
+            tracing::warn!(
+                channel_id = self.channel.channel_id.0,
+                err = &err as &dyn std::error::Error,
+                "failed to send revoke request"
+            );
+        }
     }
 }
 
@@ -502,46 +538,22 @@ enum TaskRequest {
     Stop(Rpc<(), ()>),
 }
 
-pub enum RequestFromHandle {
-    AddIntercept(Rpc<(Guid, mesh::Sender<InterceptChannelRequest>), Result<()>>),
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Inspect)]
-#[inspect(external_tag)]
-enum RelayState {
-    Disconnected,
-    Connected(#[inspect(rename = "version")] VersionInfo),
-}
-
-impl RelayState {
-    fn is_connected(&self) -> bool {
-        matches!(self, RelayState::Connected(..))
-    }
-
-    fn version(&self) -> Option<VersionInfo> {
-        if let RelayState::Connected(version) = self {
-            Some(*version)
-        } else {
-            None
-        }
-    }
-}
-
 /// Dispatches requests between Server/Client.
 #[derive(InspectMut)]
 struct RelayTask {
     #[inspect(skip)]
     spawner: Arc<dyn SpawnDriver>,
-    vmbus_client: VmbusClient,
+    #[inspect(skip)]
+    vmbus_client: client::VmbusClientAccess,
+    version: VersionInfo,
     #[inspect(skip)]
     vmbus_control: Arc<VmbusServerControl>,
     #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|x| x.0)")]
     channels: HashMap<ChannelId, ChannelInfo>,
     #[inspect(skip)]
-    channel_workers: FuturesUnordered<Task<RelayChannelTask>>,
+    channel_workers: FuturesUnordered<Task<ChannelId>>,
     #[inspect(with = "|x| inspect::iter_by_key(x).map_value(|_| ())")]
     intercept_channels: HashMap<Guid, mesh::Sender<InterceptChannelRequest>>,
-    relay_state: RelayState,
     use_interrupt_relay: Arc<AtomicBool>,
     #[inspect(skip)]
     server_response_send: mesh::Sender<ModifyConnectionResponse>,
@@ -558,36 +570,26 @@ type HvsockRequestFuture =
 impl RelayTask {
     fn new(
         spawner: Arc<dyn SpawnDriver>,
-        vmbus_client: VmbusClient,
         vmbus_control: Arc<VmbusServerControl>,
         server_response_send: mesh::Sender<ModifyConnectionResponse>,
         hvsock_relay: HvsockRelayChannelHalf,
+        vmbus_client: client::VmbusClientAccess,
+        version: VersionInfo,
     ) -> Self {
         Self {
             spawner,
             vmbus_client,
+            version,
             vmbus_control,
             channels: HashMap::new(),
             channel_workers: FuturesUnordered::new(),
             intercept_channels: HashMap::new(),
-            relay_state: RelayState::Disconnected,
             use_interrupt_relay: Arc::new(AtomicBool::new(false)),
             server_response_send,
             hvsock_relay,
             running: false,
             hvsock_requests: FuturesUnordered::new(),
         }
-    }
-
-    async fn handle_add_intercept_device(
-        &mut self,
-        id: Guid,
-        send: mesh::Sender<InterceptChannelRequest>,
-    ) -> Result<()> {
-        if self.intercept_channels.insert(id, send).is_some() {
-            tracing::warn!(%id, "Replacing existing intercept device");
-        }
-        Ok(())
     }
 
     async fn handle_start(&mut self) {
@@ -606,14 +608,7 @@ impl RelayTask {
                 }
             }
 
-            self.vmbus_client.start();
             self.running = true;
-
-            // If the relay isn't connected to the host yet, do so now. This connection will not be
-            // torn down on stop; it stays connected until the relay is destroyed.
-            if !self.relay_state.is_connected() {
-                self.connect_client().await;
-            }
         }
     }
 
@@ -643,51 +638,26 @@ impl RelayTask {
             // Because requests are handled "synchronously" (async is used but everything is awaited
             // before another request is handled), there is no need for rundown and the relay can
             // stop immediately.
-            self.vmbus_client.stop().await;
             self.running = false;
         }
     }
 
     /// Translates an offer received from the client to a server offer.
     /// Additionally, sets up all the appropriate channels.
-    async fn handle_offer(
-        &mut self,
-        offer: client::OfferInfo,
-        restore_open: Option<(bool, Option<&saved_state::Channel>)>,
-    ) -> Result<()> {
-        let (restore, open, restored_channel) = restore_open
-            .map_or((false, false, None), |(open, channel)| {
-                (true, open, channel)
-            });
-        let restored_event_flag = restored_channel.map(|c| c.event_flag).unwrap_or(None);
+    async fn handle_offer(&mut self, offer: client::OfferInfo) -> Result<()> {
         let channel_id = offer.offer.channel_id.0;
 
         if self.channels.contains_key(&ChannelId(channel_id)) {
-            if restore {
-                return Err(
-                    client::RestoreError::DuplicateChannelId(offer.offer.channel_id.0).into(),
-                );
-            }
-
-            return Ok(());
+            anyhow::bail!("channel {channel_id} already exists");
         }
 
-        // Check if this channel is being intercepted. A previously relayed
-        // channel cannot be intercepted on restore.
-        if !restore || restored_channel.map(|c| c.intercepted).unwrap_or(false) {
-            if let Some(intercept) = self.intercept_channels.get(&offer.offer.instance_id) {
-                self.channels.insert(
-                    ChannelId(channel_id),
-                    ChannelInfo::Intercept(offer.offer.instance_id),
-                );
-                if let Some(saved_state) =
-                    restored_channel.and_then(|c| c.try_get_intercept_save_state())
-                {
-                    intercept.send(InterceptChannelRequest::Restore(saved_state))
-                }
-                intercept.send(InterceptChannelRequest::Offer(offer));
-                return Ok(());
-            }
+        if let Some(intercept) = self.intercept_channels.get(&offer.offer.instance_id) {
+            self.channels.insert(
+                ChannelId(channel_id),
+                ChannelInfo::Intercept(offer.offer.instance_id),
+            );
+            intercept.send(InterceptChannelRequest::Offer(offer));
+            return Ok(());
         }
 
         // Used to Recv requests from the server.
@@ -699,7 +669,16 @@ impl RelayTask {
             tracing::warn!(offer = ?offer.offer, "All offers should be dedicated with Win8+ host")
         }
 
-        let use_mnf = offer.offer.monitor_allocated != 0;
+        // If the vmbus server is handling MnF, instead of relaying it, it will ignore this monitor
+        // ID and allocate its own.
+        let use_mnf = if offer.offer.monitor_allocated != 0 {
+            MnfUsage::Relayed {
+                monitor_id: offer.offer.monitor_id,
+            }
+        } else {
+            MnfUsage::Disabled
+        };
+
         let params = OfferParamsInternal {
             interface_name: "host relay".to_owned(),
             instance_id: offer.offer.instance_id,
@@ -707,7 +686,6 @@ impl RelayTask {
             mmio_megabytes: offer.offer.mmio_megabytes,
             mmio_megabytes_optional: offer.offer.mmio_megabytes_optional,
             subchannel_index: offer.offer.subchannel_index,
-            // The vmbus server will ignore this field if MNF is being relayed to the host.
             use_mnf,
             // Preserve channel enumeration order from the host within the same
             // interface type.
@@ -719,7 +697,6 @@ impl RelayTask {
                 .with_confidential_ring_buffer(false)
                 .with_confidential_external_memory(false),
             user_defined: offer.offer.user_defined,
-            monitor_id: use_mnf.then_some(offer.offer.monitor_id),
         };
 
         let key = params.key();
@@ -741,185 +718,52 @@ impl RelayTask {
             .with_context(|| format!("failed to offer relay channel {key}"))?;
 
         let (relay_request_send, relay_request_recv) = mesh::channel();
-        let mut channel_task = RelayChannelTask {
+        let channel_task = RelayChannelTask {
             driver: Arc::clone(&self.spawner),
             channel: RelayChannel {
                 channel_id: ChannelId(channel_id),
                 relay_request_recv,
                 request_send: offer.request_send,
                 revoke_recv: offer.revoke_recv,
+                server_request_send,
                 server_request_recv: request_recv,
                 use_interrupt_relay: Arc::clone(&self.use_interrupt_relay),
                 interrupt_relay: None,
                 gpadls_tearing_down: FuturesUnordered::new(),
+                is_open: false,
             },
-            // New channels start out running.
-            running: true,
+            running: self.running,
         };
-
-        if restore {
-            // FUTURE: restore vmbus_client before vmbus_server to avoid this
-            // indirection. This requires vmbus_client saving/restoring the
-            // connection ID itself.
-            let restored_interrupt = Arc::new(OnceLock::<Interrupt>::new());
-            let guest_to_host_interrupt = Interrupt::from_fn({
-                let x = restored_interrupt.clone();
-                move || {
-                    if let Some(x) = x.get() {
-                        x.deliver();
-                    }
-                }
-            });
-
-            let open_result = open.then(|| OpenResult {
-                guest_to_host_interrupt,
-            });
-            let result = server_request_send
-                .call(ChannelServerRequest::Restore, open_result)
-                .await
-                .context("Failed to send restore request")?
-                .map_err(|err| {
-                    anyhow::Error::from(err).context("failed to restore vmbus relay channel")
-                })?;
-
-            if let Some(request) = result.open_request {
-                let use_interrupt_relay = self.use_interrupt_relay.load(Ordering::SeqCst);
-                if use_interrupt_relay && restored_event_flag.is_none() {
-                    anyhow::bail!("using an interrupt relay but no event flag was provided");
-                }
-                let (incoming_event, notify) = if use_interrupt_relay {
-                    let event = Event::new();
-                    let notify = Notify::from_event(event.clone())
-                        .pollable(self.spawner.as_ref())
-                        .context("failed to create polled notify")?;
-                    Some((event, notify))
-                } else {
-                    None
-                }
-                .unzip();
-
-                let opened = channel_task
-                    .channel
-                    .request_send
-                    .call_failable(
-                        client::ChannelRequest::Restore,
-                        client::RestoreRequest {
-                            connection_id: request.open_data.connection_id,
-                            redirected_event_flag: restored_event_flag,
-                            incoming_event,
-                        },
-                    )
-                    .await
-                    .context("client failed to restore channel")?;
-
-                if let Some(notify) = notify {
-                    channel_task.channel.interrupt_relay = Some(InterruptRelay {
-                        event_flag: restored_event_flag.unwrap(),
-                        notify,
-                        interrupt: request.interrupt,
-                    });
-                }
-
-                restored_interrupt
-                    .set(opened.guest_to_host_signal)
-                    .ok()
-                    .unwrap();
-            }
-        }
 
         let task = self.spawner.spawn("vmbus hcl channel worker", async move {
             channel_task.run().await;
-            channel_task
+            ChannelId(channel_id)
         });
 
         self.channels.insert(
             ChannelId(channel_id),
-            ChannelInfo::Relay(RelayChannelInfo {
-                relay_request_send,
-                server_request_send,
-            }),
+            ChannelInfo::Relay(RelayChannelInfo { relay_request_send }),
         );
         self.channel_workers.push(task);
 
         Ok(())
     }
 
-    async fn handle_revoked(&mut self, task: RelayChannelTask) {
-        let channel_id = task.channel.channel_id;
-
-        // The task has already completed, so just remove the channel from the list and notify the server of the revoke.
-        let channel = self
-            .channels
+    async fn handle_revoked(&mut self, channel_id: ChannelId) {
+        // The task has already completed, so just remove the channel from the list.
+        self.channels
             .remove(&channel_id)
             .expect("channel should exist");
-
-        let ChannelInfo::Relay(channel) = channel else {
-            unreachable!()
-        };
-
-        // Dropping the channel would revoke it, but since that's not synchronized there's a chance
-        // we reoffer the channel before the server receives the revoke. Using the request ensures
-        // that won't happen.
-        if let Err(err) = channel
-            .server_request_send
-            .call(ChannelServerRequest::Revoke, ())
-            .await
-        {
-            tracing::warn!(
-                channel_id = channel_id.0,
-                ?err,
-                "failed to send revoke request"
-            );
-        }
-    }
-
-    async fn connect_client(&mut self) {
-        assert!(!self.relay_state.is_connected());
-        tracing::debug!("connecting vmbus relay");
-
-        // Always use VP0 for messages from the host, regardless of what the guest requested, since
-        // the relay cannot receive messages on other VPs. This does not affect messages sent to
-        // VTL0 by the vmbus server.
-        let connection = self
-            .vmbus_client
-            .connect(0, None, VMBUS_RELAY_CLIENT_ID)
-            .await
-            .expect("Client was in an incorrect state for initiate contact.");
-
-        if connection.version.feature_flags & REQUIRED_FEATURE_FLAGS != REQUIRED_FEATURE_FLAGS {
-            panic!(
-                "Underhill host must support required feature flags. \
-                 Required: {REQUIRED_FEATURE_FLAGS:?}, actual: {:?}.",
-                connection.version.feature_flags
-            )
-        }
-
-        for offer in connection.offers {
-            if let Err(err) = self.handle_offer(offer, None).await {
-                tracing::error!(
-                    error = err.as_ref() as &dyn std::error::Error,
-                    "failed to offer initial channel"
-                );
-            }
-        }
-
-        self.relay_state = RelayState::Connected(connection.version);
-        tracing::debug!("vmbus relay connected");
     }
 
     async fn handle_modify(
         &mut self,
         request: vmbus_server::ModifyRelayRequest,
     ) -> ModifyConnectionResponse {
-        let connected_version = self
-            .relay_state
-            .version()
-            .expect("Can't receive a modify request while not connected.");
-
         // If the guest is requesting a version change, check whether that version is not newer
         // than what the host supports.
         if let Some(version) = request.version {
-            if (connected_version.version as u32) < version {
+            if (self.version.version as u32) < version {
                 return ModifyConnectionResponse::Unsupported;
             }
         }
@@ -936,13 +780,11 @@ impl RelayTask {
             Update::Unchanged => protocol::ConnectionState::SUCCESSFUL,
             Update::Reset => {
                 self.vmbus_client
-                    .access()
                     .modify(ModifyConnectionRequest { monitor_page: None })
                     .await
             }
             Update::Set(value) => {
                 self.vmbus_client
-                    .access()
                     .modify(ModifyConnectionRequest {
                         monitor_page: Some(value),
                     })
@@ -950,7 +792,7 @@ impl RelayTask {
             }
         };
 
-        ModifyConnectionResponse::Supported(state, connected_version.feature_flags)
+        ModifyConnectionResponse::Supported(state, self.version.feature_flags)
     }
 
     async fn handle_server_request(&mut self, request: vmbus_server::ModifyRelayRequest) {
@@ -961,7 +803,7 @@ impl RelayTask {
 
     fn handle_hvsock_request(&mut self, request: HvsockConnectRequest) {
         tracing::debug!(request = ?request, "received hvsock connect request");
-        let fut = self.vmbus_client.access().connect_hvsock(request);
+        let fut = self.vmbus_client.connect_hvsock(request);
         self.hvsock_requests
             .push(Box::pin(fut.map(move |offer| (request, offer))));
     }
@@ -972,7 +814,7 @@ impl RelayTask {
         offer: Option<client::OfferInfo>,
     ) {
         let success = if let Some(offer) = offer {
-            match self.handle_offer(offer, None).await {
+            match self.handle_offer(offer).await {
                 Ok(()) => true,
                 Err(err) => {
                     tracing::error!(
@@ -991,7 +833,7 @@ impl RelayTask {
     }
 
     async fn handle_offer_request(&mut self, request: client::OfferInfo) -> Result<()> {
-        if let Err(err) = self.handle_offer(request, None).await {
+        if let Err(err) = self.handle_offer(request).await {
             tracing::error!(
                 error = err.as_ref() as &dyn std::error::Error,
                 "failed to hot add offer"
@@ -1006,10 +848,12 @@ impl RelayTask {
         server_recv: mesh::Receiver<vmbus_server::ModifyRelayRequest>,
         mut offer_recv: mesh::Receiver<client::OfferInfo>,
         mut task_recv: mesh::Receiver<TaskRequest>,
-        mut from_handle_recv: mesh::Receiver<RequestFromHandle>,
     ) -> Result<()> {
         let mut server_recv = server_recv.fuse();
         loop {
+            let mut offer_recv =
+                OptionFuture::from(self.running.then(|| offer_recv.select_next_some()));
+
             futures::select! { // merge semantics
                 r = server_recv.select_next_some() => {
                     self.handle_server_request(r).await;
@@ -1020,25 +864,20 @@ impl RelayTask {
                 r = self.hvsock_requests.select_next_some() => {
                     self.handle_hvsock_response(r.0, r.1).await;
                 }
-                r = offer_recv.select_next_some() => {
-                    self.handle_offer_request(r).await?;
+                r = offer_recv => {
+                    self.handle_offer_request(r.unwrap()).await?;
                 }
                 r = task_recv.recv().fuse() => {
                     match r.unwrap() {
                         TaskRequest::Inspect(req) => req.inspect(&mut *self),
-                        TaskRequest::Save(rpc) => rpc.handle(|()| {
-                             self.handle_save()
+                        TaskRequest::Save(rpc) => rpc.handle(async |()| {
+                             self.handle_save().await
                         }).await,
-                        TaskRequest::Restore(rpc) => rpc.handle(|state|  {
-                            self.handle_restore(state)
+                        TaskRequest::Restore(rpc) => rpc.handle(async |state|  {
+                            self.handle_restore(state).await
                         }).await,
                         TaskRequest::Start => self.handle_start().await,
-                        TaskRequest::Stop(rpc) => rpc.handle(|()| self.handle_stop()).await,
-                    }
-                }
-                r = from_handle_recv.select_next_some() => {
-                    match r {
-                        RequestFromHandle::AddIntercept(rpc) => rpc.handle(|(id, send)| self.handle_add_intercept_device(id, send)).await,
+                        TaskRequest::Stop(rpc) => rpc.handle(async |()| self.handle_stop().await).await,
                     }
                 }
                 r = self.channel_workers.select_next_some() => {

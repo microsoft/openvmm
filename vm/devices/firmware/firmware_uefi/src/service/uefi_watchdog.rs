@@ -4,8 +4,8 @@
 use crate::UefiDevice;
 use inspect::Inspect;
 use vmcore::vmtime::VmTimeAccess;
-use watchdog_core::platform::WatchdogPlatform;
 use watchdog_core::WatchdogServices;
+use watchdog_core::platform::WatchdogPlatform;
 
 #[derive(Inspect)]
 pub struct UefiWatchdogServices {

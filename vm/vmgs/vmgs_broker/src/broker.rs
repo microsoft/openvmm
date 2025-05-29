@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use mesh_channel::rpc::Rpc;
 use mesh_channel::Receiver;
+use mesh_channel::rpc::Rpc;
 use vmgs::Vmgs;
 use vmgs::VmgsFileInfo;
 use vmgs_format::FileId;
@@ -45,17 +45,16 @@ impl VmgsBrokerTask {
                 rpc.handle_sync(|file_id| self.vmgs.get_file_info(file_id))
             }
             VmgsBrokerRpc::ReadFile(rpc) => {
-                rpc.handle(|file_id| self.vmgs.read_file(file_id)).await
+                rpc.handle(async |file_id| self.vmgs.read_file(file_id).await)
+                    .await
             }
             VmgsBrokerRpc::WriteFile(rpc) => {
-                rpc.handle(
-                    |(file_id, buf)| async move { self.vmgs.write_file(file_id, &buf).await },
-                )
-                .await
+                rpc.handle(async |(file_id, buf)| self.vmgs.write_file(file_id, &buf).await)
+                    .await
             }
             #[cfg(with_encryption)]
             VmgsBrokerRpc::WriteFileEncrypted(rpc) => {
-                rpc.handle(|(file_id, buf)| async move {
+                rpc.handle(async |(file_id, buf)| {
                     self.vmgs.write_file_encrypted(file_id, &buf).await
                 })
                 .await

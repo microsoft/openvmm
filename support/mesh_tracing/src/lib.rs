@@ -3,20 +3,23 @@
 
 //! Mesh tracing backend.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 mod bounded;
 
-use self::bounded::bounded;
 use self::bounded::BoundedReceiver;
 use self::bounded::BoundedSender;
+use self::bounded::bounded;
 use anyhow::Context as _;
-use futures::future::join_all;
 use futures::FutureExt;
 use futures::Stream;
+use futures::future::join_all;
 use guid::Guid;
 use inspect::InspectMut;
+use mesh::MeshPayload;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use mesh::MeshPayload;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::fs::File;
@@ -24,11 +27,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
+use tracing_subscriber::Layer;
 use tracing_subscriber::filter::Filtered;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::reload;
-use tracing_subscriber::Layer;
 
 #[derive(Debug, MeshPayload)]
 pub struct RemoteTracer {
@@ -110,10 +113,10 @@ impl InspectMut for MeshFilterUpdater {
     fn inspect_mut(&mut self, req: inspect::Request<'_>) {
         match req.update() {
             Ok(req) => match self.update(req.new_value()) {
-                Ok(()) => req.succeed(self.get().into()),
+                Ok(()) => req.succeed(self.get()),
                 Err(err) => req.fail(err),
             },
-            Err(req) => req.value(self.get().into()),
+            Err(req) => req.value(self.get()),
         }
     }
 }
@@ -148,11 +151,11 @@ impl InspectMut for MeshFlusher {
                 self.spawn
                     .spawn("trace-flush", async move {
                         let _ = join.await;
-                        req.succeed(true.into());
+                        req.succeed(true);
                     })
                     .detach();
             }
-            Err(req) => req.value(false.into()),
+            Err(req) => req.value(false),
         }
     }
 }

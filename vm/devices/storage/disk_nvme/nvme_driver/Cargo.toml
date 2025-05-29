@@ -7,14 +7,14 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+guestmem.workspace = true
 inspect = { workspace = true, features = ["defer"] }
 inspect_counters.workspace = true
 mesh.workspace = true
-pal_async.workspace = true
 nvme_spec.workspace = true
+pal_async.workspace = true
 task_control.workspace = true
 user_driver.workspace = true
-guestmem.workspace = true
 vmcore.workspace = true
 
 anyhow.workspace = true
@@ -35,6 +35,7 @@ nvme.workspace = true
 pci_core.workspace = true
 scsi_buffers.workspace = true
 test_with_tracing.workspace = true
+user_driver_emulated_mock.workspace = true
 
 guid.workspace = true
 

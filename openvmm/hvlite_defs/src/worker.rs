@@ -6,8 +6,8 @@
 use crate::config::Config;
 use crate::config::Hypervisor;
 use crate::rpc::VmRpc;
-use mesh::payload::message::ProtobufMessage;
 use mesh::MeshPayload;
+use mesh::payload::message::ProtobufMessage;
 use mesh_worker::WorkerId;
 use vmm_core_defs::HaltReason;
 

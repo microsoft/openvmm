@@ -4,8 +4,8 @@
 //! Guest disk helpers.
 
 use std::path::Path;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::Resource;
+use vm_resource::kind::DiskHandleKind;
 
 /// Opens the resources needed for using a disk from a file at `path`.
 ///
@@ -66,6 +66,41 @@ pub fn open_disk_type(path: &Path, read_only: bool) -> anyhow::Result<Resource<D
                 .write(!read_only)
                 .open(path)?;
 
+            Resource::new(disk_backend_resources::FileDiskHandle(file))
+        }
+    })
+}
+
+/// Create and open the resources needed for using a disk from a file at `path`.
+pub fn create_disk_type(path: &Path, size: u64) -> anyhow::Result<Resource<DiskHandleKind>> {
+    Ok(match path.extension().and_then(|s| s.to_str()) {
+        Some("vhd") | Some("vmgs") => {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .read(true)
+                .write(true)
+                .open(path)?;
+
+            file.set_len(size)?;
+            disk_vhd1::Vhd1Disk::make_fixed(&file)?;
+            Resource::new(disk_backend_resources::FixedVhd1DiskHandle(file))
+        }
+        Some("vhdx") => {
+            anyhow::bail!("creating vhdx not supported")
+        }
+        Some("iso") => {
+            anyhow::bail!("creating iso not supported")
+        }
+        _ => {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .read(true)
+                .write(true)
+                .open(path)?;
+
+            file.set_len(size)?;
             Resource::new(disk_backend_resources::FileDiskHandle(file))
         }
     })

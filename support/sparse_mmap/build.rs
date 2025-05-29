@@ -3,6 +3,7 @@
 
 // build.rs scripts don't read the clippy config from .cargo/config.toml, hence
 // the manual inline override
+#![expect(missing_docs)]
 #![expect(clippy::uninlined_format_args)]
 
 fn main() {

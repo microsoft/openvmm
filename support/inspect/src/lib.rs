@@ -13,8 +13,8 @@
 //! For most cases, users should use the derive version of [`Inspect`](derive@Inspect)
 //! as this will automatically update the implementation as new fields are added.
 
-#![warn(missing_docs)]
 #![no_std]
+#![forbid(unsafe_code)]
 
 extern crate alloc;
 
@@ -70,7 +70,7 @@ pub use initiate::*;
 /// `bitflags!`) and you cannot put attributes on it.
 ///
 /// This attribute requires that there be exactly one non-skipped field. Fields
-/// of type [`PhantomData`](std::marker::PhantomData) are automatically skipped.
+/// of type [`PhantomData`](core::marker::PhantomData) are automatically skipped.
 ///
 /// Note that it is not sufficient to mark any extraneous fields' _types_ with
 /// `skip`--you must mark the individual fields with the `skip` attribute.
@@ -133,6 +133,10 @@ pub use initiate::*;
 ///     }
 /// }
 /// ```
+///
+/// ### `hex`
+///
+/// Use hexadecimal formatting by default for all fields, recursively.
 ///
 /// ## Field attributes
 ///
@@ -205,7 +209,7 @@ pub use initiate::*;
 /// ### `debug`
 ///
 /// Inspect the field by formatting it as a string, using the field's
-/// [`std::fmt::Debug`] implementation.
+/// [`core::fmt::Debug`] implementation.
 ///
 /// In general, implementing [`Inspect`] for the field should be preferred to
 /// this in order to preserve structured data.
@@ -221,13 +225,13 @@ pub use initiate::*;
 ///
 /// ### `hex`
 ///
-/// Inspect the field as a hex-formatted numeric value. Calls [`Response::hex`]
-/// with `&field`.
+/// Inspect the field, including all children, recursively, with hexadecimal
+/// formatting.
 ///
 /// ### `binary`
 ///
-/// Inspect the field as a binary-formatted numeric value. Calls
-/// [`Response::hex`] with `&field`.
+/// Inspect the field, including all children, recursively, with binary
+/// formatting.
 ///
 /// ### `bytes`
 ///
@@ -463,20 +467,45 @@ use core::num::Wrapping;
 
 /// An inspection request.
 pub struct Request<'a> {
-    path: &'a str,
-    depth: usize,
+    params: RequestParams<'a>,
     node: &'a mut InternalNode,
+}
+
+struct RootParams<'a> {
+    full_path: &'a str,
     value: Option<&'a str>,
     sensitivity: SensitivityLevel,
 }
 
-#[cfg(any(feature = "defer", feature = "initiate"))]
-struct RequestRoot<'a> {
-    path: &'a str,
-    node: InternalNode,
+#[derive(Copy, Clone)]
+struct RequestParams<'a> {
+    root: &'a RootParams<'a>,
+    path_start: usize,
     depth: usize,
-    value: Option<&'a str>,
-    sensitivity: SensitivityLevel,
+    number_format: NumberFormat,
+}
+
+impl<'a> RequestParams<'a> {
+    fn path(&self) -> &'a str {
+        &self.root.full_path[self.path_start..]
+    }
+
+    fn is_leaf(&self) -> bool {
+        self.path_start >= self.root.full_path.len()
+    }
+}
+
+#[cfg_attr(
+    any(feature = "defer", feature = "initiate"),
+    derive(mesh::MeshPayload)
+)]
+#[derive(Debug, Default, Copy, Clone)]
+enum NumberFormat {
+    #[default]
+    Decimal,
+    Hex,
+    Binary,
+    Counter,
 }
 
 /// The sensitivity level for an inspection node or request.
@@ -508,52 +537,25 @@ pub enum SensitivityLevel {
     Sensitive,
 }
 
-#[cfg(any(feature = "defer", feature = "initiate"))]
-impl<'a> RequestRoot<'a> {
-    fn new(
-        path: &'a str,
-        depth: usize,
-        value: Option<&'a str>,
-        sensitivity: SensitivityLevel,
-    ) -> Self {
-        Self {
-            path,
-            node: InternalNode::Unevaluated,
-            depth,
-            value,
-            sensitivity,
-        }
-    }
-
-    fn request(&mut self) -> Request<'_> {
-        Request::new(
-            self.path,
-            self.depth,
-            &mut self.node,
-            self.value,
-            self.sensitivity,
-        )
-    }
-}
-
 /// A type used to build an inspection response.
 pub struct Response<'a> {
-    /// Full remaining path, including leading `/`s.
-    path: &'a str,
-    /// Cache of remaining path without leading '/'s.
-    path_without_slashes: Option<&'a str>,
-    depth: usize,
-    cell: &'a mut InternalNode,
-    value: Option<&'a str>,
-    sensitivity: SensitivityLevel,
+    params: RequestParams<'a>,
+    /// Remaining path without leading '/'s.
+    path_without_slashes: &'a str,
+    /// The list of inspected children.
+    ///
+    /// This is `None` when the depth is exhaused (in which case all children
+    /// are ignored--the response object was just created to report that this
+    /// node in the inspect tree is a directory and not a value).
+    children: Option<&'a mut Vec<InternalEntry>>,
 }
 
 #[derive(Debug)]
-enum Action<'a, 'b> {
+enum Action<'a> {
     Process {
         name: &'a str,
         sensitivity: SensitivityLevel,
-        new_path: &'b str,
+        new_path_start: usize,
         new_depth: usize,
     },
     Skip,
@@ -563,17 +565,16 @@ enum Action<'a, 'b> {
     },
 }
 
-impl<'a, 'b> Action<'a, 'b> {
+impl<'a> Action<'a> {
     // Determine which action to take for the field with `name`, given the
     // remaining `path` and the remaining `depth`.
-    fn eval(child: Child<'a>, resp: &Response<'b>) -> Self {
-        let path = resp.path_without_slashes.unwrap();
-        if resp.depth == 0 {
+    fn eval(child: Child<'a>, params: &RequestParams<'_>, path: &str) -> Self {
+        if params.depth == 0 {
             // Don't return any subfields if the depth is exhausted, since depth
             // exhausted will be reported for the current node.
             return Self::Skip;
         }
-        if resp.sensitivity < child.sensitivity {
+        if params.root.sensitivity < child.sensitivity {
             // Don't return any subfields if the request's sensitivity level is too low.
             return Self::Skip;
         }
@@ -584,8 +585,8 @@ impl<'a, 'b> Action<'a, 'b> {
                 Self::Process {
                     name: child.name,
                     sensitivity: child.sensitivity,
-                    new_path: rest,
-                    new_depth: resp.depth,
+                    new_path_start: params.root.full_path.len() - rest.len(),
+                    new_depth: params.depth,
                 }
             } else {
                 // Mismatch, e.g. name is "foo", path is "foobar", or this is a
@@ -605,12 +606,12 @@ impl<'a, 'b> Action<'a, 'b> {
                 &child.name[path.len() + 1..]
             };
             // Ensure there is enough depth for the name.
-            match remaining_name.match_indices('/').nth(resp.depth - 1) {
+            match remaining_name.match_indices('/').nth(params.depth - 1) {
                 None => Self::Process {
                     name: child.name,
                     sensitivity: child.sensitivity,
-                    new_path: "",
-                    new_depth: resp.depth - 1,
+                    new_path_start: params.root.full_path.len(),
+                    new_depth: params.depth - 1,
                 },
                 Some((n, _)) => Self::DepthExhausted {
                     name: &child.name[..child.name.len() - remaining_name.len() + n],
@@ -664,23 +665,19 @@ impl Response<'_> {
     }
 
     /// Adds a hexadecimal field to the response.
-    ///
-    /// This is a convenience method for `field(name, Value::hex(value))`.
     pub fn hex<T>(&mut self, name: &str, value: T) -> &mut Self
     where
-        T: Into<Value>,
+        T: Inspect,
     {
-        self.field_with(name, || value.into().into_hex())
+        self.field(name, AsHex(value))
     }
 
     /// Adds a counter field to the response.
-    ///
-    /// This is a convenience method for `field(name, Value::counter(value))`.
     pub fn counter<T>(&mut self, name: &str, value: T) -> &mut Self
     where
-        T: Into<Value>,
+        T: Inspect,
     {
-        self.field_with(name, || value.into().into_counter())
+        self.field(name, AsCounter(value))
     }
 
     /// Adds a counter field to the response.
@@ -693,9 +690,9 @@ impl Response<'_> {
         value: T,
     ) -> &mut Self
     where
-        T: Into<Value>,
+        T: Inspect,
     {
-        self.sensitivity_field_with(name, sensitivity, || value.into().into_counter())
+        self.sensitivity_field(name, sensitivity, AsCounter(value))
     }
 
     /// Adds a binary field to the response.
@@ -703,12 +700,12 @@ impl Response<'_> {
     /// This is a convenience method for `field(name, Value::binary(value))`.
     pub fn binary<T>(&mut self, name: &str, value: T) -> &mut Self
     where
-        T: Into<Value>,
+        T: Inspect,
     {
-        self.field_with(name, || value.into().into_binary())
+        self.field(name, AsBinary(value))
     }
 
-    /// Adds a string field that implements [`std::fmt::Display`].
+    /// Adds a string field that implements [`core::fmt::Display`].
     ///
     /// This is a convenience method for `field_with(name, ||
     /// value.to_string())`. It lazily allocates the string only when the
@@ -726,7 +723,7 @@ impl Response<'_> {
         self.field_with(name, || value.to_string())
     }
 
-    /// Adds a string field that implements [`std::fmt::Debug`].
+    /// Adds a string field that implements [`core::fmt::Debug`].
     ///
     /// This is a convenience method for `field(name, format_args!("{value:?}"))`.
     ///
@@ -790,48 +787,46 @@ impl Response<'_> {
     pub fn field_mut_with<F, V, E>(&mut self, name: &str, f: F) -> &mut Self
     where
         F: FnOnce(Option<&str>) -> Result<V, E>,
-        V: Into<Value>,
+        V: Into<ValueKind>,
         E: Into<Box<dyn core::error::Error + Send + Sync>>,
     {
         self.child(name, |req| match req.update() {
             Ok(req) => match (f)(Some(req.new_value())) {
-                Ok(v) => req.succeed(v.into()),
+                Ok(v) => req.succeed(v),
                 Err(err) => req.fail(err),
             },
-            Err(req) => req.value((f)(None).ok().unwrap().into()),
+            Err(req) => req.value((f)(None).ok().unwrap()),
         })
     }
 
     fn child_request(&mut self, child: Child<'_>) -> Option<Request<'_>> {
-        if self.path_without_slashes.is_none() {
-            self.path_without_slashes = Some(self.path.trim_start_matches('/'));
-        }
-
-        match Action::eval(child, self) {
+        let children = &mut **self.children.as_mut()?;
+        let action = Action::eval(child, &self.params, self.path_without_slashes);
+        match action {
             Action::Process {
                 name,
                 sensitivity,
-                new_path,
+                new_path_start,
                 new_depth,
             } => {
-                let children = self.cell.as_dir();
                 children.push(InternalEntry {
                     name: name.to_owned(),
                     node: InternalNode::Unevaluated,
                     sensitivity,
                 });
                 let entry = children.last_mut().unwrap();
-                Some(Request::new(
-                    new_path,
-                    new_depth,
-                    &mut entry.node,
-                    self.value,
-                    self.sensitivity,
-                ))
+                Some(
+                    RequestParams {
+                        path_start: new_path_start,
+                        depth: new_depth,
+                        ..self.params
+                    }
+                    .request(&mut entry.node),
+                )
             }
             Action::Skip => None,
             Action::DepthExhausted { name, sensitivity } => {
-                self.cell.as_dir().push(InternalEntry {
+                children.push(InternalEntry {
                     name: name.to_owned(),
                     node: InternalNode::DepthExhausted,
                     sensitivity,
@@ -988,65 +983,85 @@ assert_eq!(
     /// Inspects an object and merges its responses into this node without
     /// creating a child node.
     pub fn merge(&mut self, mut child: impl InspectMut) -> &mut Self {
-        child.inspect_mut(self.request());
+        if let Some(req) = self.request() {
+            child.inspect_mut(req);
+        }
         self
     }
 
     /// Gets another request for this response. The response to that request
     /// will be merged into this response.
-    pub fn request(&mut self) -> Request<'_> {
-        let children = self.cell.as_dir();
+    ///
+    /// Returns `None` if the depth is already exhausted, in which case there is
+    /// no need (or ability--requests must have nodes) to propagate the request.
+    fn request(&mut self) -> Option<Request<'_>> {
+        let children = &mut **self.children.as_mut()?;
         children.push(InternalEntry {
             name: String::new(),
             node: InternalNode::Unevaluated,
             sensitivity: SensitivityLevel::Unspecified,
         });
         let entry = children.last_mut().unwrap();
-        Request::new(
-            self.path,
-            self.depth,
-            &mut entry.node,
-            self.value,
-            self.sensitivity,
-        )
+        Some(self.params.request(&mut entry.node))
     }
 }
 
-impl Drop for Response<'_> {
-    fn drop(&mut self) {
-        if self.depth > 0 {
-            // Ensure the children node was created.
-            let _ = self.cell.as_dir();
-        } else {
-            // No children were collected, but this node had to be inspected in
-            // case it was a value and not a directory node.
-            *self.cell = InternalNode::DepthExhausted;
-        }
+impl<'a> RequestParams<'a> {
+    #[cfg_attr(not(any(feature = "defer", feature = "initiate")), expect(dead_code))]
+    fn inspect(self, mut obj: impl InspectMut) -> InternalNode {
+        self.with(|req| {
+            obj.inspect_mut(req);
+        })
+    }
+
+    fn with(self, f: impl FnOnce(Request<'_>)) -> InternalNode {
+        let mut node = InternalNode::Unevaluated;
+        f(self.request(&mut node));
+        node
+    }
+
+    fn request(self, node: &'a mut InternalNode) -> Request<'a> {
+        Request { params: self, node }
     }
 }
 
 impl<'a> Request<'a> {
-    fn new(
-        path: &'a str,
-        depth: usize,
-        cell: &'a mut InternalNode,
-        value: Option<&'a str>,
-        sensitivity: SensitivityLevel,
-    ) -> Self {
-        Self {
-            path,
-            depth,
-            node: cell,
-            value,
-            sensitivity,
-        }
+    /// Sets numeric values to be displayed in decimal format.
+    #[must_use]
+    pub fn with_decimal_format(mut self) -> Self {
+        self.params.number_format = NumberFormat::Decimal;
+        self
+    }
+
+    /// Sets numeric values to be displayed in hexadecimal format.
+    #[must_use]
+    pub fn with_hex_format(mut self) -> Self {
+        self.params.number_format = NumberFormat::Hex;
+        self
+    }
+
+    /// Sets numeric values to be displayed in binary format.
+    #[must_use]
+    pub fn with_binary_format(mut self) -> Self {
+        self.params.number_format = NumberFormat::Binary;
+        self
+    }
+
+    /// Sets numeric values to be displayed as counters.
+    #[must_use]
+    pub fn with_counter_format(mut self) -> Self {
+        self.params.number_format = NumberFormat::Counter;
+        self
     }
 
     /// Responds to the request with a value.
-    pub fn value(self, value: Value) {
-        let node = if self.path.is_empty() {
-            if self.value.is_none() {
-                InternalNode::Value(value)
+    pub fn value(self, value: impl Into<ValueKind>) {
+        self.value_(value.into());
+    }
+    fn value_(self, value: ValueKind) {
+        let node = if self.params.is_leaf() {
+            if self.params.root.value.is_none() {
+                InternalNode::Value(value.with_format(self.params.number_format))
             } else {
                 InternalNode::Failed(InternalError::Immutable)
             }
@@ -1060,13 +1075,14 @@ impl<'a> Request<'a> {
     ///
     /// If this is not an update request, returns `Err(self)`.
     pub fn update(self) -> Result<UpdateRequest<'a>, Self> {
-        if let Some(value) = self.value {
-            if !self.path.is_empty() {
+        if let Some(value) = self.params.root.value {
+            if !self.params.is_leaf() {
                 return Err(self);
             }
             Ok(UpdateRequest {
                 node: self.node,
                 value,
+                number_format: self.params.number_format,
             })
         } else {
             Err(self)
@@ -1077,13 +1093,22 @@ impl<'a> Request<'a> {
     ///
     /// Returns an object that can be used to provide the inspection results.
     pub fn respond(self) -> Response<'a> {
+        let children = if self.params.depth > 0 {
+            *self.node = InternalNode::Dir(Vec::new());
+            let InternalNode::Dir(children) = self.node else {
+                unreachable!()
+            };
+            Some(children)
+        } else {
+            // No children will be collected, but this node had to be inspected
+            // in case it was a value and not a directory node.
+            *self.node = InternalNode::DepthExhausted;
+            None
+        };
         Response {
-            path: self.path,
-            path_without_slashes: None,
-            depth: self.depth,
-            cell: self.node,
-            value: self.value,
-            sensitivity: self.sensitivity,
+            params: self.params,
+            path_without_slashes: self.params.path().trim_start_matches('/'),
+            children,
         }
     }
 
@@ -1094,12 +1119,12 @@ impl<'a> Request<'a> {
 
     /// If true, this is an update request.
     pub fn is_update(&self) -> bool {
-        self.value.is_some()
+        self.params.root.value.is_some()
     }
 
     /// Gets the sensitivity level for this request.
     pub fn sensitivity(&self) -> SensitivityLevel {
-        self.sensitivity
+        self.params.root.sensitivity
     }
 }
 
@@ -1107,6 +1132,7 @@ impl<'a> Request<'a> {
 pub struct UpdateRequest<'a> {
     node: &'a mut InternalNode,
     value: &'a str,
+    number_format: NumberFormat,
 }
 
 impl UpdateRequest<'_> {
@@ -1116,8 +1142,11 @@ impl UpdateRequest<'_> {
     }
 
     /// Report that the update succeeded, with a new value of `value`.
-    pub fn succeed(self, value: Value) {
-        *self.node = InternalNode::Value(value);
+    pub fn succeed(self, value: impl Into<ValueKind>) {
+        self.succeed_(value.into());
+    }
+    fn succeed_(self, value: ValueKind) {
+        *self.node = InternalNode::Value(value.with_format(self.number_format));
     }
 
     /// Report that the update failed, with the reason in `err`.
@@ -1223,6 +1252,20 @@ pub enum ValueKind {
     /// Opaque binary data.
     #[cfg_attr(any(feature = "defer", feature = "initiate"), mesh(7))]
     Bytes(Vec<u8>),
+}
+
+impl ValueKind {
+    fn with_format(self, format: NumberFormat) -> Value {
+        match self {
+            Self::Signed(_) | Self::Unsigned(_) => match format {
+                NumberFormat::Decimal => Value::new(self),
+                NumberFormat::Hex => Value::hex(self).into_hex(),
+                NumberFormat::Binary => Value::binary(self).into_binary(),
+                NumberFormat::Counter => Value::counter(self).into_counter(),
+            },
+            v => v.into(),
+        }
+    }
 }
 
 /// Flags specifying additional metadata on values.
@@ -1432,7 +1475,7 @@ macro_rules! inspect_value_immut {
         $(#[$attr])*
         impl Inspect for $ty {
             fn inspect(&self, req: Request<'_>) {
-                req.value(self.into())
+                req.value(self)
             }
         }
         )*
@@ -1450,11 +1493,11 @@ macro_rules! inspect_value {
                     Ok(req) => match req.new_value().parse::<Self>() {
                         Ok(v) => {
                             *self = v.clone();
-                            req.succeed(v.into());
+                            req.succeed(v);
                         }
                         Err(err) => req.fail(err),
                     }
-                    Err(req) => req.value((&*self).into()),
+                    Err(req) => req.value(&*self),
                 }
             }
         }
@@ -1516,7 +1559,7 @@ macro_rules! inspect_atomic_value {
 
         impl Inspect for core::sync::atomic::$ty {
             fn inspect(&self, req: Request<'_>) {
-                req.value(self.load(core::sync::atomic::Ordering::Relaxed).into())
+                req.value(self.load(core::sync::atomic::Ordering::Relaxed))
             }
         }
 
@@ -1570,7 +1613,7 @@ impl Inspect for std::fs::File {
     fn inspect(&self, req: Request<'_>) {
         use filepath::FilePath;
         if let Ok(path) = self.path() {
-            req.value(path.display().to_string().into());
+            req.value(path.display().to_string());
         } else {
             req.ignore();
         }
@@ -1583,7 +1626,7 @@ pub struct AsDisplay<T>(pub T);
 
 impl<T: Display> Inspect for AsDisplay<T> {
     fn inspect(&self, req: Request<'_>) {
-        req.value(self.0.to_string().into())
+        req.value(self.0.to_string())
     }
 }
 
@@ -1593,25 +1636,31 @@ pub struct AsDebug<T>(pub T);
 
 impl<T: Debug> InspectMut for AsDebug<T> {
     fn inspect_mut(&mut self, req: Request<'_>) {
-        req.value(format!("{:?}", self.0).into())
+        req.value(format!("{:?}", self.0))
     }
 }
 
 impl<T: Debug> Inspect for AsDebug<T> {
     fn inspect(&self, req: Request<'_>) {
-        req.value(format!("{:?}", self.0).into())
+        req.value(format!("{:?}", self.0))
     }
 }
 
 macro_rules! hexbincount {
-    ($tr:ident, $method:ident, $($ty:ty),* $(,)?) => {
-        $(
-            impl Inspect for $tr<$ty> {
-                fn inspect(&self, req: Request<'_>) {
-                    req.value(Value::from(self.0).$method());
-                }
+    ($tr:ident, $fmt:expr) => {
+        impl<T: Inspect> Inspect for $tr<T> {
+            fn inspect(&self, mut req: Request<'_>) {
+                req.params.number_format = $fmt;
+                self.0.inspect(req);
             }
-        )*
+        }
+
+        impl<T: InspectMut> InspectMut for $tr<T> {
+            fn inspect_mut(&mut self, mut req: Request<'_>) {
+                req.params.number_format = $fmt;
+                self.0.inspect_mut(req);
+            }
+        }
     };
 }
 
@@ -1620,73 +1669,19 @@ macro_rules! hexbincount {
 #[derive(Clone, Copy)]
 pub struct AsHex<T>(pub T);
 
-hexbincount!(AsHex, into_hex, u8, u16, u32, u64, usize);
-
-impl<T> Inspect for AsHex<Wrapping<T>>
-where
-    for<'a> AsHex<&'a T>: Inspect,
-{
-    fn inspect(&self, req: Request<'_>) {
-        Inspect::inspect(&AsHex(&self.0 .0), req)
-    }
-}
-
-impl<T: Clone> Inspect for AsHex<&'_ T>
-where
-    AsHex<T>: Inspect,
-{
-    fn inspect(&self, req: Request<'_>) {
-        Inspect::inspect(&AsHex(self.0.clone()), req)
-    }
-}
-
-impl<T> Inspect for AsHex<Option<T>>
-where
-    for<'a> AsHex<&'a T>: Inspect,
-{
-    fn inspect(&self, req: Request<'_>) {
-        Inspect::inspect(&self.0.as_ref().map(AsHex), req);
-    }
-}
+hexbincount!(AsHex, NumberFormat::Hex);
 
 /// Wrapper around `T` that implements [`Inspect`] by writing a value with
 /// [`ValueFlags::binary`].
 pub struct AsBinary<T>(pub T);
 
-hexbincount!(AsBinary, into_binary, u8, u16, u32, u64, usize);
-
-impl<T: Clone> Inspect for AsBinary<&'_ T>
-where
-    AsBinary<T>: Inspect,
-{
-    fn inspect(&self, req: Request<'_>) {
-        Inspect::inspect(&AsBinary(self.0.clone()), req)
-    }
-}
-
-impl<T> Inspect for AsBinary<Option<T>>
-where
-    for<'a> AsBinary<&'a T>: Inspect,
-{
-    fn inspect(&self, req: Request<'_>) {
-        Inspect::inspect(&self.0.as_ref().map(AsBinary), req);
-    }
-}
+hexbincount!(AsBinary, NumberFormat::Binary);
 
 /// Wrapper around `T` that implements [`Inspect`] by writing a value with
 /// [`ValueFlags::count`].
 pub struct AsCounter<T>(pub T);
 
-hexbincount!(AsCounter, into_counter, u8, u16, u32, u64, usize);
-
-impl<T: Clone> Inspect for AsCounter<&'_ T>
-where
-    AsCounter<T>: Inspect,
-{
-    fn inspect(&self, req: Request<'_>) {
-        Inspect::inspect(&AsCounter(self.0.clone()), req)
-    }
-}
+hexbincount!(AsCounter, NumberFormat::Counter);
 
 /// Wrapper around `T` that implements [`Inspect`] by writing a
 /// [`ValueKind::Bytes`] value.
@@ -1702,7 +1697,7 @@ where
     fn inspect(&self, req: Request<'_>) {
         let mut v = Vec::new();
         v.extend(self.0.clone());
-        req.value(ValueKind::Bytes(v).into())
+        req.value(ValueKind::Bytes(v))
     }
 }
 
@@ -1851,7 +1846,7 @@ where
     any(feature = "defer", feature = "initiate"),
     derive(mesh::MeshPayload)
 )]
-#[cfg_attr(not(feature = "initiate"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "defer", feature = "initiate")), expect(dead_code))]
 enum InternalNode {
     Unevaluated,
     Failed(InternalError),
@@ -1872,26 +1867,11 @@ enum InternalNode {
 )]
 // Without the initiate feature we never read fields of the InternalEntry
 // to produce a user-visible Entry, but we still need those fields.
-#[cfg_attr(not(feature = "initiate"), allow(dead_code))]
+#[cfg_attr(not(any(feature = "defer", feature = "initiate")), expect(dead_code))]
 struct InternalEntry {
     name: String,
     node: InternalNode,
     sensitivity: SensitivityLevel,
-}
-
-impl InternalNode {
-    fn as_dir(&mut self) -> &mut Vec<InternalEntry> {
-        match self {
-            Self::Dir(children) => children,
-            _ => {
-                *self = Self::Dir(Vec::new());
-                let Self::Dir(children) = self else {
-                    unreachable!()
-                };
-                children
-            }
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -1899,7 +1879,7 @@ impl InternalNode {
     any(feature = "defer", feature = "initiate"),
     derive(mesh::MeshPayload)
 )]
-#[allow(unused)] // some invariants are unused in some configurations, but order matters in their mesh derive, so keep them
+#[cfg_attr(not(any(feature = "defer", feature = "initiate")), expect(dead_code))]
 enum InternalError {
     Immutable,
     Update(String),
@@ -2101,19 +2081,34 @@ impl<T: ?Sized + Inspect + ToOwned> Inspect for Cow<'_, T> {
 
 impl<T> Inspect for *mut T {
     fn inspect(&self, req: Request<'_>) {
-        req.value(Value::hex(*self as usize))
+        req.with_hex_format().value(*self as usize)
     }
 }
 
 impl<T> Inspect for *const T {
     fn inspect(&self, req: Request<'_>) {
-        req.value(Value::hex(*self as usize))
+        req.with_hex_format().value(*self as usize)
+    }
+}
+
+impl Inspect for ValueKind {
+    fn inspect(&self, req: Request<'_>) {
+        req.value(self.clone());
     }
 }
 
 impl Inspect for Value {
     fn inspect(&self, req: Request<'_>) {
-        req.value(self.clone());
+        let req = if self.flags.count() {
+            req.with_counter_format()
+        } else if self.flags.hex() {
+            req.with_hex_format()
+        } else if self.flags.binary() {
+            req.with_binary_format()
+        } else {
+            req
+        };
+        req.value(self.kind.clone());
     }
 }
 
@@ -2158,10 +2153,6 @@ where
 
 #[cfg(all(test, feature = "derive", feature = "initiate"))]
 mod tests {
-    use crate::adhoc;
-    use crate::adhoc_mut;
-    use crate::inspect;
-    use crate::update;
     use crate::AsBytes;
     use crate::AtomicMut;
     use crate::Error;
@@ -2172,22 +2163,26 @@ mod tests {
     use crate::Request;
     use crate::SensitivityLevel;
     use crate::ValueKind;
+    use crate::adhoc;
+    use crate::adhoc_mut;
+    use crate::inspect;
+    use crate::update;
     use alloc::boxed::Box;
     use alloc::string::String;
     use alloc::string::ToString;
     use alloc::vec;
     use alloc::vec::Vec;
     use core::time::Duration;
-    use expect_test::expect;
     use expect_test::Expect;
+    use expect_test::expect;
     use futures::FutureExt;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::timer::Instant;
     use pal_async::timer::PolledTimer;
-    use pal_async::DefaultDriver;
 
     fn expected_node(node: Node, expect: Expect) -> Node {
-        expect.assert_eq(&node.to_string());
+        expect.assert_eq(&std::format!("{node:#}"));
         node
     }
 
@@ -2275,7 +2270,19 @@ mod tests {
             "",
             None,
             &f,
-            expect!("{0: {xx: 3, xy: false}, 1: {xx: 5, xy: true}, xx: 1, xy: true}"),
+            expect!([r#"
+                {
+                    0: {
+                        xx: 3,
+                        xy: false,
+                    },
+                    1: {
+                        xx: 5,
+                        xy: true,
+                    },
+                    xx: 1,
+                    xy: true,
+                }"#]),
         );
         let expected_json =
             expect!([r#"{"0":{"xx":3,"xy":false},"1":{"xx":5,"xy":true},"xx":1,"xy":true}"#]);
@@ -2293,7 +2300,11 @@ mod tests {
                 let foo = req.defer();
                 std::thread::spawn(|| foo.inspect(&Foo::default()));
             }),
-            expect!("{xx: 0, xy: false}"),
+            expect!([r#"
+                {
+                    xx: 0,
+                    xy: false,
+                }"#]),
         )
         .await;
     }
@@ -2324,7 +2335,17 @@ mod tests {
         });
         inspect_sync_expect("a", None, &mut obj, expect!("1"));
         inspect_sync_expect("///a", None, &mut obj, expect!("1"));
-        inspect_sync_expect("b", None, &mut obj, expect!("{c: 2, d: 2, e: {}}"));
+        inspect_sync_expect(
+            "b",
+            None,
+            &mut obj,
+            expect!([r#"
+            {
+                c: 2,
+                d: 2,
+                e: {},
+            }"#]),
+        );
         inspect_sync_expect("b/c", None, &mut obj, expect!("2"));
         inspect_sync_expect("b////c", None, &mut obj, expect!("2"));
         inspect_sync_expect("b/c/", None, &mut obj, expect!("error (not a directory)"));
@@ -2357,14 +2378,21 @@ mod tests {
     #[test]
     fn test_merge() {
         let mut obj = adhoc(|req| {
-            req.respond()
-                .field("a", 1)
-                .request()
-                .respond()
-                .field("b", 2);
+            req.respond().field("a", 1).merge(adhoc(|req| {
+                req.respond().field("b", 2);
+            }));
         });
 
-        inspect_sync_expect("", None, &mut obj, expect!("{a: 1, b: 2}"));
+        inspect_sync_expect(
+            "",
+            None,
+            &mut obj,
+            expect!([r#"
+            {
+                a: 1,
+                b: 2,
+            }"#]),
+        );
         inspect_sync_expect("a", None, &mut obj, expect!("1"));
         inspect_sync_expect("b", None, &mut obj, expect!("2"));
         inspect_sync_expect("c", None, &mut obj, expect!("error (not found)"));
@@ -2392,9 +2420,35 @@ mod tests {
             "",
             None,
             &mut obj,
-            expect!("{a: 2, x: {b: 4, c: {y: 4}, d: {y: 5}}}"),
+            expect!([r#"
+                {
+                    a: 2,
+                    x: {
+                        b: 4,
+                        c: {
+                            y: 4,
+                        },
+                        d: {
+                            y: 5,
+                        },
+                    },
+                }"#]),
         );
-        inspect_sync_expect("x", None, &mut obj, expect!("{b: 4, c: {y: 4}, d: {y: 5}}"));
+        inspect_sync_expect(
+            "x",
+            None,
+            &mut obj,
+            expect!([r#"
+            {
+                b: 4,
+                c: {
+                    y: 4,
+                },
+                d: {
+                    y: 5,
+                },
+            }"#]),
+        );
     }
 
     #[test]
@@ -2463,10 +2517,51 @@ mod tests {
             req.respond().field("x/a/b", 1).field("x/a/c", 2);
         });
 
-        inspect_sync_expect("", None, &mut obj, expect!("{x: {a: {b: 1, c: 2}}}"));
-        inspect_sync_expect("x/a", None, &mut obj, expect!("{b: 1, c: 2}"));
-        inspect_sync_expect("x", Some(0), &mut obj, expect!("{a: _}"));
-        inspect_sync_expect("x", Some(2), &mut obj, expect!("{a: {b: 1, c: 2}}"));
+        inspect_sync_expect(
+            "",
+            None,
+            &mut obj,
+            expect!([r#"
+            {
+                x: {
+                    a: {
+                        b: 1,
+                        c: 2,
+                    },
+                },
+            }"#]),
+        );
+        inspect_sync_expect(
+            "x/a",
+            None,
+            &mut obj,
+            expect!([r#"
+            {
+                b: 1,
+                c: 2,
+            }"#]),
+        );
+        inspect_sync_expect(
+            "x",
+            Some(0),
+            &mut obj,
+            expect!([r#"
+            {
+                a: _,
+            }"#]),
+        );
+        inspect_sync_expect(
+            "x",
+            Some(2),
+            &mut obj,
+            expect!([r#"
+            {
+                a: {
+                    b: 1,
+                    c: 2,
+                },
+            }"#]),
+        );
     }
 
     #[test]
@@ -2486,18 +2581,42 @@ mod tests {
                 .field("1d/2b/3b", 0);
         });
 
-        inspect_sync_expect("1d", Some(0), &mut obj, expect!("{2a: 0, 2b: _}"));
+        inspect_sync_expect(
+            "1d",
+            Some(0),
+            &mut obj,
+            expect!([r#"
+            {
+                2a: 0,
+                2b: _,
+            }"#]),
+        );
         inspect_sync_expect(
             "",
             Some(0),
             &mut obj,
-            expect!("{1a: 0, 1b: 0, 1c: 0, 1d: _}"),
+            expect!([r#"
+                {
+                    1a: 0,
+                    1b: 0,
+                    1c: 0,
+                    1d: _,
+                }"#]),
         );
         inspect_sync_expect(
             "",
             Some(1),
             &mut obj,
-            expect!("{1a: 0, 1b: 0, 1c: 0, 1d: {2a: 0, 2b: _}}"),
+            expect!([r#"
+                {
+                    1a: 0,
+                    1b: 0,
+                    1c: 0,
+                    1d: {
+                        2a: 0,
+                        2b: _,
+                    },
+                }"#]),
         );
     }
 
@@ -2506,7 +2625,15 @@ mod tests {
         let mut obj = adhoc(|req| {
             req.respond().hex("a", 0x1234);
         });
-        inspect_sync_expect("", Some(0), &mut obj, expect!("{a: 0x1234}"));
+        inspect_sync_expect(
+            "",
+            Some(0),
+            &mut obj,
+            expect!([r#"
+            {
+                a: 0x1234,
+            }"#]),
+        );
     }
 
     #[test]
@@ -2514,7 +2641,15 @@ mod tests {
         let mut obj = adhoc(|req| {
             req.respond().binary("a", 0b1001000110100);
         });
-        inspect_sync_expect("", Some(0), &mut obj, expect!("{a: 0b1001000110100}"));
+        inspect_sync_expect(
+            "",
+            Some(0),
+            &mut obj,
+            expect!([r#"
+            {
+                a: 0b1001000110100,
+            }"#]),
+        );
     }
 
     #[test]
@@ -2549,7 +2684,18 @@ mod tests {
 
         expected_node(
             diff,
-            expect!("{c: 50, d: {1_c: true, 2: true, 3: 50, 4_b: true, 4_c: true}, f: 600}"),
+            expect!([r#"
+                {
+                    c: 50,
+                    d: {
+                        1_c: true,
+                        2: true,
+                        3: 50,
+                        4_b: true,
+                        4_c: true,
+                    },
+                    f: 600,
+                }"#]),
         );
     }
 
@@ -2608,23 +2754,83 @@ mod tests {
 
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Safe), &mut obj),
-            expect!("{1a: 0, 1d: {2b: {}}}"),
+            expect!([r#"
+                {
+                    1a: 0,
+                    1d: {
+                        2b: {},
+                    },
+                }"#]),
         );
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Unspecified), &mut obj),
-            expect!("{1a: 0, 1b: 0, 1d: {2b: {3b: 0}}}"),
+            expect!([r#"
+                {
+                    1a: 0,
+                    1b: 0,
+                    1d: {
+                        2b: {
+                            3b: 0,
+                        },
+                    },
+                }"#]),
         );
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Sensitive), &mut obj),
-            expect!("{1a: 0, 1b: 0, 1c: 0, 1d: {2a: 0, 2b: {3a: {4a: 0}, 3b: 0}}, 1e: 0}"),
+            expect!([r#"
+                {
+                    1a: 0,
+                    1b: 0,
+                    1c: 0,
+                    1d: {
+                        2a: 0,
+                        2b: {
+                            3a: {
+                                4a: 0,
+                            },
+                            3b: 0,
+                        },
+                    },
+                    1e: 0,
+                }"#]),
         );
         expected_node(
             inspect_sync("", None, &mut obj),
-            expect!("{1a: 0, 1b: 0, 1c: 0, 1d: {2a: 0, 2b: {3a: {4a: 0}, 3b: 0}}, 1e: 0}"),
+            expect!([r#"
+                {
+                    1a: 0,
+                    1b: 0,
+                    1c: 0,
+                    1d: {
+                        2a: 0,
+                        2b: {
+                            3a: {
+                                4a: 0,
+                            },
+                            3b: 0,
+                        },
+                    },
+                    1e: 0,
+                }"#]),
         );
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Sensitive), &mut obj),
-            expect!("{1a: 0, 1b: 0, 1c: 0, 1d: {2a: 0, 2b: {3a: {4a: 0}, 3b: 0}}, 1e: 0}"),
+            expect!([r#"
+                {
+                    1a: 0,
+                    1b: 0,
+                    1c: 0,
+                    1d: {
+                        2a: 0,
+                        2b: {
+                            3a: {
+                                4a: 0,
+                            },
+                            3b: 0,
+                        },
+                    },
+                    1e: 0,
+                }"#]),
         );
     }
 
@@ -2658,6 +2864,11 @@ mod tests {
             ignored: Ignored,
             tr1: Tr1,
             tr2: Tr2,
+            #[inspect(iter_by_index, hex)]
+            hex_array: [u8; 4],
+            hex_inner: HexInner,
+            #[inspect(hex)]
+            inner_as_hex: Inner,
         }
 
         #[derive(Clone, Inspect)]
@@ -2668,6 +2879,12 @@ mod tests {
         #[derive(InspectMut)]
         struct InnerMut {
             val: String,
+        }
+
+        #[derive(Inspect)]
+        #[inspect(hex)]
+        struct HexInner {
+            val: u32,
         }
 
         #[derive(Inspect)]
@@ -2689,7 +2906,7 @@ mod tests {
         struct Tr2(#[inspect(debug)] ());
 
         #[derive(Inspect)]
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         enum Enum {
             Foo,
             BarBaz,
@@ -2724,30 +2941,67 @@ mod tests {
             ignored: Ignored { _x: || () },
             tr1: Tr1(10, PhantomData),
             tr2: Tr2(()),
+            hex_array: [100, 101, 102, 103],
+            hex_inner: HexInner { val: 100 },
+            inner_as_hex: Inner { val: 100 },
         };
 
         inspect_sync_expect(
             "",
             None,
             &mut obj,
-            expect!([
-                r#"{bin: 0b11, debug: "()", dec: 5, display: "10", hex: 0x4, inner: {val: 3}, inner_mut: {val: "hi"}, minute: "07", t: {val: 1}, t2: {val: 2}, tr1: 0xa, tr2: "()", val: 8, var: "bar_baz"}"#
-            ]),
+            expect!([r#"
+                {
+                    bin: 0b11,
+                    debug: "()",
+                    dec: 5,
+                    display: "10",
+                    hex: 0x4,
+                    hex_array: {
+                        0: 0x64,
+                        1: 0x65,
+                        2: 0x66,
+                        3: 0x67,
+                    },
+                    hex_inner: {
+                        val: 0x64,
+                    },
+                    inner: {
+                        val: 3,
+                    },
+                    inner_as_hex: {
+                        val: 0x64,
+                    },
+                    inner_mut: {
+                        val: "hi",
+                    },
+                    minute: "07",
+                    t: {
+                        val: 1,
+                    },
+                    t2: {
+                        val: 2,
+                    },
+                    tr1: 0xa,
+                    tr2: "()",
+                    val: 8,
+                    var: "bar_baz",
+                }"#]),
         );
     }
 
     #[test]
     fn test_derive_enum() {
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         enum EmptyUnitEmum {}
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(untagged)]
         enum EmptyUntaggedEmum {}
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         enum UnitEnum {
             A,
@@ -2757,7 +3011,7 @@ mod tests {
 
         inspect_sync_expect("", None, &UnitEnum::B, expect!([r#""b""#]));
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(tag = "tag")]
         enum TaggedEnum {
@@ -2769,10 +3023,14 @@ mod tests {
             "",
             None,
             &TaggedEnum::B(true),
-            expect!([r#"{tag: "b", y: true}"#]),
+            expect!([r#"
+                {
+                    tag: "b",
+                    y: true,
+                }"#]),
         );
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(external_tag)]
         enum ExternallyTaggedEnum {
@@ -2788,12 +3046,25 @@ mod tests {
             "",
             None,
             &ExternallyTaggedEnum::B(true),
-            expect!("{b: {y: true}}"),
+            expect!([r#"
+                {
+                    b: {
+                        y: true,
+                    },
+                }"#]),
         );
 
-        inspect_sync_expect("", None, &ExternallyTaggedEnum::C(5), expect!("{c: 5}"));
+        inspect_sync_expect(
+            "",
+            None,
+            &ExternallyTaggedEnum::C(5),
+            expect!([r#"
+            {
+                c: 5,
+            }"#]),
+        );
 
-        #[allow(dead_code)]
+        #[expect(dead_code)]
         #[derive(Inspect)]
         #[inspect(untagged)]
         enum UntaggedEnum {
@@ -2801,7 +3072,15 @@ mod tests {
             B(#[inspect(rename = "y")] bool),
         }
 
-        inspect_sync_expect("", None, &UntaggedEnum::B(true), expect!("{y: true}"));
+        inspect_sync_expect(
+            "",
+            None,
+            &UntaggedEnum::B(true),
+            expect!([r#"
+            {
+                y: true,
+            }"#]),
+        );
     }
 
     #[test]
@@ -2823,7 +3102,12 @@ mod tests {
             "",
             None,
             &Foo { x: 2, y: 5 },
-            expect!("{sum: 7, x: 2, y: 5}"),
+            expect!([r#"
+                {
+                    sum: 7,
+                    x: 2,
+                    y: 5,
+                }"#]),
         );
     }
 
@@ -2885,15 +3169,44 @@ mod tests {
 
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Safe), &obj),
-            expect!("{a: 0, d: {b: {}}}"),
+            expect!([r#"
+                {
+                    a: 0,
+                    d: {
+                        b: {},
+                    },
+                }"#]),
         );
         expected_node(
             inspect_sync("", Some(SensitivityLevel::Unspecified), &obj),
-            expect!("{a: 0, b: 0, d: {b: {b: 0}}}"),
+            expect!([r#"
+                {
+                    a: 0,
+                    b: 0,
+                    d: {
+                        b: {
+                            b: 0,
+                        },
+                    },
+                }"#]),
         );
         let node = expected_node(
             inspect_sync("", Some(SensitivityLevel::Sensitive), &obj),
-            expect!("{a: 0, b: 0, c: 0, d: {a: 0, b: {a: {a: 0}, b: 0}}}"),
+            expect!([r#"
+                {
+                    a: 0,
+                    b: 0,
+                    c: 0,
+                    d: {
+                        a: 0,
+                        b: {
+                            a: {
+                                a: 0,
+                            },
+                            b: 0,
+                        },
+                    },
+                }"#]),
         );
         assert_eq!(
             node,

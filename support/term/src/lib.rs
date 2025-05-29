@@ -3,9 +3,18 @@
 
 //! Functionality to assist with managing the terminal/console/tty.
 
-#![warn(missing_docs)]
 // UNSAFETY: Win32 and libc function calls to manipulate terminal state.
 #![expect(unsafe_code)]
+
+use thiserror::Error;
+
+// Errors for terminal operations.
+#[derive(Error, Debug)]
+#[expect(missing_docs)]
+pub enum Error {
+    #[error("failed to perform a virtual terminal operation: {0}")]
+    VtOperationFailed(std::io::Error),
+}
 
 /// Enables VT and UTF-8 output.
 #[cfg(windows)]
@@ -36,59 +45,18 @@ pub fn enable_vt_and_utf8() {
 pub fn enable_vt_and_utf8() {}
 
 /// Enables or disables raw console mode.
-#[cfg(windows)]
-pub fn set_raw_console(enable: bool) {
-    use winapi::shared::minwindef;
-    use winapi::um::consoleapi;
-    use winapi::um::processenv;
-    use winapi::um::winbase;
-    use winapi::um::wincon;
-    use winapi::um::winnls;
-
-    // SAFETY: calling Windows APIs as documented.
-    unsafe {
-        let conin = processenv::GetStdHandle(winbase::STD_INPUT_HANDLE);
-        let mut mode: minwindef::DWORD = 0;
-        if consoleapi::GetConsoleMode(conin, &mut mode) != 0 {
-            let on = wincon::ENABLE_VIRTUAL_TERMINAL_INPUT;
-            let off = wincon::ENABLE_LINE_INPUT
-                | wincon::ENABLE_ECHO_INPUT
-                | wincon::ENABLE_PROCESSED_INPUT;
-            if enable {
-                mode |= on;
-                mode &= !off;
-            } else {
-                mode &= !on;
-                mode |= off;
-            }
-            consoleapi::SetConsoleMode(conin, mode);
-        }
-        let conout = processenv::GetStdHandle(winbase::STD_OUTPUT_HANDLE);
-        if consoleapi::GetConsoleMode(conout, &mut mode) != 0 {
-            let on =
-                wincon::ENABLE_VIRTUAL_TERMINAL_PROCESSING | wincon::DISABLE_NEWLINE_AUTO_RETURN;
-            let off = 0;
-            if enable {
-                mode |= on;
-                mode &= !off;
-            } else {
-                mode &= !on;
-                mode |= off;
-            }
-            consoleapi::SetConsoleMode(conout, mode);
-            wincon::SetConsoleOutputCP(winnls::CP_UTF8);
-        }
+pub fn set_raw_console(enable: bool) -> Result<(), Error> {
+    if enable {
+        crossterm::terminal::enable_raw_mode().map_err(Error::VtOperationFailed)
+    } else {
+        crossterm::terminal::disable_raw_mode().map_err(Error::VtOperationFailed)
     }
 }
 
-/// Enables or disables raw console mode.
-#[cfg(not(windows))]
-pub fn set_raw_console(enable: bool) {
-    if enable {
-        crossterm::terminal::enable_raw_mode().unwrap();
-    } else {
-        crossterm::terminal::disable_raw_mode().unwrap();
-    }
+/// Sets the name of the console window.
+pub fn set_console_title(title: &str) -> Result<(), Error> {
+    crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle(title))
+        .map_err(Error::VtOperationFailed)
 }
 
 /// Clones `file` into a `File`.

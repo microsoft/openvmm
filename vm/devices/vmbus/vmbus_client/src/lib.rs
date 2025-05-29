@@ -1,18 +1,20 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod hvsock;
-mod saved_state;
+pub mod saved_state;
 
 pub use self::saved_state::SavedState;
 use anyhow::Context as _;
 use anyhow::Result;
-use futures::future::OptionFuture;
-use futures::stream::SelectAll;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::future::OptionFuture;
+use futures::stream::SelectAll;
+use futures_concurrency::future::Race;
 use guid::Guid;
 use inspect::Inspect;
 use mesh::rpc::FailableRpc;
@@ -23,12 +25,14 @@ use pal_async::task::Task;
 use pal_event::Event;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::collections::hash_map;
 use std::convert::TryInto;
-use std::future::poll_fn;
 use std::future::Future;
+use std::future::poll_fn;
+use std::ops::Deref;
+use std::ops::DerefMut;
 use std::pin::pin;
 use std::sync::Arc;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
 use thiserror::Error;
@@ -38,6 +42,10 @@ use vmbus_channel::bus::GpadlRequest;
 use vmbus_channel::bus::ModifyRequest;
 use vmbus_channel::bus::OpenData;
 use vmbus_channel::gpadl::GpadlId;
+use vmbus_core::HvsockConnectRequest;
+use vmbus_core::OutgoingMessage;
+use vmbus_core::TaggedStream;
+use vmbus_core::VersionInfo;
 use vmbus_core::protocol;
 use vmbus_core::protocol::ChannelId;
 use vmbus_core::protocol::ConnectionState;
@@ -45,12 +53,8 @@ use vmbus_core::protocol::FeatureFlags;
 use vmbus_core::protocol::Message;
 use vmbus_core::protocol::OpenChannelFlags;
 use vmbus_core::protocol::Version;
-use vmbus_core::HvsockConnectRequest;
-use vmbus_core::MonitorPageGpas;
-use vmbus_core::OutgoingMessage;
-use vmbus_core::TaggedStream;
-use vmbus_core::VersionInfo;
 use vmcore::interrupt::Interrupt;
+use vmcore::synic::MonitorPageGpas;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
@@ -62,7 +66,8 @@ const SUPPORTED_FEATURE_FLAGS: FeatureFlags = FeatureFlags::new()
     .with_guest_specified_signal_parameters(true)
     .with_channel_interrupt_redirection(true)
     .with_modify_connection(true)
-    .with_client_id(true);
+    .with_client_id(true)
+    .with_pause_resume(true);
 
 /// The client interface synic events.
 pub trait SynicEventClient: Send + Sync {
@@ -99,7 +104,7 @@ pub trait PollPostMessage: Send {
 pub struct VmbusClient {
     task_send: mesh::Sender<TaskRequest>,
     access: VmbusClientAccess,
-    _thread: Task<()>,
+    task: Task<ClientTask>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -139,7 +144,7 @@ impl VmbusClientBuilder {
     }
 
     /// Creates a new instance with a receiver for incoming synic messages.
-    pub fn build(self, spawner: &impl Spawn, offer_send: mesh::Sender<OfferInfo>) -> VmbusClient {
+    pub fn build(self, spawner: &impl Spawn) -> VmbusClient {
         let (task_send, task_recv) = mesh::channel();
         let (client_request_send, client_request_recv) = mesh::channel();
 
@@ -147,8 +152,8 @@ impl VmbusClientBuilder {
             messages: OutgoingMessages {
                 poster: self.msg_client,
                 queued: VecDeque::new(),
+                state: OutgoingMessageState::Paused,
             },
-            channels: HashMap::new(),
             teardown_gpadls: HashMap::new(),
             channel_requests: SelectAll::new(),
             synic: SynicState {
@@ -159,9 +164,9 @@ impl VmbusClientBuilder {
 
         let mut task = ClientTask {
             inner,
+            channels: ChannelList::default(),
             task_recv,
             running: false,
-            offer_send,
             msg_source: self.msg_source,
             client_request_recv,
             state: ClientState::Disconnected,
@@ -169,14 +174,17 @@ impl VmbusClientBuilder {
             hvsock_tracker: hvsock::HvsockRequestTracker::new(),
         };
 
-        let thread = spawner.spawn("vmbus client", async move { task.run().await });
+        let task = spawner.spawn("vmbus client", async move {
+            task.run().await;
+            task
+        });
 
         VmbusClient {
             access: VmbusClientAccess {
                 client_request_send,
             },
             task_send,
-            _thread: thread,
+            task,
         }
     }
 }
@@ -203,13 +211,14 @@ impl VmbusClient {
             .unwrap()
     }
 
-    /// Send the Unload message to the server.
-    pub async fn unload(&mut self) {
+    pub async fn unload(self) {
         self.access
             .client_request_send
             .call(ClientRequest::Unload, ())
             .await
             .unwrap();
+
+        self.sever().await;
     }
 
     pub fn access(&self) -> &VmbusClientAccess {
@@ -237,7 +246,7 @@ impl VmbusClient {
     pub async fn restore(
         &mut self,
         state: SavedState,
-    ) -> Result<(Option<VersionInfo>, Vec<RestoredChannel>), RestoreError> {
+    ) -> Result<Option<ConnectResult>, RestoreError> {
         self.task_send
             .call(TaskRequest::Restore, state)
             .await
@@ -249,6 +258,16 @@ impl VmbusClient {
             .call(TaskRequest::PostRestore, ())
             .await
             .expect("Failed to send post-restore request");
+    }
+
+    async fn sever(self) -> VmbusClientBuilder {
+        drop(self.task_send);
+        let task = self.task.await;
+        VmbusClientBuilder {
+            event_client: task.inner.synic.event_client,
+            msg_source: task.msg_source,
+            msg_client: task.inner.messages.poster,
+        }
     }
 }
 
@@ -262,6 +281,7 @@ impl Inspect for VmbusClient {
 pub struct ConnectResult {
     pub version: VersionInfo,
     pub offers: Vec<OfferInfo>,
+    pub offer_recv: mesh::Receiver<OfferInfo>,
 }
 
 impl VmbusClientAccess {
@@ -302,7 +322,7 @@ pub struct RestoreRequest {
 pub enum ChannelRequest {
     Open(FailableRpc<OpenRequest, OpenOutput>),
     Restore(FailableRpc<RestoreRequest, OpenOutput>),
-    Close,
+    Close(Rpc<(), ()>),
     Gpadl(FailableRpc<GpadlRequest, ()>),
     TeardownGpadl(Rpc<GpadlId, ()>),
     Modify(Rpc<ModifyRequest, i32>),
@@ -317,14 +337,15 @@ pub struct OpenOutput {
 
 impl std::fmt::Display for ChannelRequest {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ChannelRequest::Open(_) => write!(fmt, "Open"),
-            ChannelRequest::Close => write!(fmt, "Close"),
-            ChannelRequest::Restore(_) => write!(fmt, "Restore"),
-            ChannelRequest::Gpadl(_) => write!(fmt, "Gpadl"),
-            ChannelRequest::TeardownGpadl(_) => write!(fmt, "TeardownGpadl"),
-            ChannelRequest::Modify(_) => write!(fmt, "Modify"),
-        }
+        let s = match self {
+            ChannelRequest::Open(_) => "Open",
+            ChannelRequest::Close(_) => "Close",
+            ChannelRequest::Restore(_) => "Restore",
+            ChannelRequest::Gpadl(_) => "Gpadl",
+            ChannelRequest::TeardownGpadl(_) => "TeardownGpadl",
+            ChannelRequest::Modify(_) => "Modify",
+        };
+        fmt.pad(s)
     }
 }
 
@@ -347,6 +368,9 @@ pub enum RestoreError {
 
     #[error("invalid pending message")]
     InvalidPendingMessage(#[source] vmbus_core::MessageTooLarge),
+
+    #[error("failed to offer restored channel")]
+    OfferFailed(#[source] anyhow::Error),
 }
 
 /// Provides the offer details from the server in addition to both a channel
@@ -370,31 +394,23 @@ enum ClientRequest {
 
 impl std::fmt::Display for ClientRequest {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ClientRequest::Connect(..) => write!(fmt, "Connect"),
-            ClientRequest::Unload { .. } => write!(fmt, "Unload"),
-            ClientRequest::Modify(..) => write!(fmt, "Modify"),
-            ClientRequest::HvsockConnect(..) => write!(fmt, "HvsockConnect"),
-        }
+        let s = match self {
+            ClientRequest::Connect(..) => "Connect",
+            ClientRequest::Unload { .. } => "Unload",
+            ClientRequest::Modify(..) => "Modify",
+            ClientRequest::HvsockConnect(..) => "HvsockConnect",
+        };
+        fmt.pad(s)
     }
 }
 
 enum TaskRequest {
     Inspect(inspect::Deferred),
     Save(Rpc<(), SavedState>),
-    Restore(Rpc<SavedState, Result<(Option<VersionInfo>, Vec<RestoredChannel>), RestoreError>>),
+    Restore(Rpc<SavedState, Result<Option<ConnectResult>, RestoreError>>),
     PostRestore(Rpc<(), ()>),
     Start,
     Stop(Rpc<(), ()>),
-}
-
-/// Information about a restored channel.
-#[derive(Debug)]
-pub struct RestoredChannel {
-    /// The channel offer.
-    pub offer: OfferInfo,
-    /// Whether the channel was open at save time.
-    pub open: bool,
 }
 
 /// The overall state machine used to drive which actions the client can legally
@@ -412,7 +428,11 @@ enum ClientState {
         rpc: Rpc<ConnectRequest, Result<ConnectResult, ConnectError>>,
     },
     /// The client has negotiated the protocol version with the server.
-    Connected { version: VersionInfo },
+    Connected {
+        version: VersionInfo,
+        #[inspect(skip)]
+        offer_send: mesh::Sender<OfferInfo>,
+    },
     /// The client has requested offers from the server.
     RequestingOffers {
         version: VersionInfo,
@@ -432,7 +452,7 @@ enum ClientState {
 impl ClientState {
     fn get_version(&self) -> Option<VersionInfo> {
         match self {
-            ClientState::Connected { version } => Some(*version),
+            ClientState::Connected { version, .. } => Some(*version),
             ClientState::RequestingOffers { version, .. } => Some(*version),
             ClientState::Disconnecting { version, .. } => Some(*version),
             ClientState::Disconnected | ClientState::Connecting { .. } => None,
@@ -442,13 +462,14 @@ impl ClientState {
 
 impl std::fmt::Display for ClientState {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ClientState::Disconnected => write!(fmt, "Disconnected"),
-            ClientState::Connecting { .. } => write!(fmt, "Connecting"),
-            ClientState::Connected { .. } => write!(fmt, "Connected"),
-            ClientState::RequestingOffers { .. } => write!(fmt, "RequestingOffers"),
-            ClientState::Disconnecting { .. } => write!(fmt, "Disconnecting"),
-        }
+        let s = match self {
+            ClientState::Disconnected => "Disconnected",
+            ClientState::Connecting { .. } => "Connecting",
+            ClientState::Connected { .. } => "Connected",
+            ClientState::RequestingOffers { .. } => "RequestingOffers",
+            ClientState::Disconnecting { .. } => "Disconnecting",
+        };
+        fmt.pad(s)
     }
 }
 
@@ -501,38 +522,47 @@ enum ChannelState {
         #[inspect(skip)]
         redirected_event: Option<Event>,
     },
+    /// The channel has been revoked by the server.
+    Revoked,
 }
 
 impl std::fmt::Display for ChannelState {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ChannelState::Opening { .. } => write!(fmt, "Opening"),
-            ChannelState::Offered => write!(fmt, "Offered"),
-            ChannelState::Opened { .. } => write!(fmt, "Opened"),
-            ChannelState::Restored => write!(fmt, "Restored"),
-        }
+        let s = match self {
+            ChannelState::Opening { .. } => "Opening",
+            ChannelState::Offered => "Offered",
+            ChannelState::Opened { .. } => "Opened",
+            ChannelState::Restored => "Restored",
+            ChannelState::Revoked => "Revoked",
+        };
+        fmt.pad(s)
     }
 }
 
-#[derive(Inspect)]
+#[derive(Debug, Inspect)]
 struct Channel {
     offer: protocol::OfferChannel,
     // When dropped, notifies the caller the channel has been revoked.
     #[inspect(skip)]
-    revoke_send: mesh::OneshotSender<()>,
+    revoke_send: Option<mesh::OneshotSender<()>>,
     state: ChannelState,
     #[inspect(with = "|x| x.is_some()")]
     modify_response_send: Option<Rpc<(), i32>>,
     #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|x| x.0)")]
     gpadls: HashMap<GpadlId, GpadlState>,
+    is_client_released: bool,
 }
 
-impl std::fmt::Debug for Channel {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        fmt.debug_struct("Channel")
-            .field("offer", &self.offer)
-            .field("state", &self.state)
-            .finish()
+impl Channel {
+    fn pending_request(&self) -> Option<&'static str> {
+        if self.modify_response_send.is_some() {
+            return Some("modify");
+        }
+        self.gpadls.iter().find_map(|(_, gpadl)| match gpadl {
+            GpadlState::Offered(_) => Some("creating gpadl"),
+            GpadlState::Created => None,
+            GpadlState::TearingDown { .. } => Some("tearing down gpadl"),
+        })
     }
 }
 
@@ -540,6 +570,7 @@ impl std::fmt::Debug for Channel {
 struct ClientTask {
     #[inspect(flatten)]
     inner: ClientTaskInner,
+    channels: ChannelList,
     state: ClientState,
     hvsock_tracker: hvsock::HvsockRequestTracker,
     running: bool,
@@ -547,8 +578,6 @@ struct ClientTask {
     modify_request: Option<Rpc<ModifyConnectionRequest, ConnectionState>>,
     #[inspect(skip)]
     msg_source: Box<dyn VmbusMessageSource>,
-    #[inspect(skip)]
-    offer_send: mesh::Sender<OfferInfo>,
     #[inspect(skip)]
     task_recv: mesh::Receiver<TaskRequest>,
     #[inspect(skip)]
@@ -610,7 +639,7 @@ impl ClientTask {
     }
 
     fn handle_modify(&mut self, request: Rpc<ModifyConnectionRequest, ConnectionState>) {
-        if !matches!(self.state, ClientState::Connected { version }
+        if !matches!(self.state, ClientState::Connected { version, .. }
             if version.feature_flags.modify_connection())
         {
             tracing::warn!("ModifyConnection not supported");
@@ -707,7 +736,7 @@ impl ClientTask {
         }
     }
 
-    fn create_channel(&mut self, offer: protocol::OfferChannel) -> Option<OfferInfo> {
+    fn create_channel(&mut self, offer: protocol::OfferChannel) -> Result<OfferInfo> {
         self.create_channel_core(offer, ChannelState::Offered)
     }
 
@@ -715,23 +744,22 @@ impl ClientTask {
         &mut self,
         offer: protocol::OfferChannel,
         state: ChannelState,
-    ) -> Option<OfferInfo> {
-        if let Some(channel) = self.inner.channels.get_mut(&offer.channel_id) {
-            channel.state = ChannelState::Offered;
-            tracing::debug!(channel_id = %offer.channel_id.0, "client channel exists");
-            return None;
+    ) -> Result<OfferInfo> {
+        if self.channels.0.contains_key(&offer.channel_id) {
+            anyhow::bail!("channel {:?} exists", offer.channel_id);
         }
         let (request_send, request_recv) = mesh::channel();
         let (revoke_send, revoke_recv) = mesh::oneshot();
 
-        self.inner.channels.insert(
+        self.channels.0.insert(
             offer.channel_id,
             Channel {
-                revoke_send,
+                revoke_send: Some(revoke_send),
                 offer,
                 state,
                 modify_response_send: None,
                 gpadls: HashMap::new(),
+                is_client_released: false,
             },
         );
 
@@ -739,7 +767,7 @@ impl ClientTask {
             .channel_requests
             .push(TaggedStream::new(offer.channel_id, request_recv));
 
-        Some(OfferInfo {
+        Ok(OfferInfo {
             offer,
             revoke_recv,
             request_send,
@@ -747,8 +775,11 @@ impl ClientTask {
     }
 
     fn handle_offer(&mut self, offer: protocol::OfferChannel) {
-        if let Some(offer_info) = self.create_channel(offer) {
-            tracing::info!(
+        let offer_info = self
+            .create_channel(offer)
+            .expect("channel should not exist");
+
+        tracing::info!(
                 state = %self.state,
                 channel_id = offer.channel_id.0,
                 interface_id = %offer.interface_id,
@@ -756,24 +787,26 @@ impl ClientTask {
                 subchannel_index = offer.subchannel_index,
                 "received offer");
 
-            if let Some(offer) = self.hvsock_tracker.check_offer(&offer_info.offer) {
-                offer.complete(Some(offer_info));
-            } else {
-                if let ClientState::RequestingOffers { offers, .. } = &mut self.state {
-                    offers.push(offer_info);
-                } else {
-                    self.offer_send.send(offer_info);
+        if let Some(offer) = self.hvsock_tracker.check_offer(&offer_info.offer) {
+            offer.complete(Some(offer_info));
+        } else {
+            match &mut self.state {
+                ClientState::Connected { offer_send, .. } => {
+                    offer_send.send(offer_info);
                 }
+                ClientState::RequestingOffers { offers, .. } => {
+                    offers.push(offer_info);
+                }
+                state => unreachable!("invalid client state for OfferChannel: {state}"),
             }
         }
     }
 
-    fn handle_rescind(&mut self, rescind: protocol::RescindChannelOffer) {
+    fn handle_rescind(&mut self, rescind: protocol::RescindChannelOffer) -> TriedRelease {
         tracing::info!(state = %self.state, channel_id = rescind.channel_id.0, "received rescind");
 
-        let channel = &mut self.inner.channels.get_mut(&rescind.channel_id).unwrap();
-
-        let event_flag = match std::mem::replace(&mut channel.state, ChannelState::Offered) {
+        let mut channel = self.channels.get_mut(rescind.channel_id);
+        let event_flag = match std::mem::replace(&mut channel.state, ChannelState::Revoked) {
             ChannelState::Offered => None,
             ChannelState::Opening {
                 connection_id: _,
@@ -790,44 +823,18 @@ impl ClientTask {
                 redirected_event_flag,
                 redirected_event: _,
             } => redirected_event_flag,
+            ChannelState::Revoked => {
+                panic!("channel id {:?} already revoked", rescind.channel_id);
+            }
         };
         if let Some(event_flag) = event_flag {
             self.inner.synic.free_event_flag(event_flag);
         }
 
-        // Teardown all remaining gpadls for this channel. We don't care about GpadlTorndown
-        // responses at this point.
-        for (gpadl_id, gpadl_state) in channel.gpadls.drain() {
-            match gpadl_state {
-                GpadlState::Offered(rpc) => {
-                    rpc.fail(anyhow::anyhow!("channel revoked"));
-                }
-                GpadlState::Created => {}
-                GpadlState::TearingDown { rpcs } => {
-                    self.inner.teardown_gpadls.remove(&gpadl_id).unwrap();
-                    for rpc in rpcs {
-                        rpc.complete(());
-                    }
-                }
-            }
-        }
-
         // Drop the channel and send the revoked message to the client.
-        //
-        // TODO: this is wrong--client requests can still come in after this,
-        // and they will fail to find the channel by channel ID and panic (or
-        // worse, the channel ID will get reused). Either find and drop the
-        // associated incoming request channel here, or keep this channel object
-        // around until the client is done with it.
-        {
-            let channel = self.inner.channels.remove(&rescind.channel_id).unwrap();
-            channel.revoke_send.send(());
-        }
+        channel.revoke_send.take().unwrap().send(());
 
-        // Tell the host we're not referencing the client ID anymore.
-        self.inner.messages.send(&protocol::RelIdReleased {
-            channel_id: rescind.channel_id,
-        });
+        channel.try_release(&mut self.inner.messages)
     }
 
     fn handle_offers_delivered(&mut self) {
@@ -838,8 +845,16 @@ impl ClientTask {
                 offers,
             } => {
                 tracing::info!(version = ?version, "VmBus client connected, offers delivered");
-                self.state = ClientState::Connected { version };
-                rpc.complete(Ok(ConnectResult { version, offers }));
+                let (offer_send, offer_recv) = mesh::channel();
+                self.state = ClientState::Connected {
+                    version,
+                    offer_send,
+                };
+                rpc.complete(Ok(ConnectResult {
+                    version,
+                    offers,
+                    offer_recv,
+                }));
             }
             state => {
                 tracing::warn!(client_state = %state, "invalid client state for OffersDelivered");
@@ -848,46 +863,33 @@ impl ClientTask {
         }
     }
 
-    fn handle_gpadl_created(&mut self, request: protocol::GpadlCreated) {
-        let mut channel = self.inner.channels.get_mut(&request.channel_id);
-        let Some(gpadl_state) = channel
-            .as_mut()
-            .and_then(|channel| channel.gpadls.get_mut(&request.gpadl_id))
-        else {
-            tracing::warn!(
-                gpadl_id = request.gpadl_id.0,
-                "GpadlCreated for unknown gpadl"
-            );
-
-            return;
+    fn handle_gpadl_created(&mut self, request: protocol::GpadlCreated) -> TriedRelease {
+        let mut channel = self.channels.get_mut(request.channel_id);
+        let Some(gpadl_state) = channel.gpadls.get_mut(&request.gpadl_id) else {
+            panic!("GpadlCreated for unknown gpadl {:#x}", request.gpadl_id.0);
         };
 
         let rpc = match std::mem::replace(gpadl_state, GpadlState::Created) {
             GpadlState::Offered(rpc) => rpc,
             old_state => {
-                *gpadl_state = old_state;
-                tracing::warn!(
-                    gpadl_id = request.gpadl_id.0,
-                    channel_id = request.channel_id.0,
-                    ?gpadl_state,
-                    "Invalid state for GpadlCreated"
+                panic!(
+                    "invalid state {old_state:?} for gpadl {:#x}:{:#x}",
+                    request.channel_id.0, request.gpadl_id.0
                 );
-
-                return;
             }
         };
 
         let gpadl_created = request.status == protocol::STATUS_SUCCESS;
-        if !gpadl_created {
-            channel.unwrap().gpadls.remove(&request.gpadl_id).unwrap();
+        if gpadl_created {
+            rpc.complete(Ok(()));
+        } else {
+            channel.gpadls.remove(&request.gpadl_id).unwrap();
             rpc.fail(anyhow::anyhow!(
                 "gpadl creation failed: {:#x}",
                 request.status
             ));
-            return;
         };
-
-        rpc.complete(Ok(()));
+        channel.try_release(&mut self.inner.messages)
     }
 
     fn handle_open_result(&mut self, result: protocol::OpenResult) {
@@ -897,11 +899,7 @@ impl ClientTask {
             "received open result"
         );
 
-        let channel = self
-            .inner
-            .channels
-            .get_mut(&result.channel_id)
-            .expect("channel should exist");
+        let mut channel = self.channels.get_mut(result.channel_id);
 
         let channel_opened = result.status == protocol::STATUS_SUCCESS as u32;
         let old_state = std::mem::replace(&mut channel.state, ChannelState::Offered);
@@ -941,13 +939,9 @@ impl ClientTask {
         }));
     }
 
-    fn handle_gpadl_torndown(&mut self, request: protocol::GpadlTorndown) {
+    fn handle_gpadl_torndown(&mut self, request: protocol::GpadlTorndown) -> TriedRelease {
         let Some(channel_id) = self.inner.teardown_gpadls.remove(&request.gpadl_id) else {
-            tracing::warn!(
-                gpadl_id = request.gpadl_id.0,
-                "Unknown ID or invalid state for GpadlTorndown"
-            );
-            return;
+            panic!("gpadl {:#x} not in teardown list", request.gpadl_id.0);
         };
 
         tracing::debug!(
@@ -956,7 +950,7 @@ impl ClientTask {
             "Received GpadlTorndown"
         );
 
-        let channel = self.inner.channels.get_mut(&channel_id).unwrap();
+        let mut channel = self.channels.get_mut(channel_id);
         let gpadl_state = channel
             .gpadls
             .remove(&request.gpadl_id)
@@ -969,6 +963,7 @@ impl ClientTask {
         for rpc in rpcs {
             rpc.complete(());
         }
+        channel.try_release(&mut self.inner.messages)
     }
 
     fn handle_unload_complete(&mut self) {
@@ -991,23 +986,20 @@ impl ClientTask {
         }
     }
 
-    fn handle_modify_channel_response(&mut self, response: protocol::ModifyChannelResponse) {
-        let Some(sender) = self
-            .inner
-            .channels
-            .get_mut(&response.channel_id)
-            .expect("modify response for unknown channel")
-            .modify_response_send
-            .take()
-        else {
-            tracing::warn!(
-                channel_id = response.channel_id.0,
-                "unexpected modify channel response"
+    fn handle_modify_channel_response(
+        &mut self,
+        response: protocol::ModifyChannelResponse,
+    ) -> TriedRelease {
+        let mut channel = self.channels.get_mut(response.channel_id);
+        let Some(sender) = channel.modify_response_send.take() else {
+            panic!(
+                "unexpected modify channel response for channel {:#x}",
+                response.channel_id.0
             );
-            return;
         };
 
         sender.complete(response.status);
+        channel.try_release(&mut self.inner.messages)
     }
 
     fn handle_tl_connect_result(&mut self, response: protocol::TlConnectResult) {
@@ -1016,7 +1008,8 @@ impl ClientTask {
         }
     }
 
-    fn handle_synic_message(&mut self, data: &[u8]) {
+    /// Returns false if the message was a pause complete message.
+    fn handle_synic_message(&mut self, data: &[u8]) -> bool {
         let msg = Message::parse(data, self.state.get_version()).unwrap();
         tracing::trace!(?msg, "received client message from synic");
 
@@ -1052,12 +1045,15 @@ impl ClientTask {
                 self.handle_rescind(rescind);
             }
             Message::ModifyChannelResponse(response, ..) => {
-                self.handle_modify_channel_response(response)
+                self.handle_modify_channel_response(response);
             }
             Message::TlConnectResult(response, ..) => self.handle_tl_connect_result(response),
             // Unsupported messages.
             Message::CloseReservedChannelResponse(..) => {
                 todo!("Unsupported message {msg:?}")
+            }
+            Message::PauseResponse(..) => {
+                return false;
             }
             // Messages that should only be received by a vmbus server.
             Message::RequestOffers(..)
@@ -1076,10 +1072,13 @@ impl ClientTask {
             | Message::TlConnectRequest2(..)
             | Message::TlConnectRequest(..)
             | Message::ModifyChannel(..)
-            | Message::ModifyConnection(..) => {
+            | Message::ModifyConnection(..)
+            | Message::Pause(..)
+            | Message::Resume(..) => {
                 unreachable!("Client received server message {msg:?}");
             }
         }
+        true
     }
 
     fn handle_open_channel(
@@ -1087,28 +1086,30 @@ impl ClientTask {
         channel_id: ChannelId,
         rpc: FailableRpc<OpenRequest, OpenOutput>,
     ) {
-        let channel = self
-            .inner
-            .channels
-            .get_mut(&channel_id)
-            .expect("invalid channel");
-
-        if !matches!(channel.state, ChannelState::Offered) {
-            rpc.fail(anyhow::anyhow!("invalid channel state: {}", channel.state));
-            return;
+        let mut channel = self.channels.get_mut(channel_id);
+        match &channel.state {
+            ChannelState::Offered => {}
+            ChannelState::Revoked => {
+                rpc.fail(anyhow::anyhow!("channel revoked"));
+                return;
+            }
+            state => {
+                rpc.fail(anyhow::anyhow!("invalid channel state: {}", state));
+                return;
+            }
         }
 
         tracing::info!(channel_id = channel_id.0, "opening channel on host");
         let (request, rpc) = rpc.split();
         let open_data = &request.open_data;
 
-        let supports_interrupt_redirection = if let ClientState::Connected { version } = self.state
-        {
-            version.feature_flags.guest_specified_signal_parameters()
-                || version.feature_flags.channel_interrupt_redirection()
-        } else {
-            false
-        };
+        let supports_interrupt_redirection =
+            if let ClientState::Connected { version, .. } = self.state {
+                version.feature_flags.guest_specified_signal_parameters()
+                    || version.feature_flags.channel_interrupt_redirection()
+            } else {
+                false
+            };
 
         if !supports_interrupt_redirection && open_data.event_flag != channel_id.0 as u16 {
             rpc.fail(anyhow::anyhow!(
@@ -1185,12 +1186,7 @@ impl ClientTask {
         channel_id: ChannelId,
         request: RestoreRequest,
     ) -> Result<OpenOutput> {
-        let channel = self
-            .inner
-            .channels
-            .get_mut(&channel_id)
-            .expect("invalid channel");
-
+        let mut channel = self.channels.get_mut(channel_id);
         if !matches!(channel.state, ChannelState::Restored) {
             anyhow::bail!("invalid channel state: {}", channel.state);
         }
@@ -1222,12 +1218,7 @@ impl ClientTask {
 
     fn handle_gpadl(&mut self, channel_id: ChannelId, rpc: FailableRpc<GpadlRequest, ()>) {
         let (request, rpc) = rpc.split();
-        let channel = self
-            .inner
-            .channels
-            .get_mut(&channel_id)
-            .expect("invalid channel");
-
+        let mut channel = self.channels.get_mut(channel_id);
         if channel
             .gpadls
             .insert(request.id, GpadlState::Offered(rpc))
@@ -1281,12 +1272,7 @@ impl ClientTask {
 
     fn handle_gpadl_teardown(&mut self, channel_id: ChannelId, rpc: Rpc<GpadlId, ()>) {
         let (gpadl_id, rpc) = rpc.split();
-        let channel = self
-            .inner
-            .channels
-            .get_mut(&channel_id)
-            .expect("invalid channel");
-
+        let mut channel = self.channels.get_mut(channel_id);
         let Some(gpadl_state) = channel.gpadls.get_mut(&gpadl_id) else {
             tracing::warn!(
                 gpadl_id = gpadl_id.0,
@@ -1329,26 +1315,8 @@ impl ClientTask {
     }
 
     fn handle_close_channel(&mut self, channel_id: ChannelId) {
-        if let ChannelState::Opened {
-            redirected_event_flag,
-            ..
-        } = *self.inner.channel_state(channel_id).unwrap()
-        {
-            if let Some(flag) = redirected_event_flag {
-                self.inner.synic.free_event_flag(flag);
-            }
-            tracing::info!(channel_id = channel_id.0, "closing channel on host");
-            self.inner
-                .messages
-                .send(&protocol::CloseChannel { channel_id });
-            self.inner.channels.get_mut(&channel_id).unwrap().state = ChannelState::Offered;
-        } else {
-            tracing::warn!(
-                id = %channel_id.0,
-                channel_state = %self.inner.channel_state(channel_id).unwrap(),
-                "invalid channel state for close channel"
-            );
-        }
+        let mut channel = self.channels.get_mut(channel_id);
+        self.inner.close_channel(channel_id, &mut channel);
     }
 
     fn handle_modify_channel(&mut self, channel_id: ChannelId, rpc: Rpc<ModifyRequest, i32>) {
@@ -1356,12 +1324,7 @@ impl ClientTask {
         // ModifyChannelResponse. This means we don't need to worry about sending a ChannelResponse
         // if that weren't supported.
         assert!(self.check_version(Version::Iron));
-        let channel = self
-            .inner
-            .channels
-            .get_mut(&channel_id)
-            .unwrap_or_else(|| panic!("modify request for unknown channel {channel_id:?}"));
-
+        let mut channel = self.channels.get_mut(channel_id);
         if channel.modify_response_send.is_some() {
             panic!("duplicate channel modify request {channel_id:?}");
         }
@@ -1379,22 +1342,6 @@ impl ClientTask {
     }
 
     fn handle_channel_request(&mut self, channel_id: ChannelId, request: ChannelRequest) {
-        if let Some(state) = self.inner.channel_state(channel_id) {
-            tracing::trace!(
-                id = %channel_id.0,
-                request = %request,
-                %state,
-                "received client request"
-            );
-        } else {
-            tracing::warn!(
-                id = %channel_id.0,
-                request = %request,
-                "received client request for unknown channel"
-            );
-            return;
-        }
-
         match request {
             ChannelRequest::Open(rpc) => self.handle_open_channel(channel_id, rpc),
             ChannelRequest::Restore(rpc) => {
@@ -1402,7 +1349,9 @@ impl ClientTask {
             }
             ChannelRequest::Gpadl(req) => self.handle_gpadl(channel_id, req),
             ChannelRequest::TeardownGpadl(req) => self.handle_gpadl_teardown(channel_id, req),
-            ChannelRequest::Close => self.handle_close_channel(channel_id),
+            ChannelRequest::Close(req) => {
+                req.handle_sync(|()| self.handle_close_channel(channel_id))
+            }
             ChannelRequest::Modify(req) => self.handle_modify_channel(channel_id, req),
         }
     }
@@ -1418,73 +1367,120 @@ impl ClientTask {
             }
             TaskRequest::PostRestore(rpc) => rpc.handle_sync(|()| self.handle_post_restore()),
             TaskRequest::Start => self.handle_start(),
-            TaskRequest::Stop(rpc) => rpc.handle(|()| self.handle_stop()).await,
+            TaskRequest::Stop(rpc) => rpc.handle(async |()| self.handle_stop().await).await,
         }
     }
 
     /// Makes sure a channel is closed if the channel request stream was dropped.
-    fn handle_device_removal(&mut self, channel_id: ChannelId) {
-        if let Some(ChannelState::Opened { .. }) = self.inner.channel_state(channel_id) {
+    fn handle_device_removal(&mut self, channel_id: ChannelId) -> TriedRelease {
+        let mut channel = self.channels.get_mut(channel_id);
+        channel.is_client_released = true;
+        // Close the channel if it is still open.
+        if let ChannelState::Opened { .. } = channel.state {
             tracing::warn!(
                 channel_id = channel_id.0,
                 "Channel dropped without closing first"
             );
-
-            self.handle_close_channel(channel_id);
+            self.inner.close_channel(channel_id, &mut channel);
         }
+        channel.try_release(&mut self.inner.messages)
     }
 
     /// Determines if the client is connected with at least the specified version.
     fn check_version(&self, version: Version) -> bool {
-        matches!(self.state, ClientState::Connected { version: v } if v.version >= version)
+        matches!(self.state, ClientState::Connected { version: v, .. } if v.version >= version)
     }
 
     fn handle_start(&mut self) {
         assert!(!self.running);
         self.msg_source.resume_message_stream();
+        self.inner.messages.resume();
         self.running = true;
     }
 
     async fn handle_stop(&mut self) {
         assert!(self.running);
+
         loop {
-            self.msg_source.pause_message_stream();
-
-            // Process messages until we hit EOF.
-            tracing::debug!("draining messages");
-            let mut buf = [0; protocol::MAX_MESSAGE_SIZE];
-            loop {
-                let size = self
-                    .msg_source
-                    .recv(&mut buf)
-                    .await
-                    .expect("Fatal error reading messages from synic");
-
-                if size == 0 {
-                    break;
-                }
-
-                self.handle_synic_message(&buf[..size]);
+            // Process messages until there are no more channels waiting for
+            // responses. This is necessary to ensure that the saved state does
+            // not have to support encoding revoked channels for which we are
+            // waiting for GPADL or modify responses.
+            while let Some((id, request)) = self.channels.revoked_channel_with_pending_request() {
+                tracelimit::info_ratelimited!(
+                    channel_id = id.0,
+                    request,
+                    "waiting for responses for channel"
+                );
+                assert!(self.process_next_message().await);
             }
 
-            // Flush any pending outgoing messages. This needs to be done with
-            // the incoming message stream active; otherwise, the host may stop
-            // reading our sent messages.
-            //
-            // FUTURE: We can save these pending messages instead, but older
-            // versions of OpenHCL cannot restore them. Remove this code once
-            // those older versions are no longer supported (e.g. late 2025).
-            if self.inner.messages.is_empty() {
+            if self.can_pause_resume() {
+                self.inner.messages.pause();
+            } else {
+                // Mask the sint to pause the message stream. The host will
+                // retry any queued messages after the sint is unmasked.
+                self.msg_source.pause_message_stream();
+                self.inner.messages.force_pause();
+            }
+
+            // Continue processing messages until we hit EOF or get a pause
+            // response.
+            while self.process_next_message().await {}
+
+            // Ensure there are still no pending requests. If there are, resume
+            // and go around again.
+            if self
+                .channels
+                .revoked_channel_with_pending_request()
+                .is_none()
+            {
                 break;
             }
-            tracing::info!("flushing outgoing messages");
-            self.msg_source.resume_message_stream();
-            self.inner.messages.flush_messages().await;
+            if !self.can_pause_resume() {
+                self.msg_source.resume_message_stream();
+            }
+            self.inner.messages.resume();
         }
 
         tracing::debug!("messages drained");
         // Because the run loop awaits all async operations, there is no need for rundown.
         self.running = false;
+    }
+
+    async fn process_next_message(&mut self) -> bool {
+        let mut buf = [0; protocol::MAX_MESSAGE_SIZE];
+        let recv = self.msg_source.recv(&mut buf);
+        // Concurrently flush until there is no more work to do, since pending
+        // messages may be blocking responses from the host.
+        let flush = async {
+            self.inner.messages.flush_messages().await;
+            std::future::pending().await
+        };
+        let size = (recv, flush)
+            .race()
+            .await
+            .expect("Fatal error reading messages from synic");
+        if size == 0 {
+            return false;
+        }
+        self.handle_synic_message(&buf[..size])
+    }
+
+    /// Returns whether the server supports in-band messages to pause/resume the
+    /// message stream.
+    ///
+    /// For hosts where this is not supported, we mask the sint to pause new
+    /// messages being queued to the sint, then drain the messages. This does
+    /// not work with some host implementations, which cannot support draining
+    /// the message queue while the sint is masked (due to the use of
+    /// HvPostMessageDirect).
+    fn can_pause_resume(&self) -> bool {
+        if let ClientState::Connected { version, .. } = self.state {
+            version.feature_flags.pause_resume()
+        } else {
+            false
+        }
     }
 
     async fn run(&mut self) {
@@ -1536,7 +1532,9 @@ impl ClientTask {
                 r = channel_requests => {
                     match r.unwrap() {
                         (id, Some(request)) => self.handle_channel_request(id, request),
-                        (id, _) => self.handle_device_removal(id),
+                        (id, _) => {
+                            self.handle_device_removal(id);
+                        }
                     }
                 }
                 r = message_recv => {
@@ -1555,6 +1553,29 @@ impl ClientTask {
                 }
                 complete => break,
             }
+        }
+    }
+}
+
+impl ClientTaskInner {
+    fn close_channel(&mut self, channel_id: ChannelId, channel: &mut Channel) {
+        if let ChannelState::Opened {
+            redirected_event_flag,
+            ..
+        } = channel.state
+        {
+            if let Some(flag) = redirected_event_flag {
+                self.synic.free_event_flag(flag);
+            }
+            tracing::info!(channel_id = channel_id.0, "closing channel on host");
+            self.messages.send(&protocol::CloseChannel { channel_id });
+            channel.state = ChannelState::Offered;
+        } else {
+            tracing::warn!(
+                id = %channel_id.0,
+                channel_state = %channel.state,
+                "invalid channel state for close channel"
+            );
         }
     }
 }
@@ -1579,6 +1600,14 @@ struct OutgoingMessages {
     poster: Box<dyn PollPostMessage>,
     #[inspect(with = "|x| x.len()")]
     queued: VecDeque<OutgoingMessage>,
+    state: OutgoingMessageState,
+}
+
+#[derive(Inspect, PartialEq, Eq, Debug)]
+enum OutgoingMessageState {
+    Running,
+    SendingPauseMessage,
+    Paused,
 }
 
 impl OutgoingMessages {
@@ -1598,7 +1627,7 @@ impl OutgoingMessages {
     ) {
         tracing::trace!(typ = ?T::MESSAGE_TYPE, "Sending message to host");
         let msg = OutgoingMessage::with_data(msg, data);
-        if self.queued.is_empty() {
+        if self.queued.is_empty() && self.state == OutgoingMessageState::Running {
             let r = self.poster.poll_post_message(
                 &mut Context::from_waker(std::task::Waker::noop()),
                 protocol::VMBUS_MESSAGE_REDIRECT_CONNECTION_ID,
@@ -1614,20 +1643,55 @@ impl OutgoingMessages {
     }
 
     async fn flush_messages(&mut self) {
-        poll_fn(|cx| {
-            while let Some(msg) = self.queued.front() {
-                ready!(self.poster.poll_post_message(
+        let mut send = async |msg: &OutgoingMessage| {
+            poll_fn(|cx| {
+                self.poster.poll_post_message(
                     cx,
                     protocol::VMBUS_MESSAGE_REDIRECT_CONNECTION_ID,
                     1,
                     msg.data(),
-                ));
-                tracing::trace!("sent queued message");
-                self.queued.pop_front();
+                )
+            })
+            .await
+        };
+        match self.state {
+            OutgoingMessageState::Running => {
+                while let Some(msg) = self.queued.front() {
+                    send(msg).await;
+                    tracing::trace!("sent queued message");
+                    self.queued.pop_front();
+                }
             }
-            Poll::Ready(())
-        })
-        .await
+            OutgoingMessageState::SendingPauseMessage => {
+                send(&OutgoingMessage::new(&protocol::Pause)).await;
+                tracing::trace!("sent pause message");
+                self.state = OutgoingMessageState::Paused;
+            }
+            OutgoingMessageState::Paused => {}
+        }
+    }
+
+    /// Pause by sending a pause message to the host. This will cause the host
+    /// to stop sending messages after sending a pause response.
+    fn pause(&mut self) {
+        assert_eq!(self.state, OutgoingMessageState::Running);
+        self.state = OutgoingMessageState::SendingPauseMessage;
+        // Queue a resume message to be sent later.
+        self.queued
+            .push_front(OutgoingMessage::new(&protocol::Resume));
+    }
+
+    /// Force a pause by setting the state to Paused. This is used when the
+    /// host does not support in-band pause/resume messages, in which case
+    /// the SINT is masked to force the host to stop sending messages.
+    fn force_pause(&mut self) {
+        assert_eq!(self.state, OutgoingMessageState::Running);
+        self.state = OutgoingMessageState::Paused;
+    }
+
+    fn resume(&mut self) {
+        assert_eq!(self.state, OutgoingMessageState::Paused);
+        self.state = OutgoingMessageState::Running;
     }
 
     fn is_empty(&self) -> bool {
@@ -1638,8 +1702,6 @@ impl OutgoingMessages {
 #[derive(Inspect)]
 struct ClientTaskInner {
     messages: OutgoingMessages,
-    #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|id| id.0)")]
-    channels: HashMap<ChannelId, Channel>,
     #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|id| id.0)")]
     teardown_gpadls: HashMap<GpadlId, ChannelId>,
     #[inspect(skip)]
@@ -1655,9 +1717,71 @@ struct SynicState {
     event_flag_state: Vec<bool>,
 }
 
-impl ClientTaskInner {
-    fn channel_state(&self, channel_id: ChannelId) -> Option<&ChannelState> {
-        self.channels.get(&channel_id).map(|c| &c.state)
+#[derive(Inspect, Default)]
+#[inspect(transparent)]
+struct ChannelList(
+    #[inspect(with = "|x| inspect::iter_by_key(x).map_key(|id| id.0)")] HashMap<ChannelId, Channel>,
+);
+
+/// A reference to a channel that can be used to remove the channel from the map
+/// as well.
+struct ChannelRef<'a>(hash_map::OccupiedEntry<'a, ChannelId, Channel>);
+
+/// A tag value used to indicate that [`ChannelRef::try_release`] has been called.
+/// This is useful as a return value for methods that might transition a channel
+/// into a fully released state.
+struct TriedRelease(());
+
+impl ChannelRef<'_> {
+    /// If the channel has been fully released (revoked, released by the client,
+    /// no pending requests), notifes the server and removes this channel from
+    /// the map.
+    fn try_release(self, messages: &mut OutgoingMessages) -> TriedRelease {
+        if self.is_client_released
+            && matches!(self.state, ChannelState::Revoked)
+            && self.pending_request().is_none()
+        {
+            let channel_id = *self.0.key();
+            tracelimit::info_ratelimited!(channel_id = channel_id.0, "releasing channel");
+            messages.send(&protocol::RelIdReleased { channel_id });
+            self.0.remove();
+        }
+        TriedRelease(())
+    }
+}
+
+impl Deref for ChannelRef<'_> {
+    type Target = Channel;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.get()
+    }
+}
+
+impl DerefMut for ChannelRef<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.get_mut()
+    }
+}
+
+impl ChannelList {
+    fn revoked_channel_with_pending_request(&self) -> Option<(ChannelId, &'static str)> {
+        self.0.iter().find_map(|(&id, channel)| {
+            if !matches!(channel.state, ChannelState::Revoked) {
+                return None;
+            }
+            Some((id, channel.pending_request()?))
+        })
+    }
+
+    #[track_caller]
+    fn get_mut(&mut self, channel_id: ChannelId) -> ChannelRef<'_> {
+        match self.0.entry(channel_id) {
+            hash_map::Entry::Occupied(entry) => ChannelRef(entry),
+            hash_map::Entry::Vacant(_) => {
+                panic!("channel {:?} not found", channel_id);
+            }
+        }
     }
 }
 
@@ -1732,9 +1856,9 @@ mod tests {
     use super::*;
     use futures_concurrency::future::Join;
     use guid::Guid;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::timer::PolledTimer;
-    use pal_async::DefaultDriver;
     use protocol::TargetInfo;
     use std::fmt::Debug;
     use std::task::ready;
@@ -1802,15 +1926,15 @@ mod tests {
             self.send.send(msg);
         }
 
-        async fn connect(&mut self, client: &mut VmbusClient) {
-            self.connect_with_channels(client, |_| {}).await;
+        async fn connect(&mut self, client: &mut VmbusClient) -> ConnectResult {
+            self.connect_with_channels(client, |_| {}).await
         }
 
         async fn connect_with_channels(
             &mut self,
             client: &mut VmbusClient,
             send_offers: impl FnOnce(&mut Self),
-        ) -> Vec<OfferInfo> {
+        ) -> ConnectResult {
             let client_connect = client.connect(0, None, Guid::ZERO);
 
             let server_connect = async {
@@ -1840,15 +1964,20 @@ mod tests {
             let connection = connection.unwrap();
             assert_eq!(connection.version.version, Version::Copper);
             assert_eq!(connection.version.feature_flags, SUPPORTED_FEATURE_FLAGS);
-            connection.offers
+            connection
         }
 
         async fn get_channel(&mut self, client: &mut VmbusClient) -> OfferInfo {
-            let [channel] = self.get_channels(client, 1).await.try_into().unwrap();
+            let [channel] = self
+                .get_channels(client, 1)
+                .await
+                .offers
+                .try_into()
+                .unwrap();
             channel
         }
 
-        async fn get_channels(&mut self, client: &mut VmbusClient, count: usize) -> Vec<OfferInfo> {
+        async fn get_channels(&mut self, client: &mut VmbusClient, count: usize) -> ConnectResult {
             self.connect_with_channels(client, |this| {
                 for i in 0..count {
                     let offer = protocol::OfferChannel {
@@ -1871,6 +2000,20 @@ mod tests {
                 }
             })
             .await
+        }
+
+        async fn stop_client(&mut self, client: &mut VmbusClient) {
+            let client_stop = client.stop();
+            let server_stop = async {
+                check_message(self.next().await.unwrap(), protocol::Pause);
+                self.send(in_msg(MessageType::PAUSE_RESPONSE, protocol::PauseResponse));
+            };
+            (client_stop, server_stop).join().await;
+        }
+
+        async fn start_client(&mut self, client: &mut VmbusClient) {
+            client.start();
+            check_message(self.next().await.unwrap(), protocol::Resume);
         }
     }
 
@@ -1898,13 +2041,17 @@ mod tests {
                 // FUTURE: use some kind of deterministic test framework for this to
                 // allow for reproducible tests.
                 let mut b = [0];
-                getrandom::getrandom(&mut b).unwrap();
+                getrandom::fill(&mut b).unwrap();
                 if b[0] % 4 == 0 {
                     self.deadline =
                         Some(pal_async::timer::Instant::now() + Duration::from_millis(10));
                 } else {
-                    self.sender
-                        .send(OutgoingMessage::from_message(msg).unwrap());
+                    let msg = OutgoingMessage::from_message(msg).unwrap();
+                    tracing::info!(
+                        msg = ?MessageHeader::read_from_prefix(msg.data()),
+                        "sending message"
+                    );
+                    self.sender.send(msg);
                     break Poll::Ready(());
                 }
             }
@@ -1927,6 +2074,7 @@ mod tests {
 
     struct TestMessageSource {
         msg_recv: mesh::Receiver<Vec<u8>>,
+        paused: bool,
     }
 
     impl AsyncRecv for TestMessageSource {
@@ -1935,7 +2083,16 @@ mod tests {
             cx: &mut Context<'_>,
             mut bufs: &mut [std::io::IoSliceMut<'_>],
         ) -> Poll<std::io::Result<usize>> {
-            let value = ready!(self.msg_recv.poll_recv(cx)).unwrap();
+            let value = match self.msg_recv.poll_recv(cx) {
+                Poll::Ready(v) => v.unwrap(),
+                Poll::Pending => {
+                    if self.paused {
+                        return Poll::Ready(Ok(0));
+                    } else {
+                        return Poll::Pending;
+                    }
+                }
+            };
             let mut remaining = value.as_slice();
             let mut total_size = 0;
             while !remaining.is_empty() && !bufs.is_empty() {
@@ -1950,39 +2107,47 @@ mod tests {
         }
     }
 
-    impl VmbusMessageSource for TestMessageSource {}
+    impl VmbusMessageSource for TestMessageSource {
+        fn pause_message_stream(&mut self) {
+            self.paused = true;
+        }
 
-    fn test_init(driver: &DefaultDriver) -> (TestServer, VmbusClient, mesh::Receiver<OfferInfo>) {
+        fn resume_message_stream(&mut self) {
+            self.paused = false;
+        }
+    }
+
+    fn test_init(driver: &DefaultDriver) -> (TestServer, VmbusClient) {
         let (msg_send, msg_recv) = mesh::channel();
         let (synic_send, synic_recv) = mesh::channel();
         let server = TestServer {
             messages: synic_recv,
             send: msg_send,
         };
-        let (offer_send, offer_recv) = mesh::channel();
-
         let mut client = VmbusClientBuilder::new(
             NoopSynicEvents,
-            TestMessageSource { msg_recv },
+            TestMessageSource {
+                msg_recv,
+                paused: false,
+            },
             TestServerClient {
                 sender: synic_send,
                 deadline: None,
                 timer: PolledTimer::new(driver),
             },
         )
-        .build(driver, offer_send);
+        .build(driver);
         client.start();
-        (server, client, offer_recv)
+        (server, client)
     }
 
     #[async_test]
     async fn test_initiate_contact_success(driver: DefaultDriver) {
-        let (mut server, client, _) = test_init(&driver);
+        let (mut server, client) = test_init(&driver);
         let _recv = client
             .access
             .client_request_send
             .call(ClientRequest::Connect, ConnectRequest::default());
-
         check_message(
             server.next().await.unwrap(),
             protocol::InitiateContact2 {
@@ -2004,7 +2169,7 @@ mod tests {
 
     #[async_test]
     async fn test_connect_success(driver: DefaultDriver) {
-        let (mut server, mut client, _) = test_init(&driver);
+        let (mut server, mut client) = test_init(&driver);
         let client_connect = client.connect(0, None, Guid::ZERO);
 
         let server_connect = async {
@@ -2052,7 +2217,7 @@ mod tests {
 
     #[async_test]
     async fn test_feature_flags(driver: DefaultDriver) {
-        let (mut server, mut client, _) = test_init(&driver);
+        let (mut server, mut client) = test_init(&driver);
         let client_connect = client.connect(0, None, Guid::ZERO);
 
         let server_connect = async {
@@ -2105,7 +2270,7 @@ mod tests {
 
     #[async_test]
     async fn test_client_id(driver: DefaultDriver) {
-        let (mut server, client, _) = test_init(&driver);
+        let (mut server, client) = test_init(&driver);
         let initiate_contact = ConnectRequest {
             client_id: VMBUS_TEST_CLIENT_ID,
             ..Default::default()
@@ -2131,12 +2296,12 @@ mod tests {
                 },
                 client_id: VMBUS_TEST_CLIENT_ID,
             },
-        )
+        );
     }
 
     #[async_test]
     async fn test_version_negotiation(driver: DefaultDriver) {
-        let (mut server, mut client, _) = test_init(&driver);
+        let (mut server, mut client) = test_init(&driver);
         let client_connect = client.connect(0, None, Guid::ZERO);
 
         let server_connect = async {
@@ -2206,7 +2371,7 @@ mod tests {
 
     #[async_test]
     async fn test_open_channel_success(driver: DefaultDriver) {
-        let (mut server, mut client, _) = test_init(&driver);
+        let (mut server, mut client) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
 
         let recv = channel.request_send.call(
@@ -2256,7 +2421,7 @@ mod tests {
 
     #[async_test]
     async fn test_open_channel_fail(driver: DefaultDriver) {
-        let (mut server, mut client, _) = test_init(&driver);
+        let (mut server, mut client) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
 
         let recv = channel.request_send.call(
@@ -2306,7 +2471,7 @@ mod tests {
 
     #[async_test]
     async fn test_modify_channel(driver: DefaultDriver) {
-        let (mut server, mut client, _) = test_init(&driver);
+        let (mut server, mut client) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
 
         // N.B. A real server requires the channel to be open before sending this, but the test
@@ -2338,13 +2503,12 @@ mod tests {
 
     #[async_test]
     async fn test_save_restore_connected(driver: DefaultDriver) {
-        let s0;
-        {
-            let (mut server, mut client, _) = test_init(&driver);
-            server.connect(&mut client).await;
-            s0 = client.save().await;
-        }
-        let (_server, mut client, _) = test_init(&driver);
+        let (mut server, mut client) = test_init(&driver);
+        server.connect(&mut client).await;
+        server.stop_client(&mut client).await;
+        let s0 = client.save().await;
+        let builder = client.sever().await;
+        let mut client = builder.build(&driver);
         client.restore(s0.clone()).await.unwrap();
 
         let s1 = client.save().await;
@@ -2354,24 +2518,77 @@ mod tests {
 
     #[async_test]
     async fn test_save_restore_connected_with_channel(driver: DefaultDriver) {
-        let s0;
-        let c0;
-        {
-            let (mut server, mut client, _) = test_init(&driver);
-            c0 = server.get_channel(&mut client).await;
-            s0 = client.save().await;
-        }
-        let (_server, mut client, _) = test_init(&driver);
-        let (_, channels) = client.restore(s0.clone()).await.unwrap();
-
+        let (mut server, mut client) = test_init(&driver);
+        let c0 = server.get_channel(&mut client).await;
+        server.stop_client(&mut client).await;
+        let s0 = client.save().await;
+        let builder = client.sever().await;
+        let mut client = builder.build(&driver);
+        let connection = client.restore(s0.clone()).await.unwrap().unwrap();
         let s1 = client.save().await;
         assert_eq!(s0, s1);
-        assert_eq!(channels[0].offer.offer, c0.offer);
+        assert_eq!(connection.offers[0].offer, c0.offer);
+    }
+
+    #[async_test]
+    async fn test_save_restore_connected_with_revoked_channel(driver: DefaultDriver) {
+        let (mut server, mut client) = test_init(&driver);
+        let c0 = server.get_channel(&mut client).await;
+        server.send(in_msg(
+            MessageType::RESCIND_CHANNEL_OFFER,
+            protocol::RescindChannelOffer {
+                channel_id: ChannelId(0),
+            },
+        ));
+        c0.revoke_recv.await.unwrap();
+        let rpc = c0.request_send.call(
+            ChannelRequest::Modify,
+            ModifyRequest::TargetVp { target_vp: 1 },
+        );
+
+        check_message(
+            server.next().await.unwrap(),
+            protocol::ModifyChannel {
+                channel_id: ChannelId(0),
+                target_vp: 1,
+            },
+        );
+
+        let client_stop = client.stop();
+        let server_stop = async {
+            server.send(in_msg(
+                MessageType::MODIFY_CHANNEL_RESPONSE,
+                protocol::ModifyChannelResponse {
+                    channel_id: ChannelId(0),
+                    status: protocol::STATUS_SUCCESS,
+                },
+            ));
+            check_message(server.next().await.unwrap(), protocol::Pause);
+            server.send(in_msg(MessageType::PAUSE_RESPONSE, protocol::PauseResponse));
+        };
+        (client_stop, server_stop).join().await;
+
+        rpc.await.unwrap();
+
+        let s0 = client.save().await;
+        let builder = client.sever().await;
+        let mut client = builder.build(&driver);
+        let connection = client.restore(s0.clone()).await.unwrap().unwrap();
+        let s1 = client.save().await;
+        assert_eq!(s0, s1);
+        assert!(connection.offers.is_empty());
+        server.start_client(&mut client).await;
+        check_message(
+            server.next().await.unwrap(),
+            protocol::RelIdReleased {
+                channel_id: ChannelId(0),
+            },
+        );
     }
 
     #[async_test]
     async fn test_connect_fails_on_incorrect_state(driver: DefaultDriver) {
-        let (mut server, mut client, _) = test_init(&driver);
+        let (mut server, mut client) = test_init(&driver);
         server.connect(&mut client).await;
         let err = client.connect(0, None, Guid::ZERO).await.unwrap_err();
         assert!(matches!(err, ConnectError::InvalidState), "{:?}", err);
@@ -2379,9 +2596,9 @@ mod tests {
 
     #[async_test]
     async fn test_hot_add_remove(driver: DefaultDriver) {
-        let (mut server, mut client, mut offer_recv) = test_init(&driver);
+        let (mut server, mut client) = test_init(&driver);
 
-        server.connect(&mut client).await;
+        let mut connection = server.connect(&mut client).await;
         let offer = protocol::OfferChannel {
             interface_id: Guid::new_random(),
             instance_id: Guid::new_random(),
@@ -2399,7 +2616,7 @@ mod tests {
         };
 
         server.send(in_msg(MessageType::OFFER_CHANNEL, offer));
-        let info = offer_recv.next().await.unwrap();
+        let info = connection.offer_recv.next().await.unwrap();
 
         assert_eq!(offer, info.offer);
 
@@ -2410,19 +2627,20 @@ mod tests {
             },
         ));
 
+        info.revoke_recv.await.unwrap();
+        drop(info.request_send);
+
         check_message(
             server.next().await.unwrap(),
             protocol::RelIdReleased {
                 channel_id: ChannelId(5),
             },
         );
-
-        info.revoke_recv.await.unwrap();
     }
 
     #[async_test]
     async fn test_gpadl_success(driver: DefaultDriver) {
-        let (mut server, mut client, _) = test_init(&driver);
+        let (mut server, mut client) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
         let recv = channel.request_send.call(
             ChannelRequest::Gpadl,
@@ -2479,7 +2697,7 @@ mod tests {
 
     #[async_test]
     async fn test_gpadl_fail(driver: DefaultDriver) {
-        let (mut server, mut client, _) = test_init(&driver);
+        let (mut server, mut client) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
         let recv = channel.request_send.call(
             ChannelRequest::Gpadl,
@@ -2515,14 +2733,63 @@ mod tests {
 
     #[async_test]
     async fn test_gpadl_with_revoke(driver: DefaultDriver) {
-        let (mut server, mut client, _offer_recv) = test_init(&driver);
+        let (mut server, mut client) = test_init(&driver);
         let channel = server.get_channel(&mut client).await;
         let channel_id = ChannelId(0);
-        let gpadl_id = GpadlId(1);
-        let recv = channel.request_send.call(
+        for gpadl_id in [1, 2, 3].map(GpadlId) {
+            let recv = channel.request_send.call(
+                ChannelRequest::Gpadl,
+                GpadlRequest {
+                    id: gpadl_id,
+                    count: 1,
+                    buf: vec![3],
+                },
+            );
+
+            check_message_with_data(
+                server.next().await.unwrap(),
+                protocol::GpadlHeader {
+                    channel_id,
+                    gpadl_id,
+                    len: 8,
+                    count: 1,
+                },
+                0x3u64.as_bytes(),
+            );
+
+            server.send(in_msg(
+                MessageType::GPADL_CREATED,
+                protocol::GpadlCreated {
+                    channel_id,
+                    gpadl_id,
+                    status: protocol::STATUS_SUCCESS,
+                },
+            ));
+
+            recv.await.unwrap().unwrap();
+        }
+
+        let rpc = channel
+            .request_send
+            .call(ChannelRequest::TeardownGpadl, GpadlId(1));
+
+        check_message(
+            server.next().await.unwrap(),
+            protocol::GpadlTeardown {
+                channel_id,
+                gpadl_id: GpadlId(1),
+            },
+        );
+
+        server.send(in_msg(
+            MessageType::RESCIND_CHANNEL_OFFER,
+            protocol::RescindChannelOffer { channel_id },
+        ));
+
+        let recv = channel.request_send.call_failable(
             ChannelRequest::Gpadl,
             GpadlRequest {
-                id: gpadl_id,
+                id: GpadlId(4),
                 count: 1,
                 buf: vec![3],
             },
@@ -2532,7 +2799,7 @@ mod tests {
             server.next().await.unwrap(),
             protocol::GpadlHeader {
                 channel_id,
-                gpadl_id,
+                gpadl_id: GpadlId(4),
                 len: 8,
                 count: 1,
             },
@@ -2543,28 +2810,41 @@ mod tests {
             MessageType::GPADL_CREATED,
             protocol::GpadlCreated {
                 channel_id,
-                gpadl_id,
-                status: protocol::STATUS_SUCCESS,
+                gpadl_id: GpadlId(4),
+                status: protocol::STATUS_UNSUCCESSFUL,
             },
         ));
 
-        recv.await.unwrap().unwrap();
+        server.send(in_msg(
+            MessageType::GPADL_TORNDOWN,
+            protocol::GpadlTorndown {
+                gpadl_id: GpadlId(1),
+            },
+        ));
+
+        rpc.await.unwrap();
+        recv.await.unwrap_err();
+
+        channel.revoke_recv.await.unwrap();
 
         let rpc = channel
             .request_send
-            .call(ChannelRequest::TeardownGpadl, gpadl_id);
+            .call(ChannelRequest::TeardownGpadl, GpadlId(2));
+        drop(channel.request_send);
 
         check_message(
             server.next().await.unwrap(),
             protocol::GpadlTeardown {
                 channel_id,
-                gpadl_id,
+                gpadl_id: GpadlId(2),
             },
         );
 
         server.send(in_msg(
-            MessageType::RESCIND_CHANNEL_OFFER,
-            protocol::RescindChannelOffer { channel_id },
+            MessageType::GPADL_TORNDOWN,
+            protocol::GpadlTorndown {
+                gpadl_id: GpadlId(2),
+            },
         ));
 
         rpc.await.unwrap();
@@ -2573,13 +2853,11 @@ mod tests {
             server.next().await.unwrap(),
             protocol::RelIdReleased { channel_id },
         );
-
-        channel.revoke_recv.await.unwrap();
     }
 
     #[async_test]
     async fn test_modify_connection(driver: DefaultDriver) {
-        let (mut server, mut client, _) = test_init(&driver);
+        let (mut server, mut client) = test_init(&driver);
         server.connect(&mut client).await;
         let call = client.access.client_request_send.call(
             ClientRequest::Modify,
@@ -2612,7 +2890,7 @@ mod tests {
 
     #[async_test]
     async fn test_hvsock(driver: DefaultDriver) {
-        let (mut server, mut client, _offer_recv) = test_init(&driver);
+        let (mut server, mut client) = test_init(&driver);
         server.connect(&mut client).await;
         let request = HvsockConnectRequest {
             service_id: Guid::new_random(),
@@ -2649,12 +2927,12 @@ mod tests {
 
     #[async_test]
     async fn test_synic_event_flags(driver: DefaultDriver) {
-        let (mut server, mut client, _) = test_init(&driver);
-        let channels = server.get_channels(&mut client, 5).await;
+        let (mut server, mut client) = test_init(&driver);
+        let connection = server.get_channels(&mut client, 5).await;
         let event = Event::new();
 
         for _ in 0..5 {
-            for (i, channel) in channels.iter().enumerate() {
+            for (i, channel) in connection.offers.iter().enumerate() {
                 let recv = channel.request_send.call(
                     ChannelRequest::Open,
                     OpenRequest {
@@ -2703,10 +2981,14 @@ mod tests {
                 assert_eq!(output.redirected_event_flag, Some(expected_event_flag));
             }
 
-            for (i, channel) in channels.iter().enumerate() {
+            for (i, channel) in connection.offers.iter().enumerate() {
                 // Close the channel to prepare for the next iteration of the loop.
                 // The event flag should be the same each time.
-                channel.request_send.send(ChannelRequest::Close);
+                channel
+                    .request_send
+                    .call(ChannelRequest::Close, ())
+                    .await
+                    .unwrap();
 
                 check_message(
                     server.next().await.unwrap(),
@@ -2716,5 +2998,220 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[async_test]
+    async fn test_revoke(driver: DefaultDriver) {
+        let (mut server, mut client) = test_init(&driver);
+        let channel = server.get_channel(&mut client).await;
+
+        server.send(in_msg(
+            MessageType::RESCIND_CHANNEL_OFFER,
+            protocol::RescindChannelOffer {
+                channel_id: ChannelId(0),
+            },
+        ));
+
+        channel.revoke_recv.await.unwrap();
+
+        channel
+            .request_send
+            .call_failable(
+                ChannelRequest::Open,
+                OpenRequest {
+                    open_data: OpenData {
+                        target_vp: 0,
+                        ring_offset: 0,
+                        ring_gpadl_id: GpadlId(0),
+                        event_flag: 0,
+                        connection_id: 0,
+                        user_data: UserDefinedData::new_zeroed(),
+                    },
+                    incoming_event: None,
+                    use_vtl2_connection_id: false,
+                },
+            )
+            .await
+            .unwrap_err();
+    }
+
+    #[async_test]
+    #[should_panic(expected = "channel should not exist")]
+    async fn test_reoffer_in_use_rel_id(driver: DefaultDriver) {
+        let (mut server, mut client) = test_init(&driver);
+        let mut connection = server.get_channels(&mut client, 1).await;
+        let [channel] = connection.offers.try_into().unwrap();
+
+        server.send(in_msg(
+            MessageType::RESCIND_CHANNEL_OFFER,
+            protocol::RescindChannelOffer {
+                channel_id: ChannelId(0),
+            },
+        ));
+
+        channel.revoke_recv.await.unwrap();
+
+        // This offer will cause a panic since the rel id is still in use.
+        let offer = protocol::OfferChannel {
+            interface_id: Guid::new_random(),
+            instance_id: Guid::new_random(),
+            rsvd: [0; 4],
+            flags: OfferFlags::new(),
+            mmio_megabytes: 0,
+            user_defined: UserDefinedData::new_zeroed(),
+            subchannel_index: 0,
+            mmio_megabytes_optional: 0,
+            channel_id: ChannelId(0),
+            monitor_id: 0,
+            monitor_allocated: 0,
+            is_dedicated: 0,
+            connection_id: 0,
+        };
+
+        server.send(in_msg(MessageType::OFFER_CHANNEL, offer));
+
+        connection.offer_recv.next().await;
+    }
+
+    #[async_test]
+    async fn test_revoke_release_and_reoffer(driver: DefaultDriver) {
+        let (mut server, mut client) = test_init(&driver);
+        let mut connection = server.get_channels(&mut client, 1).await;
+        let [channel] = connection.offers.try_into().unwrap();
+
+        server.send(in_msg(
+            MessageType::RESCIND_CHANNEL_OFFER,
+            protocol::RescindChannelOffer {
+                channel_id: ChannelId(0),
+            },
+        ));
+
+        channel.revoke_recv.await.unwrap();
+        drop(channel.request_send);
+
+        check_message(
+            server.next().await.unwrap(),
+            protocol::RelIdReleased {
+                channel_id: ChannelId(0),
+            },
+        );
+
+        let offer = protocol::OfferChannel {
+            interface_id: Guid::new_random(),
+            instance_id: Guid::new_random(),
+            rsvd: [0; 4],
+            flags: OfferFlags::new(),
+            mmio_megabytes: 0,
+            user_defined: UserDefinedData::new_zeroed(),
+            subchannel_index: 0,
+            mmio_megabytes_optional: 0,
+            channel_id: ChannelId(0),
+            monitor_id: 0,
+            monitor_allocated: 0,
+            is_dedicated: 0,
+            connection_id: 0,
+        };
+
+        server.send(in_msg(MessageType::OFFER_CHANNEL, offer));
+
+        connection.offer_recv.next().await.unwrap();
+    }
+
+    #[async_test]
+    async fn test_release_revoke_and_reoffer(driver: DefaultDriver) {
+        let (mut server, mut client) = test_init(&driver);
+        let mut connection = server.get_channels(&mut client, 1).await;
+        let [channel] = connection.offers.try_into().unwrap();
+
+        let open = channel.request_send.call_failable(
+            ChannelRequest::Open,
+            OpenRequest {
+                open_data: OpenData {
+                    target_vp: 0,
+                    ring_offset: 0,
+                    ring_gpadl_id: GpadlId(0),
+                    event_flag: 0,
+                    connection_id: 0,
+                    user_data: UserDefinedData::new_zeroed(),
+                },
+                incoming_event: None,
+                use_vtl2_connection_id: false,
+            },
+        );
+
+        let server_open = async {
+            check_message(
+                server.next().await.unwrap(),
+                protocol::OpenChannel2 {
+                    open_channel: protocol::OpenChannel {
+                        channel_id: ChannelId(0),
+                        open_id: 0,
+                        ring_buffer_gpadl_id: GpadlId(0),
+                        target_vp: 0,
+                        downstream_ring_buffer_page_offset: 0,
+                        user_data: UserDefinedData::new_zeroed(),
+                    },
+                    connection_id: 0,
+                    event_flag: 0,
+                    flags: Default::default(),
+                },
+            );
+            server.send(in_msg(
+                MessageType::OPEN_CHANNEL_RESULT,
+                protocol::OpenResult {
+                    channel_id: ChannelId(0),
+                    open_id: 0,
+                    status: protocol::STATUS_SUCCESS as u32,
+                },
+            ));
+        };
+
+        (open, server_open).join().await.0.unwrap();
+
+        // This will close the channel but won't release it yet.
+        drop(channel);
+
+        check_message(
+            server.next().await.unwrap(),
+            protocol::CloseChannel {
+                channel_id: ChannelId(0),
+            },
+        );
+
+        server.send(in_msg(
+            MessageType::RESCIND_CHANNEL_OFFER,
+            protocol::RescindChannelOffer {
+                channel_id: ChannelId(0),
+            },
+        ));
+
+        // Should be released.
+        check_message(
+            server.next().await.unwrap(),
+            protocol::RelIdReleased {
+                channel_id: ChannelId(0),
+            },
+        );
+
+        let offer = protocol::OfferChannel {
+            interface_id: Guid::new_random(),
+            instance_id: Guid::new_random(),
+            rsvd: [0; 4],
+            flags: OfferFlags::new(),
+            mmio_megabytes: 0,
+            user_defined: UserDefinedData::new_zeroed(),
+            subchannel_index: 0,
+            mmio_megabytes_optional: 0,
+            channel_id: ChannelId(0),
+            monitor_id: 0,
+            monitor_allocated: 0,
+            is_dedicated: 0,
+            connection_id: 0,
+        };
+
+        server.send(in_msg(MessageType::OFFER_CHANNEL, offer));
+
+        // New offer should come through.
+        connection.offer_recv.next().await.unwrap();
     }
 }

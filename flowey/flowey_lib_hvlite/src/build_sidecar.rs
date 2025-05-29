@@ -3,8 +3,8 @@
 
 //! Build `sidecar` binaries
 
-use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::BuildProfile;
+use crate::run_cargo_build::common::CommonArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -96,7 +96,7 @@ impl FlowNode for Node {
                 output: v,
             });
 
-            ctx.emit_rust_step("report built sidecar", |ctx| {
+            ctx.emit_minor_rust_step("report built sidecar", |ctx| {
                 let sidecar = sidecar.claim(ctx);
                 let output = output.claim(ctx);
                 move |rt| {
@@ -113,8 +113,6 @@ impl FlowNode for Node {
                     for var in sidecar {
                         rt.write(var, &output);
                     }
-
-                    Ok(())
                 }
             });
         }

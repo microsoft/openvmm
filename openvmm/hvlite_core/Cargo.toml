@@ -22,6 +22,7 @@ vm_topology = { workspace = true, features = ["mesh"] }
 guestmem.workspace = true
 vmcore.workspace = true
 vm_resource.workspace = true
+vmgs_resources.workspace = true
 
 aarch64defs.workspace = true
 acpi.workspace = true

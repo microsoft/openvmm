@@ -18,8 +18,10 @@ use pal_async::interest::PollEvents;
 use pal_async::socket::PollReady;
 use pal_async::socket::PolledSocket;
 use smoltcp::phy::ChecksumCapabilities;
+use smoltcp::wire::ETHERNET_HEADER_LEN;
 use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
+use smoltcp::wire::IPV4_HEADER_LEN;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Packet;
 use smoltcp::wire::Ipv4Repr;
@@ -27,16 +29,14 @@ use smoltcp::wire::TcpControl;
 use smoltcp::wire::TcpPacket;
 use smoltcp::wire::TcpRepr;
 use smoltcp::wire::TcpSeqNumber;
-use smoltcp::wire::ETHERNET_HEADER_LEN;
-use smoltcp::wire::IPV4_HEADER_LEN;
 use socket2::Domain;
 use socket2::Protocol;
 use socket2::SockAddr;
 use socket2::Socket;
 use socket2::Type;
-use std::collections::hash_map;
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::collections::hash_map;
 use std::io;
 use std::io::ErrorKind;
 use std::io::IoSlice;
@@ -116,7 +116,7 @@ struct TcpConnection {
     #[inspect(hex)]
     rx_window_cap: usize,
     rx_window_scale: u8,
-    #[inspect(with = "|x| inspect::AsHex(x.0 as u32)")]
+    #[inspect(with = "inspect_seq")]
     rx_seq: TcpSeqNumber,
     needs_ack: bool,
     is_shutdown: bool,
@@ -124,20 +124,24 @@ struct TcpConnection {
 
     #[inspect(with = "|x| x.len()")]
     tx_buffer: ring::Ring,
-    #[inspect(with = "|x| inspect::AsHex(x.0 as u32)")]
+    #[inspect(with = "inspect_seq")]
     tx_acked: TcpSeqNumber,
-    #[inspect(with = "|x| inspect::AsHex(x.0 as u32)")]
+    #[inspect(with = "inspect_seq")]
     tx_send: TcpSeqNumber,
     tx_fin_buffered: bool,
     #[inspect(hex)]
     tx_window_len: u16,
     tx_window_scale: u8,
-    #[inspect(with = "|x| inspect::AsHex(x.0 as u32)")]
+    #[inspect(with = "inspect_seq")]
     tx_window_rx_seq: TcpSeqNumber,
-    #[inspect(with = "|x| inspect::AsHex(x.0 as u32)")]
+    #[inspect(with = "inspect_seq")]
     tx_window_tx_seq: TcpSeqNumber,
     #[inspect(hex)]
     tx_mss: usize,
+}
+
+fn inspect_seq(seq: &TcpSeqNumber) -> inspect::AsHex<u32> {
+    inspect::AsHex(seq.0 as u32)
 }
 
 #[derive(Inspect)]
@@ -453,7 +457,7 @@ impl<T: Client> Sender<'_, T> {
 impl Default for TcpConnection {
     fn default() -> Self {
         let mut rx_tx_seq = [0; 8];
-        getrandom::getrandom(&mut rx_tx_seq[..]).expect("prng failure");
+        getrandom::fill(&mut rx_tx_seq[..]).expect("prng failure");
         let rx_seq = TcpSeqNumber(i32::from_ne_bytes(
             rx_tx_seq[0..4].try_into().expect("invalid length"),
         ));
@@ -1197,7 +1201,7 @@ impl TcpListener {
 fn take_socket_error(socket: &PolledSocket<Socket>) -> io::Error {
     match socket.get().take_error() {
         Ok(Some(err)) => err,
-        Ok(_) => io::Error::new(ErrorKind::Other, "missing error"),
+        Ok(_) => io::Error::other("missing error"),
         Err(err) => err,
     }
 }

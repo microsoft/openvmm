@@ -7,14 +7,17 @@
 //! Since these reservations are stored locally in memory, this is not useful
 //! for actually sharing a disk between VMs. This is just useful for testing.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 use async_trait::async_trait;
+use disk_backend::Disk;
+use disk_backend::DiskError;
+use disk_backend::DiskIo;
 use disk_backend::pr;
 use disk_backend::pr::ReservationType;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;
-use disk_backend::Disk;
-use disk_backend::DiskError;
-use disk_backend::DiskIo;
 use disk_backend_resources::DiskWithReservationsHandle;
 use inspect::Inspect;
 use parking_lot::Mutex;
@@ -23,11 +26,11 @@ use std::future::Future;
 use std::num::NonZeroU64;
 use std::num::Wrapping;
 use thiserror::Error;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::DiskHandleKind;
 
 pub struct DiskWithReservationsResolver;
 declare_static_async_resolver!(

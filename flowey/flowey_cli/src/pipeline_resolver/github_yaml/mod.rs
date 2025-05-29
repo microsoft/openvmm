@@ -3,6 +3,7 @@
 
 //! Code for emitting a pipeline as a single self-contained GitHub Actions yaml file
 
+use super::common_yaml::BashCommands;
 use super::common_yaml::check_generated_yaml_and_json;
 use super::common_yaml::write_generated_yaml_and_json;
 use super::generic::ResolvedJobArtifact;
@@ -10,20 +11,21 @@ use super::generic::ResolvedJobUseParameter;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
 use crate::cli::pipeline::CheckMode;
+use crate::cli::var_db::VarDbRequestBuilder;
 use crate::flow_resolver::stage1_dag::OutputGraphEntry;
 use crate::flow_resolver::stage1_dag::Step;
-use crate::pipeline_resolver::common_yaml::job_flowey_bootstrap_source;
 use crate::pipeline_resolver::common_yaml::FloweySource;
+use crate::pipeline_resolver::common_yaml::job_flowey_bootstrap_source;
 use crate::pipeline_resolver::generic::ResolvedPipeline;
 use crate::pipeline_resolver::generic::ResolvedPipelineJob;
 use anyhow::Context;
-use flowey_core::node::user_facing::GhPermission;
-use flowey_core::node::user_facing::GhPermissionValue;
 use flowey_core::node::FlowArch;
 use flowey_core::node::FlowBackend;
 use flowey_core::node::FlowPlatform;
 use flowey_core::node::FlowPlatformKind;
 use flowey_core::node::NodeHandle;
+use flowey_core::node::user_facing::GhPermission;
+use flowey_core::node::user_facing::GhPermissionValue;
 use flowey_core::pipeline::GhRunner;
 use flowey_core::pipeline::GhRunnerOsLabel;
 use std::collections::BTreeMap;
@@ -124,87 +126,74 @@ pub fn github_yaml(
 
         let flowey_source = job_flowey_source.remove(&job_idx).unwrap();
 
-        // actual artifact publish happens at the end of the job
-        if let FloweySource::Bootstrap(_artifact, _publish) = &flowey_source {
-            if gh_bootstrap_template.is_empty() {
-                anyhow::bail!("Did not specify flowey bootstrap template. Please provide one using `Pipeline::gh_set_flowey_bootstrap_template`")
+        let mut artifact_names = Vec::new();
+
+        let flowey_path = match &flowey_source {
+            FloweySource::Bootstrap { .. } => {
+                let flowey_path = "bootstrapped-flowey".to_string();
+
+                // actual artifact publish happens at the end of the job
+                if gh_bootstrap_template.is_empty() {
+                    anyhow::bail!(
+                        "Did not specify flowey bootstrap template. Please provide one using `Pipeline::gh_set_flowey_bootstrap_template`"
+                    )
+                }
+
+                let gh_bootstrap_template = gh_bootstrap_template
+                    .replace("{{FLOWEY_BIN_EXTENSION}}", platform.exe_suffix())
+                    .replace("{{FLOWEY_CRATE}}", flowey_crate)
+                    .replace(
+                        "{{FLOWEY_PIPELINE_PATH}}",
+                        &pipeline_file.with_extension("").display().to_string(),
+                    )
+                    .replace(
+                        "{{FLOWEY_TARGET}}",
+                        match (platform, arch) {
+                            (FlowPlatform::Windows, FlowArch::X86_64) => "x86_64-pc-windows-msvc",
+                            (FlowPlatform::Windows, FlowArch::Aarch64) => "aarch64-pc-windows-msvc",
+                            (FlowPlatform::Linux(_), FlowArch::X86_64) => {
+                                "x86_64-unknown-linux-gnu"
+                            }
+                            (FlowPlatform::Linux(_), FlowArch::Aarch64) => {
+                                "aarch64-unknown-linux-gnu"
+                            }
+                            (platform, arch) => {
+                                anyhow::bail!("unsupported platform {platform} / arch {arch}")
+                            }
+                        },
+                    )
+                    .replace("{{FLOWEY_OUTDIR}}", &format!("{RUNNER_TEMP}/{flowey_path}"));
+
+                let bootstrap_steps: serde_yaml::Sequence =
+                    serde_yaml::from_str(&gh_bootstrap_template)
+                        .context("malformed flowey bootstrap template")?;
+
+                gh_steps.extend(bootstrap_steps);
+                flowey_path
             }
+            FloweySource::Consume(artifact) => {
+                // download previously bootstrapped flowey
+                artifact_names.push(artifact.as_str());
+                format!("used_artifacts/{artifact}")
+            }
+        };
 
-            let gh_bootstrap_template = gh_bootstrap_template
-                .replace("{{FLOWEY_BIN_EXTENSION}}", platform.exe_suffix())
-                .replace("{{FLOWEY_CRATE}}", flowey_crate)
-                .replace(
-                    "{{FLOWEY_PIPELINE_PATH}}",
-                    &pipeline_file.with_extension("").display().to_string(),
-                )
-                .replace(
-                    "{{FLOWEY_TARGET}}",
-                    match (platform, arch) {
-                        (FlowPlatform::Windows, FlowArch::X86_64) => "x86_64-pc-windows-msvc",
-                        (FlowPlatform::Windows, FlowArch::Aarch64) => "aarch64-pc-windows-msvc",
-                        (FlowPlatform::Linux(_), FlowArch::X86_64) => "x86_64-unknown-linux-gnu",
-                        (FlowPlatform::Linux(_), FlowArch::Aarch64) => "aarch64-unknown-linux-gnu",
-                        (platform, arch) => {
-                            anyhow::bail!("unsupported platform {platform} / arch {arch}")
-                        }
-                    },
-                )
-                .replace(
-                    "{{FLOWEY_OUTDIR}}",
-                    &format!("{RUNNER_TEMP}/bootstrapped-flowey"),
-                );
-
-            let bootstrap_steps: serde_yaml::Sequence =
-                serde_yaml::from_str(&gh_bootstrap_template)
-                    .context("malformed flowey bootstrap template")?;
-
-            gh_steps.push({
-                let mut map = serde_yaml::Mapping::new();
-                map.insert("run".into(), "echo \"injected!\"".into());
-                map.insert("name".into(), "🌼🥾 Bootstrap flowey".into());
-                map.insert("shell".into(), "bash".into());
-                map.into()
-            });
-            gh_steps.extend(bootstrap_steps);
-        }
-
-        // the first few steps in any job are some "artisan" code, which
-        // downloads the previously bootstrapped flowey artifact and set up
-        // various vars that flowey will then rely on throughout the rest
-        // of the job
-
-        // download previously bootstrapped flowey
-        if let FloweySource::Consume(artifact) = &flowey_source {
+        // download any artifacts that'll be used
+        artifact_names.extend(artifacts_used.iter().map(|a| a.name.as_str()));
+        if !artifact_names.is_empty() {
+            let pattern = if let &[name] = artifact_names.as_slice() {
+                name.to_string()
+            } else {
+                format!("{{{}}}", artifact_names.join(","))
+            };
             gh_steps.push({
                 let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
                     r#"
-                        name: 🌼🥾 Download bootstrapped flowey
+                        name: '🌼📦 Download artifacts'
                         uses: actions/download-artifact@v4
                         with:
-                          name: {artifact}
-                          path: {RUNNER_TEMP}/bootstrapped-flowey
-                    "#
-                ))?;
-                map.into()
-            });
-        }
-
-        // also download any artifacts that'll be used
-        // TODO: Use a single download job to download all artifacts at once
-        // https://github.com/actions/download-artifact?tab=readme-ov-file#download-multiple-filtered-artifacts-to-the-same-directory
-        for ResolvedJobArtifact {
-            flowey_var: _,
-            name,
-        } in artifacts_used
-        {
-            gh_steps.push({
-                let map: serde_yaml::Mapping = serde_yaml::from_str(&format!(
-                    r#"
-                        name: '🌼📦 Download {name}'
-                        uses: actions/download-artifact@v4
-                        with:
-                          name: {name}
-                          path: {RUNNER_TEMP}/used_artifacts/{name}/
+                          pattern: '{pattern}'
+                          path: {RUNNER_TEMP}/used_artifacts/
                     "#
                 ))
                 .unwrap();
@@ -216,24 +205,20 @@ pub fn github_yaml(
             let mut map = serde_yaml::Mapping::new();
             map.insert(
                 "run".into(),
-                format!(r#"echo "{RUNNER_TEMP}/bootstrapped-flowey" >> $GITHUB_PATH"#).into(),
+                format!(r#"echo "{RUNNER_TEMP}/{flowey_path}" >> $GITHUB_PATH"#).into(),
             );
             map.insert("shell".into(), "bash".into());
             map.insert("name".into(), "🌼📦 Add flowey to PATH".into());
             gh_steps.push(map.into());
         }
 
+        let var_db = VarDbRequestBuilder::new(&flowey_bin, job_idx.index());
+
         let bootstrap_bash_var_db_inject = |var, is_raw_string| {
-            crate::cli::var_db::construct_var_db_cli(
-                &flowey_bin,
-                job_idx.index(),
-                var,
-                false,
-                true,
-                None,
-                is_raw_string,
-                None,
-            )
+            var_db
+                .update_from_stdin(var, false)
+                .raw_string(is_raw_string)
+                .to_string()
         };
 
         // if this was a bootstrap job, also take a moment to run a "self check"
@@ -271,14 +256,15 @@ pub fn github_yaml(
 
                 let current_yaml = match platform.kind() {
                     FlowPlatformKind::Windows => {
-                        r#"$ESCAPED_AGENT_TEMPDIR\\bootstrapped-flowey\\pipeline.yaml"#
+                        let win_path = flowey_path.replace('/', "\\");
+                        format!(r#"$ESCAPED_AGENT_TEMPDIR\\{win_path}\\pipeline.yaml"#)
                     }
                     FlowPlatformKind::Unix => {
-                        r#"$ESCAPED_AGENT_TEMPDIR/bootstrapped-flowey/pipeline.yaml"#
+                        format!(r#"$ESCAPED_AGENT_TEMPDIR/{flowey_path}/pipeline.yaml"#)
                     }
                 };
 
-                current_invocation.insert(i, current_yaml.into());
+                current_invocation.insert(i, current_yaml);
                 current_invocation.insert(i, "--runtime".into());
             }
 
@@ -330,13 +316,14 @@ AgentTempDirNormal="{RUNNER_TEMP}"
 AgentTempDirNormal=$(echo "$AgentTempDirNormal" | sed -e 's|\\|\/|g' -e 's|^\([A-Za-z]\)\:/\(.*\)|/\L\1\E/\2|')
 echo "AgentTempDirNormal=$AgentTempDirNormal" >> $GITHUB_ENV
 
-chmod +x $AgentTempDirNormal/bootstrapped-flowey/{flowey_bin}
+chmod +x $AgentTempDirNormal/{flowey_path}/{flowey_bin}
 
 echo '"{runtime_debug_level}"' | {var_db_insert_runtime_debug_level}
 echo "{RUNNER_TEMP}/work" | {var_db_insert_working_dir}
 "###
             )
             .trim_start()
+            .to_owned()
         })?;
 
         // import pipeline vars being used by the job into flowey
@@ -453,6 +440,7 @@ EOF
                         with:
                             name: {name}
                             path: {RUNNER_TEMP}/publish_artifacts/{name}/
+                            include-hidden-files: true
                     "#
                 ))
                 .unwrap();
@@ -470,7 +458,7 @@ EOF
                 map.insert(
                     "run".into(),
                     serde_yaml::Value::String(format!(
-                        "rm $AgentTempDirNormal/bootstrapped-flowey/job{}.json",
+                        "rm $AgentTempDirNormal/{flowey_path}/job{}.json",
                         job_idx.index()
                     )),
                 );
@@ -485,7 +473,7 @@ EOF
                     uses: actions/upload-artifact@v4
                     with:
                         name: {artifact}
-                        path: {RUNNER_TEMP}/bootstrapped-flowey
+                        path: {RUNNER_TEMP}/{flowey_path}
                 "#
                 ))
                 .unwrap();
@@ -614,7 +602,7 @@ EOF
                                     description: Some(description.clone()),
                                     default: default
                                         .as_ref()
-                                        .map(|s| github_yaml_defs::Default::String(s.to_string())),
+                                        .map(|s| github_yaml_defs::Default::String(s.clone())),
                                     required: default.is_none(),
                                     ty: github_yaml_defs::InputType::String,
                                 },
@@ -640,8 +628,8 @@ EOF
             Some(gh_pr_triggers) => {
                 if gh_pr_triggers.auto_cancel {
                     concurrency = Some(github_yaml_defs::Concurrency {
-                        // only cancel in-progress jobs or runs for the same branch
-                        group: Some("${{ github.ref }}".to_string()),
+                        // only cancel in-progress jobs for the same workflow and branch
+                        group: Some("${{ github.workflow }}-${{ github.ref }}".to_string()),
                         cancel_in_progress: Some(true),
                     })
                 };
@@ -733,8 +721,12 @@ fn resolve_flow_as_github_yaml_steps(
         anyhow::bail!("detected unreachable nodes")
     }
 
+    let mut bash_commands = BashCommands::new_github();
+
     let output_order = petgraph::algo::toposort(&output_graph, None)
         .expect("runtime variables cannot introduce a DAG cycle");
+
+    let var_db = VarDbRequestBuilder::new(flowey_bin, job_idx);
 
     for node_idx in output_order.into_iter().rev() {
         let OutputGraphEntry { node_handle, step } = output_graph[node_idx].1.take().unwrap();
@@ -746,27 +738,23 @@ fn resolve_flow_as_github_yaml_steps(
             Step::Rust {
                 idx,
                 label,
+                can_merge,
                 code: _,
             } => {
-                let cmd = crate::cli::exec_snippet::construct_exec_snippet_cli(
-                    flowey_bin,
-                    node_modpath,
-                    idx,
-                    job_idx,
-                );
-
-                let mut map = serde_yaml::Mapping::new();
-                map.insert("name".into(), serde_yaml::Value::String(label));
-                map.insert("run".into(), serde_yaml::Value::String(cmd));
-                map.insert("shell".into(), "bash".into());
-                output_steps.push(map.into());
+                output_steps.extend(bash_commands.push(
+                    Some(label),
+                    can_merge,
+                    crate::cli::exec_snippet::construct_exec_snippet_cli(
+                        flowey_bin,
+                        node_modpath,
+                        idx,
+                        job_idx,
+                    ),
+                ));
             }
-            Step::AdoYaml {
-                ado_to_rust: _,
-                rust_to_ado: _,
-                label,
-                ..
-            } => anyhow::bail!("ADO YAML not supported in GitHub. In step '{}'", label),
+            Step::AdoYaml { label, .. } => {
+                anyhow::bail!("ADO YAML not supported in GitHub. In step '{}'", label)
+            }
             Step::GitHubYaml {
                 gh_to_rust,
                 rust_to_gh,
@@ -777,20 +765,6 @@ fn resolve_flow_as_github_yaml_steps(
                 condvar,
                 permissions,
             } => {
-                let var_db_cmd =
-                    |var: &str, is_secret, update_from_file, is_raw_string, write_to_gh_env| {
-                        crate::cli::var_db::construct_var_db_cli(
-                            flowey_bin,
-                            job_idx,
-                            var,
-                            is_secret,
-                            false,
-                            update_from_file,
-                            is_raw_string,
-                            write_to_gh_env,
-                        )
-                    };
-
                 for permission in permissions {
                     if let Some(permission_map) = gh_permissions.get(&node_handle) {
                         if let Some(permission_value) = permission_map.get(&permission.0) {
@@ -812,62 +786,23 @@ fn resolve_flow_as_github_yaml_steps(
                     }
                 }
 
-                if let Some(condvar) = &condvar {
-                    let mut cmd = String::new();
-
-                    // guaranteed to be a bare bool `true`/`false`, hence
-                    // is_raw_string = false
-                    let set_condvar = var_db_cmd(
-                        condvar,
-                        false,
-                        None,
-                        false,
-                        Some("FLOWEY_CONDITION".to_string()),
-                    );
-                    writeln!(cmd, r#"{set_condvar}"#)?;
-
-                    let mut map = serde_yaml::Mapping::new();
-                    map.insert("run".into(), serde_yaml::Value::String(cmd));
-                    map.insert("shell".into(), "bash".into());
-                    map.insert(
-                        "name".into(),
-                        serde_yaml::Value::String("🌼❓ Write to 'FLOWEY_CONDITION'".into()),
-                    );
-                    output_steps.push(map.into());
-                }
-
                 for gh_var_state in rust_to_gh {
-                    let mut cmd = String::new();
+                    let set_gh_env_var = var_db
+                        .write_to_gh_env(&gh_var_state.backing_var, &gh_var_state.raw_name)
+                        .raw_string(!gh_var_state.is_object)
+                        .condvar(condvar.as_deref());
 
-                    let set_gh_env_var = var_db_cmd(
-                        &gh_var_state.backing_var,
-                        gh_var_state.is_secret,
-                        None,
-                        !gh_var_state.is_object,
-                        gh_var_state.raw_name.clone(),
-                    );
-                    writeln!(cmd, r#"{set_gh_env_var}"#)?;
-
-                    let mut map = serde_yaml::Mapping::new();
-                    map.insert("run".into(), serde_yaml::Value::String(cmd));
-                    map.insert("shell".into(), "bash".into());
-                    map.insert(
-                        "name".into(),
-                        serde_yaml::Value::String(format!(
-                            "🌼 Write to '{}'",
-                            gh_var_state
-                                .raw_name
-                                .expect("couldn't get raw_name for variable")
-                        )),
-                    );
-
-                    if condvar.is_some() {
-                        map.insert("if".into(), "${{ fromJSON(env.FLOWEY_CONDITION) }}".into());
-                    }
-                    output_steps.push(map.into());
+                    bash_commands.push_minor(format!("{set_gh_env_var}\n"));
                 }
 
                 if !uses.is_empty() {
+                    if let Some(condvar) = &condvar {
+                        // guaranteed to be a bare bool `true`/`false`, hence
+                        // is_raw_string = false
+                        let set_condvar = var_db.write_to_gh_env(condvar, "FLOWEY_CONDITION");
+                        bash_commands.push_minor(format!("{set_condvar}\n"));
+                    }
+
                     let mut map = serde_yaml::Mapping::new();
                     map.insert("id".into(), serde_yaml::Value::String(step_id.clone()));
                     map.insert("uses".into(), serde_yaml::Value::String(uses));
@@ -884,44 +819,31 @@ fn resolve_flow_as_github_yaml_steps(
                     }
 
                     let step: serde_yaml::Value = map.into();
+                    output_steps.extend(bash_commands.flush());
                     output_steps.push(step);
                 }
 
                 for gh_var_state in gh_to_rust {
-                    let write_rust_var = var_db_cmd(
-                        &gh_var_state.backing_var,
-                        gh_var_state.is_secret,
-                        Some("{0}"),
-                        !gh_var_state.is_object,
-                        None,
-                    );
-
-                    let raw_name = gh_var_state
-                        .raw_name
-                        .expect("couldn't get raw name for variable");
-
-                    let cmd = if gh_var_state.is_object {
-                        format!(r#"${{{{ toJSON({}) }}}}"#, raw_name)
+                    let value = if gh_var_state.is_object {
+                        format!(r#"${{{{ toJSON({}) }}}}"#, gh_var_state.raw_name)
                     } else {
-                        format!(r#"${{{{ {} }}}}"#, raw_name)
+                        format!(r#"${{{{ {} }}}}"#, gh_var_state.raw_name)
                     };
 
-                    let mut map = serde_yaml::Mapping::new();
-                    map.insert("run".into(), serde_yaml::Value::String(cmd));
-                    map.insert("shell".into(), write_rust_var.into());
-                    map.insert(
-                        "name".into(),
-                        serde_yaml::Value::String(format!("🌼 Read from '{}'", raw_name)),
-                    );
-                    if condvar.is_some() {
-                        map.insert("if".into(), "${{ fromJSON(env.FLOWEY_CONDITION) }}".into());
-                    }
+                    let write_var = var_db
+                        .update_from_stdin(&gh_var_state.backing_var, gh_var_state.is_secret)
+                        .raw_string(!gh_var_state.is_object)
+                        .condvar(condvar.as_deref())
+                        .env_source(Some(&gh_var_state.raw_name));
 
-                    output_steps.push(map.into());
+                    let cmd = format!("{write_var} <<EOF\n{value}\nEOF",);
+                    bash_commands.push_minor(cmd);
                 }
             }
         }
     }
+
+    output_steps.extend(bash_commands.flush());
 
     let request_db = request_db
         .into_iter()

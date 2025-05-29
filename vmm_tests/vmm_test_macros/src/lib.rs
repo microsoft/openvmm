@@ -1,23 +1,25 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 use petri_artifacts_common::tags::IsTestIso;
 use petri_artifacts_common::tags::IsTestVhd;
 use petri_artifacts_common::tags::MachineArch;
 use proc_macro2::Ident;
 use proc_macro2::Span;
 use proc_macro2::TokenStream;
-use quote::quote;
 use quote::ToTokens;
-use std::collections::HashSet;
-use syn::parse::Parse;
-use syn::parse::ParseStream;
-use syn::parse_macro_input;
-use syn::spanned::Spanned;
+use quote::quote;
 use syn::Error;
 use syn::ItemFn;
 use syn::Path;
 use syn::Token;
+use syn::parse::Parse;
+use syn::parse::ParseStream;
+use syn::parse_macro_input;
+use syn::spanned::Spanned;
 
 struct Config {
     vmm: Option<Vmm>,
@@ -391,11 +393,23 @@ fn parse_vhd(input: ParseStream<'_>, generation: Generation) -> syn::Result<Imag
                 ::petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2022_X64
             )),
         },
+        "windows_datacenter_core_2025_x64" => match generation {
+            Generation::Gen1 => Err(Error::new(
+                word.span(),
+                "Windows Server 2025 is not available for PCAT",
+            )),
+            Generation::Gen2 => Ok(image_info!(
+                ::petri_artifacts_vmm_test::artifacts::test_vhd::GEN2_WINDOWS_DATA_CENTER_CORE2025_X64
+            )),
+        },
         "ubuntu_2204_server_x64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2204_SERVER_X64
         )),
         "ubuntu_2404_server_aarch64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64
+        )),
+        "windows_11_enterprise_aarch64" => Ok(image_info!(
+            ::petri_artifacts_vmm_test::artifacts::test_vhd::WINDOWS_11_ENTERPRISE_AARCH64
         )),
         _ => Err(Error::new(word.span(), "unrecognized vhd")),
     }
@@ -540,12 +554,13 @@ fn parse_extra_deps(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 /// - `none`: No guest
 ///
 /// Valid VHD options are:
-/// - `ubuntu_2204_server_x64`: Canonical's provided Ubuntu Linux 22.04 cloudimg disk image
-/// - `windows_datacenter_core_2022_x64`: Our provided Windows Datacenter Core 2022 VHD
-/// - `freebsd_13_2_x64`: The FreeBSD Project's provided FreeBSD 13.2 VHD
+/// - `ubuntu_2204_server_x64`: Ubuntu Linux 22.04 cloudimg from Canonical
+/// - `windows_datacenter_core_2022_x64`: Windows Server Datacenter Core 2022 from the Azure Marketplace
+/// - `windows_datacenter_core_2025_x64`: Windows Server Datacenter Core 2025 from the Azure Marketplace
+/// - `freebsd_13_2_x64`: FreeBSD 13.2 from the FreeBSD Project
 ///
 /// Valid x64 ISO options are:
-/// - `freebsd_13_2_x64`: The FreeBSD Project's provided FreeBSD 13.2 installer ISO
+/// - `freebsd_13_2_x64`: FreeBSD 13.2 installer from the FreeBSD Project
 ///
 /// Valid OpenHCL UEFI options are:
 /// - `nvme`: Attach the boot drive via NVMe assigned to VTL2.
@@ -592,31 +607,25 @@ pub fn hyperv_test(
 }
 
 fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Result<TokenStream> {
-    let original_args =
-        match item.sig.inputs.len() {
-            1 => quote! {config},
-            2 => quote! {config, extra_deps},
-            3 => quote! {config, extra_deps, driver },
-            _ => return Err(Error::new(
+    let original_args = match item.sig.inputs.len() {
+        1 => quote! {config},
+        2 => quote! {config, extra_deps},
+        3 => quote! {config, extra_deps, driver },
+        _ => {
+            return Err(Error::new(
                 item.sig.inputs.span(),
                 "expected 1, 2, or 3 arguments (the PetriVmConfig, ArtifactResolver, and Driver)",
-            )),
-        };
+            ));
+        }
+    };
 
     let original_name = &item.sig.ident;
     let mut tests = TokenStream::new();
-    let mut guest_archs = HashSet::new();
     // FUTURE: compute all this in code instead of in the macro.
     for config in args.configs {
         let name = format!("{}_{original_name}", config.name_prefix(specific_vmm));
 
         let extra_deps = config.extra_deps;
-
-        let guest_arch = match config.arch {
-            MachineArch::X86_64 => "x86_64",
-            MachineArch::Aarch64 => "aarch64",
-        };
-        guest_archs.insert(guest_arch);
 
         let firmware = FirmwareAndArch {
             firmware: config.firmware,
@@ -624,34 +633,27 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
         };
         let arch = arch_to_tokens(config.arch);
 
-        let (cfg_conditions, artifacts, mut petri_vm_config) = match (specific_vmm, config.vmm) {
+        let (cfg_conditions, artifacts, petri_vm_config) = match (specific_vmm, config.vmm) {
             (Some(Vmm::HyperV), Some(Vmm::HyperV))
             | (Some(Vmm::HyperV), None)
             | (None, Some(Vmm::HyperV)) => (
-                quote!(#[cfg(all(guest_arch=#guest_arch, windows))]),
-                quote!(::petri::hyperv::PetriVmArtifactsHyperV::new(
-                    resolver, firmware, arch,
-                )),
-                quote!(::petri::hyperv::PetriVmConfigHyperV::new(
-                    &params, artifacts, &driver,
-                )?),
+                quote!(#[cfg(windows)]),
+                quote!(::petri::hyperv::PetriVmArtifactsHyperV),
+                quote!(::petri::hyperv::PetriVmConfigHyperV),
             ),
 
             (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
             | (Some(Vmm::OpenVmm), None)
             | (None, Some(Vmm::OpenVmm)) => (
-                quote!(#[cfg(guest_arch=#guest_arch)]),
-                quote!(::petri::openvmm::PetriVmArtifactsOpenVmm::new(
-                    resolver, firmware, arch,
-                )),
-                quote!(::petri::openvmm::PetriVmConfigOpenVmm::new(
-                    &params, artifacts, &driver,
-                )?),
+                quote!(),
+                quote!(::petri::openvmm::PetriVmArtifactsOpenVmm),
+                quote!(::petri::openvmm::PetriVmConfigOpenVmm),
             ),
             (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
             _ => return Err(Error::new(config.span, "vmm mismatch")),
         };
 
+        let mut petri_vm_config = quote!(#petri_vm_config::new(&params, artifacts, &driver)?);
         if specific_vmm.is_none() {
             petri_vm_config = quote!(Box::new(#petri_vm_config));
         }
@@ -664,10 +666,11 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
                     let firmware = #firmware;
                     let arch = #arch;
                     let extra_deps = (#(resolver.require(#extra_deps),)*);
-                    (#artifacts, extra_deps)
+                    let artifacts = #artifacts::new(resolver, firmware, arch)?;
+                    Some((artifacts, extra_deps))
                 },
                 |params, (artifacts, extra_deps)| {
-                    ::pal_async::DefaultPool::run_with(|driver| async move {
+                    ::pal_async::DefaultPool::run_with(async |driver| {
                         let config = #petri_vm_config;
                         #original_name(#original_args).await
                     })
@@ -678,12 +681,8 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
         tests.extend(test);
     }
 
-    let guest_archs = guest_archs.into_iter();
-
     Ok(quote! {
         ::petri::multitest!(vec![#tests]);
-        // Allow dead code for tests that are not run on the current architecture.
-        #[cfg_attr(not(any(#(guest_arch = #guest_archs,)*)), allow(dead_code))]
         #item
     })
 }

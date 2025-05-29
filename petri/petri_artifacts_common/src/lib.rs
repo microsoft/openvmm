@@ -5,7 +5,6 @@
 //! what VMM backend is being used.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 /// Artifact declarations
 pub mod artifacts {
@@ -46,6 +45,22 @@ pub mod tags {
     pub enum MachineArch {
         X86_64,
         Aarch64,
+    }
+
+    impl MachineArch {
+        /// Returns the host's architecture.
+        pub fn host() -> Self {
+            // xtask-fmt allow-target-arch oneoff-petri-host-arch
+            if cfg!(target_arch = "x86_64") {
+                Self::X86_64
+            }
+            // xtask-fmt allow-target-arch oneoff-petri-host-arch
+            else if cfg!(target_arch = "aarch64") {
+                Self::Aarch64
+            } else {
+                panic!("unsupported host architecture")
+            }
+        }
     }
 
     /// Quirks needed to boot a guest.
@@ -92,4 +107,7 @@ pub mod tags {
         /// What [`MachineArch`] this artifact supports.
         const ARCH: MachineArch;
     }
+
+    /// Artifact is a test VMGS file
+    pub trait IsTestVmgs: ArtifactId {}
 }

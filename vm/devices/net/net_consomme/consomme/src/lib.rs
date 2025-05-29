@@ -14,8 +14,6 @@
 //!
 //! This implementation includes a small DHCP server for address assignment.
 
-#![warn(missing_docs)]
-
 mod arp;
 mod dhcp;
 #[cfg_attr(unix, path = "dns_unix.rs")]
@@ -37,10 +35,10 @@ use smoltcp::wire::EthernetAddress;
 use smoltcp::wire::EthernetFrame;
 use smoltcp::wire::EthernetProtocol;
 use smoltcp::wire::EthernetRepr;
+use smoltcp::wire::IPV4_HEADER_LEN;
 use smoltcp::wire::IpProtocol;
 use smoltcp::wire::Ipv4Address;
 use smoltcp::wire::Ipv4Packet;
-use smoltcp::wire::IPV4_HEADER_LEN;
 use std::net::Ipv4Addr;
 use std::net::SocketAddrV4;
 use std::task::Context;

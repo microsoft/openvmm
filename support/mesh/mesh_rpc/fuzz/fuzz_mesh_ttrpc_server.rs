@@ -1,14 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg_attr(all(target_os = "linux", target_env = "gnu"), no_main)]
 
 use futures::AsyncReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
-use pal_async::socket::PolledSocket;
 use pal_async::DefaultPool;
+use pal_async::socket::PolledSocket;
 use unix_socket::UnixListener;
 use unix_socket::UnixStream;
 use xtask_fuzz::fuzz_eprintln;
@@ -24,7 +25,7 @@ fn do_fuzz(input: &[u8]) {
 
     let mut recv = server.add_service();
 
-    DefaultPool::run_with(|driver| async move {
+    DefaultPool::run_with(async |driver| {
         let control_listener = tempfile::Builder::new()
             .make(|path| UnixListener::bind(path))
             .unwrap();

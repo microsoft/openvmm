@@ -3,6 +3,7 @@
 
 //! The user-mode netvsp VMBus device implementation.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod buffers;
@@ -16,25 +17,25 @@ mod test;
 use crate::buffers::GuestBuffers;
 use crate::protocol::Message1RevokeReceiveBuffer;
 use crate::protocol::Message1RevokeSendBuffer;
-use crate::protocol::Version;
 use crate::protocol::VMS_SWITCH_RSS_MAX_SEND_INDIRECTION_TABLE_ENTRIES;
+use crate::protocol::Version;
 use crate::rndisprot::NDIS_HASH_FUNCTION_MASK;
 use crate::rndisprot::NDIS_RSS_PARAM_FLAG_DISABLE_RSS;
 use async_trait::async_trait;
-use buffers::sub_allocation_size_for_mtu;
 pub use buffers::BufferPool;
-use futures::channel::mpsc;
+use buffers::sub_allocation_size_for_mtu;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::channel::mpsc;
 use futures_concurrency::future::Race;
-use guestmem::ranges::PagedRange;
-use guestmem::ranges::PagedRanges;
-use guestmem::ranges::PagedRangesReader;
 use guestmem::AccessError;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use guestmem::MemoryRead;
 use guestmem::MemoryWrite;
+use guestmem::ranges::PagedRange;
+use guestmem::ranges::PagedRanges;
+use guestmem::ranges::PagedRangesReader;
 use guid::Guid;
 use hvdef::hypercall::HvGuestOsId;
 use hvdef::hypercall::HvGuestOsMicrosoft;
@@ -51,6 +52,7 @@ use net_backend::EndpointAction;
 use net_backend::L3Protocol;
 use net_backend::QueueConfig;
 use net_backend::RxId;
+use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxSegment;
 use net_backend_resources::mac_address::MacAddress;
@@ -65,9 +67,9 @@ use std::fmt::Debug;
 use std::future::pending;
 use std::mem::offset_of;
 use std::ops::Range;
+use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::task::Poll;
 use std::time::Duration;
 use task_control::AsyncRun;
@@ -92,13 +94,13 @@ use vmbus_channel::gpadl::GpadlId;
 use vmbus_channel::gpadl::GpadlMapView;
 use vmbus_channel::gpadl::GpadlView;
 use vmbus_channel::gpadl::UnknownGpadlId;
-use vmbus_channel::gpadl_ring::gpadl_channel;
 use vmbus_channel::gpadl_ring::GpadlRingMem;
+use vmbus_channel::gpadl_ring::gpadl_channel;
 use vmbus_ring as ring;
-use vmbus_ring::gparange::GpnList;
-use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmbus_ring::OutgoingPacketType;
 use vmbus_ring::RingMem;
+use vmbus_ring::gparange::GpnList;
+use vmbus_ring::gparange::MultiPagedRangeBuf;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -335,7 +337,11 @@ impl RxBufferRange {
             false
         } else {
             let i = (id - RX_RESERVED_CONTROL_BUFFERS) / self.remote_ranges.buffers_per_queue;
-            let _ = self.remote_ranges.buffer_id_send[i as usize].unbounded_send(id);
+            // The total number of receive buffers may not evenly divide among
+            // the active queues. Any extra buffers are given to the last
+            // queue, so redirect any larger values there.
+            let i = (i as usize).min(self.remote_ranges.buffer_id_send.len() - 1);
+            let _ = self.remote_ranges.buffer_id_send[i].unbounded_send(id);
             true
         }
     }
@@ -487,24 +493,34 @@ impl std::fmt::Display for PrimaryChannelGuestVfState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PrimaryChannelGuestVfState::Initializing => write!(f, "initializing"),
-            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::NoState) => write!(f, "restoring"),
-            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::AvailableAdvertised) => write!(f, "restoring from guest notified of vfid"),
-            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::Ready) => write!(f, "restoring from vf present"),
-            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::DataPathSwitchPending{to_guest, result, ..}) => {
-                write!(f, "restoring from client requested data path switch: to {} {}",
+            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::NoState) => {
+                write!(f, "restoring")
+            }
+            PrimaryChannelGuestVfState::Restoring(
+                saved_state::GuestVfState::AvailableAdvertised,
+            ) => write!(f, "restoring from guest notified of vfid"),
+            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::Ready) => {
+                write!(f, "restoring from vf present")
+            }
+            PrimaryChannelGuestVfState::Restoring(
+                saved_state::GuestVfState::DataPathSwitchPending {
+                    to_guest, result, ..
+                },
+            ) => {
+                write!(
+                    f,
+                    "restoring from client requested data path switch: to {} {}",
                     if *to_guest { "guest" } else { "synthetic" },
                     if let Some(result) = result {
-                        if *result {
-                            "succeeded\""
-                        } else {
-                            "failed\""
-                        }
+                        if *result { "succeeded\"" } else { "failed\"" }
                     } else {
                         "in progress\""
                     }
                 )
             }
-            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::DataPathSwitched) => write!(f, "restoring from data path in guest"),
+            PrimaryChannelGuestVfState::Restoring(saved_state::GuestVfState::DataPathSwitched) => {
+                write!(f, "restoring from data path in guest")
+            }
             PrimaryChannelGuestVfState::Unavailable => write!(f, "unavailable"),
             PrimaryChannelGuestVfState::UnavailableFromAvailable => {
                 write!(f, "\"unavailable (previously available)\"")
@@ -515,8 +531,10 @@ impl std::fmt::Display for PrimaryChannelGuestVfState {
             PrimaryChannelGuestVfState::UnavailableFromDataPathSwitched => {
                 write!(f, "\"unavailable (previously using guest VF)\"")
             }
-            PrimaryChannelGuestVfState::Available{vfid} => write!(f, "available vfid: {}", vfid),
-            PrimaryChannelGuestVfState::AvailableAdvertised => write!(f, "\"available, guest notified\""),
+            PrimaryChannelGuestVfState::Available { vfid } => write!(f, "available vfid: {}", vfid),
+            PrimaryChannelGuestVfState::AvailableAdvertised => {
+                write!(f, "\"available, guest notified\"")
+            }
             PrimaryChannelGuestVfState::Ready => write!(f, "\"available and present in guest\""),
             PrimaryChannelGuestVfState::DataPathSwitchPending {
                 to_guest, result, ..
@@ -526,11 +544,7 @@ impl std::fmt::Display for PrimaryChannelGuestVfState {
                     "\"switching to {} {}",
                     if *to_guest { "guest" } else { "synthetic" },
                     if let Some(result) = result {
-                        if *result {
-                            "succeeded\""
-                        } else {
-                            "failed\""
-                        }
+                        if *result { "succeeded\"" } else { "failed\"" }
                     } else {
                         "in progress\""
                     }
@@ -549,7 +563,7 @@ impl std::fmt::Display for PrimaryChannelGuestVfState {
 
 impl Inspect for PrimaryChannelGuestVfState {
     fn inspect(&self, req: inspect::Request<'_>) {
-        req.value(format!("{}", self).into());
+        req.value(self.to_string());
     }
 }
 
@@ -799,9 +813,24 @@ impl PrimaryChannelState {
             .collect();
 
         let rss_state = rss_state
-            .map(|rss| {
-                if rss.indirection_table.len() != indirection_table_size as usize {
-                    return Err(NetRestoreError::MismatchedIndirectionTableSize);
+            .map(|mut rss| {
+                if rss.indirection_table.len() > indirection_table_size as usize {
+                    // Dynamic reduction of indirection table can cause unexpected and hard to investigate issues
+                    // with performance and processor overloading.
+                    return Err(NetRestoreError::ReducedIndirectionTableSize);
+                }
+                if rss.indirection_table.len() < indirection_table_size as usize {
+                    tracing::warn!(
+                        saved_indirection_table_size = rss.indirection_table.len(),
+                        adapter_indirection_table_size = indirection_table_size,
+                        "increasing indirection table size",
+                    );
+                    // Dynamic increase of indirection table is done by duplicating the existing entries until
+                    // the desired size is reached.
+                    let table_clone = rss.indirection_table.clone();
+                    let num_to_add = indirection_table_size as usize - rss.indirection_table.len();
+                    rss.indirection_table
+                        .extend(table_clone.iter().cycle().take(num_to_add));
                 }
                 Ok(RssState {
                     key: rss
@@ -1122,7 +1151,7 @@ impl VmbusDevice for Nic {
                 data4: [0x91, 0x3f, 0xf2, 0xd2, 0xf9, 0x65, 0xed, 0xe],
             },
             subchannel_index: 0,
-            use_mnf: true,
+            mnf_interrupt_latency: Some(Duration::from_micros(100)),
             ..Default::default()
         }
     }
@@ -1403,8 +1432,8 @@ enum NetRestoreError {
     Open(#[from] OpenError),
     #[error("invalid rss key size")]
     InvalidRssKeySize,
-    #[error("mismatched indirection table size")]
-    MismatchedIndirectionTableSize,
+    #[error("reduced indirection table size")]
+    ReducedIndirectionTableSize,
 }
 
 impl From<NetRestoreError> for RestoreError {
@@ -1837,6 +1866,8 @@ enum WorkerError {
     Cancelled(task_control::Cancelled),
     #[error("tearing down because send/receive buffer is revoked")]
     BufferRevoked,
+    #[error("endpoint requires queue restart: {0}")]
+    EndpointRequiresQueueRestart(#[source] anyhow::Error),
 }
 
 impl From<task_control::Cancelled> for WorkerError {
@@ -2560,7 +2591,9 @@ impl<T: RingMem> NetChannel<T> {
                     primary.guest_vf_state = PrimaryChannelGuestVfState::AvailableAdvertised;
                     return Ok(Some(CoordinatorMessage::UpdateGuestVfState));
                 } else if let Some(true) = primary.is_data_path_switched {
-                    tracing::error!("Data path switched, but current guest negotiation does not support VTL0 VF");
+                    tracing::error!(
+                        "Data path switched, but current guest negotiation does not support VTL0 VF"
+                    );
                 }
             }
             return Ok(None);
@@ -2701,7 +2734,9 @@ impl<T: RingMem> NetChannel<T> {
                             self.restart = Some(CoordinatorMessage::UpdateGuestVfState);
                         }
                     } else if let Some(true) = primary.is_data_path_switched {
-                        tracing::error!("Data path switched, but current guest negotiation does not support VTL0 VF");
+                        tracing::error!(
+                            "Data path switched, but current guest negotiation does not support VTL0 VF"
+                        );
                     }
                 }
             }
@@ -2771,10 +2806,10 @@ impl<T: RingMem> NetChannel<T> {
                 self.send_rndis_control_message(buffers, id, message_length)?;
             }
             rndisprot::MESSAGE_TYPE_RESET_MSG => {
-                return Err(WorkerError::RndisMessageTypeNotImplemented)
+                return Err(WorkerError::RndisMessageTypeNotImplemented);
             }
             rndisprot::MESSAGE_TYPE_INDICATE_STATUS_MSG => {
-                return Err(WorkerError::RndisMessageTypeNotImplemented)
+                return Err(WorkerError::RndisMessageTypeNotImplemented);
             }
             rndisprot::MESSAGE_TYPE_KEEPALIVE_MSG => {
                 let request: rndisprot::KeepaliveRequest = reader.read_plain()?;
@@ -2796,7 +2831,7 @@ impl<T: RingMem> NetChannel<T> {
                 self.send_rndis_control_message(buffers, id, message_length)?;
             }
             rndisprot::MESSAGE_TYPE_SET_EX_MSG => {
-                return Err(WorkerError::RndisMessageTypeNotImplemented)
+                return Err(WorkerError::RndisMessageTypeNotImplemented);
             }
             _ => return Err(WorkerError::UnknownRndisMessageType(message_type)),
         };
@@ -3628,8 +3663,8 @@ impl InspectTaskMut<Coordinator> for CoordinatorState {
             });
 
             // Get the shared channel state from the primary channel.
-            {
-                let deferred = resp.request().defer();
+            resp.merge(inspect::adhoc_mut(|req| {
+                let deferred = req.defer();
                 coordinator.workers[0].update_with(|_, worker| {
                     if let Some(state) = worker.and_then(|worker| worker.state.ready()) {
                         deferred.respond(|resp| {
@@ -3642,7 +3677,7 @@ impl InspectTaskMut<Coordinator> for CoordinatorState {
                         });
                     }
                 })
-            }
+            }));
         }
     }
 }
@@ -3779,7 +3814,7 @@ impl Coordinator {
             };
             match message {
                 Message::UpdateFromVf(rpc) => {
-                    rpc.handle(|_| async {
+                    rpc.handle(async |_| {
                         self.update_guest_vf_state(state).await;
                     })
                     .await;
@@ -4166,7 +4201,7 @@ impl Coordinator {
                     // buffers.
                     queue_config.push(QueueConfig {
                         pool: Box::new(BufferPool::new(guest_buffers.clone())),
-                        initial_rx: &[RxId(0)],
+                        initial_rx: &[],
                         driver: Box::new(drivers[0].clone()),
                     });
                     rx_buffers.push(RxBufferRange::new(
@@ -4181,13 +4216,15 @@ impl Coordinator {
                     let queue_active = active_queues.is_empty()
                         || active_queues.binary_search(&queue_index).is_ok();
                     let (range_end, end, buffer_id_recv) = if queue_active {
-                        let range_end = range_start
-                            + ranges.buffers_per_queue
-                            + if queue_index == 0 {
-                                RX_RESERVED_CONTROL_BUFFERS
-                            } else {
-                                0
-                            };
+                        let range_end = if rx_buffers.len() as u16 == active_queue_count - 1 {
+                            // The last queue gets all the remaining buffers.
+                            state.buffers.recv_buffer.count
+                        } else if queue_index == 0 {
+                            // Queue zero always includes the reserved buffers.
+                            RX_RESERVED_CONTROL_BUFFERS + ranges.buffers_per_queue
+                        } else {
+                            range_start + ranges.buffers_per_queue
+                        };
                         (
                             range_end,
                             initial_rx.partition_point(|id| id.0 < range_end),
@@ -4348,10 +4385,30 @@ impl<T: RingMem + 'static> Worker<T> {
                         stop.until_stopped(pending()).await?
                     };
 
-                    let restart = self.channel.main_loop(stop, state, queue_state).await?;
+                    let result = self.channel.main_loop(stop, state, queue_state).await;
+                    match result {
+                        Ok(restart) => {
+                            assert_eq!(self.channel_idx, 0);
+                            let _ = self.coordinator_send.try_send(restart);
+                        }
+                        Err(WorkerError::EndpointRequiresQueueRestart(err)) => {
+                            tracelimit::warn_ratelimited!(
+                                err = %err,
+                                "Endpoint requires queues to restart",
+                            );
+                            if let Err(try_send_err) =
+                                self.coordinator_send.try_send(CoordinatorMessage::Restart)
+                            {
+                                tracing::error!(
+                                    try_send_err = %try_send_err,
+                                    "failed to restart queues"
+                                );
+                                return Err(WorkerError::Endpoint(err));
+                            }
+                        }
+                        Err(err) => return Err(err),
+                    }
 
-                    assert_eq!(self.channel_idx, 0);
-                    let _ = self.coordinator_send.try_send(restart);
                     stop.until_stopped(pending()).await?
                 }
             }
@@ -4694,7 +4751,7 @@ impl<T: 'static + RingMem> NetChannel<T> {
                     PendingLinkAction::Delay(_) => {
                         return Ok(CoordinatorMessage::StartTimer(
                             Instant::now() + LINK_DELAY_DURATION,
-                        ))
+                        ));
                     }
                     PendingLinkAction::Active(_) => panic!("State should not be Active"),
                     _ => {}
@@ -4886,23 +4943,48 @@ impl<T: 'static + RingMem> NetChannel<T> {
         epqueue: &mut dyn net_backend::Queue,
     ) -> Result<bool, WorkerError> {
         // Drain completed transmits.
-        let n = epqueue
-            .tx_poll(&mut data.tx_done)
-            .map_err(WorkerError::Endpoint)?;
-        if n == 0 {
-            return Ok(false);
-        }
+        let result = epqueue.tx_poll(&mut data.tx_done);
 
-        for &id in &data.tx_done[..n] {
-            let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
-            assert!(tx_packet.pending_packet_count > 0);
-            tx_packet.pending_packet_count -= 1;
-            if tx_packet.pending_packet_count == 0 {
-                self.complete_tx_packet(state, id)?;
+        match result {
+            Ok(n) => {
+                if n == 0 {
+                    return Ok(false);
+                }
+
+                for &id in &data.tx_done[..n] {
+                    let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
+                    assert!(tx_packet.pending_packet_count > 0);
+                    tx_packet.pending_packet_count -= 1;
+                    if tx_packet.pending_packet_count == 0 {
+                        self.complete_tx_packet(state, id)?;
+                    }
+                }
+
+                Ok(true)
             }
+            Err(TxError::TryRestart(err)) => {
+                // Complete any pending tx prior to restarting queues.
+                let pending_tx = state
+                    .pending_tx_packets
+                    .iter_mut()
+                    .enumerate()
+                    .filter_map(|(id, inflight)| {
+                        if inflight.pending_packet_count > 0 {
+                            inflight.pending_packet_count = 0;
+                            Some(PendingTxCompletion {
+                                transaction_id: inflight.transaction_id,
+                                tx_id: Some(TxId(id as u32)),
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                state.pending_tx_completions.extend(pending_tx);
+                Err(WorkerError::EndpointRequiresQueueRestart(err))
+            }
+            Err(TxError::Fatal(err)) => Err(WorkerError::Endpoint(err)),
         }
-
-        Ok(true)
     }
 
     fn switch_data_path(

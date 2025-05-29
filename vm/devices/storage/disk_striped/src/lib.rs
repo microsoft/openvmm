@@ -4,15 +4,16 @@
 //! Implements the [`DiskIo`] trait for virtual disks backed by multiple raw
 //! block devices.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 use async_trait::async_trait;
-use disk_backend::resolve::ResolveDiskParameters;
-use disk_backend::resolve::ResolvedDisk;
 use disk_backend::Disk;
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
 use disk_backend::UnmapBehavior;
+use disk_backend::resolve::ResolveDiskParameters;
+use disk_backend::resolve::ResolvedDisk;
 use disk_backend_resources::StripedDiskHandle;
 use futures::future::join_all;
 use futures::future::try_join_all;
@@ -20,10 +21,10 @@ use inspect::Inspect;
 use scsi_buffers::RequestBuffers;
 use std::fmt::Debug;
 use thiserror::Error;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::DiskHandleKind;
 
 pub struct StripedDiskResolver;
 declare_static_async_resolver!(StripedDiskResolver, (DiskHandleKind, StripedDiskHandle));
@@ -42,7 +43,7 @@ impl AsyncResolveResource<DiskHandleKind, StripedDiskHandle> for StripedDiskReso
         let disks = try_join_all(
             rsrc.devices
                 .into_iter()
-                .map(|device| async { resolver.resolve(device, input).await.map(|r| r.0) }),
+                .map(async |device| resolver.resolve(device, input).await.map(|r| r.0)),
         )
         .await?;
         Ok(ResolvedDisk::new(StripedDisk::new(
@@ -71,7 +72,9 @@ const CHUNK_SIZE_128K: u32 = 128 * 1024;
 pub enum NewDeviceError {
     #[error("Can't create a striping disk since the input device list is empty")]
     EmptyDeviceList,
-    #[error("The files are not compatible to form a striping disk: sector_size-{sector_size} != cur_sector_size-{cur_sector_size} OR sector_count-{sector_count} != cur_sector_count-{cur_sector_count}")]
+    #[error(
+        "The files are not compatible to form a striping disk: sector_size-{sector_size} != cur_sector_size-{cur_sector_size} OR sector_count-{sector_count} != cur_sector_count-{cur_sector_count}"
+    )]
     DeviceNotCompatible {
         sector_size: u32,
         cur_sector_size: u32,
@@ -122,7 +125,7 @@ enum IoError {
 
 impl From<IoError> for DiskError {
     fn from(err: IoError) -> Self {
-        DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, err))
+        DiskError::Io(std::io::Error::other(err))
     }
 }
 

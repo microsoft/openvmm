@@ -20,8 +20,8 @@
 //! been registered via a small bitmap.
 
 use inspect::Inspect;
-use memory_range::overlapping_ranges;
 use memory_range::MemoryRange;
+use memory_range::overlapping_ranges;
 use parking_lot::Mutex;
 use std::ops::Range;
 use std::sync::atomic::AtomicU64;
@@ -65,7 +65,7 @@ struct Bitmap(Vec<AtomicU64>);
 impl Bitmap {
     fn new(address_space_size: u64) -> Self {
         let chunks = address_space_size.div_ceil(GRANULARITY);
-        let words = (chunks + 63) / 64;
+        let words = chunks.div_ceil(64);
         let mut v = Vec::new();
         v.resize_with(words as usize, AtomicU64::default);
         Self(v)
@@ -197,7 +197,6 @@ mod tests {
     #[test]
     fn test_registrar() {
         let layout = MemoryLayout::new(
-            42,
             1 << 40,
             &[
                 MemoryRange::new(0x10000..0x20000),

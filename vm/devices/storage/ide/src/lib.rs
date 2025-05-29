@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod drive;
@@ -12,16 +13,16 @@ use crate::protocol::DeviceControlReg;
 use crate::protocol::IdeCommand;
 use crate::protocol::IdeConfigSpace;
 use crate::protocol::Status;
-use chipset_device::io::deferred::defer_write;
-use chipset_device::io::deferred::DeferredWrite;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
+use chipset_device::io::deferred::DeferredWrite;
+use chipset_device::io::deferred::defer_write;
 use chipset_device::pci::PciConfigSpace;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use disk_backend::Disk;
 use drive::DiskDrive;
 use drive::DriveRegister;
@@ -31,8 +32,8 @@ use inspect::Inspect;
 use inspect::InspectMut;
 use open_enum::open_enum;
 use pci_core::spec::cfg_space::Command;
-use pci_core::spec::cfg_space::HeaderType00;
 use pci_core::spec::cfg_space::HEADER_TYPE_00_SIZE;
+use pci_core::spec::cfg_space::HeaderType00;
 use protocol::BusMasterCommandReg;
 use protocol::BusMasterStatusReg;
 use scsi::CdbFlags;
@@ -1715,12 +1716,12 @@ mod save_restore {
                     (Some(_), None) => {
                         return Err(RestoreError::InvalidSavedState(
                             ChannelRestoreError::MissingStateForDrive.into(),
-                        ))
+                        ));
                     }
                     (None, Some(_)) => {
                         return Err(RestoreError::InvalidSavedState(
                             ChannelRestoreError::MissingDriveForState.into(),
-                        ))
+                        ));
                     }
                 }
             }
@@ -1733,10 +1734,10 @@ mod save_restore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::IdeIoPort;
     use crate::protocol::BusMasterDmaDesc;
     use crate::protocol::DeviceHeadReg;
     use crate::protocol::IdeCommand;
-    use crate::IdeIoPort;
     use chipset_device::pio::ExternallyManagedPortIoIntercepts;
     use disk_file::FileDisk;
     use pal_async::async_test;
@@ -1781,7 +1782,7 @@ mod tests {
                 sectors_per_track = 17;
                 cylinders_times_heads = hard_drive_sectors / (sectors_per_track as u64);
 
-                head_count = std::cmp::max((cylinders_times_heads as u32 + 1023) / 1024, 4);
+                head_count = std::cmp::max((cylinders_times_heads as u32).div_ceil(1024), 4);
 
                 if (cylinders_times_heads >= (head_count as u64) * 1024) || head_count > 16 {
                     // Always use 16 heads
@@ -1814,7 +1815,7 @@ mod tests {
         device_head: u8,
     }
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     enum Addressing {
         Chs,
         Lba28Bit,

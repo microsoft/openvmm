@@ -7,18 +7,18 @@ use anyhow::Context;
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
 use get_resources::crash::GuestCrashDeviceHandle;
+use mesh::OneshotReceiver;
 use mesh::channel;
 use mesh::rpc::FailableRpc;
-use mesh::OneshotReceiver;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use std::fs::File;
 use std::path::Path;
 use std::path::PathBuf;
 use unicycle::FuturesUnordered;
-use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::IntoResource;
 use vm_resource::Resource;
+use vm_resource::kind::VmbusDeviceHandleKind;
 
 /// Spawns a crash dump handling task and returns a resource to instantiate a
 /// guest crash device.

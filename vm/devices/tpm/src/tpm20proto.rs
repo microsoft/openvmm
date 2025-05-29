@@ -64,13 +64,17 @@ pub enum TpmProtoError {
 pub enum ResponseValidationError {
     #[error("response size is too small to fit into the buffer")]
     ResponseSizeTooSmall,
-    #[error("size {size} specified in the response header does not meet the minimal size of command type {expected_size}, command succeeded: {command_succeeded}")]
+    #[error(
+        "size {size} specified in the response header does not meet the minimal size of command type {expected_size}, command succeeded: {command_succeeded}"
+    )]
     HeaderResponseSizeMismatch {
         size: u32,
         expected_size: usize,
         command_succeeded: bool,
     },
-    #[error("unexpected session tag {response_session_tag} specified in the response header, expected: {expected_session_tag}, command succeeded: {command_succeeded}")]
+    #[error(
+        "unexpected session tag {response_session_tag} specified in the response header, expected: {expected_session_tag}, command succeeded: {command_succeeded}"
+    )]
     HeaderSessionTagMismatch {
         response_session_tag: u16,
         expected_session_tag: u16,
@@ -1946,7 +1950,7 @@ pub mod protocol {
 
     // === Startup === //
 
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub enum StartupType {
         Clear,
         State,

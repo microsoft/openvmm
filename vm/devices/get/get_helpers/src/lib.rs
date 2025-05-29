@@ -4,17 +4,16 @@
 //! Helpers to build GET (Guest Emulation Transport) protocol payloads.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 use get_protocol::LogFlags;
 use get_protocol::LogLevel;
 use get_protocol::LogType;
-use get_protocol::TraceLoggingBufferOffset;
-use get_protocol::TraceLoggingNotificationHeader;
 use get_protocol::TRACE_LOGGING_FIELDS_MAX_SIZE;
 use get_protocol::TRACE_LOGGING_MESSAGE_MAX_SIZE;
 use get_protocol::TRACE_LOGGING_NAME_MAX_SIZE;
 use get_protocol::TRACE_LOGGING_TARGET_MAX_SIZE;
+use get_protocol::TraceLoggingBufferOffset;
+use get_protocol::TraceLoggingNotificationHeader;
 use guid::Guid;
 use zerocopy::IntoBytes;
 

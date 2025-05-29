@@ -29,6 +29,7 @@ framebuffer.workspace = true
 get_resources.workspace = true
 ide_resources.workspace = true
 net_backend_resources.workspace = true
+netvsp_resources.workspace = true
 nvme_resources.workspace = true
 scsidisk_resources.workspace = true
 serial_core.workspace = true
@@ -43,6 +44,7 @@ vmcore.workspace = true
 vm_manifest_builder.workspace = true
 vm_resource.workspace = true
 vmgs_format.workspace = true
+vmgs_resources.workspace = true
 vmm_core_defs.workspace = true
 vmotherboard.workspace = true
 vmsocket.workspace = true
@@ -77,6 +79,7 @@ prost.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tempfile.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

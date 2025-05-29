@@ -63,17 +63,16 @@
 //!
 //! TODO: add links to any upstream PRs we end up sending out
 
-#![warn(missing_docs)]
 // UNSAFETY: See crate-level doccomment.
 #![expect(unsafe_code)]
 
 use std::mem;
 use std::ptr;
 use std::ptr::NonNull;
-use std::sync::atomic;
-use std::sync::atomic::Ordering::*;
 use std::sync::Arc;
 use std::sync::Weak;
+use std::sync::atomic;
+use std::sync::atomic::Ordering::*;
 
 // Matches the definition of `ArcInner` in the `std`
 //

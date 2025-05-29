@@ -31,12 +31,12 @@ use std::borrow::Borrow;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::fmt::Debug;
-use std::future::poll_fn;
 use std::future::Future;
+use std::future::poll_fn;
 use std::io;
 use std::os::unix::prelude::*;
-use std::pin::pin;
 use std::pin::Pin;
+use std::pin::pin;
 use std::process::abort;
 use std::sync::Arc;
 use std::task::Context;
@@ -73,10 +73,10 @@ impl IoUringPool {
         &self.client
     }
 
-    /// Runs the pool until it is shut down.
-    ///
-    /// Typically this is called on a dedicated thread.
+    /// Runs the pool until all clients have been dropped and any registered idle
+    /// tasks have completed.
     pub fn run(mut self) {
+        drop(self.client);
         self.worker.run(self.completion_ring, self.queue.run())
     }
 }
@@ -95,14 +95,20 @@ impl PoolClient {
     /// then by polling on the IO ring while the task blocks.
     //
     // TODO: move this functionality into underhill_threadpool.
-    pub fn set_idle_task<F, Fut>(&self, f: F)
+    pub fn set_idle_task<F>(&self, f: F)
     where
-        F: 'static + Send + FnOnce(IdleControl) -> Fut,
-        Fut: Future<Output = ()>,
+        F: 'static + Send + AsyncFnOnce(IdleControl),
     {
-        let f =
-            Box::new(|fd| Box::pin(async move { f(fd).await }) as Pin<Box<dyn Future<Output = _>>>)
-                as Box<dyn Send + FnOnce(IdleControl) -> Pin<Box<dyn Future<Output = ()>>>>;
+        // Keep the pool alive as long as the idle task is running by keeping a
+        // clone of this client.
+        let keep_pool_alive = self.clone();
+        let f = Box::new(|fd| {
+            Box::pin(async move {
+                let _keep_pool_alive = keep_pool_alive;
+                f(fd).await
+            }) as Pin<Box<dyn Future<Output = _>>>
+        })
+            as Box<dyn Send + FnOnce(IdleControl) -> Pin<Box<dyn Future<Output = ()>>>>;
 
         // Spawn a short-lived task to update the idle task.
         let worker_id = Arc::as_ptr(&self.0.client.worker) as usize; // cast because pointers are not Send
@@ -442,6 +448,9 @@ impl IoInitiator {
         (result, io_mem)
     }
 
+    /// # Safety
+    ///
+    /// The caller must guarantee that the given io_mem is compatible with the given sqe.
     unsafe fn submit_io(&self, sqe: squeue::Entry, io_mem: IoMemory, waker: Waker) -> usize {
         // Only submit if the worker is not currently running on this thread--if it is, the
         // IO will be submitted soon.
@@ -532,7 +541,9 @@ impl<T: 'static + Send + Sync + Unpin, Init: Borrow<IoInitiator> + Unpin> Io<T, 
         }
     }
 
-    /// # Safety: caller must ensure that `f` produces a safe sqe entry.
+    /// # Safety
+    ///
+    /// Caller must ensure that `f` produces a safe sqe entry.
     unsafe fn cancel_inner(&self, f: impl FnOnce(u64) -> squeue::Entry) {
         let sqe = f(self.user_data().unwrap());
         // SAFETY: guaranteed by caller
@@ -617,8 +628,14 @@ impl<T, Init: Borrow<IoInitiator>> Drop for Io<T, Init> {
 
 #[cfg(test)]
 mod tests {
+    #![expect(
+        clippy::disallowed_methods,
+        reason = "test code using futures channels"
+    )]
+
     use super::Io;
     use super::IoRing;
+    use crate::IoUringPool;
     use crate::uring::tests::SingleThreadPool;
     use futures::executor::block_on;
     use io_uring::opcode;
@@ -629,6 +646,8 @@ mod tests {
     use std::os::unix::prelude::*;
     use std::pin::Pin;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::Ordering;
     use std::task::Context;
     use std::task::Poll;
     use std::task::Waker;
@@ -974,5 +993,33 @@ mod tests {
                 assert_eq!(&write_buf[..], &read_buf[..]);
             })
             .detach();
+    }
+
+    #[test]
+    fn test_run_until_none() {
+        skip_if_no_io_uring_support!();
+        let (send, recv) = futures::channel::oneshot::channel();
+        let (send2, recv2) = futures::channel::oneshot::channel();
+        let pool = IoUringPool::new("test", 16).unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        pool.client()
+            .initiator()
+            .spawn("hmm", {
+                async move {
+                    recv.await.unwrap();
+                    send2.send(()).unwrap();
+                }
+            })
+            .detach();
+        pool.client().set_idle_task({
+            let done = done.clone();
+            |_ctl| async move {
+                send.send(()).unwrap();
+                recv2.await.unwrap();
+                done.store(true, Ordering::SeqCst);
+            }
+        });
+        pool.run();
+        assert!(done.load(Ordering::SeqCst));
     }
 }

@@ -1,16 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg(target_os = "linux")]
-
 //! Guest Emulation Transport - GET
 //!
 //! The GET is the guest side of a communication channel that uses VMBUS to communicate between Guest and Host.
 //! The Guest sends messages through the GET to get information on the time, VMGS file, attestation,
 //! platform settings, bios boot settings, and guest state protection.
 
+#![cfg(target_os = "linux")]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod api;
 pub mod error;
@@ -66,7 +64,7 @@ pub mod test_utilities {
 
     pub const DEFAULT_SIZE: usize = 4194816; // 4 MB
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(test), expect(dead_code))]
     pub struct TestGet {
         pub client: GuestEmulationTransportClient,
         pub(crate) gen_id: Receiver<[u8; 16]>,
@@ -117,14 +115,14 @@ mod tests {
     use super::test_utilities::*;
     use super::worker::GuestEmulationTransportWorker;
     use crate::process_loop::FatalError;
-    use get_protocol::test_utilities::TEST_VMGS_SECTOR_SIZE;
     use get_protocol::ProtocolVersion;
     use get_protocol::VmgsIoStatus;
+    use get_protocol::test_utilities::TEST_VMGS_SECTOR_SIZE;
     use guest_emulation_device::test_utilities::Event;
     use guest_emulation_device::test_utilities::TestGetResponses;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Spawn;
-    use pal_async::DefaultDriver;
     use test_with_tracing::test;
     use vmbus_async::async_dgram::AsyncRecvExt;
     use vmbus_async::async_dgram::AsyncSendExt;
@@ -149,7 +147,7 @@ mod tests {
                 );
 
                 assert_eq!(
-                    version_request.message_header.message_id,
+                    version_request.message_header.message_id(),
                     get_protocol::HostRequests::VERSION
                 );
                 assert_eq!(version_request.version, protocol);

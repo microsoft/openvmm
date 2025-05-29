@@ -1,20 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use inspect::Inspect;
 use inspect::InspectMut;
 use std::task::Context;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::vmtime::VmTimeAccess;
-use watchdog_core::platform::WatchdogPlatform;
 use watchdog_core::WatchdogServices;
+use watchdog_core::platform::WatchdogPlatform;
 
 open_enum::open_enum! {
     enum WatchdogPort: u16 {

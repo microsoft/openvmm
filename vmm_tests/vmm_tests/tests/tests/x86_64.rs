@@ -8,26 +8,19 @@ mod openhcl_servicing;
 mod openhcl_uefi;
 
 use anyhow::Context;
+use petri::ApicMode;
+use petri::PetriVmConfig;
+use petri::ProcessorTopology;
+use petri::ShutdownKind;
 use petri::openvmm::PetriVmConfigOpenVmm;
 use petri::pipette::cmd;
-use petri::ShutdownKind;
-use petri::SIZE_1_GB;
 use petri_artifacts_common::tags::OsFlavor;
 use vmm_core_defs::HaltReason;
 use vmm_test_macros::openvmm_test;
-
-/// Basic boot test with no agent for unsupported guests.
-#[openvmm_test(pcat_x64(vhd(freebsd_13_2_x64)), pcat_x64(iso(freebsd_13_2_x64)))]
-async fn boot_no_agent(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
-    let mut vm = config.run_without_agent().await?;
-    vm.wait_for_successful_boot_event().await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
-    Ok(())
-}
+use vmm_test_macros::vmm_test;
 
 /// Basic boot test with the VTL 0 alias map.
-// TODO: Remove once #912 is fixed.
+// TODO: Remove once #73 is fixed.
 #[openvmm_test(
     openhcl_linux_direct_x64,
     openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -47,42 +40,18 @@ async fn boot_alias_map(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
 )]
 async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     let os_flavor = config.os_flavor();
-    let config = config
-        // "OPENHCL_ENABLE_VTL2_GPA_POOL=1" is currently required to make test
-        // pass as the page pool is not enabled by default.
-        //
-        // TODO: Remove this once the page pool is always on.
-        .with_openhcl_command_line("OPENHCL_ENABLE_VTL2_GPA_POOL=1")
-        .with_tpm();
+    let config = config.with_tpm();
 
     let (vm, agent) = match os_flavor {
-        OsFlavor::Windows => {
-            // TODO: Add in-guest TPM tests for Windows as we currently
-            // do have an easy way to interact with TPM without a private
-            // or custom tool.
-            config.run().await?
-        }
+        OsFlavor::Windows => config.run().await?,
         OsFlavor::Linux => {
             let mut vm = config.run_with_lazy_pipette().await?;
             // Workaround to https://github.com/microsoft/openvmm/issues/379
             assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+
             vm.reset().await?;
             let agent = vm.wait_for_agent().await?;
             vm.wait_for_successful_boot_event().await?;
-
-            // Use the python script to read AK cert from TPM nv index
-            // TODO: Replace the script with tpm2-tools
-            const TEST_FILE: &str = "tpm.py";
-            const TEST_CONTENT: &str = include_str!("../../test_data/tpm.py");
-
-            agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
-            assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
-
-            let sh = agent.unix_shell();
-            let output = cmd!(sh, "python3 tpm.py").read().await?;
-
-            // Check if the content is as expected
-            assert!(output.contains("succeeded"));
 
             (vm, agent)
         }
@@ -94,28 +63,101 @@ async fn boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Basic VBS boot test.
-#[openvmm_test(
-    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
-)]
-async fn vbs_boot(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
-    let mut vm = config.run_without_agent().await?;
+/// Test AK cert is persistent across boots on Linux.
+// TODO: Add in-guest TPM tests for Windows as we currently
+// do have an easy way to interact with TPM without a private
+// or custom tool.
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
+async fn tpm_ak_cert_persisted(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+    let config = config
+        .with_tpm()
+        .with_tpm_state_persistence()
+        .with_igvm_attest_test_config(
+            get_resources::ged::IgvmAttestTestConfig::AkCertPersistentAcrossBoot,
+        );
+
+    // First boot - AK cert request will be served by GED
+    let mut vm = config.run_with_lazy_pipette().await?;
+    // Workaround to https://github.com/microsoft/openvmm/issues/379
+    assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+
+    // Second boot - Ak cert request will be bypassed by GED
+    vm.reset().await?;
+    let agent = vm.wait_for_agent().await?;
     vm.wait_for_successful_boot_event().await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+
+    // Use the python script to read AK cert from TPM nv index
+    // and verify that the AK cert preserves across boot.
+    // TODO: Replace the script with tpm2-tools
+    const TEST_FILE: &str = "tpm.py";
+    const TEST_CONTENT: &str = include_str!("../../test_data/tpm.py");
+
+    agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
+    assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
+
+    let sh = agent.unix_shell();
+    let output = cmd!(sh, "python3 tpm.py").read().await?;
+
+    // Check if the content preserves as expected
+    assert!(output.contains("succeeded"));
+
+    agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
 }
 
-/// Basic VBS boot test with a single VP.
-#[openvmm_test(
-    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
-)]
-async fn vbs_boot_single_proc(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
-    let mut vm = config.with_single_processor().run_without_agent().await?;
+/// Test AK cert retry logic on Linux.
+// TODO: Add in-guest TPM tests for Windows as we currently
+// do have an easy way to interact with TPM without a private
+// or custom tool.
+#[openvmm_test(openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)))]
+async fn tpm_ak_cert_retry(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
+    let config = config
+        .with_tpm()
+        .with_tpm_state_persistence()
+        .with_igvm_attest_test_config(
+            get_resources::ged::IgvmAttestTestConfig::AkCertRequestFailureAndRetry,
+        );
+
+    // First boot - expect no AK cert from GED
+    let mut vm = config.run_with_lazy_pipette().await?;
+    // Workaround to https://github.com/microsoft/openvmm/issues/379
+    assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
+
+    // Second boot - except get AK cert from GED on the second attempts
+    vm.reset().await?;
+    let agent = vm.wait_for_agent().await?;
     vm.wait_for_successful_boot_event().await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+
+    // Use the python script to read AK cert from TPM nv index
+    // and verify that the AK cert preserves across boot.
+    // TODO: Replace the script with tpm2-tools
+    const TEST_FILE: &str = "tpm.py";
+    const TEST_CONTENT: &str = include_str!("../../test_data/tpm.py");
+
+    agent.write_file(TEST_FILE, TEST_CONTENT.as_bytes()).await?;
+    assert_eq!(agent.read_file(TEST_FILE).await?, TEST_CONTENT.as_bytes());
+
+    // The first AK cert request made during boot is expected to
+    // get invalid response from GED such that no data is set
+    // to nv index. The script should return failure. Also, the nv
+    // read made by the script is expected to trigger another AK cert
+    // request.
+    let sh = agent.unix_shell();
+    let output = cmd!(sh, "python3 tpm.py").read().await?;
+
+    // Check if there is no content yet
+    assert!(!output.contains("succeeded"));
+
+    // Run the script again to test if the AK cert triggered by nv read
+    // succeeds and the data is written into the nv index.
+    let sh = agent.unix_shell();
+    let output = cmd!(sh, "python3 tpm.py").read().await?;
+
+    // Check if the content is now available
+    assert!(output.contains("succeeded"));
+
+    agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
 }
@@ -141,54 +183,6 @@ async fn vbs_boot_with_tpm(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Validate we can reboot a VM and reconnect to pipette.
-// TODO: Reenable interesting guests once #74 is fixed.
-#[openvmm_test(
-    linux_direct_x64,
-    openhcl_linux_direct_x64,
-    // openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    // pcat_x64(vhd(windows_datacenter_core_2022_x64)),
-    // openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
-    // uefi_x64(vhd(ubuntu_2204_server_x64)),
-    // pcat_x64(vhd(ubuntu_2204_server_x64))
-)]
-async fn reboot(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
-    let (mut vm, agent) = config.run().await?;
-
-    agent.ping().await?;
-
-    agent.reboot().await?;
-    assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
-    vm.reset().await?;
-
-    let agent = vm.wait_for_agent().await?;
-
-    agent.ping().await?;
-
-    agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
-
-    Ok(())
-}
-
-/// Basic VBS reboot test.
-#[openvmm_test(
-    openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64))
-)]
-async fn vbs_reboot(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
-    let mut vm = config.run_without_agent().await?;
-    vm.wait_for_successful_boot_event().await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Reboot).await?;
-    assert_eq!(vm.wait_for_halt().await?, HaltReason::Reset);
-    vm.reset().await?;
-    vm.wait_for_successful_boot_event().await?;
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
-    Ok(())
-}
-
 /// Basic VTL 2 pipette functionality test.
 #[openvmm_test(openhcl_linux_direct_x64)]
 async fn vtl2_pipette(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
@@ -201,85 +195,6 @@ async fn vtl2_pipette(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
 
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
-    Ok(())
-}
-
-/// Boot our guest-test UEFI image, which will run some tests,
-/// and then purposefully triple fault itself via an expiring
-/// watchdog timer.
-#[openvmm_test(uefi_x64(guest_test_uefi_x64), openhcl_uefi_x64(guest_test_uefi_x64))]
-async fn guest_test_uefi(config: PetriVmConfigOpenVmm) -> anyhow::Result<()> {
-    let vm = config
-        .with_windows_secure_boot_template()
-        .run_without_agent()
-        .await?;
-    // No boot event check, UEFI watchdog gets fired before ExitBootServices
-    assert!(matches!(
-        vm.wait_for_teardown().await?,
-        HaltReason::TripleFault { .. }
-    ));
-    Ok(())
-}
-
-/// Boot Linux and have it write the visible memory size.
-#[openvmm_test(linux_direct_x64)]
-async fn five_gb(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
-    let configured_size = 5 * SIZE_1_GB;
-    let expected_size = configured_size - configured_size / 10; // 10% buffer; TODO-figure out where this goes
-
-    let (vm, agent) = config
-        .with_custom_config(|c| c.memory.mem_size = configured_size)
-        .run()
-        .await?;
-
-    // Validate that the RAM size is appropriate.
-    // Skip the first 9 characters, which are "MemTotal:", and the last two,
-    // which are the units.
-    let output = agent.unix_shell().read_file("/proc/meminfo").await?;
-    let memtotal_line = output
-        .lines()
-        .find_map(|line| line.strip_prefix("MemTotal:"))
-        .context("coulnd't find memtotal")?;
-    let size_kb: u64 = memtotal_line
-        .strip_suffix("kB")
-        .context("memtotal units should be in kB")?
-        .trim()
-        .parse()
-        .context("couldn't parse size")?;
-    assert!(
-        size_kb * 1024 >= expected_size,
-        "memory size {} >= {}",
-        size_kb * 1024,
-        expected_size
-    );
-
-    agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
-
-    Ok(())
-}
-
-/// Test transferring a file to the guest.
-#[openvmm_test(
-    linux_direct_x64,
-    openhcl_linux_direct_x64,
-    openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
-    uefi_x64(vhd(ubuntu_2204_server_x64))
-)]
-async fn file_transfer_test(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
-    const TEST_CONTENT: &str = "hello world!";
-    const FILE_NAME: &str = "test.txt";
-
-    let (vm, agent) = config.run().await?;
-
-    agent.write_file(FILE_NAME, TEST_CONTENT.as_bytes()).await?;
-    assert_eq!(agent.read_file(FILE_NAME).await?, TEST_CONTENT.as_bytes());
-
-    agent.power_off().await?;
-    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
-
     Ok(())
 }
 
@@ -315,10 +230,14 @@ async fn mtrrs(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Error> {
     // assert!(mtrr_output.contains("default type: uncachable"));
     // assert!(mtrr_output.contains("fixed ranges enabled"));
     // assert!(mtrr_output.contains("variable ranges enabled"));
-    assert!(mtrr_output
-        .contains("reg00: base=0x000000000 (    0MB), size=  128MB, count=1: write-back"));
-    assert!(mtrr_output
-        .contains("reg01: base=0x008000000 (  128MB), size= 4096MB, count=1: write-back"));
+    assert!(
+        mtrr_output
+            .contains("reg00: base=0x000000000 (    0MB), size=  128MB, count=1: write-back")
+    );
+    assert!(
+        mtrr_output
+            .contains("reg01: base=0x008000000 (  128MB), size= 4096MB, count=1: write-back")
+    );
 
     Ok(())
 }
@@ -377,6 +296,69 @@ async fn battery_capacity(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Er
     let guest_capacity: i32 = output.parse().expect("Failed to parse battery capacity");
     assert_eq!(guest_capacity, 95, "Output did not match expected capacity");
 
+    agent.power_off().await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
+fn configure_for_sidecar(
+    config: Box<dyn PetriVmConfig>,
+    proc_count: u32,
+) -> Box<dyn PetriVmConfig> {
+    config.with_processor_topology({
+        ProcessorTopology {
+            vp_count: proc_count,
+            // Sidecar will start one VP per socket. For this test, use just one
+            // socket.
+            vps_per_socket: Some(proc_count),
+            enable_smt: Some(false),
+            // Sidecar currently requires x2APIC.
+            apic_mode: Some(ApicMode::X2apicSupported),
+        }
+    })
+}
+
+// Use UEFI so that the guest doesn't access the other APs, causing hot adds
+// into VTL2 Linux.
+//
+// Sidecar isn't supported on aarch64 yet.
+#[vmm_test(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none))]
+async fn sidecar_aps_unused(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow::Error> {
+    let proc_count = 4;
+    let mut vm = configure_for_sidecar(config, proc_count)
+        .with_uefi_frontpage(true)
+        .run_without_agent()
+        .await?;
+    vm.wait_for_successful_boot_event().await?;
+
+    let agent = vm.wait_for_vtl2_agent().await?;
+    let sh = agent.unix_shell();
+
+    // Ensure the APs haven't been started into Linux.
+    //
+    // CPU 0 doesn't usually have an online file on x86_64.
+    for cpu in 1..proc_count {
+        let online = sh
+            .read_file(format!("/sys/bus/cpu/devices/cpu{cpu}/online"))
+            .await?
+            .trim()
+            .parse::<u8>()
+            .context("failed to parse online file")?
+            != 0;
+        assert!(!online, "cpu {cpu} is online");
+    }
+
+    // No way to shut down cleanly, currently.
+    tracing::info!("dropping VM");
+    Ok(())
+}
+
+#[vmm_test(
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
+)]
+async fn sidecar_boot(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow::Error> {
+    let (vm, agent) = configure_for_sidecar(config, 4).run().await?;
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())

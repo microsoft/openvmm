@@ -1,0 +1,18 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
+
+[package]
+name = "simple_tmk"
+rust-version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tmk_core.workspace = true
+tmk_macros.workspace = true
+x86defs.workspace = true
+
+[build-dependencies]
+minimal_rt_build.workspace = true
+
+[lints]
+workspace = true

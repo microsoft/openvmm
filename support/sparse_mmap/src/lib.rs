@@ -5,7 +5,8 @@
 
 // UNSAFETY: Manual pointer manipulation, dealing with mmap, and a signal handler.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks)]
+#![expect(missing_docs)]
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 pub mod alloc;
 mod trycopy_windows_arm64;
@@ -13,12 +14,12 @@ mod trycopy_windows_x64;
 pub mod unix;
 pub mod windows;
 
-pub use sys::alloc_shared_memory;
-pub use sys::new_mappable_from_file;
 pub use sys::AsMappableRef;
 pub use sys::Mappable;
 pub use sys::MappableRef;
 pub use sys::SparseMapping;
+pub use sys::alloc_shared_memory;
+pub use sys::new_mappable_from_file;
 
 use std::mem::MaybeUninit;
 use std::sync::atomic::AtomicU8;

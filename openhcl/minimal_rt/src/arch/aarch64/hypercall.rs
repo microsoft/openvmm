@@ -74,6 +74,10 @@ pub unsafe fn invoke_hypercall(
 }
 
 /// 6 input words, 2 output words.
+///
+/// # Safety
+///
+/// Caller must ensure that the Hyper-V ABI contract is followed.
 unsafe fn invoke_hypercall_fast_6_2(
     control: hvdef::hypercall::Control,
     input: [u64; 6],

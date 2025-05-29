@@ -5,19 +5,19 @@
 //! [`Disk`].
 
 use super::DriveRegister;
+use crate::DmaType;
+use crate::NewDeviceError;
 use crate::protocol;
 use crate::protocol::DeviceControlReg;
 use crate::protocol::DeviceHeadReg;
 use crate::protocol::ErrorReg;
 use crate::protocol::IdeCommand;
 use crate::protocol::Status;
-use crate::DmaType;
-use crate::NewDeviceError;
 use disk_backend::Disk;
 use disk_backend::DiskError;
-use guestmem::ranges::PagedRange;
 use guestmem::AlignedHeapMemory;
 use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use ide_resources::IdePath;
 use inspect::Inspect;
 use safeatomic::AtomicSliceOps;
@@ -282,7 +282,7 @@ impl MediaGeometry {
             sectors_per_track = 17;
             cylinders_times_heads = hard_drive_sectors / (sectors_per_track as u64);
 
-            head_count = std::cmp::max((cylinders_times_heads as u32 + 1023) / 1024, 4);
+            head_count = std::cmp::max((cylinders_times_heads as u32).div_ceil(1024), 4);
 
             if (cylinders_times_heads >= (head_count as u64) * 1024) || head_count > 16 {
                 // Always use 16 heads
@@ -563,7 +563,9 @@ impl HardDrive {
                     && data != self.disk_path.drive
                     && self.state.command.is_some()
                 {
-                    tracing::warn!("Changing selected drive in the middle of operation. Resetting previously selected drive");
+                    tracing::warn!(
+                        "Changing selected drive in the middle of operation. Resetting previously selected drive"
+                    );
                     self.reset();
                 }
                 self.state.regs.device_head = data.into();
@@ -1190,7 +1192,7 @@ impl HardDrive {
                 sector_count = write_sector_count,
                 "starting disk write"
             );
-            self.set_io(|disk| async move {
+            self.set_io(async move |disk| {
                 let buffers = command_buffer.buffers(0, size as usize, false);
                 disk.write_vectored(&buffers, lba, fua).await
             });
@@ -1228,7 +1230,7 @@ impl HardDrive {
 
         let sector_count = command.sectors_before_interrupt;
         tracing::trace!(lba, sector_count, "starting disk read");
-        self.set_io(|disk| async move {
+        self.set_io(async move |disk| {
             let buffers = command_buffer.buffers(
                 0,
                 protocol::HARD_DRIVE_SECTOR_BYTES as usize * sector_count as usize,
@@ -1329,7 +1331,7 @@ impl HardDrive {
     }
 
     fn flush(&mut self) {
-        self.set_io(|disk| async move { disk.sync_cache().await });
+        self.set_io(async |disk| disk.sync_cache().await);
     }
 
     fn flush_complete(&mut self) {

@@ -109,7 +109,8 @@ def process(temp_dir: str, underhill_path: str, kernel_path: str,
     os.environ["OPENHCL_KERNEL_PATH"] = kernel_path
     os.environ["OPENHCL_BUILD_INFO"] = build_info
 
-    create_cpio_from_config(rootfs_config_path, underhill_cpio_gz_file_name, 'gzip')
+    stat = create_cpio_from_config(rootfs_config_path, underhill_cpio_gz_file_name, 'gzip')
+    eprint(f"The initial root fs size, bytes: {stat}")
 
     for dir_name in additional_dirs:
         temp_file_name = os.path.join(temp_dir, "add_dir.cpio.gz")
@@ -118,6 +119,8 @@ def process(temp_dir: str, underhill_path: str, kernel_path: str,
         os.unlink(temp_file_name)
 
     for layer in additional_layers:
+        layer_size = os.path.getsize(layer)
+        eprint(f"Adding layer {layer}, size: {layer_size} bytes")
         append_file(underhill_cpio_gz_file_name, layer)
 
     if Config.VERBOSE: subprocess.run(f'binwalk -eM {underhill_cpio_gz_file_name}', shell=True, check=True)

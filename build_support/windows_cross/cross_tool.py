@@ -23,7 +23,7 @@ import tempfile
 import glob
 import argparse
 
-tools = ['clang-cl', 'lld-link', 'llvm-lib', 'llvm-dlltool', 'llvm-rc']
+tools = ['clang-cl', 'lld-link', 'llvm-lib', 'llvm-dlltool', 'llvm-rc', 'midlrt.exe']
 
 
 def wslpath(p):
@@ -72,7 +72,8 @@ def sdk_paths(arch):
     version = versions[-1]
     lib = [f'{roots}/Lib/{version}/{dir}/{arch}' for dir in ['ucrt', 'um']]
     include = [f'{roots}/Include/{version}/{dir}' for dir in ['ucrt', 'um', 'shared', 'cppwinrt', 'winrt']]
-    return {'lib': lib, 'include': include}
+    bin = f'{roots}/bin/{version}/{arch}/'
+    return {'lib': lib, 'include': include, 'bin': bin}
 
 
 def check_config(a):
@@ -97,6 +98,11 @@ def find_llvm_tool(name):
         x.sort()
         return x[-1]
     return None
+
+
+def find_midlrt(sdk):
+    midlrt = f"{sdk['bin']}/midlrt.exe"
+    return os.path.normpath(midlrt)
 
 
 def get_config(arch, required_tool, ignore_cache):
@@ -126,11 +132,26 @@ def get_config(arch, required_tool, ignore_cache):
             win_arch = 'arm64'
         else:
             raise Exception("Unknown architecture")
-        vs = vs_paths(win_arch)
         sdk = sdk_paths(win_arch)
+        tool_paths = {}
+        config = {}
+        for tool in tools:
+            if tool == 'midlrt.exe':
+                p = find_midlrt(sdk)
+            else:
+                p = find_llvm_tool(tool)
+            if p:
+                tool_paths[tool] = p
+
+        if required_tool and required_tool not in tool_paths:
+            raise Exception(
+                f"tool '{required_tool}' not found, try installing it")
+
+        vs = vs_paths(win_arch)
         config = {'lib': [os.path.normpath(p) for p in vs['lib'] + sdk['lib']],
                   'include': [os.path.normpath(p) for p in vs['include'] + sdk['include']],
-                  'tools': {tool: find_llvm_tool(tool) for tool in tools}}
+                  'tools': tool_paths,
+                  'sdk': [os.path.normpath(sdk['bin'])]}
 
         if not check_config(config):
             raise Exception("invalid paths")
@@ -186,12 +207,17 @@ config = get_config(arch, tool, ignore_cache)
 
 if action == "run":
     tool_path = config['tools'][tool]
-    if not tool_path:
-        print(f"tool {tool} not found, try installing it")
-        exit(1)
-    lib = ';'.join(config['lib'])
-    include = ';'.join(config['include'])
+    separator = ':' if tool == "midlrt.exe" else ';'
+    lib = separator.join(config['lib'])
+    include = separator.join(config['include'])
     environ = dict(os.environ.copy(), LIB=lib, INCLUDE=include)
+    if tool == "midlrt.exe":
+        wslenv = environ['WSLENV']
+        if wslenv is None:
+            wslenv = ""
+        wslenv = wslenv + ":INCLUDE/wl:LIB/wl"
+        environ['WSLENV'] = wslenv
+
     os.execvpe(tool_path, [tool_path] + tool_args, environ)
 elif action == "dump":
     print(json.dumps(config))

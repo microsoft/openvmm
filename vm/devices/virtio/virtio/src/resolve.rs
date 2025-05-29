@@ -5,8 +5,8 @@
 
 use crate::VirtioDevice;
 use guestmem::GuestMemory;
-use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::CanResolveTo;
+use vm_resource::kind::VirtioDeviceHandle;
 use vmcore::vm_task::VmTaskDriverSource;
 
 impl CanResolveTo<ResolvedVirtioDevice> for VirtioDeviceHandle {

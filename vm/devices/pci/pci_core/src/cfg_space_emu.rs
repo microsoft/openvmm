@@ -8,19 +8,19 @@
 
 #![warn(missing_docs)]
 
+use crate::PciInterruptPin;
 use crate::bar_mapping::BarMappings;
 use crate::capabilities::PciCapability;
 use crate::spec::cfg_space;
 use crate::spec::hwid::HardwareIds;
-use crate::PciInterruptPin;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::ControlMmioIntercept;
 use guestmem::MappableGuestMemory;
 use inspect::Inspect;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use vmcore::line_interrupt::LineInterrupt;
 
 const SUPPORTED_COMMAND_BITS: u16 = cfg_space::Command::new()
@@ -148,9 +148,7 @@ mod inspect_helpers {
     use super::*;
 
     pub(crate) fn bars(bars: &[u32; 6]) -> impl Inspect + '_ {
-        inspect::iter_by_index(bars)
-            .prefix("bar")
-            .map_value(inspect::AsHex)
+        inspect::AsHex(inspect::iter_by_index(bars).prefix("bar"))
     }
 }
 

@@ -2,9 +2,9 @@
 // Licensed under the MIT License.
 
 use super::VmProxy;
-use gdbstub::target::ext::target_description_xml_override::TargetDescriptionXmlOverrideOps;
 use gdbstub::target::Target;
 use gdbstub::target::TargetError;
+use gdbstub::target::ext::target_description_xml_override::TargetDescriptionXmlOverrideOps;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::ops::DerefMut;
@@ -43,7 +43,7 @@ where
                 error = err.as_ref() as &dyn std::error::Error,
                 "gdb nonfatal error"
             );
-            TargetError::Io(std::io::Error::new(std::io::ErrorKind::Other, err))
+            TargetError::Io(std::io::Error::other(err))
         })
     }
 }

@@ -4,7 +4,6 @@
 //! RAM-backed disk layer implementation.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod resolver;
 
@@ -24,8 +23,8 @@ use guestmem::MemoryWrite;
 use inspect::Inspect;
 use parking_lot::RwLock;
 use scsi_buffers::RequestBuffers;
-use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::fmt;
 use std::fmt::Debug;
 use std::sync::atomic::AtomicU64;

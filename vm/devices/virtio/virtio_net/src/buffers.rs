@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use crate::header_size;
 use crate::VirtioNetHeader;
+use crate::header_size;
 use guestmem::GuestMemory;
 use net_backend::BufferAccess;
 use net_backend::RxBufferSegment;

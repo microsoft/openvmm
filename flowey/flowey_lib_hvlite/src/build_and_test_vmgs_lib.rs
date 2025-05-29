@@ -5,23 +5,30 @@
 //!
 //! Tests are windows only at the moment.
 
+use crate::run_cargo_build::CargoBuildOutput;
 use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_build::common::CommonTriple;
-use crate::run_cargo_build::CargoBuildOutput;
 use flowey::node::prelude::*;
 use flowey_lib_common::run_cargo_build::CargoCrateType;
 
 #[derive(Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum VmgsLibOutput {
     LinuxDynamicLib {
+        #[serde(rename = "libvmgs_lib.so")]
         so: PathBuf,
     },
     WindowsDynamicLib {
+        #[serde(rename = "vmgs_lib.dll")]
         dll: PathBuf,
+        #[serde(rename = "vmgs_lib.dll.lib")]
         dll_lib: PathBuf,
+        #[serde(rename = "vmgs_lib.pdb")]
         pdb: PathBuf,
     },
 }
+
+impl Artifact for VmgsLibOutput {}
 
 flowey_request! {
     pub struct Request {
@@ -71,18 +78,14 @@ impl SimpleFlowNode for Node {
             output: v,
         });
 
-        let built_vmgs_lib = ctx.emit_rust_stepv("check built vmgs_lib", |ctx| {
+        let built_vmgs_lib = ctx.emit_minor_rust_stepv("check built vmgs_lib", |ctx| {
             let output = output.claim(ctx);
-            move |rt| {
-                Ok(match rt.read(output) {
-                    CargoBuildOutput::LinuxDynamicLib { so } => {
-                        VmgsLibOutput::LinuxDynamicLib { so }
-                    }
-                    CargoBuildOutput::WindowsDynamicLib { dll, dll_lib, pdb } => {
-                        VmgsLibOutput::WindowsDynamicLib { dll, dll_lib, pdb }
-                    }
-                    _ => unreachable!(),
-                })
+            move |rt| match rt.read(output) {
+                CargoBuildOutput::LinuxDynamicLib { so } => VmgsLibOutput::LinuxDynamicLib { so },
+                CargoBuildOutput::WindowsDynamicLib { dll, dll_lib, pdb } => {
+                    VmgsLibOutput::WindowsDynamicLib { dll, dll_lib, pdb }
+                }
+                _ => unreachable!(),
             }
         });
 
@@ -205,15 +208,13 @@ impl SimpleFlowNode for Node {
             ReadVar::from_static(()).into_side_effect()
         };
 
-        ctx.emit_rust_step("report built vmgs_lib", |ctx| {
+        ctx.emit_minor_rust_step("report built vmgs_lib", |ctx| {
             did_test.claim(ctx);
             let built_vmgs_lib = built_vmgs_lib.claim(ctx);
             let vmgs_lib = vmgs_lib.claim(ctx);
             move |rt| {
                 let built_vmgs_lib = rt.read(built_vmgs_lib);
                 rt.write(vmgs_lib, &built_vmgs_lib);
-
-                Ok(())
             }
         });
 

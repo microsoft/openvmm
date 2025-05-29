@@ -3,30 +3,31 @@
 
 //! VM command handling.
 
-use super::hyperv::hvc_output;
-use super::hyperv::powershell_script;
-use super::hyperv::run_hcsdiag;
-use super::hyperv::run_hvc;
-use super::rustyline_printer::Printer;
 use super::InspectArgs;
 use super::InspectTarget;
 use super::LogMode;
 use super::ParavisorCommand;
 use super::SerialMode;
 use super::VmCommand;
+use super::hyperv::hvc_output;
+use super::hyperv::powershell_script;
+use super::hyperv::run_hcsdiag;
+use super::hyperv::run_hvc;
+use super::rustyline_printer::Printer;
 use anyhow::Context as _;
+use console_relay::ConsoleLaunchOptions;
 use diag_client::DiagClient;
-use futures::io::BufReader;
 use futures::AsyncBufReadExt;
 use futures::AsyncWriteExt;
 use futures::FutureExt;
 use futures::StreamExt;
+use futures::io::BufReader;
 use futures_concurrency::future::Race;
 use guid::Guid;
+use pal_async::DefaultDriver;
 use pal_async::pipe::PolledPipe;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
-use pal_async::DefaultDriver;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -179,8 +180,14 @@ impl Vm {
                     }
                     SerialMode::Log => Some(IoTarget::Printer),
                     SerialMode::Term => Some(IoTarget::Console(
-                        console_relay::Console::new(self.inner.driver.clone(), None)
-                            .context("failed to launch console")?,
+                        console_relay::Console::new(
+                            self.inner.driver.clone(),
+                            None,
+                            Some(ConsoleLaunchOptions {
+                                window_title: Some(format!("COM{} [Hypestv]", port)),
+                            }),
+                        )
+                        .context("failed to launch console")?,
                     )),
                 };
                 if let Some(target) = target {
@@ -203,6 +210,17 @@ impl Vm {
                 }
             }
             VmCommand::Paravisor(cmd) => self.handle_paravisor_command(cmd).await?,
+            VmCommand::Nmi { vtl } => {
+                powershell_script(
+                    r#"
+                    param([string]$id, [int]$vtl)
+                    $ErrorActionPreference = "Stop"
+                    $vm = Get-CimInstance -namespace "root\virtualization\v2" -query "select * from Msvm_ComputerSystem where Name = '$id'"
+                    $vm | Invoke-CimMethod -Name "InjectNonMaskableInterruptEx" -Arguments @{"Vtl" = $vtl}
+                    "#,
+                    &[&self.inner.id.to_string(), &vtl.to_string()],
+                )?;
+            }
         }
         Ok(())
     }
@@ -232,8 +250,14 @@ impl Vm {
                     }
                     LogMode::Log => Some(IoTarget::Printer),
                     LogMode::Term => Some(IoTarget::Console(
-                        console_relay::Console::new(self.inner.driver.clone(), None)
-                            .context("failed to launch console")?,
+                        console_relay::Console::new(
+                            self.inner.driver.clone(),
+                            None,
+                            Some(ConsoleLaunchOptions {
+                                window_title: Some("KMSG [Hypestv]".to_owned()),
+                            }),
+                        )
+                        .context("failed to launch console")?,
                     )),
                 };
                 if let Some(target) = target {

@@ -7,21 +7,21 @@ members = ["xsync"]
 resolver = "2"
 
 [workspace.package]
-rust-version = "1.85"
+rust-version = "1.87"
 edition = "2021"
 
 [workspace.dependencies]
 anyhow = "1.0"
-cargo_toml = "0.20"
-cargo-lock = "10.0.0"
-clap = "4.2"
+cargo_toml = "0.22"
+cargo-lock = "10.1"
+clap = "4.5"
 dunce = "1.0.5"
-fs-err = "2.9"
+fs-err = "3.1"
 log = "0.4"
 pathdiff = "0.2.1"
 semver = "1.0"
 serde = "1.0.185"
-toml_edit = "0.21"
+toml_edit = "0.22"
 
 # HACK: this is exactly the kind of dependency we _don't_ want to have in this
 # tooling, since the moment ci_logger moves on the filesystem / has an
@@ -34,40 +34,49 @@ ci_logger = { path = "../support/ci_logger" }
 
 # TODO: would be nice to enforce that these lints are also kept in-sync with
 # outer workspace
+[workspace.lints.rust]
+future_incompatible = { level = "deny", priority = -2 }
+rust_2018_idioms = { level = "warn", priority = -2 }
+
+rust-2024-compatibility = { level = "warn", priority = -1 }
+edition_2024_expr_fragment_specifier = "allow"
+
+unused_qualifications = "warn"
+missing_docs = "warn"
+
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "forbid"
+
 [workspace.lints.clippy]
-bad_bit_mask = "allow"
-bool_assert_comparison = "allow"
-box_default = "allow"
-collapsible_else_if = "allow"
-collapsible_if = "allow"
 dbg_macro = "warn"
 debug_assert_with_mut_call = "warn"
 filter_map_next = "warn"
 fn_params_excessive_bools = "warn"
 imprecise_flops = "warn"
 inefficient_to_string = "warn"
-len_without_is_empty = "allow"
 linkedlist = "warn"
 lossy_float_literal = "warn"
 macro_use_imports = "warn"
-manual_flatten = "allow"
 match_on_vec_items = "warn"
 needless_continue = "warn"
-new_without_default = "allow"
 option_option = "warn"
+ptr_as_ptr = "warn"
+ptr_cast_constness = "warn"
+ref_as_ptr = "warn"
 ref_option_ref = "warn"
 rest_pat_in_fully_bound_structs = "warn"
-single_range_in_vec_init = "allow"
 string_to_string = "warn"
 suboptimal_flops = "warn"
-too_many_arguments = "allow"
-type_complexity = "allow"
 undocumented_unsafe_blocks = "warn"
 unnecessary_box_returns = "warn"
 
-[workspace.lints.rust]
-future_incompatible = { level = "deny", priority = -1 }
-nonstandard_style = { level = "deny", priority = -1 }
-rust_2018_idioms = { level = "deny", priority = -1 }
-unsafe_code = "deny"
-unsafe_op_in_unsafe_fn = "warn"
+collapsible_else_if = "allow"
+collapsible_if = "allow"
+len_without_is_empty = "allow"
+new_without_default = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+manual_flatten = "allow"
+bool_assert_comparison = "allow"
+box_default = "allow"
+single_range_in_vec_init = "allow"

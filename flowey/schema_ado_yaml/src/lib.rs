@@ -3,7 +3,8 @@
 
 //! Serde defs for ADO YAML
 
-#![allow(unused)]
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use serde::Deserialize;
 use serde::Serialize;

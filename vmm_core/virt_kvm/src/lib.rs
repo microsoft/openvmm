@@ -4,6 +4,7 @@
 //! KVM implementation of the virt::generic interfaces.
 
 #![cfg(all(target_os = "linux", guest_is_native))]
+#![expect(missing_docs)]
 // UNSAFETY: Calling KVM APIs and manually managing memory.
 #![expect(unsafe_code)]
 #![expect(clippy::undocumented_unsafe_blocks)]
@@ -100,7 +101,7 @@ pub enum KvmRunVpError {
     ExtintInterrupt(#[source] kvm::Error),
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 pub struct KvmProcessorBinder {
     partition: Arc<KvmPartitionInner>,
     vpindex: VpIndex,

@@ -15,6 +15,8 @@
 //!    tracing stop notifications.
 
 #![cfg(target_os = "linux")]
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use anyhow::Context;
 use std::fs::File;
@@ -48,7 +50,16 @@ pub fn do_main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .log_internal_errors(true)
         .with_max_level(level)
+        .with_timer(tracing_subscriber::fmt::time::uptime())
+        .compact()
+        .with_ansi(false)
         .init();
+
+    // We should have checks in our callers so this is never hit, but let's be safe.
+    if underhill_confidentiality::confidential_filtering_enabled() {
+        tracing::info!("crash reporting disabled due to CVM");
+        std::process::exit(libc::EXIT_FAILURE);
+    }
 
     let pid: i32 = args
         .next()

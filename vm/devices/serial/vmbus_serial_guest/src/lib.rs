@@ -3,7 +3,7 @@
 
 //! Implements a UART backend that communicates with the host over a VMBUS pipe.
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub use vmbus_serial_protocol::UART_INTERFACE_INSTANCE_COM1;
 pub use vmbus_serial_protocol::UART_INTERFACE_INSTANCE_COM2;
@@ -18,9 +18,9 @@ use inspect_counters::Counter;
 use mesh::MeshPayload;
 use protocol::GuestNotifications;
 use protocol::HostRequests;
+use protocol::MAX_MESSAGE_SIZE;
 use protocol::MessageTypes;
 use protocol::MessageVersions;
-use protocol::MAX_MESSAGE_SIZE;
 use protocol::UART_MSG_MAX_PAYLOAD;
 use serial_core::SerialIo;
 use std::collections::VecDeque;
@@ -31,14 +31,14 @@ use std::io;
 use std::io::IoSlice;
 use std::io::IoSliceMut;
 use std::pin::Pin;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
+use std::task::ready;
 use thiserror::Error;
-use vm_resource::kind::SerialBackendHandle;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::SerialBackendHandle;
 use vmbus_async::async_dgram::AsyncRecv;
 use vmbus_async::async_dgram::AsyncRecvExt;
 use vmbus_async::async_dgram::AsyncSend;
@@ -71,10 +71,10 @@ mod user_pipe {
     use guid::Guid;
     use serial_core::resources::ResolveSerialBackendParams;
     use serial_core::resources::ResolvedSerialBackend;
-    use vm_resource::declare_static_async_resolver;
-    use vm_resource::kind::SerialBackendHandle;
     use vm_resource::AsyncResolveResource;
     use vm_resource::ResourceResolver;
+    use vm_resource::declare_static_async_resolver;
+    use vm_resource::kind::SerialBackendHandle;
 
     impl OpenVmbusSerialGuestConfig {
         /// Opens the UIO device for the specified instance GUID and returns the
@@ -173,7 +173,7 @@ enum ErrorInner {
 
 impl From<ErrorInner> for io::Error {
     fn from(value: ErrorInner) -> Self {
-        Self::new(io::ErrorKind::Other, value)
+        Self::other(value)
     }
 }
 
@@ -444,13 +444,13 @@ impl AsyncWrite for VmbusSerialDriver {
 mod tests {
     use crate::ErrorInner;
     use crate::VmbusSerialDriver;
+    use futures::AsyncWriteExt;
     use futures::io::AsyncReadExt;
     use futures::join;
-    use futures::AsyncWriteExt;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::socket::PolledSocket;
     use pal_async::task::Spawn;
-    use pal_async::DefaultDriver;
     use serial_core::serial_io::Connected;
     use test_with_tracing::test;
     use unix_socket::UnixStream;

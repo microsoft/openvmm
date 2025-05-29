@@ -5,22 +5,22 @@
 
 use super::spec;
 use super::spec::nvm;
-use crate::driver::save_restore::SavedNamespaceData;
+use crate::NVME_PAGE_SHIFT;
 use crate::driver::IoIssuers;
-use crate::queue_pair::admin_cmd;
+use crate::driver::save_restore::SavedNamespaceData;
 use crate::queue_pair::Issuer;
 use crate::queue_pair::RequestError;
-use crate::NVME_PAGE_SHIFT;
-use guestmem::ranges::PagedRange;
+use crate::queue_pair::admin_cmd;
 use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use inspect::Inspect;
 use mesh::CancelContext;
 use pal_async::task::Spawn;
 use parking_lot::Mutex;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use thiserror::Error;
 use vmcore::vm_task::VmTaskDriver;
 use zerocopy::FromBytes;
@@ -529,7 +529,6 @@ impl Namespace {
     /// during servicing.
     /// TODO: Re-enable namespace save/restore once we confirm
     /// that we can process namespace change AEN.
-    #[allow(dead_code)]
     pub fn save(&self) -> anyhow::Result<SavedNamespaceData> {
         Ok(SavedNamespaceData {
             nsid: self.nsid,

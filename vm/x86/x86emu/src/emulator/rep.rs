@@ -1,11 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::arith::ArithOp;
 use super::AlignmentMode;
 use super::Emulator;
 use super::InternalError;
+use super::arith::ArithOp;
 use crate::Cpu;
+use crate::Segment;
 use iced_x86::Instruction;
 use iced_x86::OpKind;
 use iced_x86::Register;
@@ -167,7 +168,7 @@ impl<T: Cpu> Emulator<'_, T> {
             let io_register = self.cpu.gp(instr.op0_register().into()) as u16;
 
             self.read_memory(
-                instr.memory_segment(),
+                instr.memory_segment().into(),
                 offset,
                 AlignmentMode::Standard,
                 data,
@@ -193,7 +194,7 @@ impl<T: Cpu> Emulator<'_, T> {
 
             let data = &mut [0; 4][..rep.size];
             self.read_io(io_register, data).await?;
-            self.write_memory(Register::ES, offset, AlignmentMode::Standard, data)
+            self.write_memory(Segment::ES, offset, AlignmentMode::Standard, data)
                 .await?;
 
             self.cpu.set_gp(rdi.into(), offset.wrapping_add(rep.delta));
@@ -215,7 +216,7 @@ impl<T: Cpu> Emulator<'_, T> {
             let offset = self.memory_op_offset(instr, 1);
             let mut data = [0; 8];
             self.read_memory(
-                instr.memory_segment(),
+                instr.memory_segment().into(),
                 offset,
                 AlignmentMode::Standard,
                 &mut data[..rep.size],
@@ -243,7 +244,7 @@ impl<T: Cpu> Emulator<'_, T> {
             let offset = self.memory_op_offset(instr, 0);
             let data = self.cpu.gp(instr.op1_register().into()).to_le_bytes();
             self.write_memory(
-                Register::ES,
+                Segment::ES,
                 offset,
                 AlignmentMode::Standard,
                 &data[..rep.size],
@@ -273,13 +274,13 @@ impl<T: Cpu> Emulator<'_, T> {
             let si_offset = self.memory_op_offset(instr, 1);
 
             self.read_memory(
-                instr.memory_segment(),
+                instr.memory_segment().into(),
                 si_offset,
                 AlignmentMode::Standard,
                 data,
             )
             .await?;
-            self.write_memory(Register::ES, di_offset, AlignmentMode::Standard, data)
+            self.write_memory(Segment::ES, di_offset, AlignmentMode::Standard, data)
                 .await?;
 
             self.cpu
@@ -311,14 +312,14 @@ impl<T: Cpu> Emulator<'_, T> {
             let di_offset = self.memory_op_offset(instr, 1);
 
             self.read_memory(
-                instr.memory_segment(),
+                instr.memory_segment().into(),
                 si_offset,
                 AlignmentMode::Standard,
                 &mut data_left[..rep.size],
             )
             .await?;
             self.read_memory(
-                Register::ES,
+                Segment::ES,
                 di_offset,
                 AlignmentMode::Standard,
                 &mut data_right[..rep.size],
@@ -361,7 +362,7 @@ impl<T: Cpu> Emulator<'_, T> {
             let di_offset = self.memory_op_offset(instr, 1);
 
             self.read_memory(
-                Register::ES,
+                Segment::ES,
                 di_offset,
                 AlignmentMode::Standard,
                 &mut data[..rep.size],

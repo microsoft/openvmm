@@ -100,6 +100,9 @@ vmbus_messages! {
         24 MODIFY_CHANNEL_RESPONSE { ModifyChannelResponse Iron },
         25 MODIFY_CONNECTION { ModifyConnection Copper features:modify_connection },
         26 MODIFY_CONNECTION_RESPONSE { ModifyConnectionResponse Copper features:modify_connection },
+        27 PAUSE { Pause Copper features:pause_resume },
+        28 PAUSE_RESPONSE { PauseResponse Copper features:pause_resume },
+        29 RESUME { Resume Copper features:pause_resume },
     }
 }
 
@@ -170,7 +173,10 @@ pub struct FeatureFlags {
     /// supported.
     pub confidential_channels: bool,
 
-    #[bits(27)]
+    /// The server supports messages to pause and resume additional control messages.
+    pub pause_resume: bool,
+
+    #[bits(26)]
     _reserved: u32,
 }
 
@@ -472,7 +478,7 @@ impl OfferChannel {
         const SCSI: Guid = guid::guid!("ba6163d9-04a1-4d29-b605-72e2ffb1dc7f");
         const VPCI: Guid = guid::guid!("44c4f61d-4444-4400-9d52-802e27ede19f");
 
-        let interface_type = match self.interface_id {
+        resp.field_with("interface_name", || match self.interface_id {
             SHUTDOWN_IC => "shutdown_ic",
             KVP_IC => "kvp_ic",
             VSS_IC => "vss_ic",
@@ -484,8 +490,7 @@ impl OfferChannel {
             SCSI => "scsi",
             VPCI => "vpci",
             _ => "unknown",
-        };
-        resp.field("interface_name", interface_type);
+        });
     }
 }
 
@@ -783,3 +788,15 @@ pub struct UnloadComplete {}
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
 pub struct AllOffersDelivered {}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct Pause;
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct PauseResponse;
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, IntoBytes, FromBytes, Immutable, KnownLayout)]
+pub struct Resume;

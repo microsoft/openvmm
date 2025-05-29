@@ -8,7 +8,7 @@
 //! device.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 use disk_backend::DiskError;
 use disk_backend::DiskIo;
@@ -189,7 +189,7 @@ impl DiskIo for GetVmgsDisk {
                 .get
                 .vmgs_read(sector, this_sector_count as u32, self.sector_size)
                 .await
-                .map_err(|err| DiskError::Io(io::Error::new(io::ErrorKind::Other, err)))?;
+                .map_err(|err| DiskError::Io(io::Error::other(err)))?;
 
             writer.write(&data)?;
             sector += this_sector_count as u64;
@@ -215,7 +215,7 @@ impl DiskIo for GetVmgsDisk {
             self.get
                 .vmgs_write(sector, data, self.sector_size)
                 .await
-                .map_err(|err| DiskError::Io(io::Error::new(io::ErrorKind::Other, err)))?;
+                .map_err(|err| DiskError::Io(io::Error::other(err)))?;
 
             remaining_sector_count -= this_sector_count;
             sector += this_sector_count as u64;
@@ -228,7 +228,7 @@ impl DiskIo for GetVmgsDisk {
         self.get
             .vmgs_flush()
             .await
-            .map_err(|err| DiskError::Io(io::Error::new(io::ErrorKind::Other, err)))
+            .map_err(|err| DiskError::Io(io::Error::other(err)))
     }
 
     async fn unmap(
@@ -280,20 +280,20 @@ mod tests {
     use super::*;
     use disk_backend::Disk;
     use guest_emulation_transport::api::ProtocolVersion;
-    use guest_emulation_transport::test_utilities::new_transport_pair;
     use guest_emulation_transport::test_utilities::TestGet;
+    use guest_emulation_transport::test_utilities::new_transport_pair;
+    use pal_async::DefaultDriver;
     use pal_async::async_test;
     use pal_async::task::Task;
-    use pal_async::DefaultDriver;
     use vmgs::FileId;
     use vmgs::Vmgs;
-    use vmgs_broker::spawn_vmgs_broker;
     use vmgs_broker::VmgsClient;
+    use vmgs_broker::spawn_vmgs_broker;
 
     async fn spawn_vmgs(driver: &DefaultDriver) -> (VmgsClient, TestGet, Task<()>) {
         let get = new_transport_pair(driver, None, ProtocolVersion::NICKEL_REV2).await;
         let vmgs_get = GetVmgsDisk::new(get.client.clone()).await.unwrap();
-        let vmgs = Vmgs::format_new(Disk::new(vmgs_get).unwrap())
+        let vmgs = Vmgs::format_new(Disk::new(vmgs_get).unwrap(), None)
             .await
             .unwrap();
         let (vmgs, task) = spawn_vmgs_broker(driver, vmgs);
@@ -401,7 +401,7 @@ mod tests {
     async fn test_read_write_encryption(driver: DefaultDriver) {
         let get = new_transport_pair(&driver, None, ProtocolVersion::NICKEL_REV2).await;
         let vmgs_get = GetVmgsDisk::new(get.client.clone()).await.unwrap();
-        let mut vmgs = Vmgs::format_new(Disk::new(vmgs_get).unwrap())
+        let mut vmgs = Vmgs::format_new(Disk::new(vmgs_get).unwrap(), None)
             .await
             .unwrap();
         let file_id = FileId::BIOS_NVRAM;
@@ -425,7 +425,9 @@ mod tests {
         drop(vmgs);
 
         let vmgs_get = GetVmgsDisk::new(get.client.clone()).await.unwrap();
-        let mut vmgs = Vmgs::open(Disk::new(vmgs_get).unwrap()).await.unwrap();
+        let mut vmgs = Vmgs::open(Disk::new(vmgs_get).unwrap(), None)
+            .await
+            .unwrap();
 
         let read_buf = vmgs.read_file(file_id).await.unwrap();
 

@@ -21,8 +21,6 @@
 //! its early days... but the code still has plenty of echoes from that initial
 //! C++ port, which really ought to get ironed out.
 
-#![warn(missing_docs)]
-
 mod encrypt;
 mod error;
 mod storage;
@@ -31,10 +29,10 @@ mod vmgs_impl;
 pub use error::Error;
 pub use vmgs_format::EncryptionAlgorithm;
 pub use vmgs_format::FileId;
-#[cfg(feature = "save_restore")]
-pub use vmgs_impl::save_restore;
 pub use vmgs_impl::Vmgs;
 pub use vmgs_impl::VmgsFileInfo;
+#[cfg(feature = "save_restore")]
+pub use vmgs_impl::save_restore;
 
 /// VMGS helper functions
 pub mod vmgs_helpers {
@@ -42,3 +40,6 @@ pub mod vmgs_helpers {
     pub use crate::vmgs_impl::read_headers;
     pub use crate::vmgs_impl::validate_header;
 }
+
+/// Expose the `VmgsLogger` trait
+pub mod logger;

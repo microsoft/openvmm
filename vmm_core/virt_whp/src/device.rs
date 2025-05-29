@@ -2,10 +2,10 @@
 // Licensed under the MIT License.
 
 use super::WhpPartitionInner;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pci::PciConfigSpace;
-use chipset_device::ChipsetDevice;
 use hv1_hypercall::HvInterruptParameters;
 use hvdef::Vtl;
 use inspect::InspectMut;
@@ -21,9 +21,9 @@ use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
 use vmcore::save_restore::SavedStateNotSupported;
+use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
-use vmcore::vpci_msi::VpciInterruptMapper;
 use vmcore::vpci_msi::VpciInterruptParameters;
 use whp::VpciInterruptTarget;
 use winapi::um::winnt;
@@ -109,8 +109,8 @@ impl MsiInterruptTarget for Device {
     }
 }
 
-impl VpciInterruptMapper for Device {
-    fn register_interrupt(
+impl MapVpciInterrupt for Device {
+    async fn register_interrupt(
         &self,
         vector_count: u32,
         params: &VpciInterruptParameters<'_>,
@@ -138,7 +138,7 @@ impl VpciInterruptMapper for Device {
         Ok(r)
     }
 
-    fn unregister_interrupt(&self, address: u64, data: u32) {
+    async fn unregister_interrupt(&self, address: u64, data: u32) {
         let mut interrupts = self.interrupts.lock();
         let (index, m) = interrupts
             .iter_mut()

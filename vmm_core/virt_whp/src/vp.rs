@@ -1,9 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use super::vtl2::Vtl2InterceptState;
 use super::Vplc;
 use super::VtlPartition;
+use super::vtl2::Vtl2InterceptState;
 use crate::WhpProcessor;
 use guestmem::GuestMemoryError;
 use hvdef::HvDeliverabilityNotificationsRegister;
@@ -21,10 +21,10 @@ use std::sync::atomic::Ordering;
 use std::task::Poll;
 use thiserror::Error;
 use tracing_helpers::ErrorValueExt;
-use virt::io::CpuIo;
-use virt::vp::AccessVpState;
 use virt::StopVp;
 use virt::VpHaltReason;
+use virt::io::CpuIo;
+use virt::vp::AccessVpState;
 use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
@@ -134,11 +134,6 @@ impl<'a> WhpProcessor<'a> {
 
             self.state.halted = false;
 
-            // Pretend to unlock the TLB when we return to VTL 0
-            if new_vtl == Vtl::Vtl0 {
-                self.tlb_lock = false;
-            }
-
             if new_vtl == Vtl::Vtl2 {
                 // No need to schedule any wakeups until the next VTL0 entry.
                 self.state
@@ -203,7 +198,7 @@ impl<'a> WhpProcessor<'a> {
         Ok(())
     }
 
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
     pub(crate) fn vtl2_intercept(&mut self, typ: HvMessageType, payload: &[u8]) {
         match self.vtl2_intercept_inner(typ, payload) {
             Ok(()) => {}
@@ -223,7 +218,6 @@ impl<'a> WhpProcessor<'a> {
     ) -> Result<(), HvError> {
         if let Some(hv) = &mut self.state.vtls[vtl].hv {
             hv.synic.post_message(
-                &self.vp.partition.gm,
                 sint,
                 message,
                 &mut self.vp.partition.synic_interrupt(self.vp.index, vtl),
@@ -288,7 +282,7 @@ impl<'a> WhpProcessor<'a> {
                     self.set_vtl_runnable(Vtl::Vtl2, HvVtlEntryReason::INTERRUPT);
                     // VTL2 "owns" startup suspend now, so clear the suspension state of VTL0.
                     #[cfg(guest_arch = "x86_64")]
-                    if !matches!(self.current_vtlp().hvstate, super::Hv1State::Disabled) {
+                    if !matches!(self.vp.partition.hvstate, super::Hv1State::Disabled) {
                         if let Some(lapic) = self.state.vtls.lapic(self.state.active_vtl) {
                             lapic.startup_suspend = false;
                         } else {
@@ -342,8 +336,7 @@ impl<'a> WhpProcessor<'a> {
                             let hv = self.state.vtls[vtl].hv.as_mut().unwrap();
                             let ref_time_now = hv.ref_time_now();
                             let (ready_sints, next_ref_time) =
-                                hv.synic
-                                    .scan(ref_time_now, &self.vp.partition.gm, &mut interrupt);
+                                hv.synic.scan(ref_time_now, &mut interrupt);
                             if let Some(next_ref_time) = next_ref_time {
                                 // Convert from reference timer basis to vmtime basis via
                                 // difference of programmed timer and current reference time.
@@ -570,31 +563,31 @@ impl<'a> WhpProcessor<'a> {
 #[cfg(guest_arch = "x86_64")]
 mod x86 {
     use super::WhpRunVpError;
+    use crate::Hv1State;
+    use crate::WhpProcessor;
     use crate::emu;
     use crate::emu::WhpVpRefEmulation;
     use crate::memory::x86::GpaBackingType;
     use crate::vtl2;
-    use crate::Hv1State;
-    use crate::WhpProcessor;
-    use hvdef::hypercall::InitialVpContextX64;
     use hvdef::HvCacheType;
     use hvdef::HvInterceptAccessType;
     use hvdef::HvMessageType;
     use hvdef::HvVtlEntryReason;
     use hvdef::HvX64VpExecutionState;
     use hvdef::Vtl;
+    use hvdef::hypercall::InitialVpContextX64;
+    use virt::LateMapVtl0MemoryPolicy;
+    use virt::VpHaltReason;
     use virt::io::CpuIo;
     use virt::state::StateElement;
     use virt::x86::MsrError;
     use virt::x86::MsrErrorExt;
-    use virt::LateMapVtl0MemoryPolicy;
-    use virt::VpHaltReason;
     use whp::get_registers;
     use whp::set_registers;
+    use x86defs::X86X_MSR_APIC_BASE;
     use x86defs::apic::X2APIC_MSR_BASE;
     use x86defs::apic::X2APIC_MSR_END;
     use x86defs::cpuid::CpuidFunction;
-    use x86defs::X86X_MSR_APIC_BASE;
     use zerocopy::FromZeros;
     use zerocopy::IntoBytes;
 
@@ -1163,7 +1156,7 @@ mod x86 {
                     0x4000_0080..=0x4fff_ffff => true,
                     // Hyper-V with emulation in VTL2.
                     0x4000_0000..=0x4fff_ffff
-                        if matches!(self.current_vtlp().hvstate, Hv1State::Disabled) =>
+                        if matches!(self.vp.partition.hvstate, Hv1State::Disabled) =>
                     {
                         true
                     }
@@ -1732,8 +1725,12 @@ mod aarch64 {
     use aarch64defs::IssDataAbort;
     use hvdef::HvMessageType;
     use hvdef::Vtl;
-    use virt::io::CpuIo;
     use virt::VpHaltReason;
+    use virt::io::CpuIo;
+
+    fn message_ref<T: hvdef::MessagePayload>(v: &whp::abi::WHV_RUN_VP_EXIT_CONTEXT_u) -> &T {
+        T::ref_from_prefix(&v.message).unwrap().0
+    }
 
     impl WhpProcessor<'_> {
         pub(super) fn process_apic(&mut self, _dev: &impl CpuIo) -> Result<bool, WhpRunVpError> {
@@ -1784,7 +1781,6 @@ mod aarch64 {
             exit: whp::Exit<'_>,
         ) -> Result<(), VpHaltReason<WhpRunVpError>> {
             use whp::ExitReason;
-            use zerocopy::FromBytes;
 
             let stat = match exit.reason {
                 ExitReason::Canceled => &mut self.state.exits.cancel,
@@ -1792,32 +1788,24 @@ mod aarch64 {
                 ExitReason::Hypervisor(reason, message) => match HvMessageType(reason) {
                     HvMessageType::HvMessageTypeUnmappedGpa
                     | HvMessageType::HvMessageTypeGpaIntercept => {
-                        self.handle_memory_access(
-                            dev,
-                            FromBytes::ref_from_prefix(message).unwrap().0, // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
-                            exit,
-                        )
-                        .await?;
+                        self.handle_memory_access(dev, message_ref(message), exit)
+                            .await?;
                         &mut self.state.exits.memory
                     }
                     HvMessageType::HvMessageTypeSynicSintDeliverable => {
-                        self.handle_sint_deliverable(
-                            FromBytes::ref_from_prefix(message).unwrap().0,
-                        ); // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                        self.handle_sint_deliverable(message_ref(message));
                         &mut self.state.exits.sint_deliverable
                     }
                     HvMessageType::HvMessageTypeHypercallIntercept => {
                         crate::hypercalls::WhpHypercallExit::handle(
                             self,
                             dev,
-                            FromBytes::ref_from_prefix(message).unwrap().0, // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                            message_ref(message),
                         );
                         &mut self.state.exits.hypercall
                     }
                     HvMessageType::HvMessageTypeArm64ResetIntercept => {
-                        return Err(
-                            self.handle_reset(FromBytes::ref_from_prefix(message).unwrap().0)
-                        ); // TODO: zerocopy: ref-from-prefix: use-rest-of-range (https://github.com/microsoft/openvmm/issues/759)
+                        return Err(self.handle_reset(message_ref(message)));
                     }
                     reason => {
                         return Err(VpHaltReason::Hypervisor(WhpRunVpError::UnknownExit(reason)));
@@ -1896,7 +1884,7 @@ mod aarch64 {
                 ec => {
                     return Err(VpHaltReason::EmulationFailure(
                         anyhow::anyhow!("unknown memory access exception: {ec:?}").into(),
-                    ))
+                    ));
                 }
             }
             Ok(())

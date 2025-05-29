@@ -134,7 +134,7 @@ impl SupportedAttrs {
 }
 
 /// Helper struct to collect various properties of a parsed authenticated var
-#[cfg_attr(not(feature = "auth-var-verify-crypto"), allow(dead_code))]
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub struct ParsedAuthVar<'a> {
     pub name: &'a Ucs2LeSlice,
@@ -567,7 +567,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                     (),
                     EfiStatus::DEVICE_ERROR,
                     Some(NvramError::NvramStorage(err)),
-                )
+                );
             }
         };
 
@@ -690,8 +690,8 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                 // UEFI spec 8.2.2 - Using the EFI_VARIABLE_AUTHENTICATION_2 descriptor
                 use uefi_specs::uefi::nvram::EFI_VARIABLE_AUTHENTICATION_2;
                 use uefi_specs::uefi::signing::EFI_CERT_TYPE_PKCS7_GUID;
-                use uefi_specs::uefi::signing::WIN_CERTIFICATE_UEFI_GUID;
                 use uefi_specs::uefi::signing::WIN_CERT_TYPE_EFI_GUID;
+                use uefi_specs::uefi::signing::WIN_CERTIFICATE_UEFI_GUID;
 
                 tracing::trace!(
                     "variable is attempting to use TIME_BASED_AUTHENTICATED_WRITE_ACCESS"
@@ -705,7 +705,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                             (),
                             EfiStatus::INVALID_PARAMETER,
                             Some(NvramError::DataNull),
-                        )
+                        );
                     }
                 };
 
@@ -719,7 +719,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                                 (),
                                 EfiStatus::SECURITY_VIOLATION,
                                 Some(NvramError::AuthError(AuthError::NotEnoughHdrData)),
-                            )
+                            );
                         }
                     };
                 let timestamp = auth_hdr.timestamp;
@@ -1037,7 +1037,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                     (0, _) => return NvramResult((), EfiStatus::SUCCESS, None),
                     // If data len is non-zero, data cannot be nullptr
                     (_, None) => {
-                        return NvramResult((), EfiStatus::SUCCESS, Some(NvramError::DataNull))
+                        return NvramResult((), EfiStatus::SUCCESS, Some(NvramError::DataNull));
                     }
                     (_, Some(data)) => data,
                 };
@@ -1105,7 +1105,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                                     (),
                                     EfiStatus::INVALID_PARAMETER,
                                     Some(NvramError::SignatureList(e)),
-                                )
+                                );
                             }
                         };
 
@@ -1214,7 +1214,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
                             (),
                             EfiStatus::INVALID_PARAMETER,
                             Some(NvramError::DataNull),
-                        )
+                        );
                     }
                 };
 
@@ -1304,7 +1304,9 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
         _: (Guid, &Ucs2LeSlice),
         _: ParsedAuthVar<'_>,
     ) -> Result<(), (EfiStatus, Option<NvramError>)> {
-        tracing::warn!("compiled without 'auth-var-verify-crypto' - unconditionally failing auth var validation!");
+        tracing::warn!(
+            "compiled without 'auth-var-verify-crypto' - unconditionally failing auth var validation!"
+        );
         Err((EfiStatus::SECURITY_VIOLATION, None))
     }
 
@@ -1391,7 +1393,7 @@ impl<S: InspectableNvramStorage> NvramSpecServices<S> {
         loop {
             match res {
                 Ok(NextVariable::EndOfList) => {
-                    return NvramResult(None, EfiStatus::NOT_FOUND, None)
+                    return NvramResult(None, EfiStatus::NOT_FOUND, None);
                 }
                 Ok(NextVariable::InvalidKey) => {
                     return NvramResult(None, EfiStatus::INVALID_PARAMETER, None);

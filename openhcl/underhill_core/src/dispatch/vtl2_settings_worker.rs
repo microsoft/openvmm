@@ -7,8 +7,8 @@ use super::LoadedVm;
 use crate::nvme_manager::NvmeDiskConfig;
 use crate::worker::NicConfig;
 use anyhow::Context;
-use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::Disk;
+use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend_resources::AutoFormattedDiskHandle;
 use disk_blockdevice::OpenBlockDeviceConfig;
 use futures::StreamExt;
@@ -18,10 +18,10 @@ use ide_resources::GuestMedia;
 use ide_resources::IdeControllerConfig;
 use ide_resources::IdeDeviceConfig;
 use ide_resources::IdePath;
+use mesh::CancelContext;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
-use mesh::CancelContext;
 use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use scsidisk_resources::SimpleScsiDiskHandle;
@@ -38,8 +38,8 @@ use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiControllerRequest;
 use storvsp_resources::ScsiDeviceAndPath;
 use thiserror::Error;
-use tracing::instrument;
 use tracing::Instrument;
+use tracing::instrument;
 use uevent::UeventListener;
 use underhill_config::DiskParameters;
 use underhill_config::NicDevice;
@@ -51,13 +51,13 @@ use underhill_config::Vtl2SettingsDynamic;
 use underhill_config::Vtl2SettingsErrorCode;
 use underhill_config::Vtl2SettingsErrorInfo;
 use underhill_threadpool::AffinitizedThreadpool;
-use vm_resource::kind::DiskHandleKind;
-use vm_resource::kind::PciDeviceHandleKind;
-use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_resource::IntoResource;
 use vm_resource::ResolveError;
 use vm_resource::Resource;
 use vm_resource::ResourceResolver;
+use vm_resource::kind::DiskHandleKind;
+use vm_resource::kind::PciDeviceHandleKind;
+use vm_resource::kind::VmbusDeviceHandleKind;
 
 #[derive(Error, Debug)]
 enum Error<'a> {
@@ -122,7 +122,9 @@ enum Error<'a> {
     },
     #[error("failed to parse Device ID: LUN = {lun:?}, device_id = {device_id:?}")]
     StorageBadDeviceId { lun: u8, device_id: &'a str },
-    #[error("failed to parse Product Revision Level: LUN = {lun:?}, product_revision_level = {product_revision_level:?}")]
+    #[error(
+        "failed to parse Product Revision Level: LUN = {lun:?}, product_revision_level = {product_revision_level:?}"
+    )]
     StorageBadProductRevisionLevel {
         lun: u8,
         product_revision_level: &'a str,
@@ -261,7 +263,7 @@ impl Vtl2SettingsWorker {
 
         while let Some(req) = settings_recv.next().await {
             req.0
-                .handle(|buf| async {
+                .handle(async |buf| {
                     self.handle_modify_vtl2_settings(uevent_listener, &{ buf })
                         .await
                 })
@@ -429,11 +431,12 @@ impl Vtl2SettingsWorker {
                         })?;
 
                     if let Some(dvd) = dvd {
-                        assert!(self
-                            .interfaces
-                            .scsi_dvds
-                            .insert(StorageDevicePath::Scsi(scsi_path), dvd)
-                            .is_none());
+                        assert!(
+                            self.interfaces
+                                .scsi_dvds
+                                .insert(StorageDevicePath::Scsi(scsi_path), dvd)
+                                .is_none()
+                        );
                     }
                 }
                 Vtl2ConfigCommit::RmDisk(controller_id, scsi_path) => {
@@ -516,26 +519,25 @@ pub(crate) async fn handle_vtl2_config_rpc(
 ) {
     match message {
         Vtl2ConfigNicRpc::Modify(rpc) => {
-            rpc.handle(|nic_settings| {
+            rpc.handle(async |nic_settings| {
                 let modify_settings = vm.network_settings.as_mut().map(|settings| {
                     settings.modify_network_settings(nic_settings.0, nic_settings.1)
                 });
-                async {
-                    modify_settings
-                        .context("network modifications not supported for this VM")?
-                        .await
-                }
+                modify_settings
+                    .context("network modifications not supported for this VM")?
+                    .await
             })
             .await
         }
         Vtl2ConfigNicRpc::Add(rpc) => {
-            rpc.handle(|nic_settings| {
+            rpc.handle(async |nic_settings| {
                 vm.add_vf_manager(threadpool, nic_settings.0, nic_settings.1, nic_settings.2)
+                    .await
             })
             .await
         }
         Vtl2ConfigNicRpc::Remove(rpc) => {
-            rpc.handle(|instance_id| vm.remove_vf_manager(instance_id))
+            rpc.handle(async |instance_id| vm.remove_vf_manager(instance_id).await)
                 .await
         }
     }
@@ -880,7 +882,7 @@ pub struct UhScsiControllerConfig {
     )>,
 }
 
-#[cfg_attr(not(feature = "vpci"), allow(dead_code))]
+#[cfg_attr(not(feature = "vpci"), expect(dead_code))]
 pub struct UhVpciDeviceConfig {
     pub instance_id: Guid,
     pub resource: Resource<PciDeviceHandleKind>,
@@ -1531,24 +1533,21 @@ async fn get_nvme_namespace_devname(
 
     // Look for a child node with the correct namespace ID.
     let devname = uevent_listener
-        .wait_for_matching_child(&nvme_devpath, move |path, uevent| {
-            let prefix = prefix.clone();
-            async move {
-                let name = path.file_name()?.to_str()?;
-                if !name.starts_with(&prefix) {
-                    return None;
-                }
-                match nsid_matches(&path, nsid) {
-                    Ok(true) => {
-                        if uevent || check_block_sysfs_ready(name).await {
-                            Some(Ok(name.to_string()))
-                        } else {
-                            None
-                        }
+        .wait_for_matching_child(&nvme_devpath, async |path, uevent| {
+            let name = path.file_name()?.to_str()?;
+            if !name.starts_with(&prefix) {
+                return None;
+            }
+            match nsid_matches(&path, nsid) {
+                Ok(true) => {
+                    if uevent || check_block_sysfs_ready(name).await {
+                        Some(Ok(name.to_string()))
+                    } else {
+                        None
                     }
-                    Ok(false) => None,
-                    Err(err) => Some(Err(err)),
                 }
+                Ok(false) => None,
+                Err(err) => Some(Err(err)),
             }
         })
         .await??;
@@ -1563,7 +1562,7 @@ async fn get_scsi_host_number(
     // Wait for a node of the name host<n> to show up.
     let controller_path = PathBuf::from(format!("/sys/bus/vmbus/devices/{instance_id}"));
     let host_number = uevent_listener
-        .wait_for_matching_child(&controller_path, move |name, _uevent| async move {
+        .wait_for_matching_child(&controller_path, async |name, _uevent| {
             name.file_name()?
                 .to_str()?
                 .strip_prefix("host")?
@@ -1589,7 +1588,7 @@ async fn get_vscsi_devname(
     ));
 
     uevent_listener
-        .wait_for_matching_child(&block_devpath, |path, uevent| async move {
+        .wait_for_matching_child(&block_devpath, async |path, uevent| {
             let name = path.file_name()?.to_str()?;
             if uevent || check_block_sysfs_ready(name).await {
                 Some(name.to_string())
@@ -1610,7 +1609,7 @@ async fn nvme_controller_path_from_vmbus_instance_id(
     let (pci_id, mut devpath) = vpci_path(instance_id);
     devpath.push("nvme");
     let devpath = uevent_listener
-        .wait_for_matching_child(&devpath, move |path, _uevent| async move { Some(path) })
+        .wait_for_matching_child(&devpath, async |path, _uevent| Some(path))
         .await?;
     wait_for_pci_path(&pci_id).await;
     Ok(devpath)

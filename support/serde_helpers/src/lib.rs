@@ -4,6 +4,9 @@
 //! Serde de/serialization helpers. To use one of these helpers, use the `with`
 //! serde attribute: `#[serde(with = "serde_helpers::foo")]`
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 mod prelude {
     pub use serde::Deserialize;
     pub use serde::Deserializer;

@@ -111,10 +111,7 @@ impl ReplySender for Connection {
     fn send(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<()> {
         let size = self.fuse_dev.write_vectored(bufs)?;
         if size < bufs.iter().map(|s| s.len()).sum() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Failed to write all data",
-            ));
+            return Err(io::Error::other("Failed to write all data"));
         }
 
         Ok(())

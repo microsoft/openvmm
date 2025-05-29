@@ -4,11 +4,11 @@
 use diag_client::kmsg_stream::KmsgStream;
 use fs_err::File;
 use fs_err::PathExt;
-use futures::io::BufReader;
 use futures::AsyncBufReadExt;
 use futures::AsyncRead;
 use futures::AsyncReadExt;
 use futures::StreamExt;
+use futures::io::BufReader;
 use jiff::Timestamp;
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -16,11 +16,11 @@ use std::io::Write as _;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::level_filters::LevelFilter;
 use tracing::Level;
+use tracing::level_filters::LevelFilter;
 use tracing_subscriber::filter::Targets;
-use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::MakeWriter;
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -288,7 +288,7 @@ impl<'a> MakeWriter<'a> for PetriWriter {
 
     fn make_writer(&'a self) -> Self::Writer {
         LogWriter {
-            inner: &self.0 .0,
+            inner: &self.0.0,
             level: Level::INFO,
             timestamp: None,
         }
@@ -296,7 +296,7 @@ impl<'a> MakeWriter<'a> for PetriWriter {
 
     fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> Self::Writer {
         LogWriter {
-            inner: &self.0 .0,
+            inner: &self.0.0,
             level: *meta.level(),
             timestamp: None,
         }

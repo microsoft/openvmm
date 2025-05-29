@@ -6,7 +6,7 @@
 //! A collection of constants, types, and traits that are shared across all PCI
 //! implementations (i.e: vpci, pci_gen1, pcie).
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod test_helpers;
 

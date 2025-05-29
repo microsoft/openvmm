@@ -2,23 +2,23 @@
 // Licensed under the MIT License.
 
 #![cfg_attr(all(target_os = "linux", target_env = "gnu"), no_main)]
+#![expect(missing_docs)]
 
 use arbitrary::Arbitrary;
 use arbitrary::Unstructured;
-use futures::select;
 use futures::FutureExt;
-use guestmem::ranges::PagedRange;
+use futures::select;
 use guestmem::GuestMemory;
+use guestmem::ranges::PagedRange;
 use pal_async::DefaultPool;
 use scsi_defs::Cdb10;
 use scsi_defs::ScsiOp;
 use std::pin::pin;
 use std::sync::Arc;
-use storvsp::protocol;
-use storvsp::test_helpers::TestGuest;
-use storvsp::test_helpers::TestWorker;
 use storvsp::ScsiController;
 use storvsp::ScsiControllerDisk;
+use storvsp::test_helpers::TestGuest;
+use storvsp::test_helpers::TestWorker;
 use storvsp_resources::ScsiPath;
 use vmbus_async::queue::OutgoingPacket;
 use vmbus_async::queue::Queue;
@@ -98,10 +98,10 @@ async fn send_arbitrary_readwrite_packet(
     let block: u32 = u.arbitrary()?;
     let transaction_id: u64 = u.arbitrary()?;
 
-    let packet = protocol::Packet {
-        operation: protocol::Operation::EXECUTE_SRB,
+    let packet = storvsp_protocol::Packet {
+        operation: storvsp_protocol::Operation::EXECUTE_SRB,
         flags: 0,
-        status: protocol::NtStatus::SUCCESS,
+        status: storvsp_protocol::NtStatus::SUCCESS,
     };
 
     // TODO: read6, read12, read16, write6, write12, write16, etc. (READ is read10, WRITE is write10)
@@ -113,11 +113,11 @@ async fn send_arbitrary_readwrite_packet(
         ..FromZeros::new_zeroed()
     };
 
-    let mut scsi_req = protocol::ScsiRequest {
+    let mut scsi_req = storvsp_protocol::ScsiRequest {
         target_id: path.target,
         path_id: path.path,
         lun: path.lun,
-        length: protocol::SCSI_REQUEST_LEN_V2 as u16,
+        length: storvsp_protocol::SCSI_REQUEST_LEN_V2 as u16,
         cdb_length: size_of::<Cdb10>() as u8,
         data_transfer_length: byte_len.try_into()?,
         data_in: 1,
@@ -159,7 +159,7 @@ async fn do_fuzz_loop(
                             OutgoingPacketType::InBandWithCompletion,
                             OutgoingPacketType::Completion,
                         ];
-                        let payload = u.arbitrary::<protocol::Packet>()?;
+                        let payload = u.arbitrary::<storvsp_protocol::Packet>()?;
                         // TODO: [use-arbitrary-input] (send a byte blob of arbitrary length rather
                         // than a fixed-size arbitrary packet)
                         let packet = OutgoingPacket {
@@ -171,8 +171,8 @@ async fn do_fuzz_loop(
                         guest.queue.split().1.write(packet).await?;
                     }
                     FuzzOutgoingPacketType::GpaDirectPacket => {
-                        let header = u.arbitrary::<protocol::Packet>()?;
-                        let scsi_req = u.arbitrary::<protocol::ScsiRequest>()?;
+                        let header = u.arbitrary::<storvsp_protocol::Packet>()?;
+                        let scsi_req = u.arbitrary::<storvsp_protocol::ScsiRequest>()?;
 
                         send_gpa_direct_packet(
                             guest,
@@ -201,7 +201,7 @@ async fn do_fuzz_loop(
 }
 
 fn do_fuzz(u: &mut Unstructured<'_>) -> Result<(), anyhow::Error> {
-    DefaultPool::run_with(|driver| async move {
+    DefaultPool::run_with(async |driver| {
         let (host, guest_channel) = connected_async_channels(16 * 1024); // TODO: [use-arbitrary-input]
         let guest_queue = Queue::new(guest_channel).unwrap();
 

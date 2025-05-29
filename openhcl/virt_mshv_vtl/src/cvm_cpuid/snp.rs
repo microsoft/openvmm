@@ -4,7 +4,6 @@
 //! CPUID definitions and implementation specific to Underhill in SNP CVMs.
 
 use super::CpuidArchInitializer;
-use super::CpuidArchSupport;
 use super::CpuidResultMask;
 use super::CpuidResults;
 use super::CpuidResultsError;
@@ -12,7 +11,6 @@ use super::CpuidSubtable;
 use super::ExtendedTopologyResult;
 use super::ParsedCpuidEntry;
 use super::TopologyError;
-use super::ZERO_CPUID_RESULT;
 use core::arch::x86_64::CpuidResult;
 use x86defs::cpuid;
 use x86defs::cpuid::CpuidFunction;
@@ -96,10 +94,12 @@ pub const SNP_REQUIRED_LEAVES: &[(CpuidFunction, Option<u32>)] = &[
 /// Implements [`CpuidArchSupport`] for SNP-isolation support
 pub struct SnpCpuidInitializer {
     cpuid_pages: Vec<HvPspCpuidPage>,
+    access_vsm: bool,
+    vtom: u64,
 }
 
 impl SnpCpuidInitializer {
-    pub fn new(cpuid_pages_data: &[u8]) -> Self {
+    pub fn new(cpuid_pages_data: &[u8], access_vsm: bool, vtom: u64) -> Self {
         let mut cpuid_pages = vec![
             HvPspCpuidPage::new_zeroed();
             cpuid_pages_data.len() / size_of::<HvPspCpuidPage>()
@@ -109,7 +109,11 @@ impl SnpCpuidInitializer {
             .as_mut_bytes()
             .copy_from_slice(cpuid_pages_data);
 
-        Self { cpuid_pages }
+        Self {
+            cpuid_pages,
+            access_vsm,
+            vtom,
+        }
     }
 }
 
@@ -374,7 +378,6 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
         Ok(ExtendedTopologyResult {
             subleaf0: Some(topology_subleaf0),
             subleaf1: Some(topology_subleaf1),
-            vps_per_socket,
         })
     }
 
@@ -394,6 +397,68 @@ impl CpuidArchInitializer for SnpCpuidInitializer {
         );
 
         sev_features_eax.tsc_aux_virtualization()
+    }
+
+    fn hv_cpuid_leaves(&self) -> [(CpuidFunction, CpuidResult); 5] {
+        const MAX_CPUS: u32 = 2048;
+
+        let privileges = hv1_emulator::cpuid::SUPPORTED_PRIVILEGES
+            .with_access_frequency_msrs(true)
+            .with_access_apic_msrs(true)
+            .with_start_virtual_processor(true)
+            .with_enable_extended_gva_ranges_flush_va_list(true)
+            .with_access_guest_idle_msr(true)
+            .with_access_vsm(self.access_vsm)
+            .with_isolation(true)
+            .with_fast_hypercall_output(true);
+
+        let features = hv1_emulator::cpuid::SUPPORTED_FEATURES
+            .with_privileges(privileges)
+            .with_frequency_regs_available(true)
+            .with_direct_synthetic_timers(true)
+            .with_extended_gva_ranges_for_flush_virtual_address_list_available(true)
+            .with_guest_idle_available(true)
+            .with_xmm_registers_for_fast_hypercall_available(true)
+            .with_register_pat_available(true)
+            .with_fast_hypercall_output_available(true)
+            .with_translate_gva_flags_available(true)
+            .with_guest_crash_regs_available(true);
+
+        let enlightenments = hvdef::HvEnlightenmentInformation::new()
+            .with_deprecate_auto_eoi(true)
+            .with_use_relaxed_timing(true)
+            .with_use_ex_processor_masks(true)
+            // If only xAPIC is supported, then the Hyper-V MSRs are
+            // more efficient for EOIs.
+            // If X2APIC is supported, then we can use the X2APIC MSRs. These
+            // are as efficient as the Hyper-V MSRs, and they are
+            // compatible with APIC hardware offloads.
+            // However, Lazy EOI on SNP is beneficial and requires the
+            // Hyper-V MSRs to function. Enable it here always.
+            .with_use_apic_msrs(true)
+            .with_long_spin_wait_count(!0)
+            .with_use_hypercall_for_remote_flush_and_local_flush_entire(true)
+            .with_use_synthetic_cluster_ipi(true);
+
+        let hardware_features = hvdef::HvHardwareFeatures::new()
+            .with_apic_overlay_assist_in_use(true)
+            .with_msr_bitmaps_in_use(true)
+            .with_second_level_address_translation_in_use(true)
+            .with_dma_remapping_in_use(false)
+            .with_interrupt_remapping_in_use(false);
+
+        let isolation_config = hvdef::HvIsolationConfiguration::new()
+            .with_paravisor_present(true)
+            .with_isolation_type(virt::IsolationType::Snp.to_hv().0)
+            .with_shared_gpa_boundary_active(true)
+            .with_shared_gpa_boundary_bits(self.vtom.trailing_zeros() as u8);
+
+        let [l0, l1, l2] =
+            hv1_emulator::cpuid::make_hv_cpuid_leaves(features, enlightenments, MAX_CPUS);
+        let [l3, l4] =
+            hv1_emulator::cpuid::make_isolated_hv_cpuid_leaves(hardware_features, isolation_config);
+
+        [l0, l1, l2, l3, l4]
     }
 }
 
@@ -441,56 +506,6 @@ impl Iterator for SnpCpuidIterator<'_> {
                 edx: leaf.edx_out,
             },
         })
-    }
-}
-
-pub struct SnpCpuidSupport;
-
-impl CpuidArchSupport for SnpCpuidSupport {
-    fn process_guest_result(
-        &self,
-        leaf: CpuidFunction,
-        _subleaf: u32,
-        result: &mut CpuidResult,
-        guest_state: &super::CpuidGuestState,
-        vps_per_socket: u32,
-    ) {
-        match leaf {
-            CpuidFunction::ProcessorTopologyDefinition => {
-                result.eax = cpuid::ProcessorTopologyDefinitionEax::from(result.eax)
-                    .with_extended_apic_id(guest_state.apic_id)
-                    .into();
-
-                let topology_ebx = cpuid::ProcessorTopologyDefinitionEbx::from(result.ebx);
-                let mut new_unit_id = (guest_state.apic_id) & (vps_per_socket - 1);
-
-                if topology_ebx.threads_per_compute_unit() > 0 {
-                    new_unit_id /= 2;
-                }
-
-                result.ebx = topology_ebx.with_compute_unit_id(new_unit_id as u8).into();
-
-                // TODO SNP: Ideally we would use the actual value of this property from the host, but
-                // we currently have no way of obtaining it. 1 is the default value for all current VMs.
-                let amd_nodes_per_socket = 1u32;
-
-                let node_id = guest_state.apic_id
-                    >> (vps_per_socket
-                        .trailing_zeros()
-                        .saturating_sub(amd_nodes_per_socket.trailing_zeros()));
-                let nodes_per_processor = amd_nodes_per_socket - 1;
-
-                result.ecx = cpuid::ProcessorTopologyDefinitionEcx::from(result.ecx)
-                    .with_node_id(node_id as u8)
-                    .with_nodes_per_processor(nodes_per_processor as u8)
-                    .into();
-            }
-            CpuidFunction::ExtendedSevFeatures => {
-                // SEV features are not exposed to lower VTLs at this time.
-                *result = ZERO_CPUID_RESULT
-            }
-            _ => (),
-        }
     }
 }
 

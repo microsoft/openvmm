@@ -7,18 +7,18 @@ use guestmem::GuestMemory;
 use hvdef::HV_PAGE_SIZE;
 use hvlite_defs::config::SerialInformation;
 use hvlite_defs::config::Vtl2BaseAddressType;
-use igvm::page_table::CpuPagingState;
 use igvm::IgvmDirectiveHeader;
 use igvm::IgvmFile;
 use igvm::IgvmPlatformHeader;
 use igvm::IgvmRelocatableRegion;
-use igvm_defs::IgvmPageDataType;
-use igvm_defs::IgvmPlatformType;
+use igvm::page_table::CpuPagingState;
 use igvm_defs::IGVM_VHS_MEMORY_MAP_ENTRY;
 use igvm_defs::IGVM_VHS_MEMORY_RANGE;
 use igvm_defs::IGVM_VHS_MMIO_RANGES;
 use igvm_defs::IGVM_VHS_PARAMETER;
 use igvm_defs::IGVM_VHS_PARAMETER_INSERT;
+use igvm_defs::IgvmPageDataType;
+use igvm_defs::IgvmPlatformType;
 use loader::importer::Aarch64Register;
 use loader::importer::BootPageAcceptance;
 use loader::importer::GuestArch;
@@ -26,8 +26,8 @@ use loader::importer::ImageLoad;
 use loader::importer::StartupMemoryType;
 use loader::importer::TableRegister;
 use loader::importer::X86Register;
-use memory_range::subtract_ranges;
 use memory_range::MemoryRange;
+use memory_range::subtract_ranges;
 use range_map_vec::RangeMap;
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -38,10 +38,10 @@ use virt::PageVisibility;
 use vm_loader::Loader;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::memory::MemoryRangeWithNode;
-use vm_topology::processor::aarch64::Aarch64Topology;
-use vm_topology::processor::x86::X86Topology;
 use vm_topology::processor::ArchTopology;
 use vm_topology::processor::ProcessorTopology;
+use vm_topology::processor::aarch64::Aarch64Topology;
+use vm_topology::processor::x86::X86Topology;
 use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
@@ -94,6 +94,8 @@ pub enum Error {
     LowerVtlContext,
     #[error("missing required memory range {0}")]
     MissingRequiredMemory(MemoryRange),
+    #[error("IGVM file requires at least two mmio ranges")]
+    UnsupportedMmio,
 }
 
 fn from_memory_range(range: &MemoryRange) -> IGVM_VHS_MEMORY_RANGE {
@@ -251,8 +253,7 @@ pub fn vtl2_memory_range(
     let physical_address_size = physical_address_size - 1;
 
     // Create an initial memory layout to determine the highest used address.
-    let dummy_layout = MemoryLayout::new(physical_address_size, mem_size, mmio_gaps, None)
-        .map_err(Error::MemoryConfig)?;
+    let dummy_layout = MemoryLayout::new(mem_size, mmio_gaps, None).map_err(Error::MemoryConfig)?;
 
     // TODO: Underhill kernel panics if loaded at 32TB or higher. Restrict the
     // max address to 32TB until this is fixed.
@@ -282,7 +283,7 @@ pub fn vtl2_memory_range(
     // Select a random base within the alignment
     let possible_bases = (aligned_max_addr - aligned_min_addr) / alignment;
     let mut num: u64 = 0;
-    getrandom::getrandom(num.as_mut_bytes()).expect("crng failure");
+    getrandom::fill(num.as_mut_bytes()).expect("crng failure");
     let selected_base = num % (possible_bases - 1);
     let selected_addr = aligned_min_addr + (selected_base * alignment);
     tracing::trace!(possible_bases, selected_base, selected_addr);
@@ -570,7 +571,7 @@ pub fn load_igvm(
 ///
 /// TODO: only supports underhill for now, with assumptions that the file always
 /// has VTL2 enabled.
-#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn load_igvm_x86(
     params: LoadIgvmParams<'_, X86Topology>,
 ) -> Result<(Vec<X86Register>, Vec<(MemoryRange, PageVisibility)>), Error> {
@@ -967,7 +968,9 @@ fn load_igvm_x86(
                 // Convert the hvlite format to the IGVM format
                 // Any gaps above 2 are ignored.
                 let mmio = mem_layout.mmio();
-                assert!(mmio.len() >= 2);
+                if mmio.len() < 2 {
+                    return Err(Error::UnsupportedMmio);
+                }
                 let mmio_ranges = IGVM_VHS_MMIO_RANGES {
                     mmio_ranges: [from_memory_range(&mmio[0]), from_memory_range(&mmio[1])],
                 };
@@ -1271,7 +1274,7 @@ fn build_memory_map(
     (memory_map, vnodes)
 }
 
-#[cfg_attr(not(guest_arch = "aarch64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "aarch64"), expect(dead_code))]
 fn load_igvm_aarch64(
     _params: LoadIgvmParams<'_, Aarch64Topology>,
 ) -> Result<(Vec<Aarch64Register>, Vec<(MemoryRange, PageVisibility)>), Error> {

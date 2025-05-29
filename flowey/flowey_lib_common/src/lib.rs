@@ -6,8 +6,8 @@
 //! These nodes can be considered "building blocks" that project-specific flows
 //! can leverage to quickly get up and running.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
-// #![warn(missing_docs)] // TODO: lots to do here
 
 pub mod _util;
 pub mod ado_task_azure_key_vault;

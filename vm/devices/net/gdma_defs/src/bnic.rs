@@ -3,8 +3,6 @@
 
 //! GDMA Basic NIC (BNIC/MANA) definitions
 
-#![allow(dead_code)]
-
 use super::GdmaQueueType;
 use bitfield_struct::bitfield;
 use open_enum::open_enum;
@@ -270,6 +268,7 @@ pub const CQE_TX_VF_DISABLED: u8 = 38;
 pub const CQE_TX_VPORT_IDX_OUT_OF_RANGE: u8 = 39;
 pub const CQE_TX_VPORT_DISABLED: u8 = 40;
 pub const CQE_TX_VLAN_TAGGING_VIOLATION: u8 = 41;
+pub const CQE_TX_GDMA_ERR: u8 = 42;
 
 pub const MANA_CQE_COMPLETION: u8 = 1;
 

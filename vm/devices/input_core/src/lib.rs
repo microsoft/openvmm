@@ -4,16 +4,15 @@
 //! Common input device-related definitions.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 pub mod mesh_input;
 
 use mesh::MeshPayload;
 use std::pin::Pin;
-use vm_resource::kind::KeyboardInputHandleKind;
-use vm_resource::kind::MouseInputHandleKind;
 use vm_resource::CanResolveTo;
 use vm_resource::ResourceId;
+use vm_resource::kind::KeyboardInputHandleKind;
+use vm_resource::kind::MouseInputHandleKind;
 
 /// Keyboard or mouse input data.
 #[derive(Debug, Copy, Clone, MeshPayload)]

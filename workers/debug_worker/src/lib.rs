@@ -7,24 +7,27 @@
 //! Remote Serial Protocol. This is used to debug the VM's execution when a
 //! guest debugger is not available or practical.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 mod gdb;
 
 use anyhow::Context;
-use debug_worker_defs::DebuggerParameters;
 use debug_worker_defs::DEBUGGER_WORKER;
+use debug_worker_defs::DebuggerParameters;
 use futures::AsyncReadExt;
 use futures::FutureExt;
+use gdb::VmProxy;
 use gdb::targets::TargetArch;
 use gdb::targets::VmTarget;
-use gdb::VmProxy;
 use gdbstub::target::ext::breakpoints::WatchKind;
 use inspect::InspectMut;
 use mesh::message::MeshField;
 use mesh_worker::Worker;
 use mesh_worker::WorkerId;
 use mesh_worker::WorkerRpc;
-use pal_async::local::block_with_io;
 use pal_async::local::LocalDriver;
+use pal_async::local::block_with_io;
 use pal_async::socket::Listener;
 use pal_async::socket::PolledSocket;
 use socket2::Socket;
@@ -96,7 +99,7 @@ where
     }
 
     fn run(self, mut rpc_recv: mesh::Receiver<WorkerRpc<Self::Parameters>>) -> anyhow::Result<()> {
-        block_with_io(|driver| async move {
+        block_with_io(async |driver| {
             tracing::info!(
                 address = %self.listener.local_addr().unwrap(),
                 "gdbstub listening",
@@ -272,10 +275,10 @@ async fn run_state_machine<T: TargetArch>(
     mut vm_target: VmTarget<'_, T>,
 ) -> Result<(), gdbstub::stub::GdbStubError<anyhow::Error, std::io::Error>> {
     use gdbstub::common::Signal;
-    use gdbstub::stub::state_machine::GdbStubStateMachine;
     use gdbstub::stub::DisconnectReason;
     use gdbstub::stub::GdbStubError;
     use gdbstub::stub::MultiThreadStopReason;
+    use gdbstub::stub::state_machine::GdbStubStateMachine;
 
     vm_target.send_req(DebugRequest::Attach);
     let (init_break_send, init_break_recv) = mesh::oneshot();

@@ -7,8 +7,11 @@ pub mod hyperv;
 /// OpenVMM VM management
 pub mod openvmm;
 
+use crate::ShutdownKind;
 use async_trait::async_trait;
+use get_resources::ged::FirmwareEvent;
 use petri_artifacts_common::tags::GuestQuirks;
+use petri_artifacts_common::tags::IsTestVmgs;
 use petri_artifacts_common::tags::MachineArch;
 use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ArtifactResolver;
@@ -31,11 +34,74 @@ pub trait PetriVmConfig: Send {
     async fn run_with_lazy_pipette(self: Box<Self>) -> anyhow::Result<Box<dyn PetriVm>>;
     /// Run the VM, launching pipette and returning a client to it.
     async fn run(self: Box<Self>) -> anyhow::Result<(Box<dyn PetriVm>, PipetteClient)>;
+
+    /// Inject Windows secure boot templates into the VM's UEFI.
+    fn with_windows_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig>;
+    /// Set the VM to use the specified processor topology.
+    fn with_processor_topology(
+        self: Box<Self>,
+        topology: ProcessorTopology,
+    ) -> Box<dyn PetriVmConfig>;
+
+    /// Sets a custom OpenHCL IGVM file to use.
+    fn with_custom_openhcl(self: Box<Self>, artifact: ResolvedArtifact) -> Box<dyn PetriVmConfig>;
+    /// Sets the command line for the paravisor.
+    fn with_openhcl_command_line(self: Box<Self>, command_line: &str) -> Box<dyn PetriVmConfig>;
+    /// Adds a file to the VM's pipette agent image.
+    fn with_agent_file(
+        self: Box<Self>,
+        name: &str,
+        artifact: ResolvedArtifact,
+    ) -> Box<dyn PetriVmConfig>;
+    /// Adds a file to the paravisor's pipette agent image.
+    fn with_openhcl_agent_file(
+        self: Box<Self>,
+        name: &str,
+        artifact: ResolvedArtifact,
+    ) -> Box<dyn PetriVmConfig>;
+    /// Sets whether UEFI frontpage is enabled.
+    fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig>;
+}
+
+/// Common processor topology information for the VM.
+pub struct ProcessorTopology {
+    /// The number of virtual processors.
+    pub vp_count: u32,
+    /// Whether SMT (hyperthreading) is enabled.
+    pub enable_smt: Option<bool>,
+    /// The number of virtual processors per socket.
+    pub vps_per_socket: Option<u32>,
+    /// The APIC configuration (x86-64 only).
+    pub apic_mode: Option<ApicMode>,
+}
+
+impl Default for ProcessorTopology {
+    fn default() -> Self {
+        Self {
+            vp_count: 2,
+            enable_smt: None,
+            vps_per_socket: None,
+            apic_mode: None,
+        }
+    }
+}
+
+/// The APIC mode for the VM.
+#[derive(Debug, Clone, Copy)]
+pub enum ApicMode {
+    /// xAPIC mode only.
+    Xapic,
+    /// x2APIC mode supported but not enabled at boot.
+    X2apicSupported,
+    /// x2APIC mode enabled at boot.
+    X2apicEnabled,
 }
 
 /// A running VM that tests can interact with.
 #[async_trait]
 pub trait PetriVm: Send {
+    /// Returns the guest architecture.
+    fn arch(&self) -> MachineArch;
     /// Wait for the VM to halt, returning the reason for the halt.
     async fn wait_for_halt(&mut self) -> anyhow::Result<HaltReason>;
     /// Wait for the VM to halt, returning the reason for the halt,
@@ -46,12 +112,28 @@ pub trait PetriVm: Send {
     /// Wait for a connection from a pipette agent running in the guest.
     /// Useful if you've rebooted the vm or are otherwise expecting a fresh connection.
     async fn wait_for_agent(&mut self) -> anyhow::Result<PipetteClient>;
+    /// Wait for a connection from a pipette agent running in VTL 2.
+    /// Useful if you've reset VTL 2 or are otherwise expecting a fresh connection.
+    /// Will fail if the VM is not running OpenHCL.
+    async fn wait_for_vtl2_agent(&mut self) -> anyhow::Result<PipetteClient>;
     /// Wait for VTL 2 to report that it is ready to respond to commands.
     /// Will fail if the VM is not running OpenHCL.
     ///
     /// This should only be necessary if you're doing something manual. All
     /// Petri-provided methods will wait for VTL 2 to be ready automatically.
     async fn wait_for_vtl2_ready(&mut self) -> anyhow::Result<()>;
+    /// Waits for an event emitted by the firmware about its boot status, and
+    /// verifies that it is the expected success value.
+    ///
+    /// * Linux Direct guests do not emit a boot event, so this method immediately returns Ok.
+    /// * PCAT guests may not emit an event depending on the PCAT version, this
+    /// method is best effort for them.
+    async fn wait_for_successful_boot_event(&mut self) -> anyhow::Result<()>;
+    /// Waits for an event emitted by the firmware about its boot status, and
+    /// returns that status.
+    async fn wait_for_boot_event(&mut self) -> anyhow::Result<FirmwareEvent>;
+    /// Instruct the guest to shutdown via the Hyper-V shutdown IC.
+    async fn send_enlightened_shutdown(&mut self, kind: ShutdownKind) -> anyhow::Result<()>;
 }
 
 /// Firmware to load into the test VM.
@@ -255,6 +337,27 @@ impl Firmware {
             _ => Default::default(),
         }
     }
+
+    fn expected_boot_event(&self) -> Option<FirmwareEvent> {
+        match self {
+            Firmware::LinuxDirect { .. } | Firmware::OpenhclLinuxDirect { .. } => None,
+            Firmware::Pcat { .. } => {
+                // TODO: Handle older PCAT versions that don't fire the event
+                Some(FirmwareEvent::BootAttempt)
+            }
+            Firmware::Uefi {
+                guest: UefiGuest::None,
+                ..
+            }
+            | Firmware::OpenhclUefi {
+                guest: UefiGuest::None,
+                ..
+            } => Some(FirmwareEvent::NoBootDevice),
+            Firmware::Uefi { .. } | Firmware::OpenhclUefi { .. } => {
+                Some(FirmwareEvent::BootSuccess)
+            }
+        }
+    }
 }
 
 /// The guest the VM will boot into. A boot drive with the chosen setup
@@ -299,11 +402,11 @@ impl UefiGuest {
         UefiGuest::GuestTestUefi(artifact)
     }
 
-    fn artifact(&self) -> &ResolvedArtifact {
+    fn artifact(&self) -> Option<&ResolvedArtifact> {
         match self {
-            UefiGuest::Vhd(vhd) => &vhd.artifact,
-            UefiGuest::GuestTestUefi(p) => p,
-            UefiGuest::None => unreachable!(),
+            UefiGuest::Vhd(vhd) => Some(&vhd.artifact),
+            UefiGuest::GuestTestUefi(p) => Some(p),
+            UefiGuest::None => None,
         }
     }
 }
@@ -389,8 +492,20 @@ pub enum IsolationType {
 }
 
 /// Flags controlling servicing behavior.
-#[derive(Default)]
+#[derive(Default, Debug, Clone, Copy)]
 pub struct OpenHclServicingFlags {
     /// Preserve DMA memory for NVMe devices if supported.
     pub enable_nvme_keepalive: bool,
+}
+
+/// Virtual machine guest state resource
+pub enum PetriVmgsResource<T: IsTestVmgs> {
+    /// Use disk to store guest state
+    Disk(ResolvedArtifact<T>),
+    /// Use disk to store guest state, reformatting if corrupted.
+    ReprovisionOnFailure(ResolvedArtifact<T>),
+    /// Format and use disk to store guest state
+    Reprovision(ResolvedArtifact<T>),
+    /// Store guest state in memory
+    Ephemeral,
 }

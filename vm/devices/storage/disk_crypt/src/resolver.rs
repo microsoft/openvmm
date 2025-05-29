@@ -9,11 +9,11 @@ use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend::resolve::ResolvedDisk;
 use disk_crypt_resources::DiskCryptHandle;
 use thiserror::Error;
-use vm_resource::declare_static_async_resolver;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::AsyncResolveResource;
 use vm_resource::ResolveError;
 use vm_resource::ResourceResolver;
+use vm_resource::declare_static_async_resolver;
+use vm_resource::kind::DiskHandleKind;
 
 declare_static_async_resolver! {
     DiskCryptResolver,

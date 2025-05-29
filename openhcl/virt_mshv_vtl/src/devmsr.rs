@@ -7,7 +7,7 @@
 
 use fs_err::os::unix::fs::FileExt;
 
-pub struct MsrDevice(fs_err::File);
+pub(crate) struct MsrDevice(fs_err::File);
 
 impl MsrDevice {
     /// Open `/dev/msr`.

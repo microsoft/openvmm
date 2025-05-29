@@ -3,10 +3,10 @@
 
 //! Resource definitions for the shutdown IC.
 
-use mesh::rpc::Rpc;
 use mesh::MeshPayload;
-use vm_resource::kind::VmbusDeviceHandleKind;
+use mesh::rpc::Rpc;
 use vm_resource::ResourceId;
+use vm_resource::kind::VmbusDeviceHandleKind;
 
 /// A handle to a shutdown IC.
 #[derive(MeshPayload)]

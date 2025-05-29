@@ -9,15 +9,15 @@
 use crate::resource::Resource;
 use crate::resource::SerializedMessage;
 use mesh_protobuf;
-use mesh_protobuf::encoding::SerializedMessageEncoder;
-use mesh_protobuf::inplace;
-use mesh_protobuf::inplace_none;
-use mesh_protobuf::protobuf::decode_with;
-use mesh_protobuf::protobuf::MessageSizer;
-use mesh_protobuf::protobuf::MessageWriter;
 use mesh_protobuf::DefaultEncoding;
 use mesh_protobuf::MessageDecode;
 use mesh_protobuf::MessageEncode;
+use mesh_protobuf::encoding::SerializedMessageEncoder;
+use mesh_protobuf::inplace;
+use mesh_protobuf::inplace_none;
+use mesh_protobuf::protobuf::MessageSizer;
+use mesh_protobuf::protobuf::MessageWriter;
+use mesh_protobuf::protobuf::decode_with;
 use std::any::Any;
 use std::any::TypeId;
 use std::borrow::Cow;
@@ -445,12 +445,14 @@ impl MessageEncode<Message<'_>, Resource> for MessageEncoder {
 /// in place on the stack.
 macro_rules! stack_message {
     ($v:expr) => {
-        // UNSAFETY: required to call unsafe function.
-        #[expect(unsafe_code)]
-        {
+        (|v| {
+            // UNSAFETY: required to call unsafe function.
+            #[expect(unsafe_code)]
             // SAFETY: The value is initialized and never used again.
-            unsafe { $crate::message::Message::new_stack(&mut ::core::mem::MaybeUninit::new($v)) }
-        }
+            unsafe {
+                $crate::message::Message::new_stack(v)
+            }
+        })(&mut ::core::mem::MaybeUninit::new($v))
     };
 }
 pub(crate) use stack_message;
@@ -487,6 +489,9 @@ struct DynMessageVtable {
 
 impl DynMessageVtable {
     const fn stack<T, E: MessageEncode<T, Resource>>() -> &'static Self {
+        /// # Safety
+        ///
+        /// The caller must ensure that `ptr` points to a valid owned `T`.
         unsafe fn compute_message_size<T, E: MessageEncode<T, Resource>>(
             ptr: *mut (),
             sizer: MessageSizer<'_>,
@@ -496,6 +501,9 @@ impl DynMessageVtable {
             E::compute_message_size(v, sizer);
         }
 
+        /// # Safety
+        ///
+        /// The caller must ensure that `ptr` points to a valid owned `T`.
         unsafe fn write_message<T, E: MessageEncode<T, Resource>>(
             ptr: *mut (),
             writer: MessageWriter<'_, '_, Resource>,
@@ -505,6 +513,9 @@ impl DynMessageVtable {
             E::write_message(v, writer);
         }
 
+        /// # Safety
+        ///
+        /// The caller must ensure that `ptr` points to a valid owned `T`.
         unsafe fn drop<T>(ptr: *mut ()) {
             // SAFETY: The value is owned and the vtable type matches.
             unsafe { ptr.cast::<T>().drop_in_place() };

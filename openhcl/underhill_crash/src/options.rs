@@ -24,6 +24,10 @@ pub struct Options {
 
     /// Be verbose
     pub verbose: bool,
+    /// Don't redirect output
+    pub no_redirect: bool,
+    /// Don't include KMSG
+    pub no_kmsg: bool,
     /// Timeout
     pub timeout: Duration,
 }
@@ -60,6 +64,12 @@ impl Options {
                 .expect(Self::USAGE),
         );
 
+        let no_redirect_var = std::env::var("UNDERHILL_CRASH_NO_REDIRECT").unwrap_or_default();
+        let no_redirect = no_redirect_var == "1" || no_redirect_var.eq_ignore_ascii_case("true");
+
+        let no_kmsg_var = std::env::var("UNDERHILL_CRASH_NO_KMSG").unwrap_or_default();
+        let no_kmsg = no_kmsg_var == "1" || no_kmsg_var.eq_ignore_ascii_case("true");
+
         let verbose_var = std::env::var("UNDERHILL_CRASH_VERBOSE").unwrap_or_default();
         let verbose = verbose_var == "1" || verbose_var.eq_ignore_ascii_case("true");
 
@@ -70,6 +80,8 @@ impl Options {
             comm,
 
             verbose,
+            no_redirect,
+            no_kmsg,
             timeout,
         }
     }

@@ -3,18 +3,18 @@
 
 //! Code to launch a terminal emulator for relaying input/output.
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod unix;
 mod windows;
 
 use anyhow::Context as _;
-use futures::executor::block_on;
-use futures::io::AllowStdIo;
-use futures::io::AsyncReadExt;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use futures::AsyncWriteExt;
+use futures::executor::block_on;
+use futures::io::AllowStdIo;
+use futures::io::AsyncReadExt;
 use pal_async::driver::Driver;
 use pal_async::local::block_with_io;
 use std::borrow::Cow;
@@ -25,11 +25,19 @@ use std::pin::Pin;
 use std::process::Command;
 use std::task::Context;
 use term::raw_stdout;
+use term::set_console_title;
 use term::set_raw_console;
+
+#[derive(Default)]
+/// Options to configure a new console window during launch.
+pub struct ConsoleLaunchOptions {
+    /// If supplied, sets the title of the console window.
+    pub window_title: Option<String>,
+}
 
 /// Synchronously relays stdio to the pipe (Windows) or socket (Unix) pointed to
 /// by `path`.
-pub fn relay_console(path: &Path) -> anyhow::Result<()> {
+pub fn relay_console(path: &Path, console_title: &str) -> anyhow::Result<()> {
     // We use async to read/write to the pipe/socket since on Windows you cannot
     // synchronously read and write to a pipe simultaneously (without overlapped
     // IO).
@@ -37,7 +45,7 @@ pub fn relay_console(path: &Path) -> anyhow::Result<()> {
     // But we use sync to read/write to stdio because it's quite challenging to
     // poll for stdio readiness, especially on Windows. So we use a separate
     // thread for input and output.
-    block_with_io(|driver| async move {
+    block_with_io(async |driver| {
         #[cfg(unix)]
         let (read, mut write) = {
             let pipe = pal_async::socket::PolledSocket::connect_unix(&driver, path)
@@ -57,7 +65,10 @@ pub fn relay_console(path: &Path) -> anyhow::Result<()> {
             AsyncReadExt::split(pipe)
         };
 
-        set_raw_console(true);
+        set_raw_console(true).expect("failed to set raw console mode");
+        if let Err(err) = set_console_title(console_title) {
+            tracing::warn!("failed to set console title: {}", err);
+        }
 
         std::thread::Builder::new()
             .name("input_thread".into())
@@ -126,18 +137,29 @@ fn choose_terminal_apps(app: Option<&Path>) -> Vec<App<'_>> {
 
 /// Launches the terminal application `app` (or the system default), and launch
 /// hvlite as a child of that to relay the data in the pipe/socket referred to
-/// by `path`.
-pub fn launch_console(app: Option<&Path>, path: &Path) -> anyhow::Result<()> {
+/// by `path`. Additional launch options can be specified with `launch_options`.
+pub fn launch_console(
+    app: Option<&Path>,
+    path: &Path,
+    launch_options: ConsoleLaunchOptions,
+) -> anyhow::Result<()> {
     let apps = choose_terminal_apps(app);
 
     for app in &apps {
         let mut command = Command::new(app.path.as_ref());
         command.args(&app.args);
         add_argument_separator(&mut command, app.path.as_ref());
-        let child = command
+        let mut child_builder = command
             .arg(std::env::current_exe().context("could not determine current exe path")?)
             .arg("--relay-console-path")
-            .arg(path)
+            .arg(path);
+
+        // If a title was specified, pass it to the terminal spawn.
+        if let Some(title) = &launch_options.window_title {
+            child_builder = child_builder.arg("--relay-console-title").arg(title);
+        }
+
+        let child = child_builder
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .spawn();
@@ -182,7 +204,7 @@ pub fn random_console_path() -> PathBuf {
     let mut path = std::env::temp_dir();
 
     let mut random = [0; 16];
-    getrandom::getrandom(&mut random).expect("rng failure");
+    getrandom::fill(&mut random).expect("rng failure");
     path.push(u128::from_ne_bytes(random).to_string());
 
     path
@@ -209,10 +231,15 @@ impl Console {
     /// `--relay-console-path` argument to specify the path of the pipe/socket
     /// used to relay data. Call [`relay_console`] with that path in your `main`
     /// function.
-    pub fn new(driver: impl Driver, app: Option<&Path>) -> anyhow::Result<Self> {
+    pub fn new(
+        driver: impl Driver,
+        app: Option<&Path>,
+        launch_options: Option<ConsoleLaunchOptions>,
+    ) -> anyhow::Result<Self> {
         let path = random_console_path();
         let this = Self::new_from_path(driver, &path)?;
-        launch_console(app, &path).context("failed to launch console")?;
+        launch_console(app, &path, launch_options.unwrap_or_default())
+            .context("failed to launch console")?;
         Ok(this)
     }
 

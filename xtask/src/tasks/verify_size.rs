@@ -23,13 +23,14 @@ pub struct VerifySize {
 fn verify_sections_size(
     new: &object::File<'_>,
     original: &object::File<'_>,
-) -> anyhow::Result<u64> {
+) -> anyhow::Result<(u64, i64)> {
     println!(
         "{:20} {:>15} {:>15} {:>16}",
         "Section", "Old Size (KiB)", "New Size (KiB)", "Difference (KiB)"
     );
 
     let mut total_diff: u64 = 0;
+    let mut net_diff: i64 = 0;
     let mut total_size: u64 = 0;
 
     let all_original_sections: Vec<_> = original
@@ -59,6 +60,7 @@ fn verify_sections_size(
             .unwrap_or(0);
         let diff = (new_size as i64) - (original_size as i64);
         total_diff += diff.unsigned_abs();
+        net_diff += diff;
         total_size += new_size;
 
         // Print any sections that have changed in size
@@ -69,7 +71,7 @@ fn verify_sections_size(
 
     println!("Total Size: {total_size} KiB.");
 
-    Ok(total_diff)
+    Ok((total_diff, net_diff))
 }
 
 impl Xtask for VerifySize {
@@ -89,8 +91,9 @@ impl Xtask for VerifySize {
         })?;
 
         println!("Verifying size for {}:", (&self.new.display()));
-        let total_diff = verify_sections_size(&new_elf, &original_elf)?;
+        let (total_diff, net_diff) = verify_sections_size(&new_elf, &original_elf)?;
 
+        println!("Net difference: {net_diff} KiB.");
         println!("Total difference: {total_diff} KiB.");
 
         const ALLOWED: u64 = 50;

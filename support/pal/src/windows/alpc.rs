@@ -3,9 +3,9 @@
 
 #![cfg(windows)]
 
-use super::chk_status;
 use super::IoCompletionPort;
 use super::ObjectAttributes;
+use super::chk_status;
 use headervec::HeaderVec;
 use ntlpcapi::*;
 use std::cmp::min;
@@ -15,8 +15,8 @@ use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::os::windows::prelude::*;
-use std::ptr::null_mut;
 use std::ptr::NonNull;
+use std::ptr::null_mut;
 use std::time::Duration;
 use winapi::shared::ntstatus::STATUS_TIMEOUT;
 
@@ -139,7 +139,7 @@ impl PortConfig {
                 | ALPC_PORFLG_ACCEPT_INDIRECT_HANDLES
                 | ALPC_PORFLG_ACCEPT_REQUESTS,
             DupObjectTypes: OB_ALL_OBJECT_TYPE_CODES,
-            MaxMessageLength: self.max_message_len,
+            MaxMessageLength: self.max_message_len + size_of::<PORT_MESSAGE>(),
             MaxPoolUsage: usize::MAX,
             MaxSectionSize: usize::MAX,
             MaxTotalSectionSize: usize::MAX,
@@ -1037,7 +1037,7 @@ mod tests {
 
     fn new_server(config: PortConfig) -> (Port, UnicodeString) {
         let mut id = [0; 16];
-        getrandom::getrandom(&mut id).unwrap();
+        getrandom::fill(&mut id).unwrap();
         let path: UnicodeString = format!("\\BaseNamedObjects\\{:x}", u128::from_ne_bytes(id))
             .try_into()
             .unwrap();

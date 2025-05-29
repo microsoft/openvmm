@@ -3,7 +3,7 @@
 
 // UNSAFETY: Calling into lxutil external dll.
 #![expect(unsafe_code)]
-#![expect(clippy::undocumented_unsafe_blocks)]
+#![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
 mod macros;
 
@@ -30,9 +30,9 @@ use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::ptr;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use winapi::shared::basetsd;
 use winapi::shared::ntdef;
 use winapi::um::winnt;

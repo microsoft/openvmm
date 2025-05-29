@@ -7,9 +7,9 @@ use crate::spec;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use thiserror::Error;
 use vmcore::interrupt::Interrupt;
 
@@ -18,7 +18,7 @@ pub const ILLEGAL_DOORBELL_VALUE: u32 = 0xffffffff;
 #[derive(Default, Inspect)]
 #[inspect(transparent)]
 pub struct DoorbellRegister {
-    #[inspect(with = "|x| inspect::AsHex(x.load(Ordering::Relaxed))")]
+    #[inspect(hex)]
     value: AtomicU32,
     #[inspect(skip)]
     event: event_listener::Event,
@@ -322,9 +322,5 @@ impl CompletionQueue {
 }
 
 fn advance(n: u32, l: u32) -> u32 {
-    if n + 1 < l {
-        n + 1
-    } else {
-        0
-    }
+    if n + 1 < l { n + 1 } else { 0 }
 }

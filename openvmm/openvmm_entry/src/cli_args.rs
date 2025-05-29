@@ -21,12 +21,12 @@
 use anyhow::Context;
 use clap::Parser;
 use clap::ValueEnum;
+use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::PcatBootDevice;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use hvlite_defs::config::X2ApicConfig;
-use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -92,11 +92,10 @@ pub struct Options {
     #[clap(long, requires("hv"))]
     pub get: bool,
 
-    /// The disk to use for the GET VMGS.
-    ///
-    /// If this is not provided, then a 4MB RAM disk will be used.
-    #[clap(long)]
-    pub get_vmgs: Option<DiskCliKind>,
+    /// Disable GET and related devices for using the OpenHCL paravisor, even
+    /// when --vtl2 is passed.
+    #[clap(long, conflicts_with("get"))]
+    pub no_get: bool,
 
     /// disable the VTL0 alias map presented to VTL2 by default
     #[clap(long, requires("vtl2"))]
@@ -233,35 +232,35 @@ flags:
     #[clap(long, conflicts_with("virtio_console"))]
     pub virtio_console_pci: bool,
 
-    /// COM1 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// COM1 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com1: Option<SerialConfigCli>,
 
-    /// COM2 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// COM2 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com2: Option<SerialConfigCli>,
 
-    /// COM3 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// COM3 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com3: Option<SerialConfigCli>,
 
-    /// COM4 binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// COM4 binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[clap(long, value_name = "SERIAL")]
     pub com4: Option<SerialConfigCli>,
 
-    /// virtio serial binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// virtio serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[clap(long, value_name = "SERIAL")]
     pub virtio_serial: Option<SerialConfigCli>,
 
-    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// vmbus com1 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com1_serial: Option<SerialConfigCli>,
 
-    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none)
+    /// vmbus com2 serial binding (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none)
     #[structopt(long, value_name = "SERIAL")]
     pub vmbus_com2_serial: Option<SerialConfigCli>,
 
-    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | term[=\<program\>] | none))
+    /// debugcon binding (port:serial, where port is a u16, and serial is (console | stderr | listen=\<path\> | file=\<path\> (overwrites) | listen=tcp:\<ip\>:\<port\> | term[=\<program\>][,name=<windowtitle>] | none))
     #[clap(long, value_name = "SERIAL")]
     pub debugcon: Option<DebugconSerialConfigCli>,
 
@@ -387,9 +386,28 @@ flags:
     #[clap(long, value_parser = vmbus_core::parse_vmbus_version)]
     pub vmbus_max_version: Option<u32>,
 
-    /// path to vmgs file. if no file is provided, fallback to in-memory vmgs implementation
-    #[clap(long, value_name = "PATH")]
-    pub vmgs_file: Option<PathBuf>,
+    /// The disk to use for the VMGS.
+    ///
+    /// If this is not provided, guest state will be stored in memory.
+    #[clap(long_help = r#"
+e.g: --vmgs memdiff:file:/path/to/file.vmgs
+
+syntax: \<path\> | kind:<arg>[,flag]
+
+valid disk kinds:
+    `mem:<len>`                    memory backed disk
+        <len>: length of ramdisk, e.g.: `1G`
+    `memdiff:<disk>`               memory backed diff disk
+        <disk>: lower disk, e.g.: `file:base.img`
+    `file:\<path\>`                  file-backed disk
+        \<path\>: path to file
+
+flags:
+    `fmt`                          reprovision the VMGS before boot
+    `fmt-on-fail`                  reprovision the VMGS before boot if it is corrupted
+"#)]
+    #[clap(long)]
+    pub vmgs: Option<VmgsCli>,
 
     /// VGA firmware file
     #[clap(long, requires("pcat"), value_name = "FILE")]
@@ -413,6 +431,12 @@ flags:
     /// This is a hidden argument used internally.
     #[clap(long, hide(true))]
     pub relay_console_path: Option<PathBuf>,
+
+    /// the title of the console window spawned from the relay console.
+    ///
+    /// This is a hidden argument used internally.
+    #[clap(long, hide(true))]
+    pub relay_console_title: Option<String>,
 
     /// enable in-hypervisor gdb debugger
     #[clap(long, value_name = "PORT")]
@@ -491,9 +515,9 @@ flags:
     #[clap(long)]
     pub guest_watchdog: bool,
 
-    /// enable Underhill's guest crash dump device, targeting the specified path
+    /// enable OpenHCL's guest crash dump device, targeting the specified path
     #[clap(long)]
-    pub underhill_dump_path: Option<PathBuf>,
+    pub openhcl_dump_path: Option<PathBuf>,
 
     /// halt the VM when the guest requests a reset, instead of resetting it
     #[clap(long)]
@@ -518,6 +542,10 @@ flags:
     /// set the uefi console mode
     #[clap(long)]
     pub uefi_console_mode: Option<UefiConsoleModeCli>,
+
+    /// Perform a default boot even if boot entries exist and fail
+    #[clap(long)]
+    pub default_boot_always_attempt: bool,
 }
 
 #[derive(Clone)]
@@ -640,8 +668,11 @@ pub enum DiskCliKind {
     },
     // prwrap:<kind>
     PersistentReservationsWrapper(Box<DiskCliKind>),
-    // file:<path>
-    File(PathBuf),
+    // file:<path>[;create=<len>]
+    File {
+        path: PathBuf,
+        create_with_len: Option<u64>,
+    },
     // blob:<type>:<url>
     Blob {
         kind: BlobKind,
@@ -667,37 +698,52 @@ pub enum BlobKind {
     Vhd1,
 }
 
+fn parse_path_and_len(arg: &str) -> anyhow::Result<(PathBuf, Option<u64>)> {
+    Ok(match arg.split_once(';') {
+        Some((path, len)) => {
+            let Some(len) = len.strip_prefix("create=") else {
+                anyhow::bail!("invalid syntax after ';', expected 'create=<len>'")
+            };
+
+            let len: u64 = if len == "VMGS_DEFAULT" {
+                vmgs_format::VMGS_DEFAULT_CAPACITY
+            } else {
+                parse_memory(len)?
+            };
+
+            (path.into(), Some(len))
+        }
+        None => (arg.into(), None),
+    })
+}
+
 impl FromStr for DiskCliKind {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> anyhow::Result<Self> {
         let disk = match s.split_once(':') {
             // convenience support for passing bare paths as file disks
-            None => DiskCliKind::File(PathBuf::from(s)),
+            None => {
+                let (path, create_with_len) = parse_path_and_len(s)?;
+                DiskCliKind::File {
+                    path,
+                    create_with_len,
+                }
+            }
             Some((kind, arg)) => match kind {
                 "mem" => DiskCliKind::Memory(parse_memory(arg)?),
                 "memdiff" => DiskCliKind::MemoryDiff(Box::new(arg.parse()?)),
-                "sql" => match arg.split_once(';') {
-                    Some((path, len)) => {
-                        let Some(len) = len.strip_prefix("create=") else {
-                            anyhow::bail!("invalid syntax after ';', expected 'create=<len>'")
-                        };
-
-                        DiskCliKind::Sqlite {
-                            path: path.into(),
-                            create_with_len: Some(parse_memory(len)?),
-                        }
+                "sql" => {
+                    let (path, create_with_len) = parse_path_and_len(arg)?;
+                    DiskCliKind::Sqlite {
+                        path,
+                        create_with_len,
                     }
-                    None => DiskCliKind::Sqlite {
-                        path: arg.into(),
-                        create_with_len: None,
-                    },
-                },
+                }
                 "sqldiff" => {
                     let (path_and_opts, kind) =
                         arg.split_once(':').context("expected path[;opts]:kind")?;
                     let disk = Box::new(kind.parse()?);
-
                     match path_and_opts.split_once(';') {
                         Some((path, create)) => {
                             if create != "create" {
@@ -727,7 +773,13 @@ impl FromStr for DiskCliKind {
                     }
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),
-                "file" => DiskCliKind::File(PathBuf::from(arg)),
+                "file" => {
+                    let (path, create_with_len) = parse_path_and_len(s)?;
+                    DiskCliKind::File {
+                        path,
+                        create_with_len,
+                    }
+                }
                 "blob" => {
                     let (blob_kind, url) = arg.split_once(':').context("expected kind:url")?;
                     let blob_kind = match blob_kind {
@@ -757,9 +809,12 @@ impl FromStr for DiskCliKind {
                     //
                     // in this case, we actually want to treat that leading `d:` as part of the
                     // path, rather than as a disk with `kind == 'd'`
-                    let path_buf = PathBuf::from(s);
-                    if path_buf.has_root() {
-                        DiskCliKind::File(path_buf)
+                    let (path, create_with_len) = parse_path_and_len(s)?;
+                    if path.has_root() {
+                        DiskCliKind::File {
+                            path,
+                            create_with_len,
+                        }
                     } else {
                         anyhow::bail!("invalid disk kind {kind}");
                     }
@@ -767,6 +822,40 @@ impl FromStr for DiskCliKind {
             },
         };
         Ok(disk)
+    }
+}
+
+#[derive(Clone)]
+pub struct VmgsCli {
+    pub kind: DiskCliKind,
+    pub provision: ProvisionVmgs,
+}
+
+#[derive(Copy, Clone)]
+pub enum ProvisionVmgs {
+    OnEmpty,
+    OnFailure,
+    True,
+}
+
+impl FromStr for VmgsCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        let (kind, opt) = s
+            .split_once(',')
+            .map(|(k, o)| (k, Some(o)))
+            .unwrap_or((s, None));
+        let kind = kind.parse()?;
+
+        let provision = match opt {
+            None => ProvisionVmgs::OnEmpty,
+            Some("fmt-on-fail") => ProvisionVmgs::OnFailure,
+            Some("fmt") => ProvisionVmgs::True,
+            Some(opt) => anyhow::bail!("unknown option: '{opt}'"),
+        };
+
+        Ok(VmgsCli { kind, provision })
     }
 }
 
@@ -929,43 +1018,99 @@ impl FromStr for DebugconSerialConfigCli {
     }
 }
 
-/// (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | none)
+/// (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | file=\<path\> | none)
 #[derive(Clone)]
 pub enum SerialConfigCli {
     None,
     Console,
-    NewConsole(Option<PathBuf>),
+    NewConsole(Option<PathBuf>, Option<String>),
     Stderr,
     Pipe(PathBuf),
     Tcp(SocketAddr),
+    File(PathBuf),
 }
 
 impl FromStr for SerialConfigCli {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let ret = match s {
+        let keyvalues = SerialConfigCli::parse_keyvalues(s)?;
+
+        let first_key = match keyvalues.first() {
+            Some(first_pair) => first_pair.0.as_str(),
+            None => Err("invalid serial configuration: no values supplied")?,
+        };
+        let first_value = keyvalues.first().unwrap().1.as_ref();
+
+        let ret = match first_key {
             "none" => SerialConfigCli::None,
             "console" => SerialConfigCli::Console,
             "stderr" => SerialConfigCli::Stderr,
-            "term" => SerialConfigCli::NewConsole(None),
-            s if s.starts_with("term=") => {
-                SerialConfigCli::NewConsole(Some(PathBuf::from(s.strip_prefix("term=").unwrap())))
-            }
-            s if s.starts_with("listen=") => {
-                let s = s.strip_prefix("listen=").unwrap();
-                if let Some(tcp) = s.strip_prefix("tcp:") {
-                    let addr = tcp
-                        .parse()
-                        .map_err(|err| format!("invalid tcp address: {err}"))?;
-                    SerialConfigCli::Tcp(addr)
-                } else {
-                    SerialConfigCli::Pipe(s.into())
+            "file" => match first_value {
+                Some(path) => SerialConfigCli::File(path.into()),
+                None => Err("invalid serial configuration: file requires a value")?,
+            },
+            "term" => match first_value {
+                Some(path) => {
+                    // If user supplies a name key, use it to title the window
+                    let window_name = keyvalues.iter().find(|(key, _)| key == "name");
+                    let window_name = match window_name {
+                        Some((_, Some(name))) => Some(name.clone()),
+                        _ => None,
+                    };
+
+                    SerialConfigCli::NewConsole(Some(path.into()), window_name)
                 }
+                None => SerialConfigCli::NewConsole(None, None),
+            },
+            "listen" => match first_value {
+                Some(path) => {
+                    if let Some(tcp) = path.strip_prefix("tcp:") {
+                        let addr = tcp
+                            .parse()
+                            .map_err(|err| format!("invalid tcp address: {err}"))?;
+                        SerialConfigCli::Tcp(addr)
+                    } else {
+                        SerialConfigCli::Pipe(s.into())
+                    }
+                }
+                None => Err(
+                    "invalid serial configuration: listen requires a value of tcp:addr or pipe",
+                )?,
+            },
+            _ => {
+                return Err(format!(
+                    "invalid serial configuration: '{}' is not a known option",
+                    first_key
+                ));
             }
-            _ => return Err("invalid serial configuration".into()),
         };
 
+        Ok(ret)
+    }
+}
+
+impl SerialConfigCli {
+    /// Parse a comma separated list of key=value options into a vector of
+    /// key/value pairs.
+    fn parse_keyvalues(s: &str) -> Result<Vec<(String, Option<String>)>, String> {
+        let mut ret = Vec::new();
+
+        // For each comma separated item in the supplied list
+        for item in s.split(',') {
+            // Split on the = for key and value
+            // If no = is found, treat key as key and value as None
+            let mut eqsplit = item.split('=');
+            let key = eqsplit.next();
+            let value = eqsplit.next();
+
+            if let Some(key) = key {
+                ret.push((key.to_owned(), value.map(|x| x.to_owned())));
+            } else {
+                // An empty key is invalid
+                return Err("invalid key=value pair in serial config".into());
+            }
+        }
         Ok(ret)
     }
 }
@@ -1138,7 +1283,7 @@ impl FromStr for SmtConfigCli {
     }
 }
 
-#[cfg_attr(not(guest_arch = "x86_64"), allow(dead_code))]
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
 fn parse_x2apic(s: &str) -> Result<X2ApicConfig, &'static str> {
     let r = match s {
         "auto" => X2ApicConfig::Auto,

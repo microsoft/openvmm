@@ -1,21 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![cfg(target_os = "linux")]
-
 //! The client interface to the sidecar kernel driver.
 
+#![cfg(target_os = "linux")]
 // UNSAFETY: Manually mapping memory for the sidecar kernel and calling ioctls.
 #![expect(unsafe_code)]
-#![warn(missing_docs)]
 
 use fs_err::os::unix::fs::OpenOptionsExt;
-use hvdef::hypercall::HvInputVtl;
-use hvdef::hypercall::HvRegisterAssoc;
-use hvdef::hypercall::TranslateVirtualAddressExOutputX64;
 use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvStatus;
+use hvdef::hypercall::HvInputVtl;
+use hvdef::hypercall::HvRegisterAssoc;
+use hvdef::hypercall::TranslateVirtualAddressExOutputX64;
 use pal_async::driver::PollImpl;
 use pal_async::driver::SpawnDriver;
 use pal_async::fd::PollFdReady;
@@ -26,11 +24,11 @@ use parking_lot::Mutex;
 use sidecar_defs::CommandPage;
 use sidecar_defs::CpuContextX64;
 use sidecar_defs::GetSetVpRegisterRequest;
+use sidecar_defs::PAGE_SIZE;
 use sidecar_defs::RunVpResponse;
 use sidecar_defs::SidecarCommand;
 use sidecar_defs::TranslateGvaRequest;
 use sidecar_defs::TranslateGvaResponse;
-use sidecar_defs::PAGE_SIZE;
 use std::fs::File;
 use std::future::poll_fn;
 use std::io::Read;
@@ -38,13 +36,13 @@ use std::mem::MaybeUninit;
 use std::ops::Range;
 use std::os::fd::AsRawFd;
 use std::os::raw::c_void;
+use std::ptr::NonNull;
 use std::ptr::addr_of;
 use std::ptr::addr_of_mut;
-use std::ptr::NonNull;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Acquire;
 use std::sync::atomic::Ordering::Release;
-use std::sync::Arc;
 use std::task::Poll;
 use std::task::Waker;
 use thiserror::Error;
@@ -189,7 +187,7 @@ impl SidecarNode {
                 return Err(NewSidecarClientError::Io {
                     operation: "open",
                     err,
-                })
+                });
             }
         };
 

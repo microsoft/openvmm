@@ -6,9 +6,8 @@
 //! These are used both by unit tests and by benchmarks.
 
 // Benchmarks do not use all the code here, but unit tests should.
-#![cfg_attr(not(test), allow(dead_code))]
+#![cfg_attr(not(test), expect(dead_code))]
 
-use super::protocol;
 use crate::InitState;
 use crate::PacketError;
 use crate::Protocol;
@@ -17,14 +16,14 @@ use crate::ScsiController;
 use crate::ScsiPath;
 use crate::Worker;
 use crate::WorkerError;
-use guestmem::ranges::PagedRange;
 use guestmem::GuestMemory;
 use guestmem::MemoryRead;
+use guestmem::ranges::PagedRange;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::RwLock;
-use scsi::srb::SrbStatus;
 use scsi::ScsiOp;
+use scsi::srb::SrbStatus;
 use scsi_defs as scsi;
 use std::sync::Arc;
 use vmbus_async::queue::IncomingPacket;
@@ -87,17 +86,18 @@ impl TestWorker {
 pub(crate) fn parse_guest_completion_check_flags_status<T: ring::RingMem>(
     packet: &IncomingPacket<'_, T>,
     flags: u32,
-    status: protocol::NtStatus,
+    status: storvsp_protocol::NtStatus,
 ) -> Result<(), PacketError> {
     match packet {
         IncomingPacket::Completion(compl) => {
             let mut reader = compl.reader();
-            let header: protocol::Packet = reader.read_plain().map_err(PacketError::Access)?;
+            let header: storvsp_protocol::Packet =
+                reader.read_plain().map_err(PacketError::Access)?;
             assert_eq!(header.flags, flags, "mismatched flags");
             assert_eq!(header.status, status, "mismatched status");
             assert_eq!(
                 header.operation,
-                protocol::Operation::COMPLETE_IO,
+                storvsp_protocol::Operation::COMPLETE_IO,
                 "mismatched operation"
             );
             Ok(())
@@ -109,7 +109,7 @@ pub(crate) fn parse_guest_completion_check_flags_status<T: ring::RingMem>(
 pub(crate) fn parse_guest_completion<T: ring::RingMem>(
     packet: &IncomingPacket<'_, T>,
 ) -> Result<(), PacketError> {
-    parse_guest_completion_check_flags_status(packet, 0, protocol::NtStatus::SUCCESS)
+    parse_guest_completion_check_flags_status(packet, 0, storvsp_protocol::NtStatus::SUCCESS)
 }
 
 pub(crate) fn parse_guest_completed_io<T: ring::RingMem>(
@@ -127,14 +127,15 @@ pub(crate) fn parse_guest_completed_io_check_tx_len<T: ring::RingMem>(
     match packet {
         IncomingPacket::Completion(compl) => {
             let mut reader = compl.reader();
-            let header: protocol::Packet = reader.read_plain().map_err(PacketError::Access)?;
-            if header.operation != protocol::Operation::COMPLETE_IO {
+            let header: storvsp_protocol::Packet =
+                reader.read_plain().map_err(PacketError::Access)?;
+            if header.operation != storvsp_protocol::Operation::COMPLETE_IO {
                 Err(PacketError::UnrecognizedOperation(header.operation))
             } else {
                 if expected_srb_status == SrbStatus::SUCCESS {
-                    assert_eq!(header.status, protocol::NtStatus::SUCCESS);
+                    assert_eq!(header.status, storvsp_protocol::NtStatus::SUCCESS);
                     if let Some(expected_data_tx_length) = expected_data_tx_length {
-                        let payload: protocol::ScsiRequest =
+                        let payload: storvsp_protocol::ScsiRequest =
                             reader.read_plain().map_err(PacketError::Access)?;
                         assert_eq!(
                             payload.data_transfer_length as usize,
@@ -142,8 +143,8 @@ pub(crate) fn parse_guest_completed_io_check_tx_len<T: ring::RingMem>(
                         );
                     }
                 } else {
-                    assert_ne!(header.status, protocol::NtStatus::SUCCESS);
-                    let payload: protocol::ScsiRequest =
+                    assert_ne!(header.status, storvsp_protocol::NtStatus::SUCCESS);
+                    let payload: storvsp_protocol::ScsiRequest =
                         reader.read_plain().map_err(PacketError::Access)?;
                     assert_eq!(payload.srb_status.status(), expected_srb_status);
                 }
@@ -160,11 +161,12 @@ pub(crate) fn parse_guest_enumerate_bus<T: ring::RingMem>(
     match packet {
         IncomingPacket::Data(p) => {
             let mut reader = p.reader();
-            let header: protocol::Packet = reader.read_plain().map_err(PacketError::Access)?;
-            if header.operation != protocol::Operation::ENUMERATE_BUS {
+            let header: storvsp_protocol::Packet =
+                reader.read_plain().map_err(PacketError::Access)?;
+            if header.operation != storvsp_protocol::Operation::ENUMERATE_BUS {
                 Err(PacketError::UnrecognizedOperation(header.operation))
             } else {
-                assert_eq!(header.status, protocol::NtStatus::SUCCESS);
+                assert_eq!(header.status, storvsp_protocol::NtStatus::SUCCESS);
                 Ok(())
             }
         }
@@ -226,10 +228,10 @@ impl TestGuest {
         block: u32,
         byte_len: usize,
     ) {
-        let write_packet = protocol::Packet {
-            operation: protocol::Operation::EXECUTE_SRB,
+        let write_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::EXECUTE_SRB,
             flags: 0,
-            status: protocol::NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
 
         let cdb = scsi::Cdb10 {
@@ -239,11 +241,11 @@ impl TestGuest {
             ..FromZeros::new_zeroed()
         };
 
-        let mut scsi_req = protocol::ScsiRequest {
+        let mut scsi_req = storvsp_protocol::ScsiRequest {
             target_id: path.target,
             path_id: path.path,
             lun: path.lun,
-            length: protocol::SCSI_REQUEST_LEN_V2 as u16,
+            length: storvsp_protocol::SCSI_REQUEST_LEN_V2 as u16,
             cdb_length: size_of::<scsi::Cdb10>() as u8,
             data_transfer_length: byte_len as u32,
             ..FromZeros::new_zeroed()
@@ -268,10 +270,10 @@ impl TestGuest {
         block: u32,
         byte_len: usize,
     ) {
-        let read_packet = protocol::Packet {
-            operation: protocol::Operation::EXECUTE_SRB,
+        let read_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::EXECUTE_SRB,
             flags: 0,
-            status: protocol::NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
 
         let cdb = scsi::Cdb10 {
@@ -281,11 +283,11 @@ impl TestGuest {
             ..FromZeros::new_zeroed()
         };
 
-        let mut scsi_req = protocol::ScsiRequest {
+        let mut scsi_req = storvsp_protocol::ScsiRequest {
             target_id: path.target,
             path_id: path.path,
             lun: path.lun,
-            length: protocol::SCSI_REQUEST_LEN_V2 as u16,
+            length: storvsp_protocol::SCSI_REQUEST_LEN_V2 as u16,
             cdb_length: size_of::<scsi::Cdb10>() as u8,
             data_transfer_length: byte_len as u32,
             data_in: 1,
@@ -309,10 +311,10 @@ impl TestGuest {
         data_buffer_gpa: u64,
         data_buffer_len: usize,
     ) {
-        let packet = protocol::Packet {
-            operation: protocol::Operation::EXECUTE_SRB,
+        let packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::EXECUTE_SRB,
             flags: 0,
-            status: protocol::NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
 
         let cdb = scsi::Cdb10 {
@@ -320,11 +322,11 @@ impl TestGuest {
             ..FromZeros::new_zeroed()
         };
 
-        let mut scsi_req = protocol::ScsiRequest {
+        let mut scsi_req = storvsp_protocol::ScsiRequest {
             target_id: path.target,
             path_id: path.path,
             lun: path.lun,
-            length: protocol::SCSI_REQUEST_LEN_V2 as u16,
+            length: storvsp_protocol::SCSI_REQUEST_LEN_V2 as u16,
             cdb_length: size_of::<scsi::Cdb10>() as u8,
             data_transfer_length: data_buffer_len as u32,
             data_in: 1,
@@ -352,41 +354,41 @@ impl TestGuest {
 
     // Send protocol negotiation packets for a test guest.
     pub async fn perform_protocol_negotiation(&mut self) {
-        let negotiate_packet = protocol::Packet {
-            operation: protocol::Operation::BEGIN_INITIALIZATION,
+        let negotiate_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::BEGIN_INITIALIZATION,
             flags: 0,
-            status: protocol::NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         self.send_data_packet_sync(&[negotiate_packet.as_bytes()])
             .await;
         self.verify_completion(parse_guest_completion).await;
 
-        let version_packet = protocol::Packet {
-            operation: protocol::Operation::QUERY_PROTOCOL_VERSION,
+        let version_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::QUERY_PROTOCOL_VERSION,
             flags: 0,
-            status: protocol::NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
-        let version = protocol::ProtocolVersion {
-            major_minor: protocol::VERSION_BLUE,
+        let version = storvsp_protocol::ProtocolVersion {
+            major_minor: storvsp_protocol::VERSION_BLUE,
             reserved: 0,
         };
         self.send_data_packet_sync(&[version_packet.as_bytes(), version.as_bytes()])
             .await;
         self.verify_completion(parse_guest_completion).await;
 
-        let properties_packet = protocol::Packet {
-            operation: protocol::Operation::QUERY_PROPERTIES,
+        let properties_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::QUERY_PROPERTIES,
             flags: 0,
-            status: protocol::NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         self.send_data_packet_sync(&[properties_packet.as_bytes()])
             .await;
         self.verify_completion(parse_guest_completion).await;
 
-        let negotiate_packet = protocol::Packet {
-            operation: protocol::Operation::END_INITIALIZATION,
+        let negotiate_packet = storvsp_protocol::Packet {
+            operation: storvsp_protocol::Operation::END_INITIALIZATION,
             flags: 0,
-            status: protocol::NtStatus::SUCCESS,
+            status: storvsp_protocol::NtStatus::SUCCESS,
         };
         self.send_data_packet_sync(&[negotiate_packet.as_bytes()])
             .await;

@@ -4,6 +4,7 @@
 use anyhow::Context;
 use diag_client::DiagClient;
 use diag_client::ExitStatus;
+use diag_client::kmsg_stream::KmsgStream;
 use futures::io::AllowStdIo;
 use std::io::Read;
 
@@ -11,7 +12,7 @@ pub(crate) struct OpenHclDiagHandler(DiagClient);
 
 /// The result of running a VTL2 command.
 #[derive(Debug)]
-#[allow(dead_code)] // Fields output via Debug for debugging purposes.
+#[expect(dead_code)] // Fields output via Debug for debugging purposes.
 pub(crate) struct Vtl2CommandResult {
     /// The stdout of the command.
     pub stdout: String,
@@ -98,6 +99,10 @@ impl OpenHclDiagHandler {
             .inspect("", None, None)
             .await
             .map(|_| ())
+    }
+
+    pub(crate) async fn kmsg(&self) -> anyhow::Result<KmsgStream> {
+        self.diag_client().await?.kmsg(false).await
     }
 
     async fn diag_client(&self) -> anyhow::Result<&DiagClient> {

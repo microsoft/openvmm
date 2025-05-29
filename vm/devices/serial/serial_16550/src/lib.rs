@@ -3,11 +3,12 @@
 
 //! Emulator for 16550 serial UART.
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod resolver;
 mod spec;
 
+use self::spec::FIFO_SIZE;
 use self::spec::FifoControlRegister;
 use self::spec::FifoState;
 use self::spec::InterruptEnableRegister;
@@ -19,13 +20,12 @@ use self::spec::ModemControlRegister;
 use self::spec::ModemStatusRegister;
 use self::spec::Register;
 use self::spec::RxFifoInterruptTrigger;
-use self::spec::FIFO_SIZE;
+use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::mmio::MmioIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::poll_device::PollDevice;
-use chipset_device::ChipsetDevice;
 use futures::AsyncRead;
 use futures::AsyncWrite;
 use inspect::Inspect;
@@ -37,10 +37,10 @@ use std::collections::VecDeque;
 use std::io::ErrorKind;
 use std::ops::RangeInclusive;
 use std::pin::Pin;
-use std::task::ready;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
+use std::task::ready;
 use thiserror::Error;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::line_interrupt::LineInterrupt;

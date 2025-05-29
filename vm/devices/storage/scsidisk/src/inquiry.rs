@@ -3,9 +3,9 @@
 
 use super::ScsiError;
 use super::SimpleScsiDisk;
-use crate::scsi;
 use crate::UNMAP_RANGE_DESCRIPTOR_COUNT_MAX;
 use crate::VHDMP_MAX_WRITE_SAME_LENGTH_BYTES;
+use crate::scsi;
 use guestmem::MemoryWrite;
 use guid::Guid;
 use scsi::AdditionalSenseCode;

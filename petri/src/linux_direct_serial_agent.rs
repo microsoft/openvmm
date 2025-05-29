@@ -7,8 +7,7 @@ use pal_async::socket::ReadHalf;
 use pal_async::socket::WriteHalf;
 use unix_socket::UnixStream;
 
-const BUSYBOX_INIT: &str =
-    "/bin/busybox --install /bin && mount none /dev -t devtmpfs && mount none /proc -t proc && mount none /sys -t sysfs";
+const BUSYBOX_INIT: &str = "/bin/busybox --install /bin && mount none /dev -t devtmpfs && mount none /proc -t proc && mount none /sys -t sysfs";
 
 pub(crate) struct LinuxDirectSerialAgent {
     /// Writer to serial 0, the console we define in our kernel commandline

@@ -8,26 +8,26 @@
 
 #![cfg(guest_arch = "x86_64")]
 
-use crate::vp::WhpRunVpError;
 use crate::Error;
 use crate::LocalApicKind;
 use crate::WhpPartitionInner;
 use crate::WhpProcessor;
 use crate::WhpResultExt;
 use crate::WhpVpRef;
+use crate::vp::WhpRunVpError;
 use hvdef::HvVtlEntryReason;
 use hvdef::HvX64PendingEventReg0;
 use hvdef::HvX64PendingInterruptionRegister;
 use hvdef::Vtl;
 use inspect::Inspect;
 use std::sync::atomic::Ordering;
+use virt::VpIndex;
 use virt::io::CpuIo;
 use virt::irqcon::MsiRequest;
+use virt::x86::MsrError;
 use virt::x86::vp;
 use virt::x86::vp::hv_apic_nmi_pending;
 use virt::x86::vp::set_hv_apic_nmi_pending;
-use virt::x86::MsrError;
-use virt::VpIndex;
 use virt_support_apic::ApicClient;
 use virt_support_apic::ApicWork;
 use virt_support_apic::LocalApic;
@@ -741,7 +741,7 @@ pub(crate) struct ApicState {
 impl ApicState {
     pub fn new(table: &LocalApicSet, vp_info: &vm_topology::processor::x86::X86VpInfo) -> Self {
         Self {
-            apic: table.add_apic(vp_info),
+            apic: table.add_apic(vp_info, false),
             startup_suspend: !vp_info.base.is_bsp(),
             nmi_pending: false,
         }

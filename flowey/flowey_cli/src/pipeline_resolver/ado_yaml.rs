@@ -1,15 +1,17 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+use super::common_yaml::BashCommands;
+use super::common_yaml::FloweySource;
 use super::common_yaml::check_generated_yaml_and_json;
 use super::common_yaml::job_flowey_bootstrap_source;
 use super::common_yaml::write_generated_yaml_and_json;
-use super::common_yaml::FloweySource;
 use super::generic::ResolvedJobArtifact;
 use super::generic::ResolvedJobUseParameter;
 use crate::cli::exec_snippet::FloweyPipelineStaticDb;
 use crate::cli::exec_snippet::VAR_DB_SEEDVAR_FLOWEY_WORKING_DIR;
 use crate::cli::pipeline::CheckMode;
+use crate::cli::var_db::VarDbRequestBuilder;
 use crate::flow_resolver::stage1_dag::OutputGraphEntry;
 use crate::flow_resolver::stage1_dag::Step;
 use crate::pipeline_resolver::generic::ResolvedPipeline;
@@ -127,7 +129,9 @@ pub fn ado_yaml(
             let _ = (artifact, publish);
 
             if ado_bootstrap_template.is_empty() {
-                anyhow::bail!("Did not specify flowey bootstrap template. Please provide one using `Pipeline::ado_set_flowey_bootstrap_template`")
+                anyhow::bail!(
+                    "Did not specify flowey bootstrap template. Please provide one using `Pipeline::ado_set_flowey_bootstrap_template`"
+                )
             }
 
             let ado_bootstrap_template = ado_bootstrap_template
@@ -232,17 +236,13 @@ echo "##vso[task.setvariable variable=FLOWEY_BIN;]$FLOWEY_BIN"
 
         let mut flowey_bootstrap_bash = String::new();
 
+        let var_db = VarDbRequestBuilder::new("$FLOWEY_BIN", job_idx.index());
+
         let bootstrap_bash_var_db_inject = |var, is_raw_string| {
-            crate::cli::var_db::construct_var_db_cli(
-                "$FLOWEY_BIN",
-                job_idx.index(),
-                var,
-                false,
-                true,
-                None,
-                is_raw_string,
-                None,
-            )
+            var_db
+                .update_from_stdin(var, false)
+                .raw_string(is_raw_string)
+                .to_string()
         };
 
         // and now use those vars to do some flowey bootstrap
@@ -267,6 +267,7 @@ echo "$(FLOWEY_TEMP_DIR)/work" | {var_db_insert_working_dir}
 "###
             )
             .trim_start()
+            .to_owned()
         })?;
 
         // import pipeline vars being used by the job into flowey
@@ -802,7 +803,9 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
     let output_order = petgraph::algo::toposort(&output_graph, None)
         .expect("runtime variables cannot introduce a DAG cycle");
 
-    let mut rust_step_bash_buffer = Vec::new();
+    let var_db = VarDbRequestBuilder::new("$FLOWEY_BIN", job_idx);
+
+    let mut bash_commands = BashCommands::new_ado();
     for idx in output_order.into_iter().rev() {
         let OutputGraphEntry { node_handle, step } = output_graph[idx].1.take().unwrap();
 
@@ -812,13 +815,20 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
             Step::Anchor { .. } => {}
             Step::Rust {
                 idx,
-                label: _,
+                can_merge,
+                label,
                 code: _,
             } => {
-                rust_step_bash_buffer.push(crate::cli::exec_snippet::StepIdx {
-                    node_modpath,
-                    snippet_idx: idx,
-                });
+                output_steps.extend(bash_commands.push(
+                    Some(label),
+                    can_merge,
+                    crate::cli::exec_snippet::construct_exec_snippet_cli(
+                        "$(FLOWEY_BIN)",
+                        node_modpath,
+                        idx,
+                        job_idx,
+                    ),
+                ));
             }
             Step::AdoYaml {
                 label,
@@ -829,85 +839,25 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
                 code_idx,
                 code,
             } => {
-                if !rust_step_bash_buffer.is_empty() {
-                    let rust_step_bash_buffer = std::mem::take(&mut rust_step_bash_buffer);
-                    let mut map = serde_yaml::Mapping::new();
-                    map.insert(
-                        "bash".into(),
-                        serde_yaml::Value::String(
-                            crate::cli::exec_snippet::construct_exec_snippet_cli_multi(
-                                "$(FLOWEY_BIN)",
-                                job_idx,
-                                rust_step_bash_buffer,
-                            ),
-                        ),
-                    );
-                    map.insert("displayName".into(), "🦀 flowey rust steps".into());
-                    output_steps.push(map.into());
-                }
-
-                let var_db_cmd = |var: &str, is_secret, update_from_stdin, is_raw_string| {
-                    crate::cli::var_db::construct_var_db_cli(
-                        "$(FLOWEY_BIN)",
-                        job_idx,
-                        var,
-                        is_secret,
-                        update_from_stdin,
-                        None,
-                        is_raw_string,
-                        None,
-                    )
-                };
-
-                if let Some(condvar) = &condvar {
-                    let mut cmd = String::new();
-
-                    // guaranteed to be a bare bool `true`/`false`, hence
-                    // is_raw_string = false
-                    let read_condvar = var_db_cmd(condvar, false, false, false);
-                    writeln!(cmd, r#"rust_var=$({read_condvar})"#)?;
-                    writeln!(
-                        cmd,
-                        r###"echo "##vso[task.setvariable variable=FLOWEY_CONDITION;issecret=false]$rust_var""###
-                    )?;
-
-                    let mut map = serde_yaml::Mapping::new();
-                    map.insert("bash".into(), serde_yaml::Value::String(cmd));
-                    map.insert(
-                        "displayName".into(),
-                        serde_yaml::Value::String("🌼❓ Write to 'FLOWEY_CONDITION'".into()),
-                    );
-                    output_steps.push(map.into());
-                }
-
-                for (rust_var, ado_var, is_secret) in rust_to_ado {
-                    let mut cmd = String::new();
-
+                for (rust_var, ado_var) in rust_to_ado {
                     // flowey considers all ADO vars to be typed as raw strings
-                    let read_rust_var = var_db_cmd(&rust_var, is_secret, false, true);
-                    writeln!(cmd, r#"rust_var=$({read_rust_var})"#)?;
-                    writeln!(
-                        cmd,
-                        r###"printf "##vso[task.setvariable variable={ado_var};issecret={is_secret}]%s\n" "$rust_var""###
-                    )?;
+                    let read_rust_var = var_db
+                        .write_to_ado_env(&rust_var, &ado_var)
+                        .raw_string(true)
+                        .condvar(condvar.as_deref());
 
-                    let mut map = serde_yaml::Mapping::new();
-                    map.insert("bash".into(), serde_yaml::Value::String(cmd));
-                    map.insert(
-                        "displayName".into(),
-                        serde_yaml::Value::String(format!("🌼 Write to '{ado_var}'")),
-                    );
-
-                    if condvar.is_some() {
-                        map.insert(
-                            "condition".into(),
-                            "and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))".into(),
-                        );
-                    }
-                    output_steps.push(map.into());
+                    bash_commands.push_minor(format!("{read_rust_var}\n"));
                 }
 
                 if !raw_yaml.is_empty() {
+                    if let Some(condvar) = &condvar {
+                        // guaranteed to be a bare bool `true`/`false`, hence
+                        // is_raw_string = false
+                        let read_condvar = var_db.write_to_ado_env(condvar, "FLOWEY_CONDITION");
+
+                        bash_commands.push_minor(format!("{read_condvar}\n"));
+                    }
+
                     let raw_yaml = if code.lock().is_some() {
                         let inline_snippet = crate::cli::exec_snippet::construct_exec_snippet_cli(
                             "$(FLOWEY_BIN)",
@@ -960,12 +910,17 @@ pub(crate) fn resolve_flow_as_ado_yaml_steps(
 
                         step
                     };
+                    output_steps.extend(bash_commands.flush());
                     output_steps.push(step.as_sequence().unwrap().first().unwrap().clone());
                 }
 
                 for (ado_var, rust_var, is_secret) in ado_to_rust {
                     // flowey considers all ADO vars to be typed as raw strings
-                    let write_rust_var = var_db_cmd(&rust_var, is_secret, true, true);
+                    let write_rust_var = var_db
+                        .update_from_stdin(&rust_var, is_secret)
+                        .raw_string(true)
+                        .condvar(condvar.as_deref())
+                        .env_source(Some(&ado_var));
 
                     let cmd = format!(
                         r#"
@@ -977,39 +932,14 @@ EOF
                     .trim()
                     .to_string();
 
-                    let mut map = serde_yaml::Mapping::new();
-                    map.insert("bash".into(), serde_yaml::Value::String(cmd));
-                    map.insert(
-                        "displayName".into(),
-                        serde_yaml::Value::String(format!("🌼 Read from '{ado_var}'")),
-                    );
-                    if condvar.is_some() {
-                        map.insert(
-                            "condition".into(),
-                            "and(eq(variables['FLOWEY_CONDITION'], true), succeeded(), not(canceled()))".into(),
-                        );
-                    }
-                    output_steps.push(map.into());
+                    bash_commands.push_minor(cmd);
                 }
             }
             Step::GitHubYaml { .. } => anyhow::bail!("GitHub YAML not supported in ADO"),
         }
     }
 
-    if !rust_step_bash_buffer.is_empty() {
-        let rust_step_bash_buffer = std::mem::take(&mut rust_step_bash_buffer);
-        let mut map = serde_yaml::Mapping::new();
-        map.insert(
-            "bash".into(),
-            serde_yaml::Value::String(crate::cli::exec_snippet::construct_exec_snippet_cli_multi(
-                "$(FLOWEY_BIN)",
-                job_idx,
-                rust_step_bash_buffer,
-            )),
-        );
-        map.insert("displayName".into(), "🦀 flowey rust steps".into());
-        output_steps.push(map.into());
-    }
+    output_steps.extend(bash_commands.flush());
 
     let request_db = request_db
         .into_iter()

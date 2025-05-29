@@ -7,16 +7,16 @@
 // the GET and GED to also import get_protocol.
 pub use get_protocol::CreateRamGpaRangeFlags;
 pub use get_protocol::EventLogId;
+pub use get_protocol::GSP_CIPHERTEXT_MAX;
 pub use get_protocol::GspCiphertextContent;
 pub use get_protocol::GspCleartextContent;
 pub use get_protocol::GspExtendedStatusFlags;
-pub use get_protocol::ProtocolVersion;
-pub use get_protocol::SaveGuestVtl2StateFlags;
-pub use get_protocol::VmgsIoStatus;
-pub use get_protocol::GSP_CIPHERTEXT_MAX;
 pub use get_protocol::IGVM_ATTEST_MSG_REQ_AGENT_DATA_MAX_SIZE;
 pub use get_protocol::MAX_TRANSFER_SIZE;
 pub use get_protocol::NUMBER_GSP;
+pub use get_protocol::ProtocolVersion;
+pub use get_protocol::SaveGuestVtl2StateFlags;
+pub use get_protocol::VmgsIoStatus;
 use zerocopy::FromZeros;
 
 use guid::Guid;
@@ -26,6 +26,7 @@ use guid::Guid;
 pub mod platform_settings {
     pub use get_protocol::dps_json::PcatBootDevice;
 
+    use get_protocol::dps_json::GuestStateLifetime;
     use guid::Guid;
     use inspect::Inspect;
 
@@ -101,6 +102,7 @@ pub mod platform_settings {
         pub media_present_enabled_by_default: bool,
         pub vpci_boot_enabled: bool,
         pub memory_protection_mode: MemoryProtectionMode,
+        pub default_boot_always_attempt: bool,
         pub num_lock_enabled: bool,
         #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsDebug)")]
         pub pcat_boot_device_order: [PcatBootDevice; 4],
@@ -118,6 +120,9 @@ pub mod platform_settings {
         pub firmware_mode_is_pcat: bool,
         pub imc_enabled: bool,
         pub cxl_memory_enabled: bool,
+
+        #[inspect(debug)]
+        pub guest_state_lifetime: GuestStateLifetime,
     }
 
     #[derive(Copy, Clone, Debug, Inspect)]

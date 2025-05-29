@@ -4,6 +4,8 @@
 //! A "move fast, break things" tool, that provides no long-term CLI stability
 //! guarantees.
 
+#![expect(missing_docs)]
+
 mod completions;
 
 use anyhow::Context;
@@ -13,14 +15,14 @@ use clap::Parser;
 use clap::Subcommand;
 use diag_client::DiagClient;
 use diag_client::PacketCaptureOperation;
-use futures::io::AllowStdIo;
 use futures::StreamExt;
+use futures::io::AllowStdIo;
 use futures_concurrency::future::Race;
+use pal_async::DefaultPool;
 use pal_async::driver::Driver;
 use pal_async::socket::PolledSocket;
 use pal_async::task::Spawn;
 use pal_async::timer::PolledTimer;
-use pal_async::DefaultPool;
 use std::convert::Infallible;
 use std::ffi::OsStr;
 use std::io::ErrorKind;
@@ -419,7 +421,7 @@ pub fn main() -> anyhow::Result<()> {
         .init();
 
     term::enable_vt_and_utf8();
-    DefaultPool::run_with(|driver| async move {
+    DefaultPool::run_with(async |driver| {
         let Options { vm, command } = Options::parse();
 
         match command {
@@ -453,7 +455,7 @@ pub fn main() -> anyhow::Result<()> {
                 let mut stdin = process.stdin.take().unwrap();
                 let mut stdout = process.stdout.take().unwrap();
 
-                term::set_raw_console(true);
+                term::set_raw_console(true).expect("failed to set raw console mode");
                 std::thread::spawn({
                     move || {
                         let _ = std::io::copy(&mut std::io::stdin(), &mut stdin);
@@ -502,7 +504,7 @@ pub fn main() -> anyhow::Result<()> {
                     } else {
                         Some(Duration::from_secs(timeout))
                     };
-                    let query = || async {
+                    let query = async || {
                         client
                             .inspect(
                                 path.as_deref().unwrap_or(""),

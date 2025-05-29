@@ -14,15 +14,20 @@ cfg_if::cfg_if! {
         pub mod snp;
         pub mod tdx;
 
+        use crate::TlbFlushLockAccess;
         use crate::VtlCrash;
+        use bitvec::prelude::BitArray;
+        use bitvec::prelude::Lsb0;
+        use cvm_tracing::CVM_CONFIDENTIAL;
+        use hv1_emulator::synic::ProcessorSynic;
+        use hvdef::HvRegisterCrInterceptControl;
         use hvdef::HvX64RegisterName;
-        use virt::vp::AccessVpState;
         use virt::vp::MpState;
         use virt::x86::MsrError;
         use virt_support_apic::LocalApic;
         use virt_support_x86emu::translate::TranslationRegisters;
-        use bitvec::prelude::BitArray;
-        use bitvec::prelude::Lsb0;
+        use virt::vp::AccessVpState;
+        use zerocopy::IntoBytes;
     } else if #[cfg(guest_arch = "aarch64")] {
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
@@ -34,21 +39,21 @@ cfg_if::cfg_if! {
 use super::Error;
 use super::UhPartitionInner;
 use super::UhVpInner;
-use crate::GuestVsmState;
+use crate::ExitActivity;
 use crate::GuestVtl;
 use crate::WakeReason;
-use hcl::ioctl;
+use guestmem::GuestMemory;
+use hcl::ioctl::Hcl;
 use hcl::ioctl::ProcessorRunner;
 use hv1_emulator::message_queues::MessageQueues;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
-use hvdef::hypercall::HostVisibilityType;
 use hvdef::HvError;
 use hvdef::HvMessage;
 use hvdef::HvSynicSint;
-use hvdef::Vtl;
 use hvdef::NUM_SINTS;
+use hvdef::Vtl;
 use inspect::Inspect;
 use inspect::InspectMut;
 use pal::unix::affinity;
@@ -57,20 +62,18 @@ use pal_async::driver::Driver;
 use pal_async::driver::PollImpl;
 use pal_async::timer::PollTimer;
 use pal_uring::IdleControl;
-use parking_lot::Mutex;
 use private::BackingPrivate;
 use std::convert::Infallible;
 use std::future::poll_fn;
 use std::marker::PhantomData;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
-use std::time::Duration;
-use virt::io::CpuIo;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use virt::io::CpuIo;
 use vm_topology::processor::TargetVpInfo;
 use vmcore::vmtime::VmTimeAccess;
 
@@ -93,10 +96,8 @@ pub struct UhProcessor<'a, T: Backing> {
     idle_control: Option<&'a mut IdleControl>,
     #[inspect(skip)]
     kernel_returns: u64,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     crash_reg: [u64; hvdef::HV_X64_GUEST_CRASH_PARAMETER_MSRS],
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
-    crash_control: hvdef::GuestCrashCtl,
     vmtime: VmTimeAccess,
     #[inspect(skip)]
     timer: PollImpl<dyn PollTimer>,
@@ -106,6 +107,8 @@ pub struct UhProcessor<'a, T: Backing> {
     vtls_tlb_locked: VtlsTlbLocked,
     #[inspect(skip)]
     shared: &'a T::Shared,
+    #[inspect(hex, with = "|x| inspect::iter_by_index(x.iter()).map_value(|a| a.0)")]
+    exit_activities: VtlArray<ExitActivity, 2>,
 
     // Put the runner and backing at the end so that monomorphisms of functions
     // that don't access backing-specific state are more likely to be folded
@@ -123,7 +126,6 @@ struct VtlsTlbLocked {
     vtl2: VtlArray<bool, 2>,
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
 impl VtlsTlbLocked {
     fn get(&self, requesting_vtl: Vtl, target_vtl: GuestVtl) -> bool {
         match requesting_vtl {
@@ -152,7 +154,7 @@ impl VtlsTlbLocked {
 
 #[cfg(guest_arch = "x86_64")]
 #[derive(Inspect)]
-pub struct LapicState {
+pub(crate) struct LapicState {
     lapic: LocalApic,
     activity: MpState,
     nmi_pending: bool,
@@ -169,31 +171,30 @@ impl LapicState {
     }
 }
 
+struct BackingParams<'a, 'b, T: Backing> {
+    partition: &'a UhPartitionInner,
+    vp_info: &'a TargetVpInfo,
+    runner: &'a mut ProcessorRunner<'b, T::HclBacking<'b>>,
+}
+
 mod private {
-    use super::vp_state;
+    use super::BackingParams;
     use super::UhRunVpError;
-    use crate::processor::UhProcessor;
+    use super::vp_state;
     use crate::BackingShared;
     use crate::Error;
     use crate::GuestVtl;
-    use crate::UhPartitionInner;
-    use hcl::ioctl::ProcessorRunner;
+    use crate::processor::UhProcessor;
     use hv1_emulator::hv::ProcessorVtlHv;
-    use hv1_emulator::synic::ProcessorSynic;
+    use hv1_structs::VtlArray;
     use inspect::InspectMut;
     use std::future::Future;
-    use virt::io::CpuIo;
-    use virt::vp::AccessVpState;
     use virt::StopVp;
     use virt::VpHaltReason;
-    use vm_topology::processor::TargetVpInfo;
+    use virt::io::CpuIo;
+    use virt::vp::AccessVpState;
 
-    pub struct BackingParams<'a, 'b, T: BackingPrivate> {
-        pub(crate) partition: &'a UhPartitionInner,
-        pub(crate) vp_info: &'a TargetVpInfo,
-        pub(crate) runner: &'a mut ProcessorRunner<'b, T::HclBacking<'b>>,
-    }
-
+    #[expect(private_interfaces)]
     pub trait BackingPrivate: 'static + Sized + InspectMut + Sized {
         type HclBacking<'b>: hcl::ioctl::Backing<'b>;
         type EmulationCache;
@@ -221,6 +222,14 @@ mod private {
             stop: &mut StopVp<'_>,
         ) -> impl Future<Output = Result<(), VpHaltReason<UhRunVpError>>>;
 
+        /// Process any pending interrupts. Returns true if reprocessing is required.
+        fn process_interrupts(
+            this: &mut UhProcessor<'_, Self>,
+            scan_irr: VtlArray<bool, 2>,
+            first_scan_irr: &mut bool,
+            dev: &impl CpuIo,
+        ) -> Result<bool, VpHaltReason<UhRunVpError>>;
+
         /// Process any pending APIC work.
         fn poll_apic(
             this: &mut UhProcessor<'_, Self>,
@@ -240,13 +249,6 @@ mod private {
         /// This is used for hypervisor-managed and untrusted SINTs.
         fn request_untrusted_sint_readiness(this: &mut UhProcessor<'_, Self>, sints: u16);
 
-        /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
-        /// Returns whether interrupt reprocessing is required.
-        fn handle_cross_vtl_interrupts(
-            this: &mut UhProcessor<'_, Self>,
-            dev: &impl CpuIo,
-        ) -> Result<bool, UhRunVpError>;
-
         fn handle_vp_start_enable_vtl_wake(
             _this: &mut UhProcessor<'_, Self>,
             _vtl: GuestVtl,
@@ -257,17 +259,8 @@ mod private {
         fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv>;
         fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv>;
 
-        fn untrusted_synic(&self) -> Option<&ProcessorSynic>;
-        fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
-
         fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool;
     }
-}
-
-pub struct BackingSharedParams {
-    pub(crate) cvm_state: Option<crate::UhCvmPartitionState>,
-    #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
-    pub(crate) vp_count: u32,
 }
 
 /// Processor backing.
@@ -275,16 +268,169 @@ pub trait Backing: BackingPrivate {}
 
 impl<T: BackingPrivate> Backing for T {}
 
+#[cfg_attr(not(guest_arch = "x86_64"), expect(dead_code))]
+pub(crate) struct BackingSharedParams<'a> {
+    pub cvm_state: Option<crate::UhCvmPartitionState>,
+    pub guest_memory: VtlArray<GuestMemory, 2>,
+    #[cfg(guest_arch = "x86_64")]
+    pub cpuid: &'a virt::CpuidLeafSet,
+    pub hcl: &'a Hcl,
+    pub guest_vsm_available: bool,
+}
+
+/// Supported intercept message types.
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+enum InterceptMessageType {
+    #[cfg(guest_arch = "x86_64")]
+    Register {
+        reg: HvX64RegisterName,
+        value: u64,
+    },
+    Msr {
+        msr: u32,
+    },
+    #[cfg(guest_arch = "x86_64")]
+    IoPort {
+        port_number: u16,
+        access_size: u8,
+        string_access: bool,
+        rep_access: bool,
+    },
+}
+
+/// Per-arch state required to generate an intercept message.
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+struct InterceptMessageState {
+    instruction_length_and_cr8: u8,
+    cpl: u8,
+    efer_lma: bool,
+    cs: hvdef::HvX64SegmentRegister,
+    rip: u64,
+    rflags: u64,
+    rax: u64,
+    rdx: u64,
+    rcx: u64,
+    rsi: u64,
+    rdi: u64,
+    optional: Option<InterceptMessageOptionalState>,
+}
+
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
+/// Additional per-arch state required to generate an intercept message. Used
+/// for state that is not common across the intercept message types and that
+/// might be slower to retrieve on certain architectures.
+struct InterceptMessageOptionalState {
+    ds: hvdef::HvX64SegmentRegister,
+    es: hvdef::HvX64SegmentRegister,
+}
+
+impl InterceptMessageType {
+    #[cfg(guest_arch = "x86_64")]
+    fn generate_hv_message(
+        &self,
+        vp_index: VpIndex,
+        vtl: GuestVtl,
+        state: InterceptMessageState,
+        is_read: bool,
+    ) -> HvMessage {
+        let header = hvdef::HvX64InterceptMessageHeader {
+            vp_index: vp_index.index(),
+            instruction_length_and_cr8: state.instruction_length_and_cr8,
+            intercept_access_type: if is_read {
+                hvdef::HvInterceptAccessType::READ
+            } else {
+                hvdef::HvInterceptAccessType::WRITE
+            },
+            execution_state: hvdef::HvX64VpExecutionState::new()
+                .with_cpl(state.cpl)
+                .with_vtl(vtl.into())
+                .with_efer_lma(state.efer_lma),
+            cs_segment: state.cs,
+            rip: state.rip,
+            rflags: state.rflags,
+        };
+        match self {
+            InterceptMessageType::Register { reg, value } => {
+                let intercept_message = hvdef::HvX64RegisterInterceptMessage {
+                    header,
+                    flags: hvdef::HvX64RegisterInterceptMessageFlags::new(),
+                    rsvd: 0,
+                    rsvd2: 0,
+                    register_name: *reg,
+                    access_info: hvdef::HvX64RegisterAccessInfo::new_source_value(
+                        hvdef::HvRegisterValue::from(*value),
+                    ),
+                };
+                HvMessage::new(
+                    hvdef::HvMessageType::HvMessageTypeRegisterIntercept,
+                    0,
+                    intercept_message.as_bytes(),
+                )
+            }
+            InterceptMessageType::Msr { msr } => {
+                let intercept_message = hvdef::HvX64MsrInterceptMessage {
+                    header,
+                    msr_number: *msr,
+                    rax: state.rax,
+                    rdx: state.rdx,
+                    reserved: 0,
+                };
+
+                HvMessage::new(
+                    hvdef::HvMessageType::HvMessageTypeMsrIntercept,
+                    0,
+                    intercept_message.as_bytes(),
+                )
+            }
+            InterceptMessageType::IoPort {
+                port_number,
+                access_size,
+                string_access,
+                rep_access,
+            } => {
+                let access_info =
+                    hvdef::HvX64IoPortAccessInfo::new(*access_size, *string_access, *rep_access);
+                let intercept_message = hvdef::HvX64IoPortInterceptMessage {
+                    header,
+                    port_number: *port_number,
+                    access_info,
+                    instruction_byte_count: 0,
+                    reserved: 0,
+                    rax: state.rax,
+                    instruction_bytes: [0u8; 16],
+                    ds_segment: state.optional.as_ref().unwrap().ds,
+                    es_segment: state.optional.as_ref().unwrap().es,
+                    rcx: state.rcx,
+                    rsi: state.rsi,
+                    rdi: state.rdi,
+                };
+
+                HvMessage::new(
+                    hvdef::HvMessageType::HvMessageTypeX64IoPortIntercept,
+                    0,
+                    intercept_message.as_bytes(),
+                )
+            }
+        }
+    }
+}
+
 /// Trait for processor backings that have hardware isolation support.
 #[cfg(guest_arch = "x86_64")]
-pub trait HardwareIsolatedBacking: Backing {
-    /// Gets the number of pages that will be allocated from the shared page pool
-    /// for each CPU.
-    fn shared_pages_required_per_cpu() -> u64;
+trait HardwareIsolatedBacking: Backing {
+    /// Gets CVM specific VP state.
+    fn cvm_state(&self) -> &crate::UhCvmVpState;
     /// Gets CVM specific VP state.
     fn cvm_state_mut(&mut self) -> &mut crate::UhCvmVpState;
     /// Gets CVM specific partition state.
     fn cvm_partition_state(shared: &Self::Shared) -> &crate::UhCvmPartitionState;
+    /// Gets a struct that can be used to interact with TLB flushing and
+    /// locking.
+    fn tlb_flush_lock_access<'a>(
+        vp_index: VpIndex,
+        partition: &'a UhPartitionInner,
+        shared: &'a Self::Shared,
+    ) -> impl TlbFlushLockAccess + 'a;
     /// Copies shared registers (per VSM TLFS spec) from the source VTL to
     /// the target VTL that will become active, and set the exit vtl
     fn switch_vtl(this: &mut UhProcessor<'_, Self>, source_vtl: GuestVtl, target_vtl: GuestVtl);
@@ -294,12 +440,50 @@ pub trait HardwareIsolatedBacking: Backing {
         this: &UhProcessor<'_, Self>,
         vtl: GuestVtl,
     ) -> TranslationRegisters;
+    /// Vector of the event that is pending injection into the guest state, if
+    /// valid.
+    fn pending_event_vector(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> Option<u8>;
+    /// Check if an interrupt of appropriate priority, or an NMI, is pending for
+    /// the given VTL. `check_rflags` specifies whether RFLAGS.IF should be checked.
+    fn is_interrupt_pending(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        check_rflags: bool,
+        dev: &impl CpuIo,
+    ) -> bool;
+    /// Sets the pending exception for the guest state.
+    ///
+    /// Note that this will overwrite any existing pending exception. It will
+    /// not handle merging any existing pending exception with the new one.
+    fn set_pending_exception(
+        this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        event: hvdef::HvX64PendingExceptionEvent,
+    );
+
+    fn intercept_message_state(
+        this: &UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        include_optional_state: bool,
+    ) -> InterceptMessageState;
+
+    /// Individual register for CPUID and crx intercept handling, since
+    /// AccessVpState::registers is relatively slow on TDX.
+    fn cr0(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
+    fn cr4(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> u64;
+
+    fn cr_intercept_registration(
+        this: &mut UhProcessor<'_, Self>,
+        intercept_control: HvRegisterCrInterceptControl,
+    );
+
+    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 #[derive(Inspect, Debug)]
 #[inspect(tag = "reason")]
-pub enum SidecarExitReason {
+pub(crate) enum SidecarExitReason {
     #[inspect(transparent)]
     Exit(SidecarRemoveExit),
     #[inspect(transparent)]
@@ -307,10 +491,10 @@ pub enum SidecarExitReason {
     ManualRequest,
 }
 
-#[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
+#[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 #[derive(Inspect, Debug)]
 #[inspect(tag = "exit")]
-pub enum SidecarRemoveExit {
+pub(crate) enum SidecarRemoveExit {
     Msr {
         #[inspect(hex)]
         msr: u32,
@@ -351,7 +535,6 @@ impl UhVpInner {
             waker: Default::default(),
             cpu_index,
             vp_info,
-            hv_start_enable_vtl_vp: VtlArray::from_fn(|_| Mutex::new(None)),
             sidecar_exit_reason: Default::default(),
         }
     }
@@ -378,7 +561,6 @@ impl UhVpInner {
         }
     }
 
-    #[cfg_attr(guest_arch = "aarch64", allow(dead_code))]
     pub fn set_sidecar_exit_reason(&self, reason: SidecarExitReason) {
         self.sidecar_exit_reason.lock().get_or_insert_with(|| {
             tracing::info!(?reason, "sidecar exit");
@@ -392,27 +574,24 @@ impl UhVpInner {
 pub enum UhRunVpError {
     /// Failed to run
     #[error("failed to run")]
-    Run(#[source] ioctl::Error),
+    Run(#[source] hcl::ioctl::Error),
     #[error("sidecar run error")]
     Sidecar(#[source] sidecar_client::SidecarError),
     /// Failed to access state for emulation
     #[error("failed to access state for emulation")]
-    EmulationState(#[source] ioctl::Error),
-    /// Failed to access state for hypercall handling
-    #[error("failed to access state for hypercall handling")]
-    HypercallState(#[source] ioctl::Error),
+    EmulationState(#[source] hcl::ioctl::Error),
     /// Failed to translate GVA
     #[error("failed to translate GVA")]
-    TranslateGva(#[source] ioctl::Error),
+    TranslateGva(#[source] hcl::ioctl::Error),
     /// Failed VTL access check
     #[error("failed VTL access check")]
-    VtlAccess(#[source] ioctl::Error),
+    VtlAccess(#[source] hcl::ioctl::Error),
     /// Failed to advance rip
     #[error("failed to advance rip")]
-    AdvanceRip(#[source] ioctl::Error),
+    AdvanceRip(#[source] hcl::ioctl::Error),
     /// Failed to set pending event
     #[error("failed to set pending event")]
-    Event(#[source] ioctl::Error),
+    Event(#[source] hcl::ioctl::Error),
     /// Guest accessed unaccepted gpa
     #[error("guest accessed unaccepted gpa {0}")]
     UnacceptedMemoryAccess(u64),
@@ -424,19 +603,19 @@ pub enum UhRunVpError {
     InvalidVmcb,
     #[error("unknown exit {0:#x?}")]
     UnknownVmxExit(x86defs::vmx::VmxExit),
-    #[error("failed to access VP assist page")]
-    VpAssistPage(#[source] guestmem::GuestMemoryError),
+    #[error("bad guest state on VP.ENTER")]
+    VmxBadGuestState,
     #[error("failed to read hypercall parameters")]
     HypercallParameters(#[source] guestmem::GuestMemoryError),
     #[error("failed to write hypercall result")]
     HypercallResult(#[source] guestmem::GuestMemoryError),
-    #[error("failed to write hypercall control for retry")]
-    HypercallRetry(#[source] guestmem::GuestMemoryError),
     #[error("unexpected debug exception with dr6 value {0:#x}")]
     UnexpectedDebugException(u64),
     /// Handling an intercept on behalf of an invalid Lower VTL
     #[error("invalid intercepted vtl {0:?}")]
     InvalidInterceptedVtl(u8),
+    #[error("access to state blocked by another vtl")]
+    StateAccessDenied,
 }
 
 /// Underhill processor run error
@@ -444,18 +623,13 @@ pub enum UhRunVpError {
 pub enum ProcessorError {
     /// IOCTL error
     #[error("hcl error")]
-    Ioctl(#[from] ioctl::Error),
+    Ioctl(#[from] hcl::ioctl::Error),
     /// State access error
     #[error("state access error")]
     State(#[from] vp_state::Error),
     /// Not supported
     #[error("operation not supported")]
     NotSupported,
-}
-
-fn duration_from_100ns(n: u64) -> Duration {
-    const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
-    Duration::new(n / NUM_100NS_IN_SEC, (n % NUM_100NS_IN_SEC) as u32 * 100)
 }
 
 impl<T: Backing> UhProcessor<'_, T> {
@@ -485,42 +659,6 @@ impl<T: Backing> UhProcessor<'_, T> {
         );
 
         T::inspect_extra(self, resp);
-    }
-
-    fn update_synic(&mut self, vtl: GuestVtl, untrusted_synic: bool) {
-        loop {
-            let hv = self.backing.hv_mut(vtl).unwrap();
-
-            let ref_time_now = hv.ref_time_now();
-            let synic = if untrusted_synic {
-                debug_assert_eq!(vtl, GuestVtl::Vtl0);
-                self.backing.untrusted_synic_mut().unwrap()
-            } else {
-                &mut hv.synic
-            };
-            let (ready_sints, next_ref_time) = synic.scan(
-                ref_time_now,
-                &self.partition.gm[vtl],
-                &mut self
-                    .partition
-                    .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
-            );
-            if let Some(next_ref_time) = next_ref_time {
-                // Convert from reference timer basis to vmtime basis via
-                // difference of programmed timer and current reference time.
-                let ref_diff = next_ref_time.saturating_sub(ref_time_now);
-                let timeout = self
-                    .vmtime
-                    .now()
-                    .wrapping_add(duration_from_100ns(ref_diff));
-                self.vmtime.set_timeout_if_before(timeout);
-            }
-            if ready_sints == 0 {
-                break;
-            }
-            self.deliver_synic_messages(vtl, ready_sints);
-            // Loop around to process the synic again.
-        }
     }
 
     #[cfg(guest_arch = "x86_64")]
@@ -639,11 +777,9 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 return Err(VpHaltReason::Cancel);
             }
         } else {
-            {
-                let mut current = Default::default();
-                affinity::get_current_thread_affinity(&mut current).unwrap();
-                assert_eq!(&current, CpuSet::new().set(self.inner.cpu_index));
-            }
+            let mut current = Default::default();
+            affinity::get_current_thread_affinity(&mut current).unwrap();
+            assert_eq!(&current, CpuSet::new().set(self.inner.cpu_index));
 
             // Lower the priority of this VP thread so that the VM does not return
             // to VTL0 while there is still outstanding VTL2 work to do.
@@ -666,61 +802,46 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
 
         loop {
             // Process VP activity and wait for the VP to be ready.
-            poll_fn(|cx| loop {
-                stop.check()?;
+            poll_fn(|cx| {
+                loop {
+                    stop.check()?;
 
-                // Clear the run VP cancel request.
-                self.runner.clear_cancel();
+                    // Clear the run VP cancel request.
+                    self.runner.clear_cancel();
 
-                // Cancel any pending timer.
-                self.vmtime.cancel_timeout();
+                    // Cancel any pending timer.
+                    self.vmtime.cancel_timeout();
 
-                // Ensure the waker is set.
-                if !last_waker
-                    .as_ref()
-                    .is_some_and(|waker| cx.waker().will_wake(waker))
-                {
-                    last_waker = Some(cx.waker().clone());
-                    self.inner.waker.write().clone_from(&last_waker);
-                }
-
-                // Process wakes.
-                let scan_irr = if self.inner.wake_reasons.load(Ordering::Relaxed) != 0 {
-                    self.handle_wake().map_err(VpHaltReason::Hypervisor)?
-                } else {
-                    [false, false].into()
-                };
-
-                if self.backing.untrusted_synic().is_some() {
-                    self.update_synic(GuestVtl::Vtl0, true);
-                }
-
-                for vtl in [GuestVtl::Vtl1, GuestVtl::Vtl0] {
-                    // Process interrupts.
-                    if self.backing.hv(vtl).is_some() {
-                        self.update_synic(vtl, false);
+                    // Ensure the waker is set.
+                    if !last_waker
+                        .as_ref()
+                        .is_some_and(|waker| cx.waker().will_wake(waker))
+                    {
+                        last_waker = Some(cx.waker().clone());
+                        self.inner.waker.write().clone_from(&last_waker);
                     }
 
-                    T::poll_apic(self, vtl, scan_irr[vtl] || first_scan_irr)
-                        .map_err(VpHaltReason::Hypervisor)?;
-                }
-                first_scan_irr = false;
+                    // Process wakes.
+                    let scan_irr = if self.inner.wake_reasons.load(Ordering::Relaxed) != 0 {
+                        self.handle_wake().map_err(VpHaltReason::Hypervisor)?
+                    } else {
+                        [false, false].into()
+                    };
 
-                if T::handle_cross_vtl_interrupts(self, dev)
-                    .map_err(VpHaltReason::InvalidVmState)?
-                {
-                    continue;
-                }
-
-                // Arm the timer.
-                if let Some(timeout) = self.vmtime.get_timeout() {
-                    let deadline = self.vmtime.host_time(timeout);
-                    if self.timer.poll_timer(cx, deadline).is_ready() {
+                    if T::process_interrupts(self, scan_irr, &mut first_scan_irr, dev)? {
                         continue;
                     }
-                }
 
-                return <Result<_, VpHaltReason<_>>>::Ok(()).into();
+                    // Arm the timer.
+                    if let Some(timeout) = self.vmtime.get_timeout() {
+                        let deadline = self.vmtime.host_time(timeout);
+                        if self.timer.poll_timer(cx, deadline).is_ready() {
+                            continue;
+                        }
+                    }
+
+                    return <Result<_, VpHaltReason<_>>>::Ok(()).into();
+                }
             })
             .await?;
 
@@ -740,6 +861,10 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     .into();
             }
 
+            // Quiesce RCU before running the VP to avoid having to synchronize with
+            // this CPU during memory protection updates.
+            minircu::global().quiesce();
+
             T::run_vp(self, dev, &mut stop).await?;
             self.kernel_returns += 1;
         }
@@ -754,7 +879,7 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                 }
             }
         }
-        self.runner.flush_deferred_actions();
+        self.runner.flush_deferred_state();
         Ok(())
     }
 
@@ -781,13 +906,13 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         let inner = partition.vp(vp_info.base.vp_index).unwrap();
         let mut runner = partition
             .hcl
-            .runner(inner.cpu_index, idle_control.is_none())
+            .runner(inner.vp_index().index(), idle_control.is_none())
             .unwrap();
 
         let backing_shared = T::shared(&partition.backing_shared);
 
         let backing = T::new(
-            private::BackingParams {
+            BackingParams {
                 partition,
                 vp_info: &vp_info,
                 runner: &mut runner,
@@ -802,9 +927,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             idle_control,
             kernel_returns: 0,
             crash_reg: [0; hvdef::HV_X64_GUEST_CRASH_PARAMETER_MSRS],
-            crash_control: hvdef::GuestCrashCtl::new()
-                .with_crash_notify(true)
-                .with_crash_message(true),
             _not_send: PhantomData,
             backing,
             shared: backing_shared,
@@ -817,6 +939,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 vtl1: VtlArray::new(false),
                 vtl2: VtlArray::new(false),
             },
+            exit_activities: Default::default(),
         };
 
         T::init(&mut vp);
@@ -908,21 +1031,39 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 
     fn vp_index(&self) -> VpIndex {
-        self.inner.vp_info.base.vp_index
+        self.inner.vp_index()
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn write_msr(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
+    fn write_crash_msr(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
         match msr {
             hvdef::HV_X64_MSR_GUEST_CRASH_CTL => {
-                self.crash_control = hvdef::GuestCrashCtl::from(value);
                 let crash = VtlCrash {
                     vp_index: self.vp_index(),
                     last_vtl: vtl,
-                    control: self.crash_control,
+                    control: hvdef::GuestCrashCtl::from(value),
                     parameters: self.crash_reg,
                 };
-                tracelimit::info_ratelimited!(?crash, "Guest has reported system crash");
+                tracelimit::warn_ratelimited!(?crash, "Guest has reported system crash");
+
+                if crash.control.crash_message() {
+                    let message_gpa = crash.parameters[3];
+                    let message_size = crash.parameters[4];
+                    let mut message = vec![0; message_size as usize];
+                    match self.partition.gm[vtl].read_at(message_gpa, &mut message) {
+                        Ok(()) => {
+                            let message = String::from_utf8_lossy(&message).into_owned();
+                            tracelimit::warn_ratelimited!(
+                                CVM_CONFIDENTIAL,
+                                message,
+                                "Guest has reported a system crash message"
+                            );
+                        }
+                        Err(e) => {
+                            tracelimit::warn_ratelimited!(?e, "Failed to read crash message");
+                        }
+                    }
+                }
 
                 self.partition.crash_notification_send.send(crash);
             }
@@ -939,18 +1080,14 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     }
 
     #[cfg(guest_arch = "x86_64")]
-    fn read_msr(&mut self, msr: u32, vtl: GuestVtl) -> Result<u64, MsrError> {
-        if msr & 0xf0000000 == 0x40000000 {
-            if let Some(hv) = self.backing.hv(vtl).as_ref() {
-                let r = hv.msr_read(msr);
-                if !matches!(r, Err(MsrError::Unknown)) {
-                    return r;
-                }
-            }
-        }
-
+    fn read_crash_msr(&self, msr: u32, _vtl: GuestVtl) -> Result<u64, MsrError> {
         let v = match msr {
-            hvdef::HV_X64_MSR_GUEST_CRASH_CTL => self.crash_control.into(),
+            // Reads of CRASH_CTL report our supported capabilities, not the
+            // current value.
+            hvdef::HV_X64_MSR_GUEST_CRASH_CTL => hvdef::GuestCrashCtl::new()
+                .with_crash_notify(true)
+                .with_crash_message(true)
+                .into(),
             hvdef::HV_X64_MSR_GUEST_CRASH_P0 => self.crash_reg[0],
             hvdef::HV_X64_MSR_GUEST_CRASH_P1 => self.crash_reg[1],
             hvdef::HV_X64_MSR_GUEST_CRASH_P2 => self.crash_reg[2],
@@ -1014,58 +1151,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
         .await
     }
 
-    fn vtl1_supported(&self) -> bool {
-        !matches!(
-            *self.partition.guest_vsm.read(),
-            GuestVsmState::NotPlatformSupported
-        )
-    }
-
-    fn deliver_synic_messages(&mut self, vtl: GuestVtl, sints: u16) {
-        let proxied_sints = self
-            .backing
-            .hv(vtl)
-            .as_ref()
-            .map_or(!0, |hv| hv.synic.proxied_sints());
-        let pending_sints =
-            self.inner.message_queues[vtl].post_pending_messages(sints, |sint, message| {
-                if proxied_sints & (1 << sint) != 0 {
-                    if let Some(synic) = self.backing.untrusted_synic_mut().as_mut() {
-                        synic.post_message(
-                            &self.partition.gm[vtl],
-                            sint,
-                            message,
-                            &mut self
-                                .partition
-                                .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
-                        )
-                    } else {
-                        self.partition.hcl.post_message_direct(
-                            self.inner.vp_info.base.vp_index.index(),
-                            sint,
-                            message,
-                        )
-                    }
-                } else {
-                    self.backing
-                        .hv_mut(vtl)
-                        .as_mut()
-                        .unwrap()
-                        .synic
-                        .post_message(
-                            &self.partition.gm[vtl],
-                            sint,
-                            message,
-                            &mut self
-                                .partition
-                                .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
-                        )
-                }
-            });
-
-        self.request_sint_notifications(vtl, pending_sints);
-    }
-
     #[cfg(guest_arch = "x86_64")]
     fn update_proxy_irr_filter(&mut self, vtl: GuestVtl) {
         assert_eq!(vtl, GuestVtl::Vtl0);
@@ -1076,7 +1161,9 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             for sint in 0..NUM_SINTS as u8 {
                 let sint_msr = hv.synic.sint(sint);
                 let hv_sint = HvSynicSint::from(sint_msr);
-                if hv_sint.proxy() && !hv_sint.masked() {
+                // When vmbus relay is active, then SINT will not be proxied
+                // in case of non-relay, guest will setup proxied sint
+                if (hv_sint.proxy() || self.partition.vmbus_relay) && !hv_sint.masked() {
                     irr_bits.set(hv_sint.vector() as usize, true);
                 }
             }
@@ -1280,32 +1367,6 @@ impl<T: CpuIo, B: Backing> UhHypercallHandler<'_, '_, T, B> {
             .as_ref()
             .expect("should exist if this intercept is registered or this is a CVM")
             .retarget_interrupt(device_id, address, data, &vpci_params)
-    }
-}
-
-impl<T: CpuIo, B: Backing> hv1_hypercall::QuerySparseGpaPageHostVisibility
-    for UhHypercallHandler<'_, '_, T, B>
-{
-    fn query_gpa_visibility(
-        &mut self,
-        partition_id: u64,
-        gpa_pages: &[u64],
-        host_visibility: &mut [HostVisibilityType],
-    ) -> HvRepResult {
-        if partition_id != hvdef::HV_PARTITION_ID_SELF {
-            return Err((HvError::AccessDenied, 0));
-        }
-
-        if self.vp.partition.hide_isolation {
-            return Err((HvError::AccessDenied, 0));
-        }
-
-        self.vp
-            .partition
-            .isolated_memory_protector
-            .as_ref()
-            .ok_or((HvError::AccessDenied, 0))?
-            .query_host_visibility(gpa_pages, host_visibility)
     }
 }
 

@@ -3,7 +3,7 @@
 
 //! Core types shared by serial port implementations and users.
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod disconnected;
 pub mod resources;

@@ -17,11 +17,11 @@ use crate::X64RegisterIo;
 use crate::X64RegisterState;
 use guestmem::GuestMemory;
 use guestmem::PAGE_SIZE;
-use hvdef::hypercall::Control;
-use hvdef::hypercall::HypercallOutput;
+use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HvError;
 use hvdef::HvResult;
-use hvdef::HV_PAGE_SIZE_USIZE;
+use hvdef::hypercall::Control;
+use hvdef::hypercall::HypercallOutput;
 use open_enum::open_enum;
 use sparse_mmap::SparseMapping;
 use std::vec;
@@ -922,7 +922,7 @@ impl TestController {
     }
 
     fn generate_var_header(size: usize) -> Vec<u8> {
-        let mut x = vec![FILL_PATTERN + 1; (size + 7) / 8].as_bytes().to_vec();
+        let mut x = vec![FILL_PATTERN + 1; size.div_ceil(8)].as_bytes().to_vec();
         x.truncate(size);
         x
     }
@@ -932,7 +932,7 @@ impl TestController {
         InRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         let size = rep_count * size_of::<InRepT>();
-        let pattern_count = (size + 7) / 8;
+        let pattern_count = size.div_ceil(8);
         let mut reps = Vec::new();
         for i in 0..pattern_count {
             reps.push(FILL_PATTERN + 2 + i as u64);
@@ -956,7 +956,7 @@ impl TestController {
         OutRepT: IntoBytes + FromBytes + Sized + Copy + Immutable + KnownLayout,
     {
         let size = rep_count * size_of::<OutRepT>();
-        let pattern_count = (size + 7) / 8;
+        let pattern_count = size.div_ceil(8);
         let mut reps = Vec::new();
         for i in 0..pattern_count {
             reps.push(!FILL_PATTERN - 2 - i as u64);
@@ -1336,7 +1336,7 @@ where
         // since the test may explicitly be trying to test straddling.
         let pair_count = io
             .fast_register_pair_count()
-            .min((combined_input.len() + 15) / 16);
+            .min(combined_input.len().div_ceil(16));
 
         if pair_count != 0 {
             let mut input_buffer = vec![[0u64; 2]; pair_count];
@@ -1400,7 +1400,7 @@ where
 
                 output_buffer.as_bytes().split_at(size_of::<OutputT>())
             } else {
-                output_buffer = vec![[0u64; 2]; (output_len + 15) / 16];
+                output_buffer = vec![[0u64; 2]; output_len.div_ceil(16)];
                 io.get_fast_output(input_register_pairs.unwrap(), &mut output_buffer);
                 let output_buffer = &mut output_buffer.as_mut_bytes()[..output_len];
 
@@ -1579,7 +1579,7 @@ fn hypercall_simple(test_params: TestParams) {
     let io = (test_params.io_builder())(&mut handler);
     let modified_mask = io.get_modified_mask() & !io.get_io_register_mask();
     let target_regpairs = if test_params.fast {
-        (expected_output_size + 15) / 16
+        expected_output_size.div_ceil(16)
     } else {
         0
     };
@@ -1705,7 +1705,7 @@ fn hypercall_rep(test_params: TestParams) {
         let io = (test_params.io_builder())(&mut handler);
         let modified_mask = io.get_modified_mask() & !io.get_io_register_mask();
         let target_regpairs = if test_params.fast {
-            (expected_output_size + 15) / 16
+            expected_output_size.div_ceil(16)
         } else {
             0
         };
@@ -1798,7 +1798,7 @@ fn hypercall_variable(test_params: TestParams) {
     let io = (test_params.io_builder())(&mut handler);
     let modified_mask = io.get_modified_mask() & !io.get_io_register_mask();
     let target_regpairs = if test_params.fast {
-        (expected_output_size + 15) / 16
+        expected_output_size.div_ceil(16)
     } else {
         0
     };
@@ -1894,7 +1894,7 @@ fn hypercall_variable_rep(test_params: TestParams) {
     let io = (test_params.io_builder())(&mut handler);
     let modified_mask = io.get_modified_mask() & !io.get_io_register_mask();
     let target_regpairs = if test_params.fast {
-        (expected_output_size + 15) / 16
+        expected_output_size.div_ceil(16)
     } else {
         0
     };

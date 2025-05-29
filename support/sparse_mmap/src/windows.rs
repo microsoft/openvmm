@@ -5,6 +5,25 @@
 
 #![cfg(windows)]
 
+use Memory::CreateFileMappingW;
+use Memory::MEM_COMMIT;
+use Memory::MEM_RELEASE;
+use Memory::MEM_RESERVE;
+use Memory::MEMORY_MAPPED_VIEW_ADDRESS;
+use Memory::MapViewOfFile3;
+use Memory::PAGE_EXECUTE;
+use Memory::PAGE_EXECUTE_READ;
+use Memory::PAGE_EXECUTE_READWRITE;
+use Memory::PAGE_EXECUTE_WRITECOPY;
+use Memory::PAGE_NOACCESS;
+use Memory::PAGE_READONLY;
+use Memory::PAGE_READWRITE;
+use Memory::PAGE_WRITECOPY;
+use Memory::SECTION_MAP_READ;
+use Memory::SECTION_MAP_WRITE;
+use Memory::UnmapViewOfFile2;
+use Memory::VirtualAlloc2;
+use Memory::VirtualFreeEx;
 use pal::windows::BorrowedHandleExt;
 use pal::windows::Process;
 use parking_lot::Mutex;
@@ -17,25 +36,6 @@ use std::ptr::null_mut;
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::System::Memory;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
-use Memory::CreateFileMappingW;
-use Memory::MapViewOfFile3;
-use Memory::UnmapViewOfFile2;
-use Memory::VirtualAlloc2;
-use Memory::VirtualFreeEx;
-use Memory::MEMORY_MAPPED_VIEW_ADDRESS;
-use Memory::MEM_COMMIT;
-use Memory::MEM_RELEASE;
-use Memory::MEM_RESERVE;
-use Memory::PAGE_EXECUTE;
-use Memory::PAGE_EXECUTE_READ;
-use Memory::PAGE_EXECUTE_READWRITE;
-use Memory::PAGE_EXECUTE_WRITECOPY;
-use Memory::PAGE_NOACCESS;
-use Memory::PAGE_READONLY;
-use Memory::PAGE_READWRITE;
-use Memory::PAGE_WRITECOPY;
-use Memory::SECTION_MAP_READ;
-use Memory::SECTION_MAP_WRITE;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -78,7 +78,7 @@ unsafe fn virtual_alloc(
 ) -> Result<*mut c_void, Error> {
     let address = unsafe {
         VirtualAlloc2(
-            process.handle() as isize,
+            process.handle(),
             base_address,
             size,
             allocation_type,
@@ -99,7 +99,7 @@ unsafe fn virtual_free(
     size: usize,
     flags: u32,
 ) -> Result<(), Error> {
-    if unsafe { VirtualFreeEx(process.handle() as isize, address, size, flags) } == 0 {
+    if unsafe { VirtualFreeEx(process.handle(), address, size, flags) } == 0 {
         return Err(Error::last_os_error());
     }
     Ok(())
@@ -116,8 +116,8 @@ unsafe fn map_view_of_file(
 ) -> Result<*mut c_void, Error> {
     let address = unsafe {
         MapViewOfFile3(
-            file_mapping as isize,
-            process.handle() as isize,
+            file_mapping,
+            process.handle(),
             base_address,
             offset,
             view_size,
@@ -141,7 +141,7 @@ unsafe fn unmap_view_of_file(
 ) -> Result<(), Error> {
     if unsafe {
         UnmapViewOfFile2(
-            process.handle() as isize,
+            process.handle(),
             MEMORY_MAPPED_VIEW_ADDRESS { Value: address },
             flags,
         )
@@ -262,14 +262,8 @@ pub fn new_mappable_from_file(
     };
 
     unsafe {
-        let section = CreateFileMappingW(
-            file.as_raw_handle() as isize,
-            null_mut(),
-            protection,
-            0,
-            0,
-            null(),
-        ) as RawHandle;
+        let section = CreateFileMappingW(file.as_raw_handle(), null_mut(), protection, 0, 0, null())
+            as RawHandle;
         if section.is_null() {
             return Err(Error::last_os_error());
         }
@@ -693,8 +687,8 @@ pub fn alloc_shared_memory(size: usize) -> io::Result<OwnedHandle> {
 
 #[cfg(test)]
 mod tests {
-    use super::alloc_shared_memory;
     use super::SparseMapping;
+    use super::alloc_shared_memory;
     use crate::initialize_try_copy;
     use crate::try_copy;
     use windows_sys::Win32::System::Memory::PAGE_READWRITE;

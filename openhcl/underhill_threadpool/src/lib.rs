@@ -1,13 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![cfg_attr(not(target_os = "linux"), expect(missing_docs))]
 #![cfg(target_os = "linux")]
 
 //! The Underhill per-CPU thread pool used to run async tasks and IO.
 //!
 //! This is built on top of [`pal_uring`] and [`pal_async`].
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use inspect::Inspect;
@@ -34,11 +34,11 @@ use std::future::poll_fn;
 use std::io;
 use std::marker::PhantomData;
 use std::os::fd::RawFd;
+use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::Arc;
-use std::sync::OnceLock;
 use std::task::Poll;
 use std::task::Waker;
 use thiserror::Error;
@@ -151,7 +151,7 @@ impl ThreadpoolBuilder {
             let online_cpus = fs_err::read_to_string("/sys/devices/system/cpu/online")?;
             affinity
                 .set_mask_list(&online_cpus)
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                .map_err(io::Error::other)?;
         }
 
         // Set the current thread's affinity so that allocations for the worker
@@ -385,10 +385,9 @@ impl Thread {
     /// The idle task is run before waiting on the IO ring. The idle task can
     /// block synchronously by first calling [`IdleControl::pre_block`], and
     /// then by polling on the IO ring while the task blocks.
-    pub fn set_idle_task<F, Fut>(&self, f: F)
+    pub fn set_idle_task<F>(&self, f: F)
     where
-        F: 'static + Send + FnOnce(IdleControl) -> Fut,
-        Fut: std::future::Future<Output = ()>,
+        F: 'static + Send + AsyncFnOnce(IdleControl),
     {
         self.with_once(|_, once| once.client.set_idle_task(f))
     }

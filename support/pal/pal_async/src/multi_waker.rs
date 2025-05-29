@@ -90,6 +90,9 @@ impl<const N: usize> MultiWaker<N> {
     }
 }
 
+/// # Safety
+///
+/// The caller must guarantee that the pointer is valid and pointing to a Ref<N>.
 unsafe fn ref_clone<const N: usize>(ptr: *const ()) -> RawWaker {
     // SAFETY: This function is only called through our own waker, which guarantees that the
     // pointer is valid and pointing to a Ref.
@@ -107,6 +110,9 @@ unsafe fn ref_clone<const N: usize>(ptr: *const ()) -> RawWaker {
     )
 }
 
+/// # Safety
+///
+/// The caller must guarantee that the pointer is valid and pointing to a Ref<N>.
 unsafe fn ref_wake<const N: usize>(ptr: *const ()) {
     // SAFETY: This function is only called through our own waker, which guarantees that the
     // pointer is valid and pointing to a Ref.
@@ -115,14 +121,20 @@ unsafe fn ref_wake<const N: usize>(ptr: *const ()) {
     thing.cx_waker.wake_by_ref();
 }
 
-unsafe fn ref_drop(_: *const ()) {}
+fn ref_drop(_: *const ()) {}
 
+/// # Safety
+///
+/// The caller must guarantee that the pointer is valid and pointing to a Arc<Inner>.
 unsafe fn val_drop<const N: usize>(ptr: *const ()) {
     // SAFETY: This function is only called through our own waker, which guarantees that the
     // pointer is valid and pointing to a Arc<Inner>.
     unsafe { Arc::decrement_strong_count(ptr.cast::<Inner<N>>()) };
 }
 
+/// # Safety
+///
+/// The caller must guarantee that the pointer is valid and pointing to a Arc<Inner>.
 unsafe fn val_wake_by_ref<const N: usize>(ptr: *const ()) {
     // SAFETY: This function is only called through our own waker, which guarantees that the
     // pointer is valid and pointing to a Arc<Inner>.
@@ -130,6 +142,9 @@ unsafe fn val_wake_by_ref<const N: usize>(ptr: *const ()) {
     waker.wake();
 }
 
+/// # Safety
+///
+/// The caller must guarantee that the pointer is valid and pointing to a Arc<Inner>.
 unsafe fn val_wake<const N: usize>(ptr: *const ()) {
     // SAFETY: This function is only called through our own waker, which guarantees that the
     // pointer is valid and pointing to a Arc<Inner>.
@@ -137,6 +152,9 @@ unsafe fn val_wake<const N: usize>(ptr: *const ()) {
     waker.wake();
 }
 
+/// # Safety
+///
+/// The caller must guarantee that the pointer is valid and pointing to a Arc<Inner>.
 unsafe fn val_clone<const N: usize>(ptr: *const ()) -> RawWaker {
     // SAFETY: This function is only called through our own waker, which guarantees that the
     // pointer is valid and pointing to a Arc<Inner>.

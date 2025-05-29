@@ -504,7 +504,7 @@ pub struct TdxExtendedFieldCode {
 /// Instruction info returned in r11 for a TDG.VP.ENTER call.
 #[bitfield(u64)]
 pub struct TdxInstructionInfo {
-    pub info: u32, // TODO TDX: what is this
+    pub info: u32,
     pub length: u32,
 }
 
@@ -562,7 +562,7 @@ pub struct TdxL2EnterGuestState {
     pub rip: u64,
     pub ssp: u64,
     pub rvi: u8, // GUEST_INTERRUPT_STATUS lower bits
-    pub svi: u8, // GUSET_INTERRUPT_STATUS upper bits
+    pub svi: u8, // GUEST_INTERRUPT_STATUS upper bits
     pub reserved: [u8; 6],
 }
 

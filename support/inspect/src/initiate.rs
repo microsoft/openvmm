@@ -8,10 +8,12 @@ mod natural_sort;
 use super::InspectMut;
 use super::InternalError;
 use super::InternalNode;
-use super::RequestRoot;
 use super::SensitivityLevel;
 use super::Value;
 use super::ValueKind;
+use crate::NumberFormat;
+use crate::RequestParams;
+use crate::RootParams;
 use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::string::ToString;
@@ -21,8 +23,8 @@ use base64::display::Base64Display;
 use core::cmp::Ordering;
 use core::fmt;
 use core::fmt::Write;
-use core::future::poll_fn;
 use core::future::Future;
+use core::future::poll_fn;
 use core::pin::Pin;
 use core::task::Context;
 use core::task::Poll;
@@ -361,45 +363,50 @@ impl<'a> InspectionBuilder<'a> {
 
     /// Inspects `obj` for state at the initially given `path`.
     pub fn inspect(self, obj: impl InspectMut) -> Inspection {
-        let (root, skip) = self.run(None, obj);
+        let root = self.root();
+        let (params, skip) = self.build(&root);
         Inspection {
-            node: root.node,
+            node: params.inspect(obj),
             skip,
         }
     }
 
     /// Updates a value in `obj` at the initially given `path` to value `value`.
-    pub fn update(self, value: &str, obj: impl InspectMut) -> Update {
-        let (root, skip) = self.run(Some(value), obj);
+    pub fn update(self, value: &'a str, obj: impl InspectMut) -> Update {
+        let mut root = self.root();
+        root.value = Some(value);
+        let (params, skip) = self.build(&root);
         Update {
-            node: Some(root.node),
+            node: params.inspect(obj),
             skip,
         }
     }
 
-    fn run(&self, value: Option<&'a str>, mut obj: impl InspectMut) -> (RequestRoot<'a>, usize) {
-        let Self {
-            path,
-            depth,
-            sensitivity,
-        } = self;
+    fn root(&self) -> RootParams<'_> {
+        RootParams {
+            full_path: self.path,
+            value: None,
+            sensitivity: self.sensitivity.unwrap_or(SensitivityLevel::Sensitive),
+        }
+    }
+
+    fn build<'b>(&self, root: &'b RootParams<'_>) -> (RequestParams<'b>, usize) {
         // Account for the root node by bumping depth.
         // Also enforce a maximum depth of 4096, anything deeper than that is
         // most likely a bug, and we don't want to cause an infinite loop.
         const MAX_INSPECT_DEPTH: usize = 4096;
-        let depth_with_root = if let Some(depth) = depth {
+        let depth_with_root = if let Some(depth) = self.depth {
             depth.saturating_add(1).min(MAX_INSPECT_DEPTH)
         } else {
             MAX_INSPECT_DEPTH
         };
-        let mut root = RequestRoot::new(
-            path,
-            depth_with_root,
-            value,
-            sensitivity.unwrap_or(SensitivityLevel::Sensitive),
-        );
-        obj.inspect_mut(root.request());
-        (root, path_node_count(path))
+        let params = RequestParams {
+            root,
+            path_start: 0,
+            depth: depth_with_root,
+            number_format: NumberFormat::default(),
+        };
+        (params, path_node_count(root.full_path))
     }
 }
 
@@ -458,7 +465,7 @@ pub fn update(path: &str, value: &str, obj: impl InspectMut) -> Update {
 
 /// An active update operation, returned by [`update()`] or [`InspectionBuilder::update()`].
 pub struct Update {
-    node: Option<InternalNode>,
+    node: InternalNode,
     skip: usize,
 }
 
@@ -467,9 +474,12 @@ impl Future for Update {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        core::task::ready!(this.node.as_mut().unwrap().poll_resolve(cx));
+        core::task::ready!(this.node.poll_resolve(cx));
         Poll::Ready(
-            match this.node.take().unwrap().into_node().skip(this.skip) {
+            match std::mem::replace(&mut this.node, InternalNode::Unevaluated)
+                .into_node()
+                .skip(this.skip)
+            {
                 Node::Unevaluated => Err(Error::Unresolved),
                 Node::Failed(err) => Err(err),
                 Node::Value(v) => Ok(v),

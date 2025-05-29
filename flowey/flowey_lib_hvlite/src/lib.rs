@@ -3,26 +3,13 @@
 
 //! flowey nodes specific to the HvLite project.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
-// #![warn(missing_docs)] // TODO: lots to do here
 
 pub mod _jobs;
-pub mod artifact_guest_test_uefi;
-pub mod artifact_guide;
-pub mod artifact_hypestv;
-pub mod artifact_igvmfilegen;
-pub mod artifact_nextest_unit_tests_archive;
-pub mod artifact_nextest_vmm_tests_archive;
-pub mod artifact_ohcldiag_dev;
-pub mod artifact_openhcl_boot;
 pub mod artifact_openhcl_igvm_from_recipe;
 pub mod artifact_openhcl_igvm_from_recipe_extras;
-pub mod artifact_openvmm;
 pub mod artifact_openvmm_hcl_sizecheck;
-pub mod artifact_pipette;
-pub mod artifact_rustdoc;
-pub mod artifact_vmgs_lib;
-pub mod artifact_vmgstool;
 pub mod build_and_test_vmgs_lib;
 pub mod build_guest_test_uefi;
 pub mod build_guide;
@@ -39,6 +26,8 @@ pub mod build_openvmm_hcl;
 pub mod build_pipette;
 pub mod build_rustdoc;
 pub mod build_sidecar;
+pub mod build_tmk_vmm;
+pub mod build_tmks;
 pub mod build_vmfirmwareigvm_dll;
 pub mod build_vmgstool;
 pub mod build_xtask;
@@ -46,7 +35,7 @@ pub mod cfg_openvmm_magicpath;
 pub mod download_lxutil;
 pub mod download_openhcl_kernel_package;
 pub mod download_openvmm_deps;
-pub mod download_openvmm_vmm_tests_vhds;
+pub mod download_openvmm_vmm_tests_artifacts;
 pub mod download_release_igvm_files;
 pub mod download_uefi_mu_msvm;
 pub mod git_checkout_openvmm_repo;

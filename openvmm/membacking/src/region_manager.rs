@@ -11,9 +11,9 @@ use futures::StreamExt;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
+use mesh::MeshPayload;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcSend;
-use mesh::MeshPayload;
 use pal_async::task::Spawn;
 use std::cmp::Ordering;
 use thiserror::Error;
@@ -186,25 +186,29 @@ impl RegionManagerTask {
         while let Some(req) = req_recv.next().await {
             match req {
                 RegionRequest::AddMapping(rpc) => {
-                    rpc.handle(|(id, params)| self.add_mapping(id, params))
+                    rpc.handle(async |(id, params)| self.add_mapping(id, params).await)
                         .await
                 }
                 RegionRequest::RemoveMappings(rpc) => {
-                    rpc.handle(|(id, range)| self.remove_mappings(id, range))
+                    rpc.handle(async |(id, range)| self.remove_mappings(id, range).await)
                         .await
                 }
                 RegionRequest::AddPartition(LocalOnly(rpc)) => {
-                    rpc.handle(|partition| self.add_partition(partition)).await
+                    rpc.handle(async |partition| self.add_partition(partition).await)
+                        .await
                 }
                 RegionRequest::AddRegion(rpc) => rpc.handle_sync(|params| self.add_region(params)),
                 RegionRequest::RemoveRegion(rpc) => {
-                    rpc.handle(|id| self.unmap_region(id, true)).await
+                    rpc.handle(async |id| self.unmap_region(id, true).await)
+                        .await
                 }
                 RegionRequest::MapRegion(rpc) => {
-                    rpc.handle(|(id, params)| self.map_region(id, params)).await
+                    rpc.handle(async |(id, params)| self.map_region(id, params).await)
+                        .await
                 }
                 RegionRequest::UnmapRegion(rpc) => {
-                    rpc.handle(|id| self.unmap_region(id, false)).await
+                    rpc.handle(async |id| self.unmap_region(id, false).await)
+                        .await
                 }
                 RegionRequest::Inspect(deferred) => {
                     deferred.inspect(&mut *self);
@@ -383,10 +387,12 @@ impl RegionManagerTask {
 
         // TODO: split and remove existing mappings, atomically. This is
         // technically required by virtiofs DAX support.
-        assert!(!region
-            .mappings
-            .iter()
-            .any(|m| m.params.range_in_region.overlaps(&params.range_in_region)));
+        assert!(
+            !region
+                .mappings
+                .iter()
+                .any(|m| m.params.range_in_region.overlaps(&params.range_in_region))
+        );
 
         if let Some(region_range) = region.active_range() {
             let range = range_within(region_range, params.range_in_region);

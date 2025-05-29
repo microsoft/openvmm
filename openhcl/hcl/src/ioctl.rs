@@ -3,9 +3,6 @@
 
 //! Interface to `mshv_vtl` driver.
 
-// Used to implement the [`private::BackingPrivate`] trait.
-#![allow(private_interfaces)]
-
 mod deferred;
 
 pub mod aarch64;
@@ -14,32 +11,28 @@ pub mod tdx;
 pub mod x64;
 
 use self::deferred::DeferredActionSlots;
-use self::deferred::DeferredActions;
 use self::ioctls::*;
+use crate::GuestVtl;
 use crate::ioctl::deferred::DeferredAction;
 use crate::mapped_page::MappedPage;
 use crate::protocol;
-use crate::protocol::hcl_intr_offload_flags;
-use crate::protocol::hcl_run;
 use crate::protocol::EnterModes;
 use crate::protocol::HCL_REG_PAGE_OFFSET;
 use crate::protocol::HCL_VMSA_GUEST_VSM_PAGE_OFFSET;
 use crate::protocol::HCL_VMSA_PAGE_OFFSET;
 use crate::protocol::MSHV_APIC_PAGE_OFFSET;
-use crate::GuestVtl;
+use crate::protocol::hcl_intr_offload_flags;
+use crate::protocol::hcl_run;
+use bitvec::vec::BitVec;
+use deferred::RegisteredDeferredActions;
+use deferred::push_deferred_action;
+use deferred::register_deferred_actions;
 use hv1_structs::ProcessorSet;
 use hv1_structs::VtlArray;
-use hvdef::hypercall::AssertVirtualInterrupt;
-use hvdef::hypercall::HostVisibilityType;
-use hvdef::hypercall::HvGpaRange;
-use hvdef::hypercall::HvGpaRangeExtended;
-use hvdef::hypercall::HvInputVtl;
-use hvdef::hypercall::HvInterceptParameters;
-use hvdef::hypercall::HvInterceptType;
-use hvdef::hypercall::HvRegisterAssoc;
-use hvdef::hypercall::HypercallOutput;
-use hvdef::hypercall::InitialVpContextX64;
-use hvdef::hypercall::ModifyHostVisibility;
+use hvdef::HV_PAGE_SIZE;
+use hvdef::HV_PARTITION_ID_SELF;
+use hvdef::HV_VP_INDEX_SELF;
+use hvdef::HvAarch64RegisterPage;
 use hvdef::HvAllArchRegisterName;
 #[cfg(guest_arch = "aarch64")]
 use hvdef::HvArm64RegisterName;
@@ -54,9 +47,17 @@ use hvdef::HvX64RegisterName;
 use hvdef::HvX64RegisterPage;
 use hvdef::HypercallCode;
 use hvdef::Vtl;
-use hvdef::HV_PAGE_SIZE;
-use hvdef::HV_PARTITION_ID_SELF;
-use hvdef::HV_VP_INDEX_SELF;
+use hvdef::hypercall::AssertVirtualInterrupt;
+use hvdef::hypercall::HostVisibilityType;
+use hvdef::hypercall::HvGpaRange;
+use hvdef::hypercall::HvGpaRangeExtended;
+use hvdef::hypercall::HvInputVtl;
+use hvdef::hypercall::HvInterceptParameters;
+use hvdef::hypercall::HvInterceptType;
+use hvdef::hypercall::HvRegisterAssoc;
+use hvdef::hypercall::HypercallOutput;
+use hvdef::hypercall::InitialVpContextX64;
+use hvdef::hypercall::ModifyHostVisibility;
 use memory_range::MemoryRange;
 use pal::unix::pthread::*;
 use parking_lot::Mutex;
@@ -65,20 +66,19 @@ use sidecar_client::NewSidecarClientError;
 use sidecar_client::SidecarClient;
 use sidecar_client::SidecarRun;
 use sidecar_client::SidecarVp;
-use std::cell::RefCell;
 use std::cell::UnsafeCell;
 use std::fmt::Debug;
 use std::fs::File;
 use std::io;
 use std::os::unix::prelude::*;
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::AtomicU8;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Once;
+use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use thiserror::Error;
-use user_driver::memory::MemoryBlock;
 use user_driver::DmaClient;
+use user_driver::memory::MemoryBlock;
 use x86defs::snp::SevVmsa;
 use x86defs::tdx::TdCallResultCode;
 use x86defs::vmx::ApicPage;
@@ -153,7 +153,9 @@ pub enum Error {
     Sidecar(#[source] sidecar_client::SidecarError),
     #[error("failed to open sidecar")]
     OpenSidecar(#[source] NewSidecarClientError),
-    #[error("mismatch between requested isolation type {requested:?} and supported isolation type {supported:?}")]
+    #[error(
+        "mismatch between requested isolation type {requested:?} and supported isolation type {supported:?}"
+    )]
     MismatchedIsolation {
         supported: IsolationType,
         requested: IsolationType,
@@ -194,7 +196,9 @@ impl HypercallError {
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum HvcallError {
-    #[error("kernel rejected the hypercall, most likely due to the hypercall code not being allowed via set_allowed_hypercalls")]
+    #[error(
+        "kernel rejected the hypercall, most likely due to the hypercall code not being allowed via set_allowed_hypercalls"
+    )]
     HypercallIoctlFailed(#[source] nix::Error),
     #[error("input parameters are larger than a page")]
     InputParametersTooLarge,
@@ -209,9 +213,7 @@ pub enum HvcallError {
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum ApplyVtlProtectionsError {
-    #[error(
-        "hypervisor returned {output:?} error {hv_error:?} when protecting pages {range} for vtl {vtl:?}"
-    )]
+    #[error("hypervisor failed with {output:?} when protecting pages {range} for vtl {vtl:?}")]
     Hypervisor {
         range: MemoryRange,
         output: HypercallOutput,
@@ -219,9 +221,7 @@ pub enum ApplyVtlProtectionsError {
         hv_error: HvError,
         vtl: HvInputVtl,
     },
-    #[error(
-        "{failed_operation} when protecting pages {range} with {permissions:x?} for vtl {vtl:?}"
-    )]
+    #[error("snp failure to protect pages {range} with {permissions:x?} for vtl {vtl:?}")]
     Snp {
         #[source]
         failed_operation: snp::SnpPageError,
@@ -229,7 +229,9 @@ pub enum ApplyVtlProtectionsError {
         permissions: x86defs::snp::SevRmpAdjust,
         vtl: HvInputVtl,
     },
-    #[error("tdcall failed with {error:?} when protecting pages {range} with permissions {permissions:x?} for vtl {vtl:?}")]
+    #[error(
+        "tdcall failed with {error:?} when protecting pages {range} with permissions {permissions:x?} for vtl {vtl:?}"
+    )]
     Tdx {
         error: TdCallResultCode,
         range: MemoryRange,
@@ -244,11 +246,10 @@ pub enum ApplyVtlProtectionsError {
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum SetGuestVsmConfigError {
-    #[error(
-        "hypervisor returned error {hv_error:?} when configuring guest vsm {enable_guest_vsm:?}"
-    )]
+    #[error("hypervisor failed to configure guest vsm to {enable_guest_vsm}")]
     Hypervisor {
         enable_guest_vsm: bool,
+        #[source]
         hv_error: HvError,
     },
 }
@@ -257,19 +258,22 @@ pub enum SetGuestVsmConfigError {
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum GetVpIndexFromApicIdError {
-    #[error("hypervisor returned error {hv_error:?} when querying vp index for {apic_id}")]
-    Hypervisor { hv_error: HvError, apic_id: u32 },
+    #[error("hypervisor failed when querying vp index for {apic_id}")]
+    Hypervisor {
+        #[source]
+        hv_error: HvError,
+        apic_id: u32,
+    },
 }
 
 /// Error setting VSM partition configuration.
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum SetVsmPartitionConfigError {
-    #[error(
-        "hypervisor returned error {hv_error:?} when configuring vsm partition config {config:?}"
-    )]
+    #[error("hypervisor failed when configuring vsm partition config {config:?}")]
     Hypervisor {
         config: HvRegisterVsmPartitionConfig,
+        #[source]
         hv_error: HvError,
     },
 }
@@ -278,9 +282,13 @@ pub enum SetVsmPartitionConfigError {
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum TranslateGvaToGpaError {
-    #[error("hypervisor returned error {hv_error:?} on gva {gva:x}")]
-    Hypervisor { gva: u64, hv_error: HvError },
-    #[error("sidecar kernel failed on gva {gva:x}")]
+    #[error("hypervisor failed when translating gva {gva:#x}")]
+    Hypervisor {
+        gva: u64,
+        #[source]
+        hv_error: HvError,
+    },
+    #[error("sidecar kernel failed when translating gva {gva:#x}")]
     Sidecar {
         gva: u64,
         #[source]
@@ -302,19 +310,22 @@ pub struct CheckVtlAccessResult {
 #[derive(Error, Debug)]
 #[expect(missing_docs)]
 pub enum AcceptPagesError {
-    #[error("hypervisor returned {output:?} error {hv_error:?} when accepting pages {range}")]
+    #[error("hypervisor failed to accept pages {range} with {output:?}")]
     Hypervisor {
         range: MemoryRange,
         output: HypercallOutput,
+        #[source]
         hv_error: HvError,
     },
-    #[error("{failed_operation} when protecting pages {range}")]
+    #[error("snp failure to protect pages {range}")]
     Snp {
+        #[source]
         failed_operation: snp::SnpPageError,
         range: MemoryRange,
     },
-    #[error("tdcall failed with {error:?} when accepting pages {range}")]
+    #[error("tdcall failure when accepting pages {range}")]
     Tdx {
+        #[source]
         error: tdcall::AcceptPagesError,
         range: MemoryRange,
     },
@@ -332,6 +343,7 @@ enum GpaPinUnpinAction {
 #[error("partial success: {ranges_processed} operations succeeded, but encountered an error")]
 struct PinUnpinError {
     ranges_processed: usize,
+    #[source]
     error: HvError,
 }
 
@@ -381,6 +393,7 @@ mod ioctls {
     const MSHV_VTL_RMPQUERY: u16 = 0x35;
     const MSHV_INVLPGB: u16 = 0x36;
     const MSHV_TLBSYNC: u16 = 0x37;
+    const MSHV_KICKCPUS: u16 = 0x38;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -594,6 +607,14 @@ mod ioctls {
         hcl_tlbsync,
         MSHV_IOCTL,
         MSHV_TLBSYNC
+    );
+
+    ioctl_write_ptr!(
+        /// Kick CPUs.
+        hcl_kickcpus,
+        MSHV_IOCTL,
+        MSHV_KICKCPUS,
+        protocol::hcl_kick_cpus
     );
 }
 
@@ -959,7 +980,11 @@ impl MshvHvcall {
 
     /// Modifies the host visibility of the given pages.
     ///
-    /// [`HypercallCode::HvCallModifySparseGpaPageHostVisibility`] must be allowed.
+    /// [`HypercallCode::HvCallModifySparseGpaPageHostVisibility`] must be
+    /// allowed.
+    ///
+    /// Returns on error, the hypervisor error and the number of pages
+    /// processed.
     //
     // TODO SNP: this isn't really safe. Probably this should be an IOCTL in the
     // kernel so that it can validate the page ranges are VTL0 memory.
@@ -967,7 +992,7 @@ impl MshvHvcall {
         &self,
         host_visibility: HostVisibilityType,
         mut gpns: &[u64],
-    ) -> Result<(), HvError> {
+    ) -> Result<(), (HvError, usize)> {
         const GPNS_PER_CALL: usize = (HV_PAGE_SIZE as usize
             - size_of::<hvdef::hypercall::ModifySparsePageVisibility>())
             / size_of::<u64>();
@@ -996,7 +1021,7 @@ impl MshvHvcall {
                     assert_eq!({ result.elements_processed() }, n);
                 }
                 Err(HvError::Timeout) => {}
-                Err(e) => return Err(e),
+                Err(e) => return Err((e, result.elements_processed())),
             }
             gpns = &gpns[result.elements_processed()..];
         }
@@ -1481,6 +1506,60 @@ impl MshvHvcall {
 
         self.get_vp_register_for_vtl_inner(vtl, name.into())
     }
+
+    /// Invokes the HvCallMemoryMappedIoRead hypercall
+    pub fn mmio_read(&self, gpa: u64, data: &mut [u8]) -> Result<(), HvError> {
+        assert!(data.len() <= hvdef::hypercall::HV_HYPERCALL_MMIO_MAX_DATA_LENGTH);
+
+        let header = hvdef::hypercall::MemoryMappedIoRead {
+            gpa,
+            access_width: data.len() as u32,
+            reserved_z0: 0,
+        };
+
+        let mut output: hvdef::hypercall::MemoryMappedIoReadOutput = FromZeros::new_zeroed();
+
+        // SAFETY: The input header and slice are the correct types for this hypercall.
+        //         The hypercall output is validated right after the hypercall is issued.
+        let status = unsafe {
+            self.hvcall(
+                HypercallCode::HvCallMemoryMappedIoRead,
+                &header,
+                &mut output,
+            )
+            .expect("submitting hypercall should not fail")
+        };
+
+        // Only copy the data if the hypercall was successful
+        if status.result().is_ok() {
+            data.copy_from_slice(&output.data[..data.len()]);
+        };
+
+        status.result()
+    }
+
+    /// Invokes the HvCallMemoryMappedIoWrite hypercall
+    pub fn mmio_write(&self, gpa: u64, data: &[u8]) -> Result<(), HvError> {
+        assert!(data.len() <= hvdef::hypercall::HV_HYPERCALL_MMIO_MAX_DATA_LENGTH);
+
+        let mut header = hvdef::hypercall::MemoryMappedIoWrite {
+            gpa,
+            access_width: data.len() as u32,
+            reserved_z0: 0,
+            data: [0; hvdef::hypercall::HV_HYPERCALL_MMIO_MAX_DATA_LENGTH],
+        };
+
+        header.data[..data.len()].copy_from_slice(data);
+
+        // SAFETY: The input header and slice are the correct types for this hypercall.
+        //         The hypercall output is validated right after the hypercall is issued.
+        let status = unsafe {
+            self.hvcall(HypercallCode::HvCallMemoryMappedIoWrite, &header, &mut ())
+                .expect("submitting hypercall should not fail")
+        };
+
+        status.result()
+    }
 }
 
 /// The HCL device and collection of fds.
@@ -1539,7 +1618,10 @@ struct HclVp {
 
 #[derive(Debug)]
 enum BackingState {
-    Mshv {
+    MshvAarch64 {
+        reg_page: Option<MappedPage<HvAarch64RegisterPage>>,
+    },
+    MshvX64 {
         reg_page: Option<MappedPage<HvX64RegisterPage>>,
     },
     Snp {
@@ -1568,14 +1650,32 @@ impl HclVp {
         let fd = &hcl.mshv_vtl.file;
         let run: MappedPage<hcl_run> =
             MappedPage::new(fd, vp as i64).map_err(|e| Error::MmapVp(e, None))?;
-        // SAFETY: `proxy_irr_blocked` is not accessed by any other VPs/kernel at this point (`HclVp` creation)
-        // so we know we have exclusive access.
-        let proxy_irr_blocked = unsafe { &mut (*run.as_ptr()).proxy_irr_blocked };
-        // Initializing to block all vectors by default.
-        proxy_irr_blocked.fill(0xFFFFFFFF);
+        // Block proxied interrupts on all vectors by default. The mask will be
+        // relaxed as the guest runs.
+        //
+        // This is only used on CVMs. Skip it otherwise, since run page accesses
+        // will fault on VPs that are still in the sidecar kernel.
+        if isolation_type.is_hardware_isolated() {
+            // SAFETY: `proxy_irr_blocked` is not accessed by any other VPs/kernel at this point (`HclVp` creation)
+            // so we know we have exclusive access.
+            let proxy_irr_blocked = unsafe { &mut (*run.as_ptr()).proxy_irr_blocked };
+            proxy_irr_blocked.fill(!0);
+        }
 
         let backing = match isolation_type {
-            IsolationType::None | IsolationType::Vbs => BackingState::Mshv {
+            IsolationType::None | IsolationType::Vbs if cfg!(guest_arch = "aarch64") => {
+                BackingState::MshvAarch64 {
+                    reg_page: if map_reg_page {
+                        Some(
+                            MappedPage::new(fd, HCL_REG_PAGE_OFFSET | vp as i64)
+                                .map_err(Error::MmapRegPage)?,
+                        )
+                    } else {
+                        None
+                    },
+                }
+            }
+            IsolationType::None | IsolationType::Vbs => BackingState::MshvX64 {
                 reg_page: if map_reg_page {
                     Some(
                         MappedPage::new(fd, HCL_REG_PAGE_OFFSET | vp as i64)
@@ -1613,10 +1713,11 @@ impl HclVp {
 }
 
 /// Object used to run and to access state for a specific VP.
-pub struct ProcessorRunner<'a, T> {
+pub struct ProcessorRunner<'a, T: Backing<'a>> {
     hcl: &'a Hcl,
     vp: &'a HclVp,
     sidecar: Option<SidecarVp<'a>>,
+    deferred_actions: Option<RegisteredDeferredActions<'a>>,
     run: &'a UnsafeCell<hcl_run>,
     intercept_message: &'a UnsafeCell<HvMessage>,
     state: T,
@@ -1637,12 +1738,14 @@ pub enum NoRunner {
 }
 
 /// An isolation-type-specific backing for a processor runner.
+#[expect(private_bounds)]
 pub trait Backing<'a>: BackingPrivate<'a> {}
 
 impl<'a, T: BackingPrivate<'a>> Backing<'a> for T {}
 
 mod private {
     use super::Error;
+    use super::Hcl;
     use super::HclVp;
     use super::NoRunner;
     use super::ProcessorRunner;
@@ -1651,46 +1754,45 @@ mod private {
     use hvdef::HvRegisterValue;
     use sidecar_client::SidecarVp;
 
-    pub trait BackingPrivate<'a>: Sized {
-        fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>) -> Result<Self, NoRunner>;
+    pub(super) trait BackingPrivate<'a>: Sized {
+        fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>, hcl: &Hcl)
+        -> Result<Self, NoRunner>;
 
         fn try_set_reg(
-            runner: &mut ProcessorRunner<'_, Self>,
+            runner: &mut ProcessorRunner<'a, Self>,
             vtl: GuestVtl,
             name: HvRegisterName,
             value: HvRegisterValue,
         ) -> Result<bool, Error>;
 
-        fn must_flush_regs_on(runner: &ProcessorRunner<'_, Self>, name: HvRegisterName) -> bool;
+        fn must_flush_regs_on(runner: &ProcessorRunner<'a, Self>, name: HvRegisterName) -> bool;
 
         fn try_get_reg(
-            runner: &ProcessorRunner<'_, Self>,
+            runner: &ProcessorRunner<'a, Self>,
             vtl: GuestVtl,
             name: HvRegisterName,
         ) -> Result<Option<HvRegisterValue>, Error>;
+
+        fn flush_register_page(runner: &mut ProcessorRunner<'a, Self>);
     }
 }
 
-impl<T> Drop for ProcessorRunner<'_, T> {
+impl<'a, T: Backing<'a>> Drop for ProcessorRunner<'a, T> {
     fn drop(&mut self) {
-        self.flush_deferred_actions();
-        let actions = DEFERRED_ACTIONS.with(|actions| actions.take());
-        assert!(actions.is_none_or(|a| a.is_empty()));
+        self.flush_deferred_state();
+        drop(self.deferred_actions.take());
         let old_state = std::mem::replace(&mut *self.vp.state.lock(), VpState::NotRunning);
         assert!(matches!(old_state, VpState::Running(thread) if thread == Pthread::current()));
     }
 }
 
-impl<T> ProcessorRunner<'_, T> {
-    /// Flushes any pending deferred actions. Must be called if preparing the
-    /// partition for save/restore (servicing), since otherwise the deferred
-    /// actions will be lost.
-    pub fn flush_deferred_actions(&mut self) {
-        if self.sidecar.is_none() {
-            DEFERRED_ACTIONS.with(|actions| {
-                let mut actions = actions.borrow_mut();
-                actions.as_mut().unwrap().run_actions(self.hcl);
-            })
+impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
+    /// Flushes any deferred state. Must be called if preparing the partition
+    /// for save/restore (servicing).
+    pub fn flush_deferred_state(&mut self) {
+        T::flush_register_page(self);
+        if let Some(actions) = &mut self.deferred_actions {
+            actions.flush();
         }
     }
 }
@@ -1893,18 +1995,13 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
     pub fn run(&mut self) -> Result<bool, Error> {
         assert!(self.sidecar.is_none());
         // Apply any deferred actions to the run page.
-        DEFERRED_ACTIONS.with(|actions| {
-            let mut actions = actions.borrow_mut();
-            let actions = actions.as_mut().unwrap();
-            if self.hcl.supports_vtl_ret_action {
-                // SAFETY: there are no concurrent accesses to the deferred action
-                // slots.
-                let mut slots = unsafe { DeferredActionSlots::new(self.run) };
-                actions.copy_to_slots(&mut slots, self.hcl);
-            } else {
-                actions.run_actions(self.hcl);
-            }
-        });
+        if let Some(actions) = &mut self.deferred_actions {
+            debug_assert!(self.hcl.supports_vtl_ret_action);
+            // SAFETY: there are no concurrent accesses to the deferred action
+            // slots.
+            let mut slots = unsafe { DeferredActionSlots::new(self.run) };
+            actions.move_to_slots(&mut slots);
+        };
 
         // N.B. cpu_context and exit_context are mutated by this call.
         //
@@ -2106,6 +2203,7 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                     | HvX64RegisterName::VsmVpWaitForTlbLock
                     | HvX64RegisterName::VsmVpSecureConfigVtl0
                     | HvX64RegisterName::VsmVpSecureConfigVtl1
+                    | HvX64RegisterName::CrInterceptControl
             )
         ));
         self.set_vp_registers_hvcall_inner(vtl, &registers)
@@ -2118,10 +2216,6 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
         // invoked during `run`
         unsafe { (*self.run.get()).target_vtl = vtl.into() }
     }
-}
-
-thread_local! {
-    static DEFERRED_ACTIONS: RefCell<Option<DeferredActions>> = const { RefCell::new(None) };
 }
 
 impl Hcl {
@@ -2295,7 +2389,7 @@ impl Hcl {
             None
         };
 
-        let state = T::new(vp, sidecar.as_ref())?;
+        let state = T::new(vp, sidecar.as_ref(), self)?;
 
         // Set this thread as the runner.
         let VpState::NotRunning =
@@ -2304,11 +2398,11 @@ impl Hcl {
             panic!("another runner already exists")
         };
 
-        if sidecar.is_none() {
-            DEFERRED_ACTIONS.with(|actions| {
-                assert!(actions.replace(Some(Default::default())).is_none());
-            });
-        }
+        let actions = if sidecar.is_none() && self.supports_vtl_ret_action {
+            Some(register_deferred_actions(self))
+        } else {
+            None
+        };
 
         // SAFETY: The run page is guaranteed to be mapped and valid.
         // While the exit message might not be filled in yet we're only computing its address.
@@ -2322,6 +2416,7 @@ impl Hcl {
         Ok(ProcessorRunner {
             hcl: self,
             vp,
+            deferred_actions: actions,
             run: vp.run.as_ref(),
             intercept_message,
             state,
@@ -2375,24 +2470,7 @@ impl Hcl {
     /// hypervisor is returning to a lower VTL.
     pub fn signal_event_direct(&self, vp: u32, sint: u8, flag: u16) {
         tracing::trace!(vp, sint, flag, "signaling event");
-
-        DEFERRED_ACTIONS.with(|actions| {
-            // Push a deferred action if we are running on a VP thread.
-            if let Some(actions) = actions.borrow_mut().as_mut() {
-                actions.push(self, DeferredAction::SignalEvent { vp, sint, flag });
-            } else {
-                // Signal the event directly.
-                if let Err(err) = self.hvcall_signal_event_direct(vp, sint, flag) {
-                    tracelimit::warn_ratelimited!(
-                        error = &err as &dyn std::error::Error,
-                        vp,
-                        sint,
-                        flag,
-                        "failed to signal event"
-                    );
-                }
-            }
-        })
+        push_deferred_action(self, DeferredAction::SignalEvent { vp, sint, flag });
     }
 
     fn hvcall_signal_event_direct(&self, vp: u32, sint: u8, flag: u16) -> Result<bool, Error> {
@@ -2440,7 +2518,8 @@ impl Hcl {
             padding0: [0; 3],
             sint,
             padding1: [0; 3],
-            message: *message,
+            message: zerocopy::Unalign::new(*message),
+            padding2: 0,
         };
 
         // SAFETY: calling the hypercall with correct input buffer.
@@ -3036,8 +3115,8 @@ impl Hcl {
     }
 
     /// Gets the PFN for the VTL 1 VMSA
-    pub fn vtl1_vmsa_pfn(&self, vp_index: u32) -> u64 {
-        let mut vp_pfn = vp_index as u64; // input vp, output pfn
+    pub fn vtl1_vmsa_pfn(&self, cpu_index: u32) -> u64 {
+        let mut vp_pfn = cpu_index as u64; // input vp, output pfn
 
         // SAFETY: The ioctl requires no prerequisites other than the VTL 1 VMSA
         // should be mapped. This ioctl should never fail as long as the vtl 1
@@ -3067,62 +3146,6 @@ impl Hcl {
         }
 
         value
-    }
-
-    /// Invokes the HvCallMemoryMappedIoRead hypercall
-    pub fn memory_mapped_io_read(&self, gpa: u64, data: &mut [u8]) -> Result<(), HvError> {
-        assert!(data.len() <= hvdef::hypercall::HV_HYPERCALL_MMIO_MAX_DATA_LENGTH);
-
-        let header = hvdef::hypercall::MemoryMappedIoRead {
-            gpa,
-            access_width: data.len() as u32,
-            reserved_z0: 0,
-        };
-
-        let mut output: hvdef::hypercall::MemoryMappedIoReadOutput = FromZeros::new_zeroed();
-
-        // SAFETY: The input header and slice are the correct types for this hypercall.
-        //         The hypercall output is validated right after the hypercall is issued.
-        let status = unsafe {
-            self.mshv_hvcall
-                .hvcall(
-                    HypercallCode::HvCallMemoryMappedIoRead,
-                    &header,
-                    &mut output,
-                )
-                .expect("submitting hypercall should not fail")
-        };
-
-        // Only copy the data if the hypercall was successful
-        if status.result().is_ok() {
-            data.copy_from_slice(&output.data[..data.len()]);
-        };
-
-        status.result()
-    }
-
-    /// Invokes the HvCallMemoryMappedIoWrite hypercall
-    pub fn memory_mapped_io_write(&self, gpa: u64, data: &[u8]) -> Result<(), HvError> {
-        assert!(data.len() <= hvdef::hypercall::HV_HYPERCALL_MMIO_MAX_DATA_LENGTH);
-
-        let mut header = hvdef::hypercall::MemoryMappedIoWrite {
-            gpa,
-            access_width: data.len() as u32,
-            reserved_z0: 0,
-            data: [0; hvdef::hypercall::HV_HYPERCALL_MMIO_MAX_DATA_LENGTH],
-        };
-
-        header.data[..data.len()].copy_from_slice(data);
-
-        // SAFETY: The input header and slice are the correct types for this hypercall.
-        //         The hypercall output is validated right after the hypercall is issued.
-        let status = unsafe {
-            self.mshv_hvcall
-                .hvcall(HypercallCode::HvCallMemoryMappedIoWrite, &header, &mut ())
-                .expect("submitting hypercall should not fail")
-        };
-
-        status.result()
     }
 
     /// Invokes the HvCallRetargetDeviceInterrupt hypercall.
@@ -3226,6 +3249,32 @@ impl Hcl {
         // SAFETY: ioctl has no prerequisites.
         unsafe {
             hcl_tlbsync(self.mshv_vtl.file.as_raw_fd()).expect("should always succeed");
+        }
+    }
+
+    /// Causes the specified CPUs to be woken out of a lower VTL.
+    pub fn kick_cpus(
+        &self,
+        cpus: impl IntoIterator<Item = u32>,
+        cancel_run: bool,
+        wait_for_other_cpus: bool,
+    ) {
+        let mut cpu_bitmap: BitVec<u8> = BitVec::from_vec(vec![0; self.vps.len().div_ceil(8)]);
+        for cpu in cpus {
+            cpu_bitmap.set(cpu as usize, true);
+        }
+
+        let data = protocol::hcl_kick_cpus {
+            len: cpu_bitmap.len() as u64,
+            cpu_mask: cpu_bitmap.as_bitptr().pointer(),
+            flags: protocol::hcl_kick_cpus_flags::new()
+                .with_cancel_run(cancel_run)
+                .with_wait_for_other_cpus(wait_for_other_cpus),
+        };
+
+        // SAFETY: ioctl has no prerequisites.
+        unsafe {
+            hcl_kickcpus(self.mshv_vtl.file.as_raw_fd(), &data).expect("should always succeed");
         }
     }
 }

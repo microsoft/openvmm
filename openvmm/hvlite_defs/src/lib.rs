@@ -3,6 +3,9 @@
 
 //! Client-facing definitions for the VM worker.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 pub mod config;
 pub mod entrypoint;
 pub mod rpc;

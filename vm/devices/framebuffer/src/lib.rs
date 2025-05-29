@@ -19,7 +19,7 @@
 //! This is separate from the synthetic device because its lifetime is separate
 //! from that of the synthetic video VMBus channel.
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 use anyhow::Context;
 use chipset_device::ChipsetDevice;
@@ -29,8 +29,8 @@ use guestmem::MemoryMapper;
 use inspect::Inspect;
 use inspect::InspectMut;
 use memory_range::MemoryRange;
-use mesh::payload::Protobuf;
 use mesh::MeshPayload;
+use mesh::payload::Protobuf;
 use parking_lot::Mutex;
 use sparse_mmap::Mappable;
 use sparse_mmap::SparseMapping;
@@ -41,8 +41,8 @@ use video_core::FramebufferControl;
 use video_core::FramebufferFormat;
 use video_core::ResolvedFramebuffer;
 use video_core::SharedFramebufferHandle;
-use vm_resource::kind::FramebufferHandleKind;
 use vm_resource::ResolveResource;
+use vm_resource::kind::FramebufferHandleKind;
 use vmcore::device_state::ChangeDeviceState;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
@@ -66,14 +66,14 @@ pub const FRAMEBUFFER_SIZE: usize = 8 * 1024 * 1024; // 8 MB
 /// The framebuffer should be allocated prior to calling this function.
 ///
 /// * `vram`:   [`Mappable`] (`OwnedFd`/`OwnedHandle`) that can be mapped into guest memory
-///             and a `SparseMapping` for the VNC server to read from. In HvLite, this
-///             is created by `alloc_shared_memory`. In Underhill, this is `/dev/mshv_vtl_low`.
+///   and a `SparseMapping` for the VNC server to read from. In HvLite, this
+///   is created by `alloc_shared_memory`. In Underhill, this is `/dev/mshv_vtl_low`.
 ///
 /// * `len`:    The amount of memory that was allocated for the framebuffer.
 ///
 /// * `offset`: The `file_offset` that should be used when reading the framebuffer.
-///             In HvLite, this should be 0. In Underhill, this is the GPA of the
-///             VTL2 framebuffer mapping.
+///   In HvLite, this should be 0. In Underhill, this is the GPA of the
+///   VTL2 framebuffer mapping.
 pub fn framebuffer(
     vram: Mappable,
     len: usize,

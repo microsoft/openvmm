@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+
 mod storage_backend;
 mod uefi_nvram;
 mod vmgs_json;
@@ -17,17 +19,17 @@ use std::path::Path;
 use std::path::PathBuf;
 use thiserror::Error;
 use uefi_nvram::UefiNvramOperation;
+use vmgs::Error as VmgsError;
+use vmgs::Vmgs;
 use vmgs::vmgs_helpers::get_active_header;
 use vmgs::vmgs_helpers::read_headers;
 use vmgs::vmgs_helpers::validate_header;
-use vmgs::Error as VmgsError;
-use vmgs::Vmgs;
 use vmgs_format::EncryptionAlgorithm;
 use vmgs_format::FileId;
-use vmgs_format::VmgsHeader;
 use vmgs_format::VMGS_BYTES_PER_BLOCK;
 use vmgs_format::VMGS_DEFAULT_CAPACITY;
 use vmgs_format::VMGS_ENCRYPTION_KEY_SIZE;
+use vmgs_format::VmgsHeader;
 
 const ONE_MEGA_BYTE: u64 = 1024 * 1024;
 const ONE_GIGA_BYTE: u64 = ONE_MEGA_BYTE * 1024;
@@ -329,8 +331,9 @@ fn parse_legacy_args() -> Vec<String> {
 }
 
 fn main() {
-    DefaultPool::run_with(|_| async move {
-        if let Err(e) = do_main().await {
+    DefaultPool::run_with(async |_| match do_main().await {
+        Ok(_) => eprintln!("The operation completed successfully."),
+        Err(e) => {
             let exit_code = match e {
                 Error::NotEncrypted => ExitCode::ErrorNotEncrypted,
                 Error::EmptyFile => ExitCode::ErrorEmpty,
@@ -456,7 +459,7 @@ async fn vmgs_file_update_key(
     vmgs_update_key(&mut vmgs, encryption_alg, new_encryption_key.as_ref()).await
 }
 
-#[cfg_attr(not(with_encryption), allow(unused_variables))]
+#[cfg_attr(not(with_encryption), expect(unused_variables))]
 async fn vmgs_update_key(
     vmgs: &mut Vmgs,
     encryption_alg: EncryptionAlgorithm,
@@ -495,7 +498,6 @@ async fn vmgs_file_create(
 
     let _ = vmgs_create(disk, encryption_alg_key).await?;
 
-    println!("Done!");
     Ok(())
 }
 
@@ -519,12 +521,13 @@ fn vhdfiledisk_create(
     }
 
     if force_create && Path::new(path.as_ref()).exists() {
-        println!(
+        eprintln!(
             "File already exists. Recreating the file {:?}",
             path.as_ref()
         );
     }
 
+    eprintln!("Creating file: {}", path.as_ref().display());
     let file = match fs_err::OpenOptions::new()
         .read(true)
         .write(true)
@@ -535,14 +538,13 @@ fn vhdfiledisk_create(
     {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            return Err(Error::FileExists)
+            return Err(Error::FileExists);
         }
         Err(err) => return Err(Error::VmgsFile(err)),
     };
 
-    println!(
-        "Creating file {} with file size {}{}...",
-        path.as_ref().display(),
+    eprintln!(
+        "Setting file size to {}{}",
         file_size,
         if req_file_size.is_some() {
             ""
@@ -550,20 +552,21 @@ fn vhdfiledisk_create(
             " (default)"
         }
     );
-
     file.set_len(file_size).map_err(Error::VmgsFile)?;
 
+    eprintln!("Formatting VHD");
     Vhd1Disk::make_fixed(file.file()).map_err(Error::Vhd1)?;
     let disk = Vhd1Disk::open_fixed(file.into(), false).map_err(Error::Vhd1)?;
     Disk::new(disk).map_err(Error::InvalidDisk)
 }
 
-#[cfg_attr(not(with_encryption), allow(unused_mut), allow(unused_variables))]
+#[cfg_attr(not(with_encryption), expect(unused_mut), expect(unused_variables))]
 async fn vmgs_create(
     disk: Disk,
     encryption_alg_key: Option<(EncryptionAlgorithm, &[u8])>,
 ) -> Result<Vmgs, Error> {
-    let mut vmgs = Vmgs::format_new(disk).await?;
+    eprintln!("Formatting VMGS");
+    let mut vmgs = Vmgs::format_new(disk, None).await?;
 
     if let Some((algorithm, encryption_key)) = encryption_alg_key {
         #[cfg(with_encryption)]
@@ -585,12 +588,9 @@ async fn vmgs_file_write(
     key_path: Option<impl AsRef<Path>>,
     allow_overwrite: bool,
 ) -> Result<(), Error> {
-    println!("Source (Raw data file): {}", data_path.as_ref().display());
-    println!(
-        "Destination (VMGS file): {}, File ID: {} ({:?})",
-        file_path.as_ref().display(),
-        file_id.0,
-        file_id
+    eprintln!(
+        "Opening source (raw data file): {}",
+        data_path.as_ref().display()
     );
 
     let mut file = File::open(data_path.as_ref()).map_err(Error::DataFile)?;
@@ -600,14 +600,13 @@ async fn vmgs_file_write(
     // accessible, and a read operation failing
     file.read_to_end(&mut buf).map_err(Error::DataFile)?;
 
-    println!("Size: {} bytes", buf.len());
+    eprintln!("Read {} bytes", buf.len());
 
     let encrypt = key_path.is_some();
     let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadWrite, false).await?;
 
     vmgs_write(&mut vmgs, file_id, &buf, encrypt, allow_overwrite).await?;
 
-    println!("Done!");
     Ok(())
 }
 
@@ -618,6 +617,8 @@ async fn vmgs_write(
     encrypt: bool,
     allow_overwrite: bool,
 ) -> Result<(), Error> {
+    eprintln!("Writing File ID {} ({:?})", file_id.0, file_id);
+
     if !allow_overwrite {
         if let Ok(info) = vmgs.get_file_info(file_id) {
             if info.valid_bytes > 0 {
@@ -647,30 +648,23 @@ async fn vmgs_file_read(
     key_path: Option<impl AsRef<Path>>,
     raw_stdout: bool,
 ) -> Result<(), Error> {
-    eprintln!(
-        "Source (VMGS file): {}, File ID: {} ({:?})",
-        file_path.as_ref().display(),
-        file_id.0,
-        file_id
-    );
-
     let decrypt = key_path.is_some();
     let mut vmgs = vmgs_file_open(file_path, key_path, OpenMode::ReadOnly, true).await?;
 
     let buf = vmgs_read(&mut vmgs, file_id, decrypt).await?;
 
-    eprintln!("Size: {} bytes", buf.len());
+    eprintln!("Read {} bytes", buf.len());
     let data_size = vmgs.get_file_info(file_id)?.valid_bytes as usize;
     if buf.len() != data_size {
         eprintln!("Warning: Bytes read from VMGS doesn't match file info");
     }
 
     if let Some(path) = data_path {
-        eprintln!("Destination (Raw data file): {}", path.as_ref().display());
+        eprintln!("Writing contents to {}", path.as_ref().display());
         let mut file = File::create(path.as_ref()).map_err(Error::DataFile)?;
         file.write_all(&buf).map_err(Error::DataFile)?;
     } else {
-        eprintln!("Destination: Console");
+        eprintln!("Writing contents to stdout");
         if raw_stdout {
             let mut stdout = std::io::stdout();
             stdout.write_all(&buf).map_err(Error::DataFile)?;
@@ -695,11 +689,11 @@ async fn vmgs_file_read(
         }
     }
 
-    eprintln!("Done!");
     Ok(())
 }
 
 async fn vmgs_read(vmgs: &mut Vmgs, file_id: FileId, decrypt: bool) -> Result<Vec<u8>, Error> {
+    eprintln!("Reading File ID {} ({:?})", file_id.0, file_id);
     Ok(if decrypt {
         vmgs.read_file(file_id).await?
     } else {
@@ -901,6 +895,7 @@ async fn vmgs_file_open(
     open_mode: OpenMode,
     encrypted_no_key_ok: bool,
 ) -> Result<Vmgs, Error> {
+    eprintln!("Opening VMGS File: {}", file_path.as_ref().display());
     let file = fs_err::OpenOptions::new()
         .read(true)
         .write(open_mode == OpenMode::ReadWrite)
@@ -929,13 +924,13 @@ async fn vmgs_file_open(
     res
 }
 
-#[cfg_attr(not(with_encryption), allow(unused_mut), allow(unused_variables))]
+#[cfg_attr(not(with_encryption), expect(unused_mut), expect(unused_variables))]
 async fn vmgs_open(
     disk: Disk,
     encryption_key: Option<&[u8]>,
     encrypted_no_key_ok: bool,
 ) -> Result<Vmgs, Error> {
-    let mut vmgs: Vmgs = Vmgs::open(disk).await?;
+    let mut vmgs: Vmgs = Vmgs::open(disk, None).await?;
 
     if let Some(encryption_key) = encryption_key {
         #[cfg(with_encryption)]
@@ -958,6 +953,7 @@ async fn vmgs_open(
 }
 
 fn read_key_path(path: impl AsRef<Path>) -> Result<Vec<u8>, Error> {
+    eprintln!("Reading encryption key: {}", path.as_ref().display());
     let metadata = fs_err::metadata(&path).map_err(Error::KeyFile)?;
     if metadata.len() != VMGS_ENCRYPTION_KEY_SIZE as u64 {
         return Err(Error::InvalidKeySize(

@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![forbid(unsafe_code)]
 
 pub mod protocol;
@@ -9,10 +10,10 @@ use futures::FutureExt;
 use futures::StreamExt;
 use guid::Guid;
 use inspect::Inspect;
-use protocol::MessageHeader;
-use protocol::VmbusMessage;
 use protocol::HEADER_SIZE;
 use protocol::MAX_MESSAGE_SIZE;
+use protocol::MessageHeader;
+use protocol::VmbusMessage;
 use std::future::Future;
 use std::str::FromStr;
 use std::task::Poll;
@@ -186,14 +187,6 @@ impl PartialEq for OutgoingMessage {
 #[derive(Debug, Error)]
 #[error("a synic message exceeds the maximum length")]
 pub struct MessageTooLarge;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Inspect)]
-pub struct MonitorPageGpas {
-    #[inspect(hex)]
-    pub parent_to_child: u64,
-    #[inspect(hex)]
-    pub child_to_parent: u64,
-}
 
 /// A request from the guest to connect to the specified hvsocket endpoint.
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Inspect)]

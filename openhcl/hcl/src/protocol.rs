@@ -3,17 +3,11 @@
 
 //! Structures and definitions used between the underhill kernel and HvLite.
 
-#![allow(dead_code)]
-#![allow(
-    non_upper_case_globals,
-    clippy::upper_case_acronyms,
-    non_camel_case_types,
-    missing_docs
-)]
+#![expect(non_camel_case_types, missing_docs)]
 
 use bitfield_struct::bitfield;
-use hvdef::hypercall::HvInputVtl;
 use hvdef::HV_MESSAGE_SIZE;
+use hvdef::hypercall::HvInputVtl;
 use libc::c_void;
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -281,3 +275,21 @@ pub struct tdx_vp_context {
 
 const _: () = assert!(core::mem::offset_of!(tdx_vp_context, gpr_list) + 272 == 512);
 const _: () = assert!(size_of::<tdx_vp_context>() == 1024);
+
+#[bitfield(u64)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct hcl_kick_cpus_flags {
+    #[bits(1)]
+    pub wait_for_other_cpus: bool,
+    #[bits(1)]
+    pub cancel_run: bool,
+    #[bits(62)]
+    reserved: u64,
+}
+
+#[repr(C)]
+pub struct hcl_kick_cpus {
+    pub len: u64,
+    pub cpu_mask: *const u8,
+    pub flags: hcl_kick_cpus_flags,
+}

@@ -13,8 +13,8 @@ use clap::CommandFactory;
 use clap::FromArgMatches;
 use clap::Parser;
 use clap::ValueEnum;
-use futures::executor::block_on;
 use futures::StreamExt;
+use futures::executor::block_on;
 use hyperv::run_hvc;
 use mesh::rpc::RpcSend;
 use pal_async::DefaultDriver;
@@ -94,6 +94,13 @@ pub(crate) enum VmCommand {
         port: Option<u32>,
         /// The serial output mode.
         mode: Option<SerialMode>,
+    },
+
+    /// Injects an NMI.
+    Nmi {
+        /// The target VTL.
+        #[clap(long, default_value = "0")]
+        vtl: u32,
     },
 }
 
@@ -179,14 +186,24 @@ pub(crate) enum InspectTarget {
 struct CommandLine {
     /// The initial VM name. Use select to change the active VM.
     vm: Option<String>,
+
     #[clap(long, hide(true))]
     relay_console_path: Option<PathBuf>,
+
+    #[clap(long, hide(true))]
+    relay_console_title: Option<String>,
 }
 
 pub async fn main(driver: DefaultDriver) -> anyhow::Result<()> {
     let command_line = CommandLine::parse();
     if let Some(relay_console_path) = command_line.relay_console_path {
-        return console_relay::relay_console(&relay_console_path);
+        return console_relay::relay_console(
+            &relay_console_path,
+            command_line
+                .relay_console_title
+                .unwrap_or("Hypestv".to_owned())
+                .as_ref(),
+        );
     }
 
     let mut rl = rustyline::Editor::<_, rustyline::history::FileHistory>::with_config(
@@ -255,9 +272,17 @@ pub async fn main(driver: DefaultDriver) -> anyhow::Result<()> {
 
     std::thread::spawn(move || {
         while let Ok(prompt) = block_on(send.call(Request::Prompt, ())) {
-            let Ok(line) = rl.readline(&prompt) else {
-                break;
+            let line = match rl.readline(&prompt) {
+                Ok(line) => line,
+                Err(rustyline::error::ReadlineError::Interrupted) => {
+                    // On CTRL+C, ignore the current line
+                    continue;
+                }
+                Err(_) => {
+                    break;
+                }
             };
+
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
@@ -300,7 +325,7 @@ pub async fn main(driver: DefaultDriver) -> anyhow::Result<()> {
             }),
             Request::Inspect(rpc) => {
                 let vm = &mut vm;
-                rpc.handle(|(target, path)| async move {
+                rpc.handle(async |(target, path)| {
                     vm.as_mut()
                         .context("no active VM")?
                         .handle_inspect(target, &path)
@@ -309,7 +334,7 @@ pub async fn main(driver: DefaultDriver) -> anyhow::Result<()> {
                 .await
             }
             Request::Command(rpc) => {
-                rpc.handle(|cmd| async {
+                rpc.handle(async |cmd| {
                     match cmd {
                         InteractiveCommand::Detach => {
                             vm = None;

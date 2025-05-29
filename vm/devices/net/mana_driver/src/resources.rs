@@ -6,8 +6,8 @@ use crate::gdma_driver::GdmaDriver;
 use gdma_defs::GdmaDevId;
 use gdma_defs::GdmaQueueType;
 use std::mem::ManuallyDrop;
-use user_driver::memory::MemoryBlock;
 use user_driver::DeviceBacking;
+use user_driver::memory::MemoryBlock;
 
 /// A list of allocated device resources.
 ///

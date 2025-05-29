@@ -3,6 +3,8 @@
 
 //! Provides build metadata
 
+#![expect(missing_docs)]
+
 use inspect::Inspect;
 
 #[derive(Debug, Inspect)]

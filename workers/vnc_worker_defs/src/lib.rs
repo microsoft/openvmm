@@ -1,6 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
+#![forbid(unsafe_code)]
+
 use mesh::MeshPayload;
 use mesh_worker::WorkerId;
 use std::net::TcpListener;

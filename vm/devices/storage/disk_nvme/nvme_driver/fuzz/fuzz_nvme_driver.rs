@@ -14,17 +14,18 @@ use nvme::NvmeControllerCaps;
 use nvme_driver::Namespace;
 use nvme_driver::NvmeDriver;
 use nvme_spec::nvm::DsmRange;
+use page_pool_alloc::PagePoolAllocator;
 use pal_async::DefaultDriver;
 use pci_core::msi::MsiInterruptSet;
 use scsi_buffers::OwnedRequestBuffers;
 use std::convert::TryFrom;
-use user_driver::emulated::DeviceSharedMemory;
+use user_driver_emulated_mock::DeviceTestMemory;
 use vmcore::vm_task::SingleDriverBackend;
 use vmcore::vm_task::VmTaskDriverSource;
 
 /// Nvme driver fuzzer
 pub struct FuzzNvmeDriver {
-    driver: Option<NvmeDriver<FuzzEmulatedDevice<NvmeController>>>,
+    driver: Option<NvmeDriver<FuzzEmulatedDevice<NvmeController, PagePoolAllocator>>>,
     namespace: Namespace,
     payload_mem: GuestMemory,
     cpu_count: u32,
@@ -34,15 +35,11 @@ impl FuzzNvmeDriver {
     /// Setup a new nvme driver with a fuzz-enabled backend device.
     pub async fn new(driver: DefaultDriver) -> Result<Self, anyhow::Error> {
         let cpu_count = 64; // TODO: [use-arbitrary-input]
-        let base_len = 64 << 20; // 64MB TODO: [use-arbitrary-input]
-        let payload_len = 1 << 20; // 1MB TODO: [use-arbitrary-input]
-        let mem = DeviceSharedMemory::new(base_len, payload_len);
+        let pages = 512; // 2MB TODO: [use-arbitrary-input]
+        let mem = DeviceTestMemory::new(pages, false, "fuzz_nvme_driver");
 
         // Trasfer buffer
-        let payload_mem = mem
-            .guest_memory()
-            .subrange(base_len as u64, payload_len as u64, false)
-            .unwrap();
+        let payload_mem = mem.guest_memory();
 
         // Nvme device and driver setup
         let driver_source = VmTaskDriverSource::new(SingleDriverBackend::new(driver));
@@ -66,8 +63,8 @@ impl FuzzNvmeDriver {
             .await
             .unwrap();
 
-        let device = FuzzEmulatedDevice::new(nvme, msi_set, mem);
-        let nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device).await?; // TODO: [use-arbitrary-input]
+        let device = FuzzEmulatedDevice::new(nvme, msi_set, mem.dma_client());
+        let nvme_driver = NvmeDriver::new(&driver_source, cpu_count, device, false).await?; // TODO: [use-arbitrary-input]
         let namespace = nvme_driver.namespace(1).await?; // TODO: [use-arbitrary-input]
 
         Ok(Self {

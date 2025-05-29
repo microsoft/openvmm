@@ -6,8 +6,6 @@
 //!
 //! This is useful for testing.
 
-use crate::linearize;
-use crate::packet_count;
 use crate::BufferAccess;
 use crate::Endpoint;
 use crate::MultiQueueSupport;
@@ -16,8 +14,11 @@ use crate::QueueConfig;
 use crate::RssConfig;
 use crate::RxId;
 use crate::RxMetadata;
+use crate::TxError;
 use crate::TxId;
 use crate::TxSegment;
+use crate::linearize;
+use crate::packet_count;
 use async_trait::async_trait;
 use inspect::InspectMut;
 use std::collections::VecDeque;
@@ -125,7 +126,7 @@ impl Queue for LoopbackQueue {
         Ok((true, sent))
     }
 
-    fn tx_poll(&mut self, _done: &mut [TxId]) -> anyhow::Result<usize> {
+    fn tx_poll(&mut self, _done: &mut [TxId]) -> Result<usize, TxError> {
         Ok(0)
     }
 

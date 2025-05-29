@@ -1,19 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use anyhow::Context;
-use guid::Guid;
 use inspect::Inspect;
-use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
-use state_unit::run_async_unit;
 use state_unit::NameInUse;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnit;
 use state_unit::UnitBuilder;
+use state_unit::run_async_unit;
 use vmbus_relay::HostVmbusTransport;
-use vmbus_relay::InterceptChannelRequest;
-use vmbus_relay::RequestFromHandle;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SavedStateBlob;
@@ -23,7 +18,6 @@ use vmcore::save_restore::SavedStateBlob;
 /// FUTURE: incorporate the state unit handling directly into [`HostVmbusTransport`].
 pub struct VmbusRelayHandle {
     unit: SpawnedUnit<VmbusRelayUnit>,
-    relay_send: mesh::Sender<RequestFromHandle>,
 }
 
 impl VmbusRelayHandle {
@@ -31,27 +25,15 @@ impl VmbusRelayHandle {
     pub fn new(
         spawner: &impl Spawn,
         builder: UnitBuilder<'_>,
-        mut relay: HostVmbusTransport,
+        relay: HostVmbusTransport,
     ) -> Result<Self, NameInUse> {
-        let relay_send = relay.take_handle_sender();
         let unit = builder.spawn(spawner, |recv| run_async_unit(VmbusRelayUnit(relay), recv))?;
-        Ok(Self { unit, relay_send })
+        Ok(Self { unit })
     }
 
     /// Tears down the vmbus relay, leaving any host state untouched.
     pub async fn teardown(self) {
         self.unit.remove().await;
-    }
-
-    pub async fn intercept_channel(
-        &self,
-        id: Guid,
-        send: mesh::Sender<InterceptChannelRequest>,
-    ) -> anyhow::Result<()> {
-        self.relay_send
-            .call(RequestFromHandle::AddIntercept, (id, send))
-            .await
-            .context("failed to make call")?
     }
 }
 
@@ -82,9 +64,5 @@ impl StateUnit for &'_ VmbusRelayUnit {
             .restore(state.parse()?)
             .await
             .map_err(RestoreError::Other)
-    }
-
-    async fn post_restore(&mut self) -> anyhow::Result<()> {
-        Ok(())
     }
 }

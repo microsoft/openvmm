@@ -4,9 +4,9 @@
 //! Per-VM state.
 
 use super::X86PartitionCapabilities;
-use crate::state::state_trait;
 use crate::state::HvRegisterState;
 use crate::state::StateElement;
+use crate::state::state_trait;
 use hvdef::HvRegisterValue;
 use hvdef::HvX64RegisterName;
 use inspect::Inspect;

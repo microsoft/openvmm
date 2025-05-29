@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#![expect(missing_docs)]
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))] // xtask-fmt allow-target-arch sys-crate
 
 //! A hypervisor backend using macos's Hypervisor framework.
@@ -13,15 +14,15 @@ mod hypercall;
 mod vp_state;
 
 use crate::hypercall::HvfHypercallHandler;
-use aarch64defs::psci::FastCall;
-use aarch64defs::psci::PsciCall;
-use aarch64defs::psci::PsciError;
-use aarch64defs::psci::PSCI;
 use aarch64defs::Cpsr64;
 use aarch64defs::ExceptionClass;
 use aarch64defs::IssDataAbort;
 use aarch64defs::IssSystem;
 use aarch64defs::MpidrEl1;
+use aarch64defs::psci::FastCall;
+use aarch64defs::psci::PSCI;
+use aarch64defs::psci::PsciCall;
+use aarch64defs::psci::PsciError;
 use abi::HvfError;
 use anyhow::Context;
 use guestmem::GuestMemory;
@@ -40,29 +41,32 @@ use std::future::poll_fn;
 use std::ops::Deref;
 use std::ops::Range;
 use std::ptr::null_mut;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Weak;
-use std::task::ready;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 use std::task::Poll;
 use std::task::Waker;
+use std::task::ready;
 use std::time::Duration;
 use thiserror::Error;
-use virt::aarch64::vm::AccessVmState;
-use virt::aarch64::Aarch64PartitionCapabilities;
-use virt::io::CpuIo;
-use virt::state::StateElement;
-use virt::vp::AccessVpState;
 use virt::BindProcessor;
 use virt::NeedsYield;
 use virt::Processor;
 use virt::StopVp;
 use virt::VpHaltReason;
 use virt::VpIndex;
+use virt::aarch64::Aarch64PartitionCapabilities;
+use virt::aarch64::vm::AccessVmState;
+use virt::io::CpuIo;
+use virt::state::StateElement;
+use virt::vp::AccessVpState;
 use virt_support_gic as gic;
 use vm_topology::processor::aarch64::Aarch64VpInfo;
 use vmcore::interrupt::Interrupt;
+use vmcore::reference_time::GetReferenceTime;
+use vmcore::reference_time::ReferenceTimeResult;
+use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::synic::GuestEventPort;
 use vmcore::vmtime::VmTimeAccess;
 
@@ -119,7 +123,10 @@ impl virt::ProtoPartition for HvfProtoPartition<'_> {
         // SAFETY: no safety requirements.
         unsafe { abi::hv_vm_create(null_mut()) }.chk()?;
 
-        let hv1 = HvfHv1State::new(self.config.processor_topology.vp_count());
+        let hv1 = HvfHv1State::new(
+            config.guest_memory.clone(),
+            self.config.processor_topology.vp_count(),
+        );
         let hv1_vps = self
             .config
             .processor_topology
@@ -245,6 +252,12 @@ impl virt::Hv1 for HvfPartition {
     type Error = Error;
     type Device = virt::aarch64::gic_software_device::GicSoftwareDevice;
 
+    fn reference_time_source(&self) -> Option<ReferenceTimeSource> {
+        Some(ReferenceTimeSource::from(
+            self.inner.clone() as Arc<dyn GetReferenceTime>
+        ))
+    }
+
     fn new_virtual_device(
         &self,
     ) -> Option<&dyn virt::DeviceBuilder<Device = Self::Device, Error = Self::Error>> {
@@ -257,6 +270,15 @@ impl virt::DeviceBuilder for HvfPartition {
         Ok(virt::aarch64::gic_software_device::GicSoftwareDevice::new(
             self.inner.clone(),
         ))
+    }
+}
+
+impl GetReferenceTime for HvfPartitionInner {
+    fn now(&self) -> ReferenceTimeResult {
+        ReferenceTimeResult {
+            ref_time: self.vmtime.now().as_100ns(),
+            system_time: None,
+        }
     }
 }
 
@@ -282,10 +304,20 @@ impl virt::Synic for HvfPartition {
         }
     }
 
-    fn new_guest_event_port(&self) -> Box<dyn GuestEventPort> {
+    fn new_guest_event_port(
+        &self,
+        _vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Box<dyn GuestEventPort> {
         Box::new(HvfEventPort {
             partition: Arc::downgrade(&self.inner),
-            params: Default::default(),
+            params: Arc::new(RwLock::new(HvfEventPortParams {
+                vp: VpIndex::new(vp),
+                sint,
+                flag,
+            })),
         })
     }
 
@@ -296,7 +328,13 @@ impl virt::Synic for HvfPartition {
 
 struct HvfEventPort {
     partition: Weak<HvfPartitionInner>,
-    params: Arc<RwLock<Option<(VpIndex, u8, u16)>>>,
+    params: Arc<RwLock<HvfEventPortParams>>,
+}
+
+struct HvfEventPortParams {
+    vp: VpIndex,
+    sint: u8,
+    flag: u16,
 }
 
 impl GuestEventPort for HvfEventPort {
@@ -306,36 +344,23 @@ impl GuestEventPort for HvfEventPort {
         Interrupt::from_fn(move || {
             if let Some(partition) = partition.upgrade() {
                 let params = params.read();
-                if let Some((vp, sint, flag)) = *params {
-                    let _ = partition.hv1.synic.signal_event(
-                        &partition.guest_memory,
-                        vp,
-                        sint,
-                        flag,
-                        &mut |vector, _auto_eoi| {
+                let HvfEventPortParams { vp, sint, flag } = *params;
+                let _ =
+                    partition
+                        .hv1
+                        .synic
+                        .signal_event(vp, sint, flag, &mut |vector, _auto_eoi| {
                             if partition.gicd.raise_ppi(vp, vector) {
                                 tracing::debug!(vector, "ppi from event");
                                 partition.vps[vp.index() as usize].wake();
                             }
-                        },
-                    );
-                }
+                        });
             }
         })
     }
 
-    fn clear(&mut self) {
-        *self.params.write() = None;
-    }
-
-    fn set(
-        &mut self,
-        _vtl: Vtl,
-        vp: u32,
-        sint: u8,
-        flag: u16,
-    ) -> Result<(), vmcore::synic::HypervisorError> {
-        *self.params.write() = Some((VpIndex::new(vp), sint, flag));
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
+        self.params.write().vp = VpIndex::new(vp);
         Ok(())
     }
 }
@@ -437,10 +462,10 @@ struct HvfHv1State {
 }
 
 impl HvfHv1State {
-    fn new(max_vp_count: u32) -> Self {
+    fn new(guest_memory: GuestMemory, max_vp_count: u32) -> Self {
         Self {
             guest_os_id: 0.into(),
-            synic: GlobalSynic::new(max_vp_count),
+            synic: GlobalSynic::new(guest_memory, max_vp_count),
         }
     }
 }
@@ -675,12 +700,10 @@ impl HvfProcessor<'_> {
         self.inner
             .message_queues
             .post_pending_messages(sints, |sint, message| {
-                self.hv1.post_message(
-                    &self.partition.guest_memory,
-                    sint,
-                    message,
-                    &mut |vector, _auto_eoi| self.gicr.raise(vector),
-                )
+                self.hv1
+                    .post_message(sint, message, &mut |vector, _auto_eoi| {
+                        self.gicr.raise(vector)
+                    })
             });
     }
 
@@ -774,87 +797,86 @@ impl<'p> Processor for HvfProcessor<'p> {
         loop {
             self.inner.needs_yield.maybe_yield().await;
 
-            poll_fn(|cx| loop {
-                stop.check()?;
+            poll_fn(|cx| {
+                loop {
+                    stop.check()?;
 
-                if !last_waker
-                    .as_ref()
-                    .is_some_and(|waker| cx.waker().will_wake(waker))
-                {
-                    last_waker = Some(cx.waker().clone());
-                    self.inner.waker.write().clone_from(&last_waker);
-                }
-
-                if let Some(cpu_on) = self.inner.cpu_on.lock().take() {
-                    if self.on {
-                        todo!("block this");
-                    } else {
-                        tracing::debug!(x0 = cpu_on.x0, pc = cpu_on.pc, "cpu on");
-                        self.vcpu.set_gp(0, cpu_on.x0).unwrap();
-                        self.vcpu.set_reg(abi::HvReg::PC, cpu_on.pc).unwrap();
-                        self.on = true;
+                    if !last_waker
+                        .as_ref()
+                        .is_some_and(|waker| cx.waker().will_wake(waker))
+                    {
+                        last_waker = Some(cx.waker().clone());
+                        self.inner.waker.write().clone_from(&last_waker);
                     }
-                }
 
-                if !self.on {
-                    break Poll::Pending;
-                }
-
-                self.hv1
-                    .request_sint_readiness(self.inner.message_queues.pending_sints());
-
-                let ref_time_now = self.vmtime.now().as_100ns();
-                let (ready_sints, next_ref_time) = self.hv1.scan(
-                    ref_time_now,
-                    &self.partition.guest_memory,
-                    &mut |ppi, _auto_eoi| {
-                        tracing::debug!(ppi, "ppi from message");
-                        self.gicr.raise(ppi);
-                    },
-                );
-
-                if let Some(next_ref_time) = next_ref_time {
-                    // Convert from reference timer basis to vmtime basis via
-                    // difference of programmed timer and current reference time.
-                    const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
-                    let ref_diff = next_ref_time.saturating_sub(ref_time_now);
-                    let ref_duration = Duration::new(
-                        ref_diff / NUM_100NS_IN_SEC,
-                        (ref_diff % NUM_100NS_IN_SEC) as u32 * 100,
-                    );
-                    let timeout = self.vmtime.now().wrapping_add(ref_duration);
-                    self.vmtime.set_timeout_if_before(timeout);
-                }
-
-                if ready_sints != 0 {
-                    self.deliver_sints(ready_sints);
-                    continue;
-                }
-
-                if self.partition.gicd.irq_pending(&self.gicr) {
-                    // SAFETY: no requirements.
-                    unsafe {
-                        abi::hv_vcpu_set_pending_interrupt(
-                            self.vcpu.vcpu,
-                            abi::HvInterruptType::IRQ,
-                            true,
-                        )
+                    if let Some(cpu_on) = self.inner.cpu_on.lock().take() {
+                        if self.on {
+                            todo!("block this");
+                        } else {
+                            tracing::debug!(x0 = cpu_on.x0, pc = cpu_on.pc, "cpu on");
+                            self.vcpu.set_gp(0, cpu_on.x0).unwrap();
+                            self.vcpu.set_reg(abi::HvReg::PC, cpu_on.pc).unwrap();
+                            self.on = true;
+                        }
                     }
-                    .chk()
-                    .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
-                    self.wfi = false;
-                }
 
-                if self.wfi {
-                    self.vmtime.set_timeout_if_before(
-                        self.vmtime.now().wrapping_add(Duration::from_millis(2)),
-                    );
-                    ready!(self.vmtime.poll_timeout(cx));
-                    self.gicr.raise(PPI_VTIMER);
-                    continue;
-                }
+                    if !self.on {
+                        break Poll::Pending;
+                    }
 
-                break Poll::Ready(Result::<_, VpHaltReason<_>>::Ok(()));
+                    self.hv1
+                        .request_sint_readiness(self.inner.message_queues.pending_sints());
+
+                    let ref_time_now = self.vmtime.now().as_100ns();
+                    let (ready_sints, next_ref_time) =
+                        self.hv1.scan(ref_time_now, &mut |ppi, _auto_eoi| {
+                            tracing::debug!(ppi, "ppi from message");
+                            self.gicr.raise(ppi);
+                        });
+
+                    if let Some(next_ref_time) = next_ref_time {
+                        // Convert from reference timer basis to vmtime basis via
+                        // difference of programmed timer and current reference time.
+                        const NUM_100NS_IN_SEC: u64 = 10 * 1000 * 1000;
+                        let ref_diff = next_ref_time.saturating_sub(ref_time_now);
+                        let ref_duration = Duration::new(
+                            ref_diff / NUM_100NS_IN_SEC,
+                            (ref_diff % NUM_100NS_IN_SEC) as u32 * 100,
+                        );
+                        let timeout = self.vmtime.now().wrapping_add(ref_duration);
+                        self.vmtime.set_timeout_if_before(timeout);
+                    }
+
+                    if ready_sints != 0 {
+                        self.deliver_sints(ready_sints);
+                        continue;
+                    }
+
+                    if self.partition.gicd.irq_pending(&self.gicr) {
+                        // SAFETY: no requirements.
+                        unsafe {
+                            abi::hv_vcpu_set_pending_interrupt(
+                                self.vcpu.vcpu,
+                                abi::HvInterruptType::IRQ,
+                                true,
+                            )
+                        }
+                        .chk()
+                        .map_err(|err| VpHaltReason::Hypervisor(err.into()))?;
+                        self.wfi = false;
+                    }
+
+                    if self.wfi {
+                        self.vmtime.set_timeout_if_before(
+                            self.vmtime.now().wrapping_add(Duration::from_millis(2)),
+                        );
+                        ready!(self.vmtime.poll_timeout(cx));
+                        self.gicr.raise(PPI_VTIMER);
+                        continue;
+                    }
+
+                    break Poll::Ready(Result::<_, VpHaltReason<_>>::Ok(()));
+                }
             })
             .await?;
 

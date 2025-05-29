@@ -3,23 +3,24 @@
 
 //! Backing for non-hardware-isolated X64 partitions.
 
-use super::private::BackingPrivate;
 use super::BackingState;
 use super::Error;
 use super::GuestVtl;
+use super::Hcl;
 use super::HclVp;
 use super::NoRunner;
 use super::ProcessorRunner;
 use super::TranslateGvaToGpaError;
 use super::TranslateResult;
+use super::private::BackingPrivate;
 use crate::protocol::hcl_cpu_context_x64;
+use hvdef::HV_PARTITION_ID_SELF;
+use hvdef::HV_VP_INDEX_SELF;
 use hvdef::HvRegisterName;
 use hvdef::HvRegisterValue;
 use hvdef::HvX64RegisterName;
 use hvdef::HvX64RegisterPage;
 use hvdef::HypercallCode;
-use hvdef::HV_PARTITION_ID_SELF;
-use hvdef::HV_VP_INDEX_SELF;
 use sidecar_client::SidecarVp;
 use std::cell::UnsafeCell;
 use zerocopy::FromZeros;
@@ -51,7 +52,7 @@ pub struct MshvX64<'a> {
     cpu_context: &'a UnsafeCell<hcl_cpu_context_x64>,
 }
 
-impl ProcessorRunner<'_, MshvX64<'_>> {
+impl<'a> ProcessorRunner<'a, MshvX64<'a>> {
     fn reg_page(&self) -> Option<&HvX64RegisterPage> {
         // SAFETY: the register page will not be concurrently accessed by the
         // hypervisor while this VP is in VTL2.
@@ -169,8 +170,8 @@ impl ProcessorRunner<'_, MshvX64<'_>> {
 }
 
 impl<'a> BackingPrivate<'a> for MshvX64<'a> {
-    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>) -> Result<Self, NoRunner> {
-        let BackingState::Mshv { reg_page } = &vp.backing else {
+    fn new(vp: &'a HclVp, sidecar: Option<&SidecarVp<'a>>, _hcl: &Hcl) -> Result<Self, NoRunner> {
+        let BackingState::MshvX64 { reg_page } = &vp.backing else {
             return Err(NoRunner::MismatchedIsolation);
         };
 
@@ -197,7 +198,7 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
     }
 
     fn try_set_reg(
-        runner: &mut ProcessorRunner<'_, Self>,
+        runner: &mut ProcessorRunner<'a, Self>,
         vtl: GuestVtl,
         name: HvRegisterName,
         value: HvRegisterValue,
@@ -258,17 +259,17 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
                     HvX64RegisterName::Rsp => {
                         reg_page.gp_registers[(name.0 - HvX64RegisterName::Rax.0) as usize] =
                             value.as_u64();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_GENERAL;
+                        reg_page.dirty.set_general_purpose(true);
                         true
                     }
                     HvX64RegisterName::Rip => {
                         reg_page.rip = value.as_u64();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_IP;
+                        reg_page.dirty.set_instruction_pointer(true);
                         true
                     }
                     HvX64RegisterName::Rflags => {
                         reg_page.rflags = value.as_u64();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_FLAGS;
+                        reg_page.dirty.set_flags(true);
                         true
                     }
                     HvX64RegisterName::Es
@@ -279,7 +280,7 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
                     | HvX64RegisterName::Gs => {
                         reg_page.segment[(name.0 - HvX64RegisterName::Es.0) as usize] =
                             value.as_u128();
-                        reg_page.dirty |= 1 << hvdef::HV_X64_REGISTER_CLASS_SEGMENT;
+                        reg_page.dirty.set_segments(true);
                         true
                     }
 
@@ -301,7 +302,7 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
         Ok(false)
     }
 
-    fn must_flush_regs_on(runner: &ProcessorRunner<'_, Self>, name: HvRegisterName) -> bool {
+    fn must_flush_regs_on(runner: &ProcessorRunner<'a, Self>, name: HvRegisterName) -> bool {
         // Updating rflags must be ordered with other registers in a batch,
         // since it may affect the validity other interrupt-related registers.
         matches!(HvX64RegisterName::from(name), HvX64RegisterName::Rflags)
@@ -309,7 +310,7 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
     }
 
     fn try_get_reg(
-        runner: &ProcessorRunner<'_, Self>,
+        runner: &ProcessorRunner<'a, Self>,
         vtl: GuestVtl,
         name: HvRegisterName,
     ) -> Result<Option<HvRegisterValue>, Error> {
@@ -401,5 +402,55 @@ impl<'a> BackingPrivate<'a> for MshvX64<'a> {
         }
 
         Ok(None)
+    }
+
+    fn flush_register_page(runner: &mut ProcessorRunner<'a, Self>) {
+        let Some(reg_page) = runner.reg_page_mut() else {
+            return;
+        };
+
+        // Collect any dirty registers.
+        let mut regs: Vec<(HvX64RegisterName, HvRegisterValue)> = Vec::new();
+        if reg_page.dirty.instruction_pointer() {
+            regs.push((HvX64RegisterName::Rip, reg_page.rip.into()));
+        }
+        if reg_page.dirty.general_purpose() {
+            regs.push((
+                HvX64RegisterName::Rsp,
+                reg_page.gp_registers
+                    [(HvX64RegisterName::Rsp.0 - HvX64RegisterName::Rax.0) as usize]
+                    .into(),
+            ));
+        }
+        if reg_page.dirty.flags() {
+            regs.push((HvX64RegisterName::Rflags, reg_page.rflags.into()));
+        }
+        if reg_page.dirty.segments() {
+            let segment_regs = reg_page
+                .segment
+                .iter()
+                .copied()
+                .enumerate()
+                .map(|(i, val)| {
+                    (
+                        HvX64RegisterName::from(HvRegisterName(HvX64RegisterName::Es.0 + i as u32)),
+                        HvRegisterValue::from(val),
+                    )
+                });
+            regs.extend(segment_regs);
+        }
+
+        // Disable the reg page so future writes do not use it (until the state
+        // is reset at the next VTL transition).
+        reg_page.is_valid = 0;
+        reg_page.dirty = 0.into();
+
+        // Set the registers now that the register page is marked invalid.
+        if let Err(err) = runner.set_vp_registers(GuestVtl::Vtl0, regs.as_slice()) {
+            panic!(
+                "Failed to flush register page: {}",
+                &err as &dyn std::error::Error
+            );
+        }
     }
 }

@@ -6,10 +6,10 @@ use crate::WhpPartition;
 use crate::WhpPartitionAndVtl;
 use crate::WhpPartitionInner;
 use guestmem::DoorbellRegistration;
+use hvdef::HV_PAGE_SIZE_USIZE;
 use hvdef::HvError;
 use hvdef::HvMessageType;
 use hvdef::Vtl;
-use hvdef::HV_PAGE_SIZE_USIZE;
 use pal_event::Event;
 use parking_lot::Mutex;
 use sparse_mmap::alloc::Allocation;
@@ -85,8 +85,14 @@ impl virt::Synic for WhpPartition {
             .post_message(vtl, vp, sint, HvMessageType(typ), payload);
     }
 
-    fn new_guest_event_port(&self) -> Box<dyn GuestEventPort> {
-        match &self.inner.vtl0.hvstate {
+    fn new_guest_event_port(
+        &self,
+        vtl: Vtl,
+        vp: u32,
+        sint: u8,
+        flag: u16,
+    ) -> Box<dyn GuestEventPort> {
+        match &self.inner.hvstate {
             Hv1State::Offloaded | Hv1State::Disabled => {
                 if self.inner.vtl2.is_none() {
                     let (trigger, event) = self
@@ -94,9 +100,9 @@ impl virt::Synic for WhpPartition {
                         .vtl0
                         .whp
                         .create_trigger(whp::TriggerParameters::SynicEvent {
-                            vp_index: !0,
-                            sint: 0,
-                            flag: 0,
+                            vp_index: vp,
+                            sint,
+                            flag,
                         })
                         .expect("oom creating trigger");
 
@@ -104,17 +110,29 @@ impl virt::Synic for WhpPartition {
                         partition: Arc::downgrade(&self.inner),
                         trigger: Some(trigger),
                         event: event.into(),
+                        sint,
+                        flag,
                     })
                 } else {
                     Box::new(OffloadedGuestEventPortNoTrigger {
                         partition: Arc::downgrade(&self.inner),
-                        params: Default::default(),
+                        params: Arc::new(Mutex::new(WhpEventPortParams {
+                            vtl,
+                            vp: VpIndex::new(vp),
+                            sint,
+                            flag,
+                        })),
                     })
                 }
             }
             Hv1State::Emulated(_) => Box::new(EmulatedGuestEventPort {
                 partition: Arc::downgrade(&self.inner),
-                params: Default::default(),
+                params: Arc::new(Mutex::new(WhpEventPortParams {
+                    vtl,
+                    vp: VpIndex::new(vp),
+                    sint,
+                    flag,
+                })),
             }),
         }
     }
@@ -139,13 +157,15 @@ impl virt::Synic for WhpPartition {
 }
 
 impl SynicMonitor for WhpPartition {
-    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Send> {
+    fn register_monitor(&self, monitor_id: MonitorId, connection_id: u32) -> Box<dyn Sync + Send> {
         self.inner
             .monitor_page
             .register_monitor(monitor_id, connection_id)
     }
 
-    fn set_monitor_page(&self, gpa: Option<u64>) -> anyhow::Result<()> {
+    fn set_monitor_page(&self, vtl: Vtl, gpa: Option<u64>) -> anyhow::Result<()> {
+        // Monitor pages are not supported at all when VTL2 is enabled.
+        assert_eq!(vtl, Vtl::Vtl0);
         let mut overlays = crate::memory::OverlayMapper::new(&self.inner.vtl0);
         let old_gpa = self.inner.monitor_page.set_gpa(gpa);
         if let Some(old_gpa) = old_gpa {
@@ -174,7 +194,7 @@ impl SynicMonitor for WhpPartition {
 #[derive(Debug, Clone)]
 struct OffloadedGuestEventPortNoTrigger {
     partition: Weak<WhpPartitionInner>,
-    params: Arc<Mutex<Option<WhpEventPortParams>>>,
+    params: Arc<Mutex<WhpEventPortParams>>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -189,70 +209,51 @@ impl GuestEventPort for OffloadedGuestEventPortNoTrigger {
     fn interrupt(&self) -> Interrupt {
         let this = self.clone();
         Interrupt::from_fn(move || {
-            if let Some(WhpEventPortParams {
+            let WhpEventPortParams {
                 vtl,
                 vp,
                 sint,
                 flag,
-            }) = *this.params.lock()
-            {
-                if let Some(partition) = this.partition.upgrade() {
-                    let Some(vpref) = partition.vp(vp) else {
-                        tracelimit::warn_ratelimited!(
-                            vp = vp.index(),
-                            "invalid vp for synic event port"
-                        );
-                        return;
-                    };
-                    match vpref.whp(vtl).signal_synic_event(sint, flag) {
-                        Ok(newly_signaled) => {
-                            if newly_signaled {
-                                vpref.ensure_vtl_runnable(vtl);
-                            }
-                        }
-                        Err(err) => match err.hv_result().map(HvError::from) {
-                            Some(err @ HvError::InvalidSynicState) => {
-                                tracing::debug!(
-                                    vp = vp.index(),
-                                    sint,
-                                    flag,
-                                    error = err.as_error(),
-                                    "failed to signal synic (expected)"
-                                );
-                            }
-                            _ => {
-                                tracing::error!(
-                                    vp = vp.index(),
-                                    sint,
-                                    flag,
-                                    error = err.as_error(),
-                                    "failed to signal synic"
-                                );
-                            }
-                        },
+            } = *this.params.lock();
+            let Some(partition) = this.partition.upgrade() else {
+                return;
+            };
+            let Some(vpref) = partition.vp(vp) else {
+                tracelimit::warn_ratelimited!(vp = vp.index(), "invalid vp for synic event port");
+                return;
+            };
+            match vpref.whp(vtl).signal_synic_event(sint, flag) {
+                Ok(newly_signaled) => {
+                    if newly_signaled {
+                        vpref.ensure_vtl_runnable(vtl);
                     }
                 }
+                Err(err) => match err.hv_result().map(HvError::from) {
+                    Some(err @ HvError::InvalidSynicState) => {
+                        tracing::debug!(
+                            vp = vp.index(),
+                            sint,
+                            flag,
+                            error = err.as_error(),
+                            "failed to signal synic (expected)"
+                        );
+                    }
+                    _ => {
+                        tracing::error!(
+                            vp = vp.index(),
+                            sint,
+                            flag,
+                            error = err.as_error(),
+                            "failed to signal synic"
+                        );
+                    }
+                },
             }
         })
     }
 
-    fn clear(&mut self) {
-        *self.params.lock() = None;
-    }
-
-    fn set(
-        &mut self,
-        vtl: Vtl,
-        vp: u32,
-        sint: u8,
-        flag: u16,
-    ) -> Result<(), vmcore::synic::HypervisorError> {
-        *self.params.lock() = Some(WhpEventPortParams {
-            vtl,
-            vp: VpIndex::new(vp),
-            sint,
-            flag,
-        });
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
+        self.params.lock().vp = VpIndex::new(vp);
         Ok(())
     }
 }
@@ -264,6 +265,8 @@ struct OffloadedGuestEventPort {
     partition: Weak<WhpPartitionInner>,
     trigger: Option<whp::TriggerHandle>,
     event: Event,
+    sint: u8,
+    flag: u16,
 }
 
 impl GuestEventPort for OffloadedGuestEventPort {
@@ -271,31 +274,7 @@ impl GuestEventPort for OffloadedGuestEventPort {
         Interrupt::from_event(self.event.clone())
     }
 
-    fn clear(&mut self) {
-        if let Some(partition) = self.partition.upgrade() {
-            partition
-                .vtl0
-                .whp
-                .update_trigger(
-                    self.trigger.as_ref().unwrap(),
-                    whp::TriggerParameters::SynicEvent {
-                        vp_index: !0,
-                        sint: 0,
-                        flag: 0,
-                    },
-                )
-                .expect("cannot fail");
-        }
-    }
-
-    fn set(
-        &mut self,
-        vtl: Vtl,
-        vp: u32,
-        sint: u8,
-        flag: u16,
-    ) -> Result<(), vmcore::synic::HypervisorError> {
-        assert_eq!(vtl, Vtl::Vtl0);
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
         if let Some(partition) = self.partition.upgrade() {
             partition
                 .vtl0
@@ -304,8 +283,8 @@ impl GuestEventPort for OffloadedGuestEventPort {
                     self.trigger.as_ref().unwrap(),
                     whp::TriggerParameters::SynicEvent {
                         vp_index: vp,
-                        sint,
-                        flag,
+                        sint: self.sint,
+                        flag: self.flag,
                     },
                 )
                 .expect("cannot fail");
@@ -331,54 +310,32 @@ impl Drop for OffloadedGuestEventPort {
 #[derive(Clone)]
 struct EmulatedGuestEventPort {
     partition: Weak<WhpPartitionInner>,
-    params: Arc<Mutex<Option<WhpEventPortParams>>>,
+    params: Arc<Mutex<WhpEventPortParams>>,
 }
 
 impl GuestEventPort for EmulatedGuestEventPort {
     fn interrupt(&self) -> Interrupt {
         let this = self.clone();
         Interrupt::from_fn(move || {
-            if let Some(WhpEventPortParams {
+            let WhpEventPortParams {
                 vtl,
                 vp,
                 sint,
                 flag,
-            }) = *this.params.lock()
-            {
-                if let Some(partition) = this.partition.upgrade() {
-                    let Hv1State::Emulated(hv) = &partition.vtlp(vtl).hvstate else {
-                        unreachable!()
-                    };
-                    let _ = hv.synic[vtl].signal_event(
-                        &partition.gm,
-                        vp,
-                        sint,
-                        flag,
-                        &mut partition.synic_interrupt(vp, vtl),
-                    );
-                }
-            }
+            } = *this.params.lock();
+            let Some(partition) = this.partition.upgrade() else {
+                return;
+            };
+            let Hv1State::Emulated(hv) = &partition.hvstate else {
+                unreachable!()
+            };
+            let _ =
+                hv.synic[vtl].signal_event(vp, sint, flag, &mut partition.synic_interrupt(vp, vtl));
         })
     }
 
-    fn clear(&mut self) {
-        *self.params.lock() = None;
-    }
-
-    fn set(
-        &mut self,
-        vtl: Vtl,
-        vp: u32,
-        sint: u8,
-        flag: u16,
-    ) -> Result<(), vmcore::synic::HypervisorError> {
-        *self.params.lock() = Some(WhpEventPortParams {
-            vtl,
-            vp: VpIndex::new(vp),
-            sint,
-            flag,
-        });
-
+    fn set_target_vp(&mut self, vp: u32) -> Result<(), vmcore::synic::HypervisorError> {
+        self.params.lock().vp = VpIndex::new(vp);
         Ok(())
     }
 }

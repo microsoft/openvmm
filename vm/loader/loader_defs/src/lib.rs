@@ -3,8 +3,8 @@
 
 //! Type definitions for loading guest firmware, available as no_std if no features are defined.
 
-#![warn(missing_docs)]
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub mod linux;
 pub mod paravisor;

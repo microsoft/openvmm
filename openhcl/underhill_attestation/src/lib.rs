@@ -7,7 +7,6 @@
 //! The module also implements the VMGS unlocking process based on SKR.
 
 #![cfg(target_os = "linux")]
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 mod crypto;
@@ -17,17 +16,17 @@ mod key_protector;
 mod secure_key_release;
 mod vmgs;
 
-pub use igvm_attest::ak_cert::parse_response as parse_ak_cert_response;
 pub use igvm_attest::Error as IgvmAttestError;
 pub use igvm_attest::IgvmAttestRequestHelper;
+pub use igvm_attest::ak_cert::parse_response as parse_ak_cert_response;
 
 use ::vmgs::EncryptionAlgorithm;
 use ::vmgs::Vmgs;
 use cvm_tracing::CVM_ALLOWED;
+use guest_emulation_transport::GuestEmulationTransportClient;
 use guest_emulation_transport::api::GspExtendedStatusFlags;
 use guest_emulation_transport::api::GuestStateProtection;
 use guest_emulation_transport::api::GuestStateProtectionById;
-use guest_emulation_transport::GuestEmulationTransportClient;
 use guid::Guid;
 use hardware_key_sealing::HardwareDerivedKeys;
 use hardware_key_sealing::HardwareKeyProtectorExt as _;
@@ -35,10 +34,10 @@ use key_protector::GetKeysFromKeyProtectorError;
 use key_protector::KeyProtectorExt as _;
 use mesh::MeshPayload;
 use openhcl_attestation_protocol::igvm_attest::get::runtime_claims::AttestationVmConfig;
+use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
 use openhcl_attestation_protocol::vmgs::HardwareKeyProtector;
 use openhcl_attestation_protocol::vmgs::KeyProtector;
 use openhcl_attestation_protocol::vmgs::SecurityProfile;
-use openhcl_attestation_protocol::vmgs::AES_GCM_KEY_LENGTH;
 use openssl::pkey::Private;
 use openssl::rsa::Rsa;
 use pal_async::local::LocalDriver;
@@ -247,7 +246,7 @@ pub async fn initialize_platform_security(
 
     // Read Security Profile from VMGS
     // Currently this only includes "Key Reference" data, which is not attested data, is opaque to the
-    // Underhill, and is passed to the IGVMm agent outside of the report contents.
+    // OpenHCL, and is passed to the IGVMm agent outside of the report contents.
     let SecurityProfile { mut agent_data } = vmgs::read_security_profile(vmgs)
         .await
         .map_err(AttestationErrorInner::ReadSecurityProfile)?;
@@ -342,7 +341,7 @@ pub async fn initialize_platform_security(
         false
     };
 
-    let vmgs_encrypted: bool = vmgs.get_encryption_algorithm() != EncryptionAlgorithm::NONE;
+    let vmgs_encrypted: bool = vmgs.is_encrypted();
 
     tracing::info!(tcb_version=?tcb_version, vmgs_encrypted = vmgs_encrypted, "Deriving keys");
     let derived_keys_result = get_derived_keys(
@@ -620,6 +619,15 @@ async fn get_derived_keys(
 
         let response = get_gsp_data(get, key_protector).await;
 
+        tracing::info!(
+            CVM_ALLOWED,
+            request_data_length_in_vmgs = key_protector.gsp[ingress_idx].gsp_length,
+            no_rpc_server = response.extended_status_flags.no_rpc_server(),
+            requires_rpc_server = response.extended_status_flags.requires_rpc_server(),
+            encrypted_gsp_length = response.encrypted_gsp.length,
+            "GSP response"
+        );
+
         let no_gsp =
             response.extended_status_flags.no_rpc_server() || response.encrypted_gsp.length == 0;
 
@@ -654,7 +662,6 @@ async fn get_derived_keys(
 
     // If sources of encryption used last are missing, attempt to unseal VMGS key with hardware key
     if (no_kek && found_dek) || (no_gsp && requires_gsp) || (no_gsp_by_id && requires_gsp_by_id) {
-        tracing::info!("Unseal VMGS key-encryption key with hardware key");
         // If possible, get ingressKey from hardware sealed data
         let (hardware_key_protector, hardware_derived_keys) = if let Some(tee_call) = tee_call {
             let hardware_key_protector = match vmgs::read_hardware_key_protector(vmgs).await {
@@ -709,7 +716,10 @@ async fn get_derived_keys(
             key_protector_settings.should_write_kp = false;
             key_protector_settings.use_hardware_unlock = true;
 
-            tracing::warn!(CVM_ALLOWED, "Using hardware based key derivation");
+            tracing::warn!(
+                CVM_ALLOWED,
+                "Using hardware-derived key to recover VMGS DEK"
+            );
 
             return Ok(DerivedKeyResult {
                 derived_keys: Some(derived_keys),
@@ -727,6 +737,14 @@ async fn get_derived_keys(
             }
         }
     }
+
+    tracing::info!(
+        CVM_ALLOWED,
+        kek = !no_kek,
+        gsp = !no_gsp,
+        gsp_by_id = !no_gsp_by_id,
+        "Encryption sources"
+    );
 
     // Check if sources of encryption are available
     if no_kek && no_gsp && no_gsp_by_id {
@@ -1065,13 +1083,13 @@ mod tests {
     use super::*;
     use disk_backend::Disk;
     use disklayer_ram::ram_disk;
-    use get_protocol::GspExtendedStatusFlags;
     use get_protocol::GSP_CLEARTEXT_MAX;
+    use get_protocol::GspExtendedStatusFlags;
     use key_protector::AES_WRAPPED_AES_KEY_LENGTH;
-    use openhcl_attestation_protocol::vmgs::DekKp;
-    use openhcl_attestation_protocol::vmgs::GspKp;
     use openhcl_attestation_protocol::vmgs::DEK_BUFFER_SIZE;
+    use openhcl_attestation_protocol::vmgs::DekKp;
     use openhcl_attestation_protocol::vmgs::GSP_BUFFER_SIZE;
+    use openhcl_attestation_protocol::vmgs::GspKp;
     use openhcl_attestation_protocol::vmgs::NUMBER_KP;
     use pal_async::async_test;
     use vmgs_format::EncryptionAlgorithm;
@@ -1086,7 +1104,7 @@ mod tests {
     async fn new_formatted_vmgs() -> Vmgs {
         let disk = new_test_file();
 
-        let mut vmgs = Vmgs::format_new(disk).await.unwrap();
+        let mut vmgs = Vmgs::format_new(disk, None).await.unwrap();
 
         assert!(
             key_protector_is_empty(&mut vmgs).await,
@@ -1720,10 +1738,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(found_key_protector.dek[active_kp_copy as usize]
-            .dek_buffer
-            .iter()
-            .all(|&b| b == 0),);
+        assert!(
+            found_key_protector.dek[active_kp_copy as usize]
+                .dek_buffer
+                .iter()
+                .all(|&b| b == 0),
+        );
         assert_eq!(
             found_key_protector.gsp[active_kp_copy as usize].gsp_length,
             0

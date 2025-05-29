@@ -43,8 +43,7 @@
 //! ```
 
 // UNSAFETY: this is needed to work around the borrow checker.
-#![allow(unsafe_code)]
-#![warn(missing_docs)]
+#![expect(unsafe_code)]
 #![no_std]
 
 use core::cell::Cell;
@@ -77,7 +76,7 @@ impl<T: ?Sized> LoanCell<T> {
         struct RestoreOnDrop<'a, T: ?Sized>(&'a LoanCell<T>, Option<NonNull<T>>);
         impl<T: ?Sized> Drop for RestoreOnDrop<'_, T> {
             fn drop(&mut self) {
-                self.0 .0.set(self.1);
+                self.0.0.set(self.1);
             }
         }
 

@@ -60,7 +60,6 @@
 //! disk format for testing in OpenVMM.
 
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 mod auto_cache;
 pub mod resolver;
@@ -249,7 +248,7 @@ impl SqliteDiskLayer {
             move || write_sectors(conn, sector_size, sector, buf, overwrite)
         })
         .await
-        .map_err(|e| DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
 
         Ok(())
     }
@@ -336,7 +335,7 @@ impl LayerIo for SqliteDiskLayer {
             move || read_sectors(conn, sector_size, sector, end_sector)
         })
         .await
-        .map_err(|e| DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
 
         for (s, data) in valid_sectors {
             let offset = (s - sector) as usize * self.meta.sector_size as usize;
@@ -383,7 +382,7 @@ impl LayerIo for SqliteDiskLayer {
             }
         })
         .await
-        .map_err(|e| DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))
+        .map_err(|e| DiskError::Io(std::io::Error::other(e)))
     }
 
     async fn unmap(
@@ -403,7 +402,7 @@ impl LayerIo for SqliteDiskLayer {
             move || unmap_sectors(conn, sector_offset, sector_count, next_is_zero)
         })
         .await
-        .map_err(|e| DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        .map_err(|e| DiskError::Io(std::io::Error::other(e)))?;
 
         Ok(())
     }
