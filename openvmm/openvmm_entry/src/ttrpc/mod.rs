@@ -4,7 +4,6 @@
 //! Worker for the prototype gRPC/ttrpc management endpoint.
 
 use self::vmservice::nic_config::Backend;
-use crate::DEFAULT_MMIO_GAPS;
 use crate::serial_io::bind_serial;
 use anyhow::Context;
 use anyhow::anyhow;
@@ -14,6 +13,7 @@ use futures::FutureExt;
 use futures::StreamExt;
 use guid::Guid;
 use hvlite_defs::config::Config;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LoadMode;
@@ -466,7 +466,7 @@ impl VmService {
                     .memory_mb
                     .checked_mul(0x100000)
                     .context("invalid memory configuration")?,
-                mmio_gaps: DEFAULT_MMIO_GAPS.into(),
+                mmio_gaps: DEFAULT_MMIO_GAPS_X86.into(),
                 prefetch_memory: false,
             },
             chipset: chipset.chipset,
@@ -498,8 +498,7 @@ impl VmService {
             vmbus_devices: vec![],
             #[cfg(windows)]
             vpci_resources: vec![],
-            vmgs_disk: None,
-            format_vmgs: false,
+            vmgs: None,
             secure_boot_enabled: false,
             custom_uefi_vars: Default::default(),
             firmware_event_send: None,

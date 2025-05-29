@@ -138,6 +138,40 @@ mod vmgs_inspect {
 }
 
 impl Vmgs {
+    /// Attempt to open the VMGS file, optionally formatting if it is
+    /// empty or corrupted.
+    pub async fn try_open(
+        disk: Disk,
+        logger: Option<Arc<dyn VmgsLogger>>,
+        format_on_empty: bool,
+        format_on_failure: bool,
+    ) -> Result<Self, Error> {
+        match Vmgs::open(disk.clone(), logger.clone()).await {
+            Ok(vmgs) => Ok(vmgs),
+            Err(Error::EmptyFile) if format_on_empty => {
+                tracing::info!("empty vmgs file, formatting");
+                Vmgs::format_new(disk, logger).await
+            }
+            Err(err) if format_on_failure => {
+                tracing::warn!(?err, "vmgs initialization error, reformatting");
+                Vmgs::format_new(disk, logger).await
+            }
+            Err(err) => {
+                let event_log_id = match err {
+                    // The data store format is invalid or not supported.
+                    Error::InvalidFormat(_) => VmgsLogEvent::InvalidFormat,
+                    // The data store is corrupted.
+                    Error::CorruptFormat(_) => VmgsLogEvent::CorruptFormat,
+                    // All other errors
+                    _ => VmgsLogEvent::InitFailed,
+                };
+
+                logger.log_event_fatal(event_log_id).await;
+                Err(err)
+            }
+        }
+    }
+
     /// Format and open a new VMGS file.
     pub async fn format_new(
         disk: Disk,
@@ -2569,7 +2603,7 @@ mod tests {
         let fcb = vmgs.fcbs.get_mut(&FileId::BIOS_NVRAM).unwrap();
 
         // Manipulate the nonce and expect the read to fail.
-        fcb.nonce[0] += 1;
+        fcb.nonce[0] ^= 1;
 
         // read and expect to fail
         let result = vmgs.read_file(FileId::BIOS_NVRAM).await;

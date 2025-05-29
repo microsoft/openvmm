@@ -174,7 +174,7 @@ struct RunState {
     active_vtl: Vtl,
     enabled_vtls: VtlSet,
     runnable_vtls: VtlSet,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     vtl2_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     vtl2_wakeup_vmtime: Option<VmTimeAccess>,
     #[inspect(skip)]
@@ -202,7 +202,7 @@ struct PerVtlRunState {
     #[cfg(guest_arch = "x86_64")]
     lapic: Option<apic::ApicState>,
     hv: Option<ProcessorVtlHv>,
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     deliverability_notifications: HvDeliverabilityNotificationsRegister,
     // Only used when `hv` is `None`.
     vp_assist_page: u64,
@@ -464,6 +464,8 @@ impl virt::ScrubVtl for WhpPartition {
         assert!(!self.inner.isolation.is_isolated());
         assert_eq!(vtl, Vtl::Vtl2);
 
+        tracing::info!(?vtl, "scrubbing partition");
+
         let vtl2 = self.inner.vtl2.as_ref().ok_or(Error::NoVtl2)?;
 
         // Preserve VTL2 reference time across the scrub to match hypervisor
@@ -622,8 +624,6 @@ impl virt::BindProcessor for WhpProcessorBinder {
                 .vtl2
                 .as_ref()
                 .map(|vtl2| &vtl2.vplcs[self.index.index() as usize]),
-
-            tlb_lock: false,
         };
 
         let vp_info = &vp.inner.vp_info;
@@ -675,11 +675,6 @@ pub struct WhpProcessor<'a> {
     state: RunState,
     vplc0: &'a Vplc,
     vplc2: Option<&'a Vplc>,
-
-    /// Whether the VTL 0 TLB is locked by VTL 2 or not.
-    // TODO: This doesn't actually control anything, we just
-    // track it so we can report it back correctly when asked.
-    tlb_lock: bool,
 }
 
 #[derive(Copy, Clone)]
@@ -901,9 +896,9 @@ impl WhpPartitionInner {
             // hypervisor will do this automatically, but it doesn't hurt to do this
             // again.
             let mask = [0, 0, 1 << 21, 0];
-            let value = match proto_config.processor_topology.apic_mode() {
-                ApicMode::XApic => [0; 4],
-                ApicMode::X2ApicSupported | ApicMode::X2ApicEnabled => mask,
+            let (value, use_apic_msrs) = match proto_config.processor_topology.apic_mode() {
+                ApicMode::XApic => ([0; 4], true),
+                ApicMode::X2ApicSupported | ApicMode::X2ApicEnabled => (mask, false),
             };
             cpuid.push(
                 virt::CpuidLeaf::new(x86defs::cpuid::CpuidFunction::VersionAndFeatures.0, value)
@@ -913,13 +908,21 @@ impl WhpPartitionInner {
             // Add in the synthetic hv leaves if necessary.
             if let Some(hv_config) = &proto_config.hv_config {
                 if !hv_config.offload_enlightenments || proto_config.user_mode_apic {
-                    cpuid.extend(hv1_emulator::cpuid::hv_cpuid_leaves(
-                        proto_config.processor_topology,
-                        IsolationType::None,
-                        false,
-                        [0; 4],
-                        None,
-                    ));
+                    let enlightenments = hvdef::HvEnlightenmentInformation::new()
+                        .with_deprecate_auto_eoi(true)
+                        .with_use_relaxed_timing(true)
+                        .with_use_ex_processor_masks(true)
+                        .with_use_apic_msrs(use_apic_msrs);
+                    const MAX_CPUS: u32 = 2048;
+                    cpuid.extend_from_slice(
+                        &hv1_emulator::cpuid::make_hv_cpuid_leaves(
+                            hv1_emulator::cpuid::SUPPORTED_FEATURES,
+                            enlightenments,
+                            MAX_CPUS,
+                        )
+                        .map(|(f, v)| virt::CpuidLeaf::new(f.0, [v.eax, v.ebx, v.ecx, v.edx])),
+                    );
+                    hv1_emulator::cpuid::process_hv_cpuid_leaves(&mut cpuid, false, [0; 4]);
                 }
             }
 

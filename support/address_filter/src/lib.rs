@@ -4,10 +4,12 @@
 //! Types to manage a filter on addresses.
 //!
 //! This is used to track the conditions under which a given PIO/MMIO access
-//! should be traced.
+//! or interrupt vector should be traced.
 //!
 //! See [`AddressFilter`] for more information, including the syntax used to
 //! define the filter.
+
+#![forbid(unsafe_code)]
 
 use inspect::InspectMut;
 use std::fmt::Display;
@@ -16,17 +18,37 @@ use std::num::ParseIntError;
 use std::str::FromStr;
 use thiserror::Error;
 
+/// A trait for types that can be used as a range value in an [`AddressFilter`].
 pub trait RangeKey: PartialOrd + Ord + PartialEq + Copy + LowerHex {
+    /// The zero value for this type.
     const ZERO: Self;
+    /// The maximum value for this type.
     const MAX: Self;
+    /// Parse a hex string into this type.
     fn parse_hex(s: &str) -> Result<Self, ParseIntError>;
+}
+
+impl RangeKey for u8 {
+    const ZERO: Self = 0;
+    const MAX: Self = Self::MAX;
+    fn parse_hex(s: &str) -> Result<Self, ParseIntError> {
+        Self::from_str_radix(s, 16)
+    }
 }
 
 impl RangeKey for u16 {
     const ZERO: Self = 0;
     const MAX: Self = Self::MAX;
     fn parse_hex(s: &str) -> Result<Self, ParseIntError> {
-        u16::from_str_radix(s, 16)
+        Self::from_str_radix(s, 16)
+    }
+}
+
+impl RangeKey for u32 {
+    const ZERO: Self = 0;
+    const MAX: Self = Self::MAX;
+    fn parse_hex(s: &str) -> Result<Self, ParseIntError> {
+        Self::from_str_radix(s, 16)
     }
 }
 
@@ -34,7 +56,7 @@ impl RangeKey for u64 {
     const ZERO: Self = 0;
     const MAX: Self = Self::MAX;
     fn parse_hex(s: &str) -> Result<Self, ParseIntError> {
-        u64::from_str_radix(s, 16)
+        Self::from_str_radix(s, 16)
     }
 }
 
@@ -47,6 +69,7 @@ impl RangeKey for u64 {
 ///
 /// For example: `0x40-0x4f,0x63,?` would filter addresses 0x40 through 0x4f, address
 /// 0x63, and any unknown addresses.
+#[derive(Debug)]
 pub struct AddressFilter<T> {
     unknown: bool,
     ranges: Vec<(T, T)>,
@@ -109,7 +132,9 @@ impl<T: RangeKey> Display for AddressFilter<T> {
     }
 }
 
+/// Errors returned when trying to parse a full filter string
 #[derive(Debug, Error)]
+#[expect(missing_docs)]
 pub enum InvalidRangeSet {
     #[error("invalid range value")]
     InvalidValue(#[from] InvalidRangeValue),
@@ -119,7 +144,9 @@ pub enum InvalidRangeSet {
     Overlapping,
 }
 
+/// Errors returned when trying to parse a single range value
 #[derive(Debug, Error)]
+#[expect(missing_docs)]
 pub enum InvalidRangeValue {
     #[error(transparent)]
     ParseInt(#[from] ParseIntError),
@@ -176,13 +203,13 @@ impl<T: RangeKey> InspectMut for AddressFilter<T> {
             Ok(req) => match req.new_value().parse() {
                 Ok(v) => {
                     *self = v;
-                    req.succeed(self.to_string().into());
+                    req.succeed(self.to_string());
                 }
                 Err(err) => {
                     req.fail(err);
                 }
             },
-            Err(req) => req.value(self.to_string().into()),
+            Err(req) => req.value(self.to_string()),
         }
     }
 }

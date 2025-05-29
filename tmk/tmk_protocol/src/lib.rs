@@ -4,6 +4,7 @@
 //! Definitions for the protocol between `tmk_vmm` and the test microkernel.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 use zerocopy::FromBytes;
 use zerocopy::Immutable;
@@ -12,7 +13,7 @@ use zerocopy::TryFromBytes;
 
 /// Start input from the VMM to the TMK.
 #[repr(C)]
-#[derive(IntoBytes, Immutable)]
+#[derive(Debug, IntoBytes, Immutable)]
 pub struct StartInput {
     /// The address to write commands to.
     pub command: u64,

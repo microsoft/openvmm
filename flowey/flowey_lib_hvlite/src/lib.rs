@@ -5,14 +5,11 @@
 
 #![expect(missing_docs)]
 #![forbid(unsafe_code)]
-// #![warn(missing_docs)] // TODO: lots to do here
 
 pub mod _jobs;
-pub mod artifact_guide;
 pub mod artifact_openhcl_igvm_from_recipe;
 pub mod artifact_openhcl_igvm_from_recipe_extras;
 pub mod artifact_openvmm_hcl_sizecheck;
-pub mod artifact_rustdoc;
 pub mod build_and_test_vmgs_lib;
 pub mod build_guest_test_uefi;
 pub mod build_guide;
@@ -38,7 +35,7 @@ pub mod cfg_openvmm_magicpath;
 pub mod download_lxutil;
 pub mod download_openhcl_kernel_package;
 pub mod download_openvmm_deps;
-pub mod download_openvmm_vmm_tests_vhds;
+pub mod download_openvmm_vmm_tests_artifacts;
 pub mod download_uefi_mu_msvm;
 pub mod git_checkout_openvmm_repo;
 pub mod init_cross_build;

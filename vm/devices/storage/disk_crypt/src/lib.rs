@@ -4,6 +4,8 @@
 //! A disk device wrapper that provides confidentiality (but not authentication)
 //! via encryption.
 
+#![forbid(unsafe_code)]
+
 pub mod resolver;
 
 use block_crypto::XtsAes256;
@@ -186,7 +188,7 @@ impl DiskIo for CryptDisk {
 }
 
 fn crypto_error(err: block_crypto::Error) -> DiskError {
-    DiskError::Io(std::io::Error::new(std::io::ErrorKind::Other, err))
+    DiskError::Io(std::io::Error::other(err))
 }
 
 #[cfg(test)]

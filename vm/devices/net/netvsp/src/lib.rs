@@ -52,6 +52,7 @@ use net_backend::EndpointAction;
 use net_backend::L3Protocol;
 use net_backend::QueueConfig;
 use net_backend::RxId;
+use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxSegment;
 use net_backend_resources::mac_address::MacAddress;
@@ -562,7 +563,7 @@ impl std::fmt::Display for PrimaryChannelGuestVfState {
 
 impl Inspect for PrimaryChannelGuestVfState {
     fn inspect(&self, req: inspect::Request<'_>) {
-        req.value(format!("{}", self).into());
+        req.value(self.to_string());
     }
 }
 
@@ -812,9 +813,24 @@ impl PrimaryChannelState {
             .collect();
 
         let rss_state = rss_state
-            .map(|rss| {
-                if rss.indirection_table.len() != indirection_table_size as usize {
-                    return Err(NetRestoreError::MismatchedIndirectionTableSize);
+            .map(|mut rss| {
+                if rss.indirection_table.len() > indirection_table_size as usize {
+                    // Dynamic reduction of indirection table can cause unexpected and hard to investigate issues
+                    // with performance and processor overloading.
+                    return Err(NetRestoreError::ReducedIndirectionTableSize);
+                }
+                if rss.indirection_table.len() < indirection_table_size as usize {
+                    tracing::warn!(
+                        saved_indirection_table_size = rss.indirection_table.len(),
+                        adapter_indirection_table_size = indirection_table_size,
+                        "increasing indirection table size",
+                    );
+                    // Dynamic increase of indirection table is done by duplicating the existing entries until
+                    // the desired size is reached.
+                    let table_clone = rss.indirection_table.clone();
+                    let num_to_add = indirection_table_size as usize - rss.indirection_table.len();
+                    rss.indirection_table
+                        .extend(table_clone.iter().cycle().take(num_to_add));
                 }
                 Ok(RssState {
                     key: rss
@@ -1416,8 +1432,8 @@ enum NetRestoreError {
     Open(#[from] OpenError),
     #[error("invalid rss key size")]
     InvalidRssKeySize,
-    #[error("mismatched indirection table size")]
-    MismatchedIndirectionTableSize,
+    #[error("reduced indirection table size")]
+    ReducedIndirectionTableSize,
 }
 
 impl From<NetRestoreError> for RestoreError {
@@ -1850,6 +1866,8 @@ enum WorkerError {
     Cancelled(task_control::Cancelled),
     #[error("tearing down because send/receive buffer is revoked")]
     BufferRevoked,
+    #[error("endpoint requires queue restart: {0}")]
+    EndpointRequiresQueueRestart(#[source] anyhow::Error),
 }
 
 impl From<task_control::Cancelled> for WorkerError {
@@ -3645,8 +3663,8 @@ impl InspectTaskMut<Coordinator> for CoordinatorState {
             });
 
             // Get the shared channel state from the primary channel.
-            {
-                let deferred = resp.request().defer();
+            resp.merge(inspect::adhoc_mut(|req| {
+                let deferred = req.defer();
                 coordinator.workers[0].update_with(|_, worker| {
                     if let Some(state) = worker.and_then(|worker| worker.state.ready()) {
                         deferred.respond(|resp| {
@@ -3659,7 +3677,7 @@ impl InspectTaskMut<Coordinator> for CoordinatorState {
                         });
                     }
                 })
-            }
+            }));
         }
     }
 }
@@ -4367,10 +4385,30 @@ impl<T: RingMem + 'static> Worker<T> {
                         stop.until_stopped(pending()).await?
                     };
 
-                    let restart = self.channel.main_loop(stop, state, queue_state).await?;
+                    let result = self.channel.main_loop(stop, state, queue_state).await;
+                    match result {
+                        Ok(restart) => {
+                            assert_eq!(self.channel_idx, 0);
+                            let _ = self.coordinator_send.try_send(restart);
+                        }
+                        Err(WorkerError::EndpointRequiresQueueRestart(err)) => {
+                            tracelimit::warn_ratelimited!(
+                                err = %err,
+                                "Endpoint requires queues to restart",
+                            );
+                            if let Err(try_send_err) =
+                                self.coordinator_send.try_send(CoordinatorMessage::Restart)
+                            {
+                                tracing::error!(
+                                    try_send_err = %try_send_err,
+                                    "failed to restart queues"
+                                );
+                                return Err(WorkerError::Endpoint(err));
+                            }
+                        }
+                        Err(err) => return Err(err),
+                    }
 
-                    assert_eq!(self.channel_idx, 0);
-                    let _ = self.coordinator_send.try_send(restart);
                     stop.until_stopped(pending()).await?
                 }
             }
@@ -4905,23 +4943,48 @@ impl<T: 'static + RingMem> NetChannel<T> {
         epqueue: &mut dyn net_backend::Queue,
     ) -> Result<bool, WorkerError> {
         // Drain completed transmits.
-        let n = epqueue
-            .tx_poll(&mut data.tx_done)
-            .map_err(WorkerError::Endpoint)?;
-        if n == 0 {
-            return Ok(false);
-        }
+        let result = epqueue.tx_poll(&mut data.tx_done);
 
-        for &id in &data.tx_done[..n] {
-            let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
-            assert!(tx_packet.pending_packet_count > 0);
-            tx_packet.pending_packet_count -= 1;
-            if tx_packet.pending_packet_count == 0 {
-                self.complete_tx_packet(state, id)?;
+        match result {
+            Ok(n) => {
+                if n == 0 {
+                    return Ok(false);
+                }
+
+                for &id in &data.tx_done[..n] {
+                    let tx_packet = &mut state.pending_tx_packets[id.0 as usize];
+                    assert!(tx_packet.pending_packet_count > 0);
+                    tx_packet.pending_packet_count -= 1;
+                    if tx_packet.pending_packet_count == 0 {
+                        self.complete_tx_packet(state, id)?;
+                    }
+                }
+
+                Ok(true)
             }
+            Err(TxError::TryRestart(err)) => {
+                // Complete any pending tx prior to restarting queues.
+                let pending_tx = state
+                    .pending_tx_packets
+                    .iter_mut()
+                    .enumerate()
+                    .filter_map(|(id, inflight)| {
+                        if inflight.pending_packet_count > 0 {
+                            inflight.pending_packet_count = 0;
+                            Some(PendingTxCompletion {
+                                transaction_id: inflight.transaction_id,
+                                tx_id: Some(TxId(id as u32)),
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                state.pending_tx_completions.extend(pending_tx);
+                Err(WorkerError::EndpointRequiresQueueRestart(err))
+            }
+            Err(TxError::Fatal(err)) => Err(WorkerError::Endpoint(err)),
         }
-
-        Ok(true)
     }
 
     fn switch_data_path(

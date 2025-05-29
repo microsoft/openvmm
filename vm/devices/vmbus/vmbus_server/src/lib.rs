@@ -5,7 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod channel_bitmap;
-mod channels;
+pub mod channels;
 pub mod event;
 pub mod hvsock;
 mod monitor;
@@ -122,6 +122,7 @@ pub struct VmbusServerBuilder<'a, T: Spawn> {
     vtl: Vtl,
     hvsock_notify: Option<HvsockServerChannelHalf>,
     server_relay: Option<VmbusServerChannelHalf>,
+    saved_state_notify: Option<mesh::Sender<SavedStateRequest>>,
     external_server: Option<mesh::Sender<InitiateContactRequest>>,
     external_requests: Option<mesh::Receiver<InitiateContactRequest>>,
     use_message_redirect: bool,
@@ -131,6 +132,13 @@ pub struct VmbusServerBuilder<'a, T: Spawn> {
     enable_mnf: bool,
     force_confidential_external_memory: bool,
     send_messages_while_stopped: bool,
+}
+
+#[derive(mesh::MeshPayload)]
+/// The request to send to the proxy to set or clear its saved state cache.
+pub enum SavedStateRequest {
+    Set(FailableRpc<Box<channels::SavedState>, ()>),
+    Clear(Rpc<(), ()>),
 }
 
 /// The server side of the connection between a vmbus server and a relay.
@@ -206,7 +214,7 @@ enum VmbusRequest {
     Reset(Rpc<(), ()>),
     Inspect(inspect::Deferred),
     Save(Rpc<(), SavedState>),
-    Restore(Rpc<SavedState, Result<(), RestoreError>>),
+    Restore(Rpc<Box<SavedState>, Result<(), RestoreError>>),
     Start,
     Stop(Rpc<(), ()>),
 }
@@ -218,6 +226,7 @@ pub struct OfferInfo {
     pub server_request_recv: mesh::Receiver<ChannelServerRequest>,
 }
 
+#[expect(clippy::large_enum_variant)]
 #[derive(mesh::MeshPayload)]
 pub(crate) enum OfferRequest {
     Offer(FailableRpc<OfferInfo, ()>),
@@ -268,6 +277,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
             vtl: Vtl::Vtl0,
             hvsock_notify: None,
             server_relay: None,
+            saved_state_notify: None,
             external_server: None,
             external_requests: None,
             use_message_redirect: false,
@@ -297,6 +307,15 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
     /// Sets a send/receive pair used to handle hvsocket requests.
     pub fn hvsock_notify(mut self, hvsock_notify: Option<HvsockServerChannelHalf>) -> Self {
         self.hvsock_notify = hvsock_notify;
+        self
+    }
+
+    /// Sets a send channel used to enlighten ProxyIntegration about saved channels.
+    pub fn saved_state_notify(
+        mut self,
+        saved_state_notify: Option<mesh::Sender<SavedStateRequest>>,
+    ) -> Self {
+        self.saved_state_notify = saved_state_notify;
         self
     }
 
@@ -499,6 +518,7 @@ impl<'a, T: Spawn> VmbusServerBuilder<'a, T> {
             synic: self.synic,
             hvsock_requests: 0,
             hvsock_send,
+            saved_state_notify: self.saved_state_notify,
             channels: HashMap::new(),
             channel_responses: FuturesUnordered::new(),
             relay_send: relay_request_send,
@@ -553,7 +573,7 @@ impl VmbusServer {
 
     pub async fn restore(&self, state: SavedState) -> Result<(), RestoreError> {
         self.task_send
-            .call(VmbusRequest::Restore, state)
+            .call(VmbusRequest::Restore, Box::new(state))
             .await
             .unwrap()
     }
@@ -638,6 +658,7 @@ struct ServerTaskInner {
     message_port: Box<dyn GuestMessagePort>,
     hvsock_requests: usize,
     hvsock_send: mesh::Sender<HvsockConnectRequest>,
+    saved_state_notify: Option<mesh::Sender<SavedStateRequest>>,
     channels: HashMap<OfferId, Channel>,
     channel_responses: FuturesUnordered<
         Pin<Box<dyn Send + Future<Output = (OfferId, u64, Result<ChannelResponse, RpcError>)>>>,
@@ -914,7 +935,7 @@ impl ServerTask {
         Ok(result)
     }
 
-    fn handle_request(&mut self, request: VmbusRequest) {
+    async fn handle_request(&mut self, request: VmbusRequest) {
         tracing::debug!(?request, "handle_request");
         match request {
             VmbusRequest::Reset(rpc) => self.handle_reset(rpc),
@@ -924,7 +945,7 @@ impl ServerTask {
                         .field("running", self.inner.running)
                         .field("hvsock_requests", self.inner.hvsock_requests)
                         .field_mut_with("unstick_channels", |v| {
-                            let v: inspect::Value = if let Some(v) = v {
+                            let v: inspect::ValueKind = if let Some(v) = v {
                                 if v == "force" {
                                     self.unstick_channels(true);
                                     v.into()
@@ -948,12 +969,29 @@ impl ServerTask {
                 server: self.server.save(),
                 lost_synic_bug_fixed: true,
             }),
-            VmbusRequest::Restore(rpc) => rpc.handle_sync(|state| {
-                self.unstick_on_start = !state.lost_synic_bug_fixed;
-                self.server
-                    .with_notifier(&mut self.inner)
-                    .restore(state.server)
-            }),
+            VmbusRequest::Restore(rpc) => {
+                rpc.handle(async |state| {
+                    self.unstick_on_start = !state.lost_synic_bug_fixed;
+                    if let Some(sender) = &self.inner.saved_state_notify {
+                        tracing::trace!("sending saved state to proxy");
+                        if let Err(err) = sender
+                            .call_failable(SavedStateRequest::Set, Box::new(state.server.clone()))
+                            .await
+                        {
+                            tracing::error!(
+                                err = &err as &dyn std::error::Error,
+                                "failed to restore proxy saved state"
+                            );
+                            return Err(RestoreError::ServerError(err.into()));
+                        }
+                    }
+
+                    self.server
+                        .with_notifier(&mut self.inner)
+                        .restore(state.server)
+                })
+                .await
+            }
             VmbusRequest::Stop(rpc) => rpc.handle_sync(|()| {
                 if self.inner.running {
                     self.inner.running = false;
@@ -962,6 +1000,16 @@ impl ServerTask {
             VmbusRequest::Start => {
                 if !self.inner.running {
                     self.inner.running = true;
+                    if let Some(sender) = self.inner.saved_state_notify.as_ref() {
+                        // Indicate to the proxy that the server is starting and that it should
+                        // clear its saved state cache.
+                        tracing::trace!("sending clear saved state message to proxy");
+                        sender
+                            .call(SavedStateRequest::Clear, ())
+                            .await
+                            .expect("failed to clear proxy saved state");
+                    }
+
                     self.server
                         .with_notifier(&mut self.inner)
                         .revoke_unclaimed_channels();
@@ -1086,7 +1134,7 @@ impl ServerTask {
             futures::select! { // merge semantics
                 r = self.task_recv.recv().fuse() => {
                     if let Ok(request) = r {
-                        self.handle_request(request);
+                        self.handle_request(request).await;
                     } else {
                         break;
                     }

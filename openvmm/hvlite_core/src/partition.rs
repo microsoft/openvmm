@@ -48,6 +48,7 @@ use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::save_restore::RestoreError;
 use vmcore::save_restore::SaveError;
 use vmcore::save_restore::SaveRestore;
+use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vmm_core::partition_unit::RequestYield;
 use vmm_core::partition_unit::RunCancelled;
@@ -268,15 +269,15 @@ impl SaveRestore for WrappedPartition {
 pub trait VpciDevice {
     /// Gets the [`VpciInterruptMapper`] interface to create interrupt mapping
     /// table entries.
-    fn interrupt_mapper(self: Arc<Self>) -> Arc<dyn VpciInterruptMapper>;
+    fn interrupt_mapper(self: Arc<Self>) -> VpciInterruptMapper;
 
-    /// Gets the [`VpciInterruptMapper`] interface to signal interrupts.
+    /// Gets the [`MsiInterruptTarget`] interface to signal interrupts.
     fn target(self: Arc<Self>) -> Arc<dyn MsiInterruptTarget>;
 }
 
-impl<T: 'static + VpciInterruptMapper + MsiInterruptTarget> VpciDevice for T {
-    fn interrupt_mapper(self: Arc<Self>) -> Arc<dyn VpciInterruptMapper> {
-        self
+impl<T: 'static + MapVpciInterrupt + MsiInterruptTarget> VpciDevice for T {
+    fn interrupt_mapper(self: Arc<Self>) -> VpciInterruptMapper {
+        VpciInterruptMapper::new(self)
     }
 
     fn target(self: Arc<Self>) -> Arc<dyn MsiInterruptTarget> {

@@ -196,7 +196,7 @@ fn panic(panic: &core::panic::PanicInfo<'_>) -> ! {
             .offset_of(ptr as u64)
             .map(|offset| addr_space::stack_base_pa() + offset as usize)
     };
-    minimal_rt::enlightened_panic::report(panic, stack_va_to_pa);
+    minimal_rt::enlightened_panic::report(*b"SIDECARK", panic, stack_va_to_pa);
     if !AFTER_INIT.load(Acquire) {
         let _ = writeln!(Serial::new(InstrIoAccess), "{panic}");
     }

@@ -38,9 +38,9 @@ use vmcore::monitor::MonitorId;
 use vmcore::reference_time::ReferenceTimeSource;
 use vmcore::synic::GuestEventPort;
 use vmcore::vmtime::VmTimeSource;
+use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
-use vmcore::vpci_msi::VpciInterruptMapper;
 use vmcore::vpci_msi::VpciInterruptParameters;
 
 pub type Error = anyhow::Error;
@@ -93,7 +93,7 @@ impl IsolationType {
 pub struct UnexpectedIsolationType;
 
 impl IsolationType {
-    pub fn from_hv(
+    pub const fn from_hv(
         value: hvdef::HvPartitionIsolationType,
     ) -> Result<Self, UnexpectedIsolationType> {
         match value {
@@ -105,7 +105,7 @@ impl IsolationType {
         }
     }
 
-    pub fn to_hv(self) -> hvdef::HvPartitionIsolationType {
+    pub const fn to_hv(self) -> hvdef::HvPartitionIsolationType {
         match self {
             IsolationType::None => hvdef::HvPartitionIsolationType::NONE,
             IsolationType::Vbs => hvdef::HvPartitionIsolationType::VBS,
@@ -588,7 +588,7 @@ pub trait PartitionMemoryMapper {
 
 pub trait Hv1 {
     type Error: std::error::Error + Send + Sync + 'static;
-    type Device: VpciInterruptMapper + MsiInterruptTarget;
+    type Device: MapVpciInterrupt + MsiInterruptTarget;
 
     fn reference_time_source(&self) -> Option<ReferenceTimeSource>;
 
@@ -603,8 +603,8 @@ pub trait DeviceBuilder: Hv1 {
 
 pub enum UnimplementedDevice {}
 
-impl VpciInterruptMapper for UnimplementedDevice {
-    fn register_interrupt(
+impl MapVpciInterrupt for UnimplementedDevice {
+    async fn register_interrupt(
         &self,
         _vector_count: u32,
         _params: &VpciInterruptParameters<'_>,
@@ -612,7 +612,7 @@ impl VpciInterruptMapper for UnimplementedDevice {
         match *self {}
     }
 
-    fn unregister_interrupt(&self, _address: u64, _data: u32) {
+    async fn unregister_interrupt(&self, _address: u64, _data: u32) {
         match *self {}
     }
 }

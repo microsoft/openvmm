@@ -102,7 +102,7 @@ async fn mana_nic_servicing(
 
     validate_mana_nic(&agent).await?;
 
-    vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
+    vm.restart_openhcl(&igvm_file, OpenHclServicingFlags::default())
         .await?;
 
     validate_mana_nic(&agent).await?;
@@ -652,8 +652,8 @@ async fn openhcl_linux_vtl2_ram_self_allocate(
     let vtl2_mem_kb = parse_meminfo_kb(&vtl2_agent.unix_shell().read_file("/proc/meminfo").await?)?;
 
     // The allowable difference between VTL2's expected ram size and
-    // proc/meminfo MemTotal. Locally tested to be 27200 difference, so round up
-    // to 28000 to account for small differences.
+    // proc/meminfo MemTotal. Locally tested to be ~28000 difference, so round
+    // up to 29000 to account for small differences.
     //
     // TODO: If we allowed parsing inspect output, or instead perhaps parse the
     // device tree or kmsg output, we should be able to get an exact number for
@@ -661,7 +661,7 @@ async fn openhcl_linux_vtl2_ram_self_allocate(
     // tree and parse it ourselves again, but this requires refactoring some
     // crates to make `bootloader_fdt_parser` available outside the underhill
     // tree.
-    let vtl2_allowable_difference_kb = 28000;
+    let vtl2_allowable_difference_kb = 29000;
     let vtl2_expected_mem_kb = vtl2_ram_size / 1024;
     let vtl2_diff = (vtl2_mem_kb as i64 - vtl2_expected_mem_kb as i64).unsigned_abs();
     tracing::info!(

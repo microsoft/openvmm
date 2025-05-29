@@ -6,7 +6,7 @@
 #![cfg(target_arch = "x86_64")]
 
 use super::Scope;
-use core::marker::PhantomData;
+use crate::log;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering::Relaxed;
 use x86defs::IdtAttributes;
@@ -42,33 +42,35 @@ mod entry {
         ".globl isr_common",
         "isr_common:",
         "push rbp",
-        "mov rbp, rsp",
-        "push rax",
-        "push rcx",
-        "push rdx",
-        "push rsi",
-        "push rdi",
-        "push r8",
-        "push r9",
-        "push r10",
         "push r11",
+        "push r10",
+        "push r9",
+        "push r8",
+        "push rdi",
+        "push rsi",
+        "push rdx",
+        "push rcx",
+        "push rax",
+        "mov rbp, rsp",
         "mov rdi, rbp",
         "and rsp, 0xfffffffffffffff0", // align to 16 bytes
         "call {isr_handler}",
         "test al, al", // check if there's an error code on the stack
-        "mov rax, [rbp - 8]",
-        "mov rcx, [rbp - 16]",
-        "mov rdx, [rbp - 24]",
-        "mov rsi, [rbp - 32]",
-        "mov rdi, [rbp - 40]",
-        "mov r8, [rbp - 48]",
-        "mov r9, [rbp - 56]",
-        "mov r10, [rbp - 64]",
-        "mov r11, [rbp - 72]",
-        "lea rsp, [rbp + 16]", // pop the stack frame (including rbp and vector)
+        "mov rsp, rbp",
+        "pop rax",
+        "pop rcx",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
+        "pop r8",
+        "pop r9",
+        "pop r10",
+        "pop r11",
+        "pop rbp",
         "jz 2f",
-        "add rsp, 8", // pop the error code
+        "add rsp, 8", // pop the vector
         "2:",
+        "add rsp, 8", // pop the error code or vector
         "iretq",
 
         // Define the 256 interrupt entry points. Repeat 256 times.
@@ -85,6 +87,9 @@ mod entry {
 
 /// A context passed to the ISR handler.
 pub struct IsrContext<'a> {
+    /// The stack frame containing the volatile registers at the time of the
+    /// exception or interrupt.
+    pub frame: &'a mut Frame,
     /// The error code for the exception, if applicable.
     pub error_code: Option<u64>,
     /// The instruction pointer at the time of the exception or interrupt.
@@ -92,24 +97,56 @@ pub struct IsrContext<'a> {
     /// This can be modified by the ISR handler to change the instruction
     /// pointer after the exception.
     pub rip: u64,
-    _phantom: PhantomData<&'a mut ()>,
+}
+
+/// The stack frame used by the ISR handler.
+#[repr(C)]
+pub struct Frame {
+    /// RAX
+    pub rax: u64,
+    /// RCX
+    pub rcx: u64,
+    /// RDX
+    pub rdx: u64,
+    /// RSI
+    pub rsi: u64,
+    /// RDI
+    pub rdi: u64,
+    /// R8
+    pub r8: u64,
+    /// R9
+    pub r9: u64,
+    /// R10
+    pub r10: u64,
+    /// R11
+    pub r11: u64,
+    /// RBP
+    pub rbp: u64,
+    /// The vector number of the interrupt or exception.
+    pub vector: u64,
 }
 
 /// # Safety
 /// Must be called from a valid ISR context.
 #[cfg_attr(not(minimal_rt), expect(dead_code))]
-unsafe extern "C" fn isr_handler(frame: *mut u64) -> bool {
-    #[repr(C)]
-    struct Frame {
-        rbp: u64,
-        vector: u64,
-        error_code: u64,
-    }
+unsafe extern "C" fn isr_handler(frame_addr: *mut Frame) -> bool {
     // SAFETY: caller ensures this is a valid pointer to a stack frame.
-    let frame_up = unsafe { &*frame.cast::<Frame>() };
-    let vector = frame_up.vector as u8;
+    let frame = unsafe { &mut *frame_addr };
+    let vector = frame.vector as u8;
 
     let has_error_code = matches!(vector, 1 | 8 | 0xa..=0xe | 0x11 | 0x12 | 0x15 | 0x1d | 0x1e);
+
+    let error_code = if has_error_code {
+        // SAFETY: caller ensures this is a valid pointer to a stack frame.
+        Some(unsafe { *frame_addr.add(1).cast::<u64>() })
+    } else {
+        None
+    };
+
+    log!(
+        "ISR: vector = {vector:?}, has_error_code = {has_error_code}, error_code = {error_code:#x}",
+        error_code = error_code.unwrap_or(0),
+    );
 
     #[repr(C)]
     struct ReturnParams {
@@ -118,14 +155,14 @@ unsafe extern "C" fn isr_handler(frame: *mut u64) -> bool {
         rflags: u64,
     }
 
+    let return_params_offset = if has_error_code { 8 } else { 0 };
     // SAFETY: caller ensures the frame pointer has the return parameters here.
     let return_params = unsafe {
-        &mut *frame
-            .byte_add(if has_error_code { 24 } else { 16 })
+        &mut *frame_addr
+            .add(1)
+            .byte_add(return_params_offset)
             .cast::<ReturnParams>()
     };
-
-    let error_code = has_error_code.then_some(frame_up.error_code);
 
     // SAFETY: `ISRS` is not modified with interrupts disabled.
     let isr = unsafe { ISRS[vector as usize] };
@@ -143,9 +180,9 @@ unsafe extern "C" fn isr_handler(frame: *mut u64) -> bool {
     };
 
     let mut ctx = IsrContext {
+        frame,
         error_code,
         rip: return_params.rip,
-        _phantom: PhantomData,
     };
     isr(&mut ctx);
     return_params.rip = ctx.rip;
@@ -411,9 +448,11 @@ fn disable_interrupts() -> bool {
 }
 
 fn enable_interrupts() {
+    // Include a nop to ensure the caller does not run in the interrupt shadow.
+    //
     // SAFETY: caller ensures this is safe.
     unsafe {
-        core::arch::asm!("sti");
+        core::arch::asm!("sti; nop");
     }
 }
 

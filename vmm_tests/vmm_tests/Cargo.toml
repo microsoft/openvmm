@@ -35,12 +35,14 @@ vm_resource.workspace = true
 vmm_core_defs.workspace = true
 
 guid.workspace = true
+kmsg.workspace = true
 mesh.workspace = true
 pal.workspace = true
 pal_async.workspace = true
 unix_socket.workspace = true
 
 anyhow.workspace = true
+futures.workspace = true
 jiff.workspace = true
 tracing.workspace = true
 
@@ -49,9 +51,6 @@ hvlite_ttrpc_vmservice.workspace = true
 mesh_rpc.workspace = true
 
 tempfile.workspace = true
-
-[build-dependencies]
-build_rs_guest_arch.workspace = true
 
 [lints]
 workspace = true

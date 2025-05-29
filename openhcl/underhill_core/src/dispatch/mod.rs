@@ -559,10 +559,10 @@ impl LoadedVm {
         // Tell the initial process to flush all logs. Any logs
         // emitted after this point may be lost.
         state.init_state.flush_logs_result = Some({
-            // Only wait up to a second (which is still
+            // Only wait up to a half second (which is still
             // a long time!) to prevent delays from
             // introducing longer blackouts.
-            let ctx = CancelContext::new().with_timeout(Duration::from_secs(1));
+            let ctx = CancelContext::new().with_timeout(Duration::from_millis(500));
 
             let now = std::time::Instant::now();
             let call = self
@@ -737,7 +737,7 @@ impl LoadedVm {
     }
 
     fn notify_of_vtl_crash(&self, vtl_crash: VtlCrash) {
-        tracing::info!("Notifying the host of the guest system crash {vtl_crash:x?}");
+        tracelimit::info_ratelimited!("Notifying the host of the guest system crash");
 
         let VtlCrash {
             vp_index,
@@ -824,11 +824,11 @@ mod inspect_helpers {
         // TODO: inspect::AsDebug would work here once
         // https://github.com/kupiakos/open-enum/pull/15 is merged.
         inspect::adhoc(|req| match *typ {
-            MemoryMapEntryType::MEMORY => req.value("MEMORY".into()),
-            MemoryMapEntryType::PERSISTENT => req.value("PERSISTENT".into()),
-            MemoryMapEntryType::PLATFORM_RESERVED => req.value("PLATFORM_RESERVED".into()),
-            MemoryMapEntryType::VTL2_PROTECTABLE => req.value("VTL2_PROTECTABLE".into()),
-            _ => req.value(typ.0.into()),
+            MemoryMapEntryType::MEMORY => req.value("MEMORY"),
+            MemoryMapEntryType::PERSISTENT => req.value("PERSISTENT"),
+            MemoryMapEntryType::PLATFORM_RESERVED => req.value("PLATFORM_RESERVED"),
+            MemoryMapEntryType::VTL2_PROTECTABLE => req.value("VTL2_PROTECTABLE"),
+            _ => req.value(typ.0),
         })
     }
 
@@ -840,7 +840,7 @@ mod inspect_helpers {
                 entry.range,
                 inspect::adhoc(|req| {
                     req.respond()
-                        .field("length", inspect::AsHex(entry.range.len()))
+                        .hex("length", entry.range.len())
                         .field("type", inspect_memory_map_entry_type(typ))
                         .field("vnode", entry.vnode);
                 }),

@@ -3,8 +3,6 @@
 
 //! Integration tests for hvlite's TTRPC interface.
 
-#![cfg(guest_arch = "x86_64")]
-
 use anyhow::Context;
 use guid::Guid;
 use hvlite_ttrpc_vmservice as vmservice;
@@ -19,10 +17,16 @@ use std::process::Stdio;
 use unix_socket::UnixStream;
 
 petri::test!(test_ttrpc_interface, |resolver| {
+    // Only supported on x86_64 for now.
+    if petri_artifacts_common::tags::MachineArch::host()
+        != petri_artifacts_common::tags::MachineArch::X86_64
+    {
+        return None;
+    }
     let openvmm = resolver.require(artifacts::OPENVMM_NATIVE);
     let kernel = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_KERNEL_NATIVE);
     let initrd = resolver.require(artifacts::loadable::LINUX_DIRECT_TEST_INITRD_NATIVE);
-    [openvmm.erase(), kernel.erase(), initrd.erase()]
+    Some([openvmm.erase(), kernel.erase(), initrd.erase()])
 });
 
 fn test_ttrpc_interface(

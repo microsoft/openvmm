@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;

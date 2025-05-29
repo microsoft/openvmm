@@ -313,7 +313,6 @@ async fn launch_workers(
         nvme_vfio: opt.nvme_vfio,
         mcr: opt.mcr,
         enable_shared_visibility_pool: opt.enable_shared_visibility_pool,
-        cvm_guest_vsm: opt.cvm_guest_vsm,
         halt_on_guest_halt: opt.halt_on_guest_halt,
         no_sidecar_hotplug: opt.no_sidecar_hotplug,
         gdbstub: opt.gdbstub,
@@ -443,6 +442,12 @@ async fn run_control(
 ) -> anyhow::Result<()> {
     let (control_send, mut control_recv) = mesh::channel();
     let mut control_send = Some(control_send);
+
+    if opt.signal_vtl0_started {
+        signal_vtl0_started(&driver)
+            .await
+            .context("failed to signal vtl0 started")?;
+    }
 
     let mut diag = DiagState::new().await?;
 
@@ -733,6 +738,19 @@ async fn run_control(
         }
     }
 
+    Ok(())
+}
+
+async fn signal_vtl0_started(driver: &DefaultDriver) -> anyhow::Result<()> {
+    tracing::info!("signaling vtl0 started early");
+    let (client, task) = guest_emulation_transport::spawn_get_worker(driver.clone())
+        .await
+        .context("failed to spawn GET")?;
+    client.complete_start_vtl0(None).await;
+    // Disconnect the GET so that it can be reused.
+    drop(client);
+    task.await.unwrap();
+    tracing::info!("signaled vtl0 start");
     Ok(())
 }
 

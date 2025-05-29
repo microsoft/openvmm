@@ -88,10 +88,9 @@ impl HyperVVM {
 
         tracing::info!(name, vmid = vmid.to_string(), "Created Hyper-V VM");
 
-        // Remove the default network adapter
-        powershell::run_remove_vm_network_adapter(&vmid)?;
-
-        Ok(Self {
+        // Instantiate this now so that its drop runs if there's a failure
+        // below.
+        let this = Self {
             name,
             vmid,
             destroyed: false,
@@ -101,7 +100,26 @@ impl HyperVVM {
             log_file,
             expected_boot_event,
             driver,
-        })
+        };
+
+        // Remove the default network adapter
+        powershell::run_remove_vm_network_adapter(&vmid)
+            .context("remove default network adapter")?;
+
+        // Remove the default SCSI controller
+        powershell::run_remove_vm_scsi_controller(&vmid, 0)
+            .context("remove default SCSI controller")?;
+
+        // Disable dynamic memory
+        powershell::run_set_vm_memory(
+            &vmid,
+            &powershell::HyperVSetVMMemoryArgs {
+                dynamic_memory_enabled: Some(false),
+                ..Default::default()
+            },
+        )?;
+
+        Ok(this)
     }
 
     /// Get the name of the VM
@@ -173,12 +191,12 @@ impl HyperVVM {
             .transpose()
     }
 
-    /// Set the VM processor count.
-    pub fn set_processor_count(&mut self, count: u32) -> anyhow::Result<()> {
-        powershell::run_set_vm_processor(powershell::HyperVSetVMProcessorArgs {
-            vmid: &self.vmid,
-            count: Some(count),
-        })
+    /// Set the VM processor topology.
+    pub fn set_processor(
+        &mut self,
+        args: &powershell::HyperVSetVMProcessorArgs,
+    ) -> anyhow::Result<()> {
+        powershell::run_set_vm_processor(&self.vmid, args)
     }
 
     /// Set the OpenHCL firmware file
@@ -207,19 +225,30 @@ impl HyperVVM {
     }
 
     /// Add a SCSI controller
-    pub fn add_scsi_controller(&mut self) -> anyhow::Result<()> {
-        powershell::run_add_vm_scsi_controller(&self.vmid)
+    pub fn add_scsi_controller(&mut self, target_vtl: u32) -> anyhow::Result<u32> {
+        let controller_number = powershell::run_add_vm_scsi_controller(&self.vmid)?;
+        if target_vtl != 0 {
+            powershell::run_set_vm_scsi_controller_target_vtl(
+                &self.ps_mod,
+                &self.vmid,
+                controller_number,
+                target_vtl,
+            )?;
+        }
+        Ok(controller_number)
     }
 
     /// Add a VHD
     pub fn add_vhd(
         &mut self,
         path: &Path,
+        controller_type: powershell::ControllerType,
         controller_location: Option<u32>,
         controller_number: Option<u32>,
     ) -> anyhow::Result<()> {
         powershell::run_add_vm_hard_disk_drive(powershell::HyperVAddVMHardDiskDriveArgs {
             vmid: &self.vmid,
+            controller_type,
             controller_location,
             controller_number,
             path: Some(path),
@@ -247,7 +276,7 @@ impl HyperVVM {
     pub async fn start(&self) -> anyhow::Result<()> {
         self.check_state(VmState::Off)?;
         hvc::hvc_start(&self.vmid)?;
-        self.wait_for_state(VmState::Running).await
+        Ok(())
     }
 
     /// Attempt to gracefully shut down the VM
@@ -255,7 +284,7 @@ impl HyperVVM {
         self.wait_for_shutdown_ic().await?;
         self.check_state(VmState::Running)?;
         hvc::hvc_stop(&self.vmid)?;
-        self.wait_for_state(VmState::Off).await
+        Ok(())
     }
 
     /// Attempt to gracefully restart the VM
@@ -263,7 +292,6 @@ impl HyperVVM {
         self.wait_for_shutdown_ic().await?;
         self.check_state(VmState::Running)?;
         hvc::hvc_restart(&self.vmid)?;
-        tracing::warn!("end state checking on restart not yet implemented for hyper-v vms");
         Ok(())
     }
 
@@ -374,10 +402,20 @@ impl HyperVVM {
 
         Ok(())
     }
+
+    /// Sets the VM firmware  command line.
+    pub fn set_vm_firmware_command_line(&self, openhcl_command_line: &str) -> anyhow::Result<()> {
+        powershell::run_set_vm_command_line(&self.vmid, &self.ps_mod, openhcl_command_line)
+    }
 }
 
 impl Drop for HyperVVM {
     fn drop(&mut self) {
-        let _ = self.remove_inner();
+        if std::env::var("PETRI_PRESERVE_VM")
+            .ok()
+            .is_none_or(|v| v.is_empty() || v == "0")
+        {
+            let _ = self.remove_inner();
+        }
     }
 }

@@ -138,12 +138,12 @@ where
             VpHaltReason::TripleFault { vtl } => {
                 let registers = self.vp.access_state(vtl).registers().ok().map(Arc::new);
 
+                tracing::error!(?vtl, vp = self.vp_index.index(), "triple fault");
                 self.trace_fault(
                     vtl,
                     vtl_guest_memory[vtl as usize].as_ref(),
                     registers.as_deref(),
                 );
-                tracing::error!(?vtl, "triple fault");
                 Err(HaltReason::TripleFault {
                     vp: self.vp_index.index(),
                     registers,
@@ -260,8 +260,8 @@ where
 {
     fn inspect_vtl(&mut self, gm: Option<&GuestMemory>, req: inspect::Request<'_>, vtl: Vtl) {
         let mut resp = req.respond();
-        resp.field("enabled", true);
-        self.vp.access_state(vtl).inspect_all(resp.request());
+        resp.field("enabled", true)
+            .merge(self.vp.access_state(vtl).inspect_all());
 
         let _ = gm;
         #[cfg(all(guest_arch = "x86_64", feature = "gdb"))]
@@ -337,10 +337,31 @@ where
             efer,
         } = *registers;
         tracing::error!(
-            rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi, r8, r9, r10, r11, r12, r13, r14, r15, rip,
+            vp = self.vp_index.index(),
+            ?vtl,
+            rax,
+            rcx,
+            rdx,
+            rbx,
+            rsp,
+            rbp,
+            rsi,
+            rdi,
+            r8,
+            r9,
+            r10,
+            r11,
+            r12,
+            r13,
+            r14,
+            r15,
+            rip,
             rflags,
+            "triple fault register state",
         );
         tracing::error!(
+            ?vtl,
+            vp = self.vp_index.index(),
             ?cs,
             ?ds,
             ?es,
@@ -357,6 +378,7 @@ where
             cr4,
             cr8,
             efer,
+            "triple fault system register state",
         );
 
         #[cfg(feature = "gdb")]
@@ -708,10 +730,12 @@ struct Vp {
 
 impl Inspect for Vp {
     fn inspect(&self, req: inspect::Request<'_>) {
-        let mut resp = req.respond();
-        resp.merge(&self.vp_info);
-        self.send
-            .send(VpEvent::State(StateEvent::Inspect(resp.request().defer())));
+        req.respond()
+            .merge(&self.vp_info)
+            .merge(inspect::adhoc(|req| {
+                self.send
+                    .send(VpEvent::State(StateEvent::Inspect(req.defer())))
+            }));
     }
 }
 
@@ -1218,8 +1242,10 @@ impl RunnerInner {
         match event {
             StateEvent::Inspect(deferred) => {
                 deferred.respond(|resp| {
-                    resp.field("state", self.state);
-                    vp.inspect_vp(&self.inner.vtl_guest_memory, resp.request());
+                    resp.field("state", self.state)
+                        .merge(inspect::adhoc_mut(|req| {
+                            vp.inspect_vp(&self.inner.vtl_guest_memory, req)
+                        }));
                 });
             }
             StateEvent::SetInitialRegs(rpc) => {

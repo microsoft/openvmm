@@ -11,18 +11,19 @@ use super::PetriVmArtifactsOpenVmm;
 use super::PetriVmConfigOpenVmm;
 use super::PetriVmResourcesOpenVmm;
 use super::SCSI_INSTANCE;
+use super::memdiff_disk_from_artifact;
 use crate::Firmware;
 use crate::IsolationType;
 use crate::PcatGuest;
 use crate::PetriLogSource;
 use crate::PetriTestParams;
+use crate::ProcessorTopology;
 use crate::SIZE_1_GB;
 use crate::UefiGuest;
 use crate::linux_direct_serial_agent::LinuxDirectSerialAgent;
 use crate::openhcl_diag::OpenHclDiagHandler;
 use anyhow::Context;
 use disk_backend_resources::LayeredDiskHandle;
-use disk_backend_resources::layer::DiskLayerHandle;
 use disk_backend_resources::layer::RamDiskLayerHandle;
 use framebuffer::FRAMEBUFFER_SIZE;
 use framebuffer::Framebuffer;
@@ -33,8 +34,10 @@ use get_resources::crash::GuestCrashDeviceHandle;
 use get_resources::ged::FirmwareEvent;
 use guid::Guid;
 use hvlite_defs::config::Config;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_WITH_VTL2;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
@@ -82,6 +85,7 @@ use vm_resource::kind::SerialBackendHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vmbus_serial_resources::VmbusSerialDeviceHandle;
 use vmbus_serial_resources::VmbusSerialPort;
+use vmgs_resources::VmgsResource;
 use vtl2_settings_proto::Vtl2Settings;
 
 impl PetriVmConfigOpenVmm {
@@ -276,9 +280,15 @@ impl PetriVmConfigOpenVmm {
                     SIZE_1_GB
                 },
                 mmio_gaps: if firmware.is_openhcl() {
-                    DEFAULT_MMIO_GAPS_WITH_VTL2.into()
+                    match arch {
+                        MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into(),
+                        MachineArch::Aarch64 => DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into(),
+                    }
                 } else {
-                    DEFAULT_MMIO_GAPS.into()
+                    match arch {
+                        MachineArch::X86_64 => DEFAULT_MMIO_GAPS_X86.into(),
+                        MachineArch::Aarch64 => DEFAULT_MMIO_GAPS_AARCH64.into(),
+                    }
                 },
                 prefetch_memory: false,
             },
@@ -286,7 +296,7 @@ impl PetriVmConfigOpenVmm {
                 proc_count: 2,
                 vps_per_socket: None,
                 enable_smt: None,
-                arch: Default::default(),
+                arch: None,
             },
 
             // Base chipset
@@ -338,8 +348,11 @@ impl PetriVmConfigOpenVmm {
             virtio_devices: vec![],
             #[cfg(windows)]
             vpci_resources: vec![],
-            vmgs_disk: None,
-            format_vmgs: false,
+            vmgs: if firmware.is_openhcl() {
+                None
+            } else {
+                Some(VmgsResource::Ephemeral)
+            },
             secure_boot_enabled: false,
             debugger_rpc: None,
             generation_id_recv: None,
@@ -397,7 +410,8 @@ impl PetriVmConfigOpenVmm {
             ged,
             vtl2_settings,
             framebuffer_access,
-        })
+        }
+        .with_processor_topology(ProcessorTopology::default()))
     }
 }
 
@@ -639,22 +653,15 @@ impl PetriVmConfigSetupCore<'_> {
             }
             Firmware::Pcat { guest, .. } => {
                 let disk_path = guest.artifact();
-                let inner_disk = open_disk_type(disk_path.as_ref(), true)?;
                 let guest_media = match guest {
                     PcatGuest::Vhd(_) => GuestMedia::Disk {
                         read_only: false,
                         disk_parameters: None,
-                        disk_type: LayeredDiskHandle {
-                            layers: vec![
-                                RamDiskLayerHandle { len: None }.into_resource().into(),
-                                DiskLayerHandle(inner_disk).into_resource().into(),
-                            ],
-                        }
-                        .into_resource(),
+                        disk_type: memdiff_disk_from_artifact(disk_path)?,
                     },
                     PcatGuest::Iso(_) => GuestMedia::Dvd(
                         SimpleScsiDvdHandle {
-                            media: Some(inner_disk),
+                            media: Some(open_disk_type(disk_path.as_ref(), true)?),
                             requests: None,
                         }
                         .into_resource(),
@@ -690,15 +697,9 @@ impl PetriVmConfigSetupCore<'_> {
                             device: SimpleScsiDiskHandle {
                                 read_only: false,
                                 parameters: Default::default(),
-                                disk: LayeredDiskHandle {
-                                    layers: vec![
-                                        RamDiskLayerHandle { len: None }.into_resource().into(),
-                                        DiskLayerHandle(open_disk_type(disk_path.as_ref(), true)?)
-                                            .into_resource()
-                                            .into(),
-                                    ],
-                                }
-                                .into_resource(),
+                                disk: memdiff_disk_from_artifact(
+                                    disk_path.expect("not uefi guest none"),
+                                )?,
                             }
                             .into_resource(),
                         }],
@@ -722,15 +723,9 @@ impl PetriVmConfigSetupCore<'_> {
                         msix_count: 64,
                         namespaces: vec![NamespaceDefinition {
                             nsid: BOOT_NVME_NSID,
-                            disk: LayeredDiskHandle {
-                                layers: vec![
-                                    RamDiskLayerHandle { len: None }.into_resource().into(),
-                                    DiskLayerHandle(open_disk_type(disk_path.as_ref(), true)?)
-                                        .into_resource()
-                                        .into(),
-                                ],
-                            }
-                            .into_resource(),
+                            disk: memdiff_disk_from_artifact(
+                                disk_path.expect("not uefi guest none"),
+                            )?,
                             read_only: false,
                         }],
                     }
@@ -829,7 +824,7 @@ impl PetriVmConfigSetupCore<'_> {
             com2: true,
             vmbus_redirection: false,
             vtl2_settings: None, // Will be added at startup to allow tests to modify
-            vmgs_disk: Some(
+            vmgs: VmgsResource::Disk(
                 LayeredDiskHandle::single_layer(RamDiskLayerHandle {
                     len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
                 })
@@ -843,6 +838,7 @@ impl PetriVmConfigSetupCore<'_> {
             secure_boot_template: get_resources::ged::GuestSecureBootTemplateType::None,
             enable_battery: false,
             no_persistent_secrets: true,
+            igvm_attest_test_config: None,
         };
 
         Ok((ged, guest_request_send))

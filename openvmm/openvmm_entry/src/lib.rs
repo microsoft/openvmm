@@ -5,6 +5,7 @@
 //! for the worker process.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 mod cli_args;
 mod crash_dump;
@@ -30,9 +31,11 @@ use clap::Parser;
 use cli_args::DiskCliKind;
 use cli_args::EndpointConfigCli;
 use cli_args::NicConfigCli;
+use cli_args::ProvisionVmgs;
 use cli_args::SerialConfigCli;
 use cli_args::UefiConsoleModeCli;
 use cli_args::VirtioBusCli;
+use cli_args::VmgsCli;
 use crash_dump::spawn_dump_handler;
 use disk_backend_resources::DiskLayerDescription;
 use disk_backend_resources::layer::DiskLayerHandle;
@@ -55,8 +58,10 @@ use gdma_resources::VportDefinition;
 use get_resources::ged::GuestServicingFlags;
 use guid::Guid;
 use hvlite_defs::config::Config;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS;
-use hvlite_defs::config::DEFAULT_MMIO_GAPS_WITH_VTL2;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_X86_WITH_VTL2;
 use hvlite_defs::config::DEFAULT_PCAT_BOOT_ORDER;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::HypervisorConfig;
@@ -74,6 +79,7 @@ use hvlite_defs::rpc::PulseSaveRestoreError;
 use hvlite_defs::rpc::VmRpc;
 use hvlite_defs::worker::VM_WORKER;
 use hvlite_defs::worker::VmWorkerParameters;
+use hvlite_helpers::disk::create_disk_type;
 use hvlite_helpers::disk::open_disk_type;
 use input_core::MultiplexedInputHandle;
 use inspect::InspectMut;
@@ -144,6 +150,7 @@ use vmbus_serial_resources::VmbusSerialDeviceHandle;
 use vmbus_serial_resources::VmbusSerialPort;
 use vmcore::non_volatile_store::resources::EphemeralNonVolatileStoreHandle;
 use vmgs_resources::VmgsFileHandle;
+use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vnc_worker_defs::VncParameters;
 
@@ -244,6 +251,18 @@ fn vm_config_from_command_line(
                     .unwrap();
                 Some(config)
             }
+            SerialConfigCli::File(path) => {
+                let (config, serial) = serial_io::anonymous_serial_pair(&serial_driver)?;
+                let file = fs_err::File::create(path).context("failed to create file")?;
+
+                thread::Builder::new()
+                    .name(name.to_owned())
+                    .spawn(move || {
+                        let _ = block_on(futures::io::copy(serial, &mut AllowStdIo::new(file)));
+                    })
+                    .unwrap();
+                Some(config)
+            }
             SerialConfigCli::None => None,
             SerialConfigCli::Pipe(path) => {
                 Some(serial_io::bind_serial(&path).context("failed to bind serial")?)
@@ -290,6 +309,15 @@ fn vm_config_from_command_line(
             SerialConfigCli::Stderr => {
                 let mut io = SerialIo::new().context("creating serial IO")?;
                 io.spawn_copy_out(name, term::raw_stderr());
+                // Ensure there is no input so that the serial devices don't see
+                // EOF and think the port is disconnected.
+                io.config.input = None;
+                Some(io.config)
+            }
+            SerialConfigCli::File(path) => {
+                let mut io = SerialIo::new().context("creating serial IO")?;
+                let file = fs_err::File::create(path).context("failed to create file")?;
+                io.spawn_copy_out(name, file);
                 // Ensure there is no input so that the serial devices don't see
                 // EOF and think the port is disconnected.
                 io.config.input = None;
@@ -856,6 +884,17 @@ fn vm_config_from_command_line(
         };
     }
 
+    let mut vmgs = Some(if let Some(VmgsCli { kind, provision }) = &opt.vmgs {
+        let disk = disk_open(kind, false).context("failed to open vmgs disk")?;
+        match provision {
+            ProvisionVmgs::OnEmpty => VmgsResource::Disk(disk),
+            ProvisionVmgs::OnFailure => VmgsResource::ReprovisionOnFailure(disk),
+            ProvisionVmgs::True => VmgsResource::Reprovision(disk),
+        }
+    } else {
+        VmgsResource::Ephemeral
+    });
+
     if with_get && with_hv {
         let vtl2_settings = vtl2_settings_proto::Vtl2Settings {
             version: vtl2_settings_proto::vtl2_settings_base::Version::V1.into(),
@@ -869,14 +908,21 @@ fn vm_config_from_command_line(
 
         let (send, guest_request_recv) = mesh::channel();
         resources.ged_rpc = Some(send);
-        let vmgs_disk = if let Some(disk) = &opt.get_vmgs {
-            disk_open(disk, false).context("failed to open GET vmgs disk")?
+
+        let vmgs = vmgs.take().unwrap();
+        // OpenHCL doesn't support ephemeral guest state yet,
+        // so give it a memory-backed VMGS
+        let vmgs = if matches!(vmgs, VmgsResource::Ephemeral) {
+            VmgsResource::Disk(
+                disk_backend_resources::LayeredDiskHandle::single_layer(RamDiskLayerHandle {
+                    len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
+                })
+                .into_resource(),
+            )
         } else {
-            disk_backend_resources::LayeredDiskHandle::single_layer(RamDiskLayerHandle {
-                len: Some(vmgs_format::VMGS_DEFAULT_CAPACITY),
-            })
-            .into_resource()
+            vmgs
         };
+
         vmbus_devices.extend([
             (
                 openhcl_vtl,
@@ -925,7 +971,7 @@ fn vm_config_from_command_line(
                     com2: with_vmbus_com2_serial,
                     vtl2_settings: Some(prost::Message::encode_to_vec(&vtl2_settings)),
                     vmbus_redirection: opt.vmbus_redirect,
-                    vmgs_disk: Some(vmgs_disk),
+                    vmgs,
                     framebuffer: opt
                         .vtl2_gfx
                         .then(|| SharedFramebufferHandle.into_resource()),
@@ -946,6 +992,7 @@ fn vm_config_from_command_line(
                     },
                     enable_battery: opt.battery,
                     no_persistent_secrets: true,
+                    igvm_attest_test_config: None,
                 }
                 .into_resource(),
             ),
@@ -959,7 +1006,7 @@ fn vm_config_from_command_line(
             TpmRegisterLayout::Mmio
         };
 
-        let (ppi_store, nvram_store) = if opt.vmgs_file.is_some() {
+        let (ppi_store, nvram_store) = if opt.vmgs.is_some() {
             (
                 VmgsFileHandle::new(vmgs_format::FileId::TPM_PPI, true).into_resource(),
                 VmgsFileHandle::new(vmgs_format::FileId::TPM_NVRAM, true).into_resource(),
@@ -1098,9 +1145,15 @@ fn vm_config_from_command_line(
             opt.igvm_vtl2_relocation_type,
             Vtl2BaseAddressType::Vtl2Allocate { .. },
         ) {
-        DEFAULT_MMIO_GAPS_WITH_VTL2.into()
+        if is_x86 {
+            DEFAULT_MMIO_GAPS_X86_WITH_VTL2.into()
+        } else {
+            DEFAULT_MMIO_GAPS_AARCH64_WITH_VTL2.into()
+        }
+    } else if is_x86 {
+        DEFAULT_MMIO_GAPS_X86.into()
     } else {
-        DEFAULT_MMIO_GAPS.into()
+        DEFAULT_MMIO_GAPS_AARCH64.into()
     };
 
     if let Some(path) = &opt.openhcl_dump_path {
@@ -1110,15 +1163,18 @@ fn vm_config_from_command_line(
     }
 
     #[cfg(guest_arch = "aarch64")]
-    let topology_arch = hvlite_defs::config::Aarch64TopologyConfig {
-        // TODO: allow this to be configured from the command line
-        gic_config: None,
-    };
+    let topology_arch = hvlite_defs::config::ArchTopologyConfig::Aarch64(
+        hvlite_defs::config::Aarch64TopologyConfig {
+            // TODO: allow this to be configured from the command line
+            gic_config: None,
+        },
+    );
     #[cfg(guest_arch = "x86_64")]
-    let topology_arch = hvlite_defs::config::X86TopologyConfig {
-        apic_id_offset: opt.apic_id_offset,
-        x2apic: opt.x2apic,
-    };
+    let topology_arch =
+        hvlite_defs::config::ArchTopologyConfig::X86(hvlite_defs::config::X86TopologyConfig {
+            apic_id_offset: opt.apic_id_offset,
+            x2apic: opt.x2apic,
+        });
 
     let with_isolation = if let Some(isolation) = &opt.isolation {
         // TODO: For now, isolation is only supported with VTL2.
@@ -1253,27 +1309,6 @@ fn vm_config_from_command_line(
         );
     }
 
-    let (vmgs_disk, format_vmgs) = if let Some(path) = &opt.vmgs_file {
-        let file = fs_err::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(path)
-            .context("failed to create or open vmgs file")?;
-        let format_vmgs = file.metadata()?.len() == 0;
-        if format_vmgs {
-            file.set_len(vmgs_format::VMGS_DEFAULT_CAPACITY)?;
-            disk_vhd1::Vhd1Disk::make_fixed(file.file())
-                .context("failed to format VHD1 file for VMGS")?;
-        }
-        (
-            Some(disk_backend_resources::FixedVhd1DiskHandle(file.into()).into_resource()),
-            format_vmgs,
-        )
-    } else {
-        (None, false)
-    };
-
     let mut cfg = Config {
         chipset,
         load_mode,
@@ -1293,7 +1328,7 @@ fn vm_config_from_command_line(
                 cli_args::SmtConfigCli::Force => Some(true),
                 cli_args::SmtConfigCli::Off => Some(false),
             },
-            arch: topology_arch,
+            arch: Some(topology_arch),
         },
         hypervisor: HypervisorConfig {
             with_hv,
@@ -1338,8 +1373,7 @@ fn vm_config_from_command_line(
         chipset_devices,
         #[cfg(windows)]
         vpci_resources,
-        vmgs_disk,
-        format_vmgs,
+        vmgs,
         secure_boot_enabled: opt.secure_boot,
         custom_uefi_vars,
         firmware_event_send: None,
@@ -1525,10 +1559,16 @@ fn disk_open_inner(
         &DiskCliKind::Memory(len) => {
             layers.push(layer(RamDiskLayerHandle { len: Some(len) }));
         }
-        DiskCliKind::File(path) => layers.push(LayerOrDisk::Disk(
+        DiskCliKind::File {
+            path,
+            create_with_len,
+        } => layers.push(LayerOrDisk::Disk(if let Some(size) = create_with_len {
+            create_disk_type(path, *size)
+                .with_context(|| format!("failed to create {}", path.display()))?
+        } else {
             open_disk_type(path, read_only)
-                .with_context(|| format!("failed to open {}", path.display()))?,
-        )),
+                .with_context(|| format!("failed to open {}", path.display()))?
+        })),
         DiskCliKind::Blob { kind, url } => {
             layers.push(disk(disk_backend_resources::BlobDiskHandle {
                 url: url.to_owned(),
@@ -2180,6 +2220,7 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
         Resume(bool),
         Reset(Result<(), RemoteError>),
         PulseSaveRestore(Result<(), PulseSaveRestoreError>),
+        ServiceVtl2(anyhow::Result<Duration>),
     }
 
     enum Event {
@@ -2373,6 +2414,18 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                             Err(err) => tracing::error!(
                                 error = &err as &dyn std::error::Error,
                                 "pulse save/restore failed"
+                            ),
+                        },
+                        StateChange::ServiceVtl2(r) => match r {
+                            Ok(dur) => {
+                                tracing::info!(
+                                    duration = dur.as_millis() as i64,
+                                    "vtl2 servicing complete"
+                                )
+                            }
+                            Err(err) => tracing::error!(
+                                error = err.as_ref() as &dyn std::error::Error,
+                                "vtl2 servicing failed"
                             ),
                         },
                     },
@@ -2716,35 +2769,35 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 user_mode_only,
                 igvm,
             } => {
-                let r = async {
+                let paravisor_diag = paravisor_diag.clone();
+                let vm_rpc = vm_rpc.clone();
+                let igvm = igvm.or_else(|| opt.igvm.clone());
+                let ged_rpc = resources.ged_rpc.clone();
+                let r = async move {
                     let start;
                     if user_mode_only {
                         start = Instant::now();
                         paravisor_diag.restart().await?;
                     } else {
-                        let path = igvm
-                            .as_ref()
-                            .or(opt.igvm.as_ref())
-                            .context("no igvm file loaded")?;
+                        let path = igvm.context("no igvm file loaded")?;
                         let file = fs_err::File::open(path)?;
                         start = Instant::now();
                         hvlite_helpers::underhill::service_underhill(
                             &vm_rpc,
-                            resources.ged_rpc.as_ref().context("no GED")?,
+                            ged_rpc.as_ref().context("no GED")?,
                             GuestServicingFlags::default(),
                             file.into(),
                         )
                         .await?;
                     }
-                    anyhow::Ok(start)
+                    let end = Instant::now();
+                    Ok(end - start)
                 }
-                .await;
-                let end = Instant::now();
-                match r {
-                    Ok(start) => {
-                        println!("servicing time: {}ms", (end - start).as_millis());
-                    }
-                    Err(err) => eprintln!("error: {:#}", err),
+                .map(|r| Ok(StateChange::ServiceVtl2(r)));
+                if state_change_task.is_some() {
+                    tracing::error!("state change already in progress");
+                } else {
+                    state_change_task = Some(driver.spawn("state-change", r));
                 }
             }
             InteractiveCommand::Quit => {
@@ -2898,7 +2951,7 @@ impl mesh_rpc::client::Dial for DiagDialer {
                 ),
             )
             .await
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            .map_err(io::Error::other)?;
 
         PolledSocket::new(&self.driver, socket)
     }

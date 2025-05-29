@@ -4,6 +4,7 @@
 //! `pcapng` compatible packet capture endpoint implementation.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use async_trait::async_trait;
 use futures::FutureExt;
@@ -23,6 +24,7 @@ use net_backend::Queue;
 use net_backend::QueueConfig;
 use net_backend::RssConfig;
 use net_backend::RxId;
+use net_backend::TxError;
 use net_backend::TxId;
 use net_backend::TxOffloadSupport;
 use net_backend::TxSegment;
@@ -543,7 +545,7 @@ impl Queue for PacketCaptureQueue {
         self.current_mut().tx_avail(segments)
     }
 
-    fn tx_poll(&mut self, done: &mut [TxId]) -> anyhow::Result<usize> {
+    fn tx_poll(&mut self, done: &mut [TxId]) -> Result<usize, TxError> {
         self.current_mut().tx_poll(done)
     }
 

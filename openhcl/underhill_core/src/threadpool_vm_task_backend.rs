@@ -44,11 +44,10 @@ enum Target {
 
 impl Inspect for Target {
     fn inspect(&self, req: inspect::Request<'_>) {
-        let v = match self {
-            Target::Untargeted(_) => "any".into(),
-            Target::Targeted(driver) => driver.current_target_cpu().into(),
-        };
-        req.value(v)
+        match self {
+            Target::Untargeted(_) => req.value("any"),
+            Target::Targeted(driver) => req.value(driver.current_target_cpu()),
+        }
     }
 }
 

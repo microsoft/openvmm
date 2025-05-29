@@ -4,6 +4,7 @@
 //! Microsoft hypervisor definitions.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 #![no_std]
 
 use bitfield_struct::bitfield;
@@ -268,12 +269,13 @@ pub struct HvIsolationConfiguration {
 open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HypercallCode: u16 {
-        #![allow(non_upper_case_globals)]
+        #![expect(non_upper_case_globals)]
 
         HvCallSwitchVirtualAddressSpace = 0x0001,
         HvCallFlushVirtualAddressSpace = 0x0002,
         HvCallFlushVirtualAddressList = 0x0003,
         HvCallNotifyLongSpinWait = 0x0008,
+        HvCallInvokeHypervisorDebugger = 0x000a,
         HvCallSendSyntheticClusterIpi = 0x000b,
         HvCallModifyVtlProtectionMask = 0x000c,
         HvCallEnablePartitionVtl = 0x000d,
@@ -291,6 +293,7 @@ open_enum! {
         HvCallSignalEvent = 0x005D,
         HvCallOutputDebugCharacter = 0x0071,
         HvCallRetargetDeviceInterrupt = 0x007e,
+        HvCallNotifyPartitionEvent = 0x0087,
         HvCallAssertVirtualInterrupt = 0x0094,
         HvCallStartVirtualProcessor = 0x0099,
         HvCallGetVpIndexFromApicId = 0x009A,
@@ -456,7 +459,7 @@ impl core::error::Error for HvError {}
 macro_rules! hv_error {
     ($ty:ty, $(#[doc = $doc:expr] $ident:ident = $val:expr),* $(,)?) => {
 
-        #[allow(non_upper_case_globals)]
+        #[expect(non_upper_case_globals)]
         impl $ty {
             $(
                 #[doc = $doc]
@@ -475,7 +478,7 @@ macro_rules! hv_error {
             fn doc_str(&self) -> Option<&'static str> {
                 Some(match self.0.get() {
                     $(
-                        $val => $doc,
+                        $val => const { $doc.trim_ascii() },
                     )*
                     _ => return None,
                 })
@@ -712,7 +715,7 @@ impl From<AlignedU128> for u128 {
 open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvMessageType: u32 {
-        #![allow(non_upper_case_globals)]
+        #![expect(non_upper_case_globals)]
 
         HvMessageTypeNone = 0x00000000,
 
@@ -1193,7 +1196,7 @@ pub mod hypercall {
     open_enum::open_enum! {
         #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
         pub enum HvInterceptType: u32 {
-            #![allow(non_upper_case_globals)]
+            #![expect(non_upper_case_globals)]
             HvInterceptTypeX64IoPort = 0x00000000,
             HvInterceptTypeX64Msr = 0x00000001,
             HvInterceptTypeX64Cpuid = 0x00000002,
@@ -1773,13 +1776,37 @@ pub mod hypercall {
     pub struct FlushVirtualAddressSpaceEx {
         pub address_space: u64,
         pub flags: HvFlushFlags,
-        // Followed by an HvVpSet
+        pub vp_set_format: u64,
+        pub vp_set_valid_banks_mask: u64,
+        // Followed by the variable-sized part of an HvVpSet
     }
 
     #[repr(C)]
     #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub struct PinUnpinGpaPageRangesHeader {
         pub reserved: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct SendSyntheticClusterIpi {
+        pub vector: u32,
+        pub target_vtl: HvInputVtl,
+        pub flags: u8,
+        pub reserved: u16,
+        pub processor_mask: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+    pub struct SendSyntheticClusterIpiEx {
+        pub vector: u32,
+        pub target_vtl: HvInputVtl,
+        pub flags: u8,
+        pub reserved: u16,
+        pub vp_set_format: u64,
+        pub vp_set_valid_banks_mask: u64,
+        // Followed by the variable-sized part of an HvVpSet
     }
 
     #[bitfield(u64)]
@@ -1804,6 +1831,18 @@ pub mod hypercall {
     #[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
     #[repr(transparent)]
     pub struct HvGvaRange(pub u64);
+
+    impl From<u64> for HvGvaRange {
+        fn from(value: u64) -> Self {
+            Self(value)
+        }
+    }
+
+    impl From<HvGvaRange> for u64 {
+        fn from(value: HvGvaRange) -> Self {
+            value.0
+        }
+    }
 
     impl HvGvaRange {
         pub fn as_simple(self) -> HvGvaRangeSimple {
@@ -1960,7 +1999,7 @@ macro_rules! registers {
         open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
             pub enum $name: u32 {
-        #![allow(non_upper_case_globals)]
+        #![expect(non_upper_case_globals)]
                 $($variant = $value,)*
                 InstructionEmulationHints = 0x00000002,
                 InternalActivityState = 0x00000004,
@@ -2638,7 +2677,7 @@ const_assert!(size_of::<HvArm64InterceptMessageHeader>() == 0x18);
 impl MessagePayload for HvArm64InterceptMessageHeader {}
 
 #[repr(transparent)]
-#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+#[derive(Debug, Copy, Clone, IntoBytes, Immutable, KnownLayout, FromBytes)]
 pub struct HvX64IoPortAccessInfo(pub u8);
 
 impl HvX64IoPortAccessInfo {
@@ -2713,7 +2752,7 @@ pub struct HvArm64MemoryAccessInfo {
 open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvCacheType: u32 {
-        #![allow(non_upper_case_globals)]
+        #![expect(non_upper_case_globals)]
         HvCacheTypeUncached = 0,
         HvCacheTypeWriteCombining = 1,
         HvCacheTypeWriteThrough = 4,
@@ -3017,7 +3056,7 @@ impl HvX64RegisterAccessInfo {
 open_enum! {
     #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
     pub enum HvInterruptType : u32  {
-        #![allow(non_upper_case_globals)]
+        #![expect(non_upper_case_globals)]
         HvArm64InterruptTypeFixed = 0x0000,
         HvX64InterruptTypeFixed = 0x0000,
         HvX64InterruptTypeLowestPriority = 0x0001,
@@ -3669,7 +3708,7 @@ pub struct HvRegisterVpAssistPage {
 
 #[bitfield(u32)]
 #[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
-pub struct X64RegisterPageDirtyFlags {
+pub struct HvX64RegisterPageDirtyFlags {
     pub general_purpose: bool,
     pub instruction_pointer: bool,
     pub xmm: bool,
@@ -3685,7 +3724,7 @@ pub struct HvX64RegisterPage {
     pub version: u16,
     pub is_valid: u8,
     pub vtl: u8,
-    pub dirty: X64RegisterPageDirtyFlags,
+    pub dirty: HvX64RegisterPageDirtyFlags,
     pub gp_registers: [u64; 16],
     pub rip: u64,
     pub rflags: u64,
@@ -3706,6 +3745,39 @@ pub struct HvX64RegisterPage {
 }
 
 const _: () = assert!(size_of::<HvX64RegisterPage>() == HV_PAGE_SIZE_USIZE);
+
+#[bitfield(u32)]
+#[derive(IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HvAarch64RegisterPageDirtyFlags {
+    _unused: bool,
+    pub instruction_pointer: bool,
+    pub processor_state: bool,
+    pub control_registers: bool,
+    #[bits(28)]
+    reserved: u32,
+}
+
+#[repr(C)]
+#[derive(Debug, IntoBytes, Immutable, KnownLayout, FromBytes)]
+pub struct HvAarch64RegisterPage {
+    pub version: u16,
+    pub is_valid: u8,
+    pub vtl: u8,
+    pub dirty: HvAarch64RegisterPageDirtyFlags,
+    // Reserved.
+    pub _rsvd: [u64; 33],
+    // Instruction pointer.
+    pub pc: u64,
+    // Processor state.
+    pub cpsr: u64,
+    // Control registers.
+    pub sctlr_el1: u64,
+    pub tcr_el1: u64,
+    // Reserved.
+    pub reserved_end: [u8; 3792],
+}
+
+const _: () = assert!(size_of::<HvAarch64RegisterPage>() == HV_PAGE_SIZE_USIZE);
 
 #[bitfield(u64)]
 pub struct HvRegisterVsmWpWaitForTlbLock {

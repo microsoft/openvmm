@@ -10,7 +10,6 @@ use petri::OpenHclServicingFlags;
 use petri::ResolvedArtifact;
 use petri::openvmm::PetriVmConfigOpenVmm;
 use petri::pipette::cmd;
-#[cfg(guest_arch = "x86_64")]
 use petri_artifacts_vmm_test::artifacts::openhcl_igvm::LATEST_LINUX_DIRECT_TEST_X64;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use storvsp_resources::ScsiControllerHandle;
@@ -31,17 +30,19 @@ async fn openhcl_servicing_core(
         .run()
         .await?;
 
-    agent.ping().await?;
+    for _ in 0..3 {
+        agent.ping().await?;
 
-    // Test that inspect serialization works with the old version.
-    vm.test_inspect_openhcl().await?;
+        // Test that inspect serialization works with the old version.
+        vm.test_inspect_openhcl().await?;
 
-    vm.restart_openhcl(new_openhcl, flags).await?;
+        vm.restart_openhcl(&new_openhcl, flags).await?;
 
-    agent.ping().await?;
+        agent.ping().await?;
 
-    // Test that inspect serialization works with the new version.
-    vm.test_inspect_openhcl().await?;
+        // Test that inspect serialization works with the new version.
+        vm.test_inspect_openhcl().await?;
+    }
 
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
@@ -67,7 +68,7 @@ async fn openhcl_servicing_keepalive(
 ) -> Result<(), anyhow::Error> {
     openhcl_servicing_core(
         config,
-        "OPENHCL_ENABLE_VTL2_GPA_POOL=512",
+        "OPENHCL_ENABLE_VTL2_GPA_POOL=512 OPENHCL_SIDECAR=off", // disable sidecar until #1345 is fixed
         igvm_file,
         OpenHclServicingFlags {
             enable_nvme_keepalive: true,
@@ -122,7 +123,7 @@ async fn openhcl_servicing_shutdown_ic(
     cmd!(sh, "ls /dev/sda").run().await?;
 
     let shutdown_ic = vm.wait_for_enlightened_shutdown_ready().await?;
-    vm.restart_openhcl(igvm_file, OpenHclServicingFlags::default())
+    vm.restart_openhcl(&igvm_file, OpenHclServicingFlags::default())
         .await?;
     // VTL2 will disconnect and then reconnect the shutdown IC across a servicing event.
     tracing::info!("waiting for shutdown IC to close");

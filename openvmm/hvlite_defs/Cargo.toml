@@ -12,6 +12,7 @@ hvlite_pcat_locator.workspace = true
 # vmcore
 memory_range.workspace = true
 vm_resource.workspace = true
+vmgs_resources.workspace = true
 
 vmotherboard.workspace = true
 firmware_uefi_custom_vars.workspace = true
@@ -35,9 +36,6 @@ thiserror.workspace = true
 [target.'cfg(windows)'.dependencies]
 virt_whp.workspace = true
 vmbus_proxy.workspace = true
-
-[build-dependencies]
-build_rs_guest_arch.workspace = true
 
 [lints]
 workspace = true

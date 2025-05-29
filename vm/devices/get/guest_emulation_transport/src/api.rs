@@ -26,6 +26,7 @@ use guid::Guid;
 pub mod platform_settings {
     pub use get_protocol::dps_json::PcatBootDevice;
 
+    use get_protocol::dps_json::GuestStateLifetime;
     use guid::Guid;
     use inspect::Inspect;
 
@@ -119,6 +120,9 @@ pub mod platform_settings {
         pub firmware_mode_is_pcat: bool,
         pub imc_enabled: bool,
         pub cxl_memory_enabled: bool,
+
+        #[inspect(debug)]
+        pub guest_state_lifetime: GuestStateLifetime,
     }
 
     #[derive(Copy, Clone, Debug, Inspect)]

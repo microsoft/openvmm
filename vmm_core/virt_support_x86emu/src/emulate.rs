@@ -18,6 +18,7 @@ use vm_topology::processor::VpIndex;
 use x86defs::Exception;
 use x86defs::RFlags;
 use x86defs::SegmentRegister;
+use x86emu::AlignmentMode;
 use x86emu::Gp;
 use x86emu::RegisterIndex;
 use x86emu::Segment;
@@ -78,7 +79,7 @@ pub trait EmulatorSupport {
     fn physical_address(&self) -> Option<u64>;
 
     /// The gva translation included in the intercept message header, if valid.
-    fn initial_gva_translation(&self) -> Option<InitialTranslation>;
+    fn initial_gva_translation(&mut self) -> Option<InitialTranslation>;
 
     /// If interrupt pending is marked in the intercept message
     fn interruption_pending(&self) -> bool;
@@ -193,6 +194,7 @@ pub struct EmuTranslateResult {
 }
 
 /// The translation, if any, provided in the intercept message and provided by [`EmulatorSupport`].
+#[derive(Debug)]
 pub struct InitialTranslation {
     /// GVA for the translation
     pub gva: u64,
@@ -470,6 +472,42 @@ pub async fn emulate<T: EmulatorSupport>(
     }
 
     Ok(())
+}
+
+/// Performs a memory operation as if it had been performed by an emulated instruction.
+///
+/// "As if it had been performed by an emulated instruction" means that the given
+/// GVA will be translated to a GPA, subject to applicable segmentation, permission,
+/// and alignment checks, may be determined to be MMIO instead of RAM, etc.
+pub async fn emulate_insn_memory_op<T: EmulatorSupport>(
+    support: &mut T,
+    gm: &GuestMemory,
+    dev: &impl CpuIo,
+    gva: u64,
+    segment: Segment,
+    alignment: AlignmentMode,
+    op: EmulatedMemoryOperation<'_>,
+) -> Result<(), VpHaltReason<T::Error>> {
+    assert!(!support.interruption_pending());
+
+    let vendor = support.vendor();
+    let mut cpu = EmulatorCpu::new(gm, dev, support);
+    let mut emu = x86emu::Emulator::new(&mut cpu, vendor, &[]);
+
+    match op {
+        EmulatedMemoryOperation::Read(data) => emu.read_memory(segment, gva, alignment, data).await,
+        EmulatedMemoryOperation::Write(data) => {
+            emu.write_memory(segment, gva, alignment, data).await
+        }
+    }
+    .map_err(|e| VpHaltReason::EmulationFailure(e.into()))
+
+    // No need to flush the cache, we have not modified any registers.
+}
+
+pub enum EmulatedMemoryOperation<'a> {
+    Read(&'a mut [u8]),
+    Write(&'a [u8]),
 }
 
 /// For storing gva to gpa translations in a cache in [`EmulatorCpu`]

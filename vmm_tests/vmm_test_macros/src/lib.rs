@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use petri_artifacts_common::tags::IsTestIso;
 use petri_artifacts_common::tags::IsTestVhd;
@@ -11,7 +12,6 @@ use proc_macro2::Span;
 use proc_macro2::TokenStream;
 use quote::ToTokens;
 use quote::quote;
-use std::collections::HashSet;
 use syn::Error;
 use syn::ItemFn;
 use syn::Path;
@@ -408,6 +408,9 @@ fn parse_vhd(input: ParseStream<'_>, generation: Generation) -> syn::Result<Imag
         "ubuntu_2404_server_aarch64" => Ok(image_info!(
             ::petri_artifacts_vmm_test::artifacts::test_vhd::UBUNTU_2404_SERVER_AARCH64
         )),
+        "windows_11_enterprise_aarch64" => Ok(image_info!(
+            ::petri_artifacts_vmm_test::artifacts::test_vhd::WINDOWS_11_ENTERPRISE_AARCH64
+        )),
         _ => Err(Error::new(word.span(), "unrecognized vhd")),
     }
 }
@@ -618,18 +621,11 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
 
     let original_name = &item.sig.ident;
     let mut tests = TokenStream::new();
-    let mut guest_archs = HashSet::new();
     // FUTURE: compute all this in code instead of in the macro.
     for config in args.configs {
         let name = format!("{}_{original_name}", config.name_prefix(specific_vmm));
 
         let extra_deps = config.extra_deps;
-
-        let guest_arch = match config.arch {
-            MachineArch::X86_64 => "x86_64",
-            MachineArch::Aarch64 => "aarch64",
-        };
-        guest_archs.insert(guest_arch);
 
         let firmware = FirmwareAndArch {
             firmware: config.firmware,
@@ -637,34 +633,27 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
         };
         let arch = arch_to_tokens(config.arch);
 
-        let (cfg_conditions, artifacts, mut petri_vm_config) = match (specific_vmm, config.vmm) {
+        let (cfg_conditions, artifacts, petri_vm_config) = match (specific_vmm, config.vmm) {
             (Some(Vmm::HyperV), Some(Vmm::HyperV))
             | (Some(Vmm::HyperV), None)
             | (None, Some(Vmm::HyperV)) => (
-                quote!(#[cfg(all(guest_arch=#guest_arch, windows))]),
-                quote!(::petri::hyperv::PetriVmArtifactsHyperV::new(
-                    resolver, firmware, arch,
-                )),
-                quote!(::petri::hyperv::PetriVmConfigHyperV::new(
-                    &params, artifacts, &driver,
-                )?),
+                quote!(#[cfg(windows)]),
+                quote!(::petri::hyperv::PetriVmArtifactsHyperV),
+                quote!(::petri::hyperv::PetriVmConfigHyperV),
             ),
 
             (Some(Vmm::OpenVmm), Some(Vmm::OpenVmm))
             | (Some(Vmm::OpenVmm), None)
             | (None, Some(Vmm::OpenVmm)) => (
-                quote!(#[cfg(guest_arch=#guest_arch)]),
-                quote!(::petri::openvmm::PetriVmArtifactsOpenVmm::new(
-                    resolver, firmware, arch,
-                )),
-                quote!(::petri::openvmm::PetriVmConfigOpenVmm::new(
-                    &params, artifacts, &driver,
-                )?),
+                quote!(),
+                quote!(::petri::openvmm::PetriVmArtifactsOpenVmm),
+                quote!(::petri::openvmm::PetriVmConfigOpenVmm),
             ),
             (None, None) => return Err(Error::new(config.span, "vmm must be specified")),
             _ => return Err(Error::new(config.span, "vmm mismatch")),
         };
 
+        let mut petri_vm_config = quote!(#petri_vm_config::new(&params, artifacts, &driver)?);
         if specific_vmm.is_none() {
             petri_vm_config = quote!(Box::new(#petri_vm_config));
         }
@@ -677,7 +666,8 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
                     let firmware = #firmware;
                     let arch = #arch;
                     let extra_deps = (#(resolver.require(#extra_deps),)*);
-                    (#artifacts, extra_deps)
+                    let artifacts = #artifacts::new(resolver, firmware, arch)?;
+                    Some((artifacts, extra_deps))
                 },
                 |params, (artifacts, extra_deps)| {
                     ::pal_async::DefaultPool::run_with(async |driver| {
@@ -691,12 +681,8 @@ fn make_vmm_test(args: Args, item: ItemFn, specific_vmm: Option<Vmm>) -> syn::Re
         tests.extend(test);
     }
 
-    let guest_archs = guest_archs.into_iter();
-
     Ok(quote! {
         ::petri::multitest!(vec![#tests]);
-        // Allow dead code for tests that are not run on the current architecture.
-        #[cfg_attr(not(any(#(guest_arch = #guest_archs,)*)), expect(dead_code))]
         #item
     })
 }

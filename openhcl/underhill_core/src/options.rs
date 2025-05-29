@@ -41,6 +41,12 @@ pub struct Options {
     ///  wait for a diagnostics start request before initializing and starting the VM
     pub wait_for_start: bool,
 
+    /// (OPENHCL_SIGNAL_VTL0_STARTED=1)
+    /// immediately signal that VTL0 has started, before doing any
+    /// initialization. This allows VM boot to proceed even if initialization
+    /// may hang (e.g., because you specified OPENHCL_WAIT_FOR_START=1).
+    pub signal_vtl0_started: bool,
+
     /// (OPENHCL_REFORMAT_VMGS=1 | --reformat-vmgs)
     /// reformat the VMGS file on boot. useful for running potentially destructive VMGS tests.
     pub reformat_vmgs: bool,
@@ -114,10 +120,6 @@ pub struct Options {
     /// Enable the shared visibility pool. This is enabled by default on
     /// hardware isolated platforms, but can be enabled for testing.
     pub enable_shared_visibility_pool: bool,
-
-    /// (OPENHCL_CVM_GUEST_VSM=1)
-    /// Enable support for guest vsm in CVMs. This is disabled by default.
-    pub cvm_guest_vsm: bool,
 
     /// (OPENHCL_HIDE_ISOLATION=1)
     /// Hide the isolation mode from the guest.
@@ -225,7 +227,6 @@ impl Options {
         let mcr = parse_legacy_env_bool("OPENHCL_MCR_DEVICE");
         let enable_shared_visibility_pool =
             parse_legacy_env_bool("OPENHCL_ENABLE_SHARED_VISIBILITY_POOL");
-        let cvm_guest_vsm = parse_legacy_env_bool("OPENHCL_CVM_GUEST_VSM");
         let hide_isolation = parse_env_bool("OPENHCL_HIDE_ISOLATION");
         let halt_on_guest_halt = parse_legacy_env_bool("OPENHCL_HALT_ON_GUEST_HALT");
         let no_sidecar_hotplug = parse_legacy_env_bool("OPENHCL_NO_SIDECAR_HOTPLUG");
@@ -244,6 +245,7 @@ impl Options {
                 .ok()
         });
         let disable_uefi_frontpage = parse_env_bool("OPENHCL_DISABLE_UEFI_FRONTPAGE");
+        let signal_vtl0_started = parse_env_bool("OPENHCL_SIGNAL_VTL0_STARTED");
 
         let mut args = std::env::args().chain(extra_args);
         // Skip our own filename.
@@ -276,6 +278,7 @@ impl Options {
 
         Ok(Self {
             wait_for_start,
+            signal_vtl0_started,
             reformat_vmgs,
             pid,
             vmbus_max_version,
@@ -292,7 +295,6 @@ impl Options {
             nvme_vfio,
             mcr,
             enable_shared_visibility_pool,
-            cvm_guest_vsm,
             hide_isolation,
             halt_on_guest_halt,
             no_sidecar_hotplug,
