@@ -28,7 +28,9 @@ use futures::stream::SelectAll;
 use guestmem::GuestMemory;
 use mesh::Cancel;
 use mesh::CancelContext;
+use mesh::RecvError;
 use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
@@ -514,11 +516,15 @@ impl ProxyTask {
                 .call(ChannelServerRequest::Revoke, ())
                 .await
             {
-                tracing::error!(
-                    error = &err as &dyn std::error::Error,
-                    id = %proxy_id,
-                    "failed to revoke channel"
-                );
+                // If the mesh channel is closed, the revoke happened after the server is shutting
+                // down, which is benign as long as we still release the channel below.
+                if !matches!(err, RpcError::Channel(RecvError::Closed)) {
+                    tracing::error!(
+                        error = &err as &dyn std::error::Error,
+                        id = %proxy_id,
+                        "failed to revoke channel"
+                    );
+                }
             }
 
             let _ = self.proxy.close(proxy_id).await;
