@@ -1341,7 +1341,7 @@ pub struct UhPartitionNewParams<'a> {
     /// Intercept guest debug exceptions to support gdbstub.
     pub intercept_debug_exceptions: bool,
     /// This allows VTL0 owned device interrupts to be posted to VTL2
-    /// when VTL0 does not support posted interrupts.
+    /// when VTL0 does not directly support posted interrupts.
     pub use_posted_redirection: bool,
 }
 
