@@ -21,25 +21,23 @@ use std::sync::Arc;
 use thiserror::Error;
 use vm_topology::memory::MemoryLayout;
 
-pub struct GuestPartitionMemoryBuilder<'a> {
+pub struct GuestPartitionMemoryView<'a> {
     memory_layout: &'a MemoryLayout,
-    valid_memory: Option<Arc<GuestValidMemory>>,
+    valid_memory: Arc<GuestValidMemory>,
 }
 
-impl<'a> GuestPartitionMemoryBuilder<'a> {
-    /// If `valid_bitmap_state` is `Some`, a bitmap is created to track the
-    /// accessibility state of each page in the lower VTL memory. The bitmap is
-    /// initialized to the provided state.
+impl<'a> GuestPartitionMemoryView<'a> {
+    /// A bitmap is created to track the accessibility state of each page in the
+    /// lower VTL memory. The bitmap is initialized to valid_bitmap_state.
     ///
     /// This is used to support tracking the shared/encrypted state of each
     /// page.
     pub fn new(
         memory_layout: &'a MemoryLayout,
-        valid_bitmap_state: Option<bool>,
+        valid_bitmap_state: bool,
     ) -> Result<Self, MappingError> {
-        let valid_memory = valid_bitmap_state
-            .map(|state| GuestValidMemory::new(memory_layout, state).map(Arc::new))
-            .transpose()?;
+        let valid_memory =
+            GuestValidMemory::new(memory_layout, valid_bitmap_state).map(Arc::new)?;
         Ok(Self {
             memory_layout,
             valid_memory,
@@ -47,19 +45,19 @@ impl<'a> GuestPartitionMemoryBuilder<'a> {
     }
 
     /// Returns the built partition-wide valid memory.
-    pub fn partition_valid_memory(&self) -> Option<Arc<GuestValidMemory>> {
+    pub fn partition_valid_memory(&self) -> Arc<GuestValidMemory> {
         self.valid_memory.clone()
     }
 
     /// Build a [`GuestMemoryMapping`], feeding in any related partition-wide
     /// state.
-    pub fn build_guest_memory_mapping(
+    fn build_guest_memory_mapping(
         &self,
         mshv_vtl_low: &MshvVtlLow,
         memory_mapping_builder: &mut GuestMemoryMappingBuilder,
     ) -> Result<GuestMemoryMapping, MappingError> {
         memory_mapping_builder
-            .use_partition_valid_memory(self.valid_memory.clone())
+            .use_partition_valid_memory(Some(self.valid_memory.clone()))
             .build(mshv_vtl_low, self.memory_layout)
     }
 }
@@ -307,6 +305,24 @@ impl GuestMemoryMappingBuilder {
         self
     }
 
+    /// Mapping should leverage the bitmap used to track the accessibility state
+    /// of each page in the lower VTL memory.
+    pub fn build_with_bitmap(
+        &mut self,
+        mshv_vtl_low: &MshvVtlLow,
+        partition_builder: &GuestPartitionMemoryView<'_>,
+    ) -> Result<GuestMemoryMapping, MappingError> {
+        partition_builder.build_guest_memory_mapping(mshv_vtl_low, self)
+    }
+
+    pub fn build_without_bitmap(
+        &self,
+        mshv_vtl_low: &MshvVtlLow,
+        memory_layout: &MemoryLayout,
+    ) -> Result<GuestMemoryMapping, MappingError> {
+        self.build(mshv_vtl_low, memory_layout)
+    }
+
     /// Map the lower VTL address space.
     ///
     /// If `is_shared`, then map the kernel mapping as shared memory.
@@ -318,10 +334,6 @@ impl GuestMemoryMappingBuilder {
     /// When handing out IOVAs for device DMA, add `iova_offset`. This can be
     /// VTOM for SNP-isolated VMs, or it can be the VTL0 alias map start for
     /// non-isolated VMs.
-    ///
-    /// If `bitmap_state` is `Some`, a bitmap is created to track the
-    /// accessibility state of each page in the lower VTL memory. The bitmap is
-    /// initialized to the provided state.
     fn build(
         &self,
         mshv_vtl_low: &MshvVtlLow,
