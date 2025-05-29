@@ -895,7 +895,7 @@ fn create_or_stderr(path: &Option<PathBuf>) -> std::io::Result<fs_err::File> {
 
 async fn capture_packets(
     client: DiagClient,
-    streams: Vec<impl std::future::Future<Output = Result<u64, std::io::Error>>>,
+    streams: Vec<impl Future<Output = Result<u64, std::io::Error>>>,
     capture_duration: Duration,
 ) {
     let mut capture_streams = FuturesUnordered::from_iter(streams);
