@@ -114,7 +114,7 @@ impl NvmeManager {
                     .await
                 {
                     tracing::error!(
-                        e = &err as &dyn std::error::Error,
+                        error = e.as_ref() as &dyn std::error::Error,
                         "failed to restore nvme manager"
                     );
                 }
