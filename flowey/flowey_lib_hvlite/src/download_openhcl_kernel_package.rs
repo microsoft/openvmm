@@ -160,6 +160,9 @@ impl FlowNode for Node {
 
                     let base_dir = std::env::current_dir()?;
 
+                    println!("extract_dir: {:?}", extract_dir);
+                    println!("base_dir: {:?}", base_dir);
+
                     if cfg!(unix) {
                         #[cfg(unix)]
                         {
