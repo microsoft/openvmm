@@ -32,7 +32,7 @@ pub(crate) async fn spawn_vps(
             tp: tp.clone(),
         };
 
-        spawner.spawn_vp(tp)
+        spawner.spawn_vp()
     }))
     .await?;
     Ok(())
@@ -50,9 +50,9 @@ struct VpSpawner {
 
 impl VpSpawner {
     /// Spawns the VP on the appropriate thread pool thread.
-    pub async fn spawn_vp(self, tp: &AffinitizedThreadpool) -> anyhow::Result<()> {
+    pub async fn spawn_vp(self) -> anyhow::Result<()> {
         if underhill_threadpool::is_cpu_online(self.cpu)? {
-            self.spawn_main_vp(tp).await
+            self.spawn_main_vp().await
         } else {
             // The CPU is not online, so this should be a sidecar VP. Run the VP
             // remotely via the sidecar kernel.
@@ -62,7 +62,7 @@ impl VpSpawner {
                     self.cpu
                 );
             }
-            self.spawn_sidecar_vp(tp).await;
+            self.spawn_sidecar_vp().await;
             Ok(())
         }
     }
@@ -155,9 +155,10 @@ impl VpSpawner {
         }
     }
 
-    async fn spawn_main_vp(mut self, tp: &AffinitizedThreadpool) -> anyhow::Result<()> {
-        let driver = tp.driver(self.cpu);
-        driver
+    async fn spawn_main_vp(mut self) -> anyhow::Result<()> {
+        self.tp
+            .driver(self.cpu)
+            .clone()
             .spawn("vp-init", async move {
                 let thread = underhill_threadpool::Thread::current().unwrap();
                 assert!(
@@ -175,61 +176,65 @@ impl VpSpawner {
             .await
     }
 
-    async fn spawn_sidecar_vp(mut self, tp: &AffinitizedThreadpool) {
+    async fn spawn_sidecar_vp(mut self) {
+        // Initially, run any sidecar VP handling on the base CPU, which is
+        // guaranteed to be online.
         let base_cpu = self.vp.sidecar_base_cpu().expect("missing sidecar");
-        tp.driver(base_cpu)
-            .spawn("sidecar-init", {
-                let tp = tp.clone();
-                async move {
-                    let thread = underhill_threadpool::Thread::current().unwrap();
-                    let tp = tp.clone();
-                    thread
-                        .spawn_local(
-                            format!("sidecar-{}", self.vp.vp_index().index()),
-                            async move {
-                                let canceller = self.runner.canceller();
-                                let (state_send, state_recv) = mesh::oneshot();
-                                let r = tp.driver(self.cpu).set_spawn_notifier(move || {
-                                    underhill_threadpool::Thread::current()
-                                        .unwrap()
-                                        .spawn_local(
-                                            "online-sidecar",
-                                            Self::notify_main_vp_thread_start(
-                                                self.cpu, state_recv, canceller,
-                                            ),
-                                        )
+        self.tp
+            .driver(base_cpu)
+            .clone()
+            .spawn("sidecar-init", async move {
+                let thread = underhill_threadpool::Thread::current().unwrap();
+                thread
+                    .spawn_local(
+                        format!("sidecar-{}", self.vp.vp_index().index()),
+                        async move {
+                            let canceller = self.runner.canceller();
+                            let (state_send, state_recv) = mesh::oneshot();
+                            // When the target CPU thread gets spawned for any
+                            // reason, kick off a task to online the CPU and
+                            // restart the VP.
+                            let r = self.tp.driver(self.cpu).set_spawn_notifier(move || {
+                                underhill_threadpool::Thread::current()
+                                    .unwrap()
+                                    .spawn_local(
+                                        "online-sidecar",
+                                        Self::notify_main_vp_thread_start(
+                                            self.cpu, state_recv, canceller,
+                                        ),
+                                    )
+                                    .detach();
+                            });
+
+                            let saved_state = match r {
+                                Ok(()) => {
+                                    // Run until the VP is finished or cancelled. If
+                                    // it is cancelled, we will hotplug the
+                                    // processor and respawn the VP.
+                                    let saved_state = self.run_vp(None, None).await;
+                                    if saved_state.is_none() {
+                                        // The VP is done.
+                                        return;
+                                    }
+                                    saved_state
+                                }
+                                Err(notifier) => {
+                                    // The thread has already been spawned,
+                                    // so run the notifier over on the
+                                    // thread without running the VP.
+                                    self.tp
+                                        .driver(self.cpu)
+                                        .spawn("spawn-remote", async move { notifier() })
                                         .detach();
-                                });
+                                    None
+                                }
+                            };
 
-                                let saved_state = match r {
-                                    Ok(()) => {
-                                        // Run until the VP is finished or cancelled. If
-                                        // it is cancelled, we will hotplug the
-                                        // processor and respawn the VP.
-                                        let saved_state = self.run_vp(None, None).await;
-                                        if saved_state.is_none() {
-                                            // The VP is done.
-                                            return;
-                                        }
-                                        saved_state
-                                    }
-                                    Err(notifier) => {
-                                        // The thread has already been spawned,
-                                        // so run the notifier over on the
-                                        // thread without running the VP.
-                                        tp.driver(self.cpu)
-                                            .spawn("spawn-remote", async move { notifier() })
-                                            .detach();
-                                        None
-                                    }
-                                };
-
-                                // Send the VP and its saved state to the main thread.
-                                state_send.send((self, saved_state));
-                            },
-                        )
-                        .detach()
-                }
+                            // Send the VP and its saved state to the main thread.
+                            state_send.send((self, saved_state));
+                        },
+                    )
+                    .detach()
             })
             .await;
     }
@@ -285,6 +290,7 @@ impl VpSpawner {
                 .map_or_else(|| "<unknown>".into(), |t| t.name),
         );
 
+        // Start the run VP task.
         thread.set_idle_task(async move |mut control| {
             let state = this.run_vp(saved_state, Some(&mut control)).await;
             assert!(state.is_none());
