@@ -9,6 +9,8 @@ use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::build_openvmm_hcl;
 use crate::build_openvmm_hcl::OpenvmmHclBuildParams;
 use crate::build_openvmm_hcl::OpenvmmHclBuildProfile::OpenvmmHclShip;
+use crate::download_openhcl_kernel_package::OpenhclKernelPackageArch;
+use crate::download_openhcl_kernel_package::OpenhclKernelPackageKind;
 use crate::run_cargo_build::common::CommonArch;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
@@ -38,6 +40,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<build_openhcl_igvm_from_recipe::Node>();
         ctx.import::<build_openvmm_hcl::Node>();
         ctx.import::<artifact_openhcl_igvm_from_recipe_extras::publish::Node>();
+        ctx.import::<crate::download_openhcl_kernel_package::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -92,7 +95,7 @@ impl SimpleFlowNode for Node {
             repo_name: "openvmm".into(),
             file_name: file_name.into(),
             path: old_openhcl,
-            run_id,
+            run_id: run_id.clone(),
             gh_token: gh_token.clone(),
         });
 
@@ -140,8 +143,8 @@ impl SimpleFlowNode for Node {
         let comparison = ctx.emit_rust_step("binary size comparison", |ctx| {
             // Ensure the artifact is published before the analysis since this step may fail.
             let _publish_artifact = publish_artifact.claim(ctx);
-            let xtask = xtask.claim(ctx);
-            let openvmm_repo_path = openvmm_repo_path.claim(ctx);
+            let xtask = xtask.clone().claim(ctx);
+            let openvmm_repo_path = openvmm_repo_path.clone().claim(ctx);
             let old_openhcl = merge_head_artifact.claim(ctx);
             let new_openhcl = built_openvmm_hcl.claim(ctx);
             let merge_run = merge_run.claim(ctx);
@@ -176,7 +179,51 @@ impl SimpleFlowNode for Node {
             }
         });
 
-        ctx.emit_side_effect_step(vec![comparison], [done]);
+        let old_openhcl_kernel = ctx.reqv(|old_openhcl_kernel| download_gh_artifact::Request {
+            repo_owner: "microsoft".into(),
+            repo_name: "openvmm".into(),
+            file_name: "x64-kernel-baseline".into(),
+            path: old_openhcl_kernel,
+            run_id,
+            gh_token,
+        });
+
+        let current_openhcl_kernel =
+            ctx.reqv(
+                |v| crate::download_openhcl_kernel_package::Request::GetPackage {
+                    kind: OpenhclKernelPackageKind::Main,
+                    arch: OpenhclKernelPackageArch::X86_64,
+                    pkg: v,
+                },
+            );
+
+        let kernel_size_comparison = ctx.emit_rust_step("kernel size comparison", |ctx| {
+            let old_openhcl_kernel = old_openhcl_kernel.claim(ctx);
+            let current_openhcl_kernel = current_openhcl_kernel.claim(ctx);
+            let openvmm_repo_path = openvmm_repo_path.claim(ctx);
+            let xtask = xtask.claim(ctx);
+            |rt| {
+                let old_openhcl_kernel = rt.read(old_openhcl_kernel).join("build/native/bin/x64/vmlinux.dbg");
+                let current_openhcl_kernel = rt.read(current_openhcl_kernel).join("build/native/bin/x64/vmlinux.dbg");
+                let openvmm_repo_path = rt.read(openvmm_repo_path);
+                let xtask = match rt.read(xtask) {
+                    crate::build_xtask::XtaskOutput::LinuxBin { bin, .. } => bin,
+                    crate::build_xtask::XtaskOutput::WindowsBin { exe, .. } => exe,
+                };
+
+                let sh = xshell::Shell::new()?;
+                sh.change_dir(openvmm_repo_path);
+                xshell::cmd!(
+                    sh,
+                    "{xtask} verify-size --original {old_openhcl_kernel} --new {current_openhcl_kernel}"
+                )
+                .run()?;
+
+            Ok(())
+            }
+        });
+
+        ctx.emit_side_effect_step(vec![comparison, kernel_size_comparison], [done]);
 
         Ok(())
     }
