@@ -153,14 +153,14 @@ impl VpSpawner {
 
     async fn spawn_main_vp(mut self, tp: &AffinitizedThreadpool) -> anyhow::Result<()> {
         let driver = tp.driver(self.cpu);
-        assert!(
-            driver.is_affinity_set(),
-            "cpu {} should already be online",
-            self.cpu
-        );
         driver
             .spawn("vp-init", async move {
                 let thread = underhill_threadpool::Thread::current().unwrap();
+                assert!(
+                    thread.with_driver(|driver| driver.is_affinity_set()),
+                    "cpu {} should already be online",
+                    self.cpu
+                );
 
                 thread.set_idle_task(async move |mut control| {
                     let state = self.run_vp(None, Some(&mut control), false).await;
