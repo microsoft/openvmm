@@ -18,6 +18,8 @@ use chipset_device::ChipsetDevice;
 use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use closeable_mutex::CloseableMutex;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use inspect::Inspect;
 use std::future::poll_fn;
 use std::sync::Arc;
@@ -104,6 +106,7 @@ impl Chipset {
                         // Fill data with !0 to indicate an error to the guest.
                         bytes.fill(!0);
                         tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
                             device = &*lookup.dev_name,
                             address,
                             len,
@@ -112,15 +115,22 @@ impl Chipset {
                             "device io read error"
                         );
                     }
-                    IoType::Write(bytes) => tracelimit::warn_ratelimited!(
-                        device = &*lookup.dev_name,
-                        address,
-                        len,
-                        ?kind,
-                        error,
-                        ?bytes,
-                        "device io write error"
-                    ),
+                    IoType::Write(bytes) => {
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            device = &*lookup.dev_name,
+                            address,
+                            len,
+                            ?kind,
+                            error,
+                            "device io write error"
+                        );
+                        tracelimit::warn_ratelimited!(
+                            CVM_CONFIDENTIAL,
+                            ?bytes,
+                            "device io write error"
+                        );
+                    }
                 }
                 Ok(())
             }
@@ -147,7 +157,8 @@ impl Chipset {
                 }
             }
             Err(err) => {
-                tracing::error!(
+                tracelimit::error_ratelimited!(
+                    CVM_ALLOWED,
                     device = &*lookup.dev_name,
                     ?kind,
                     address,
