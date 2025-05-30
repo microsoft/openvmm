@@ -284,7 +284,8 @@ impl CpuidArchInitializer for TdxCpuidInitializer<'_> {
             .with_xmm_registers_for_fast_hypercall_available(true)
             .with_register_pat_available(true)
             .with_fast_hypercall_output_available(true)
-            .with_translate_gva_flags_available(true);
+            .with_translate_gva_flags_available(true)
+            .with_guest_crash_regs_available(true);
 
         let use_apic_msrs = match self.topology.apic_mode() {
             vm_topology::processor::x86::ApicMode::XApic => {

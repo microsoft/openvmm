@@ -543,6 +543,7 @@ impl<T: SimpleVmbusClientDeviceAsync> SimpleVmbusClientDeviceTask<T> {
     /// device wrapper.
     pub async fn process_messages(&mut self, state: &mut SimpleVmbusClientDeviceTaskState) {
         loop {
+            #[expect(clippy::large_enum_variant)]
             enum Event {
                 Request(InterceptChannelRequest),
                 Revoke(()),

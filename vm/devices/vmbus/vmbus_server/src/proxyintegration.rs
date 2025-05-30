@@ -219,6 +219,7 @@ impl ProxyTask {
                     RingBufferGpadlHandle: open_request.open_data.ring_gpadl_id.0,
                     DownstreamRingBufferPageOffset: open_request.open_data.ring_offset,
                     NodeNumber: 0, // BUGBUG: NUMA
+                    Padding: 0,
                 },
                 maybe_wrapped.event(),
             )
@@ -777,7 +778,7 @@ impl ProxyTask {
                 let mut proxy_ids: HashMap<u32, u64> = HashMap::new();
                 tracing::trace!("restoring channels...");
 
-                rpc.handle_failable(async |saved_state: SavedState| {
+                rpc.handle_failable(async |saved_state| {
                     // Restore channel state in the proxy for each channel in the SavedState.
                     if let Some(channels) = saved_state.channels() {
                         for channel in channels {
@@ -793,11 +794,13 @@ impl ProxyTask {
                                     key.interface_id.into(),
                                     key.instance_id.into(),
                                     key.subchannel_index,
+                                    vtl,
                                     VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS {
                                         RingBufferGpadlHandle: open_params.ring_buffer_gpadl_id.0,
                                         DownstreamRingBufferPageOffset: open_params
                                             .downstream_ring_buffer_page_offset,
                                         NodeNumber: 0, // BUGBUG: NUMA
+                                        Padding: 0,
                                     },
                                     channel.saved_open(),
                                 )
@@ -844,7 +847,7 @@ impl ProxyTask {
                         return Err(anyhow!("No channels exist in the saved state"));
                     }
 
-                    *saved_state_option = Some(saved_state);
+                    *saved_state_option = Some(*saved_state);
                     Ok(())
                 })
                 .await;
@@ -929,7 +932,7 @@ impl ProxyTask {
                     }
                     r = vtl2_saved_state_requests => {
                         if !self.handle_saved_state_request(r.unwrap(), 2).await {
-                            vtl2_hvsock_request_recv = None;
+                            vtl2_saved_state_recv = None;
                         }
                     }
                     complete => break 'outer,

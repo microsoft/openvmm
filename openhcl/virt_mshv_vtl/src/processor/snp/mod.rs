@@ -320,44 +320,48 @@ impl HardwareIsolatedBacking for SnpBacked {
             .expect("setting intercept control succeeds");
     }
 
-    fn handle_cross_vtl_interrupts(
+    fn is_interrupt_pending(
         this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        check_rflags: bool,
         dev: &impl CpuIo,
-    ) -> Result<bool, UhRunVpError> {
-        this.cvm_handle_cross_vtl_interrupts(|this, vtl, check_rflags| {
-            let vmsa = this.runner.vmsa_mut(vtl);
-            if vmsa.event_inject().valid()
-                && vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
-            {
-                return true;
-            }
+    ) -> bool {
+        let vmsa = this.runner.vmsa_mut(vtl);
+        if vmsa.event_inject().valid()
+            && vmsa.event_inject().interruption_type() == x86defs::snp::SEV_INTR_TYPE_NMI
+        {
+            return true;
+        }
 
-            let vmsa_priority = vmsa.v_intr_cntrl().priority() as u32;
-            let lapic = &mut this.backing.cvm.lapics[vtl].lapic;
-            let ppr = lapic
-                .access(&mut SnpApicClient {
-                    partition: this.partition,
-                    vmsa,
-                    dev,
-                    vmtime: &this.vmtime,
-                    vtl,
-                })
-                .get_ppr();
-            let ppr_priority = ppr >> 4;
-            if vmsa_priority <= ppr_priority {
-                return false;
-            }
+        let vmsa_priority = vmsa.v_intr_cntrl().priority() as u32;
+        let lapic = &mut this.backing.cvm.lapics[vtl].lapic;
+        let ppr = lapic
+            .access(&mut SnpApicClient {
+                partition: this.partition,
+                vmsa,
+                dev,
+                vmtime: &this.vmtime,
+                vtl,
+            })
+            .get_ppr();
+        let ppr_priority = ppr >> 4;
+        if vmsa_priority <= ppr_priority {
+            return false;
+        }
 
-            let vmsa = this.runner.vmsa_mut(vtl);
-            if (check_rflags && !RFlags::from_bits(vmsa.rflags()).interrupt_enable())
-                || vmsa.v_intr_cntrl().intr_shadow()
-                || !vmsa.v_intr_cntrl().irq()
-            {
-                return false;
-            }
+        let vmsa = this.runner.vmsa_mut(vtl);
+        if (check_rflags && !RFlags::from_bits(vmsa.rflags()).interrupt_enable())
+            || vmsa.v_intr_cntrl().intr_shadow()
+            || !vmsa.v_intr_cntrl().irq()
+        {
+            return false;
+        }
 
-            true
-        })
+        true
+    }
+
+    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
+        None
     }
 }
 
@@ -575,10 +579,6 @@ impl BackingPrivate for SnpBacked {
 
     fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
         Some(&mut self.cvm.hv[vtl])
-    }
-
-    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
-        None
     }
 
     fn handle_vp_start_enable_vtl_wake(
@@ -1370,11 +1370,23 @@ impl UhProcessor<'_, SnpBacked> {
             }
 
             SevExitCode::NPF if has_intercept => {
-                // Determine whether an NPF needs to be handled. If not, assume this fault is spurious
-                // and that the instruction can be retried. The intercept itself may be presented by the
-                // hypervisor as either a GPA intercept or an exception intercept.
-                // The hypervisor configures the NPT to generate a #VC inside the guest for accesses to
-                // unmapped memory. This means that accesses to unmapped memory for lower VTLs will be
+                // TODO SNP: This code needs to be fixed to not rely on the
+                // hypervisor message to check the validity of the NPF, rather
+                // we should look at the SNP hardware exit info only like we do
+                // with TDX.
+                //
+                // TODO SNP: This code should be fixed so we do not attempt to
+                // emulate a NPF with an address that has the wrong shared bit,
+                // as this will cause the emulator to raise an internal error,
+                // and instead inject a machine check like TDX.
+                //
+                // Determine whether an NPF needs to be handled. If not, assume
+                // this fault is spurious and that the instruction can be
+                // retried. The intercept itself may be presented by the
+                // hypervisor as either a GPA intercept or an exception
+                // intercept. The hypervisor configures the NPT to generate a
+                // #VC inside the guest for accesses to unmapped memory. This
+                // means that accesses to unmapped memory for lower VTLs will be
                 // forwarded to underhill as a #VC exception.
                 let exit_info2 = vmsa.exit_info2();
                 let interruption_pending = vmsa.event_inject().valid()
@@ -1735,7 +1747,9 @@ impl<T: CpuIo> X86EmulatorSupport for UhEmulationState<'_, '_, T, SnpBacked> {
         Some(self.vp.runner.vmsa(self.vtl).exit_info2())
     }
 
-    fn initial_gva_translation(&self) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
+    fn initial_gva_translation(
+        &mut self,
+    ) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
         None
     }
 

@@ -273,7 +273,7 @@ impl VarDb {
                 if is_secret {
                     // Remember that this environment variable is secret so that
                     // it cannot be easily laundered into a non-secret variable.
-                    runtime_var_db.set_var(&env_source_name(&env), false, Vec::new());
+                    runtime_var_db.set_var(&env_source_name(&env), false, "null".into());
                 }
 
                 match backend {

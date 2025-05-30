@@ -333,9 +333,10 @@ impl Inspect for Inner {
                             .join(",")
                     });
                 }
-                resp.field("unit_state", unit.state);
-                unit.send
-                    .send(StateRequest::Inspect(resp.request().defer()))
+                resp.field("unit_state", unit.state)
+                    .merge(inspect::adhoc(|req| {
+                        unit.send.send(StateRequest::Inspect(req.defer()))
+                    }));
             });
         }
     }

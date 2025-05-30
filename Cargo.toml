@@ -53,7 +53,7 @@ exclude = [
 ]
 
 [workspace.package]
-rust-version = "1.86"
+rust-version = "1.87"
 edition = "2021"
 
 [workspace.dependencies]
@@ -90,6 +90,7 @@ pipette_protocol = { path = "petri/pipette_protocol" }
 # support crates
 address_filter = { path = "support/address_filter" }
 arc_cyclic_builder = { path = "support/arc_cyclic_builder" }
+atomic_ringbuf = { path = "support/atomic_ringbuf" }
 cache_topology = { path = "support/cache_topology" }
 closeable_mutex = { path = "support/closeable_mutex" }
 ci_logger = { path = "support/ci_logger" }
@@ -123,6 +124,7 @@ mesh_remote = { path = "support/mesh/mesh_remote" }
 mesh_rpc = { path = "support/mesh/mesh_rpc" }
 mesh_worker = { path = "support/mesh/mesh_worker" }
 mesh_tracing = { path = "support/mesh_tracing" }
+minircu = { path = "support/minircu" }
 open_enum = { path = "support/open_enum" }
 openssl_kdf = { path = "support/openssl_kdf" }
 openssl_crypto_only = { path = "support/openssl_crypto_only" }
@@ -453,7 +455,7 @@ igvm = {git = "https://github.com/microsoft/igvm", rev = "365065d7e31da0a0116e79
 igvm_defs = {git = "https://github.com/microsoft/igvm", rev = "365065d7e31da0a0116e7934de3ecd85f00bab70", default-features = false, features = [ "unstable" ]}
 image = { version = "0.25.1", default-features = false }
 io-uring = "0.7.4"
-jiff = "0.2"
+jiff = "0.2.14"
 kvm-bindings = "0.11.1"
 # Use of these specific REPO will go away when changes are taken upstream.
 landlock = "0.4.1"
@@ -462,6 +464,7 @@ libfuzzer-sys = "0.4"
 libtest-mimic = "0.8"
 linkme = "0.3.9"
 log = "0.4"
+loom = "0.7.2"
 macaddr = "1.0"
 mbrman = "0.5"
 mimalloc = { version = "0.1.39", default-features = false }
@@ -595,6 +598,10 @@ lto = 'fat'
 [profile.dev.package.minimal_rt]
 opt-level = 1
 
+# Optimize loom even in the dev profile, as otherwise tests just take too long.
+[profile.dev.package.loom]
+opt-level = 3
+
 [patch.crates-io]
 # Pending <https://github.com/ferrilab/bitvec/pull/273>
 bitvec = { git = "https://github.com/smalis-msft/bitvec", branch = "set-aliased-previous-val" }
@@ -643,9 +650,6 @@ string_to_string = "warn"
 suboptimal_flops = "warn"
 undocumented_unsafe_blocks = "warn"
 unnecessary_box_returns = "warn"
-
-# TODO: Remove this allow in Rust 1.86. See https://github.com/rust-lang/rust-clippy/pull/14115.
-precedence = "allow"
 
 # Possible future additions:
 #

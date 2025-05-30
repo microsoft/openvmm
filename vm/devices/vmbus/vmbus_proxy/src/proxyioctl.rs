@@ -52,7 +52,7 @@ pub const IOCTL_VMBUS_PROXY_REVOKE_UNCLAIMED_CHANNELS: u32 = VMBUS_PROXY_IOCTL(0
 pub const IOCTL_VMBUS_PROXY_RESTORE_SET_INTERRUPT: u32 = VMBUS_PROXY_IOCTL(0xf);
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, zerocopy::IntoBytes)]
 pub struct VMBUS_PROXY_SET_VM_NAME_INPUT {
     pub VmId: [u8; 16],
     pub NameLength: u16,
@@ -60,7 +60,7 @@ pub struct VMBUS_PROXY_SET_VM_NAME_INPUT {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, zerocopy::IntoBytes)]
 pub struct VMBUS_PROXY_SET_TOPOLOGY_INPUT {
     pub NodeCount: u32,
     pub VpCount: u32,
@@ -68,7 +68,7 @@ pub struct VMBUS_PROXY_SET_TOPOLOGY_INPUT {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, zerocopy::IntoBytes)]
 pub struct VMBUS_PROXY_SET_MEMORY_INPUT {
     pub BaseAddress: u64,
     pub Size: u64,
@@ -83,6 +83,7 @@ pub const VmbusProxyActionTypeTlConnectResult: u32 = 4;
 #[derive(Copy, Clone)]
 pub struct VMBUS_PROXY_NEXT_ACTION_OUTPUT {
     pub Type: u32,
+    pub Padding: u32,
     pub ProxyId: u64,
     pub u: VMBUS_PROXY_NEXT_ACTION_OUTPUT_union,
 }
@@ -109,6 +110,7 @@ pub struct VMBUS_PROXY_NEXT_ACTION_OUTPUT_union_TlConnectResult {
     pub ServiceId: GUID,
     pub Status: NTSTATUS,
     pub Vtl: u8,
+    pub Padding: [u8; 3],
 }
 
 #[repr(C)]
@@ -116,6 +118,7 @@ pub struct VMBUS_PROXY_NEXT_ACTION_OUTPUT_union_TlConnectResult {
 pub struct VMBUS_PROXY_OPEN_CHANNEL_INPUT {
     pub ProxyId: u64,
     pub OpenParameters: VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS,
+    pub Padding: u32,
     pub VmmSignalEvent: u64, // BUGBUG: HANDLE
 }
 
@@ -138,9 +141,13 @@ pub struct VMBUS_PROXY_RESTORE_CHANNEL_INPUT {
     pub InterfaceType: GUID,
     pub InterfaceInstance: GUID,
     pub SubchannelIndex: u16,
+    pub TargetVtl: u8,
+    pub Padding: u8,
     pub OpenParameters: VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS,
     pub Open: BOOLEAN,
+    pub Padding2: [u8; 3],
 }
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct VMBUS_PROXY_RESTORE_CHANNEL_OUTPUT {
@@ -168,6 +175,7 @@ pub struct VMBUS_PROXY_CREATE_GPADL_INPUT {
 pub struct VMBUS_PROXY_DELETE_GPADL_INPUT {
     pub ProxyId: u64,
     pub GpadlId: u32,
+    pub Padding: u32,
 }
 
 #[repr(C)]
@@ -197,4 +205,5 @@ pub struct VMBUS_PROXY_TL_CONNECT_REQUEST_INPUT {
     pub SiloId: GUID,
     pub Flags: VMBUS_PROXY_TL_CONNECT_REQUEST_FLAGS,
     pub Vtl: u8,
+    pub Padding: [u8; 3],
 }

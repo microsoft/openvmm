@@ -79,7 +79,7 @@ pub trait EmulatorSupport {
     fn physical_address(&self) -> Option<u64>;
 
     /// The gva translation included in the intercept message header, if valid.
-    fn initial_gva_translation(&self) -> Option<InitialTranslation>;
+    fn initial_gva_translation(&mut self) -> Option<InitialTranslation>;
 
     /// If interrupt pending is marked in the intercept message
     fn interruption_pending(&self) -> bool;
@@ -194,6 +194,7 @@ pub struct EmuTranslateResult {
 }
 
 /// The translation, if any, provided in the intercept message and provided by [`EmulatorSupport`].
+#[derive(Debug)]
 pub struct InitialTranslation {
     /// GVA for the translation
     pub gva: u64,

@@ -559,10 +559,10 @@ impl LoadedVm {
         // Tell the initial process to flush all logs. Any logs
         // emitted after this point may be lost.
         state.init_state.flush_logs_result = Some({
-            // Only wait up to a second (which is still
+            // Only wait up to a half second (which is still
             // a long time!) to prevent delays from
             // introducing longer blackouts.
-            let ctx = CancelContext::new().with_timeout(Duration::from_secs(1));
+            let ctx = CancelContext::new().with_timeout(Duration::from_millis(500));
 
             let now = std::time::Instant::now();
             let call = self
@@ -737,7 +737,7 @@ impl LoadedVm {
     }
 
     fn notify_of_vtl_crash(&self, vtl_crash: VtlCrash) {
-        tracing::info!("Notifying the host of the guest system crash {vtl_crash:x?}");
+        tracelimit::info_ratelimited!("Notifying the host of the guest system crash");
 
         let VtlCrash {
             vp_index,

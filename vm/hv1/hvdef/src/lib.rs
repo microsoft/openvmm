@@ -1817,6 +1817,18 @@ pub mod hypercall {
     #[repr(transparent)]
     pub struct HvGvaRange(pub u64);
 
+    impl From<u64> for HvGvaRange {
+        fn from(value: u64) -> Self {
+            Self(value)
+        }
+    }
+
+    impl From<HvGvaRange> for u64 {
+        fn from(value: HvGvaRange) -> Self {
+            value.0
+        }
+    }
+
     impl HvGvaRange {
         pub fn as_simple(self) -> HvGvaRangeSimple {
             HvGvaRangeSimple(self.0)

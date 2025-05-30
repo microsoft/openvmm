@@ -27,7 +27,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.86.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.87.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -37,7 +37,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.86.0
+        ./rustup-init.exe -y --default-toolchain=1.87.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -45,7 +45,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.86.0
+        ./rustup-init.exe -y --default-toolchain=1.87.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -185,7 +185,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.86.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.87.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -195,7 +195,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.86.0
+        ./rustup-init.exe -y --default-toolchain=1.87.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -203,7 +203,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.86.0
+        ./rustup-init.exe -y --default-toolchain=1.87.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -350,7 +350,7 @@ jobs:
         set -x
         i=0; while [ $i -lt 5 ] && ! sudo apt-get update; do let "i=i+1"; sleep 1; done;
         sudo apt-get -o DPkg::Lock::Timeout=60 install gcc -y
-        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.86.0 -y
+        curl --fail --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain=1.87.0 -y
         . "$HOME/.cargo/env"
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         rustup show
@@ -360,7 +360,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/x86_64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.86.0
+        ./rustup-init.exe -y --default-toolchain=1.87.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'X64'
       name: rustup (Windows X64)
@@ -368,7 +368,7 @@ jobs:
     - run: |
         set -x
         curl --fail -sSfLo rustup-init.exe https://win.rustup.rs/aarch64 --output rustup-init
-        ./rustup-init.exe -y --default-toolchain=1.86.0
+        ./rustup-init.exe -y --default-toolchain=1.87.0
         echo "$USERPROFILE\\.cargo\\bin" >> $GITHUB_PATH
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       name: rustup (Windows ARM64)
@@ -556,14 +556,36 @@ jobs:
         echo "$AgentTempDirNormal/used_artifacts/x64-linux-rustdoc" | flowey v 3 'artifact_use_from_x64-linux-rustdoc' --is-raw-string update
         echo "$AgentTempDirNormal/used_artifacts/x64-windows-rustdoc" | flowey v 3 'artifact_use_from_x64-windows-rustdoc' --is-raw-string update
       shell: bash
-    - name: generate consolidated gh pages html
+    - name: check if openvmm needs to be cloned
       run: |-
         flowey e 3 flowey_core::pipeline::artifact::resolve 1
         flowey e 3 flowey_core::pipeline::artifact::resolve 2
         flowey e 3 flowey_core::pipeline::artifact::resolve 0
+        flowey e 3 flowey_lib_common::git_checkout 0
+        flowey v 3 'flowey_lib_common::git_checkout:0:flowey_lib_common/src/git_checkout.rs:469:80' --is-raw-string --condvar flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46 write-to-env github floweyvar2
+        flowey v 3 'flowey_lib_common::git_checkout:1:flowey_lib_common/src/git_checkout.rs:470:46' write-to-env github FLOWEY_CONDITION
+      shell: bash
+    - id: flowey_lib_common__git_checkout__1
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: '1'
+        path: repo0
+        persist-credentials: ${{ env.floweyvar2 }}
+      name: checkout repo openvmm
+      if: ${{ fromJSON(env.FLOWEY_CONDITION) }}
+    - name: report cloned repo directories
+      run: |-
+        flowey v 3 'flowey_lib_common::git_checkout:4:flowey_core/src/node/github_context.rs:55:41' --is-raw-string update --env-source github.workspace <<EOF
+        ${{ github.workspace }}
+        EOF
+        flowey e 3 flowey_lib_common::git_checkout 3
+        flowey e 3 flowey_lib_hvlite::git_checkout_openvmm_repo 0
+      shell: bash
+    - name: generate consolidated gh pages html
+      run: |-
         flowey e 3 flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages 0
         flowey e 3 flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages 1
-        flowey v 3 'flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages:1:flowey_lib_hvlite/src/_jobs/consolidate_and_publish_gh_pages.rs:94:39' --is-raw-string write-to-env github floweyvar1
+        flowey v 3 'flowey_lib_hvlite::_jobs::consolidate_and_publish_gh_pages:2:flowey_lib_hvlite/src/_jobs/consolidate_and_publish_gh_pages.rs:105:39' --is-raw-string write-to-env github floweyvar1
       shell: bash
     - id: flowey_lib_hvlite___jobs__consolidate_and_publish_gh_pages__2
       uses: actions/upload-pages-artifact@v3

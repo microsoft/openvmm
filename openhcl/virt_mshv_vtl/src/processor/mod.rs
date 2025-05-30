@@ -18,6 +18,9 @@ cfg_if::cfg_if! {
         use crate::VtlCrash;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
+        use cvm_tracing::CVM_CONFIDENTIAL;
+        use hv1_emulator::synic::ProcessorSynic;
+        use hvdef::HvRegisterCrInterceptControl;
         use hvdef::HvX64RegisterName;
         use virt::vp::MpState;
         use virt::x86::MsrError;
@@ -25,7 +28,6 @@ cfg_if::cfg_if! {
         use virt_support_x86emu::translate::TranslationRegisters;
         use virt::vp::AccessVpState;
         use zerocopy::IntoBytes;
-        use hvdef::HvRegisterCrInterceptControl;
     } else if #[cfg(guest_arch = "aarch64")] {
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
@@ -96,8 +98,6 @@ pub struct UhProcessor<'a, T: Backing> {
     kernel_returns: u64,
     #[inspect(hex, iter_by_index)]
     crash_reg: [u64; hvdef::HV_X64_GUEST_CRASH_PARAMETER_MSRS],
-    #[inspect(hex, with = "|&x| u64::from(x)")]
-    crash_control: hvdef::GuestCrashCtl,
     vmtime: VmTimeAccess,
     #[inspect(skip)]
     timer: PollImpl<dyn PollTimer>,
@@ -186,7 +186,6 @@ mod private {
     use crate::GuestVtl;
     use crate::processor::UhProcessor;
     use hv1_emulator::hv::ProcessorVtlHv;
-    use hv1_emulator::synic::ProcessorSynic;
     use hv1_structs::VtlArray;
     use inspect::InspectMut;
     use std::future::Future;
@@ -259,8 +258,6 @@ mod private {
 
         fn hv(&self, vtl: GuestVtl) -> Option<&ProcessorVtlHv>;
         fn hv_mut(&mut self, vtl: GuestVtl) -> Option<&mut ProcessorVtlHv>;
-
-        fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
 
         fn vtl1_inspectable(this: &UhProcessor<'_, Self>) -> bool;
     }
@@ -446,12 +443,14 @@ trait HardwareIsolatedBacking: Backing {
     /// Vector of the event that is pending injection into the guest state, if
     /// valid.
     fn pending_event_vector(this: &UhProcessor<'_, Self>, vtl: GuestVtl) -> Option<u8>;
-    /// Checks interrupt status for all VTLs, and handles cross VTL interrupt preemption and VINA.
-    /// Returns whether interrupt reprocessing is required.
-    fn handle_cross_vtl_interrupts(
+    /// Check if an interrupt of appropriate priority, or an NMI, is pending for
+    /// the given VTL. `check_rflags` specifies whether RFLAGS.IF should be checked.
+    fn is_interrupt_pending(
         this: &mut UhProcessor<'_, Self>,
+        vtl: GuestVtl,
+        check_rflags: bool,
         dev: &impl CpuIo,
-    ) -> Result<bool, UhRunVpError>;
+    ) -> bool;
     /// Sets the pending exception for the guest state.
     ///
     /// Note that this will overwrite any existing pending exception. It will
@@ -477,6 +476,8 @@ trait HardwareIsolatedBacking: Backing {
         this: &mut UhProcessor<'_, Self>,
         intercept_control: HvRegisterCrInterceptControl,
     );
+
+    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic>;
 }
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
@@ -860,6 +861,10 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     .into();
             }
 
+            // Quiesce RCU before running the VP to avoid having to synchronize with
+            // this CPU during memory protection updates.
+            minircu::global().quiesce();
+
             T::run_vp(self, dev, &mut stop).await?;
             self.kernel_returns += 1;
         }
@@ -922,9 +927,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             idle_control,
             kernel_returns: 0,
             crash_reg: [0; hvdef::HV_X64_GUEST_CRASH_PARAMETER_MSRS],
-            crash_control: hvdef::GuestCrashCtl::new()
-                .with_crash_notify(true)
-                .with_crash_message(true),
             _not_send: PhantomData,
             backing,
             shared: backing_shared,
@@ -1036,14 +1038,32 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     fn write_crash_msr(&mut self, msr: u32, value: u64, vtl: GuestVtl) -> Result<(), MsrError> {
         match msr {
             hvdef::HV_X64_MSR_GUEST_CRASH_CTL => {
-                self.crash_control = hvdef::GuestCrashCtl::from(value);
                 let crash = VtlCrash {
                     vp_index: self.vp_index(),
                     last_vtl: vtl,
-                    control: self.crash_control,
+                    control: hvdef::GuestCrashCtl::from(value),
                     parameters: self.crash_reg,
                 };
-                tracelimit::info_ratelimited!(?crash, "Guest has reported system crash");
+                tracelimit::warn_ratelimited!(?crash, "Guest has reported system crash");
+
+                if crash.control.crash_message() {
+                    let message_gpa = crash.parameters[3];
+                    let message_size = crash.parameters[4];
+                    let mut message = vec![0; message_size as usize];
+                    match self.partition.gm[vtl].read_at(message_gpa, &mut message) {
+                        Ok(()) => {
+                            let message = String::from_utf8_lossy(&message).into_owned();
+                            tracelimit::warn_ratelimited!(
+                                CVM_CONFIDENTIAL,
+                                message,
+                                "Guest has reported a system crash message"
+                            );
+                        }
+                        Err(e) => {
+                            tracelimit::warn_ratelimited!(?e, "Failed to read crash message");
+                        }
+                    }
+                }
 
                 self.partition.crash_notification_send.send(crash);
             }
@@ -1062,7 +1082,12 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
     #[cfg(guest_arch = "x86_64")]
     fn read_crash_msr(&self, msr: u32, _vtl: GuestVtl) -> Result<u64, MsrError> {
         let v = match msr {
-            hvdef::HV_X64_MSR_GUEST_CRASH_CTL => self.crash_control.into(),
+            // Reads of CRASH_CTL report our supported capabilities, not the
+            // current value.
+            hvdef::HV_X64_MSR_GUEST_CRASH_CTL => hvdef::GuestCrashCtl::new()
+                .with_crash_notify(true)
+                .with_crash_message(true)
+                .into(),
             hvdef::HV_X64_MSR_GUEST_CRASH_P0 => self.crash_reg[0],
             hvdef::HV_X64_MSR_GUEST_CRASH_P1 => self.crash_reg[1],
             hvdef::HV_X64_MSR_GUEST_CRASH_P2 => self.crash_reg[2],
@@ -1124,49 +1149,6 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
             devices,
         )
         .await
-    }
-
-    fn deliver_synic_messages(&mut self, vtl: GuestVtl, sints: u16) {
-        let proxied_sints = self
-            .backing
-            .hv(vtl)
-            .as_ref()
-            .map_or(!0, |hv| hv.synic.proxied_sints());
-        let pending_sints =
-            self.inner.message_queues[vtl].post_pending_messages(sints, |sint, message| {
-                if proxied_sints & (1 << sint) != 0 {
-                    if let Some(synic) = self.backing.untrusted_synic_mut().as_mut() {
-                        synic.post_message(
-                            sint,
-                            message,
-                            &mut self
-                                .partition
-                                .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
-                        )
-                    } else {
-                        self.partition.hcl.post_message_direct(
-                            self.inner.vp_info.base.vp_index.index(),
-                            sint,
-                            message,
-                        )
-                    }
-                } else {
-                    self.backing
-                        .hv_mut(vtl)
-                        .as_mut()
-                        .unwrap()
-                        .synic
-                        .post_message(
-                            sint,
-                            message,
-                            &mut self
-                                .partition
-                                .synic_interrupt(self.inner.vp_info.base.vp_index, vtl),
-                        )
-                }
-            });
-
-        self.request_sint_notifications(vtl, pending_sints);
     }
 
     #[cfg(guest_arch = "x86_64")]

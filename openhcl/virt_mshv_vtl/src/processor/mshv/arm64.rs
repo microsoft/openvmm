@@ -30,7 +30,6 @@ use hcl::UnsupportedGuestVtl;
 use hcl::ioctl;
 use hcl::ioctl::aarch64::MshvArm64;
 use hv1_emulator::hv::ProcessorVtlHv;
-use hv1_emulator::synic::ProcessorSynic;
 use hvdef::HvAarch64PendingEvent;
 use hvdef::HvArm64RegisterName;
 use hvdef::HvArm64ResetType;
@@ -158,6 +157,7 @@ impl BackingPrivate for HypervisorBackedArm64 {
                 this.backing.next_deliverability_notifications;
         }
 
+        this.unlock_tlb_lock(Vtl::Vtl2);
         let intercepted = this
             .runner
             .run()
@@ -236,10 +236,6 @@ impl BackingPrivate for HypervisorBackedArm64 {
     }
 
     fn hv_mut(&mut self, _vtl: GuestVtl) -> Option<&mut ProcessorVtlHv> {
-        None
-    }
-
-    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
         None
     }
 
@@ -598,7 +594,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
         }
     }
 
-    fn initial_gva_translation(&self) -> Option<emulate::InitialTranslation> {
+    fn initial_gva_translation(&mut self) -> Option<emulate::InitialTranslation> {
         if (self.vp.runner.exit_message().header.typ != HvMessageType::HvMessageTypeGpaIntercept)
             && (self.vp.runner.exit_message().header.typ != HvMessageType::HvMessageTypeUnmappedGpa)
             && (self.vp.runner.exit_message().header.typ
@@ -621,13 +617,20 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
         let translate_mode = emulate::TranslateMode::try_from(message.header.intercept_access_type)
             .expect("unexpected intercept access type");
 
-        tracing::trace!(?message.guest_virtual_address, ?message.guest_physical_address, ?translate_mode, "initial translation");
-
-        Some(emulate::InitialTranslation {
+        let translation = emulate::InitialTranslation {
             gva: message.guest_virtual_address,
             gpa: message.guest_physical_address,
             translate_mode,
-        })
+        };
+
+        tracing::trace!(?translation, "initial translation");
+
+        // If we have a valid translation, the hypervisor must have set the TLB lock
+        // so the translation remains valid for the duration of this exit.
+        // Update our local cache appropriately.
+        self.vp.mark_tlb_locked(Vtl::Vtl2, self.vtl);
+
+        Some(translation)
     }
 
     fn interruption_pending(&self) -> bool {
@@ -658,6 +661,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
             )
         {
             // Should always be called after translate gva with the tlb lock flag
+            // or with an initial translation.
             debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vtl));
 
             let cpsr: Cpsr64 = self
@@ -734,10 +738,13 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedA
             Ok(ioctl::TranslateResult {
                 gpa_page,
                 overlay_page,
-            }) => Ok(Ok(EmuTranslateResult {
-                gpa: (gpa_page << hvdef::HV_PAGE_SHIFT) + (gva & (hvdef::HV_PAGE_SIZE - 1)),
-                overlay_page: Some(overlay_page),
-            })),
+            }) => {
+                self.vp.mark_tlb_locked(Vtl::Vtl2, self.vtl);
+                Ok(Ok(EmuTranslateResult {
+                    gpa: (gpa_page << hvdef::HV_PAGE_SHIFT) + (gva & (hvdef::HV_PAGE_SIZE - 1)),
+                    overlay_page: Some(overlay_page),
+                }))
+            }
             Err(ioctl::aarch64::TranslateErrorAarch64 { code }) => Ok(Err(EmuTranslateError {
                 code: hypercall::TranslateGvaResultCode(code),
                 event_info: None,
