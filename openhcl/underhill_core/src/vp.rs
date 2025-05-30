@@ -244,7 +244,11 @@ impl VpSpawner {
         state_recv: mesh::OneshotReceiver<(Self, Option<vmcore::save_restore::SavedStateBlob>)>,
         mut canceller: vmm_core::partition_unit::RunnerCanceller,
     ) {
-        tracing::info!(cpu, "thread spawned for sidecar VP, waiting to online");
+        tracing::info!(
+            CVM_ALLOWED,
+            cpu,
+            "thread spawned for sidecar VP, waiting to online"
+        );
         let thread = underhill_threadpool::Thread::current().unwrap();
 
         let mut this: Self;
