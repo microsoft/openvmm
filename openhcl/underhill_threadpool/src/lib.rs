@@ -213,16 +213,17 @@ impl ThreadpoolBuilder {
 
                 send.send(Ok(pool.client().clone())).ok();
 
-                if let Some(notifier) = notifier {
-                    (notifier.0)();
-                }
-
                 // Store the current thread's driver so that spawned tasks can
                 // find it via `Thread::current()`. Do this via a loan instead
                 // of storing it directly in TLS to avoid the overhead of
                 // registering a destructor.
                 CURRENT_THREAD_DRIVER.with(|current| {
-                    current.lend(&driver, || pool.run());
+                    current.lend(&driver, || {
+                        if let Some(notifier) = notifier {
+                            (notifier.0)();
+                        }
+                        pool.run()
+                    });
                 });
             })?;
 
@@ -599,15 +600,14 @@ impl ThreadpoolDriver {
 
     /// Sets a function to be called when the thread gets spawned.
     ///
-    /// Return false if the thread is already spawned.
-    pub fn set_spawn_notifier(&self, f: impl 'static + Send + FnOnce()) -> bool {
-        let notifier = AffinityNotifier(Box::new(f));
+    /// Return `Err(f)` if the thread is already spawned.
+    pub fn set_spawn_notifier<F: 'static + Send + FnOnce()>(&self, f: F) -> Result<(), F> {
         let mut state = self.inner.state.lock();
         if !state.spawned {
-            state.notifier = Some(notifier);
-            true
+            state.notifier = Some(AffinityNotifier(Box::new(f)));
+            Ok(())
         } else {
-            false
+            Err(f)
         }
     }
 }

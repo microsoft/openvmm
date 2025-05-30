@@ -59,7 +59,7 @@ impl VpSpawner {
     /// Spawns the VP on the appropriate thread pool thread.
     pub async fn spawn_vp(self, tp: &AffinitizedThreadpool) -> anyhow::Result<()> {
         if underhill_threadpool::is_cpu_online(self.cpu)? {
-            self.spawn_main_vp(tp, None, false).await
+            self.spawn_main_vp(tp).await
         } else {
             // The CPU is not online, so this should be a sidecar VP. Run the VP
             // remotely via the sidecar kernel.
@@ -151,41 +151,19 @@ impl VpSpawner {
         }
     }
 
-    async fn spawn_main_vp(
-        mut self,
-        tp: &AffinitizedThreadpool,
-        mut saved_state: Option<vmcore::save_restore::SavedStateBlob>,
-        was_sidecar: bool,
-    ) -> anyhow::Result<()> {
-        let vp_index = self.vp.vp_index();
-        tp.driver(vp_index.index())
+    async fn spawn_main_vp(mut self, tp: &AffinitizedThreadpool) -> anyhow::Result<()> {
+        let driver = tp.driver(self.cpu);
+        assert!(
+            driver.is_affinity_set(),
+            "cpu {} should already be online",
+            self.cpu
+        );
+        driver
             .spawn("vp-init", async move {
                 let thread = underhill_threadpool::Thread::current().unwrap();
 
-                // If this was a relaunch of a sidecar VP, set the initial task
-                // (which may have caused the sidecar VP to be removed) for
-                // diagnostics purposes.
-                if was_sidecar {
-                    self.vp.set_sidecar_exit_due_to_task(
-                        thread
-                            .first_task()
-                            .map_or_else(|| "<unknown>".into(), |t| t.name),
-                    );
-                }
-
-                // Ensure this thread pool thread has its affinity set.
-                let affinity_set = thread
-                    .try_set_affinity()
-                    .context("failed to set affinity")?;
-                if !affinity_set {
-                    anyhow::bail!("processor {} not online", vp_index.index());
-                }
-
                 thread.set_idle_task(async move |mut control| {
-                    let state = self
-                        .run_vp(saved_state.take(), Some(&mut control), false)
-                        .await;
-
+                    let state = self.run_vp(None, Some(&mut control), false).await;
                     assert!(state.is_none());
                 });
                 Ok(())
@@ -208,70 +186,105 @@ impl VpSpawner {
                                 // Cancel running the VP when the thread pool
                                 // thread is spawned so that we can hotplug the
                                 // processor and continue running locally.
-                                let mut canceller = self.runner.canceller();
-                                let (lock_send, lock_recv) = mesh::oneshot();
-                                let offline = tp.driver(self.cpu).set_spawn_notifier({
-                                    let tp = tp.clone();
-                                    move || {
-                                        // Only online one CPU at a time, since
-                                        // this serializes in the kernel, and
-                                        // the online process prevents the CPU
-                                        // from being used by the guest. This
-                                        // approach ensures that the guest only
-                                        // sees blackout of one CPU at a time,
-                                        // rather than all CPUs at once.
-                                        static ONLINE_LOCK: LazyLock<futures::lock::Mutex<()>> =
-                                            LazyLock::new(|| futures::lock::Mutex::new(()));
-                                        tp.spawn("wait_for_online", async move {
-                                            let lock = ONLINE_LOCK.lock().await;
-                                            canceller.cancel();
-                                            // Send the lock guard on the
-                                            // channel so that it will be
-                                            // dropped below when the receiver
-                                            // is dropped.
-                                            lock_send.send(lock);
-                                        })
+                                let canceller = self.runner.canceller();
+                                let (state_send, state_recv) = mesh::oneshot();
+                                let r = tp.driver(self.cpu).set_spawn_notifier(move || {
+                                    underhill_threadpool::Thread::current()
+                                        .unwrap()
+                                        .spawn_local(
+                                            "online-sidecar",
+                                            Self::notify_main_vp_thread_start(
+                                                state_recv, canceller,
+                                            ),
+                                        )
                                         .detach();
-                                    }
                                 });
 
-                                let saved_state = if offline {
-                                    // Run until the VP is finished or cancelled. If
-                                    // it is cancelled, we will hotplug the
-                                    // processor and respawn the VP.
-                                    let saved_state = self.run_vp(None, None, true).await;
-                                    if saved_state.is_none() {
-                                        // The VP is done.
-                                        return;
+                                let saved_state = match r {
+                                    Ok(()) => {
+                                        // Run until the VP is finished or cancelled. If
+                                        // it is cancelled, we will hotplug the
+                                        // processor and respawn the VP.
+                                        let saved_state = self.run_vp(None, None, true).await;
+                                        if saved_state.is_none() {
+                                            // The VP is done.
+                                            return;
+                                        }
+                                        saved_state
                                     }
-                                    saved_state
-                                } else {
-                                    // The thread has already been spawned, so
-                                    // online the processor and continue without
-                                    // saved state.
-                                    None
+                                    Err(notifier) => {
+                                        // The thread has already been spawned,
+                                        // so run the notifier over on the
+                                        // thread without running the VP.
+                                        tp.driver(self.cpu)
+                                            .spawn("spawn-remote", async move { notifier() })
+                                            .detach();
+                                        None
+                                    }
                                 };
 
-                                tracing::info!(CVM_ALLOWED, cpu = self.cpu, "onlining sidecar VP");
-                                online_cpu(self.cpu).await;
-
-                                // The CPU is online, so allow the next waiting
-                                // VP to be onlined.
-                                drop(lock_recv);
-
-                                // Respawn the VP on the new thread.
-                                let vp_index = self.vp.vp_index().index();
-                                if let Err(err) = self.spawn_main_vp(&tp, saved_state, true).await {
-                                    panic!(
-                                        "failed to spawn VP {vp_index} for onlined sidecar: {err:#}"
-                                    );
-                                }
+                                // Send the VP and its saved state to the main thread.
+                                state_send.send((self, saved_state));
                             },
                         )
                         .detach()
                 }
             })
             .await;
+    }
+
+    async fn notify_main_vp_thread_start(
+        state_recv: mesh::OneshotReceiver<(Self, Option<vmcore::save_restore::SavedStateBlob>)>,
+        mut canceller: vmm_core::partition_unit::RunnerCanceller,
+    ) {
+        let thread = underhill_threadpool::Thread::current().unwrap();
+
+        // Only online one CPU at a time, since this serializes in the kernel,
+        // and the online process prevents the CPU from being used by the guest.
+        // This approach ensures that the guest only sees blackout of one CPU at
+        // a time, rather than all CPUs at once.
+        static ONLINE_LOCK: LazyLock<futures::lock::Mutex<()>> =
+            LazyLock::new(|| futures::lock::Mutex::new(()));
+
+        let mut this: Self;
+        let saved_state: Option<vmcore::save_restore::SavedStateBlob>;
+        {
+            let _lock = ONLINE_LOCK.lock().await;
+            canceller.cancel();
+
+            // Wait for the VP to stop running and get its spawner and saved
+            // state.
+            (this, saved_state) = match state_recv.await {
+                Ok(r) => r,
+                Err(_) => {
+                    // The VP is done.
+                    return;
+                }
+            };
+
+            tracing::info!(CVM_ALLOWED, cpu = this.cpu, "onlining sidecar VP");
+            online_cpu(this.cpu).await;
+
+            // Set the affinity on the thread pool thread now that the CPU is
+            // online.
+            let affinity_set = thread.try_set_affinity().expect("failed to set affinity");
+            if !affinity_set {
+                panic!("processor {} not online", this.cpu);
+            }
+        }
+
+        // Set the initial task (which may have caused the sidecar VP to be
+        // removed) for diagnostics purposes.
+        this.vp.set_sidecar_exit_due_to_task(
+            thread
+                .first_task()
+                .map_or_else(|| "<unknown>".into(), |t| t.name),
+        );
+
+        thread.set_idle_task(async move |mut control| {
+            let state = this.run_vp(saved_state, Some(&mut control), false).await;
+            assert!(state.is_none());
+        });
     }
 }
 
