@@ -335,14 +335,14 @@ where
 
     tracing::debug!(parameter_region_start);
 
-    // Reserve 64 pages for a bootshim heap. This is only used to parse the
+    // Reserve 16 pages for a bootshim heap. This is only used to parse the
     // protobuf payload from the previous instance in a servicing boot.
     //
     // Import these pages as it greatly simplifies the early startup code in the
     // bootshim for isolated guests. This allows the bootshim to use these pages
     // early on without extra acceptance calls.
     let heap_start = offset;
-    let heap_size = 64 * HV_PAGE_SIZE;
+    let heap_size = 16 * HV_PAGE_SIZE;
     importer.import_pages(
         heap_start / HV_PAGE_SIZE,
         heap_size / HV_PAGE_SIZE,
@@ -1029,14 +1029,14 @@ where
 
     tracing::debug!(parameter_region_start);
 
-    // Reserve 64 pages for a bootshim heap. This is only used to parse the
+    // Reserve 16 pages for a bootshim heap. This is only used to parse the
     // protobuf payload from the previous instance in a servicing boot.
     //
     // Import these pages as it greatly simplifies the early startup code in the
     // bootshim for isolated guests. This allows the bootshim to use these pages
     // early on without extra acceptance calls.
     let heap_start = next_addr;
-    let heap_size = 64 * HV_PAGE_SIZE;
+    let heap_size = 16 * HV_PAGE_SIZE;
     importer.import_pages(
         heap_start / HV_PAGE_SIZE,
         heap_size / HV_PAGE_SIZE,
