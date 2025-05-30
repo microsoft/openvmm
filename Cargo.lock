@@ -4277,7 +4277,7 @@ dependencies = [
 [[package]]
 name = "ms-tpm-20-ref"
 version = "0.1.0"
-source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?branch=main#92fdd699015cb7b168c3f58aa78ca87979a14ff5"
+source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?branch=main#c7433fb1a74e47cea5daf13d3aac24cd0ccac1f4"
 dependencies = [
  "cc",
  "once_cell",
