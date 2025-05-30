@@ -9,6 +9,7 @@ use futures::future::try_join_all;
 use pal_async::task::Spawn;
 use pal_async::task::SpawnLocal;
 use pal_uring::IdleControl;
+use std::sync::LazyLock;
 use underhill_threadpool::AffinitizedThreadpool;
 
 pub(crate) async fn spawn_vps(
@@ -208,8 +209,30 @@ impl VpSpawner {
                                 // thread is spawned so that we can hotplug the
                                 // processor and continue running locally.
                                 let mut canceller = self.runner.canceller();
-                                let offline = tp.driver(self.cpu).set_spawn_notifier(move || {
-                                    canceller.cancel();
+                                let (lock_send, lock_recv) = mesh::oneshot();
+                                let offline = tp.driver(self.cpu).set_spawn_notifier({
+                                    let tp = tp.clone();
+                                    move || {
+                                        // Only online one CPU at a time, since
+                                        // this serializes in the kernel, and
+                                        // the online process prevents the CPU
+                                        // from being used by the guest. This
+                                        // approach ensures that the guest only
+                                        // sees blackout of one CPU at a time,
+                                        // rather than all CPUs at once.
+                                        static ONLINE_LOCK: LazyLock<futures::lock::Mutex<()>> =
+                                            LazyLock::new(|| futures::lock::Mutex::new(()));
+                                        tp.spawn("wait_for_online", async move {
+                                            let lock = ONLINE_LOCK.lock().await;
+                                            canceller.cancel();
+                                            // Send the lock guard on the
+                                            // channel so that it will be
+                                            // dropped below when the receiver
+                                            // is dropped.
+                                            lock_send.send(lock);
+                                        })
+                                        .detach();
+                                    }
                                 });
 
                                 let saved_state = if offline {
@@ -231,6 +254,10 @@ impl VpSpawner {
 
                                 tracing::info!(CVM_ALLOWED, cpu = self.cpu, "onlining sidecar VP");
                                 online_cpu(self.cpu).await;
+
+                                // The CPU is online, so allow the next waiting
+                                // VP to be onlined.
+                                drop(lock_recv);
 
                                 // Respawn the VP on the new thread.
                                 let vp_index = self.vp.vp_index().index();
