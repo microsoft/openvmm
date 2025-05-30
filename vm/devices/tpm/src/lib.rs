@@ -562,7 +562,11 @@ impl Tpm {
             {
                 // Failures are non-fatal as the feature is not necessary for booting.
                 tracing::error!(CVM_ALLOWED, "Failed to initialize guest secret key");
-                tracing::error!(CVM_CONFIDENTIAL, error = &e as &dyn std::error::Error, "Failed to initialize guest secret key");
+                tracing::error!(
+                    CVM_CONFIDENTIAL,
+                    error = &e as &dyn std::error::Error,
+                    "Failed to initialize guest secret key"
+                );
             }
         }
 
@@ -698,7 +702,11 @@ impl Tpm {
                         CVM_ALLOWED,
                         "could not persist ppi state to non-volatile store"
                     );
-                    tracing::warn!(CVM_CONFIDENTIAL, error = &e as &dyn std::error::Error, "could not persist ppi state to non-volatile store");
+                    tracing::warn!(
+                        CVM_CONFIDENTIAL,
+                        error = &e as &dyn std::error::Error,
+                        "could not persist ppi state to non-volatile store"
+                    );
                 }
             }
         };
@@ -1291,7 +1299,11 @@ impl MmioIntercept for Tpm {
         let res = pal_async::local::block_on(self.flush_pending_nvram());
         if let Err(e) = res {
             tracing::warn!(CVM_ALLOWED, "could not commit nvram to non-volatile store");
-            tracing::warn!(CVM_CONFIDENTIAL, error = &e as &dyn std::error::Error, "could not commit nvram to non-volatile store");
+            tracing::warn!(
+                CVM_CONFIDENTIAL,
+                error = &e as &dyn std::error::Error,
+                "could not commit nvram to non-volatile store"
+            );
         };
 
         IoResult::Ok

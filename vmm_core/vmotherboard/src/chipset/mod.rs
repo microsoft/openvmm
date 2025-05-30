@@ -115,15 +115,15 @@ impl Chipset {
                         );
                     }
                     IoType::Write(bytes) => tracelimit::warn_ratelimited!(
-                            CVM_CONFIDENTIAL,
-                            device = &*lookup.dev_name,
-                            address,
-                            len,
-                            ?kind,
-                            error,
-                            ?bytes,
-                            "device io write error"
-                        ),
+                        CVM_CONFIDENTIAL,
+                        device = &*lookup.dev_name,
+                        address,
+                        len,
+                        ?kind,
+                        error,
+                        ?bytes,
+                        "device io write error"
+                    ),
                 }
                 Ok(())
             }
