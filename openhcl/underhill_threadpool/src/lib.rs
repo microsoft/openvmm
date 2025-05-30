@@ -199,21 +199,23 @@ impl ThreadpoolBuilder {
                 };
 
                 let driver = driver;
-                {
+                let notifier = {
                     let mut state = driver.inner.state.lock();
                     state.spawned = true;
-                    if let Some(notifier) = state.notifier.take() {
-                        (notifier.0)();
-                    }
                     if online {
                         // There cannot be any waiters yet since they can only
                         // be registered from the current thread.
                         driver.inner.affinity_set.store(true, Relaxed);
                         state.affinity = AffinityState::Set;
                     }
-                }
+                    state.notifier.take()
+                };
 
                 send.send(Ok(pool.client().clone())).ok();
+
+                if let Some(notifier) = notifier {
+                    (notifier.0)();
+                }
 
                 // Store the current thread's driver so that spawned tasks can
                 // find it via `Thread::current()`. Do this via a loan instead
