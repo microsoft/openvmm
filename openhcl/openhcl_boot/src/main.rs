@@ -15,18 +15,19 @@ mod cmdline;
 mod dt;
 mod host_params;
 mod hypercall;
+mod isolation;
 mod rt;
 mod sidecar;
 mod single_threaded;
 
 use crate::arch::setup_vtl2_memory;
-use crate::arch::setup_vtl2_vp;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_init;
 use crate::boot_logger::log;
 use crate::hypercall::hvcall;
+use crate::isolation::IsolationType;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
@@ -37,7 +38,6 @@ use dt::BootTimes;
 use dt::write_dt;
 use host_params::COMMAND_LINE_SIZE;
 use host_params::PartitionInfo;
-use host_params::shim_params::IsolationType;
 use host_params::shim_params::ShimParams;
 use hvdef::Vtl;
 use loader_defs::linux::SETUP_DTB;
@@ -402,7 +402,10 @@ fn reserved_memory_regions(
 mod x86_boot {
     use crate::PageAlign;
     use crate::ReservedMemoryType;
+    #[cfg(target_arch = "x86_64")]
+    use crate::arch::tdx_prepare_ap_memory;
     use crate::host_params::PartitionInfo;
+    use crate::isolation::IsolationType;
     use crate::single_threaded::OffStackRef;
     use crate::single_threaded::off_stack;
     use crate::zeroed;
@@ -501,6 +504,8 @@ mod x86_boot {
         cmdline: &str,
         setup_data_head: *const setup_data,
         setup_data_tail: &mut &mut setup_data,
+        isolation_type: IsolationType,
+        page_tables: Option<MemoryRange>,
     ) -> OffStackRef<'static, PageAlign<boot_params>> {
         let mut boot_params_storage = off_stack!(PageAlign<boot_params>, zeroed());
         let boot_params = &mut boot_params_storage.0;
@@ -539,6 +544,22 @@ mod x86_boot {
         boot_params.ext_cmd_line_ptr = (cmd_line_addr >> 32) as u32;
 
         boot_params.hdr.setup_data = (setup_data_head as u64).into();
+
+        if !isolation_type.is_hardware_isolated() || page_tables.is_none() {
+            return boot_params_storage;
+        }
+
+        // If TDX isolated, update the architectural reset vector for APs,
+        // and add the page tables to the e820 entries.
+        #[cfg(target_arch = "x86_64")]
+        if isolation_type == IsolationType::Tdx {
+            tdx_prepare_ap_memory(
+                page_tables.unwrap().start(),
+                page_tables.unwrap().end(),
+                boot_params,
+            );
+        }
+
         boot_params_storage
     }
 }
@@ -571,16 +592,6 @@ const fn zeroed<T: FromZeros>() -> T {
     unsafe { core::mem::MaybeUninit::<T>::zeroed().assume_init() }
 }
 
-fn get_ref_time(isolation: IsolationType) -> Option<u64> {
-    match isolation {
-        #[cfg(target_arch = "x86_64")]
-        IsolationType::Tdx => get_tdx_tsc_reftime(),
-        #[cfg(target_arch = "x86_64")]
-        IsolationType::Snp => None,
-        _ => Some(minimal_rt::reftime::reference_time()),
-    }
-}
-
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
     if p.isolation_type == IsolationType::None {
@@ -593,16 +604,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Thus the fast hypercalls will fail as the the Guest ID has
     // to be set first hence initialize hypercall support
     // explicitly.
-    //
-    // In the hardware-isolated case, the hypervisor cannot
-    // access the guest registers so the fast hypercalls and
-    // any other methods of passing data to/from the hypervisor
-    // via the CPU registers (e.g. CPUID, hypercall call code or
-    // status) do not work, and the `hvcall()` doesn't have
-    // provisions for the hardware-isolated case.
-    if !p.isolation_type.is_hardware_isolated() {
-        hvcall().initialize();
-    }
+
+    p.isolation_type.initialize_hypercalls();
 
     // Enable early log output if requested in the static command line.
     // Also check for confidential debug mode if we're isolated.
@@ -618,7 +621,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     let can_trust_host =
         p.isolation_type == IsolationType::None || static_options.confidential_debug;
 
-    let boot_reftime = get_ref_time(p.isolation_type);
+    let boot_reftime = p.isolation_type.get_ref_time();
 
     let mut dt_storage = off_stack!(PartitionInfo, PartitionInfo::new());
     let partition_info =
@@ -678,8 +681,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     validate_vp_hw_ids(partition_info);
 
-    setup_vtl2_vp(partition_info);
+    p.isolation_type.setup_vtl2_vp(partition_info);
     setup_vtl2_memory(&p, partition_info);
+
     verify_imported_regions_hash(&p);
 
     let mut sidecar_params = off_stack!(PageAlign<SidecarParams>, zeroed());
@@ -743,6 +747,8 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         &cmdline,
         setup_data_head,
         &mut setup_data_tail,
+        p.isolation_type,
+        p.page_tables,
     );
 
     // Compute the ending boot time. This has to be before writing to device
@@ -750,7 +756,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     let boot_times = boot_reftime.map(|start| BootTimes {
         start,
-        end: get_ref_time(p.isolation_type).unwrap_or(0),
+        end: p.isolation_type.get_ref_time().unwrap_or(0),
     });
 
     // Validate that no imported regions that are pending are not part of vtl2
@@ -790,13 +796,14 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         &cmdline,
         sidecar.as_ref(),
         boot_times,
+        p.isolation_type,
     )
     .unwrap();
 
     rt::verify_stack_cookie();
 
     log!("uninitializing hypercalls, about to jump to kernel");
-    hvcall().uninitialize();
+    p.isolation_type.uninitialize_hypercalls();
 
     cfg_if::cfg_if! {
         if #[cfg(target_arch = "x86_64")] {
@@ -898,7 +905,7 @@ mod test {
     use crate::dt::write_dt;
     use crate::host_params::MAX_CPU_COUNT;
     use crate::host_params::PartitionInfo;
-    use crate::host_params::shim_params::IsolationType;
+    use crate::isolation::IsolationType;
     use crate::reserved_memory_regions;
     use arrayvec::ArrayString;
     use arrayvec::ArrayVec;
@@ -983,6 +990,7 @@ mod test {
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            IsolationType::None,
         )
         .unwrap();
     }
@@ -1056,6 +1064,7 @@ mod test {
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            IsolationType::None,
         )
         .unwrap();
 
@@ -1084,6 +1093,7 @@ mod test {
             &ArrayString::from("test").unwrap_or_default(),
             None,
             None,
+            IsolationType::None,
         )
         .unwrap();
 
