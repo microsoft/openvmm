@@ -74,9 +74,9 @@ macro_rules! kmsg_enabled {
                 tracing::enabled!(target: $target, Level::ERROR)
             }
             kmsg_defs::LOGLEVEL_WARNING => tracing::enabled!(target: $target, Level::WARN),
-            kmsg_defs::LOGLEVEL_NOTICE => tracing::enabled!(target: $target, Level::INFO),
-            kmsg_defs::LOGLEVEL_INFO => tracing::enabled!(target: $target, Level::DEBUG),
-            kmsg_defs::LOGLEVEL_DEBUG.. => tracing::enabled!(target: $target, Level::TRACE),
+            kmsg_defs::LOGLEVEL_NOTICE | kmsg_defs::LOGLEVEL_INFO => tracing::enabled!(target: $target, Level::INFO),
+            kmsg_defs::LOGLEVEL_DEBUG => tracing::enabled!(target: $target, Level::DEBUG),
+            _ => tracing::enabled!(target: $target, Level::TRACE),
         }
     };
 }
@@ -116,8 +116,10 @@ impl Stream for KmsgStream {
                         kmsg_defs::LOGLEVEL_EMERG..=kmsg_defs::LOGLEVEL_CRIT => LogLevel::CRITICAL,
                         kmsg_defs::LOGLEVEL_ERR => LogLevel::ERROR,
                         kmsg_defs::LOGLEVEL_WARNING => LogLevel::WARNING,
-                        kmsg_defs::LOGLEVEL_NOTICE => LogLevel::INFORMATION,
-                        kmsg_defs::LOGLEVEL_INFO.. => LogLevel::VERBOSE,
+                        kmsg_defs::LOGLEVEL_NOTICE | kmsg_defs::LOGLEVEL_INFO => {
+                            LogLevel::INFORMATION
+                        }
+                        kmsg_defs::LOGLEVEL_DEBUG.. => LogLevel::VERBOSE,
                     };
 
                     let mut message = [0; TRACE_LOGGING_MESSAGE_MAX_SIZE];
