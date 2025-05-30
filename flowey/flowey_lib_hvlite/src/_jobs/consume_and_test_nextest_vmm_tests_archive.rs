@@ -60,6 +60,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe_extras::resolve::Node>();
         ctx.import::<crate::artifact_openhcl_igvm_from_recipe::resolve::Node>();
         ctx.import::<crate::download_openvmm_vmm_tests_artifacts::Node>();
+        ctx.import::<crate::download_release_igvm_files::Node>();
         ctx.import::<crate::init_openvmm_magicpath_uefi_mu_msvm::Node>();
         ctx.import::<crate::init_hyperv_tests::Node>();
         ctx.import::<crate::init_vmm_tests_env::Node>();
@@ -106,6 +107,9 @@ impl SimpleFlowNode for Node {
             )
         });
 
+        let release_2411_igvm_files =
+            ctx.reqv(crate::download_release_igvm_files::resolve::Request::Release2411);
+
         ctx.req(crate::download_openvmm_vmm_tests_artifacts::Request::Download(test_artifacts));
 
         let disk_images_dir =
@@ -145,6 +149,7 @@ impl SimpleFlowNode for Node {
             disk_images_dir: Some(disk_images_dir),
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
+            release_2411_igvm_files,
             get_env: v,
         });
 

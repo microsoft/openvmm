@@ -6,6 +6,7 @@
 
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::download_openvmm_deps::OpenvmmDepsArch;
+use crate::download_release_igvm_files::Release2411Output;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -51,6 +52,7 @@ flowey_request! {
         pub get_test_log_path: Option<WriteVar<PathBuf>>,
         /// Get a map of env vars required to be set when running VMM tests
         pub get_env: WriteVar<BTreeMap<String, String>>,
+        pub release_2411_igvm_files: ReadVar<Release2411Output>,
     }
 }
 
@@ -79,6 +81,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path,
             get_env,
+            release_2411_igvm_files,
         } = request;
 
         let openvmm_deps_arch = match vmm_tests_target.architecture {
@@ -112,6 +115,7 @@ impl SimpleFlowNode for Node {
             let test_linux_initrd = test_linux_initrd.claim(ctx);
             let test_linux_kernel = test_linux_kernel.claim(ctx);
             let openvmm_repo_root = openvmm_repo_root.claim(ctx);
+            let release_2411_igvm_files = release_2411_igvm_files.claim(ctx);
             move |rt| {
                 let test_linux_initrd = rt.read(test_linux_initrd);
                 let test_linux_kernel = rt.read(test_linux_kernel);
@@ -277,6 +281,20 @@ impl SimpleFlowNode for Node {
                         fs_err::copy(igvm_bin, test_content_dir.join(filename))?;
                     }
                 }
+
+                let release_2411_igvm_files = rt.read(release_2411_igvm_files);
+                fs_err::copy(
+                    release_2411_igvm_files.x64_bin,
+                    test_content_dir.join("release-2411-x64-openhcl.bin"),
+                )?;
+                fs_err::copy(
+                    release_2411_igvm_files.x64_direct_bin,
+                    test_content_dir.join("release-2411-x64-openhcl-direct.bin"),
+                )?;
+                fs_err::copy(
+                    release_2411_igvm_files.aarch64_bin,
+                    test_content_dir.join("release-2411-aarch64-openhcl.bin"),
+                )?;
 
                 let (arch_dir, kernel_file_name) = match openvmm_deps_arch {
                     OpenvmmDepsArch::X86_64 => ("x64", "vmlinux"),
