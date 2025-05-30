@@ -348,17 +348,12 @@ impl Worker for UnderhillVmWorker {
                     "failed to start VM"
                 );
 
-                // An error could potentially contain sensitive information, so don't send it on CVMs.
-                let error_msg = if underhill_confidentiality::confidential_filtering_enabled() {
-                    String::new()
-                } else {
-                    // Format error as raw string because the error is anyhow::Error
-                    format!("{:#}", err)
-                };
-
                 // Note that this probably will not return, since the host
                 // should terminate the VM in this case.
-                get_client.complete_start_vtl0(Some(error_msg)).await;
+                // Format error as raw string because the error is anyhow::Error
+                get_client
+                    .complete_start_vtl0(Some(format!("{:#}", err)))
+                    .await;
             } else {
                 get_client.complete_start_vtl0(None).await;
             }
