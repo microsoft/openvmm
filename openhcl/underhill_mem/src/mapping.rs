@@ -331,7 +331,7 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
         if let Some(registrar) = &self.registrar {
             registrar
                 .register(address, len)
-                .map_err(|start| GuestMemoryBackingError::new(start, RegistrationError))
+                .map_err(|start| GuestMemoryBackingError::other(start, RegistrationError))
         } else {
             // TODO: fail this call once we have a way to avoid calling this for
             // user-mode-only accesses to locked memory (e.g., for vmbus ring

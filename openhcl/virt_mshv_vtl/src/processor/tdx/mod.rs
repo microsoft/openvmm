@@ -2418,7 +2418,10 @@ impl UhProcessor<'_, TdxBacked> {
                 // For now, we just check if the exit was suprious or if we
                 // should inject a machine check. An exit is considered spurious
                 // if the gpa is accessible.
-                if self.partition.gm[intercepted_vtl].check_gpa_readable(gpa) {
+                if self.partition.gm[intercepted_vtl]
+                    .probe_gpa_readable(gpa)
+                    .is_ok()
+                {
                     tracelimit::warn_ratelimited!(gpa, "possible spurious EPT violation, ignoring");
                 } else {
                     // TODO: It would be better to show what exact bitmap check
