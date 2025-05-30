@@ -144,6 +144,7 @@ pub(crate) struct LoadedVm {
     pub emuplat_servicing: EmuplatServicing,
     pub device_interfaces: Option<DeviceInterfaces>,
     pub vmbus_client: Option<vmbus_client::VmbusClient>,
+    pub vmbus_filter: Option<vmbus_client::filter::ClientFilter>,
     /// Memory map with IGVM types for each range.
     pub vtl0_memory_map: Vec<(MemoryRangeWithNode, MemoryMapEntryType)>,
 
@@ -309,6 +310,8 @@ impl LoadedVm {
                         );
                         resp.field("memory", &self.memory);
                         resp.field("dma_manager", &self.dma_manager);
+                        resp.field("vmbus_client", &self.vmbus_client);
+                        resp.field("vmbus_filter", &self.vmbus_filter);
                     }),
                 },
                 Event::Vtl2ConfigNicRpc(message) => {
