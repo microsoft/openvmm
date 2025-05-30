@@ -20,11 +20,21 @@ pub(crate) async fn spawn_vps(
     isolation: virt::IsolationType,
 ) -> anyhow::Result<()> {
     // Start the VP tasks on the thread pool.
-    let _: Vec<()> =
-        try_join_all(vps.into_iter().zip(runners).map(|(vp, runner)| {
-            VpSpawner::new(vp, chipset.clone(), runner, isolation).spawn_vp(tp)
-        }))
-        .await?;
+    let _: Vec<()> = try_join_all(vps.into_iter().zip(runners).map(|(vp, runner)| {
+        // TODO: get CPU index for VP
+        let cpu = vp.vp_index().index();
+        let spawner = VpSpawner {
+            vp,
+            cpu,
+            chipset: chipset.clone(),
+            runner,
+            isolation,
+            tp: tp.clone(),
+        };
+
+        spawner.spawn_vp(tp)
+    }))
+    .await?;
     Ok(())
 }
 
@@ -35,27 +45,10 @@ struct VpSpawner {
     chipset: vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
     runner: vmm_core::partition_unit::VpRunner,
     isolation: virt::IsolationType,
+    tp: AffinitizedThreadpool,
 }
 
 impl VpSpawner {
-    /// Creates a new spawner.
-    pub fn new(
-        vp: virt_mshv_vtl::UhProcessorBox,
-        chipset: vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
-        runner: vmm_core::partition_unit::VpRunner,
-        isolation: virt::IsolationType,
-    ) -> Self {
-        // TODO: get CPU index for VP
-        let cpu = vp.vp_index().index();
-        Self {
-            vp,
-            cpu,
-            chipset,
-            runner,
-            isolation,
-        }
-    }
-
     /// Spawns the VP on the appropriate thread pool thread.
     pub async fn spawn_vp(self, tp: &AffinitizedThreadpool) -> anyhow::Result<()> {
         if underhill_threadpool::is_cpu_online(self.cpu)? {
@@ -78,7 +71,6 @@ impl VpSpawner {
         &mut self,
         saved_state: Option<vmcore::save_restore::SavedStateBlob>,
         control: Option<&mut IdleControl>,
-        save_on_cancel: bool,
     ) -> anyhow::Result<Option<vmcore::save_restore::SavedStateBlob>>
     where
         for<'a> virt_mshv_vtl::UhProcessor<'a, T>: vmcore::save_restore::ProtobufSaveRestore,
@@ -96,15 +88,32 @@ impl VpSpawner {
             vmcore::save_restore::ProtobufSaveRestore::restore(&mut vp, saved_state)
                 .context("failed to restore saved state")?;
         }
+        let mut spawned = false;
         let state = loop {
             match self.runner.run(&mut vp, &self.chipset).await {
                 Ok(()) => break None,
-                Err(vmm_core::partition_unit::RunCancelled) => {
-                    if save_on_cancel {
+                Err(cancelled) => {
+                    if cancelled.is_user_cancelled() {
+                        // The target thread notifier explicitly cancelled the
+                        // VP in order to migrate it. Save the state and return.
                         break Some(
                             vmcore::save_restore::ProtobufSaveRestore::save(&mut vp)
                                 .context("failed to save state")?,
                         );
+                    } else if !spawned
+                        && thread.with_driver(|driver| driver.target_cpu() != self.cpu)
+                    {
+                        // We are running on a remote CPU via sidecar. Spawn a
+                        // task on the correct CPU to cause the target thread to
+                        // be spawned, which in its notifier will explicitly
+                        // cancel the VP in order to migrate it to the target
+                        // CPU.
+                        self.tp
+                            .driver(self.cpu)
+                            .spawn("cancel-vp", async move {})
+                            .detach();
+
+                        spawned = true;
                     }
                 }
             }
@@ -116,25 +125,20 @@ impl VpSpawner {
         &mut self,
         saved_state: Option<vmcore::save_restore::SavedStateBlob>,
         control: Option<&mut IdleControl>,
-        save_on_cancel: bool,
     ) -> Option<vmcore::save_restore::SavedStateBlob> {
         let r = match self.isolation {
             virt::IsolationType::None | virt::IsolationType::Vbs => {
-                self.run_backed_vp::<virt_mshv_vtl::HypervisorBacked>(
-                    saved_state,
-                    control,
-                    save_on_cancel,
-                )
-                .await
+                self.run_backed_vp::<virt_mshv_vtl::HypervisorBacked>(saved_state, control)
+                    .await
             }
             #[cfg(guest_arch = "x86_64")]
             virt::IsolationType::Snp => {
-                self.run_backed_vp::<virt_mshv_vtl::SnpBacked>(saved_state, control, save_on_cancel)
+                self.run_backed_vp::<virt_mshv_vtl::SnpBacked>(saved_state, control)
                     .await
             }
             #[cfg(guest_arch = "x86_64")]
             virt::IsolationType::Tdx => {
-                self.run_backed_vp::<virt_mshv_vtl::TdxBacked>(saved_state, control, save_on_cancel)
+                self.run_backed_vp::<virt_mshv_vtl::TdxBacked>(saved_state, control)
                     .await
             }
             #[cfg(guest_arch = "aarch64")]
@@ -163,7 +167,7 @@ impl VpSpawner {
                 );
 
                 thread.set_idle_task(async move |mut control| {
-                    let state = self.run_vp(None, Some(&mut control), false).await;
+                    let state = self.run_vp(None, Some(&mut control)).await;
                     assert!(state.is_none());
                 });
                 Ok(())
@@ -183,9 +187,6 @@ impl VpSpawner {
                         .spawn_local(
                             format!("sidecar-{}", self.vp.vp_index().index()),
                             async move {
-                                // Cancel running the VP when the thread pool
-                                // thread is spawned so that we can hotplug the
-                                // processor and continue running locally.
                                 let canceller = self.runner.canceller();
                                 let (state_send, state_recv) = mesh::oneshot();
                                 let r = tp.driver(self.cpu).set_spawn_notifier(move || {
@@ -194,7 +195,7 @@ impl VpSpawner {
                                         .spawn_local(
                                             "online-sidecar",
                                             Self::notify_main_vp_thread_start(
-                                                state_recv, canceller,
+                                                self.cpu, state_recv, canceller,
                                             ),
                                         )
                                         .detach();
@@ -205,7 +206,7 @@ impl VpSpawner {
                                         // Run until the VP is finished or cancelled. If
                                         // it is cancelled, we will hotplug the
                                         // processor and respawn the VP.
-                                        let saved_state = self.run_vp(None, None, true).await;
+                                        let saved_state = self.run_vp(None, None).await;
                                         if saved_state.is_none() {
                                             // The VP is done.
                                             return;
@@ -234,22 +235,25 @@ impl VpSpawner {
     }
 
     async fn notify_main_vp_thread_start(
+        cpu: u32,
         state_recv: mesh::OneshotReceiver<(Self, Option<vmcore::save_restore::SavedStateBlob>)>,
         mut canceller: vmm_core::partition_unit::RunnerCanceller,
     ) {
+        tracing::info!(cpu, "thread spawned for sidecar VP, waiting to online");
         let thread = underhill_threadpool::Thread::current().unwrap();
-
-        // Only online one CPU at a time, since this serializes in the kernel,
-        // and the online process prevents the CPU from being used by the guest.
-        // This approach ensures that the guest only sees blackout of one CPU at
-        // a time, rather than all CPUs at once.
-        static ONLINE_LOCK: LazyLock<futures::lock::Mutex<()>> =
-            LazyLock::new(|| futures::lock::Mutex::new(()));
 
         let mut this: Self;
         let saved_state: Option<vmcore::save_restore::SavedStateBlob>;
+        // Only online one CPU at a time, since this operation serializes in the
+        // kernel, and the online process prevents the CPU from being used by
+        // the guest. This approach ensures that the guest only sees blackout of
+        // one CPU at a time, rather than all CPUs at once.
         {
+            static ONLINE_LOCK: LazyLock<futures::lock::Mutex<()>> =
+                LazyLock::new(|| futures::lock::Mutex::new(()));
             let _lock = ONLINE_LOCK.lock().await;
+            // Notify the runner that we are ready for the VP to be stopped and
+            // the saved state to be sent.
             canceller.cancel();
 
             // Wait for the VP to stop running and get its spawner and saved
@@ -257,7 +261,7 @@ impl VpSpawner {
             (this, saved_state) = match state_recv.await {
                 Ok(r) => r,
                 Err(_) => {
-                    // The VP is done.
+                    // The VP is done. Presumably the VM is shutting down.
                     return;
                 }
             };
@@ -282,7 +286,7 @@ impl VpSpawner {
         );
 
         thread.set_idle_task(async move |mut control| {
-            let state = this.run_vp(saved_state, Some(&mut control), false).await;
+            let state = this.run_vp(saved_state, Some(&mut control)).await;
             assert!(state.is_none());
         });
     }
