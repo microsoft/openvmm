@@ -136,7 +136,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
         let res = self.lazy_load_from_storage_inner().await;
         if let Err(e) = &res {
             tracing::error!(CVM_ALLOWED, "storage contains corrupt nvram state");
-            tracing::error!(CVM_CONFIDENTIAL, error = e as &dyn std::error::Error);
+            tracing::error!(CVM_CONFIDENTIAL, error = e as &dyn std::error::Error, "storage contains corrupt nvram state");
         }
         res
     }
@@ -255,7 +255,7 @@ impl<S: StorageBackend> HclCompatNvram<S> {
                             CVM_ALLOWED,
                             "skipping corrupt nvram var (missing null term)"
                         );
-                        tracing::warn!(CVM_CONFIDENTIAL, ?var);
+                        tracing::warn!(CVM_CONFIDENTIAL, ?var, "skipping corrupt nvram var (missing null term)");
                         continue;
                     } else {
                         return Err(NvramStorageError::Load(e.into()));

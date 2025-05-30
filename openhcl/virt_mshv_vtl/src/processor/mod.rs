@@ -565,7 +565,7 @@ impl UhVpInner {
     pub fn set_sidecar_exit_reason(&self, reason: SidecarExitReason) {
         self.sidecar_exit_reason.lock().get_or_insert_with(|| {
             tracing::info!(CVM_ALLOWED, "sidecar exit");
-            tracing::info!(CVM_CONFIDENTIAL, ?reason);
+            tracing::info!(CVM_CONFIDENTIAL, ?reason, "sidecar exit");
             reason
         });
     }

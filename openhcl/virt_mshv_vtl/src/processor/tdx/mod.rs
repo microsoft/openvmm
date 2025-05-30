@@ -1878,7 +1878,7 @@ impl UhProcessor<'_, TdxBacked> {
                                 msr,
                                 "unknown tdx vm msr write"
                             );
-                            tracelimit::warn_ratelimited!(CVM_CONFIDENTIAL, value);
+                            tracelimit::warn_ratelimited!(CVM_CONFIDENTIAL, value, "unknown tdx vm msr write");
                             false
                         }
                         Err(MsrError::InvalidAccess) => true,
@@ -2555,7 +2555,7 @@ impl UhProcessor<'_, TdxBacked> {
                                 ?err,
                                 "failed tdvmcall msr write"
                             );
-                            tracelimit::warn_ratelimited!(CVM_CONFIDENTIAL, value);
+                            tracelimit::warn_ratelimited!(CVM_CONFIDENTIAL, value, "failed tdvmcall msr write");
                             TdVmCallR10Result::OPERAND_INVALID
                         }
                     }
