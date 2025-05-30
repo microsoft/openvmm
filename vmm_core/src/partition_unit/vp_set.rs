@@ -293,6 +293,8 @@ where
         guest_memory: Option<&GuestMemory>,
         registers: Option<&virt::x86::vp::Registers>,
     ) {
+        use cvm_tracing::CVM_CONFIDENTIAL;
+
         #[cfg(not(feature = "gdb"))]
         let _ = (guest_memory, vtl);
 
@@ -337,6 +339,7 @@ where
             efer,
         } = *registers;
         tracing::error!(
+            CVM_CONFIDENTIAL,
             vp = self.vp_index.index(),
             ?vtl,
             rax,
@@ -360,6 +363,7 @@ where
             "triple fault register state",
         );
         tracing::error!(
+            CVM_CONFIDENTIAL,
             ?vtl,
             vp = self.vp_index.index(),
             ?cs,
@@ -387,6 +391,7 @@ where
                 vp_state::next_instruction(guest_memory, self, vtl, registers)
             {
                 tracing::error!(
+                    CVM_CONFIDENTIAL,
                     instruction = instr.to_string(),
                     ?bytes,
                     "faulting instruction"

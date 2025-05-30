@@ -7,6 +7,7 @@ use super::LoadedVm;
 use crate::nvme_manager::NvmeDiskConfig;
 use crate::worker::NicConfig;
 use anyhow::Context;
+use cvm_tracing::CVM_ALLOWED;
 use disk_backend::Disk;
 use disk_backend::resolve::ResolveDiskParameters;
 use disk_backend_resources::AutoFormattedDiskHandle;
@@ -303,7 +304,7 @@ impl Vtl2SettingsWorker {
 
         let new_settings = vtl2_settings.dynamic;
 
-        tracing::info!("Received VTL2 settings {:?}", new_settings);
+        tracing::info!(CVM_ALLOWED, ?new_settings, "Received VTL2 settings");
 
         let mut todos: Vec<Vtl2ConfigAcquireResource> = Vec::new();
 
@@ -332,14 +333,18 @@ impl Vtl2SettingsWorker {
                 .await
             {
                 Err(e) => {
-                    tracing::error!("Error acquiring VTL2 configuration resources: {:?}", e);
+                    tracing::error!(
+                        CVM_ALLOWED,
+                        ?e,
+                        "Error acquiring VTL2 configuration resources"
+                    );
                     errors.push(e);
                 }
                 Ok(()) => {
                     // NOTHING BEYOND CAN FAIL
                     // We assume recover action for commit is to re-create the VM
                     if let Err(e) = self.commit_configuration_changes(to_commits).await {
-                        tracing::error!("Error commit VTL2 configuration changes: {:?}", e);
+                        tracing::error!(CVM_ALLOWED, ?e, "Error commit VTL2 configuration changes");
                         errors.push(e);
                     }
                 }
@@ -350,7 +355,7 @@ impl Vtl2SettingsWorker {
             return Err(errors);
         }
 
-        tracing::info!("VTL2 settings modified");
+        tracing::info!(CVM_ALLOWED, "VTL2 settings modified");
         self.old_settings = new_settings;
         Ok(())
     }
@@ -952,7 +957,7 @@ struct StorageContext<'a> {
     use_nvme_vfio: bool,
 }
 
-#[instrument(skip_all)]
+#[instrument(skip_all, fields(CVM_ALLOWED))]
 async fn make_disk_type_from_physical_device(
     ctx: &mut CancelContext,
     storage_context: &StorageContext<'_>,
@@ -1016,7 +1021,7 @@ async fn make_disk_type_from_physical_device(
                     }
                 }
             })
-            .instrument(tracing::info_span!("get_devname"))
+            .instrument(tracing::info_span!("get_devname", CVM_ALLOWED))
             .await??;
         Ok(devname)
     }
@@ -1042,7 +1047,7 @@ async fn make_disk_type_from_physical_device(
                     devname.as_ref(),
                     "bdi".as_ref(),
                 ]))
-                .instrument(tracing::info_span!("wait_for_bdi")),
+                .instrument(tracing::info_span!("wait_for_bdi", CVM_ALLOWED)),
         )
         .await??;
         Ok(())
@@ -1278,7 +1283,7 @@ async fn make_disk_type(
                 Ok(disk_type) => Some(disk_type),
                 Err(err_info) => match err_info.code() {
                     Vtl2SettingsErrorCode::StorageCannotOpenVtl2Device => {
-                        tracing::warn!("Check if ISO is present on drive: {:?}", err_info);
+                        tracing::warn!(CVM_ALLOWED, ?err_info, "Check if ISO is present on drive");
                         None
                     }
                     _ => Err(err_info)?,
@@ -1311,7 +1316,7 @@ async fn make_nvme_disk_config(
     })
 }
 
-#[instrument(skip_all)]
+#[instrument(skip_all, fields(CVM_ALLOWED))]
 async fn make_ide_controller_config(
     ctx: &mut CancelContext,
     storage_context: &StorageContext<'_>,
@@ -1353,7 +1358,7 @@ async fn make_ide_controller_config(
     }
 }
 
-#[instrument(skip_all)]
+#[instrument(skip_all, fields(CVM_ALLOWED))]
 async fn make_scsi_controller_config(
     ctx: &mut CancelContext,
     storage_context: &StorageContext<'_>,
@@ -1392,7 +1397,7 @@ async fn make_scsi_controller_config(
     })
 }
 
-#[instrument(skip_all)]
+#[instrument(skip_all, fields(CVM_ALLOWED))]
 async fn make_nvme_controller_config(
     ctx: &mut CancelContext,
     storage_context: &StorageContext<'_>,
@@ -1495,11 +1500,16 @@ async fn check_block_sysfs_ready(devname: &str) -> bool {
     match blocking::unblock(move || fs_err::File::open(Path::new("/dev").join(dev_clone))).await {
         Ok(_) => true,
         Err(err) if err.raw_os_error() == Some(libc::ENXIO) => {
-            tracing::info!(devname, "block device not ready, waiting for uevent");
+            tracing::info!(
+                CVM_ALLOWED,
+                devname,
+                "block device not ready, waiting for uevent"
+            );
             false
         }
         Err(err) => {
             tracing::warn!(
+                CVM_ALLOWED,
                 error = &err as &dyn std::error::Error,
                 devname,
                 "block device failed to open during scan"
@@ -1779,7 +1789,7 @@ impl InitialControllers {
 
         let vtl2_settings = dps.general.vtl2_settings.as_ref();
 
-        tracing::info!("Initial VTL2 settings {:?}", vtl2_settings);
+        tracing::info!(CVM_ALLOWED, ?vtl2_settings, "Initial VTL2 settings");
 
         let fixed = vtl2_settings.map_or_else(Default::default, |s| s.fixed.clone());
         let dynamic = vtl2_settings.map(|s| &s.dynamic);

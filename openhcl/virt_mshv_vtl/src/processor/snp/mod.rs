@@ -26,6 +26,8 @@ use crate::WakeReason;
 use crate::devmsr;
 use crate::processor::UhHypercallHandler;
 use crate::processor::UhProcessor;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use hcl::vmsa::VmsaWrapper;
 use hv1_emulator::hv::ProcessorVtlHv;
 use hv1_emulator::synic::ProcessorSynic;
@@ -677,7 +679,13 @@ fn init_vmsa(vmsa: &mut VmsaWrapper<'_, &mut SevVmsa>, vtl: GuestVtl, vtom: Opti
     vmsa.set_efer(x86defs::X64_EFER_SVME);
 
     let sev_features = vmsa.sev_features();
-    tracing::info!(?vtl, ?sev_status, ?sev_features, "VMSA features");
+    tracing::info!(
+        CVM_ALLOWED,
+        ?vtl,
+        ?sev_status,
+        ?sev_features,
+        "VMSA features"
+    );
 }
 
 struct SnpApicClient<'a, T> {
@@ -925,6 +933,7 @@ impl UhProcessor<'_, SnpBacked> {
                 // TODO SNP: Should allow arbitrary page to be used for GHCB
                 if ghcb_pfn != ghcb_overlay {
                     tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
                         vmgexit_pfn = ghcb_pfn,
                         overlay_pfn = ghcb_overlay,
                         "ghcb page used for vmgexit does not match overlay page"
@@ -1139,7 +1148,10 @@ impl UhProcessor<'_, SnpBacked> {
         //
         // TODO SNP: consider emulating the instruction.
         if !mov_crx_drx.mov_crx() {
-            tracelimit::warn_ratelimited!("Intercepted crx access, instruction is not mov crx");
+            tracelimit::warn_ratelimited!(
+                CVM_ALLOWED,
+                "Intercepted crx access, instruction is not mov crx"
+            );
             return;
         }
 
@@ -1177,7 +1189,7 @@ impl UhProcessor<'_, SnpBacked> {
         let halt = self.backing.cvm.lapics[next_vtl].activity != MpState::Running || tlb_halt;
 
         if halt && next_vtl == GuestVtl::Vtl1 && !tlb_halt {
-            tracelimit::warn_ratelimited!("halting VTL 1, which might halt the guest");
+            tracelimit::warn_ratelimited!(CVM_ALLOWED, "halting VTL 1, which might halt the guest");
         }
 
         self.runner.set_halted(halt);
@@ -1551,6 +1563,7 @@ impl UhProcessor<'_, SnpBacked> {
 
             _ => {
                 tracing::error!(
+                    CVM_CONFIDENTIAL,
                     "SEV exit code {sev_error_code:x?} sev features {:x?} v_intr_control {:x?} event inject {:x?} \
                     vmpl {:x?} cpl {:x?} exit_info1 {:x?} exit_info2 {:x?} exit_int_info {:x?} virtual_tom {:x?} \
                     efer {:x?} cr4 {:x?} cr3 {:x?} cr0 {:x?} rflag {:x?} rip {:x?} next rip {:x?}",
@@ -1599,7 +1612,11 @@ impl UhProcessor<'_, SnpBacked> {
                     // TODO SNP: Figure out why we are getting these.
                 }
                 message_type => {
-                    tracelimit::error_ratelimited!(?message_type, "unknown synthetic exit");
+                    tracelimit::error_ratelimited!(
+                        CVM_ALLOWED,
+                        ?message_type,
+                        "unknown synthetic exit"
+                    );
                 }
             }
         }

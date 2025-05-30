@@ -23,6 +23,8 @@ use crate::UhPartitionInner;
 use crate::UhPartitionNewParams;
 use crate::UhProcessor;
 use crate::WakeReason;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use hcl::ioctl::ProcessorRunner;
 use hcl::ioctl::tdx::Tdx;
 use hcl::ioctl::tdx::TdxPrivateRegs;
@@ -1080,7 +1082,7 @@ impl BackingPrivate for TdxBacked {
         scan_irr: bool,
     ) -> Result<(), UhRunVpError> {
         if !this.try_poll_apic(vtl, scan_irr)? {
-            tracing::info!("disabling APIC offload due to auto EOI");
+            tracing::info!(CVM_ALLOWED, "disabling APIC offload due to auto EOI");
             let page = this.runner.tdx_apic_page_mut(vtl);
             let (irr, isr) = pull_apic_offload(page);
 
@@ -1102,7 +1104,7 @@ impl BackingPrivate for TdxBacked {
         if let Some(synic) = &mut this.backing.untrusted_synic {
             synic.request_sint_readiness(sints);
         } else {
-            tracelimit::error_ratelimited!("untrusted synic is not configured");
+            tracelimit::error_ratelimited!(CVM_ALLOWED, "untrusted synic is not configured");
         }
     }
 
@@ -1570,6 +1572,7 @@ impl UhProcessor<'_, TdxBacked> {
                     (false, true) => MpState::Idle,
                     (true, true) => {
                         tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
                             "Kernel indicates VP is both halted and idle!"
                         );
                         activity
@@ -1820,7 +1823,7 @@ impl UhProcessor<'_, TdxBacked> {
                 let value = match result {
                     Ok(v) => Some(v),
                     Err(MsrError::Unknown) => {
-                        tracelimit::warn_ratelimited!(msr, "unknown tdx vm msr read");
+                        tracelimit::warn_ratelimited!(CVM_ALLOWED, msr, "unknown tdx vm msr read");
                         Some(0)
                     }
                     Err(MsrError::InvalidAccess) => None,
@@ -1872,7 +1875,16 @@ impl UhProcessor<'_, TdxBacked> {
                     let inject_gp = match result {
                         Ok(()) => false,
                         Err(MsrError::Unknown) => {
-                            tracelimit::warn_ratelimited!(msr, value, "unknown tdx vm msr write");
+                            tracelimit::warn_ratelimited!(
+                                CVM_ALLOWED,
+                                msr,
+                                "unknown tdx vm msr write"
+                            );
+                            tracelimit::warn_ratelimited!(
+                                CVM_CONFIDENTIAL,
+                                value,
+                                "unknown tdx vm msr write"
+                            );
                             false
                         }
                         Err(MsrError::InvalidAccess) => true,
@@ -1963,7 +1975,12 @@ impl UhProcessor<'_, TdxBacked> {
                         self.update_execution_mode(intercepted_vtl);
                         self.advance_to_next_instruction(intercepted_vtl);
                     } else {
-                        tracelimit::warn_ratelimited!(?cr, value, "failed to write cr");
+                        tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
+                            ?cr,
+                            value,
+                            "failed to write cr"
+                        );
                         self.inject_gpf(intercepted_vtl);
                     }
                 }
@@ -2159,10 +2176,10 @@ impl UhProcessor<'_, TdxBacked> {
     /// Trace processor state for debugging purposes.
     fn trace_processor_state(&self, vtl: GuestVtl) {
         let raw_exit = self.runner.tdx_vp_enter_exit_info();
-        tracing::error!(?raw_exit, "raw tdx vp enter exit info");
+        tracing::error!(CVM_CONFIDENTIAL, ?raw_exit, "raw tdx vp enter exit info");
 
         let gprs = self.runner.tdx_enter_guest_gps();
-        tracing::error!(?gprs, "guest gpr list");
+        tracing::error!(CVM_CONFIDENTIAL, ?gprs, "guest gpr list");
 
         let TdxPrivateRegs {
             rflags,
@@ -2180,6 +2197,7 @@ impl UhProcessor<'_, TdxBacked> {
             vp_entry_flags,
         } = self.backing.vtls[vtl].private_regs;
         tracing::error!(
+            CVM_CONFIDENTIAL,
             rflags,
             rip,
             rsp,
@@ -2203,7 +2221,13 @@ impl UhProcessor<'_, TdxBacked> {
         let cr0_guest_host_mask: u64 = self
             .runner
             .read_vmcs64(vtl, VmcsField::VMX_VMCS_CR0_GUEST_HOST_MASK);
-        tracing::error!(physical_cr0, shadow_cr0, cr0_guest_host_mask, "cr0 values");
+        tracing::error!(
+            CVM_CONFIDENTIAL,
+            physical_cr0,
+            shadow_cr0,
+            cr0_guest_host_mask,
+            "cr0 values"
+        );
 
         let physical_cr4 = self.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR4);
         let shadow_cr4 = self
@@ -2212,18 +2236,24 @@ impl UhProcessor<'_, TdxBacked> {
         let cr4_guest_host_mask = self
             .runner
             .read_vmcs64(vtl, VmcsField::VMX_VMCS_CR4_GUEST_HOST_MASK);
-        tracing::error!(physical_cr4, shadow_cr4, cr4_guest_host_mask, "cr4 values");
+        tracing::error!(
+            CVM_CONFIDENTIAL,
+            physical_cr4,
+            shadow_cr4,
+            cr4_guest_host_mask,
+            "cr4 values"
+        );
 
         let cr3 = self.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_CR3);
-        tracing::error!(cr3, "cr3");
+        tracing::error!(CVM_CONFIDENTIAL, cr3, "cr3");
 
         let cached_efer = self.backing.vtls[vtl].efer;
         let vmcs_efer = self.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_EFER);
         let entry_controls = self
             .runner
             .read_vmcs32(vtl, VmcsField::VMX_VMCS_ENTRY_CONTROLS);
-        tracing::error!(cached_efer, vmcs_efer, "efer");
-        tracing::error!(entry_controls, "entry controls");
+        tracing::error!(CVM_CONFIDENTIAL, cached_efer, vmcs_efer, "efer");
+        tracing::error!(CVM_CONFIDENTIAL, entry_controls, "entry controls");
 
         let cs = self.read_segment(vtl, TdxSegmentReg::Cs);
         let ds = self.read_segment(vtl, TdxSegmentReg::Ds);
@@ -2234,12 +2264,23 @@ impl UhProcessor<'_, TdxBacked> {
         let tr = self.read_segment(vtl, TdxSegmentReg::Tr);
         let ldtr = self.read_segment(vtl, TdxSegmentReg::Ldtr);
 
-        tracing::error!(?cs, ?ds, ?es, ?fs, ?gs, ?ss, ?tr, ?ldtr, "segment values");
+        tracing::error!(
+            CVM_CONFIDENTIAL,
+            ?cs,
+            ?ds,
+            ?es,
+            ?fs,
+            ?gs,
+            ?ss,
+            ?tr,
+            ?ldtr,
+            "segment values"
+        );
 
         let exception_bitmap = self
             .runner
             .read_vmcs32(vtl, VmcsField::VMX_VMCS_EXCEPTION_BITMAP);
-        tracing::error!(exception_bitmap, "exception bitmap");
+        tracing::error!(CVM_CONFIDENTIAL, exception_bitmap, "exception bitmap");
 
         let cached_processor_controls = self.backing.vtls[vtl].processor_controls;
         let vmcs_processor_controls = ProcessorControls::from(
@@ -2251,6 +2292,7 @@ impl UhProcessor<'_, TdxBacked> {
                 .read_vmcs32(vtl, VmcsField::VMX_VMCS_SECONDARY_PROCESSOR_CONTROLS),
         );
         tracing::error!(
+            CVM_CONFIDENTIAL,
             ?cached_processor_controls,
             ?vmcs_processor_controls,
             ?vmcs_secondary_processor_controls,
@@ -2258,14 +2300,19 @@ impl UhProcessor<'_, TdxBacked> {
         );
 
         if cached_processor_controls != vmcs_processor_controls {
-            tracing::error!("BUGBUG: processor controls mismatch");
+            tracing::error!(CVM_ALLOWED, "BUGBUG: processor controls mismatch");
         }
 
         let cached_tpr_threshold = self.backing.vtls[vtl].tpr_threshold;
         let vmcs_tpr_threshold = self
             .runner
             .read_vmcs32(vtl, VmcsField::VMX_VMCS_TPR_THRESHOLD);
-        tracing::error!(cached_tpr_threshold, vmcs_tpr_threshold, "tpr threshold");
+        tracing::error!(
+            CVM_CONFIDENTIAL,
+            cached_tpr_threshold,
+            vmcs_tpr_threshold,
+            "tpr threshold"
+        );
 
         let cached_eoi_exit_bitmap = self.backing.eoi_exit_bitmap;
         let vmcs_eoi_exit_bitmap = {
@@ -2281,6 +2328,7 @@ impl UhProcessor<'_, TdxBacked> {
                 .collect::<Vec<_>>()
         };
         tracing::error!(
+            CVM_CONFIDENTIAL,
             ?cached_eoi_exit_bitmap,
             ?vmcs_eoi_exit_bitmap,
             "eoi exit bitmap"
@@ -2295,6 +2343,7 @@ impl UhProcessor<'_, TdxBacked> {
             .runner
             .read_vmcs32(vtl, VmcsField::VMX_VMCS_ENTRY_EXCEPTION_ERROR_CODE);
         tracing::error!(
+            CVM_CONFIDENTIAL,
             ?cached_interrupt_information,
             cached_interruption_set,
             vmcs_interrupt_information,
@@ -2305,7 +2354,11 @@ impl UhProcessor<'_, TdxBacked> {
         let guest_interruptibility = self
             .runner
             .read_vmcs32(vtl, VmcsField::VMX_VMCS_GUEST_INTERRUPTIBILITY);
-        tracing::error!(guest_interruptibility, "guest interruptibility");
+        tracing::error!(
+            CVM_CONFIDENTIAL,
+            guest_interruptibility,
+            "guest interruptibility"
+        );
 
         let vmcs_sysenter_cs = self
             .runner
@@ -2317,6 +2370,7 @@ impl UhProcessor<'_, TdxBacked> {
             .runner
             .read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_SYSENTER_EIP_MSR);
         tracing::error!(
+            CVM_CONFIDENTIAL,
             vmcs_sysenter_cs,
             vmcs_sysenter_esp,
             vmcs_sysenter_eip,
@@ -2324,7 +2378,7 @@ impl UhProcessor<'_, TdxBacked> {
         );
 
         let vmcs_pat = self.runner.read_vmcs64(vtl, VmcsField::VMX_VMCS_GUEST_PAT);
-        tracing::error!(vmcs_pat, "guest PAT");
+        tracing::error!(CVM_CONFIDENTIAL, vmcs_pat, "guest PAT");
     }
 
     fn handle_vm_enter_failed(
@@ -2337,7 +2391,7 @@ impl UhProcessor<'_, TdxBacked> {
             VmxExitBasic::BAD_GUEST_STATE => {
                 // Log system register state for debugging why we were
                 // unable to enter the guest. This is a VMM bug.
-                tracing::error!("VP.ENTER failed with bad guest state");
+                tracing::error!(CVM_ALLOWED, "VP.ENTER failed with bad guest state");
                 self.trace_processor_state(vtl);
 
                 // TODO: panic instead?
@@ -2419,7 +2473,11 @@ impl UhProcessor<'_, TdxBacked> {
                 // should inject a machine check. An exit is considered spurious
                 // if the gpa is accessible.
                 if self.partition.gm[intercepted_vtl].check_gpa_readable(gpa) {
-                    tracelimit::warn_ratelimited!(gpa, "possible spurious EPT violation, ignoring");
+                    tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
+                        gpa,
+                        "possible spurious EPT violation, ignoring"
+                    );
                 } else {
                     // TODO: It would be better to show what exact bitmap check
                     // failed, but that requires some refactoring of how the
@@ -2433,6 +2491,7 @@ impl UhProcessor<'_, TdxBacked> {
                     // should have already been checked to be valid memory
                     // described to the guest or not.
                     tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
                         gpa,
                         is_shared,
                         ?ept_info,
@@ -2455,6 +2514,7 @@ impl UhProcessor<'_, TdxBacked> {
                     //
                     // For now, log that the guest did this.
                     tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
                         gpa,
                         is_shared,
                         ?ept_info,
@@ -2493,9 +2553,14 @@ impl UhProcessor<'_, TdxBacked> {
                         }
                         Err(err) => {
                             tracelimit::warn_ratelimited!(
+                                CVM_ALLOWED,
                                 msr,
-                                value,
                                 ?err,
+                                "failed tdvmcall msr write"
+                            );
+                            tracelimit::warn_ratelimited!(
+                                CVM_CONFIDENTIAL,
+                                value,
                                 "failed tdvmcall msr write"
                             );
                             TdVmCallR10Result::OPERAND_INVALID
@@ -2511,13 +2576,19 @@ impl UhProcessor<'_, TdxBacked> {
                             TdVmCallR10Result::SUCCESS
                         }
                         Err(err) => {
-                            tracelimit::warn_ratelimited!(msr, ?err, "failed tdvmcall msr read");
+                            tracelimit::warn_ratelimited!(
+                                CVM_ALLOWED,
+                                msr,
+                                ?err,
+                                "failed tdvmcall msr read"
+                            );
                             TdVmCallR10Result::OPERAND_INVALID
                         }
                     }
                 }
                 subfunction => {
                     tracelimit::warn_ratelimited!(
+                        CVM_ALLOWED,
                         ?subfunction,
                         "architectural vmcall not supported"
                     );
@@ -2593,6 +2664,7 @@ impl UhProcessor<'_, TdxBacked> {
                         value.into(),
                     ) {
                         tracelimit::warn_ratelimited!(
+                            CVM_ALLOWED,
                             error = &err as &dyn std::error::Error,
                             "failed to set sint register"
                         );

@@ -25,6 +25,7 @@ mod kmsg_stream;
 mod kmsg_writer;
 
 use anyhow::Context;
+use cvm_tracing::CVM_ALLOWED;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures_concurrency::stream::Merge;
@@ -80,6 +81,7 @@ pub fn init_tracing_backend(driver: impl 'static + SpawnDriver) -> anyhow::Resul
         .and_then(|dev| vmbus_user_channel::message_pipe(&driver, dev))
         .map_err(|err| {
             tracing::error!(
+                CVM_ALLOWED,
                 error = &err as &dyn std::error::Error,
                 "failed to open the vmbus tracing channel"
             );

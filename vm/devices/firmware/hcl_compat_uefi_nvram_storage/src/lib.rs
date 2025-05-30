@@ -18,6 +18,8 @@
 
 pub mod storage_backend;
 
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guid::Guid;
 use std::fmt::Debug;
 use storage_backend::StorageBackend;
@@ -133,10 +135,12 @@ impl<S: StorageBackend> HclCompatNvram<S> {
     async fn lazy_load_from_storage(&mut self) -> Result<(), NvramStorageError> {
         let res = self.lazy_load_from_storage_inner().await;
         if let Err(e) = &res {
+            tracing::error!(CVM_ALLOWED, "storage contains corrupt nvram state");
             tracing::error!(
+                CVM_CONFIDENTIAL,
                 error = e as &dyn std::error::Error,
                 "storage contains corrupt nvram state"
-            )
+            );
         }
         res
     }
@@ -251,7 +255,15 @@ impl<S: StorageBackend> HclCompatNvram<S> {
                             var.push(0);
                             ucs2::Ucs2LeVec::from_vec_with_nul(var)
                         };
-                        tracing::warn!(?var, "skipping corrupt nvram var (missing null term)");
+                        tracing::warn!(
+                            CVM_ALLOWED,
+                            "skipping corrupt nvram var (missing null term)"
+                        );
+                        tracing::warn!(
+                            CVM_CONFIDENTIAL,
+                            ?var,
+                            "skipping corrupt nvram var (missing null term)"
+                        );
                         continue;
                     } else {
                         return Err(NvramStorageError::Load(e.into()));
