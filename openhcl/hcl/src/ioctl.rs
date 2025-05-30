@@ -79,9 +79,10 @@ use std::sync::atomic::Ordering;
 use thiserror::Error;
 use user_driver::DmaClient;
 use user_driver::memory::MemoryBlock;
+use x86defs::snp::SevAvicPage;
 use x86defs::snp::SevVmsa;
 use x86defs::tdx::TdCallResultCode;
-use x86defs::vmx::ApicPage;
+use x86defs::vmx::VmxApicPage;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -394,6 +395,7 @@ mod ioctls {
     const MSHV_INVLPGB: u16 = 0x36;
     const MSHV_TLBSYNC: u16 = 0x37;
     const MSHV_KICKCPUS: u16 = 0x38;
+    const MSHV_VTL_SECURE_AVIC_VTL0_PFN: u16 = 0x39;
 
     #[repr(C)]
     #[derive(Copy, Clone)]
@@ -568,6 +570,13 @@ mod ioctls {
         hcl_read_guest_vsm_page_pfn,
         MSHV_IOCTL,
         MSHV_VTL_GUEST_VSM_VMSA_PFN,
+        u64
+    );
+
+    ioctl_readwrite!(
+        hcl_read_secure_avic_vtl0_pfn,
+        MSHV_IOCTL,
+        MSHV_VTL_SECURE_AVIC_VTL0_PFN,
         u64
     );
 
@@ -1626,9 +1635,12 @@ enum BackingState {
     },
     Snp {
         vmsa: VtlArray<MappedPage<SevVmsa>, 2>,
+        vtl0_apic_page: MappedPage<SevAvicPage>,
+        /// VTL1 runs with the alternate interrupt injection.
+        vtl1_apic_page: MemoryBlock,
     },
     Tdx {
-        vtl0_apic_page: MappedPage<ApicPage>,
+        vtl0_apic_page: MappedPage<VmxApicPage>,
         vtl1_apic_page: MemoryBlock,
     },
 }
@@ -1692,6 +1704,12 @@ impl HclVp {
                     .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl1)))?;
                 BackingState::Snp {
                     vmsa: [vmsa_vtl0, vmsa_vtl1].into(),
+                    vtl0_apic_page: MappedPage::new(fd, MSHV_APIC_PAGE_OFFSET | vp as i64)
+                        .map_err(|e| Error::MmapVp(e, Some(Vtl::Vtl0)))?,
+                    vtl1_apic_page: private_dma_client
+                        .ok_or(Error::MissingPrivateMemory)?
+                        .allocate_dma_buffer(HV_PAGE_SIZE as usize)
+                        .map_err(Error::AllocVp)?,
                 }
             }
             IsolationType::Tdx => BackingState::Tdx {
@@ -2204,6 +2222,8 @@ impl<'a, T: Backing<'a>> ProcessorRunner<'a, T> {
                     | HvX64RegisterName::VsmVpSecureConfigVtl0
                     | HvX64RegisterName::VsmVpSecureConfigVtl1
                     | HvX64RegisterName::CrInterceptControl
+                    | HvX64RegisterName::SevAvicGpa
+                    | HvX64RegisterName::GuestVsmPartitionConfig
             )
         ));
         self.set_vp_registers_hvcall_inner(vtl, &registers)
@@ -3127,6 +3147,21 @@ impl Hcl {
         }
 
         vp_pfn
+    }
+
+    /// Gets the PFN for the VTL 0 secure AVIC
+    pub fn secure_avic_vtl0_pfn(&self, cpu_index: u32) -> u64 {
+        let mut savic_pfn = cpu_index as u64; // input vp, output pfn
+
+        // SAFETY: The ioctl requires no prerequisites other than the Secure AVIC VTL 0
+        // should be mapped. This ioctl should never fail as long as the VTL 0
+        // Secure AVIC was mapped.
+        unsafe {
+            hcl_read_secure_avic_vtl0_pfn(self.mshv_vtl.file.as_raw_fd(), &mut savic_pfn)
+                .expect("should always succeed");
+        }
+
+        savic_pfn
     }
 
     /// Returns the isolation type for the partition.
