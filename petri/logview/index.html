@@ -160,7 +160,7 @@
                             node("td", {}, run.creationTime.toLocaleString()),
                             node("td", {}, marker + " ", node("a", { href: `?run=${encodeURIComponent(run.name)}` }, run.name)),
                             node("td", {}, run.failed),
-                            node("td", {}, run.passed + run.failed),
+                            node("td", {}, Number(run.passed) + Number(run.failed)),
                             node("td", {}, pr),
                             node("td", {}, run.branch),
                             node("td", {}, node("a", { href: `https://github.com/microsoft/openvmm/actions/runs/${encodeURIComponent(run_id)}` }, run_id)));

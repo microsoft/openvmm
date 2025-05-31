@@ -140,7 +140,7 @@
             color: #000;
         }
 
-        #screenshotModal {
+        #modal {
             position: fixed;
             top: 0;
             left: 0;
@@ -153,11 +153,26 @@
             z-index: 9999;
         }
 
-        #screenshotModal img {
+        #modal img {
             max-width: 90%;
             max-height: 90%;
             box-shadow: 0 0 12px rgba(0, 0, 0, 0.8);
             border-radius: 6px;
+        }
+
+        #modalText {
+            max-width: 90%;
+            max-height: 90%;
+            background: white;
+            color: black;
+            font-family: monospace;
+            font-size: 14px;
+            overflow: auto;
+            padding: 16px;
+            border-radius: 6px;
+            box-shadow: 0 0 12px rgba(0, 0, 0, 0.8);
+            white-space: pre-wrap;
+            cursor: auto;
         }
     </style>
     <script src="common.js"></script>
@@ -213,7 +228,7 @@
 
         function formatRelative(from, to) {
             const deltaMs = new Date(to) - new Date(from);
-            const sec = (deltaMs % 1000000) / 1000;
+            const sec = ((deltaMs / 1000) % 60).toFixed(3);
             const min = Math.floor((deltaMs / 60000) % 60);
             const hr = Math.floor(deltaMs / 3600000);
 
@@ -303,16 +318,15 @@
                         const timestamp = line.timestamp;
                         let message = line.message || "";
                         let severity = line.severity || "INFO";
-                        const source = line.source || "unknown";
+                        const source = line.source || (line.attachment ? "attachment" : "unknown");
 
-                        if (line.attachment && line.attachment.endsWith(".png") && logEntries.length > 0) {
-                            logEntries[logEntries.length - 1].screenshot = new URL(line.attachment, url);
-                            continue;
-                        }
-
-                        if (!line.message) {
-                            console.log(line);
-                            continue;
+                        let attachment = null;
+                        if (line.attachment) {
+                            attachment = new URL(line.attachment, url);
+                            if (line.attachment.endsWith(".png") && logEntries.length > 0) {
+                                logEntries[logEntries.length - 1].screenshot = attachment;
+                                continue;
+                            }
                         }
 
                         if (!start) {
@@ -327,6 +341,20 @@
                         severity = r.severity;
 
                         const messageNode = ansiToSpan(message);
+                        if (attachment) {
+                            if (messageNode.children.length > 0) {
+                                messageNode.append(" ");
+                            }
+                            if (line.attachment.includes('inspect')) {
+                                const url = `inspect.html?file=${encodeURIComponent(attachment)}`;
+                                const link = node("a", { href: url, class: "attachment", target: "_blank", "data-inspect": true }, line.attachment);
+                                const rawLink = node("a", { href: attachment, class: "attachment", target: "_blank" }, "[raw]");
+                                messageNode.append(link, ' ', rawLink);
+                            } else {
+                                const link = node("a", { href: attachment, class: "attachment", target: "_blank" }, line.attachment);
+                                messageNode.append(link);
+                            }
+                        }
 
                         logEntries.push({
                             index: i,
@@ -352,16 +380,20 @@
 
             // Clear on X click
             document.getElementById("clearFilter").addEventListener('click', () => {
-                input.value = '';
+                const searchInput = document.getElementById("search");
+                searchInput.value = '';
                 renderLogs(logEntries);
-                input.focus();
+                searchInput.focus();
             });
 
             document.addEventListener('keydown', (e) => {
                 const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
                 const isF = e.key === 'f' || e.key === 'F';
+                const isFind = (isMac && e.metaKey && isF) || (!isMac && e.ctrlKey && isF);
 
-                if ((isMac && e.metaKey && isF) || (!isMac && e.ctrlKey && isF)) {
+                // Use our find if we're not showing the text modal and our find
+                // is not already selected.
+                if (isFind && document.getElementById('modal').style.display === 'none' && searchInput !== document.activeElement) {
                     e.preventDefault();
                     searchInput.focus();
                     searchInput.select();
@@ -369,13 +401,13 @@
                 }
 
                 if (e.key === 'Escape') {
-                    if (searchInput.value) {
+                    if (document.getElementById('modal').style.display !== 'none') {
+                        closeModal();
+                    } else if (searchInput.value) {
                         searchInput.value = '';
                         renderLogs(logEntries);
                     } else if (searchInput === document.activeElement) {
                         searchInput.blur();
-                    } else if (selectedRow) {
-                        deselectRow();
                     }
                 }
             });
@@ -458,7 +490,8 @@
                         cursor: 'zoom-in'
                     }
                 });
-                screenshots.append(img);
+                const linkedImg = node("a", { href: log.screenshot }, img);
+                screenshots.append(linkedImg);
             });
         }
 
@@ -530,6 +563,7 @@
             container.addEventListener('click', (e) => {
                 const row = e.target.closest('tr');
                 if (!row || !row.parentElement.matches('tbody')) return;
+                if (e.target.closest('a')) return;
                 if (row === selectedRow?.tr) {
                     deselectRow();
                 } else {
@@ -553,24 +587,80 @@
         }
 
         function setupModalSupport() {
-            const modal = document.getElementById('screenshotModal');
+            const modal = document.getElementById('modal');
             const modalImg = document.getElementById('modalImage');
 
             document.addEventListener('click', (e) => {
                 if (e.target.matches('.screenshot-thumb')) {
-                    if (e.ctrlKey || e.metaKey) {
-                        // Ctrl+click or Cmd+click opens in a new tab
-                        window.open(e.target.src, '_blank');
-                    } else {
-                        // Regular click opens in modal
-                        modalImg.src = e.target.src;
-                        modal.style.display = 'flex';
+                    if (!e.ctrlKey && !e.metaKey) {
+                        openScreenshotModal(e.target.src);
+                        e.preventDefault();
+                    }
+                } else if (e.target.matches('.attachment')) {
+                    const href = e.target.href;
+                    if (href.endsWith('.txt') || href.endsWith('.log') || href.endsWith('.json')) {
+                        if (!e.ctrlKey && !e.metaKey) {
+                            openAttachmentModal(href, e.target.dataset.inspect);
+                            e.preventDefault();
+                        }
                     }
                 } else if (e.target === modal || e.target === modalImg) {
-                    modal.style.display = 'none';
-                    modalImg.src = '';
+                    closeModal();
                 }
             });
+        }
+
+        function openModal(...content) {
+            const modal = document.getElementById('modal');
+            modal.replaceChildren(...content);
+            modal.style.display = 'flex';
+            document.getElementById('logContainer').setAttribute('inert', 'true');
+            if (modal.children[0])
+                modal.children[0].focus();
+        }
+
+        function closeModal() {
+            const modal = document.getElementById('modal');
+            modal.style.display = 'none';
+            modal.replaceChildren();
+            document.getElementById('logContainer').removeAttribute('inert');
+        }
+
+        function openTextModal(content) {
+            openModal(node("pre", { id: "modalText" }, content));
+        }
+
+        function openScreenshotModal(url) {
+            openModal(node("img", { id: "modalImage", src: url, alt: "screenshot" }));
+        }
+
+        function openAttachmentModal(url, inspect) {
+            if (inspect) {
+                // We're opening an HTML page, so just open it in an iframe.
+                openModal(node("iframe", {
+                    src: url,
+                    id: 'modalText',
+                    style: { width: '100%', height: '100%' },
+                    frameborder: 0,
+                }));
+                return;
+            }
+            // Download the data and display it. This is necessary because the
+            // blob being downloaded may have the wrong content type, so we
+            // can't just use an iframe.
+            fetch(url)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch ${url}: ${response.statusText}`);
+                    }
+                    return response.text();
+                })
+                .then(data => {
+                    openTextModal(data);
+                })
+                .catch(error => {
+                    openTextModal(`Error opening attachment: ${error.message}`);
+                });
         }
 
         window.onload = function () {
@@ -623,8 +713,7 @@
         </table>
         <div id="floatingScreenshots"></div>
     </div>
-    <div id="screenshotModal" style="display: none;">
-        <img id="modalImage" src="" alt="screenshot" />
+    <div id="modal" style="display: none;">
     </div>
 </body>
 

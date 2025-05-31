@@ -18,7 +18,6 @@ cfg_if::cfg_if! {
         use crate::VtlCrash;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
-        use cvm_tracing::CVM_CONFIDENTIAL;
         use hv1_emulator::synic::ProcessorSynic;
         use hvdef::HvRegisterCrInterceptControl;
         use hvdef::HvX64RegisterName;
@@ -42,6 +41,8 @@ use super::UhVpInner;
 use crate::ExitActivity;
 use crate::GuestVtl;
 use crate::WakeReason;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::GuestMemory;
 use hcl::ioctl::Hcl;
 use hcl::ioctl::ProcessorRunner;
@@ -563,7 +564,8 @@ impl UhVpInner {
 
     pub fn set_sidecar_exit_reason(&self, reason: SidecarExitReason) {
         self.sidecar_exit_reason.lock().get_or_insert_with(|| {
-            tracing::info!(?reason, "sidecar exit");
+            tracing::info!(CVM_ALLOWED, "sidecar exit");
+            tracing::info!(CVM_CONFIDENTIAL, ?reason, "sidecar exit");
             reason
         });
     }
@@ -1044,7 +1046,11 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                     control: hvdef::GuestCrashCtl::from(value),
                     parameters: self.crash_reg,
                 };
-                tracelimit::warn_ratelimited!(?crash, "Guest has reported system crash");
+                tracelimit::warn_ratelimited!(
+                    CVM_ALLOWED,
+                    ?crash,
+                    "Guest has reported system crash"
+                );
 
                 if crash.control.crash_message() {
                     let message_gpa = crash.parameters[3];
@@ -1060,7 +1066,11 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                             );
                         }
                         Err(e) => {
-                            tracelimit::warn_ratelimited!(?e, "Failed to read crash message");
+                            tracelimit::warn_ratelimited!(
+                                CVM_ALLOWED,
+                                ?e,
+                                "Failed to read crash message"
+                            );
                         }
                     }
                 }
@@ -1181,6 +1191,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 fn signal_mnf(dev: &impl CpuIo, connection_id: u32) {
     if let Err(err) = dev.signal_synic_event(Vtl::Vtl0, connection_id, 0) {
         tracelimit::warn_ratelimited!(
+            CVM_ALLOWED,
             error = &err as &dyn std::error::Error,
             connection_id,
             "failed to signal mnf"

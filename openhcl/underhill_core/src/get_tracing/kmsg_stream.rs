@@ -5,6 +5,7 @@
 //! send to the host.
 
 use super::json_common::KmsgMessage;
+use cvm_tracing::CVM_ALLOWED;
 use futures::AsyncRead;
 use futures::Stream;
 use get_helpers::build_tracelogging_notification_buffer;
@@ -161,6 +162,7 @@ impl Stream for KmsgStream {
                 }
                 Err(err) => {
                     tracing::error!(
+                        CVM_ALLOWED,
                         error = &err as &dyn std::error::Error,
                         "failed to read from /dev/kmsg"
                     );

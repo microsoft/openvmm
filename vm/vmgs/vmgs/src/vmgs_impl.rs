@@ -44,6 +44,8 @@ pub struct VmgsFileInfo {
     pub allocated_bytes: u64,
     /// Number of valid bytes in the file.
     pub valid_bytes: u64,
+    /// Whether this file is encrypted.
+    pub encrypted: bool,
 }
 
 // Aggregates fully validated data from the FILE_TABLE and EXTENDED_FILE_TABLE
@@ -411,6 +413,7 @@ impl Vmgs {
         Ok(VmgsFileInfo {
             allocated_bytes: block_count_to_byte_count(fcb.allocated_blocks.get()),
             valid_bytes: fcb.valid_bytes,
+            encrypted: fcb.attributes.encrypted() || fcb.attributes.authenticated(),
         })
     }
 
