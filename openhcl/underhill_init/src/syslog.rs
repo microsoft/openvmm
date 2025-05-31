@@ -28,7 +28,7 @@ impl log::Log for SysLog {
             log::Level::Error => kmsg_defs::LOGLEVEL_ERR,
             log::Level::Warn => kmsg_defs::LOGLEVEL_WARNING,
             log::Level::Info => kmsg_defs::LOGLEVEL_NOTICE,
-            log::Level::Debug => kmsg_defs::LOGLEVEL_INFO,
+            log::Level::Debug => kmsg_defs::LOGLEVEL_DEBUG,
             log::Level::Trace => kmsg_defs::LOGLEVEL_DEBUG,
         };
 
