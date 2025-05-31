@@ -105,6 +105,7 @@ pub struct UhProcessor<'a, T: Backing> {
     timer: PollImpl<dyn PollTimer>,
     #[inspect(mut)]
     force_exit_sidecar: bool,
+    signaled_sidecar_exit: bool,
     /// The VTLs on this VP that are currently locked, per requesting VTL.
     vtls_tlb_locked: VtlsTlbLocked,
     #[inspect(skip)]
@@ -773,9 +774,10 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
         dev: &impl CpuIo,
     ) -> Result<Infallible, VpHaltReason<UhRunVpError>> {
         if self.runner.is_sidecar() {
-            if self.force_exit_sidecar {
+            if self.force_exit_sidecar && !self.signaled_sidecar_exit {
                 self.inner
                     .set_sidecar_exit_reason(SidecarExitReason::ManualRequest);
+                self.signaled_sidecar_exit = true;
                 return Err(VpHaltReason::Cancel);
             }
         } else {
@@ -940,6 +942,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 .access(format!("vp-{}", vp_info.base.vp_index.index())),
             timer: driver.new_dyn_timer(),
             force_exit_sidecar: false,
+            signaled_sidecar_exit: false,
             vtls_tlb_locked: VtlsTlbLocked {
                 vtl1: VtlArray::new(false),
                 vtl2: VtlArray::new(false),

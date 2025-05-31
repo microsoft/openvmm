@@ -1059,7 +1059,15 @@ impl RunnerCanceller {
 
 /// Error returned when a VP run is cancelled.
 #[derive(Debug)]
-pub struct RunCancelled;
+pub struct RunCancelled(bool);
+
+impl RunCancelled {
+    /// Returns `true` if the run was cancelled by the user, or `false` if it was
+    /// cancelled by the VP itself.
+    pub fn is_user_cancelled(&self) -> bool {
+        self.0
+    }
+}
 
 struct RunnerInner {
     vp: VpIndex,
@@ -1106,7 +1114,7 @@ impl VpRunner {
                 let r = (self.recv.next().map(Ok), self.cancel_recv.next().map(Err))
                     .race()
                     .await
-                    .map_err(|_| RunCancelled)?;
+                    .map_err(|_| RunCancelled(true))?;
                 match r {
                     Some(VpEvent::Start) => {
                         assert_eq!(self.inner.state, VpState::Stopped);
@@ -1131,7 +1139,7 @@ impl VpRunner {
 
             let mut stop_complete = None;
             let mut state_requests = Vec::new();
-            let mut cancelled = false;
+            let mut cancelled_by_user = None;
             {
                 enum Event {
                     Vp(VpEvent),
@@ -1198,7 +1206,7 @@ impl VpRunner {
                         Event::Cancel => {
                             tracing::debug!("run cancelled externally");
                             stop.stop();
-                            cancelled = true;
+                            cancelled_by_user = Some(true);
                         }
                         Event::Teardown => {
                             tracing::debug!("tearing down");
@@ -1212,7 +1220,7 @@ impl VpRunner {
                                 }
                                 Ok(StopReason::Cancel) => {
                                     tracing::debug!("run cancelled internally");
-                                    cancelled = true;
+                                    cancelled_by_user = Some(false);
                                 }
                                 Err(halt_reason) => {
                                     tracing::debug!("VP halted");
@@ -1233,8 +1241,8 @@ impl VpRunner {
                 send.send(());
             }
 
-            if cancelled {
-                return Err(RunCancelled);
+            if let Some(by_user) = cancelled_by_user {
+                return Err(RunCancelled(by_user));
             }
         }
     }

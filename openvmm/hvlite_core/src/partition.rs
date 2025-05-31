@@ -379,6 +379,6 @@ impl<T: Processor> HvliteVp for T {
         mut runner: VpRunner,
         chipset: &vmm_core::vmotherboard_adapter::ChipsetPlusSynic,
     ) {
-        while let Err(RunCancelled) = runner.run(&mut WrappedVp(self), chipset).await {}
+        while let Err(RunCancelled { .. }) = runner.run(&mut WrappedVp(self), chipset).await {}
     }
 }
