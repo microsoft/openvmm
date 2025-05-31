@@ -8,7 +8,7 @@ use super::address_space::init_local_map;
 use crate::ShimParams;
 use crate::host_params::PartitionInfo;
 use crate::host_params::shim_params::IsolationType;
-use crate::hypercall::hvcall;
+use crate::hypercall::HvCall;
 use memory_range::MemoryRange;
 use sha2::Digest;
 use sha2::Sha384;
@@ -17,7 +17,11 @@ use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 
 /// On isolated systems, transitions all VTL2 RAM to be private and accepted, with the appropriate
 /// VTL permissions applied.
-pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInfo) {
+pub fn setup_vtl2_memory(
+    hvcall: &mut HvCall,
+    shim_params: &ShimParams,
+    partition_info: &PartitionInfo,
+) {
     // Only if the partition is VBS-isolated, accept memory and apply vtl 2 protections here.
     // Non-isolated partitions can undergo servicing, and additional information
     // would be needed to determine whether vtl 2 protections should be applied
@@ -35,7 +39,7 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
             .with_default_vtl_protection_mask(0xF)
             .with_enable_vtl_protection(true);
 
-        hvcall()
+        hvcall
             .set_register(
                 hvdef::HvX64RegisterName::VsmPartitionConfig.into(),
                 hvdef::HvRegisterValue::from(u64::from(vsm_config)),
@@ -56,7 +60,7 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
             partition_info.vtl2_ram.iter().map(|entry| entry.range),
             accepted_ranges,
         ) {
-            hvcall()
+            hvcall
                 .apply_vtl2_protections(range)
                 .expect("applying vtl 2 protections cannot fail");
         }
@@ -84,7 +88,7 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
         partition_info.vtl2_ram.iter().map(|e| e.range),
         shim_params.imported_regions().map(|(r, _)| r),
     ) {
-        accept_vtl2_memory(shim_params, &mut local_map, range);
+        accept_vtl2_memory(hvcall, shim_params, &mut local_map, range);
     }
 
     let ram_buffer = if let Some(bounce_buffer) = shim_params.bounce_buffer {
@@ -95,7 +99,7 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
             core::iter::once(bounce_buffer),
             partition_info.vtl2_ram.iter().map(|e| e.range),
         ) {
-            accept_vtl2_memory(shim_params, &mut local_map, range);
+            accept_vtl2_memory(hvcall, shim_params, &mut local_map, range);
         }
 
         // SAFETY: The bounce buffer is trusted as it is obtained from measured
@@ -115,20 +119,27 @@ pub fn setup_vtl2_memory(shim_params: &ShimParams, partition_info: &PartitionInf
     // TODO: No VTL0 memory is currently marked as pending.
     for (imported_range, already_accepted) in shim_params.imported_regions() {
         if !already_accepted {
-            accept_pending_vtl2_memory(shim_params, &mut local_map, ram_buffer, imported_range);
+            accept_pending_vtl2_memory(
+                hvcall,
+                shim_params,
+                &mut local_map,
+                ram_buffer,
+                imported_range,
+            );
         }
     }
 }
 
 /// Accepts VTL2 memory in the specified gpa range.
 fn accept_vtl2_memory(
+    hvcall: &mut HvCall,
     shim_params: &ShimParams,
     local_map: &mut Option<LocalMap<'_>>,
     range: MemoryRange,
 ) {
     match shim_params.isolation_type {
         IsolationType::Vbs => {
-            hvcall()
+            hvcall
                 .accept_vtl2_pages(range, hvdef::hypercall::AcceptMemoryType::RAM)
                 .expect("accepting vtl 2 memory must not fail");
         }
@@ -146,6 +157,7 @@ fn accept_vtl2_memory(
 /// Accepts VTL2 memory in the specified range that is currently marked as pending, i.e. not
 /// yet assigned as exclusive and private.
 fn accept_pending_vtl2_memory(
+    hvcall: &mut HvCall,
     shim_params: &ShimParams,
     local_map: &mut Option<LocalMap<'_>>,
     ram_buffer: &mut [u8],
@@ -155,7 +167,7 @@ fn accept_pending_vtl2_memory(
 
     match isolation_type {
         IsolationType::Vbs => {
-            hvcall()
+            hvcall
                 .accept_vtl2_pages(range, hvdef::hypercall::AcceptMemoryType::RAM)
                 .expect("accepting vtl 2 memory must not fail");
         }

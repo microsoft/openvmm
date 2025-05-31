@@ -5,10 +5,14 @@
 
 use crate::PartitionInfo;
 use crate::ShimParams;
-use crate::hvcall;
+use crate::hypercall::HvCall;
 use aarch64defs::IntermPhysAddrSize;
 
-pub fn setup_vtl2_memory(_shim_params: &ShimParams, _partition_info: &PartitionInfo) {
+pub fn setup_vtl2_memory(
+    hvcall: &mut HvCall,
+    _shim_params: &ShimParams,
+    _partition_info: &PartitionInfo,
+) {
     // TODO: memory acceptance isn't currently supported in the boot shim for aarch64.
     let _ = _shim_params.bounce_buffer;
 
@@ -18,7 +22,7 @@ pub fn setup_vtl2_memory(_shim_params: &ShimParams, _partition_info: &PartitionI
         .with_default_vtl_protection_mask(0xF)
         .with_enable_vtl_protection(true);
 
-    hvcall()
+    hvcall
         .set_register(
             hvdef::HvArm64RegisterName::VsmPartitionConfig.into(),
             hvdef::HvRegisterValue::from(u64::from(vsm_config)),

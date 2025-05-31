@@ -63,6 +63,7 @@ pub fn start_sidecar<'a>(
     partition_info: &PartitionInfo,
     sidecar_params: &'a mut SidecarParams,
     sidecar_output: &'a mut SidecarOutput,
+    hypercall_page_address: u64,
 ) -> Option<SidecarConfig<'a>> {
     if !cfg!(target_arch = "x86_64") || p.isolation_type != IsolationType::None {
         return None;
@@ -150,11 +151,7 @@ pub fn start_sidecar<'a>(
             nodes,
         } = sidecar_params;
 
-        *hypercall_page = 0;
-        #[cfg(target_arch = "x86_64")]
-        {
-            *hypercall_page = crate::hypercall::hvcall().hypercall_page();
-        }
+        *hypercall_page = hypercall_page_address;
         *enable_logging = partition_info.boot_options.sidecar_logging;
 
         let mut base_vp = 0;
