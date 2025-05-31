@@ -165,7 +165,7 @@ impl Stream for KmsgStream {
                     .unwrap();
 
                     let remaining = writer.0.len();
-                    let message_len = buffer.len() - remaining;
+                    let json = &buffer[..buffer.len() - remaining];
 
                     let notification = build_tracelogging_notification_buffer(
                         LogType::EVENT,
@@ -177,7 +177,7 @@ impl Stream for KmsgStream {
                         None,
                         Some(target.as_bytes()),
                         None,
-                        &buffer[..message_len],
+                        json,
                         (entry.time.as_nanos() / 100) as u64,
                     );
 
