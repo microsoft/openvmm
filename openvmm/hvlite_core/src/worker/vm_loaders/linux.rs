@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use guestmem::GuestMemory;
+use hvlite_defs::config::DEFAULT_MMIO_GAPS_AARCH64;
 use loader::importer::Aarch64Register;
 use loader::importer::X86Register;
 use loader::linux::AcpiConfig;
@@ -200,6 +201,7 @@ fn build_dt(
     let p_clock_names = builder.add_string("clock-names")?;
     let p_current_speed = builder.add_string("current-speed")?;
     let p_arm_periph_id = builder.add_string("arm,primecell-periphid")?;
+    let p_dma_coherent = builder.add_string("dma-coherent")?;
 
     // Property handle values.
     const PHANDLE_GIC: u32 = 1;
@@ -209,14 +211,16 @@ fn build_dt(
     const GIC_PPI: u32 = 1;
     const IRQ_TYPE_LEVEL_LOW: u32 = 8;
     const IRQ_TYPE_LEVEL_HIGH: u32 = 4;
+    const IRQ_TYPE_EDGE_FALLING: u32 = 2;
+    const VMBUS_INTID: u32 = 2; // Note: the hardware INTID will be 16 + 2
 
     let mut root_builder = builder
         .start_node("")?
         .add_u32(p_address_cells, 2)?
         .add_u32(p_size_cells, 2)?
         .add_u32(p_interrupt_parent, PHANDLE_GIC)?
-        .add_str(p_model, "microsoft,hvlite")?
-        .add_str(p_compatible, "microsoft,hvlite")?;
+        .add_str(p_model, "microsoft,openvmm")?
+        .add_str(p_compatible, "microsoft,openvmm")?;
 
     let mut cpu_builder = root_builder
         .start_node("cpus")?
@@ -340,6 +344,33 @@ fn build_dt(
                 .end_node()?;
         }
     }
+
+    assert!(DEFAULT_MMIO_GAPS_AARCH64.len() == 2);
+    let low_mmio_gap = DEFAULT_MMIO_GAPS_AARCH64[0];
+    let high_mmio_gap = DEFAULT_MMIO_GAPS_AARCH64[1];
+    soc = soc
+        .start_node("vmbus")?
+        .add_u32(p_address_cells, 2)?
+        .add_u32(p_size_cells, 2)?
+        .add_null(p_dma_coherent)?
+        .add_u64_array(
+            p_ranges,
+            &[
+                low_mmio_gap.start(),
+                low_mmio_gap.len(),
+                high_mmio_gap.start(),
+                high_mmio_gap.len(),
+            ],
+        )?
+        .add_str(p_compatible, "microsoft,vmbus")?
+        .add_u32(p_interrupt_parent, PHANDLE_GIC)?
+        .add_u32_array(
+            p_interrupts,
+            // Here 3 parameters are used as the "#interrupt-cells"
+            // above specifies.
+            &[GIC_PPI, VMBUS_INTID, IRQ_TYPE_EDGE_FALLING],
+        )?
+        .end_node()?;
 
     root_builder = soc.end_node()?;
 
