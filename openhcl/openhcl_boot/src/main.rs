@@ -946,6 +946,7 @@ mod test {
             bsp_reg: cpus[0].reg as u32,
             cpus,
             cmdline: ArrayString::new(),
+            host_provided_cmdline: ArrayString::new(),
             vmbus_vtl2: VmbusInfo {
                 mmio,
                 connection_id: 0,

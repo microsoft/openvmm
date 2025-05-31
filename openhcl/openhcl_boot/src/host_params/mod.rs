@@ -83,6 +83,8 @@ pub struct PartitionInfo {
     pub vmbus_vtl0: VmbusInfo,
     /// Command line to be used for the underhill kernel.
     pub cmdline: ArrayString<COMMAND_LINE_SIZE>,
+    /// Dynamic command line provided by the host.
+    pub host_provided_cmdline: ArrayString<COMMAND_LINE_SIZE>,
     /// Com3 serial device is available
     pub com3_serial_available: bool,
     /// GIC information
@@ -122,6 +124,7 @@ impl PartitionInfo {
                 connection_id: 0,
             },
             cmdline: ArrayString::new_const(),
+            host_provided_cmdline: ArrayString::new_const(),
             com3_serial_available: false,
             gic: None,
             memory_allocation_mode: MemoryAllocationMode::Host,
