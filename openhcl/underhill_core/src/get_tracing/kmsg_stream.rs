@@ -29,6 +29,7 @@ use tracing::Level;
 pub struct KmsgStream {
     pipe: PolledPipe,
     next_seq: u64,
+    missed_entries: u64,
 }
 
 impl KmsgStream {
@@ -39,6 +40,7 @@ impl KmsgStream {
         let kmsg_stream = KmsgStream {
             pipe: PolledPipe::new(driver, kmsg)?,
             next_seq: 0,
+            missed_entries: 0,
         };
         Ok(kmsg_stream)
     }
@@ -68,9 +70,10 @@ impl Write for SaturatingWriter<'_> {
     }
 }
 
-macro_rules! kmsg_enabled {
-    ($target:expr, $level:expr) => {
-        match $level {
+macro_rules! kmsg_parmas {
+    ($target:expr, $level:expr, $message:expr $(,)?) => {{
+        let level = $level;
+        let enabled = match level {
             kmsg_defs::LOGLEVEL_EMERG..=kmsg_defs::LOGLEVEL_ERR => {
                 tracing::enabled!(target: $target, Level::ERROR)
             }
@@ -78,8 +81,9 @@ macro_rules! kmsg_enabled {
             kmsg_defs::LOGLEVEL_NOTICE => tracing::enabled!(target: $target, Level::INFO),
             kmsg_defs::LOGLEVEL_INFO => tracing::enabled!(target: $target, Level::DEBUG),
             kmsg_defs::LOGLEVEL_DEBUG.. => tracing::enabled!(target: $target, Level::TRACE),
-        }
-    };
+        };
+        enabled.then(|| (const { $target }, level, $message))
+    }};
 }
 
 impl Stream for KmsgStream {
@@ -92,28 +96,49 @@ impl Stream for KmsgStream {
             match ready!(Pin::new(&mut self.pipe).poll_read(cx, &mut buf)) {
                 Ok(n) => {
                     let entry = KmsgParsedEntry::new(&buf[..n]).unwrap();
-                    let missed_entries = NonZeroU64::new(entry.seq - self.next_seq);
+                    self.missed_entries += entry.seq - self.next_seq;
                     self.next_seq = entry.seq + 1;
-                    let target = match entry.facility {
+                    let params = match entry.facility {
                         kmsg_defs::UNDERHILL_KMSG_FACILITY => {
                             // Don't re-log messages from Underhill itself.
                             continue;
                         }
                         kmsg_defs::UNDERHILL_INIT_KMSG_FACILITY => {
-                            if !kmsg_enabled!("underhill_init", entry.level) {
-                                continue;
-                            }
-                            "underhill_init"
+                            // Use a separate target for the init process messages.
+                            kmsg_parmas!("underhill_init", entry.level, entry.message)
+                        }
+                        kmsg_defs::KERNEL_FACILITY
+                            if entry
+                                .message
+                                .as_raw()
+                                .starts_with(kmsg_defs::TTYPRINK_PREFIX) =>
+                        {
+                            // These are messages written to /dev/ttyprintk.
+                            // These should be panic messages from user-mode
+                            // processes. Log them with an appropriate level
+                            // (the kernel defaults to INFO for these) and a
+                            // separate target.
+                            kmsg_parmas!(
+                                "panic",
+                                kmsg_defs::LOGLEVEL_CRIT,
+                                // Skip the ttyprintk message prefix.
+                                kmsg::EncodedMessage::new(
+                                    &entry.message.as_raw()[kmsg_defs::TTYPRINK_PREFIX.len()..],
+                                ),
+                            )
                         }
                         _ => {
-                            if !kmsg_enabled!("kmsg", entry.level) {
-                                continue;
-                            }
-                            "kmsg"
+                            // Non-ttyprintk kernel messages and any other
+                            // user-mode facilities are logged as is.
+                            kmsg_parmas!("kmsg", entry.level, entry.message)
                         }
                     };
+                    let Some((target, klevel, message)) = params else {
+                        // The message was not enabled.
+                        continue;
+                    };
 
-                    let level = match entry.level {
+                    let level = match klevel {
                         kmsg_defs::LOGLEVEL_EMERG..=kmsg_defs::LOGLEVEL_CRIT => LogLevel::CRITICAL,
                         kmsg_defs::LOGLEVEL_ERR => LogLevel::ERROR,
                         kmsg_defs::LOGLEVEL_WARNING => LogLevel::WARNING,
@@ -121,24 +146,26 @@ impl Stream for KmsgStream {
                         kmsg_defs::LOGLEVEL_INFO.. => LogLevel::VERBOSE,
                     };
 
-                    let mut message = [0; TRACE_LOGGING_MESSAGE_MAX_SIZE];
-                    let mut writer = SaturatingWriter(&mut message);
+                    let mut buffer = [0; TRACE_LOGGING_MESSAGE_MAX_SIZE];
+                    let mut writer = SaturatingWriter(&mut buffer);
                     serde_json::to_writer(
                         &mut writer,
                         &KmsgMessage {
                             timestamp: entry.time,
-                            level: entry.level,
+                            level: klevel,
                             target,
                             fields: Fields {
-                                message: entry.message,
-                                missed_entries,
+                                message,
+                                missed_entries: NonZeroU64::new(std::mem::take(
+                                    &mut self.missed_entries,
+                                )),
                             },
                         },
                     )
                     .unwrap();
 
                     let remaining = writer.0.len();
-                    let message_len = message.len() - remaining;
+                    let json = &buffer[..buffer.len() - remaining];
 
                     let notification = build_tracelogging_notification_buffer(
                         LogType::EVENT,
@@ -150,7 +177,7 @@ impl Stream for KmsgStream {
                         None,
                         Some(target.as_bytes()),
                         None,
-                        &message[..message_len],
+                        json,
                         (entry.time.as_nanos() / 100) as u64,
                     );
 
