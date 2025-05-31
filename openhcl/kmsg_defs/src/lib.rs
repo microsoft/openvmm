@@ -22,6 +22,12 @@ pub const LOGLEVEL_INFO: u8 = 6;
 /// debug-level messages
 pub const LOGLEVEL_DEBUG: u8 = 7;
 
+/// The facility for kernel messages.
+pub const KERNEL_FACILITY: u8 = 0;
+
+/// The message prefix for ttyprintk messages.
+pub const TTYPRINK_PREFIX: &str = "[U] ";
+
 /// underhill_init user-mode log facility
 pub const UNDERHILL_INIT_KMSG_FACILITY: u8 = 2;
 /// underhill user-mode log facility
