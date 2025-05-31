@@ -61,6 +61,8 @@ pub trait PetriVmConfig: Send {
     ) -> Box<dyn PetriVmConfig>;
     /// Sets whether UEFI frontpage is enabled.
     fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig>;
+    /// Run the VM with Enable VMBus relay enabled
+    fn with_vmbus_relay(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig>;
 }
 
 /// Common processor topology information for the VM.

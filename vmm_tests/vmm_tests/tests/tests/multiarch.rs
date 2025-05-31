@@ -272,6 +272,19 @@ async fn boot_no_agent(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     Ok(())
 }
 
+// Test for vmbus relay
+#[vmm_test(
+    openvmm_linux_direct_x64,
+    hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
+)]
+async fn boot_no_agent_with_vmbus_relay(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+    let mut vm = config.with_vmbus_relay(true).run_without_agent().await?;
+    vm.wait_for_successful_boot_event().await?;
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
+    assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
+    Ok(())
+}
+
 /// Basic boot test without agent and with a single VP.
 #[vmm_test(
     openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),

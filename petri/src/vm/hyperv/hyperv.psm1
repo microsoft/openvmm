@@ -197,3 +197,37 @@ function Set-VmScsiControllerTargetVtl
     $rasd.TargetVtl = $TargetVtl
     $rasd | Set-VmResourceSettings
 }
+
+function Enable-VmBusRelay
+{
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm
+    )
+
+    $vssd = Get-Vssd $Vm
+    $vssd | ForEach-Object {
+            $_.VMBusMessageRedirection = 1
+            $_
+        }
+    Set-VmSystemSettings $vssd
+}
+
+function Disable-VmBusRelay
+{
+    [CmdletBinding()]
+    Param (
+        [Parameter(Position = 0, Mandatory = $true, ValueFromPipeline = $true)]
+        [System.Object]
+        $Vm
+    )
+
+    $vssd = Get-Vssd $Vm
+    $vssd | ForEach-Object {
+            $_.VMBusMessageRedirection = 0
+            $_
+        }
+    Set-VmSystemSettings $vssd
+}

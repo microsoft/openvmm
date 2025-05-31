@@ -61,6 +61,7 @@ pub struct PetriVmConfigHyperV {
     openhcl_igvm: Option<ResolvedArtifact>,
     openhcl_command_line: String,
     disable_frontpage: bool,
+    vmbus_relay: bool,
 
     driver: DefaultDriver,
     agent_image: AgentImage,
@@ -127,6 +128,10 @@ impl PetriVmConfig for PetriVmConfigHyperV {
 
     fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
         Box::new(Self::with_uefi_frontpage(*self, enable))
+    }
+
+    fn with_vmbus_relay(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_vmbus_relay(*self, enable))
     }
 }
 
@@ -297,6 +302,7 @@ impl PetriVmConfigHyperV {
             temp_dir,
             log_source: params.logger.clone(),
             disable_frontpage: true,
+            vmbus_relay: false,
             openhcl_command_line: String::new(),
         })
     }
@@ -479,6 +485,9 @@ impl PetriVmConfigHyperV {
             )?;
         }
 
+        // Enable/Disable VMBusRelay if requested in config
+        vm.set_vmbus_relay(self.vmbus_relay);
+
         let mut log_tasks = Vec::new();
 
         let serial_pipe_path = vm.set_vm_com_port(1)?;
@@ -576,6 +585,12 @@ impl PetriVmConfigHyperV {
     /// Set whether to disable the UEFI frontpage.
     pub fn with_uefi_frontpage(mut self, enable: bool) -> Self {
         self.disable_frontpage = !enable;
+        self
+    }
+    
+    /// Enables VMBus relay for the VM
+    pub fn with_vmbus_relay(mut self, enable: bool) -> Self {
+        self.vmbus_relay = enable;
         self
     }
 }

@@ -503,6 +503,38 @@ pub fn run_set_vm_com_port(vmid: &Guid, port: u8, path: &Path) -> anyhow::Result
         .context("set_vm_com_port")
 }
 
+/// Run Enable-VmBusRelay commandlet
+pub fn run_enable_vmbus_relay(vmid: &Guid) -> anyhow::Result<()> {
+    PowerShellBuilder::new()
+        .cmdlet("Import-Module")
+        .positional(ps_mod)
+        .next()
+        .cmdlet("Get-VM")
+        .arg("Id", vmid)
+        .pipeline()
+        .cmdlet("Enable-VmBusRelay")
+        .finish()
+        .output(true)
+        .map(|_| ())
+        .context("enable_vmbus_relay")
+}
+
+/// Run Disable-VmBusRelay commandlet
+pub fn run_disable_vmbus_relay(vmid: &Guid) -> anyhow::Result<()> {
+    PowerShellBuilder::new()
+        .cmdlet("Import-Module")
+        .positional(ps_mod)
+        .next()
+        .cmdlet("Get-VM")
+        .arg("Id", vmid)
+        .pipeline()
+        .cmdlet("Disable-VmBusRelay")
+        .finish()
+        .output(true)
+        .map(|_| ())
+        .context("disable_vmbus_relay")
+}
+
 /// Windows event log as retrieved by `run_get_winevent`
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
