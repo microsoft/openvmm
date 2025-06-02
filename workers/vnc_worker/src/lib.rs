@@ -3,6 +3,8 @@
 
 //! A worker for running a VNC server.
 
+#![forbid(unsafe_code)]
+
 use anyhow::Context;
 use anyhow::anyhow;
 use futures::FutureExt;

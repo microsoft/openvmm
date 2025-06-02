@@ -438,7 +438,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
         // available.
         let mut eq_id_msix = HashMap::new();
         eq_id_msix.insert(eq.id(), 0);
-        tracing::info!("Created HWC with eq id: {}, msix: 0", eq.id());
+        tracing::info!(eq_id = eq.id(), msix = 0, "created HWC");
 
         let db_id = db_id.context("db id not provided")? as u32;
         let gpa_mkey = gpa_mkey.context("gpa mem key not provided")?;
@@ -609,7 +609,7 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             tracing::error!(msg_type, "expected shmem response");
         }
         if header.status() != 0 {
-            tracing::error!(msg_type, "response failed status={}", header.status());
+            tracing::error!(msg_type, header_status = header.status(), "response failed");
         }
     }
 
@@ -848,10 +848,10 @@ impl<T: DeviceBacking> GdmaDriver<T> {
                                 "HWC timeout value"
                             );
                         }
-                        unknown => tracing::error!(unknown, "unknown reconfig data type."),
+                        unknown => tracing::error!(unknown, "unknown reconfig data type"),
                     }
                 }
-                ty => tracing::error!("unknown eq event {}", ty),
+                ty => tracing::error!(ty, "unknown eq event"),
             }
             self.eq.ack();
         }

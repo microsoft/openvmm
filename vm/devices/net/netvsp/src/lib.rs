@@ -563,7 +563,7 @@ impl std::fmt::Display for PrimaryChannelGuestVfState {
 
 impl Inspect for PrimaryChannelGuestVfState {
     fn inspect(&self, req: inspect::Request<'_>) {
-        req.value(format!("{}", self).into());
+        req.value(self.to_string());
     }
 }
 
@@ -813,9 +813,24 @@ impl PrimaryChannelState {
             .collect();
 
         let rss_state = rss_state
-            .map(|rss| {
-                if rss.indirection_table.len() != indirection_table_size as usize {
-                    return Err(NetRestoreError::MismatchedIndirectionTableSize);
+            .map(|mut rss| {
+                if rss.indirection_table.len() > indirection_table_size as usize {
+                    // Dynamic reduction of indirection table can cause unexpected and hard to investigate issues
+                    // with performance and processor overloading.
+                    return Err(NetRestoreError::ReducedIndirectionTableSize);
+                }
+                if rss.indirection_table.len() < indirection_table_size as usize {
+                    tracing::warn!(
+                        saved_indirection_table_size = rss.indirection_table.len(),
+                        adapter_indirection_table_size = indirection_table_size,
+                        "increasing indirection table size",
+                    );
+                    // Dynamic increase of indirection table is done by duplicating the existing entries until
+                    // the desired size is reached.
+                    let table_clone = rss.indirection_table.clone();
+                    let num_to_add = indirection_table_size as usize - rss.indirection_table.len();
+                    rss.indirection_table
+                        .extend(table_clone.iter().cycle().take(num_to_add));
                 }
                 Ok(RssState {
                     key: rss
@@ -1417,8 +1432,8 @@ enum NetRestoreError {
     Open(#[from] OpenError),
     #[error("invalid rss key size")]
     InvalidRssKeySize,
-    #[error("mismatched indirection table size")]
-    MismatchedIndirectionTableSize,
+    #[error("reduced indirection table size")]
+    ReducedIndirectionTableSize,
 }
 
 impl From<NetRestoreError> for RestoreError {
@@ -3648,8 +3663,8 @@ impl InspectTaskMut<Coordinator> for CoordinatorState {
             });
 
             // Get the shared channel state from the primary channel.
-            {
-                let deferred = resp.request().defer();
+            resp.merge(inspect::adhoc_mut(|req| {
+                let deferred = req.defer();
                 coordinator.workers[0].update_with(|_, worker| {
                     if let Some(state) = worker.and_then(|worker| worker.state.ready()) {
                         deferred.respond(|resp| {
@@ -3662,7 +3677,7 @@ impl InspectTaskMut<Coordinator> for CoordinatorState {
                         });
                     }
                 })
-            }
+            }));
         }
     }
 }
@@ -3969,7 +3984,11 @@ impl Coordinator {
                     }
                     let result = c_state.endpoint.set_data_path_to_guest_vf(to_guest).await;
                     let result = if let Err(err) = result {
-                        tracing::error!(err = %err, to_guest, "Failed to switch guest VF data path");
+                        tracing::error!(
+                            err = err.as_ref() as &dyn std::error::Error,
+                            to_guest,
+                            "Failed to switch guest VF data path"
+                        );
                         false
                     } else {
                         primary.is_data_path_switched = Some(to_guest);
@@ -4026,7 +4045,10 @@ impl Coordinator {
                 ) => {
                     if !to_guest {
                         if let Err(err) = c_state.endpoint.set_data_path_to_guest_vf(false).await {
-                            tracing::warn!(err = %err, "Failed setting data path back to synthetic after guest VF was removed.");
+                            tracing::warn!(
+                                err = err.as_ref() as &dyn std::error::Error,
+                                "Failed setting data path back to synthetic after guest VF was removed."
+                            );
                         }
                         primary.is_data_path_switched = Some(false);
                     }
@@ -4036,7 +4058,10 @@ impl Coordinator {
                     saved_state::GuestVfState::DataPathSwitched,
                 ) => {
                     if let Err(err) = c_state.endpoint.set_data_path_to_guest_vf(false).await {
-                        tracing::warn!(err = %err, "Failed setting data path back to synthetic after guest VF was removed.");
+                        tracing::warn!(
+                            err = err.as_ref() as &dyn std::error::Error,
+                            "Failed setting data path back to synthetic after guest VF was removed."
+                        );
                     }
                     primary.is_data_path_switched = Some(false);
                 }
@@ -4378,14 +4403,14 @@ impl<T: RingMem + 'static> Worker<T> {
                         }
                         Err(WorkerError::EndpointRequiresQueueRestart(err)) => {
                             tracelimit::warn_ratelimited!(
-                                err = %err,
+                                err = err.as_ref() as &dyn std::error::Error,
                                 "Endpoint requires queues to restart",
                             );
                             if let Err(try_send_err) =
                                 self.coordinator_send.try_send(CoordinatorMessage::Restart)
                             {
                                 tracing::error!(
-                                    try_send_err = %try_send_err,
+                                    try_send_err = &try_send_err as &dyn std::error::Error,
                                     "failed to restart queues"
                                 );
                                 return Err(WorkerError::Endpoint(err));

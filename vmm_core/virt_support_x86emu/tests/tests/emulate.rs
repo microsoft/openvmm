@@ -99,7 +99,9 @@ impl EmulatorSupport for MockSupport {
     }
 
     /// The gva translation included in the intercept message header, if valid.
-    fn initial_gva_translation(&self) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
+    fn initial_gva_translation(
+        &mut self,
+    ) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
         None
     }
 

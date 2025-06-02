@@ -13,10 +13,10 @@ use net_backend_resources::mac_address::MacAddress;
 use std::fmt;
 use std::fs::File;
 use vm_resource::Resource;
-use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
+use vmgs_resources::VmgsResource;
 use vmotherboard::ChipsetDeviceHandle;
 use vmotherboard::options::BaseChipsetManifest;
 
@@ -43,8 +43,7 @@ pub struct Config {
     pub virtio_devices: Vec<(VirtioBus, Resource<VirtioDeviceHandle>)>,
     #[cfg(windows)]
     pub vpci_resources: Vec<virt_whp::device::DeviceHandle>,
-    pub format_vmgs: bool,
-    pub vmgs_disk: Option<Resource<DiskHandleKind>>,
+    pub vmgs: Option<VmgsResource>,
     pub secure_boot_enabled: bool,
     pub custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     // TODO: move FirmwareEvent somewhere not GED-specific.

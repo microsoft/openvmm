@@ -3,6 +3,8 @@
 
 //! Test code for running TMK tests in different environments.
 
+#![forbid(unsafe_code)]
+
 use anyhow::Context as _;
 use pal_async::DefaultDriver;
 use pal_async::DefaultPool;

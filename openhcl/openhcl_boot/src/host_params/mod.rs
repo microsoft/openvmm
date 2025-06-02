@@ -4,6 +4,7 @@
 //! Module used to parse the host parameters used to setup Underhill. These are
 //! provided via a device tree IGVM parameter.
 
+use crate::cmdline::BootCommandLineOptions;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use host_fdt_parser::CpuEntry;
@@ -82,6 +83,8 @@ pub struct PartitionInfo {
     pub vmbus_vtl0: VmbusInfo,
     /// Command line to be used for the underhill kernel.
     pub cmdline: ArrayString<COMMAND_LINE_SIZE>,
+    /// Dynamic command line provided by the host.
+    pub host_provided_cmdline: ArrayString<COMMAND_LINE_SIZE>,
     /// Com3 serial device is available
     pub com3_serial_available: bool,
     /// GIC information
@@ -94,6 +97,8 @@ pub struct PartitionInfo {
     pub vtl0_alias_map: Option<u64>,
     /// Host is compatible with DMA preservation / NVMe keep-alive.
     pub nvme_keepalive: bool,
+    /// Parsed boot command line options.
+    pub boot_options: BootCommandLineOptions,
 }
 
 impl PartitionInfo {
@@ -119,12 +124,14 @@ impl PartitionInfo {
                 connection_id: 0,
             },
             cmdline: ArrayString::new_const(),
+            host_provided_cmdline: ArrayString::new_const(),
             com3_serial_available: false,
             gic: None,
             memory_allocation_mode: MemoryAllocationMode::Host,
             entropy: None,
             vtl0_alias_map: None,
             nvme_keepalive: false,
+            boot_options: BootCommandLineOptions::new(),
         }
     }
 

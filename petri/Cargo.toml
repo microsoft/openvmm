@@ -44,6 +44,7 @@ vmcore.workspace = true
 vm_manifest_builder.workspace = true
 vm_resource.workspace = true
 vmgs_format.workspace = true
+vmgs_resources.workspace = true
 vmm_core_defs.workspace = true
 vmotherboard.workspace = true
 vmsocket.workspace = true

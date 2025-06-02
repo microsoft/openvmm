@@ -340,7 +340,7 @@ async fn vmgs_file_open_nvram(
     key_path: Option<impl AsRef<Path>>,
     open_mode: OpenMode,
 ) -> Result<HclCompatNvram<VmgsStorageBackend>, Error> {
-    let vmgs = vmgs_file_open(file_path, key_path, open_mode, false).await?;
+    let vmgs = vmgs_file_open(file_path, key_path, open_mode).await?;
     let encrypted = vmgs.is_encrypted();
 
     open_nvram(vmgs, encrypted)

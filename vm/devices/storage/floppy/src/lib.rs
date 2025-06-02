@@ -1094,8 +1094,7 @@ impl FloppyDiskController {
             Some(r) => r,
             None => {
                 tracelimit::error_ratelimited!("request_dma for read failed");
-                return Err(disk_backend::DiskError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Err(disk_backend::DiskError::Io(std::io::Error::other(
                     "request_dma for read failed",
                 )));
             }

@@ -640,7 +640,7 @@ fn load_image<'a, R: IgvmfilegenRegister + GuestArch + 'static>(
                     OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME
                 )
             } else {
-                command_line.to_string()
+                command_line.clone()
             };
 
             let command_line = if static_command_line {

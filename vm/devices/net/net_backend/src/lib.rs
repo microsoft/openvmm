@@ -5,6 +5,7 @@
 //! backends.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod loopback;
 pub mod null;

@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+use cvm_tracing::CVM_ALLOWED;
 use inspect::Inspect;
 use loan_cell::LoanCell;
 use pal::unix::affinity::CpuSet;
@@ -151,7 +152,7 @@ impl ThreadpoolBuilder {
             let online_cpus = fs_err::read_to_string("/sys/devices/system/cpu/online")?;
             affinity
                 .set_mask_list(&online_cpus)
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                .map_err(io::Error::other)?;
         }
 
         // Set the current thread's affinity so that allocations for the worker
@@ -163,6 +164,7 @@ impl ThreadpoolBuilder {
                 // because the thread will probably get allocated with the wrong node,
                 // but it's recoverable.
                 tracing::warn!(
+                    CVM_ALLOWED,
                     cpu,
                     error = &err as &dyn std::error::Error,
                     "could not set package affinity for thread pool thread"
@@ -197,19 +199,17 @@ impl ThreadpoolBuilder {
                 };
 
                 let driver = driver;
-                {
+                let notifier = {
                     let mut state = driver.inner.state.lock();
                     state.spawned = true;
-                    if let Some(notifier) = state.notifier.take() {
-                        (notifier.0)();
-                    }
                     if online {
                         // There cannot be any waiters yet since they can only
                         // be registered from the current thread.
                         driver.inner.affinity_set.store(true, Relaxed);
                         state.affinity = AffinityState::Set;
                     }
-                }
+                    state.notifier.take()
+                };
 
                 send.send(Ok(pool.client().clone())).ok();
 
@@ -218,7 +218,12 @@ impl ThreadpoolBuilder {
                 // of storing it directly in TLS to avoid the overhead of
                 // registering a destructor.
                 CURRENT_THREAD_DRIVER.with(|current| {
-                    current.lend(&driver, || pool.run());
+                    current.lend(&driver, || {
+                        if let Some(notifier) = notifier {
+                            (notifier.0)();
+                        }
+                        pool.run()
+                    });
                 });
             })?;
 
@@ -595,15 +600,14 @@ impl ThreadpoolDriver {
 
     /// Sets a function to be called when the thread gets spawned.
     ///
-    /// Return false if the thread is already spawned.
-    pub fn set_spawn_notifier(&self, f: impl 'static + Send + FnOnce()) -> bool {
-        let notifier = AffinityNotifier(Box::new(f));
+    /// Return `Err(f)` if the thread is already spawned.
+    pub fn set_spawn_notifier<F: 'static + Send + FnOnce()>(&self, f: F) -> Result<(), F> {
         let mut state = self.inner.state.lock();
         if !state.spawned {
-            state.notifier = Some(notifier);
-            true
+            state.notifier = Some(AffinityNotifier(Box::new(f)));
+            Ok(())
         } else {
-            false
+            Err(f)
         }
     }
 }

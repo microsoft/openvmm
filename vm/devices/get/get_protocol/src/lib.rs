@@ -5,6 +5,7 @@
 //! GET (Guest Emulation Transport)
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 use bitfield_struct::bitfield;
 use guid::Guid;
@@ -163,8 +164,6 @@ open_enum! {
 }
 
 pub use header::*;
-// UNSAFETY: The unsafe manual impl of IntoBytes for HeaderGeneric
-#[expect(unsafe_code)]
 pub mod header {
     use super::MessageTypes;
     use super::MessageVersions;
@@ -249,28 +248,16 @@ pub mod header {
         (HeaderHostRequest => HostRequest, HOST_REQUEST, HostRequests),
     }
 
-    #[repr(C)]
-    #[derive(Copy, Clone, Debug, FromBytes, Immutable, KnownLayout, PartialEq)]
+    // TODO: repr(packed) is only needed here to make zerocopy's IntoBytes
+    // derive happy. Ideally it wouldn't be needed. We know this type has no
+    // padding bytes because of the asserts inside `defn_header_meta!`, and
+    // HeaderMeta is sealed, but zerocopy can't see all of that yet.
+    #[repr(C, packed)]
+    #[derive(Copy, Clone, Debug, FromBytes, Immutable, KnownLayout, PartialEq, IntoBytes)]
     pub struct HeaderGeneric<Meta: HeaderMeta> {
         pub message_version: MessageVersions,
         pub message_type: MessageTypes,
-        pub message_id: Meta::MessageId,
-    }
-
-    // SAFETY:
-    // - `HeaderMeta::MessageId` includes a bound on `IntoBytes`
-    // - All other HeaderGeneric fields implement IntoBytes
-    // - HeaderGeneric is repr(C + Immutable + KnownLayout)
-    // - the `defn_header_meta!` macro includes calls to `static_assert!` which
-    // ensure that the `MessageId` type is the correct size + alignment
-    // - a sealed trait bound on `HeaderMeta` ensures that external consumers
-    // cannot construct instances of HeaderGeneric that have not been validated
-    unsafe impl<Meta: HeaderMeta> IntoBytes for HeaderGeneric<Meta> {
-        fn only_derive_is_allowed_to_implement_this_trait()
-        where
-            Self: Sized,
-        {
-        }
+        message_id: Meta::MessageId,
     }
 
     impl<Meta: HeaderMeta> HeaderGeneric<Meta> {
@@ -280,6 +267,15 @@ pub mod header {
                 message_type: Meta::MESSAGE_TYPE,
                 message_id,
             }
+        }
+
+        // This method is only needed to force a copy of the message_id field to
+        // avoid references to potentially unaligned packed fields. message_id
+        // will never actually be unaligned in practice, but the compiler can't
+        // prove that. This can go away and message_id can be made `pub` when
+        // repr(packed) goes away.
+        pub fn message_id(&self) -> Meta::MessageId {
+            self.message_id
         }
     }
 }

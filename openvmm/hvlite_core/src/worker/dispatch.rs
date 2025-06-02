@@ -123,6 +123,7 @@ use vmcore::vmtime::VmTime;
 use vmcore::vmtime::VmTimeKeeper;
 use vmcore::vmtime::VmTimeSource;
 use vmgs_broker::resolver::VmgsFileResolver;
+use vmgs_resources::VmgsResource;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
 use vmm_core::input_distributor::InputDistributor;
 use vmm_core::partition_unit::Halt;
@@ -178,8 +179,7 @@ impl Manifest {
             vtl2_vmbus: config.vtl2_vmbus,
             #[cfg(all(windows, feature = "virt_whp"))]
             vpci_resources: config.vpci_resources,
-            format_vmgs: config.format_vmgs,
-            vmgs_disk: config.vmgs_disk,
+            vmgs: config.vmgs,
             secure_boot_enabled: config.secure_boot_enabled,
             custom_uefi_vars: config.custom_uefi_vars,
             firmware_event_send: config.firmware_event_send,
@@ -219,8 +219,7 @@ pub struct Manifest {
     vtl2_vmbus: Option<VmbusConfig>,
     #[cfg(all(windows, feature = "virt_whp"))]
     vpci_resources: Vec<virt_whp::device::DeviceHandle>,
-    format_vmgs: bool,
-    vmgs_disk: Option<Resource<DiskHandleKind>>,
+    vmgs: Option<VmgsResource>,
     secure_boot_enabled: bool,
     custom_uefi_vars: firmware_uefi_custom_vars::CustomVars,
     firmware_event_send: Option<mesh::Sender<get_resources::ged::FirmwareEvent>>,
@@ -966,18 +965,38 @@ impl InitializedVm {
             }
         }
 
-        let (vmgs_client, vmgs_task) = if let Some(vmgs_file) = cfg.vmgs_disk {
-            let disk = open_simple_disk(&resolver, vmgs_file, false).await?;
-            let vmgs = if cfg.format_vmgs {
-                vmgs::Vmgs::format_new(disk, None)
+        let vmgs = match cfg.vmgs {
+            Some(VmgsResource::Disk(disk)) => Some(
+                vmgs::Vmgs::try_open(
+                    open_simple_disk(&resolver, disk, false).await?,
+                    None,
+                    true,
+                    false,
+                )
+                .await
+                .context("failed to open vmgs file")?,
+            ),
+            Some(VmgsResource::ReprovisionOnFailure(disk)) => Some(
+                vmgs::Vmgs::try_open(
+                    open_simple_disk(&resolver, disk, false).await?,
+                    None,
+                    true,
+                    true,
+                )
+                .await
+                .context("failed to open vmgs file")?,
+            ),
+            Some(VmgsResource::Reprovision(disk)) => Some(
+                vmgs::Vmgs::format_new(open_simple_disk(&resolver, disk, false).await?, None)
                     .await
-                    .context("failed to format vmgs file")?
-            } else {
-                vmgs::Vmgs::open(disk, None)
-                    .await
-                    .context("failed to open vmgs file")?
-            };
+                    .context("failed to format vmgs file")?,
+            ),
+            Some(VmgsResource::Ephemeral) => None,
+            // TODO: make sure we don't need a VMGS
+            None => None,
+        };
 
+        let (vmgs_client, vmgs_task) = if let Some(vmgs) = vmgs {
             let (vmgs_client, vmgs_task) =
                 vmgs_broker::spawn_vmgs_broker(driver_source.builder().build("vmgs_broker"), vmgs);
             resolver.add_resolver(VmgsFileResolver::new(vmgs_client.clone()));
@@ -1714,9 +1733,9 @@ impl InitializedVm {
                     vmbus_server::ProxyIntegration::start(
                         &vmbus_driver,
                         proxy_handle,
-                        vmbus_server::ProxyServerInfo::new(vmbus.control(), None),
+                        vmbus_server::ProxyServerInfo::new(vmbus.control(), None, None),
                         vtl2_vmbus.as_ref().map(|server| {
-                            vmbus_server::ProxyServerInfo::new(server.control().clone(), None)
+                            vmbus_server::ProxyServerInfo::new(server.control().clone(), None, None)
                         }),
                         Some(&gm),
                     )
@@ -2538,9 +2557,9 @@ impl LoadedVm {
                 while let Some(rpc) = worker_rpc.next().await {
                     match rpc {
                         WorkerRpc::Inspect(req) => req.respond(|resp| {
-                            worker_rpc_send.send(WorkerRpc::Inspect(
-                                resp.merge(&state_units).request().defer(),
-                            ));
+                            resp.merge(&state_units).merge(inspect::adhoc(|req| {
+                                worker_rpc_send.send(WorkerRpc::Inspect(req.defer()));
+                            }));
                         }),
                         rpc => worker_rpc_send.send(rpc),
                     }
@@ -2853,8 +2872,7 @@ impl LoadedVm {
             virtio_devices: vec![], // TODO
             #[cfg(all(windows, feature = "virt_whp"))]
             vpci_resources: vec![], // TODO
-            vmgs_disk: None,        // TODO
-            format_vmgs: false,     // TODO
+            vmgs: None,             // TODO
             secure_boot_enabled: false, // TODO
             custom_uefi_vars: Default::default(), // TODO
             firmware_event_send: self.inner.firmware_event_send,

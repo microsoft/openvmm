@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use self::host_time::HostSystemTimeAccess;
+use cvm_tracing::CVM_ALLOWED;
 use inspect::Inspect;
 use local_clock::LocalClock;
 use local_clock::LocalClockDelta;
@@ -80,7 +81,11 @@ impl UnderhillLocalClock {
                         // stores UTC.
                         let skew = this.host_time.now().offset();
                         let skew = time::Duration::seconds(skew.whole_seconds().into());
-                        tracing::info!(?skew, "no saved skew found: defaulting to host local time");
+                        tracing::info!(
+                            CVM_ALLOWED,
+                            ?skew,
+                            "no saved skew found: defaulting to host local time"
+                        );
                         skew.into()
                     }
                 }
@@ -92,7 +97,10 @@ impl UnderhillLocalClock {
         let neg_two_days = LocalClockDelta::from_millis(-MILLIS_IN_TWO_DAYS);
         if this.offset_from_host_time < neg_two_days {
             this.offset_from_host_time = neg_two_days;
-            tracing::warn!("Guest time was more than two days in the past.");
+            tracing::warn!(
+                CVM_ALLOWED,
+                "Guest time was more than two days in the past."
+            );
         }
 
         Ok(this)
@@ -112,7 +120,7 @@ async fn fetch_skew_from_store(
         raw_skew_100ns / NANOS_100_IN_SECOND,
         (raw_skew_100ns % NANOS_100_IN_SECOND) as i32,
     );
-    tracing::info!(?skew, "restored existing RTC skew");
+    tracing::info!(CVM_ALLOWED, ?skew, "restored existing RTC skew");
     Ok(Some(skew.into()))
 }
 
@@ -134,6 +142,7 @@ impl LocalClock for UnderhillLocalClock {
         let res = pal_async::local::block_on(self.store.persist(raw_skew.to_le_bytes().into()));
         if let Err(err) = res {
             tracing::error!(
+                CVM_ALLOWED,
                 err = &err as &dyn std::error::Error,
                 "failed to persist RTC skew"
             );

@@ -3,6 +3,8 @@
 
 //! A [`log::Log`] implementation translates log-levels to ADO logging commands.
 
+#![forbid(unsafe_code)]
+
 use env_logger::Logger;
 use log::Level;
 use log::Metadata;

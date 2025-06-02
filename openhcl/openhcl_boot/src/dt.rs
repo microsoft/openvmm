@@ -483,6 +483,12 @@ pub fn write_dt(
         openhcl_builder = openhcl_builder.add_u64(p_vtl0_alias_map, data)?;
     }
 
+    let p_host_provided_cmdline = openhcl_builder.add_string("host-provided-cmdline")?;
+    openhcl_builder = openhcl_builder.add_str(
+        p_host_provided_cmdline,
+        partition_info.host_provided_cmdline.as_str(),
+    )?;
+
     #[derive(Debug, Copy, Clone, PartialEq, Eq)]
     struct Vtl2MemoryEntry {
         range: MemoryRange,

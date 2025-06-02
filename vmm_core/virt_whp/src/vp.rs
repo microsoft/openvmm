@@ -134,11 +134,6 @@ impl<'a> WhpProcessor<'a> {
 
             self.state.halted = false;
 
-            // Pretend to unlock the TLB when we return to VTL 0
-            if new_vtl == Vtl::Vtl0 {
-                self.tlb_lock = false;
-            }
-
             if new_vtl == Vtl::Vtl2 {
                 // No need to schedule any wakeups until the next VTL0 entry.
                 self.state

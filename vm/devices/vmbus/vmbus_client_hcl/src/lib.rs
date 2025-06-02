@@ -115,7 +115,7 @@ impl SynicEventClient for HclSynicEvents {
     fn map_event(&self, event_flag: u16, event: &pal_event::Event) -> io::Result<()> {
         self.hcl_vmbus
             .set_eventfd(event_flag.into(), Some(event.as_fd()))
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
+            .map_err(io::Error::other)
     }
 
     fn unmap_event(&self, event_flag: u16) {
@@ -125,7 +125,7 @@ impl SynicEventClient for HclSynicEvents {
     fn signal_event(&self, connection_id: u32, event_flag: u16) -> io::Result<()> {
         self.hcl_vmbus
             .signal_event(connection_id, event_flag.into())
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
+            .map_err(io::Error::other)
     }
 }
 
