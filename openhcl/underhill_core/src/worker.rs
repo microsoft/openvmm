@@ -127,6 +127,7 @@ use tracing::Instrument;
 use tracing::instrument;
 use uevent::UeventListener;
 use underhill_attestation::AttestationType;
+use underhill_confidentiality::confidential_debug_enabled;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
 use virt::Partition;
@@ -1602,6 +1603,11 @@ async fn new_underhill_vm(
         secure_boot: dps.general.secure_boot_enabled,
         tpm_enabled: dps.general.tpm_enabled,
         tpm_persisted: !dps.general.suppress_attestation.unwrap_or(false),
+        debug_enabled: confidential_debug_enabled(),
+        dyn_cmd_line: runtime_params
+            .parsed_openhcl_boot()
+            .host_provided_cmdline
+            .clone(),
         vm_unique_id: dps.general.bios_guid.to_string(),
     };
 

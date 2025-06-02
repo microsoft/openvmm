@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_vm_configuration_no_time() {
-        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"vmUniqueId":""}"#;
+        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"debug-enabled":false,"dyn-cmd-line":"","vmUniqueId":""}"#;
 
         let attestation_vm_config = AttestationVmConfig {
             current_time: None,
@@ -292,6 +292,8 @@ mod tests {
             secure_boot: false,
             tpm_enabled: false,
             tpm_persisted: false,
+            debug_enabled: false,
+            dyn_cmd_line: String::new(),
             vm_unique_id: String::new(),
         };
         let result = serde_json::to_string(&attestation_vm_config);
@@ -303,7 +305,7 @@ mod tests {
 
     #[test]
     fn test_vm_configuration_with_time() {
-        const EXPECTED_JWK: &str = r#"{"current-time":1691103220,"root-cert-thumbprint":"","console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"vmUniqueId":""}"#;
+        const EXPECTED_JWK: &str = r#"{"current-time":1691103220,"root-cert-thumbprint":"","console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"debug-enabled":false,"dyn-cmd-line":"","vmUniqueId":""}"#;
 
         let attestation_vm_config = AttestationVmConfig {
             current_time: None,
@@ -312,6 +314,8 @@ mod tests {
             secure_boot: false,
             tpm_enabled: false,
             tpm_persisted: false,
+            debug_enabled: false,
+            dyn_cmd_line: String::new(),
             vm_unique_id: String::new(),
         };
         let attestation_vm_config =
@@ -321,5 +325,33 @@ mod tests {
 
         let vm_config = result.unwrap();
         assert_eq!(vm_config, EXPECTED_JWK);
+    }
+
+    #[test]
+    fn test_dyn_cmd_line() {
+        // Try round-tripping a dynamic command line with quotes and other nasty things.
+        const CMDLINE: &str = "FOO=\"bar\" BAZ=\"\"\"\\";
+        const EXPECTED_JWK: &str = r#"{"root-cert-thumbprint":"","console-enabled":false,"secure-boot":false,"tpm-enabled":false,"tpm-persisted":false,"debug-enabled":false,"dyn-cmd-line":"FOO=\"bar\" BAZ=\"\"\"\\","vmUniqueId":""}"#;
+
+        let attestation_vm_config = AttestationVmConfig {
+            current_time: None,
+            root_cert_thumbprint: String::new(),
+            console_enabled: false,
+            secure_boot: false,
+            tpm_enabled: false,
+            tpm_persisted: false,
+            debug_enabled: false,
+            dyn_cmd_line: CMDLINE.into(),
+            vm_unique_id: String::new(),
+        };
+        let result = serde_json::to_string(&attestation_vm_config);
+        assert!(result.is_ok());
+
+        let vm_config = result.unwrap();
+        assert_eq!(vm_config, EXPECTED_JWK);
+
+        // Make sure it round-trips correctly.
+        let parsed_config: AttestationVmConfig = serde_json::from_str(&vm_config).unwrap();
+        assert_eq!(parsed_config.dyn_cmd_line, CMDLINE);
     }
 }
