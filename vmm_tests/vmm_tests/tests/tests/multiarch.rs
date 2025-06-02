@@ -102,7 +102,11 @@ async fn secure_boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
 async fn mismatched_secure_boot_template_windows(
     config: Box<dyn PetriVmConfig>,
 ) -> anyhow::Result<()> {
-    let mut vm = config.with_uefi_ca_template().run_without_agent().await?;
+    let mut vm = config
+        .with_secure_boot()
+        .with_uefi_ca_template()
+        .run_without_agent()
+        .await?;
     assert_eq!(vm.wait_for_boot_event().await?, FirmwareEvent::BootFailed);
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
@@ -122,6 +126,7 @@ async fn mismatched_secure_boot_template_linux(
     config: Box<dyn PetriVmConfig>,
 ) -> anyhow::Result<()> {
     let mut vm = config
+        .with_secure_boot()
         .with_windows_secure_boot_template()
         .run_without_agent()
         .await?;
