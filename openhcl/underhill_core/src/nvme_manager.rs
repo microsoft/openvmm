@@ -113,7 +113,10 @@ impl NvmeManager {
                     .instrument(tracing::info_span!("nvme_manager_restore"))
                     .await
                 {
-                    tracing::error!("failed to restore nvme manager: {}", e);
+                    tracing::error!(
+                        error = e.as_ref() as &dyn std::error::Error,
+                        "failed to restore nvme manager"
+                    );
                 }
             };
             worker.run(recv).await

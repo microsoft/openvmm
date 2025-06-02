@@ -40,6 +40,7 @@ use crate::tpm20proto::protocol::TpmtPublic;
 use crate::tpm20proto::protocol::TpmtRsaScheme;
 use crate::tpm20proto::protocol::TpmtSymDefObject;
 use crate::tpm20proto::protocol::common::CmdAuth;
+use cvm_tracing::CVM_ALLOWED;
 use inspect::InspectMut;
 use ms_tpm_20_ref::MsTpm20RefPlatform;
 use thiserror::Error;
@@ -212,6 +213,7 @@ impl TpmEngineHelper {
         if let Err(error) = self.clear_control(TPM20_RH_PLATFORM, false) {
             if let TpmCommandError::TpmCommandFailed { response_code } = error {
                 tracelimit::error_ratelimited!(
+                    CVM_ALLOWED,
                     err = &error as &dyn std::error::Error,
                     "tpm ClearControlCmd failed"
                 );
@@ -236,6 +238,7 @@ impl TpmEngineHelper {
             Err(error) => {
                 if let TpmCommandError::TpmCommandFailed { response_code } = error {
                     tracelimit::error_ratelimited!(
+                        CVM_ALLOWED,
                         err = &error as &dyn std::error::Error,
                         "tpm ClearCmd failed"
                     );
@@ -343,6 +346,7 @@ impl TpmEngineHelper {
                     // Guest might cause the command to fail (e.g., taking the ownership of a hierarchy).
                     // Making this failure as non-fatal.
                     tracelimit::error_ratelimited!(
+                        CVM_ALLOWED,
                         err = &error as &dyn std::error::Error,
                         "tpm CreatePrimaryCmd failed"
                     );
@@ -369,7 +373,10 @@ impl TpmEngineHelper {
         if res.out_public.size.get() == 0 {
             // Guest might cause the command to fail (e.g., taking the ownership of a hierarchy).
             // Making this failure as non-fatal.
-            tracelimit::error_ratelimited!("No public data in CreatePrimaryCmd response");
+            tracelimit::error_ratelimited!(
+                CVM_ALLOWED,
+                "No public data in CreatePrimaryCmd response"
+            );
 
             return Ok(TpmRsa2kPublic {
                 modulus: [0u8; RSA_2K_MODULUS_SIZE],
@@ -396,6 +403,7 @@ impl TpmEngineHelper {
                 // Guest might cause the command to fail (e.g., taking the ownership of a hierarchy).
                 // Making this failure as non-fatal.
                 tracelimit::error_ratelimited!(
+                    CVM_ALLOWED,
                     err = &error as &dyn std::error::Error,
                     "tpm FlushContextCmd failed"
                 );
@@ -428,6 +436,7 @@ impl TpmEngineHelper {
                 // Guest might cause the command to fail (e.g., taking the ownership of a hierarchy).
                 // Making this failure as non-fatal.
                 tracelimit::error_ratelimited!(
+                    CVM_ALLOWED,
                     err = &error as &dyn std::error::Error,
                     "tpm EvictControlCmd failed"
                 );

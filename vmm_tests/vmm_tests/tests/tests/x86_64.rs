@@ -304,13 +304,12 @@ async fn battery_capacity(config: PetriVmConfigOpenVmm) -> Result<(), anyhow::Er
 fn configure_for_sidecar(
     config: Box<dyn PetriVmConfig>,
     proc_count: u32,
+    node_count: u32,
 ) -> Box<dyn PetriVmConfig> {
     config.with_processor_topology({
         ProcessorTopology {
             vp_count: proc_count,
-            // Sidecar will start one VP per socket. For this test, use just one
-            // socket.
-            vps_per_socket: Some(proc_count),
+            vps_per_socket: Some(proc_count / node_count),
             enable_smt: Some(false),
             // Sidecar currently requires x2APIC.
             apic_mode: Some(ApicMode::X2apicSupported),
@@ -325,7 +324,7 @@ fn configure_for_sidecar(
 #[vmm_test(openvmm_openhcl_uefi_x64(none), hyperv_openhcl_uefi_x64(none))]
 async fn sidecar_aps_unused(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow::Error> {
     let proc_count = 4;
-    let mut vm = configure_for_sidecar(config, proc_count)
+    let mut vm = configure_for_sidecar(config, proc_count, 1)
         .with_uefi_frontpage(true)
         .run_without_agent()
         .await?;
@@ -358,7 +357,7 @@ async fn sidecar_aps_unused(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
 async fn sidecar_boot(config: Box<dyn PetriVmConfig>) -> Result<(), anyhow::Error> {
-    let (vm, agent) = configure_for_sidecar(config, 4).run().await?;
+    let (vm, agent) = configure_for_sidecar(config, 8, 2).run().await?;
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
