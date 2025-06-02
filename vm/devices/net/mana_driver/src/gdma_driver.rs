@@ -232,7 +232,7 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
         }
         if header.status() != 0 {
             tracing::error!(
-                context = AFTER_DESTROY_HWC, 
+                context = AFTER_DESTROY_HWC,
                 error = format!("DESTROY_HWC failed: {}", header.status())
             );
         }
