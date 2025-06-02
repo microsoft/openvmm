@@ -182,7 +182,9 @@ impl<T: DeviceBacking> GdmaDriver<T> {
             }
 
             if std::time::Instant::now() > timeout {
-                return Err(anyhow::anyhow!("MANA request timed out waiting for PF ownership to clear"));
+                return Err(anyhow::anyhow!(
+                    "MANA request timed out waiting for PF ownership to clear"
+                ));
             }
 
             std::hint::spin_loop();
@@ -229,7 +231,10 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
             tracing::error!(context = AFTER_DESTROY_HWC, error = "expected response");
         }
         if header.status() != 0 {
-            tracing::error!(context = AFTER_DESTROY_HWC, error = format!("DESTROY_HWC failed: {}", header.status()));
+            tracing::error!(
+                context = AFTER_DESTROY_HWC, 
+                error = format!("DESTROY_HWC failed: {}", header.status())
+            );
         }
     }
 }
