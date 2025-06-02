@@ -123,6 +123,7 @@ impl HyperVVM {
         if generation == powershell::HyperVGeneration::Two {
             powershell::run_set_vm_firmware(powershell::HyperVSetVMFirmwareArgs {
                 vmid: &vmid,
+                secure_boot_enabled: false,
                 secure_boot_template: None,
             })?;
         }

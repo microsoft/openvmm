@@ -77,7 +77,6 @@ pub enum HyperVSecureBootTemplate {
 impl ps::AsVal for HyperVSecureBootTemplate {
     fn as_val(&self) -> impl '_ + AsRef<OsStr> {
         match self {
-            HyperVSecureBootTemplate::SecureBootDisabled => "SecureBootDisabled",
             HyperVSecureBootTemplate::MicrosoftWindows => "MicrosoftWindows",
             HyperVSecureBootTemplate::MicrosoftUEFICertificateAuthority => {
                 "MicrosoftUEFICertificateAuthority"

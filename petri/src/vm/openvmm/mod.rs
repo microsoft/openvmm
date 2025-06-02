@@ -200,7 +200,7 @@ impl PetriVmConfig for PetriVmConfigOpenVmm {
     }
 
     fn os_flavor(&self) -> OsFlavor {
-        Self::os_flavor(&self)
+        self.firmware.os_flavor()
     }
 }
 
