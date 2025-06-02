@@ -367,7 +367,7 @@ impl PetriVmConfigHyperV {
             })?;
         }
 
-        vm.set_secure_boot_state(self.secure_boot_enabled, self.secure_boot_template);
+        vm.set_secure_boot_state(self.secure_boot_enabled, self.secure_boot_template)?;
 
         for (i, vhds) in self.vhd_paths.iter().enumerate() {
             let (controller_type, controller_number) = match self.generation {
