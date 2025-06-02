@@ -544,6 +544,7 @@ impl PetriVmConfigHyperV {
             panic!("Secure boot is only supported for UEFI firmware.");
         }
         self.secure_boot_enabled = true;
+        self
     }
 
     /// Inject Windows secure boot templates into the VM's UEFI.
