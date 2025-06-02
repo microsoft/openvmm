@@ -281,7 +281,7 @@ impl PetriVmConfigOpenVmm {
                 let mut last_image = Vec::new();
                 loop {
                     timer.sleep(Duration::from_secs(2)).await;
-                    tracing::info!("Taking screenshot.");
+                    tracing::trace!("Taking screenshot.");
 
                     // Our framebuffer uses 4 bytes per pixel, approximating an
                     // BGRA image, however it only actually contains BGR data.
@@ -305,7 +305,7 @@ impl PetriVmConfigOpenVmm {
                     }
 
                     if image == last_image {
-                        tracing::info!("No change in framebuffer, skipping screenshot.");
+                        tracing::trace!("No change in framebuffer, skipping screenshot.");
                         continue;
                     }
 

@@ -3984,7 +3984,11 @@ impl Coordinator {
                     }
                     let result = c_state.endpoint.set_data_path_to_guest_vf(to_guest).await;
                     let result = if let Err(err) = result {
-                        tracing::error!(err = %err, to_guest, "Failed to switch guest VF data path");
+                        tracing::error!(
+                            err = err.as_ref() as &dyn std::error::Error,
+                            to_guest,
+                            "Failed to switch guest VF data path"
+                        );
                         false
                     } else {
                         primary.is_data_path_switched = Some(to_guest);
@@ -4041,7 +4045,10 @@ impl Coordinator {
                 ) => {
                     if !to_guest {
                         if let Err(err) = c_state.endpoint.set_data_path_to_guest_vf(false).await {
-                            tracing::warn!(err = %err, "Failed setting data path back to synthetic after guest VF was removed.");
+                            tracing::warn!(
+                                err = err.as_ref() as &dyn std::error::Error,
+                                "Failed setting data path back to synthetic after guest VF was removed."
+                            );
                         }
                         primary.is_data_path_switched = Some(false);
                     }
@@ -4051,7 +4058,10 @@ impl Coordinator {
                     saved_state::GuestVfState::DataPathSwitched,
                 ) => {
                     if let Err(err) = c_state.endpoint.set_data_path_to_guest_vf(false).await {
-                        tracing::warn!(err = %err, "Failed setting data path back to synthetic after guest VF was removed.");
+                        tracing::warn!(
+                            err = err.as_ref() as &dyn std::error::Error,
+                            "Failed setting data path back to synthetic after guest VF was removed."
+                        );
                     }
                     primary.is_data_path_switched = Some(false);
                 }
@@ -4393,14 +4403,14 @@ impl<T: RingMem + 'static> Worker<T> {
                         }
                         Err(WorkerError::EndpointRequiresQueueRestart(err)) => {
                             tracelimit::warn_ratelimited!(
-                                err = %err,
+                                err = err.as_ref() as &dyn std::error::Error,
                                 "Endpoint requires queues to restart",
                             );
                             if let Err(try_send_err) =
                                 self.coordinator_send.try_send(CoordinatorMessage::Restart)
                             {
                                 tracing::error!(
-                                    try_send_err = %try_send_err,
+                                    try_send_err = &try_send_err as &dyn std::error::Error,
                                     "failed to restart queues"
                                 );
                                 return Err(WorkerError::Endpoint(err));

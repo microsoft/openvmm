@@ -50,8 +50,14 @@ impl GuestMemoryError {
             debug_name: debug_name.clone(),
             range,
             gpa: (err.gpa != INVALID_ERROR_GPA).then_some(err.gpa),
+            kind: err.kind,
             err: err.err,
         }))
+    }
+
+    /// Returns the kind of the error.
+    pub fn kind(&self) -> GuestMemoryErrorKind {
+        self.0.kind
     }
 }
 
@@ -86,6 +92,7 @@ struct GuestMemoryErrorInner {
     debug_name: Arc<str>,
     range: Option<Range<u64>>,
     gpa: Option<u64>,
+    kind: GuestMemoryErrorKind,
     #[source]
     err: Box<dyn std::error::Error + Send + Sync>,
 }
@@ -118,7 +125,48 @@ impl std::fmt::Display for GuestMemoryErrorInner {
 #[derive(Debug)]
 pub struct GuestMemoryBackingError {
     gpa: u64,
+    kind: GuestMemoryErrorKind,
     err: Box<dyn std::error::Error + Send + Sync>,
+}
+
+/// The kind of memory access error.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum GuestMemoryErrorKind {
+    /// An error that does not fit any other category.
+    Other,
+    /// The address is outside the valid range of the memory.
+    OutOfRange,
+    /// The memory has been protected by a higher virtual trust level.
+    VtlProtected,
+    /// The memory is shared but was accessed via a private address.
+    NotPrivate,
+    /// The memory is private but was accessed via a shared address.
+    NotShared,
+}
+
+/// An error returned by a page fault handler in [`GuestMemoryAccess::page_fault`].
+pub struct PageFaultError {
+    kind: GuestMemoryErrorKind,
+    err: Box<dyn std::error::Error + Send + Sync>,
+}
+
+impl PageFaultError {
+    /// Returns a new page fault error.
+    pub fn new(
+        kind: GuestMemoryErrorKind,
+        err: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+    ) -> Self {
+        Self {
+            kind,
+            err: err.into(),
+        }
+    }
+
+    /// Returns a page fault error without an explicit kind.
+    pub fn other(err: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+        Self::new(GuestMemoryErrorKind::Other, err)
+    }
 }
 
 /// Used to avoid needing an `Option` for [`GuestMemoryBackingError::gpa`], to
@@ -127,18 +175,29 @@ const INVALID_ERROR_GPA: u64 = !0;
 
 impl GuestMemoryBackingError {
     /// Returns a new error for a memory access failure at address `gpa`.
-    pub fn new(gpa: u64, err: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+    pub fn new(
+        kind: GuestMemoryErrorKind,
+        gpa: u64,
+        err: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+    ) -> Self {
         // `gpa` might incorrectly be INVALID_ERROR_GPA; this is harmless (just
         // affecting the error message), so don't assert on it in case this is
         // an untrusted value in some path.
         Self {
+            kind,
             gpa,
             err: err.into(),
         }
     }
 
+    /// Returns a new error without an explicit kind.
+    pub fn other(gpa: u64, err: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> Self {
+        Self::new(GuestMemoryErrorKind::Other, gpa, err)
+    }
+
     fn gpn(err: InvalidGpn) -> Self {
         Self {
+            kind: GuestMemoryErrorKind::OutOfRange,
             gpa: INVALID_ERROR_GPA,
             err: err.into(),
         }
@@ -367,11 +426,12 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
         bitmap_failure: bool,
     ) -> PageFaultAction {
         let _ = (address, len, write);
-        if bitmap_failure {
-            PageFaultAction::Fail(BitmapFailure.into())
+        let err = if bitmap_failure {
+            PageFaultError::other(BitmapFailure)
         } else {
-            PageFaultAction::Fail(NotMapped.into())
-        }
+            PageFaultError::other(NotMapped)
+        };
+        PageFaultAction::Fail(err)
     }
 
     /// Fallback called if a read fails via direct access to `mapped_range`.
@@ -393,7 +453,7 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
         len: usize,
     ) -> Result<(), GuestMemoryBackingError> {
         let _ = (dest, len);
-        Err(GuestMemoryBackingError::new(addr, NoFallback))
+        Err(GuestMemoryBackingError::other(addr, NoFallback))
     }
 
     /// Fallback called if a write fails via direct access to `mapped_range`.
@@ -412,7 +472,7 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
         len: usize,
     ) -> Result<(), GuestMemoryBackingError> {
         let _ = (src, len);
-        Err(GuestMemoryBackingError::new(addr, NoFallback))
+        Err(GuestMemoryBackingError::other(addr, NoFallback))
     }
 
     /// Fallback called if a fill fails via direct access to `mapped_range`.
@@ -421,7 +481,7 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
     /// returns `PageFaultAction::Fallback`.
     fn fill_fallback(&self, addr: u64, val: u8, len: usize) -> Result<(), GuestMemoryBackingError> {
         let _ = (val, len);
-        Err(GuestMemoryBackingError::new(addr, NoFallback))
+        Err(GuestMemoryBackingError::other(addr, NoFallback))
     }
 
     /// Fallback called if a compare exchange fails via direct access to `mapped_range`.
@@ -437,7 +497,7 @@ pub unsafe trait GuestMemoryAccess: 'static + Send + Sync {
         new: &[u8],
     ) -> Result<bool, GuestMemoryBackingError> {
         let _ = (current, new);
-        Err(GuestMemoryBackingError::new(addr, NoFallback))
+        Err(GuestMemoryBackingError::other(addr, NoFallback))
     }
 
     /// Prepares a guest page for having its virtual address exposed as part of
@@ -568,7 +628,7 @@ impl<T: GuestMemoryAccess> DynGuestMemoryAccess for T {
 /// continue the operation.
 pub enum PageFaultAction {
     /// Fail the operation.
-    Fail(Box<dyn std::error::Error + Send + Sync>),
+    Fail(PageFaultError),
     /// Retry the operation.
     Retry,
     /// Use the fallback method to access the memory.
@@ -692,7 +752,11 @@ impl GuestMemoryAccessRange {
         if address <= self.len && len <= self.len - address {
             Ok(self.offset + address)
         } else {
-            Err(GuestMemoryBackingError::new(address, OutOfRange))
+            Err(GuestMemoryBackingError::new(
+                GuestMemoryErrorKind::OutOfRange,
+                address,
+                OutOfRange,
+            ))
         }
     }
 }
@@ -853,9 +917,11 @@ struct MultiRegionGuestMemoryAccess<T> {
 impl<T> MultiRegionGuestMemoryAccess<T> {
     fn region(&self, gpa: u64, len: u64) -> Result<(&T, u64), GuestMemoryBackingError> {
         let (i, offset) = self.region_def.region(gpa, len)?;
-        let imp = self.imps[i]
-            .as_ref()
-            .ok_or(GuestMemoryBackingError::new(gpa, OutOfRange))?;
+        let imp = self.imps[i].as_ref().ok_or(GuestMemoryBackingError::new(
+            GuestMemoryErrorKind::OutOfRange,
+            gpa,
+            OutOfRange,
+        ))?;
         Ok((imp, offset))
     }
 }
@@ -925,7 +991,10 @@ impl<T: GuestMemoryAccess> DynGuestMemoryAccess for MultiRegionGuestMemoryAccess
             Ok((region, offset_in_region)) => {
                 region.page_fault(offset_in_region, len, write, bitmap_failure)
             }
-            Err(err) => PageFaultAction::Fail(err.err),
+            Err(err) => PageFaultAction::Fail(PageFaultError {
+                kind: err.kind,
+                err: err.err,
+            }),
         }
     }
 }
@@ -1400,7 +1469,11 @@ impl GuestMemory {
                     true,
                 ) {
                     PageFaultAction::Fail(err) => {
-                        return Err(GuestMemoryBackingError::new(gpa + fault_offset, err));
+                        return Err(GuestMemoryBackingError::new(
+                            err.kind,
+                            gpa + fault_offset,
+                            err.err,
+                        ));
                     }
                     PageFaultAction::Retry => {}
                     PageFaultAction::Fallback => break,
@@ -1443,8 +1516,9 @@ impl GuestMemory {
                         ) {
                             PageFaultAction::Fail(err) => {
                                 return Err(GuestMemoryBackingError::new(
+                                    err.kind,
                                     gpa + fault.offset() as u64,
-                                    err,
+                                    err.err,
                                 ));
                             }
                             PageFaultAction::Retry => {}
@@ -1789,7 +1863,7 @@ impl GuestMemory {
     ) -> Result<*const AtomicU8, GuestMemoryBackingError> {
         let (region, offset, _) = self.inner.region(gpa, 1)?;
         let Some(SendPtrU8(ptr)) = region.mapping else {
-            return Err(GuestMemoryBackingError::new(gpa, NotLockable));
+            return Err(GuestMemoryBackingError::other(gpa, NotLockable));
         };
         // Ensure the virtual address can be exposed.
         if with_kernel_access {
@@ -1838,9 +1912,9 @@ impl GuestMemory {
     }
 
     /// Check if a given GPA is readable or not.
-    pub fn check_gpa_readable(&self, gpa: u64) -> bool {
+    pub fn probe_gpa_readable(&self, gpa: u64) -> Result<(), GuestMemoryErrorKind> {
         let mut b = [0];
-        self.read_at_inner(gpa, &mut b).is_ok()
+        self.read_at_inner(gpa, &mut b).map_err(|err| err.kind)
     }
 
     /// Gets a slice of guest memory assuming the memory was already locked via
@@ -2016,11 +2090,19 @@ struct RegionDefinition {
 impl RegionDefinition {
     fn region(&self, gpa: u64, len: u64) -> Result<(usize, u64), GuestMemoryBackingError> {
         if (gpa | len) & self.invalid_mask != 0 {
-            return Err(GuestMemoryBackingError::new(gpa, OutOfRange));
+            return Err(GuestMemoryBackingError::new(
+                GuestMemoryErrorKind::OutOfRange,
+                gpa,
+                OutOfRange,
+            ));
         }
         let offset = gpa & self.region_mask;
         if offset.wrapping_add(len) & !self.region_mask != 0 {
-            return Err(GuestMemoryBackingError::new(gpa, OutOfRange));
+            return Err(GuestMemoryBackingError::new(
+                GuestMemoryErrorKind::OutOfRange,
+                gpa,
+                OutOfRange,
+            ));
         }
         let index = (gpa >> self.region_bits) as usize;
         Ok((index, offset))
@@ -2036,7 +2118,11 @@ impl GuestMemoryInner {
         let (index, offset) = self.region_def.region(gpa, len)?;
         let region = &self.regions[index];
         if offset + len > region.len {
-            return Err(GuestMemoryBackingError::new(gpa, OutOfRange));
+            return Err(GuestMemoryBackingError::new(
+                GuestMemoryErrorKind::OutOfRange,
+                gpa,
+                OutOfRange,
+            ));
         }
         Ok((&self.regions[index], offset, index))
     }
@@ -2368,6 +2454,7 @@ mod tests {
     use crate::GuestMemory;
     use crate::PAGE_SIZE64;
     use crate::PageFaultAction;
+    use crate::PageFaultError;
     use sparse_mmap::SparseMapping;
     use std::ptr::NonNull;
     use std::sync::Arc;
@@ -2546,12 +2633,12 @@ mod tests {
             assert!(!bitmap_failure);
             let qlen = self.mapping.len() as u64 / 4;
             if address < qlen || address >= 3 * qlen {
-                return PageFaultAction::Fail(Fault.into());
+                return PageFaultAction::Fail(PageFaultError::other(Fault));
             }
             let page_address = (address as usize) & !(PAGE_SIZE - 1);
             if address >= 2 * qlen {
                 if write {
-                    return PageFaultAction::Fail(Fault.into());
+                    return PageFaultAction::Fail(PageFaultError::other(Fault));
                 }
                 self.mapping.map_zero(page_address, PAGE_SIZE).unwrap();
             } else {
