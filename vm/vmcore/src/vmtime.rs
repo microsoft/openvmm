@@ -345,10 +345,8 @@ pub struct VmTimeKeeper {
     time: TimeState,
 }
 
-#[expect(
-    unsafe_code,
-    reason = "Needed to derive SavedStateRoot in the same crate it is declared"
-)]
+// UNSAFETY: Needed to derive SavedStateRoot in the same crate it is declared
+#[expect(unsafe_code)]
 mod saved_state {
     use super::*;
 
