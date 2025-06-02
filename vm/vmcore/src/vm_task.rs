@@ -4,7 +4,8 @@
 //! Infrastructure for spawning tasks and issuing async IO related to VM
 //! activity.
 
-#![forbid(unsafe_code)]
+// UNSAFETY: Needed to implement the unsafe new_dyn_overlapped_file method.
+#![cfg_attr(windows, expect(unsafe_code))]
 
 use inspect::Inspect;
 use pal_async::driver::Driver;
