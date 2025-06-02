@@ -25,9 +25,15 @@ pub struct KmsgParsedEntry<'a> {
 }
 
 /// An encoded message.
+#[derive(Copy, Clone, Debug)]
 pub struct EncodedMessage<'a>(&'a str);
 
-impl EncodedMessage<'_> {
+impl<'a> EncodedMessage<'a> {
+    /// Creates a new encoded message from a raw string.
+    pub fn new(raw: &'a str) -> Self {
+        EncodedMessage(raw)
+    }
+
     /// The raw encoded string.
     pub fn as_raw(&self) -> &str {
         self.0
