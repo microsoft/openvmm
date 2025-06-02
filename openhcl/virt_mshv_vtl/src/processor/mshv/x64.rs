@@ -31,7 +31,6 @@ use hcl::ioctl::ApplyVtlProtectionsError;
 use hcl::ioctl::x64::MshvX64;
 use hcl::protocol;
 use hv1_emulator::hv::ProcessorVtlHv;
-use hv1_emulator::synic::ProcessorSynic;
 use hv1_hypercall::HvRepResult;
 use hv1_structs::VtlSet;
 use hvdef::HV_PAGE_SIZE;
@@ -83,10 +82,10 @@ use zerocopy::KnownLayout;
 pub struct HypervisorBackedX86 {
     // VTL0 only, used for synic message and extint readiness notifications.
     // We do not currently support synic message ports or extint interrupts for VTL1.
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     deliverability_notifications: HvDeliverabilityNotificationsRegister,
     /// Next set of deliverability notifications. See register definition for details.
-    #[inspect(with = "|x| inspect::AsHex(u64::from(*x))")]
+    #[inspect(hex, with = "|&x| u64::from(x)")]
     pub(super) next_deliverability_notifications: HvDeliverabilityNotificationsRegister,
     stats: ProcessorStatsX86,
 }
@@ -298,7 +297,10 @@ impl BackingPrivate for HypervisorBackedX86 {
             };
             stat.increment();
 
-            if this.runner.is_sidecar() && !this.partition.no_sidecar_hotplug.load(Relaxed) {
+            if this.runner.is_sidecar()
+                && !this.signaled_sidecar_exit
+                && !this.partition.no_sidecar_hotplug.load(Relaxed)
+            {
                 // We got and handled an exit and this is a sidecar VP. Cancel
                 // the run so that we can move the sidecar VP over to the main
                 // kernel and handle future exits there.
@@ -310,6 +312,7 @@ impl BackingPrivate for HypervisorBackedX86 {
                 let message = this.runner.exit_message();
                 this.inner
                     .set_sidecar_exit_reason(SidecarExitReason::Exit(parse_sidecar_exit(message)));
+                this.signaled_sidecar_exit = true;
                 return Err(VpHaltReason::Cancel);
             }
         }
@@ -324,11 +327,12 @@ impl BackingPrivate for HypervisorBackedX86 {
         Ok(())
     }
 
-    fn handle_cross_vtl_interrupts(
+    fn process_interrupts(
         _this: &mut UhProcessor<'_, Self>,
+        _scan_irr: hv1_structs::VtlArray<bool, 2>,
+        _first_scan_irr: &mut bool,
         _dev: &impl CpuIo,
-    ) -> Result<bool, UhRunVpError> {
-        // TODO WHP GUEST VSM
+    ) -> Result<bool, VpHaltReason<UhRunVpError>> {
         Ok(false)
     }
 
@@ -352,14 +356,6 @@ impl BackingPrivate for HypervisorBackedX86 {
         None
     }
 
-    fn untrusted_synic(&self) -> Option<&ProcessorSynic> {
-        None
-    }
-
-    fn untrusted_synic_mut(&mut self) -> Option<&mut ProcessorSynic> {
-        None
-    }
-
     fn handle_vp_start_enable_vtl_wake(
         _this: &mut UhProcessor<'_, Self>,
         _vtl: GuestVtl,
@@ -372,8 +368,6 @@ impl BackingPrivate for HypervisorBackedX86 {
         // whether VTL 1 is enabled on the vp (this can be cached).
         false
     }
-
-    fn handle_exit_activity(_this: &mut UhProcessor<'_, Self>) {}
 }
 
 fn parse_sidecar_exit(message: &hvdef::HvMessage) -> SidecarRemoveExit {
@@ -794,7 +788,8 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
         let msr = message.msr_number;
         match message.header.intercept_access_type {
             HvInterceptAccessType::READ => {
-                let value = match self.vp.read_msr(msr, self.intercepted_vtl) {
+                // Only supported MSRs are the crash MSRs.
+                let value = match self.vp.read_crash_msr(msr, self.intercepted_vtl) {
                     Ok(v) => v,
                     Err(MsrError::Unknown) => {
                         tracing::trace!(msr, "unknown msr read");
@@ -812,7 +807,8 @@ impl<'a, 'b> InterceptHandler<'a, 'b> {
             }
             HvInterceptAccessType::WRITE => {
                 let value = (message.rax & 0xffff_ffff) | (message.rdx << 32);
-                match self.vp.write_msr(msr, value, self.intercepted_vtl) {
+                // Only supported MSRs are the crash MSRs.
+                match self.vp.write_crash_msr(msr, value, self.intercepted_vtl) {
                     Ok(()) => {}
                     Err(MsrError::Unknown) => {
                         tracing::trace!(msr, value, "unknown msr write");
@@ -1171,7 +1167,9 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         }
     }
 
-    fn initial_gva_translation(&self) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
+    fn initial_gva_translation(
+        &mut self,
+    ) -> Option<virt_support_x86emu::emulate::InitialTranslation> {
         if (self.vp.runner.exit_message().header.typ != HvMessageType::HvMessageTypeGpaIntercept)
             && (self.vp.runner.exit_message().header.typ != HvMessageType::HvMessageTypeUnmappedGpa)
             && (self.vp.runner.exit_message().header.typ
@@ -1196,13 +1194,20 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         )
         .expect("unexpected intercept access type");
 
-        tracing::trace!(?message.guest_virtual_address, ?message.guest_physical_address, ?translate_mode, "initial translation");
-
-        Some(virt_support_x86emu::emulate::InitialTranslation {
+        let translation = virt_support_x86emu::emulate::InitialTranslation {
             gva: message.guest_virtual_address,
             gpa: message.guest_physical_address,
             translate_mode,
-        })
+        };
+
+        tracing::trace!(?translation, "initial translation");
+
+        // If we have a valid translation, the hypervisor must have set the TLB lock
+        // so the translation remains valid for the duration of this exit.
+        // Update our local cache appropriately.
+        self.vp.mark_tlb_locked(Vtl::Vtl2, self.vtl);
+
+        Some(translation)
     }
 
     fn interruption_pending(&self) -> bool {
@@ -1233,6 +1238,7 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             )
         {
             // Should always be called after translate gva with the tlb lock flag
+            // or with an initial translation.
             debug_assert!(self.vp.is_tlb_locked(Vtl::Vtl2, self.vtl));
 
             let mbec_user_execute = self
@@ -1293,7 +1299,6 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
         // remains usable until the VP is resumed back to direct execution.
         control_flags.set_set_page_table_bits(true);
         control_flags.set_tlb_flush_inhibit(true);
-        self.vp.set_tlb_lock(Vtl::Vtl2, target_vtl);
 
         // In case we're not running ring 0, check privileges against VP state
         // as of when the original intercept came in - since the emulator
@@ -1315,10 +1320,13 @@ impl<T: CpuIo> EmulatorSupport for UhEmulationState<'_, '_, T, HypervisorBackedX
             Ok(ioctl::TranslateResult {
                 gpa_page,
                 overlay_page,
-            }) => Ok(Ok(EmuTranslateResult {
-                gpa: (gpa_page << hvdef::HV_PAGE_SHIFT) + (gva & (HV_PAGE_SIZE - 1)),
-                overlay_page: Some(overlay_page),
-            })),
+            }) => {
+                self.vp.mark_tlb_locked(Vtl::Vtl2, GuestVtl::Vtl0);
+                Ok(Ok(EmuTranslateResult {
+                    gpa: (gpa_page << hvdef::HV_PAGE_SHIFT) + (gva & (HV_PAGE_SIZE - 1)),
+                    overlay_page: Some(overlay_page),
+                }))
+            }
             Err(ioctl::x64::TranslateErrorX64 { code, event_info }) => Ok(Err(EmuTranslateError {
                 code: hypercall::TranslateGvaResultCode(code),
                 event_info: Some(event_info),
@@ -1823,6 +1831,7 @@ mod save_restore {
     use super::UhProcessor;
     use anyhow::Context;
     use hcl::GuestVtl;
+    use hvdef::HV_X64_MSR_GUEST_CRASH_CTL;
     use hvdef::HvInternalActivityRegister;
     use hvdef::HvX64RegisterName;
     use hvdef::Vtl;
@@ -1885,17 +1894,25 @@ mod save_restore {
             pub(super) dr2: u64,
             #[mesh(21)]
             pub(super) dr3: u64,
+
+            /// Only set when the DR6_SHARED capability is present
             #[mesh(22)]
-            pub(super) dr6: Option<u64>, // only set when the DR6_SHARED capability is present
+            pub(super) dr6: Option<u64>,
+
             /// If VTL0 should be in the startup suspend state. Older underhill
             /// versions do not save this property, so maintain the old buggy
             /// behavior for those cases its not present in the saved state.
             #[mesh(23)]
             pub(super) startup_suspend: Option<bool>,
+
             #[mesh(24)]
             pub(super) crash_reg: Option<[u64; 5]>,
+
+            /// This value is ignored going forward, but may still be read by downlevel
+            /// versions.
             #[mesh(25)]
             pub(super) crash_control: u64,
+
             #[mesh(26)]
             pub(super) msr_mtrr_def_type: u64,
             #[mesh(27)]
@@ -1995,6 +2012,12 @@ mod save_restore {
                 .context("failed to get MTRRs")
                 .map_err(SaveError::Other)?;
 
+            // This value is ignored during restore, but may still be read by downlevel
+            // versions. Set it to the correct hardcoded read value as a best effort for them.
+            let crash_control = self
+                .read_crash_msr(HV_X64_MSR_GUEST_CRASH_CTL, GuestVtl::Vtl0)
+                .unwrap();
+
             let UhProcessor {
                 _not_send,
                 inner:
@@ -2013,7 +2036,6 @@ mod save_restore {
                     },
                 // Saved
                 crash_reg,
-                crash_control,
                 // Runtime glue
                 partition: _,
                 idle_control: _,
@@ -2021,6 +2043,7 @@ mod save_restore {
                 timer: _,
                 // This field is only used in dev/test scenarios
                 force_exit_sidecar: _,
+                signaled_sidecar_exit: _,
                 // Just caching the hypervisor value, let it handle saving
                 vtls_tlb_locked: _,
                 // Statistic that should reset to 0 on restore
@@ -2066,7 +2089,7 @@ mod save_restore {
                 dr6: dr6_shared.then(|| values[4].as_u64()),
                 startup_suspend,
                 crash_reg: Some(*crash_reg),
-                crash_control: crash_control.into_bits(),
+                crash_control,
                 msr_mtrr_def_type,
                 fixed_mtrrs: Some(fixed_mtrrs),
                 variable_mtrrs: Some(variable_mtrrs),
@@ -2102,7 +2125,7 @@ mod save_restore {
                 dr6,
                 startup_suspend,
                 crash_reg,
-                crash_control,
+                crash_control: _crash_control,
                 msr_mtrr_def_type,
                 fixed_mtrrs,
                 variable_mtrrs,
@@ -2146,7 +2169,6 @@ mod save_restore {
                 .copy_from_slice(&fx_state);
 
             self.crash_reg = crash_reg.unwrap_or_default();
-            self.crash_control = crash_control.into();
 
             // Previous versions of Underhill did not save the MTRRs.
             // If we get a restore state with them missing then assume they weren't

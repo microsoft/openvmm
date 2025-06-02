@@ -127,7 +127,7 @@ open_enum! {
 #[derive(Debug, Default, Copy, Clone, Inspect)]
 struct LogicalDeviceData {
     enabled: bool,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     io_port_base: [u16; 2],
     #[inspect(bytes)]
     irq_vector: [u8; 2],

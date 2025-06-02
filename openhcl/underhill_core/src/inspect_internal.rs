@@ -68,7 +68,7 @@ fn net(req: Request<'_>, reinspect: Sender<Deferred>, driver: DefaultDriver) {
             vm_inspection.resolve().await;
 
             let Node::Dir(nodes) = vm_inspection.results() else {
-                return defer.value("Error: No VM node.".into());
+                return defer.value("Error: No VM node.");
             };
 
             defer.respond(|resp| {
@@ -146,7 +146,7 @@ fn net_nic(req: Request<'_>, name: String, reinspect: Sender<Deferred>, driver: 
                     }
                 })
             } else {
-                defer.value(format!("Unexpected node when looking for NIC {name}.").into());
+                defer.value(format!("Unexpected node when looking for NIC {name}."));
             }
         })
         .detach();

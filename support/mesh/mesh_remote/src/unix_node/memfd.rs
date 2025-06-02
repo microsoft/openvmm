@@ -126,7 +126,7 @@ impl SealedMemfd {
             return Err(io::Error::last_os_error());
         }
         if seals & SEALS != SEALS {
-            return Err(io::Error::new(io::ErrorKind::Other, "memfd is not sealed"));
+            return Err(io::Error::other("memfd is not sealed"));
         }
         let len = file.metadata()?.len() as usize;
         // SAFETY: mapping a valid fd.

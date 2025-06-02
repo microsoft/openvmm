@@ -31,6 +31,7 @@ use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use boot_logger::LoggerType;
+use cmdline::BootCommandLineOptions;
 use core::fmt::Write;
 use dt::BootTimes;
 use dt::write_dt;
@@ -71,7 +72,6 @@ fn build_kernel_command_line(
     params: &ShimParams,
     cmdline: &mut ArrayString<COMMAND_LINE_SIZE>,
     partition_info: &PartitionInfo,
-    can_trust_host: bool,
     sidecar: Option<&SidecarConfig<'_>>,
 ) -> Result<(), CommandLineTooLong> {
     // For reference:
@@ -238,7 +238,10 @@ fn build_kernel_command_line(
     // com1. This is overridden by any user customizations in the static or
     // dynamic command line, as this console argument provided by the bootloader
     // comes first.
-    let console = if partition_info.com3_serial_available && can_trust_host {
+    let console = if partition_info.com3_serial_available
+        && (params.isolation_type == IsolationType::None
+            || partition_info.boot_options.confidential_debug)
+    {
         "ttyS2,115200"
     } else {
         "ttynull"
@@ -253,6 +256,14 @@ fn build_kernel_command_line(
         )?;
     }
 
+    if partition_info.boot_options.confidential_debug {
+        write!(
+            cmdline,
+            "{}=1 ",
+            underhill_confidentiality::OPENHCL_CONFIDENTIAL_DEBUG_ENV_VAR_NAME
+        )?;
+    }
+
     // Only when explicitly supported by Host.
     // TODO: Move from command line to device tree when stabilized.
     if partition_info.nvme_keepalive && !partition_info.vtl2_pool_memory.is_empty() {
@@ -263,8 +274,8 @@ fn build_kernel_command_line(
         write!(cmdline, "{} ", sidecar.kernel_command_line())?;
     }
 
-    // If we're isolated we can't trust the host-provided cmdline
-    if can_trust_host {
+    // The VMBUS connection ID parameter is only used for non-isolated VMs.
+    if params.isolation_type == IsolationType::None {
         let old_cmdline = &partition_info.cmdline;
 
         // HACK: See if we should set the vmbus connection id via kernel
@@ -582,6 +593,9 @@ fn get_ref_time(isolation: IsolationType) -> Option<u64> {
 
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
+    if p.isolation_type == IsolationType::None {
+        enable_enlightened_panic();
+    }
 
     // The support code for the fast hypercalls does not set
     // the Guest ID if it is not set yet as opposed to the slow
@@ -598,27 +612,23 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // provisions for the hardware-isolated case.
     if !p.isolation_type.is_hardware_isolated() {
         hvcall().initialize();
-        if p.isolation_type == IsolationType::None {
-            enable_enlightened_panic();
-        }
     }
 
     // Enable early log output if requested in the static command line.
     // Also check for confidential debug mode if we're isolated.
-    let static_options =
-        cmdline::parse_boot_command_line(p.command_line().command_line().unwrap_or(""));
+    let mut static_options = BootCommandLineOptions::new();
+    if let Some(cmdline) = p.command_line().command_line() {
+        static_options.parse(cmdline);
+    }
     if let Some(typ) = static_options.logger {
         boot_logger_init(p.isolation_type, typ);
         log!("openhcl_boot: early debugging enabled");
     }
 
-    let can_trust_host =
-        p.isolation_type == IsolationType::None || static_options.confidential_debug;
-
     let boot_reftime = get_ref_time(p.isolation_type);
 
     let mut dt_storage = off_stack!(PartitionInfo, PartitionInfo::new());
-    let partition_info = match PartitionInfo::read_from_dt(&p, &mut dt_storage, can_trust_host) {
+    let partition_info = match PartitionInfo::read_from_dt(&p, &mut dt_storage, static_options) {
         Ok(Some(val)) => val,
         Ok(None) => panic!("host did not provide a device tree"),
         Err(e) => panic!("unable to read device tree params {}", e),
@@ -654,17 +664,12 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
         partition_info.vtl0_alias_map = None;
     }
 
-    if can_trust_host {
-        // Enable late log output if requested in the dynamic command line.
-        // Confidential debug is only allowed in the static command line.
-        let dynamic_options = cmdline::parse_boot_command_line(&partition_info.cmdline);
-        if let Some(typ) = dynamic_options.logger {
-            boot_logger_init(p.isolation_type, typ);
-        } else if partition_info.com3_serial_available && cfg!(target_arch = "x86_64") {
-            // If COM3 is available and we can trust the host, enable log output even
-            // if it wasn't otherwise requested.
-            boot_logger_init(p.isolation_type, LoggerType::Serial);
-        }
+    // Enable late log output if requested in the dynamic command line.
+    if let Some(typ) = partition_info.boot_options.logger {
+        boot_logger_init(p.isolation_type, typ);
+    } else if partition_info.com3_serial_available && cfg!(target_arch = "x86_64") {
+        // If COM3 is available, enable log output even if it wasn't otherwise requested.
+        boot_logger_init(p.isolation_type, LoggerType::Serial);
     }
 
     log!("openhcl_boot: entered shim_main");
@@ -689,14 +694,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     );
 
     let mut cmdline = off_stack!(ArrayString<COMMAND_LINE_SIZE>, ArrayString::new_const());
-    build_kernel_command_line(
-        &p,
-        &mut cmdline,
-        partition_info,
-        can_trust_host,
-        sidecar.as_ref(),
-    )
-    .unwrap();
+    build_kernel_command_line(&p, &mut cmdline, partition_info, sidecar.as_ref()).unwrap();
 
     let mut fdt = off_stack!(Fdt, zeroed());
     fdt.header.len = fdt.data.len() as u32;
@@ -891,6 +889,7 @@ mod test {
     use super::x86_boot::E820Ext;
     use super::x86_boot::build_e820_map;
     use crate::ReservedMemoryType;
+    use crate::cmdline::BootCommandLineOptions;
     use crate::dt::write_dt;
     use crate::host_params::MAX_CPU_COUNT;
     use crate::host_params::PartitionInfo;
@@ -942,6 +941,7 @@ mod test {
             bsp_reg: cpus[0].reg as u32,
             cpus,
             cmdline: ArrayString::new(),
+            host_provided_cmdline: ArrayString::new(),
             vmbus_vtl2: VmbusInfo {
                 mmio,
                 connection_id: 0,
@@ -956,6 +956,7 @@ mod test {
             entropy: None,
             vtl0_alias_map: None,
             nvme_keepalive: false,
+            boot_options: BootCommandLineOptions::new(),
         }
     }
 

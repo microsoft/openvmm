@@ -24,7 +24,11 @@ fn write_hypercall_msr(enable: bool) {
 
     let hypercall_page_num = addr_of!(HYPERCALL_PAGE) as u64 / HV_PAGE_SIZE;
 
-    assert!(!enable || !hypercall_contents.enable());
+    assert!(
+        !enable || !hypercall_contents.enable(),
+        "{:?}",
+        hypercall_contents
+    );
     let new_hv_contents = hypercall_contents.with_enable(enable).with_gpn(if enable {
         hypercall_page_num
     } else {

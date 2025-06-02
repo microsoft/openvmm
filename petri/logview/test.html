@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Petri test results</title>
+    <style type="text/css">
+        body {
+            font-family: monospace;
+            font-size: 14px;
+        }
+
+        #logContainer {
+            box-sizing: border-box;
+        }
+
+        #logContainer table {
+            border-collapse: collapse;
+            overflow: clip;
+            word-break: break-word;
+        }
+
+        #logContainer th,
+        #logContainer td {
+            border: 1px solid #ddd;
+            padding: 6px 10px;
+            text-align: left;
+            white-space: nowrap;
+        }
+
+        #logContainer col.screenshot {
+            width: 120px;
+        }
+
+        #logContainer td.screenshot {
+            border-top: 1px solid white;
+            border-bottom: 1px solid white;
+        }
+
+        #logContainer td.message {
+            white-space: normal;
+        }
+
+        #logContainer thead {
+            background-color: #f0f0f0;
+            font-weight: bold;
+        }
+
+        /* Don't select the screenshot column */
+        #logContainer tr.selected td:nth-child(-n+4) {
+            outline: 2px solid #007acc;
+            outline-offset: -2px;
+        }
+
+        /* Zebra striping for rows */
+        #logContainer tbody tr:nth-child(even) td:not(.screenshot) {
+            background-color: #fafafa;
+        }
+
+        #logContainer tbody tr:nth-child(odd) {
+            background-color: #ffffff;
+        }
+
+        /* Severity-based highlighting */
+        #logContainer tr.severity-ERROR td {
+            border-left: 4px solid #d00;
+            color: #900;
+        }
+
+        #logContainer tr.severity-WARN td {
+            border-left: 4px solid #d98e00;
+            color: #a65f00;
+        }
+
+        #logContainer tr.severity-INFO td {
+            border-left: 4px solid #007acc;
+            color: #004e7a;
+        }
+
+        #logContainer tr.severity-DEBUG td {
+            border-left: 4px solid #888;
+            color: #555;
+        }
+
+        #filterBar {
+            position: sticky;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: white;
+            display: flex;
+            justify-content: space-between;
+            /* left + right */
+            align-items: center;
+            padding: 8px 16px;
+            border-bottom: 1px solid #ccc;
+            z-index: 10;
+            box-sizing: border-box;
+        }
+
+        #testName {
+            font-weight: bold;
+            font-size: 16px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 50%;
+        }
+
+        #filterWrapper {
+            position: relative;
+            display: inline-block;
+        }
+
+        #search {
+            font-size: 14px;
+            padding: 6px 28px 6px 10px;
+            /* leave space for the X */
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-family: monospace;
+            min-width: 200px;
+        }
+
+        #clearFilter {
+            position: absolute;
+            right: 6px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            font-size: 16px;
+            color: #888;
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+        }
+
+        #clearFilter:hover {
+            color: #000;
+        }
+
+        #modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background-color: rgba(0, 0, 0, 0.25);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+
+        #modal img {
+            max-width: 90%;
+            max-height: 90%;
+            box-shadow: 0 0 12px rgba(0, 0, 0, 0.8);
+            border-radius: 6px;
+        }
+
+        #modalText {
+            max-width: 90%;
+            max-height: 90%;
+            background: white;
+            color: black;
+            font-family: monospace;
+            font-size: 14px;
+            overflow: auto;
+            padding: 16px;
+            border-radius: 6px;
+            box-shadow: 0 0 12px rgba(0, 0, 0, 0.8);
+            white-space: pre-wrap;
+            cursor: auto;
+        }
+    </style>
+    <script src="common.js"></script>
+    <script>
+        function removeTimestamp(orig, entryTimestamp) {
+            const message = orig.trim();
+            const i = message.indexOf(" ");
+            if (i === -1) {
+                return orig;
+            }
+            let ts = message.slice(0, i);
+            if (ts.endsWith("s")) {
+                const secs = parseFloat(ts.slice(0, -1));
+                if (!isNaN(secs)) {
+                    return message.slice(i + 1);
+                }
+            }
+
+            if (ts.startsWith("[")) {
+                ts = ts.slice(1, -1);
+            }
+            const parsedTs = new Date(ts);
+            if (isNaN(parsedTs.getTime())) {
+                return orig;
+            }
+            parsedTs.setMilliseconds(0);
+            const truncatedTs = new Date(entryTimestamp.getTime());
+            truncatedTs.setMilliseconds(0);
+            if (parsedTs.getTime() !== truncatedTs.getTime()) {
+                return orig;
+            }
+            return message.slice(i + 1);
+        }
+
+        function replaceSeverity(orig, severity) {
+            // If the message starts with a severity level, remove it and also return it.
+            const severityLevels = ["ERROR", "WARN", "INFO", "DEBUG"];
+            const message = orig.trim();
+            for (const level of severityLevels) {
+                if (message.startsWith(level)) {
+                    return {
+                        message: message.slice(level.length + 1),
+                        severity: level
+                    };
+                }
+            }
+            // If no severity level is found, return the original message.
+            return {
+                message: orig,
+                severity: severity,
+            };
+        }
+
+        function formatRelative(from, to) {
+            const deltaMs = new Date(to) - new Date(from);
+            const sec = ((deltaMs / 1000) % 60).toFixed(3);
+            const min = Math.floor((deltaMs / 60000) % 60);
+            const hr = Math.floor(deltaMs / 3600000);
+
+            return `${hr > 0 ? hr + 'h ' : ''}${min}m ${sec}s`;
+        }
+
+        function ansiToSpan(str) {
+            const ANSI_STYLE_MAP = {
+                // Text styles
+                '1': 'font-weight: bold',
+                '3': 'font-style: italic',
+                '4': 'text-decoration: underline',
+
+                // Foreground colors
+                '30': 'color: black', '31': 'color: red', '32': 'color: green',
+                '33': 'color: #b58900', '34': 'color: blue', '35': 'color: magenta',
+                '36': 'color: cyan', '37': 'color: white',
+
+                '90': 'color: gray', '91': 'color: lightcoral', '92': 'color: lightgreen',
+                '93': 'color: gold', '94': 'color: lightskyblue', '95': 'color: plum',
+                '96': 'color: lightcyan', '97': 'color: white',
+
+                // Reset foreground
+                '39': 'color: inherit'
+            };
+
+            const ESC = '\u001b';
+            const ESC_REGEX = /\u001b\[([0-9;]*)m/g;
+
+            let result = node("span");
+            let lastIndex = 0;
+            let currentStyles = [];
+
+            const flush = (text) => {
+                if (!text) return;
+                if (currentStyles.length > 0) {
+                    result.append(node("span", { style: currentStyles.join('; ') }, text));
+                } else {
+                    result.append(text);
+                }
+            };
+
+            for (const match of str.matchAll(ESC_REGEX)) {
+                const [fullMatch, codeStr] = match;
+                const index = match.index;
+
+                // Flush plain text before this escape sequence
+                flush(str.slice(lastIndex, index));
+
+                // Update styles
+                const codes = codeStr.split(';');
+                for (const code of codes) {
+                    if (code === '0') {
+                        currentStyles = [];
+                        continue;
+                    }
+                    const style = ANSI_STYLE_MAP[code];
+                    if (style) {
+                        // Replace style of the same type
+                        const type = style.split(':')[0];
+                        currentStyles = currentStyles.filter(s => !s.startsWith(type));
+                        currentStyles.push(style);
+                    }
+                }
+
+                lastIndex = index + fullMatch.length;
+            }
+
+            // Flush any trailing text
+            flush(str.slice(lastIndex));
+            return result;
+        }
+
+        let logEntries = [];
+        let selectedRow = null;
+
+        function getTestResults(url) {
+            fetch(url)
+                .then(response => response.text())
+                .then(data => {
+                    let lines = data.split("\n").filter(line => line.trim() !== "").map(line => JSON.parse(line));
+                    lines.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+                    let start;
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i];
+
+                        const timestamp = line.timestamp;
+                        let message = line.message || "";
+                        let severity = line.severity || "INFO";
+                        const source = line.source || (line.attachment ? "attachment" : "unknown");
+
+                        let attachment = null;
+                        if (line.attachment) {
+                            attachment = new URL(line.attachment, url);
+                            if (line.attachment.endsWith(".png") && logEntries.length > 0) {
+                                logEntries[logEntries.length - 1].screenshot = attachment;
+                                continue;
+                            }
+                        }
+
+                        if (!start) {
+                            start = line.timestamp;
+                        }
+                        const relative = formatRelative(start, timestamp);
+
+                        message = removeTimestamp(message, new Date(line.timestamp));
+
+                        const r = replaceSeverity(message, severity);
+                        message = r.message;
+                        severity = r.severity;
+
+                        const messageNode = ansiToSpan(message);
+                        if (attachment) {
+                            if (messageNode.children.length > 0) {
+                                messageNode.append(" ");
+                            }
+                            if (line.attachment.includes('inspect')) {
+                                const url = `inspect.html?file=${encodeURIComponent(attachment)}`;
+                                const link = node("a", { href: url, class: "attachment", target: "_blank", "data-inspect": true }, line.attachment);
+                                const rawLink = node("a", { href: attachment, class: "attachment", target: "_blank" }, "[raw]");
+                                messageNode.append(link, ' ', rawLink);
+                            } else {
+                                const link = node("a", { href: attachment, class: "attachment", target: "_blank" }, line.attachment);
+                                messageNode.append(link);
+                            }
+                        }
+
+                        logEntries.push({
+                            index: i,
+                            timestamp: timestamp,
+                            relative: relative,
+                            severity: severity,
+                            source: source,
+                            messageNode: messageNode,
+                            messageText: messageNode.textContent.toLowerCase(),
+                            screenshot: null,
+                        });
+                    }
+
+                    prepTestResults();
+                })
+                .catch(error => console.error('Error fetching test results:', error));
+        }
+
+        function prepTestResults() {
+            document.getElementById("loading").style.display = 'none';
+            const container = document.getElementById("logContainer");
+            container.style.display = 'block';
+
+            // Clear on X click
+            document.getElementById("clearFilter").addEventListener('click', () => {
+                const searchInput = document.getElementById("search");
+                searchInput.value = '';
+                renderLogs(logEntries);
+                searchInput.focus();
+            });
+
+            document.addEventListener('keydown', (e) => {
+                const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+                const isF = e.key === 'f' || e.key === 'F';
+                const isFind = (isMac && e.metaKey && isF) || (!isMac && e.ctrlKey && isF);
+
+                // Use our find if we're not showing the text modal and our find
+                // is not already selected.
+                if (isFind && document.getElementById('modal').style.display === 'none' && searchInput !== document.activeElement) {
+                    e.preventDefault();
+                    searchInput.focus();
+                    searchInput.select();
+                    return;
+                }
+
+                if (e.key === 'Escape') {
+                    if (document.getElementById('modal').style.display !== 'none') {
+                        closeModal();
+                    } else if (searchInput.value) {
+                        searchInput.value = '';
+                        renderLogs(logEntries);
+                    } else if (searchInput === document.activeElement) {
+                        searchInput.blur();
+                    }
+                }
+            });
+
+            renderLogs(logEntries);
+            const searchInput = document.getElementById("search");
+            searchInput.addEventListener("input", function () {
+                const tokens = tokenizeSearchQuery(this.value);
+                const filteredLogs = logEntries.filter(log => rowMatchesQuery(log, tokens));
+                renderLogs(filteredLogs);
+            });
+
+            enableRowSelectionAndCopy(container);
+            setupModalSupport();
+        }
+
+        function renderLogs(filteredLogs) {
+            let rows = [];
+            filteredLogs.forEach((log, i) => {
+                let tr = node("tr",
+                    {
+                        class: `severity-${log.severity}`,
+                        id: `log-${log.index}`,
+                        dataset: { row: i },
+                    },
+                    node("td", { title: log.timestamp }, log.relative),
+                    node("td", {}, log.severity),
+                    node("td", {}, log.source),
+                    node("td", { class: "message" }, log.messageNode),
+                    node("td", { class: "screenshot" }, "")
+                );
+                rows.push(tr);
+            });
+            const logBody = document.getElementById("logBody");
+            logBody.replaceChildren(...rows);
+            if (selectedRow) {
+                selectedRow.tr = null;
+                const tr = document.getElementById(selectedRow.id);
+                if (tr) {
+                    selectRow(tr);
+                    tr.scrollIntoView({ block: 'center' });
+                }
+            }
+            insertFloatingScreenshots(filteredLogs);
+        }
+
+        function insertFloatingScreenshots(logs) {
+            const container = document.getElementById('logContainer');
+            const screenshots = document.getElementById('floatingScreenshots');
+            screenshots.replaceChildren(); // Clear previous screenshots
+
+            logs.forEach((log, i) => {
+                if (!log.screenshot || i == 0) return;
+
+                const prevRow = container.querySelector(`tr[data-row="${i - 1}"]`);
+                const nextRow = container.querySelector(`tr[data-row="${i + 1}"]`);
+                const prevBox = prevRow?.getBoundingClientRect();
+                const nextBox = nextRow?.getBoundingClientRect();
+
+                if (!prevBox || !nextBox) {
+                    return;
+                }
+
+                const containerBox = container.getBoundingClientRect();
+                const offsetTop = (prevBox.bottom + nextBox.top) / 2 - containerBox.top;
+
+                const img = node("img", {
+                    src: log.screenshot,
+                    alt: 'screenshot',
+                    class: 'screenshot-thumb',
+                    style: {
+                        position: 'absolute',
+                        top: `${offsetTop}px`,
+                        right: '8px',
+                        width: '120px',
+                        border: '1px solid #ccc',
+                        borderRadius: '4px',
+                        boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
+                        zIndex: '5',
+                        cursor: 'zoom-in'
+                    }
+                });
+                const linkedImg = node("a", { href: log.screenshot }, img);
+                screenshots.append(linkedImg);
+            });
+        }
+
+        function tokenizeSearchQuery(query) {
+            // If there's an unmatched quote, pretend it's closed at the end
+            const quoteCount = (query.match(/"/g) || []).length;
+            if (quoteCount % 2 !== 0) {
+                query += '"';
+            }
+            const regex = /"([^"]+)"|(\S+)/g;
+            const tokens = [];
+            let match;
+            while ((match = regex.exec(query))) {
+                tokens.push(match[1] || match[2]);
+            }
+            return tokens;
+        }
+
+        function rowMatchesQuery(log, tokens) {
+            return tokens.every(token => {
+                const [prefix, ...rest] = token.split(':');
+                const term = rest.join(':').toLowerCase();
+
+                if (prefix === 'source') {
+                    return log.source.toLowerCase().includes(term);
+                } else if (prefix === 'severity') {
+                    return log.severity.toLowerCase().includes(term);
+                } else if (prefix === 'message') {
+                    return log.messageText.includes(term);
+                } else {
+                    // general match
+                    return (
+                        log.source.toLowerCase().includes(token.toLowerCase()) ||
+                        log.severity.toLowerCase().includes(token.toLowerCase()) ||
+                        log.messageText.includes(token.toLowerCase())
+                    );
+                }
+            });
+        }
+
+        function selectRow(tr) {
+            if (selectedRow?.tr) {
+                selectedRow.tr.classList.remove('selected');
+            }
+            selectedRow = { id: tr.id, tr: tr };
+            tr.classList.add('selected');
+            history.replaceState(null, '', `#${tr.id}`);
+        }
+
+        function deselectRow() {
+            if (selectedRow?.tr) {
+                selectedRow.tr.classList.remove('selected');
+            }
+            selectedRow = null;
+            history.replaceState(null, '', '#');
+        }
+
+        function enableRowSelectionAndCopy(container) {
+            const hash = location.hash;
+            if (hash.startsWith('#log-')) {
+                let row = document.querySelector(hash);
+                if (row) {
+                    // Scroll into view and simulate selection
+                    row.scrollIntoView({ block: 'center' });
+                    selectRow(row);
+                }
+            }
+
+            container.addEventListener('click', (e) => {
+                const row = e.target.closest('tr');
+                if (!row || !row.parentElement.matches('tbody')) return;
+                if (e.target.closest('a')) return;
+                if (row === selectedRow?.tr) {
+                    deselectRow();
+                } else {
+                    selectRow(row);
+                }
+            });
+
+            document.addEventListener('copy', (e) => {
+                const tr = selectedRow?.tr;
+                if (!tr) return;
+                const selection = window.getSelection();
+                if (selection && selection.toString().trim()) return; // user selected text, let it be
+
+                // Copy text content of row, tab-separated
+                const cells = Array.from(tr.querySelectorAll('td'));
+                const text = cells.map(td => td.textContent.trim()).join('\t');
+
+                e.clipboardData.setData('text/plain', text);
+                e.preventDefault();
+            });
+        }
+
+        function setupModalSupport() {
+            const modal = document.getElementById('modal');
+            const modalImg = document.getElementById('modalImage');
+
+            document.addEventListener('click', (e) => {
+                if (e.target.matches('.screenshot-thumb')) {
+                    if (!e.ctrlKey && !e.metaKey) {
+                        openScreenshotModal(e.target.src);
+                        e.preventDefault();
+                    }
+                } else if (e.target.matches('.attachment')) {
+                    const href = e.target.href;
+                    if (href.endsWith('.txt') || href.endsWith('.log') || href.endsWith('.json')) {
+                        if (!e.ctrlKey && !e.metaKey) {
+                            openAttachmentModal(href, e.target.dataset.inspect);
+                            e.preventDefault();
+                        }
+                    }
+                } else if (e.target === modal || e.target === modalImg) {
+                    closeModal();
+                }
+            });
+        }
+
+        function openModal(...content) {
+            const modal = document.getElementById('modal');
+            modal.replaceChildren(...content);
+            modal.style.display = 'flex';
+            document.getElementById('logContainer').setAttribute('inert', 'true');
+            if (modal.children[0])
+                modal.children[0].focus();
+        }
+
+        function closeModal() {
+            const modal = document.getElementById('modal');
+            modal.style.display = 'none';
+            modal.replaceChildren();
+            document.getElementById('logContainer').removeAttribute('inert');
+        }
+
+        function openTextModal(content) {
+            openModal(node("pre", { id: "modalText" }, content));
+        }
+
+        function openScreenshotModal(url) {
+            openModal(node("img", { id: "modalImage", src: url, alt: "screenshot" }));
+        }
+
+        function openAttachmentModal(url, inspect) {
+            if (inspect) {
+                // We're opening an HTML page, so just open it in an iframe.
+                openModal(node("iframe", {
+                    src: url,
+                    id: 'modalText',
+                    style: { width: '100%', height: '100%' },
+                    frameborder: 0,
+                }));
+                return;
+            }
+            // Download the data and display it. This is necessary because the
+            // blob being downloaded may have the wrong content type, so we
+            // can't just use an iframe.
+            fetch(url)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`Failed to fetch ${url}: ${response.statusText}`);
+                    }
+                    return response.text();
+                })
+                .then(data => {
+                    openTextModal(data);
+                })
+                .catch(error => {
+                    openTextModal(`Error opening attachment: ${error.message}`);
+                });
+        }
+
+        window.onload = function () {
+            const urlParams = new URLSearchParams(window.location.search);
+            const run = urlParams.get('run');
+            const test = urlParams.get('test');
+            const job = urlParams.get('job');
+            if (!run || !test || !job) {
+                document.getElementById("runName").innerText = "No test specified";
+                return;
+            }
+            const url = `${baseUrl}/${run}/${job}/${test}/petri.jsonl`;
+            document.getElementById("runName").replaceChildren(node("a", { href: `index.html?run=${encodeURIComponent(run)}` }, run));
+            document.getElementById("jobName").innerText = job;
+            document.getElementById("testName").innerText = convertTestName(test);
+            document.getElementById("loading").style.display = 'block';
+            getTestResults(url);
+        };
+    </script>
+</head>
+
+<body>
+    <h1 id="runName">Loading</h1>
+    <h2 id="jobName"></h2>
+    <div id="filterBar">
+        <div id="testName"></div>
+        <div id="filterWrapper">
+            <input type="text" id="search" placeholder="Filter logs…" />
+            <button id="clearFilter" title="Clear filter">&times;</button>
+        </div>
+    </div>
+    <div id="loading" style="display: none;">Loading...</div>
+    <div id="logContainer" style="display: none;">
+        <table>
+            <thead>
+                <colgroup>
+                    <col span="4" />
+                    <col class="screenshot" />
+                </colgroup>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Severity</th>
+                    <th>Source</th>
+                    <th>Message</th>
+                    <th>Screenshot</th>
+                </tr>
+            </thead>
+            <tbody id="logBody">
+            </tbody>
+        </table>
+        <div id="floatingScreenshots"></div>
+    </div>
+    <div id="modal" style="display: none;">
+    </div>
+</body>
+
+</html>

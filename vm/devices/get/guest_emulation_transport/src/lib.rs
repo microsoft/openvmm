@@ -147,7 +147,7 @@ mod tests {
                 );
 
                 assert_eq!(
-                    version_request.message_header.message_id,
+                    version_request.message_header.message_id(),
                     get_protocol::HostRequests::VERSION
                 );
                 assert_eq!(version_request.version, protocol);

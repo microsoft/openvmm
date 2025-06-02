@@ -10,6 +10,7 @@ rust-version.workspace = true
 diag_proto.workspace = true
 
 azure_profiler_proto.workspace = true
+cvm_tracing.workspace = true
 inspect_proto.workspace = true
 inspect = { workspace = true, features = ["defer"] }
 mesh = { workspace = true, features = ["socket2"] }

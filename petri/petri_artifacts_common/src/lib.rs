@@ -107,4 +107,7 @@ pub mod tags {
         /// What [`MachineArch`] this artifact supports.
         const ARCH: MachineArch;
     }
+
+    /// Artifact is a test VMGS file
+    pub trait IsTestVmgs: ArtifactId {}
 }

@@ -78,12 +78,12 @@ impl Inspect for NvmeManager {
                     .sender
                     .send(Request::ForceLoadDriver(update.defer()));
             }
-            Err(req) => req.value("".into()),
+            Err(req) => req.value(""),
         });
         // Send the remaining fields directly to the worker.
-        self.client
-            .sender
-            .send(Request::Inspect(resp.request().defer()));
+        resp.merge(inspect::adhoc(|req| {
+            self.client.sender.send(Request::Inspect(req.defer()))
+        }));
     }
 }
 
@@ -108,10 +108,16 @@ impl NvmeManager {
         };
         let task = driver.spawn("nvme-manager", async move {
             // Restore saved data (if present) before async worker thread runs.
-            if saved_state.is_some() {
-                let _ = NvmeManager::restore(&mut worker, saved_state.as_ref().unwrap())
+            if let Some(s) = saved_state.as_ref() {
+                if let Err(e) = NvmeManager::restore(&mut worker, s)
                     .instrument(tracing::info_span!("nvme_manager_restore"))
-                    .await;
+                    .await
+                {
+                    tracing::error!(
+                        error = e.as_ref() as &dyn std::error::Error,
+                        "failed to restore nvme manager"
+                    );
+                }
             };
             worker.run(recv).await
         });
@@ -231,7 +237,7 @@ impl NvmeManagerWorker {
                 Request::ForceLoadDriver(update) => {
                     match self.get_driver(update.new_value().to_owned()).await {
                         Ok(_) => {
-                            let pci_id = update.new_value().into();
+                            let pci_id = update.new_value().to_string();
                             update.succeed(pci_id);
                         }
                         Err(err) => {
@@ -314,14 +320,21 @@ impl NvmeManagerWorker {
                     .await
                     .map_err(InnerError::Vfio)?;
 
-                let driver =
-                    nvme_driver::NvmeDriver::new(&self.driver_source, self.vp_count, device)
-                        .instrument(tracing::info_span!(
-                            "nvme_driver_init",
-                            pci_id = entry.key()
-                        ))
-                        .await
-                        .map_err(InnerError::DeviceInitFailed)?;
+                // TODO: For now, any isolation means use bounce buffering. This
+                // needs to change when we have nvme devices that support DMA to
+                // confidential memory.
+                let driver = nvme_driver::NvmeDriver::new(
+                    &self.driver_source,
+                    self.vp_count,
+                    device,
+                    self.is_isolated,
+                )
+                .instrument(tracing::info_span!(
+                    "nvme_driver_init",
+                    pci_id = entry.key()
+                ))
+                .await
+                .map_err(InnerError::DeviceInitFailed)?;
 
                 entry.insert(driver)
             }
@@ -385,11 +398,15 @@ impl NvmeManagerWorker {
                     .instrument(tracing::info_span!("vfio_device_restore", pci_id))
                     .await?;
 
+            // TODO: For now, any isolation means use bounce buffering. This
+            // needs to change when we have nvme devices that support DMA to
+            // confidential memory.
             let nvme_driver = nvme_driver::NvmeDriver::restore(
                 &self.driver_source,
                 saved_state.cpu_count,
                 vfio_device,
                 &disk.driver_state,
+                self.is_isolated,
             )
             .instrument(tracing::info_span!("nvme_driver_restore"))
             .await?;

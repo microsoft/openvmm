@@ -5,6 +5,7 @@
 //! particular at virtio-fs.
 
 #![expect(missing_docs)]
+
 #[cfg(unix)]
 mod conn;
 pub mod protocol;

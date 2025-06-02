@@ -95,6 +95,13 @@ pub(crate) enum VmCommand {
         /// The serial output mode.
         mode: Option<SerialMode>,
     },
+
+    /// Injects an NMI.
+    Nmi {
+        /// The target VTL.
+        #[clap(long, default_value = "0")]
+        vtl: u32,
+    },
 }
 
 #[derive(Parser)]

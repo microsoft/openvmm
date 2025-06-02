@@ -160,7 +160,7 @@ impl MappableGuestMemory for DeviceMemoryControl {
                     DEVICE_PRIORITY,
                 )
                 .await
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+                .map_err(io::Error::other)?;
 
             for mapping in &state.mappings {
                 handle

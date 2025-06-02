@@ -7,7 +7,7 @@ edition.workspace = true
 rust-version.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-guestmem.workspace = true
+guestmem = { workspace = true, features = ["bitmap"] }
 hcl.workspace = true
 hv1_structs.workspace = true
 hvdef.workspace = true
@@ -18,6 +18,7 @@ virt_mshv_vtl.workspace = true
 vm_topology.workspace = true
 x86defs.workspace = true
 
+cvm_tracing.workspace = true
 inspect.workspace = true
 pal_async.workspace = true
 sparse_mmap.workspace = true

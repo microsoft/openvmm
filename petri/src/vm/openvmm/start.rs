@@ -277,11 +277,11 @@ impl PetriVmConfigOpenVmm {
             let mut timer = PolledTimer::new(driver);
             let log_source = log_source.clone();
             tasks.push(driver.spawn("petri-watchdog-screenshot", async move {
-                let mut count = 0;
+                let mut image = Vec::new();
+                let mut last_image = Vec::new();
                 loop {
                     timer.sleep(Duration::from_secs(2)).await;
-                    count += 1;
-                    tracing::info!(count, "Taking screenshot.");
+                    tracing::trace!("Taking screenshot.");
 
                     // Our framebuffer uses 4 bytes per pixel, approximating an
                     // BGRA image, however it only actually contains BGR data.
@@ -293,7 +293,7 @@ impl PetriVmConfigOpenVmm {
                     let (widthsize, heightsize) = (width as usize, height as usize);
                     let len = widthsize * heightsize * BYTES_PER_PIXEL;
 
-                    let mut image = vec![0; len];
+                    image.resize(len, 0);
                     for (i, line) in
                         (0..height).zip(image.chunks_exact_mut(widthsize * BYTES_PER_PIXEL))
                     {
@@ -302,6 +302,11 @@ impl PetriVmConfigOpenVmm {
                             pixel.swap(0, 2);
                             pixel[3] = 0xFF;
                         }
+                    }
+
+                    if image == last_image {
+                        tracing::trace!("No change in framebuffer, skipping screenshot.");
+                        continue;
                     }
 
                     let r = log_source
@@ -321,8 +326,9 @@ impl PetriVmConfigOpenVmm {
                     if let Err(e) = r {
                         tracing::error!(?e, "Failed to save screenshot");
                     } else {
-                        tracing::info!(count, "Screenshot saved.");
+                        tracing::info!("Screenshot saved.");
                     }
+                    std::mem::swap(&mut image, &mut last_image);
                 }
             }));
         }

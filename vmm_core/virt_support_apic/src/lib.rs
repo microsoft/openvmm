@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+use address_filter::AddressFilter;
 use bitfield_struct::bitfield;
 use inspect::Inspect;
 use inspect_counters::Counter;
@@ -78,13 +79,13 @@ pub struct LocalApic {
     cluster_mode: bool,
     #[inspect(hex)]
     svr: u32,
-    #[inspect(with = "|x| inspect::iter_by_index(x.to_bits()).map_value(inspect::AsHex)")]
+    #[inspect(hex, with = "|x| inspect::iter_by_index(x.to_bits())")]
     isr: IsrStack,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     irr: [u32; 8],
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     tmr: [u32; 8],
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     auto_eoi: [u32; 8],
     next_irr: Option<u8>,
     #[inspect(hex)]
@@ -97,7 +98,7 @@ pub struct LocalApic {
     lvt_thermal: u32,
     #[inspect(hex)]
     lvt_pmc: u32,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     lvt_lint: [u32; 2],
     #[inspect(hex)]
     lvt_error: u32,
@@ -211,22 +212,25 @@ impl IsrStack {
 }
 
 #[derive(Debug, Inspect)]
+#[inspect(extra = "inspect_address_filter")]
 struct SharedState {
     vp_index: VpIndex,
-    #[inspect(
-        with = "|x| inspect::iter_by_index(x).map_value(|x| inspect::AsHex(x.load(Ordering::Relaxed)))"
-    )]
+    #[inspect(hex, iter_by_index)]
     tmr: [AtomicU32; 8],
-    #[inspect(
-        with = "|x| inspect::iter_by_index(x).map_value(|x| inspect::AsHex(x.load(Ordering::Relaxed)))"
-    )]
+    #[inspect(hex, iter_by_index)]
     new_irr: [AtomicU32; 8],
-    #[inspect(
-        with = "|x| inspect::iter_by_index(x).map_value(|x| inspect::AsHex(x.load(Ordering::Relaxed)))"
-    )]
+    #[inspect(hex, iter_by_index)]
     auto_eoi: [AtomicU32; 8],
     work: AtomicU32,
     software_enabled_on_reset: bool,
+
+    // Handled in inspect_address_filter
+    #[inspect(skip)]
+    vector_filter: RwLock<AddressFilter<u8>>,
+}
+
+fn inspect_address_filter(this: &SharedState, resp: &mut inspect::Response<'_>) {
+    resp.field_mut("vector_filter", &mut *this.vector_filter.write());
 }
 
 #[bitfield(u32)]
@@ -345,6 +349,7 @@ impl LocalApicSet {
             auto_eoi: Default::default(),
             work: 0.into(),
             software_enabled_on_reset,
+            vector_filter: RwLock::new(AddressFilter::new(false)),
         });
 
         {
@@ -1071,7 +1076,17 @@ impl<T: ApicClient> LocalApicAccess<'_, T> {
     }
 
     fn handle_ipi(&mut self, icr: Icr) {
-        tracing::trace!(?icr, vp = self.apic.shared.vp_index.index(), "ipi");
+        if tracing::enabled!(tracing::Level::TRACE) {
+            if !self
+                .apic
+                .shared
+                .vector_filter
+                .read()
+                .filtered(&icr.vector(), false)
+            {
+                tracing::trace!(?icr, vp = self.apic.shared.vp_index.index(), "ipi");
+            }
+        }
 
         let delivery_mode = DeliveryMode(icr.delivery_mode());
         match delivery_mode {
@@ -1162,14 +1177,18 @@ impl SharedState {
         level_triggered: bool,
         auto_eoi: bool,
     ) -> bool {
-        tracing::trace!(
-            software_enabled,
-            ?delivery_mode,
-            vector,
-            level_triggered,
-            vp = self.vp_index.index(),
-            "interrupt"
-        );
+        if tracing::enabled!(tracing::Level::TRACE) {
+            if !self.vector_filter.read().filtered(&vector, false) {
+                tracing::trace!(
+                    software_enabled,
+                    ?delivery_mode,
+                    vector,
+                    level_triggered,
+                    vp = self.vp_index.index(),
+                    "interrupt"
+                );
+            }
+        }
 
         match delivery_mode {
             DeliveryMode::FIXED | DeliveryMode::LOWEST_PRIORITY => {

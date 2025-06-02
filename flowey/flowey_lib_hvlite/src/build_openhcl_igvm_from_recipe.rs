@@ -80,6 +80,7 @@ pub struct OpenhclIgvmRecipeDetailsLocalOnly {
     pub custom_extra_rootfs: Vec<PathBuf>,
 }
 
+#[expect(clippy::large_enum_variant)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum OpenhclIgvmRecipe {
     LocalOnlyCustom(OpenhclIgvmRecipeDetails),
@@ -129,7 +130,7 @@ impl OpenhclIgvmRecipe {
                 vtl0_kernel_type: None,
                 with_uefi: true,
                 with_interactive,
-                with_sidecar: false,
+                with_sidecar: true,
             },
             Self::X64Devkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -168,7 +169,7 @@ impl OpenhclIgvmRecipe {
                 vtl0_kernel_type: Some(Vtl0KernelType::Example),
                 with_uefi: false,
                 with_interactive,
-                with_sidecar: false,
+                with_sidecar: true,
             },
             Self::X64TestLinuxDirectDevkern => OpenhclIgvmRecipeDetails {
                 local_only: None,
@@ -182,7 +183,7 @@ impl OpenhclIgvmRecipe {
                 vtl0_kernel_type: Some(Vtl0KernelType::Example),
                 with_uefi: false,
                 with_interactive,
-                with_sidecar: false,
+                with_sidecar: true,
             },
             Self::X64Cvm => OpenhclIgvmRecipeDetails {
                 local_only: None,

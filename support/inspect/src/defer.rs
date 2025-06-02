@@ -6,12 +6,15 @@
 use super::InspectMut;
 use super::InternalNode;
 use super::Request;
-use super::RequestRoot;
 use super::Response;
 use super::SensitivityLevel;
 use super::UpdateRequest;
-use super::Value;
+use crate::NumberFormat;
+use crate::RequestParams;
+use crate::RootParams;
+use crate::ValueKind;
 use alloc::borrow::ToOwned;
+use alloc::boxed::Box;
 use alloc::string::String;
 use mesh::MeshPayload;
 
@@ -21,13 +24,14 @@ impl Request<'_> {
     pub fn defer(self) -> Deferred {
         let (send, recv) = mesh::oneshot();
         *self.node = InternalNode::Deferred(recv);
-        Deferred {
-            path: self.path.to_owned(),
-            value: self.value.map(|x| x.to_owned()),
-            depth: self.depth,
+        Deferred(Box::new(DeferredInner {
+            path: self.params.path().to_owned(),
+            value: self.params.root.value.map(|x| x.to_owned()),
+            depth: self.params.depth,
             node: send,
-            sensitivity: self.sensitivity,
-        }
+            sensitivity: self.params.root.sensitivity,
+            number_format: self.params.number_format,
+        }))
     }
 }
 
@@ -41,6 +45,7 @@ impl UpdateRequest<'_> {
         DeferredUpdate {
             value: self.value.to_owned(),
             node: send,
+            number_format: self.number_format,
         }
     }
 }
@@ -48,65 +53,75 @@ impl UpdateRequest<'_> {
 /// A deferred inspection, which can provide inspection results asynchronously
 /// from a call to [`inspect`](crate::Inspect::inspect).
 #[derive(Debug, MeshPayload)]
-pub struct Deferred {
+pub struct Deferred(Box<DeferredInner>);
+
+#[derive(Debug, MeshPayload)]
+struct DeferredInner {
     path: String,
     value: Option<String>,
     depth: usize,
     node: mesh::OneshotSender<InternalNode>,
     sensitivity: SensitivityLevel,
+    number_format: NumberFormat,
 }
 
 impl Deferred {
     /// Inspect an object as part of a deferred inspection.
-    pub fn inspect(self, mut obj: impl InspectMut) {
-        let mut root = self.root();
-        obj.inspect_mut(root.request());
-        let node = root.node;
-        self.node.send(node);
+    pub fn inspect(self, obj: impl InspectMut) {
+        let node = self.params(&self.root()).inspect(obj);
+        self.0.node.send(node);
     }
 
     /// Responds to the deferred inspection, calling `f` with a [`Response`].
     pub fn respond<F: FnOnce(&mut Response<'_>)>(self, f: F) {
-        let mut root = self.root();
-        f(&mut root.request().respond());
-        let node = root.node;
-        self.node.send(node);
+        let node = self.params(&self.root()).with(|req| f(&mut req.respond()));
+        self.0.node.send(node);
     }
 
     /// Responds to the deferred request with a value.
-    pub fn value(self, value: Value) {
-        let mut root = self.root();
-        root.request().value(value);
-        let node = root.node;
-        self.node.send(node);
+    pub fn value(self, value: impl Into<ValueKind>) {
+        self.value_(value.into())
+    }
+    fn value_(self, value: ValueKind) {
+        let node = self.params(&self.root()).with(|req| req.value(value));
+        self.0.node.send(node);
     }
 
     /// Returns an object used for handling an update request.
     ///
     /// If this is not an update request, returns `Err(self)`.
     pub fn update(self) -> Result<DeferredUpdate, Self> {
-        if self.value.is_some() && self.path.is_empty() {
+        if self.0.value.is_some() && self.0.path.is_empty() {
             Ok(DeferredUpdate {
-                value: self.value.unwrap(),
-                node: self.node,
+                value: self.0.value.unwrap(),
+                node: self.0.node,
+                number_format: self.0.number_format,
             })
         } else {
             Err(self)
         }
     }
 
-    fn root(&self) -> RequestRoot<'_> {
-        RequestRoot::new(
-            &self.path,
-            self.depth,
-            self.value.as_deref(),
-            self.sensitivity,
-        )
+    fn root(&self) -> RootParams<'_> {
+        RootParams {
+            full_path: &self.0.path,
+            sensitivity: self.0.sensitivity,
+            value: self.0.value.as_deref(),
+        }
+    }
+
+    fn params<'a>(&'a self, root: &'a RootParams<'a>) -> RequestParams<'a> {
+        RequestParams {
+            root,
+            path_start: 0,
+            depth: self.0.depth,
+            number_format: self.0.number_format,
+        }
     }
 
     /// Removes this node from the inspection output.
     pub fn ignore(self) {
-        self.node.send(InternalNode::Ignored);
+        self.0.node.send(InternalNode::Ignored);
     }
 
     /// Gets the request information for sending to a remote node via a non-mesh
@@ -130,10 +145,12 @@ impl Deferred {
     #[cfg(feature = "initiate")]
     pub fn external_request(&self) -> ExternalRequest<'_> {
         ExternalRequest {
-            path: &self.path,
-            sensitivity: self.sensitivity,
-            request_type: match &self.value {
-                None => ExternalRequestType::Inspect { depth: self.depth },
+            path: &self.0.path,
+            sensitivity: self.0.sensitivity,
+            request_type: match &self.0.value {
+                None => ExternalRequestType::Inspect {
+                    depth: self.0.depth,
+                },
                 Some(value) => ExternalRequestType::Update { value },
             },
         }
@@ -148,14 +165,15 @@ impl Deferred {
     #[cfg(feature = "initiate")]
     pub fn complete_external(self, node: super::Node, sensitivity: SensitivityLevel) {
         // If the returned sensitivity level is not allowed for this request, drop it.
-        if sensitivity > self.sensitivity {
+        if sensitivity > self.0.sensitivity {
             return;
         }
-        if let Some(node) = InternalNode::from_node(node, self.sensitivity) {
+        if let Some(node) = InternalNode::from_node(node, self.0.sensitivity) {
             // Add the prefixed path back on as a sequence of directory nodes. This
             // is necessary so that they can be skipped in post-processing.
             let node =
-                self.path
+                self.0
+                    .path
                     .split('/')
                     .filter(|s| !s.is_empty())
                     .rev()
@@ -167,13 +185,13 @@ impl Deferred {
                         }])
                     });
 
-            self.node.send(node);
+            self.0.node.send(node);
         }
     }
 
     /// Gets the sensitivity level for this request.
     pub fn sensitivity(&self) -> SensitivityLevel {
-        self.sensitivity
+        self.0.sensitivity
     }
 }
 
@@ -255,6 +273,7 @@ pub enum ExternalRequestType<'a> {
 pub struct DeferredUpdate {
     value: String,
     node: mesh::OneshotSender<InternalNode>,
+    number_format: NumberFormat,
 }
 
 impl DeferredUpdate {
@@ -264,12 +283,16 @@ impl DeferredUpdate {
     }
 
     /// Report that the update succeeded, with a new value of `value`.
-    pub fn succeed(self, value: Value) {
-        self.node.send(InternalNode::Value(value));
+    pub fn succeed(self, value: impl Into<ValueKind>) {
+        self.succeed_(value.into())
+    }
+    fn succeed_(self, value: ValueKind) {
+        self.node
+            .send(InternalNode::Value(value.with_format(self.number_format)));
     }
 
     /// Report that the update failed, with the reason in `err`.
-    pub fn fail<E: Into<alloc::boxed::Box<dyn core::error::Error + Send + Sync>>>(self, err: E) {
+    pub fn fail<E: Into<Box<dyn core::error::Error + Send + Sync>>>(self, err: E) {
         self.node.send(InternalNode::failed(err.into()));
     }
 }

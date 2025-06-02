@@ -6,7 +6,9 @@
 #![forbid(unsafe_code)]
 
 use mesh::MeshPayload;
+use vm_resource::Resource;
 use vm_resource::ResourceId;
+use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::NonVolatileStoreKind;
 use vmgs_format::FileId;
 
@@ -33,4 +35,17 @@ impl VmgsFileHandle {
 
 impl ResourceId<NonVolatileStoreKind> for VmgsFileHandle {
     const ID: &'static str = "vmgs";
+}
+
+/// Virtual machine guest state resource
+#[derive(MeshPayload, Debug)]
+pub enum VmgsResource {
+    /// Use disk to store guest state
+    Disk(Resource<DiskHandleKind>),
+    /// Use disk to store guest state, reformatting if corrupted.
+    ReprovisionOnFailure(Resource<DiskHandleKind>),
+    /// Format and use disk to store guest state
+    Reprovision(Resource<DiskHandleKind>),
+    /// Store guest state in memory
+    Ephemeral,
 }

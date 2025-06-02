@@ -3,8 +3,6 @@
 
 //! Virtual PCI device module
 
-use super::protocol;
-use crate::protocol::SlotNumber;
 use async_trait::async_trait;
 use chipset_device::ChipsetDevice;
 use chipset_device::mmio::ControlMmioIntercept;
@@ -39,10 +37,13 @@ use vmbus_channel::simple::SimpleVmbusDevice;
 use vmbus_ring as ring;
 use vmbus_ring::RingMem;
 use vmcore::save_restore::NoSavedState;
+use vmcore::vpci_msi::MapVpciInterrupt;
 use vmcore::vpci_msi::MsiAddressData;
 use vmcore::vpci_msi::RegisterInterruptError;
 use vmcore::vpci_msi::VpciInterruptMapper;
 use vmcore::vpci_msi::VpciInterruptParameters;
+use vpci_protocol as protocol;
+use vpci_protocol::SlotNumber;
 use zerocopy::FromBytes;
 use zerocopy::FromZeros;
 use zerocopy::Immutable;
@@ -203,8 +204,8 @@ enum PacketError {
     TooManyMsis(u32),
     #[error("failed to register interrupt")]
     RegisterInterrupt(#[source] RegisterInterruptError),
-    #[error("unknown interrupt address/data")]
-    UnknownInterrupt,
+    #[error("unknown interrupt address {:#x}/data {:#x}", .0.address, .0.data)]
+    UnknownInterrupt(MsiAddressData),
 }
 
 #[derive(Debug)]
@@ -271,6 +272,8 @@ fn parse_packet<T: RingMem>(packet: &queue::DataPacket<'_, T>) -> Result<PacketD
     let message_type = protocol::MessageType::read_from_prefix(buf)
         .map_err(|_| PacketError::PacketTooSmall("header"))?
         .0; // TODO: zerocopy: map_err (https://github.com/microsoft/openvmm/issues/759)
+
+    tracing::trace!(?message_type, "parsing vpci packet");
 
     let data = match message_type {
         protocol::MessageType::ASSIGNED_RESOURCES | protocol::MessageType::ASSIGNED_RESOURCES2 => {
@@ -426,7 +429,7 @@ enum WorkerError {
     #[error("unexpected packet order")]
     UnexpectedPacketOrder,
     #[error("queue error")]
-    Queue(queue::Error),
+    Queue(#[source] queue::Error),
     #[error("unexpectedly out of ring space")]
     OutOfSpace,
     #[error("invalid packet type")]
@@ -436,9 +439,13 @@ enum WorkerError {
 }
 
 impl<T: RingMem> Connection<T> {
-    async fn send_packet<P: IntoBytes + Debug + Immutable + KnownLayout>(
+    async fn send_packet<
+        P: IntoBytes + Debug + Immutable + KnownLayout + ?Sized,
+        Q: IntoBytes + Debug + Immutable + KnownLayout + ?Sized,
+    >(
         &mut self,
         payload: &P,
+        more_payload: &Q,
     ) -> Result<(), WorkerError> {
         tracing::trace!(?payload, "send packet");
         self.queue
@@ -447,7 +454,7 @@ impl<T: RingMem> Connection<T> {
             .write(OutgoingPacket {
                 transaction_id: 0,
                 packet_type: OutgoingPacketType::InBandNoCompletion,
-                payload: &[payload.as_bytes()],
+                payload: &[payload.as_bytes(), more_payload.as_bytes()],
             })
             .await
             .map_err(WorkerError::Queue)
@@ -592,29 +599,31 @@ impl ReadyState {
             let relations = protocol::QueryBusRelations {
                 message_type: protocol::MessageType::BUS_RELATIONS,
                 device_count: 1,
-                device: protocol::DeviceDescription {
-                    pnp_id,
-                    slot: SlotNumber::new(),
-                    serial_num: dev.serial_num,
-                },
+                device: [],
+            };
+            let device = protocol::DeviceDescription {
+                pnp_id,
+                slot: SlotNumber::new(),
+                serial_num: dev.serial_num,
             };
 
-            conn.send_packet(&relations).await?;
+            conn.send_packet(&relations, &device).await?;
         } else {
             let relations = protocol::QueryBusRelations2 {
                 message_type: protocol::MessageType::BUS_RELATIONS2,
                 device_count: 1,
-                device: protocol::DeviceDescription2 {
-                    pnp_id,
-                    slot: SlotNumber::new(),
-                    serial_num: dev.serial_num,
-                    flags: 0,
-                    numa_node: 0,
-                    rsvd: 0,
-                },
+                device: [],
+            };
+            let device = protocol::DeviceDescription2 {
+                pnp_id,
+                slot: SlotNumber::new(),
+                serial_num: dev.serial_num,
+                flags: 0,
+                numa_node: 0,
+                rsvd: 0,
             };
 
-            conn.send_packet(&relations).await?;
+            conn.send_packet(&relations, &device).await?;
         }
 
         Ok(())
@@ -646,7 +655,7 @@ impl ReadyState {
             let r = match packet {
                 Ok(packet) => {
                     tracing::trace!(?packet, "vpci packet");
-                    match self.handle_packet(packet, dev, conn, transaction_id) {
+                    match self.handle_packet(packet, dev, conn, transaction_id).await {
                         Ok(()) => Ok(()),
                         Err(WorkerError::Packet(err)) => Err(err),
                         Err(err) => return Err(err),
@@ -666,7 +675,7 @@ impl ReadyState {
         }
     }
 
-    fn handle_packet(
+    async fn handle_packet(
         &mut self,
         packet: PacketData,
         dev: &mut VpciChannel,
@@ -715,7 +724,8 @@ impl ReadyState {
                             AssignedResourcesReplyType::V2 => {
                                 v2.push(r.into());
                             }
-                        })?;
+                        })
+                        .await?;
 
                         let translated = protocol::DeviceTranslateReply {
                             status: protocol::Status::SUCCESS,
@@ -733,12 +743,14 @@ impl ReadyState {
                         conn.send_completion(transaction_id, &translated, extra)?;
                     }
                     DeviceRequest::ReleaseResources => {
-                        dev.release_all();
+                        dev.release_all().await;
                         conn.send_completion(transaction_id, &protocol::Status::SUCCESS, &[])?;
                     }
                     DeviceRequest::CreateInterrupt { interrupt } => {
                         let mut resource = FromZeros::new_zeroed();
-                        dev.map_interrupts(&[interrupt], &mut |r| resource = r)?;
+                        // TODO: pass failures back the guest, don't fail the channel.
+                        dev.map_interrupts(&[interrupt], &mut |r| resource = r)
+                            .await?;
                         conn.send_completion(
                             transaction_id,
                             &(protocol::CreateInterruptReply {
@@ -753,7 +765,9 @@ impl ReadyState {
                         dev.unmap_interrupt(MsiAddressData {
                             address: interrupt.address,
                             data: interrupt.data_payload,
-                        })?;
+                        })
+                        .await?;
+                        conn.send_completion(transaction_id, &protocol::Status::SUCCESS, &[])?;
                     }
                     DeviceRequest::QueryResources => {
                         let reply = protocol::QueryResourceRequirementsReply {
@@ -920,10 +934,10 @@ impl VpciChannel {
         // TODO: set power cap, too, on devices that support it.
     }
 
-    fn map_interrupts(
+    async fn map_interrupts(
         &mut self,
         interrupts: &[InterruptResourceRequest],
-        add_resource: &mut dyn FnMut(protocol::MsiResourceRemapped),
+        add_resource: &mut (dyn FnMut(protocol::MsiResourceRemapped) + Send),
     ) -> Result<(), PacketError> {
         let interrupts = interrupts.iter().filter(|r| r.vector_count != 0);
         let count = interrupts.clone().count();
@@ -943,6 +957,7 @@ impl VpciChannel {
             let address_data = self
                 .msi_mapper
                 .register_interrupt(interrupt.vector_count.into(), &params)
+                .await
                 .map_err(PacketError::RegisterInterrupt)?;
 
             add_resource(protocol::MsiResourceRemapped {
@@ -952,32 +967,36 @@ impl VpciChannel {
                 address: address_data.address,
             });
 
+            tracing::debug!(?address_data, "mapped interrupt");
+
             self.interrupts.push(address_data);
         }
 
         Ok(())
     }
 
-    fn unmap_interrupt(&mut self, interrupt: MsiAddressData) -> Result<(), PacketError> {
+    async fn unmap_interrupt(&mut self, interrupt: MsiAddressData) -> Result<(), PacketError> {
         let i = self
             .interrupts
             .iter()
             .position(|x| x == &interrupt)
-            .ok_or(PacketError::UnknownInterrupt)?;
+            .ok_or(PacketError::UnknownInterrupt(interrupt))?;
 
         self.msi_mapper
-            .unregister_interrupt(interrupt.address, interrupt.data);
+            .unregister_interrupt(interrupt.address, interrupt.data)
+            .await;
         self.interrupts.swap_remove(i);
+        tracing::debug!(?interrupt, "unmapped interrupt");
         Ok(())
     }
 
-    fn release_all(&mut self) {
+    async fn release_all(&mut self) {
         // Power off the device.
         self.set_power(false);
 
         // Unmap all interrupts.
         for MsiAddressData { address, data } in self.interrupts.drain(..) {
-            self.msi_mapper.unregister_interrupt(address, data);
+            self.msi_mapper.unregister_interrupt(address, data).await;
         }
 
         // Clear the BARs.
@@ -991,7 +1010,7 @@ impl VpciChannel {
 pub struct VpciChannel {
     // Runtime services.
     #[inspect(skip)]
-    msi_mapper: Arc<dyn VpciInterruptMapper>,
+    msi_mapper: VpciInterruptMapper,
     #[inspect(skip)]
     config_space: VpciConfigSpace,
 
@@ -1000,7 +1019,7 @@ pub struct VpciChannel {
     instance_id: Guid,
     serial_num: u32,
     hardware_ids: HardwareIds,
-    #[inspect(with = "|x| inspect::iter_by_index(x).map_value(inspect::AsHex)")]
+    #[inspect(hex, iter_by_index)]
     bar_masks: [u32; 6],
 
     // The underlying device.
@@ -1072,11 +1091,11 @@ impl VpciConfigSpaceOffset {
 
 impl VpciChannel {
     /// Create New VPCI Channel
-    pub fn new(
+    pub(crate) fn new(
         device: &Arc<CloseableMutex<dyn ChipsetDevice>>,
         instance_id: Guid,
         config_space: VpciConfigSpace,
-        msi_mapper: Arc<dyn VpciInterruptMapper>,
+        msi_mapper: VpciInterruptMapper,
     ) -> Result<Self, NotPciDevice> {
         let (hardware_ids, bar_masks);
         {
@@ -1101,9 +1120,9 @@ impl VpciChannel {
 }
 
 #[async_trait]
-impl SimpleVmbusDevice for VpciChannel {
+impl<M: 'static + Send + Sync + RingMem> SimpleVmbusDevice<M> for VpciChannel {
     type SavedState = NoSavedState;
-    type Runner = VpciChannelState;
+    type Runner = VpciChannelState<M>;
 
     fn offer(&self) -> OfferParams {
         OfferParams {
@@ -1121,7 +1140,7 @@ impl SimpleVmbusDevice for VpciChannel {
 
     fn open(
         &mut self,
-        channel: RawAsyncChannel<GpadlRingMem>,
+        channel: RawAsyncChannel<M>,
         _guest_memory: guestmem::GuestMemory,
     ) -> Result<Self::Runner, ChannelOpenError> {
         Ok(VpciChannelState {
@@ -1133,7 +1152,7 @@ impl SimpleVmbusDevice for VpciChannel {
     }
 
     async fn close(&mut self) {
-        self.release_all();
+        self.release_all().await;
     }
 
     async fn run(
@@ -1169,8 +1188,6 @@ mod tests {
     use super::VpciChannel;
     use super::VpciChannelState;
     use super::VpciConfigSpace;
-    use crate::protocol;
-    use crate::protocol::SlotNumber;
     use crate::test_helpers::TestVpciInterruptController;
     use chipset_arc_mutex_device::services::MmioInterceptServices;
     use chipset_arc_mutex_device::test_chipset::TestChipset;
@@ -1215,8 +1232,9 @@ mod tests {
     use vmbus_async::queue::connected_queues;
     use vmbus_ring as ring;
     use vmcore::vpci_msi::VpciInterruptMapper;
+    use vpci_protocol as protocol;
+    use vpci_protocol::SlotNumber;
     use zerocopy::FromBytes;
-
     use zerocopy::Immutable;
     use zerocopy::IntoBytes;
     use zerocopy::KnownLayout;
@@ -1237,7 +1255,7 @@ mod tests {
     fn connected_device(
         driver: &impl SpawnDriver,
         device: Arc<CloseableMutex<dyn ChipsetDevice>>,
-        msi_mapper: Arc<dyn VpciInterruptMapper>,
+        msi_mapper: Arc<TestVpciInterruptController>,
     ) -> MockVpciGuestDevice {
         let (host, guest) = connected_queues(16384);
         let (hardware_ids, bar_masks);
@@ -1251,7 +1269,7 @@ mod tests {
             ExternallyManagedMmioIntercepts.new_io_region("test", 2 * HV_PAGE_SIZE),
         );
         let mut state = VpciChannel {
-            msi_mapper,
+            msi_mapper: VpciInterruptMapper::new(msi_mapper),
             config_space,
             instance_id: Guid::new_random(),
             serial_num: 0x1234,
@@ -1274,9 +1292,16 @@ mod tests {
     #[derive(Debug, Error)]
     enum GuestError {
         #[error("queue error")]
-        Queue(vmbus_async::queue::Error),
+        Queue(#[source] vmbus_async::queue::Error),
         #[error("guest memory access error")]
         Access(#[source] AccessError),
+    }
+
+    #[repr(C)]
+    #[derive(FromBytes, IntoBytes, Immutable, KnownLayout)]
+    struct Relations2 {
+        header: protocol::QueryBusRelations2,
+        device: protocol::DeviceDescription2,
     }
 
     impl MockVpciGuestDevice {
@@ -1387,46 +1412,32 @@ mod tests {
             }
         }
 
-        fn verify_device_relations2(&self, relations: &protocol::QueryBusRelations2) {
+        fn verify_device_relations2(&self, message: &Relations2) {
+            let relations = &message.header;
+            let device = &message.device;
             assert_eq!(relations.device_count, 1);
-            assert_eq!(relations.device.pnp_id.vendor_id, self.config.vendor_id);
-            assert_eq!(relations.device.pnp_id.device_id, self.config.device_id);
-            assert_eq!(relations.device.pnp_id.revision_id, self.config.revision_id);
-            assert_eq!(
-                relations.device.pnp_id.prog_if,
-                u8::from(self.config.prog_if)
-            );
-            assert_eq!(
-                relations.device.pnp_id.sub_class,
-                u8::from(self.config.sub_class)
-            );
-            assert_eq!(
-                relations.device.pnp_id.base_class,
-                u8::from(self.config.base_class)
-            );
-            assert_eq!(
-                relations.device.pnp_id.sub_vendor_id,
-                self.config.type0_sub_vendor_id
-            );
-            assert_eq!(
-                relations.device.pnp_id.sub_system_id,
-                self.config.type0_sub_system_id
-            );
-            assert_eq!(relations.device.slot, SlotNumber::new());
-            assert_eq!(relations.device.flags, 0,);
-            assert_eq!(relations.device.numa_node, 0);
-            assert_eq!(relations.device.rsvd, 0);
+            assert_eq!(device.pnp_id.vendor_id, self.config.vendor_id);
+            assert_eq!(device.pnp_id.device_id, self.config.device_id);
+            assert_eq!(device.pnp_id.revision_id, self.config.revision_id);
+            assert_eq!(device.pnp_id.prog_if, u8::from(self.config.prog_if));
+            assert_eq!(device.pnp_id.sub_class, u8::from(self.config.sub_class));
+            assert_eq!(device.pnp_id.base_class, u8::from(self.config.base_class));
+            assert_eq!(device.pnp_id.sub_vendor_id, self.config.type0_sub_vendor_id);
+            assert_eq!(device.pnp_id.sub_system_id, self.config.type0_sub_system_id);
+            assert_eq!(device.slot, SlotNumber::new());
+            assert_eq!(device.flags, 0,);
+            assert_eq!(device.numa_node, 0);
+            assert_eq!(device.rsvd, 0);
         }
 
         async fn start_device(&mut self, base_address: u64) {
             self.negotiate_version().await;
             self.power_on(base_address).await;
             let mut pkt_info = ReadPacketInfo::None;
-            let relations: protocol::QueryBusRelations2 =
-                self.read_packet(&mut pkt_info).await.unwrap();
+            let relations: Relations2 = self.read_packet(&mut pkt_info).await.unwrap();
             if let ReadPacketInfo::NewTransaction = pkt_info {
                 assert_eq!(
-                    relations.message_type,
+                    relations.header.message_type,
                     protocol::MessageType::BUS_RELATIONS2
                 );
                 self.verify_device_relations2(&relations);

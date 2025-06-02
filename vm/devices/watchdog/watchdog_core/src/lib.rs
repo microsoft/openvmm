@@ -9,6 +9,7 @@
 //! Guest Watchdog device.
 
 #![expect(missing_docs)]
+#![forbid(unsafe_code)]
 
 pub mod platform;
 use inspect::Inspect;
