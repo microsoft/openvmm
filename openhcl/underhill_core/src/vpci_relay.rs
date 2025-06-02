@@ -19,11 +19,54 @@ use vmotherboard::ChipsetBuilder;
 use vpci_client::MemoryAccess;
 use vpci_client::VpciDevice;
 
-struct Mmio(MshvHvcall);
+const TEMP_GPA: u64 = 0x1000000000 - 0x2000;
 
-impl MemoryAccess for Mmio {
+struct HypercallMmio(MshvHvcall);
+
+struct DirectMmio(sparse_mmap::SparseMapping);
+
+impl MemoryAccess for DirectMmio {
     fn gpa(&mut self) -> u64 {
-        0x2000000000 - 0x2000
+        TEMP_GPA
+    }
+
+    fn read(&mut self, addr: u64) -> u32 {
+        let offset = addr
+            .checked_sub(self.gpa())
+            .and_then(|o| o.try_into().ok())
+            .unwrap_or(!0);
+        match self.0.read_plain(offset) {
+            Ok(v) => v,
+            Err(err) => {
+                tracelimit::error_ratelimited!(
+                    addr,
+                    error = &err as &dyn std::error::Error,
+                    "vpci mmio read failure"
+                );
+                !0
+            }
+        }
+    }
+
+    fn write(&mut self, addr: u64, value: u32) {
+        let offset = addr
+            .checked_sub(self.gpa())
+            .and_then(|o| o.try_into().ok())
+            .unwrap_or(!0);
+        if let Err(err) = self.0.write_at(offset, &value.to_ne_bytes()) {
+            tracelimit::error_ratelimited!(
+                addr,
+                value,
+                error = &err as &dyn std::error::Error,
+                "vpci mmio write failure"
+            );
+        }
+    }
+}
+
+impl MemoryAccess for HypercallMmio {
+    fn gpa(&mut self) -> u64 {
+        TEMP_GPA
     }
 
     fn read(&mut self, addr: u64) -> u32 {
@@ -63,12 +106,27 @@ pub async fn relay_vpci_bus(
 ) -> anyhow::Result<()> {
     let instance_id = offer_info.offer.instance_id;
 
-    let mshv_hvcall = MshvHvcall::new().context("failed to open mshv_hvcall device")?;
-    mshv_hvcall.set_allowed_hypercalls(&[
-        hvdef::HypercallCode::HvCallMemoryMappedIoRead,
-        hvdef::HypercallCode::HvCallMemoryMappedIoWrite,
-    ]);
-    let mmio = Mmio(mshv_hvcall);
+    let mmio = if false {
+        let mshv_hvcall = MshvHvcall::new().context("failed to open mshv_hvcall device")?;
+        mshv_hvcall.set_allowed_hypercalls(&[
+            hvdef::HypercallCode::HvCallMemoryMappedIoRead,
+            hvdef::HypercallCode::HvCallMemoryMappedIoWrite,
+        ]);
+        Box::new(HypercallMmio(mshv_hvcall)) as _
+    } else {
+        let mapping = sparse_mmap::SparseMapping::new(0x2000)
+            .context("failed to create sparse mapping for vpci mmio")?;
+        let dev_mem = fs_err::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/mem")
+            .context("failed to open /dev/mem")?;
+        mapping
+            .map_file(0, 0x2000, &dev_mem, TEMP_GPA, true)
+            .context("failed to map /dev/mem for vpci mmio")?;
+
+        Box::new(DirectMmio(mapping)) as _
+    };
 
     let channel = vmbus_client::local_use::open_channel(
         driver_source.simple(),
@@ -82,8 +140,7 @@ pub async fn relay_vpci_bus(
     .await?;
     let (devices, mut devices_recv) = mesh::channel();
     let vpci_client =
-        vpci_client::VpciClient::connect(driver_source.simple(), channel, Box::new(mmio), devices)
-            .await?;
+        vpci_client::VpciClient::connect(driver_source.simple(), channel, mmio, devices).await?;
     // TODO: hang onto this guy, wire him up to the inspect graph at least.
     vpci_client.detach();
     let vpci_device = Arc::new(devices_recv.next().await.context("no device")?);

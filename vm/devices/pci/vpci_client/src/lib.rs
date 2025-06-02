@@ -67,7 +67,7 @@ impl<M: RingMem> VpciConnection<M> {
         let (mut read, mut write) = self.queue.split();
         write
             .write(OutgoingPacket {
-                transaction_id: 0,
+                transaction_id: 1,
                 packet_type: vmbus_ring::OutgoingPacketType::InBandWithCompletion,
                 payload: &[send.as_bytes()],
             })
@@ -106,6 +106,7 @@ async fn negotiate<M: RingMem>(
             .await
             .context("failed to send protocol version query")?;
         if reply.status == protocol::Status::SUCCESS {
+            tracing::debug!(?version, "negotiated protocol version");
             return Ok(version);
         }
     }
@@ -270,6 +271,7 @@ struct VpciClientWorker<M: RingMem> {
 #[derive(Inspect)]
 #[inspect(external_tag)]
 enum Tx {
+    FdoD0Entry(#[inspect(skip)] mesh::OneshotSender<protocol::Status>),
     CreateInterrupt(#[inspect(skip)] FailableRpc<(), protocol::MsiResourceRemapped>),
     DeleteInterrupt(#[inspect(skip)] FailableRpc<(), ()>),
 }
@@ -292,29 +294,42 @@ impl VpciClient {
 
         let gpa = mmio.gpa();
 
-        let status: protocol::Status = conn
-            .transact(protocol::FdoD0Entry {
-                message_type: protocol::MessageType::FDO_D0_ENTRY,
-                padding: 0,
-                mmio_start: gpa,
+        tracing::debug!(gpa, "requesting fdo d0 entry");
+
+        let mut tx = slab::Slab::new();
+
+        // Start a transaction to move the bus to the D0 state. The completion
+        // may come after the device list, so start the task and wait for the
+        // reply afterwards.
+        let (fdo_entry_send, fdo_entry_recv) = mesh::oneshot();
+        let tx_id = index_to_tx_id(tx.insert(Tx::FdoD0Entry(fdo_entry_send)));
+        conn.queue
+            .split()
+            .1
+            .write(OutgoingPacket {
+                transaction_id: tx_id,
+                packet_type: vmbus_ring::OutgoingPacketType::InBandWithCompletion,
+                payload: &[protocol::FdoD0Entry {
+                    message_type: protocol::MessageType::FDO_D0_ENTRY,
+                    padding: 0,
+                    mmio_start: gpa,
+                }
+                .as_bytes()],
             })
             .await
             .context("failed to send FDO D0 entry")?;
 
-        if status != protocol::Status::SUCCESS {
-            anyhow::bail!("failed to enter D0 state: {:#x?}", status);
-        }
-
         let (send, recv) = mesh::channel();
         let mut worker = VpciClientWorker {
             conn,
-            tx: slab::Slab::new(),
+            tx,
             protocol_version: version,
             send_devices: devices,
             req: recv,
             config_space: Arc::new(Mutex::new(ConfigSpaceAccessor {
                 mem: mmio,
                 base_gpa: gpa,
+                // Let's not assume the config space access starts at slot 0.
                 current_slot: (!0).into(),
             })),
         };
@@ -327,6 +342,17 @@ impl VpciClient {
                 );
             }
         });
+
+        let status = fdo_entry_recv
+            .await
+            .context("no response to FDO D0 entry")?;
+
+        if status != protocol::Status::SUCCESS {
+            task.cancel().await;
+            anyhow::bail!("failed to enter D0 state: {:#x?}", status);
+        }
+
+        tracing::debug!(gpa, "fdo d0 entry successful");
 
         Ok(Self { task, req: send })
     }
@@ -368,6 +394,9 @@ impl<M: RingMem> VpciClientWorker<M> {
                                 let (packet_type, _) = protocol::MessageType::read_from_prefix(buf)
                                     .ok()
                                     .context("packet too small")?;
+
+                                tracing::debug!(?packet_type, "received packet");
+
                                 match packet_type {
                                     protocol::MessageType::BUS_RELATIONS2 => {
                                         let (bus_relations, devices) =
@@ -416,11 +445,24 @@ impl<M: RingMem> VpciClientWorker<M> {
                                 }
                             }
                             IncomingPacket::Completion(p) => {
-                                let tx = p.transaction_id() as usize;
-                                let entry =
-                                    self.tx.try_remove(tx).context("failed to find tx entry")?;
+                                let tx_id = p.transaction_id();
+                                let entry = self
+                                    .tx
+                                    .try_remove(tx_id_to_index(tx_id))
+                                    .context("failed to find tx entry")?;
                                 match entry {
+                                    Tx::FdoD0Entry(send) => {
+                                        tracing::trace!(tx_id, "fdo d0 entry reply received");
+
+                                        let status = p
+                                            .reader()
+                                            .read_plain::<protocol::Status>()
+                                            .context("failed to read fdo d0 entry reply")?;
+                                        send.send(status);
+                                    }
                                     Tx::CreateInterrupt(rpc) => {
+                                        tracing::trace!(tx_id, "create interrupt reply received");
+
                                         let reply = p
                                             .reader()
                                             .read_plain::<protocol::CreateInterruptReply>()
@@ -435,6 +477,8 @@ impl<M: RingMem> VpciClientWorker<M> {
                                         }
                                     }
                                     Tx::DeleteInterrupt(rpc) => {
+                                        tracing::trace!(tx_id, "delete interrupt reply received");
+
                                         let status = p
                                             .reader()
                                             .read_plain::<protocol::Status>()
@@ -470,12 +514,14 @@ impl<M: RingMem> VpciClientWorker<M> {
             WorkerRequest::MapInterrupt(rpc) => {
                 let (req, reply) = rpc.split();
                 let entry = self.tx.vacant_entry();
+                let tx_id = index_to_tx_id(entry.key());
+                tracing::trace!(tx_id, "create interrupt request");
                 self.conn
                     .queue
                     .split()
                     .1
                     .write(OutgoingPacket {
-                        transaction_id: entry.key() as u64,
+                        transaction_id: tx_id,
                         packet_type: vmbus_ring::OutgoingPacketType::InBandWithCompletion,
                         payload: &[req.as_bytes()],
                     })
@@ -487,12 +533,14 @@ impl<M: RingMem> VpciClientWorker<M> {
             WorkerRequest::UnmapInterrupt(rpc) => {
                 let (req, reply) = rpc.split();
                 let entry = self.tx.vacant_entry();
+                let tx_id = index_to_tx_id(entry.key());
+                tracing::trace!(tx_id, "delete interrupt request");
                 self.conn
                     .queue
                     .split()
                     .1
                     .write(OutgoingPacket {
-                        transaction_id: entry.key() as u64,
+                        transaction_id: tx_id,
                         packet_type: vmbus_ring::OutgoingPacketType::InBandWithCompletion,
                         payload: &[req.as_bytes()],
                     })
@@ -504,4 +552,13 @@ impl<M: RingMem> VpciClientWorker<M> {
         }
         Ok(())
     }
+}
+
+fn index_to_tx_id(index: usize) -> u64 {
+    // Hyper-V VPCI doesn't like transaction IDs of 0, so we start at 1.
+    (index + 1) as u64
+}
+
+fn tx_id_to_index(tx_id: u64) -> usize {
+    tx_id.saturating_sub(1) as usize
 }
