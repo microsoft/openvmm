@@ -22,7 +22,6 @@ use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use petri_artifacts_common::tags::IsTestVmgs;
 use petri_artifacts_common::tags::MachineArch;
-use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ResolvedArtifact;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
@@ -128,28 +127,19 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    /// Set the VM to enable secure boot and inject the templates.
+    /// Set the VM to enable secure boot and inject the templates per OS flavor.
     pub fn with_secure_boot(mut self) -> Self {
-        // Restrict to UEFI firmware
         if !self.firmware.is_uefi() {
             panic!("Secure boot is only supported for UEFI firmware.");
         }
 
-        // Enable secure boot
         if self.firmware.is_openhcl() {
             self.ged.as_mut().unwrap().secure_boot_enabled = true;
         } else {
             self.config.secure_boot_enabled = true;
         }
 
-        // Inject templates per os flavor
-        match self.os_flavor() {
-            OsFlavor::Windows => self.with_windows_secure_boot_template(),
-            OsFlavor::Linux => self.with_uefi_ca_template(),
-            OsFlavor::FreeBsd | OsFlavor::Uefi => {
-                panic!("Secure boot is not supported for this OS flavor.")
-            }
-        }
+        self
     }
 
     /// Inject Windows secure boot templates into the VM's UEFI.
@@ -157,12 +147,14 @@ impl PetriVmConfigOpenVmm {
         if !self.firmware.is_uefi() {
             panic!("Secure boot templates are only supported for UEFI firmware.");
         }
+
         if self.firmware.is_openhcl() {
             self.ged.as_mut().unwrap().secure_boot_template =
                 get_resources::ged::GuestSecureBootTemplateType::MicrosoftWindows;
         } else {
             self.config.custom_uefi_vars = hyperv_secure_boot_templates::x64::microsoft_windows();
         }
+
         self
     }
 
@@ -171,12 +163,14 @@ impl PetriVmConfigOpenVmm {
         if !self.firmware.is_uefi() {
             panic!("Secure boot templates are only supported for UEFI firmware.");
         }
+
         if self.firmware.is_openhcl() {
             self.ged.as_mut().unwrap().secure_boot_template =
                 get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy;
         } else {
             self.config.custom_uefi_vars = hyperv_secure_boot_templates::x64::microsoft_uefi_ca();
         }
+
         self
     }
 

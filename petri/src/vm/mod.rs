@@ -35,7 +35,7 @@ pub trait PetriVmConfig: Send {
     /// Run the VM, launching pipette and returning a client to it.
     async fn run(self: Box<Self>) -> anyhow::Result<(Box<dyn PetriVm>, PipetteClient)>;
 
-    /// Set the VM to enable secure boot and inject the templates.
+    /// Set the VM to enable secure boot.
     fn with_secure_boot(self: Box<Self>) -> Box<dyn PetriVmConfig>;
     /// Inject Windows secure boot templates into the VM's UEFI.
     fn with_windows_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig>;
@@ -65,6 +65,9 @@ pub trait PetriVmConfig: Send {
     ) -> Box<dyn PetriVmConfig>;
     /// Sets whether UEFI frontpage is enabled.
     fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig>;
+
+    /// Get the OS that the VM will boot into.
+    fn os_flavor(&self) -> OsFlavor;
 }
 
 /// Common processor topology information for the VM.

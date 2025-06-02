@@ -16,6 +16,7 @@ use petri::ShutdownKind;
 use petri::openvmm::NIC_MAC_ADDRESS;
 use petri::openvmm::PetriVmConfigOpenVmm;
 use petri_artifacts_common::tags::MachineArch;
+use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_vmm_test::artifacts::test_vmgs::VMGS_WITH_BOOT_ENTRY;
 use std::time::Duration;
 use vmm_core_defs::HaltReason;
@@ -67,7 +68,7 @@ async fn boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Basic boot test with secure boot enabled.
+/// Basic boot test with secure boot enabled and a valid template.
 #[vmm_test(
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -84,52 +85,98 @@ async fn boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
 async fn secure_boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
-    let (vm, agent) = config.with_secure_boot().run().await?;
+    let (vm, agent) = match config.os_flavor() {
+        OsFlavor::Windows => {
+            config
+                .with_secure_boot()
+                .with_windows_secure_boot_template()
+                .run()
+                .await?
+        }
+        OsFlavor::Linux => {
+            config
+                .with_secure_boot()
+                .with_uefi_ca_template()
+                .run()
+                .await?
+        }
+        _ => anyhow::bail!(
+            "Unsupported OS flavor for secure boot test: {:?}",
+            config.os_flavor()
+        ),
+    };
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
 }
 
-/// Verify that Windows UEFI guests fail with a mismatched secure boot template.
+/// Verify that secure boot fails with a mismatched template.
 #[vmm_test(
+    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
     hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_uefi_x64(vhd(ubuntu_2204_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64))
+    hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn mismatched_secure_boot_template_windows(
-    config: Box<dyn PetriVmConfig>,
-) -> anyhow::Result<()> {
-    let mut vm = config
-        .with_secure_boot()
-        .with_uefi_ca_template()
-        .run_without_agent()
-        .await?;
+async fn secure_boot_mismatched_template(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+    let mut vm = match config.os_flavor() {
+        OsFlavor::Windows => {
+            config
+                .with_secure_boot()
+                .with_uefi_ca_template()
+                .run_without_agent()
+                .await?
+        }
+        OsFlavor::Linux => {
+            config
+                .with_secure_boot()
+                .with_windows_secure_boot_template()
+                .run_without_agent()
+                .await?
+        }
+        _ => anyhow::bail!(
+            "Unsupported OS flavor for mismatched secure boot template test: {:?}",
+            config.os_flavor()
+        ),
+    };
     assert_eq!(vm.wait_for_boot_event().await?, FirmwareEvent::BootFailed);
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
 }
 
-/// Verify that Linux UEFI guests fail with a mismatched secure boot template.
+/// Verify that secure boot fails with no template.
 #[vmm_test(
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
-async fn mismatched_secure_boot_template_linux(
-    config: Box<dyn PetriVmConfig>,
-) -> anyhow::Result<()> {
-    let mut vm = config
-        .with_secure_boot()
-        .with_windows_secure_boot_template()
-        .run_without_agent()
-        .await?;
+async fn secure_boot_no_template(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+    let mut vm = match config.os_flavor() {
+        OsFlavor::Windows => config.with_secure_boot().run_without_agent().await?,
+        OsFlavor::Linux => config.with_secure_boot().run_without_agent().await?,
+        _ => anyhow::bail!(
+            "Unsupported OS flavor for mismatched secure boot template test: {:?}",
+            config.os_flavor()
+        ),
+    };
     assert_eq!(vm.wait_for_boot_event().await?, FirmwareEvent::BootFailed);
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())

@@ -198,6 +198,10 @@ impl PetriVmConfig for PetriVmConfigOpenVmm {
     fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
         Box::new(Self::with_uefi_frontpage(*self, enable))
     }
+
+    fn os_flavor(&self) -> OsFlavor {
+        Self::os_flavor(&self)
+    }
 }
 
 /// Various channels and resources used to interact with the VM while it is running.

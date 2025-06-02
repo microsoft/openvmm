@@ -57,6 +57,7 @@ pub struct PetriVmConfigHyperV {
     // Specifies the path to a virtual hard disk file(s) to attach to the
     // virtual machine as SCSI (Gen2) or IDE (Gen1) drives.
     vhd_paths: Vec<Vec<PathBuf>>,
+    secure_boot_enabled: bool,
     secure_boot_template: Option<powershell::HyperVSecureBootTemplate>,
     openhcl_igvm: Option<ResolvedArtifact>,
     openhcl_command_line: String,
@@ -135,6 +136,10 @@ impl PetriVmConfig for PetriVmConfigHyperV {
 
     fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
         Box::new(Self::with_uefi_frontpage(*self, enable))
+    }
+
+    fn os_flavor(&self) -> OsFlavor {
+        Self::os_flavor(&self)
     }
 }
 
@@ -286,6 +291,7 @@ impl PetriVmConfigHyperV {
             memory: 0x1_0000_0000,
             proc_topology: ProcessorTopology::default(),
             vhd_paths,
+            secure_boot_enabled: false,
             secure_boot_template: None,
             openhcl_igvm,
             agent_image,
@@ -361,9 +367,7 @@ impl PetriVmConfigHyperV {
             })?;
         }
 
-        if let Some(secure_boot_template) = self.secure_boot_template {
-            vm.set_secure_boot_template(secure_boot_template)?;
-        }
+        vm.set_secure_boot_state(self.secure_boot_enabled, self.secure_boot_template);
 
         for (i, vhds) in self.vhd_paths.iter().enumerate() {
             let (controller_type, controller_number) = match self.generation {
@@ -534,18 +538,12 @@ impl PetriVmConfigHyperV {
         self
     }
 
-    /// Set the VM to enable secure boot and inject the templates.
-    pub fn with_secure_boot(self) -> Self {
+    /// Set the VM to enable secure boot and inject the templates per OS flavor.
+    pub fn with_secure_boot(mut self) -> Self {
         if !matches!(self.generation, powershell::HyperVGeneration::Two) {
             panic!("Secure boot is only supported for UEFI firmware.");
         }
-        match self.os_flavor {
-            OsFlavor::Windows => self.with_windows_secure_boot_template(),
-            OsFlavor::Linux => self.with_uefi_ca_template(),
-            OsFlavor::FreeBsd | OsFlavor::Uefi => {
-                panic!("Secure boot is not supported for this OS flavor.")
-            }
-        }
+        self.secure_boot_enabled = true;
     }
 
     /// Inject Windows secure boot templates into the VM's UEFI.
@@ -600,6 +598,11 @@ impl PetriVmConfigHyperV {
     pub fn with_uefi_frontpage(mut self, enable: bool) -> Self {
         self.disable_frontpage = !enable;
         self
+    }
+
+    /// Get the OS that the VM will boot into.
+    pub fn os_flavor(&self) -> OsFlavor {
+        self.os_flavor
     }
 }
 

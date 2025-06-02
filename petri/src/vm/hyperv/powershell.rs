@@ -66,8 +66,6 @@ impl ps::AsVal for HyperVGuestStateIsolationType {
 /// Hyper-V Secure Boot Template
 #[derive(Clone, Copy)]
 pub enum HyperVSecureBootTemplate {
-    /// Secure Boot Disabled
-    SecureBootDisabled,
     /// Windows Secure Boot Template
     MicrosoftWindows,
     /// Microsoft UEFI Certificate Authority Template
@@ -395,6 +393,8 @@ pub struct HyperVSetVMFirmwareArgs<'a> {
     /// Specifies the ID of virtual machines for which you want to modify the
     /// firmware configuration.
     pub vmid: &'a Guid,
+    /// Specifies whether to enable secure boot for the virtual machine.
+    pub secure_boot_enabled: bool,
     /// Specifies the name of the secure boot template. If secure boot is
     /// enabled, you must have a valid secure boot template for the guest
     /// operating system to start.
@@ -403,24 +403,32 @@ pub struct HyperVSetVMFirmwareArgs<'a> {
 
 /// Runs Set-VMFirmware with the given arguments.
 pub fn run_set_vm_firmware(args: HyperVSetVMFirmwareArgs<'_>) -> anyhow::Result<()> {
+    // Determine the boot state based on whether secure boot is enabled
+    let boot_state = if args.secure_boot_enabled {
+        ps::RawVal::new("On")
+    } else {
+        ps::RawVal::new("Off")
+    };
+
+    // Build the PowerShell command
     let mut builder = PowerShellBuilder::new()
         .cmdlet("Get-VM")
         .arg("Id", args.vmid)
-        .pipeline();
+        .pipeline()
+        .cmdlet("Set-VMFirmware")
+        .arg("EnableSecureBoot", boot_state);
 
-    builder = match args.secure_boot_template {
-        Some(HyperVSecureBootTemplate::SecureBootDisabled) | None => builder
-            .cmdlet("Set-VMFirmware")
-            .arg("EnableSecureBoot", ps::RawVal::new("Off"))
-            .finish(),
-        Some(template) => builder
-            .cmdlet("Set-VMFirmware")
-            .arg("EnableSecureBoot", ps::RawVal::new("On"))
-            .arg("SecureBootTemplate", template)
-            .finish(),
-    };
+    // Add the secure boot template if specified
+    if let Some(template) = args.secure_boot_template {
+        builder = builder.arg("SecureBootTemplate", template);
+    }
 
-    builder.output(true).map(|_| ()).context("set_vm_firmware")
+    // Execute the command
+    builder
+        .finish()
+        .output(true)
+        .map(|_| ())
+        .context("set_vm_firmware")
 }
 
 /// Runs Set-VMFirmware with the given arguments.
