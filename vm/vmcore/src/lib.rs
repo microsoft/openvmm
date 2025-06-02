@@ -6,9 +6,6 @@
 //! across both HvLite and Hyper-V, so it should not contain any references to
 //! HvLite-specific infrastructure (such as WHP).
 
-// UNSAFETY: linkme uses link_section which is unsafe.
-#![expect(unsafe_code)]
-
 // Needed for `save_restore_derive`.
 extern crate self as vmcore;
 

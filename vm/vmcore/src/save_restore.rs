@@ -38,7 +38,7 @@
 //!    device-specific trait that provides additional parameters. But the
 //!    pattern should be the same.
 
-#![warn(missing_docs)]
+#![expect(unsafe_code)]
 
 /// Derives [`SavedStateRoot`] for a type.
 ///

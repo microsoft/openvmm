@@ -21,8 +21,6 @@
 //! in the same OS (but not across machines, virtual or physical). See the
 //! comments on [`VmTimeSourceBuilder`] for more information.
 
-#![warn(missing_docs)]
-
 use futures::StreamExt;
 use futures::future::join_all;
 use futures_concurrency::future::Race;
@@ -42,6 +40,7 @@ use pal_async::timer::Instant;
 use pal_async::timer::PollTimer;
 use parking_lot::RwLock;
 use save_restore_derive::SavedStateRoot;
+pub use saved_state::SavedState;
 use slab::Slab;
 use std::future::poll_fn;
 use std::sync::Arc;
@@ -345,18 +344,26 @@ pub struct VmTimeKeeper {
     time: TimeState,
 }
 
-/// Saved state for [`VmTimeKeeper`].
-#[derive(Protobuf, SavedStateRoot)]
-#[mesh(package = "vmtime")]
-pub struct SavedState {
-    #[mesh(1)]
-    vmtime: VmTime,
-}
+#[expect(
+    unsafe_code,
+    reason = "Needed to derive SavedStateRoot in the same crate it is declared"
+)]
+mod saved_state {
+    use super::*;
 
-impl SavedState {
-    /// Create a new instance of `SavedState` from an existing `VmTime`.
-    pub fn from_vmtime(vmtime: VmTime) -> Self {
-        SavedState { vmtime }
+    /// Saved state for [`VmTimeKeeper`].
+    #[derive(Protobuf, SavedStateRoot)]
+    #[mesh(package = "vmtime")]
+    pub struct SavedState {
+        #[mesh(1)]
+        pub(super) vmtime: VmTime,
+    }
+
+    impl SavedState {
+        /// Create a new instance of `SavedState` from an existing `VmTime`.
+        pub fn from_vmtime(vmtime: VmTime) -> Self {
+            SavedState { vmtime }
+        }
     }
 }
 

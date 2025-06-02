@@ -4,7 +4,7 @@
 //! Infrastructure for spawning tasks and issuing async IO related to VM
 //! activity.
 
-#![warn(missing_docs)]
+#![forbid(unsafe_code)]
 
 use inspect::Inspect;
 use pal_async::driver::Driver;

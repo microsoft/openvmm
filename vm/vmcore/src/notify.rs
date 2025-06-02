@@ -4,6 +4,8 @@
 //! Guest-to-host notification infrastructure, abstracting over [platform
 //! events](pal_event::Event), and [task events](SlimEvent).
 
+#![forbid(unsafe_code)]
+
 use crate::interrupt::Interrupt;
 use crate::local_only::LocalOnly;
 use crate::slim_event::SlimEvent;
