@@ -21,6 +21,8 @@
 //! in the same OS (but not across machines, virtual or physical). See the
 //! comments on [`VmTimeSourceBuilder`] for more information.
 
+pub use saved_state::SavedState;
+
 use futures::StreamExt;
 use futures::future::join_all;
 use futures_concurrency::future::Race;
@@ -40,7 +42,6 @@ use pal_async::timer::Instant;
 use pal_async::timer::PollTimer;
 use parking_lot::RwLock;
 use save_restore_derive::SavedStateRoot;
-pub use saved_state::SavedState;
 use slab::Slab;
 use std::future::poll_fn;
 use std::sync::Arc;
