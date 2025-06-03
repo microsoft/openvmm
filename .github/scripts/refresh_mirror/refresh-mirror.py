@@ -19,7 +19,7 @@ def main(pipeline_id: str, token: str, organization: str, project: str, debug: b
 
         build = {
                     'definition': {'id': pipeline_id},
-                    'templateParameters': {'branchToMirror': 'release/2505', 'branchToUpdateSubmodule': 'release/1.6.2505', 'updateSubmodule': 'true'},
+                    'templateParameters': {'branchToMirror': 'release/2505', 'branchToUpdateSubmodule': 'staging/1.6.2505', 'updateSubmodule': 'true'},
                 }
         build = client.queue_build(build, project=project)
         print(f'Scheduled build: {build.id}. Url: {organization}/{project}/_build/results?buildId={build.id}&view=results', file=sys.stderr)
