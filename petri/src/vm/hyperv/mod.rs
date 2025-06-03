@@ -543,8 +543,8 @@ impl PetriVmConfigHyperV {
     /// Set the VM to enable secure boot and inject the templates per OS flavor.
     pub fn with_secure_boot(self) -> Self {
         match self.os_flavor {
-            OsFlavor::Windows => self.with_windows_secure_boot_template(self),
-            OsFlavor::Linux => self.with_uefi_ca_secure_boot_template(self),
+            OsFlavor::Windows => self.with_windows_secure_boot_template(),
+            OsFlavor::Linux => self.with_uefi_ca_secure_boot_template(),
             _ => panic!("Secure boot unsupported for OS flavor {:?}", self.os_flavor),
         }
     }
