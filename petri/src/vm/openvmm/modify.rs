@@ -151,6 +151,7 @@ impl PetriVmConfigOpenVmm {
             self.ged.as_mut().unwrap().secure_boot_template =
                 get_resources::ged::GuestSecureBootTemplateType::MicrosoftWindows;
         } else {
+            self.config.secure_boot_enabled = true;
             self.config.custom_uefi_vars = hyperv_secure_boot_templates::x64::microsoft_windows();
         }
 
@@ -168,6 +169,7 @@ impl PetriVmConfigOpenVmm {
             self.ged.as_mut().unwrap().secure_boot_template =
                 get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy;
         } else {
+            self.config.secure_boot_enabled = true;
             self.config.custom_uefi_vars = hyperv_secure_boot_templates::x64::microsoft_uefi_ca();
         }
 
