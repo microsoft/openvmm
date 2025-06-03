@@ -112,19 +112,20 @@ async fn secure_boot_mismatched_template(config: Box<dyn PetriVmConfig>) -> anyh
         OsFlavor::Windows => {
             config
                 .with_uefi_ca_secure_boot_template()
+                .with_uefi_frontpage(false)
                 .run_without_agent()
                 .await?
         }
         OsFlavor::Linux => {
             config
                 .with_windows_secure_boot_template()
+                .with_uefi_frontpage(false)
                 .run_without_agent()
                 .await?
         }
         _ => anyhow::bail!("Unsupported OS flavor for test: {:?}", config.os_flavor()),
     };
     assert_eq!(vm.wait_for_boot_event().await?, FirmwareEvent::BootFailed);
-    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
 }
