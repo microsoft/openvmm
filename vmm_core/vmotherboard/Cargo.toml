@@ -43,7 +43,6 @@ vga_proxy = { optional = true, workspace = true }
 vga = { optional = true, workspace = true }
 watchdog_core.workspace = true
 
-address_filter.workspace = true
 arc_cyclic_builder.workspace = true
 closeable_mutex.workspace = true
 cvm_tracing.workspace = true

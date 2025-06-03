@@ -88,7 +88,6 @@ pipette_client = { path = "petri/pipette_client" }
 pipette_protocol = { path = "petri/pipette_protocol" }
 
 # support crates
-address_filter = { path = "support/address_filter" }
 arc_cyclic_builder = { path = "support/arc_cyclic_builder" }
 atomic_ringbuf = { path = "support/atomic_ringbuf" }
 cache_topology = { path = "support/cache_topology" }
