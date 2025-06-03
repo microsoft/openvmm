@@ -148,6 +148,7 @@ async fn secure_boot_mismatched_template(config: Box<dyn PetriVmConfig>) -> anyh
         ),
     };
     assert_eq!(vm.wait_for_boot_event().await?, FirmwareEvent::BootFailed);
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
 }
@@ -178,6 +179,7 @@ async fn secure_boot_no_template(config: Box<dyn PetriVmConfig>) -> anyhow::Resu
         ),
     };
     assert_eq!(vm.wait_for_boot_event().await?, FirmwareEvent::BootFailed);
+    vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
 }
