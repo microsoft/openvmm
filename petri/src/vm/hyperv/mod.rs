@@ -139,7 +139,7 @@ impl PetriVmConfig for PetriVmConfigHyperV {
     }
 
     fn os_flavor(&self) -> OsFlavor {
-        Self::os_flavor(&self)
+        Self::os_flavor(self)
     }
 }
 
