@@ -195,6 +195,9 @@ impl HyperVVM {
                 powershell::EVENT_ID_BOOT_FAILURE => Ok(FirmwareEvent::BootFailed),
                 powershell::EVENT_ID_NO_BOOT_DEVICE => Ok(FirmwareEvent::NoBootDevice),
                 powershell::EVENT_ID_BOOT_ATTEMPT => Ok(FirmwareEvent::BootAttempt),
+                powershell::EVENT_ID_BOOT_FAILURE_SECURE_BOOT_FAILED => {
+                    Ok(FirmwareEvent::BootFailed)
+                }
                 id => anyhow::bail!("Unexpected event id: {id}"),
             })
             .transpose()
