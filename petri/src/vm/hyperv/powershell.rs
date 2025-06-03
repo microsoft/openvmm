@@ -504,7 +504,7 @@ pub fn run_set_vm_com_port(vmid: &Guid, port: u8, path: &Path) -> anyhow::Result
 }
 
 /// Run Enable-VmBusRelay commandlet
-pub fn run_enable_vmbus_relay(vmid: &Guid) -> anyhow::Result<()> {
+pub fn run_enable_vmbus_relay(vmid: &Guid, ps_mod: &Path) -> anyhow::Result<()> {
     PowerShellBuilder::new()
         .cmdlet("Import-Module")
         .positional(ps_mod)
@@ -520,7 +520,7 @@ pub fn run_enable_vmbus_relay(vmid: &Guid) -> anyhow::Result<()> {
 }
 
 /// Run Disable-VmBusRelay commandlet
-pub fn run_disable_vmbus_relay(vmid: &Guid) -> anyhow::Result<()> {
+pub fn run_disable_vmbus_relay(vmid: &Guid, ps_mod: &Path) -> anyhow::Result<()> {
     PowerShellBuilder::new()
         .cmdlet("Import-Module")
         .positional(ps_mod)

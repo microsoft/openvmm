@@ -409,11 +409,11 @@ impl HyperVVM {
     }
 
     /// Enable VMBusRelay
-    pub fn set_vmbus_relay(&self, enable: bool) {
+    pub fn set_vmbus_relay(&self, enable: bool) -> anyhow::Result<()> {
         if enable {
-            powershell::run_enable_vmbus_relay(&self.vmid);
+            powershell::run_enable_vmbus_relay(&self.vmid, &self.ps_mod)
         } else {
-            powershell::run_disable_vmbus_relay(&self.vmid);
+            powershell::run_disable_vmbus_relay(&self.vmid, &self.ps_mod)
         }
     }
 }

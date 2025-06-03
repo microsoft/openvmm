@@ -486,7 +486,7 @@ impl PetriVmConfigHyperV {
         }
 
         // Enable/Disable VMBusRelay if requested in config
-        vm.set_vmbus_relay(self.vmbus_relay);
+        let _ = vm.set_vmbus_relay(self.vmbus_relay);
 
         let mut log_tasks = Vec::new();
 
@@ -587,7 +587,7 @@ impl PetriVmConfigHyperV {
         self.disable_frontpage = !enable;
         self
     }
-    
+
     /// Enables VMBus relay for the VM
     pub fn with_vmbus_relay(mut self, enable: bool) -> Self {
         self.vmbus_relay = enable;
