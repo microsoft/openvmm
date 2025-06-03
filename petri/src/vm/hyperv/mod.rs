@@ -99,8 +99,8 @@ impl PetriVmConfig for PetriVmConfigHyperV {
         Box::new(Self::with_windows_secure_boot_template(*self))
     }
 
-    fn with_uefi_ca_template(self: Box<Self>) -> Box<dyn PetriVmConfig> {
-        Box::new(Self::with_uefi_ca_template(*self))
+    fn with_uefi_ca_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_uefi_ca_secure_boot_template(*self))
     }
 
     fn with_processor_topology(
@@ -541,28 +541,30 @@ impl PetriVmConfigHyperV {
     }
 
     /// Set the VM to enable secure boot and inject the templates per OS flavor.
-    pub fn with_secure_boot(mut self) -> Self {
+    pub fn with_secure_boot(self) -> Self {
+        match self.os_flavor {
+            OsFlavor::Windows => self.with_windows_secure_boot_template(self),
+            OsFlavor::Linux => self.with_uefi_ca_secure_boot_template(self),
+            _ => panic!("Secure boot unsupported for OS flavor {:?}", self.os_flavor),
+        }
+    }
+
+    /// Inject Windows secure boot templates into the VM's UEFI and enable secure boot.
+    pub fn with_windows_secure_boot_template(mut self) -> Self {
         if !matches!(self.generation, powershell::HyperVGeneration::Two) {
             panic!("Secure boot is only supported for UEFI firmware.");
         }
         self.secure_boot_enabled = true;
-        self
-    }
-
-    /// Inject Windows secure boot templates into the VM's UEFI.
-    pub fn with_windows_secure_boot_template(mut self) -> Self {
-        if !matches!(self.generation, powershell::HyperVGeneration::Two) {
-            panic!("Secure boot templates are only supported for UEFI firmware.");
-        }
         self.secure_boot_template = Some(powershell::HyperVSecureBootTemplate::MicrosoftWindows);
         self
     }
 
-    /// Inject UEFI CA template into the VM's UEFI
-    pub fn with_uefi_ca_template(mut self) -> Self {
+    /// Inject UEFI CA secure boot templates into the VM's UEFI and enable secure boot.
+    pub fn with_uefi_ca_secure_boot_template(mut self) -> Self {
         if !matches!(self.generation, powershell::HyperVGeneration::Two) {
-            panic!("Secure boot templates are only supported for UEFI firmware.");
+            panic!("Secure boot is only supported for UEFI firmware.");
         }
+        self.secure_boot_enabled = true;
         self.secure_boot_template =
             Some(powershell::HyperVSecureBootTemplate::MicrosoftUEFICertificateAuthority);
         self

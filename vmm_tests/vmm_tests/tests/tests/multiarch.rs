@@ -85,26 +85,7 @@ async fn boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64))
 )]
 async fn secure_boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
-    let (vm, agent) = match config.os_flavor() {
-        OsFlavor::Windows => {
-            config
-                .with_secure_boot()
-                .with_windows_secure_boot_template()
-                .run()
-                .await?
-        }
-        OsFlavor::Linux => {
-            config
-                .with_secure_boot()
-                .with_uefi_ca_template()
-                .run()
-                .await?
-        }
-        _ => anyhow::bail!(
-            "Unsupported OS flavor for secure boot test: {:?}",
-            config.os_flavor()
-        ),
-    };
+    let (vm, agent) = config.with_secure_boot().run().await?;
     agent.power_off().await?;
     assert_eq!(vm.wait_for_teardown().await?, HaltReason::PowerOff);
     Ok(())
@@ -130,22 +111,17 @@ async fn secure_boot_mismatched_template(config: Box<dyn PetriVmConfig>) -> anyh
     let mut vm = match config.os_flavor() {
         OsFlavor::Windows => {
             config
-                .with_secure_boot()
-                .with_uefi_ca_template()
+                .with_uefi_ca_secure_boot_template()
                 .run_without_agent()
                 .await?
         }
         OsFlavor::Linux => {
             config
-                .with_secure_boot()
                 .with_windows_secure_boot_template()
                 .run_without_agent()
                 .await?
         }
-        _ => anyhow::bail!(
-            "Unsupported OS flavor for mismatched secure boot template test: {:?}",
-            config.os_flavor()
-        ),
+        _ => anyhow::bail!("Unsupported OS flavor for test: {:?}", config.os_flavor()),
     };
     assert_eq!(vm.wait_for_boot_event().await?, FirmwareEvent::BootFailed);
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;

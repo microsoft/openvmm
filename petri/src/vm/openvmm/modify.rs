@@ -22,6 +22,7 @@ use hvlite_defs::config::VpciDeviceConfig;
 use hvlite_defs::config::Vtl2BaseAddressType;
 use petri_artifacts_common::tags::IsTestVmgs;
 use petri_artifacts_common::tags::MachineArch;
+use petri_artifacts_common::tags::OsFlavor;
 use petri_artifacts_core::ResolvedArtifact;
 use tpm_resources::TpmDeviceHandle;
 use tpm_resources::TpmRegisterLayout;
@@ -128,27 +129,25 @@ impl PetriVmConfigOpenVmm {
     }
 
     /// Set the VM to enable secure boot and inject the templates per OS flavor.
-    pub fn with_secure_boot(mut self) -> Self {
+    pub fn with_secure_boot(self) -> Self {
+        match self.os_flavor() {
+            OsFlavor::Windows => self.with_windows_secure_boot_template(),
+            OsFlavor::Linux => self.with_uefi_ca_secure_boot_template(),
+            _ => panic!(
+                "Secure boot unsupported for OS flavor {:?}",
+                self.os_flavor()
+            ),
+        }
+    }
+
+    /// Inject Windows secure boot templates into the VM's UEFI and enable secure boot.
+    pub fn with_windows_secure_boot_template(mut self) -> Self {
         if !self.firmware.is_uefi() {
             panic!("Secure boot is only supported for UEFI firmware.");
         }
 
         if self.firmware.is_openhcl() {
             self.ged.as_mut().unwrap().secure_boot_enabled = true;
-        } else {
-            self.config.secure_boot_enabled = true;
-        }
-
-        self
-    }
-
-    /// Inject Windows secure boot templates into the VM's UEFI.
-    pub fn with_windows_secure_boot_template(mut self) -> Self {
-        if !self.firmware.is_uefi() {
-            panic!("Secure boot templates are only supported for UEFI firmware.");
-        }
-
-        if self.firmware.is_openhcl() {
             self.ged.as_mut().unwrap().secure_boot_template =
                 get_resources::ged::GuestSecureBootTemplateType::MicrosoftWindows;
         } else {
@@ -158,13 +157,14 @@ impl PetriVmConfigOpenVmm {
         self
     }
 
-    /// Inject UEFI CA template into the VM's UEFI
-    pub fn with_uefi_ca_template(mut self) -> Self {
+    /// Inject UEFI CA secure boot templates into the VM's UEFI and enable secure boot.
+    pub fn with_uefi_ca_secure_boot_template(mut self) -> Self {
         if !self.firmware.is_uefi() {
-            panic!("Secure boot templates are only supported for UEFI firmware.");
+            panic!("Secure boot is only supported for UEFI firmware.");
         }
 
         if self.firmware.is_openhcl() {
+            self.ged.as_mut().unwrap().secure_boot_enabled = true;
             self.ged.as_mut().unwrap().secure_boot_template =
                 get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy;
         } else {

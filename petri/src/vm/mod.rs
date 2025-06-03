@@ -35,12 +35,12 @@ pub trait PetriVmConfig: Send {
     /// Run the VM, launching pipette and returning a client to it.
     async fn run(self: Box<Self>) -> anyhow::Result<(Box<dyn PetriVm>, PipetteClient)>;
 
-    /// Set the VM to enable secure boot.
+    /// Set the VM to enable secure boot and inject the templates per OS flavor.
     fn with_secure_boot(self: Box<Self>) -> Box<dyn PetriVmConfig>;
-    /// Inject Windows secure boot templates into the VM's UEFI.
+    /// Inject Windows secure boot templates into the VM's UEFI and enable secure boot.
     fn with_windows_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig>;
-    /// Inject UEFI CA template into the VM's UEFI.
-    fn with_uefi_ca_template(self: Box<Self>) -> Box<dyn PetriVmConfig>;
+    /// Inject UEFI CA secure boot templates into the VM's UEFI and enable secure boot.
+    fn with_uefi_ca_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig>;
     /// Set the VM to use the specified processor topology.
     fn with_processor_topology(
         self: Box<Self>,
