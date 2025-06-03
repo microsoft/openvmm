@@ -1055,11 +1055,16 @@ impl VpciConfigSpace {
     }
 
     fn map(&mut self, addr: u64) {
+        tracing::debug!(addr, "mapping config space");
         self.offset.0.store(addr, Ordering::Relaxed);
         self.control_mmio.map(addr);
     }
 
     fn unmap(&mut self) {
+        tracing::debug!(
+            addr = self.offset.0.load(Ordering::Relaxed),
+            "unmapping config space"
+        );
         // Note that there may be some current accessors that this will not
         // flush out synchronously. The MMIO implementation in bus.rs must be
         // careful to ignore reads/writes that are not to an expected address.
@@ -1073,7 +1078,7 @@ impl VpciConfigSpace {
 /// PCI Config space offset structure
 #[derive(Debug, Clone, Inspect)]
 #[inspect(transparent)]
-pub struct VpciConfigSpaceOffset(Arc<AtomicU64>);
+pub struct VpciConfigSpaceOffset(#[inspect(hex)] Arc<AtomicU64>);
 
 impl VpciConfigSpaceOffset {
     const INVALID: u64 = !0;

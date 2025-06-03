@@ -2621,6 +2621,7 @@ async fn new_underhill_vm(
     let mut vmbus_server = None;
     let mut vmbus_client = None;
     let mut host_vmbus_relay = None;
+    let mut vmbus_filter = None;
 
     // VMBus
     if with_vmbus {
@@ -2707,6 +2708,40 @@ async fn new_underhill_vm(
                     .await
                     .context("failed to connect to vmbus")?
             };
+
+            let mut filter = vmbus_client::filter::ClientFilterBuilder::new();
+
+            let mut vpci_filter = vmbus_client::filter::filter_client("vpci")
+                .by_interface(guid::guid!("44C4F61D-4444-4400-9D52-802E27EDE19F"));
+
+            filter.add_client(&mut vpci_filter);
+
+            let mut relay_filter = vmbus_client::filter::filter_client("relay").rest();
+            filter.add_client(&mut relay_filter);
+            vmbus_filter = Some(filter.build(tp, connection));
+
+            let connection = relay_filter.take();
+
+            for offer in vpci_filter.take().offers {
+                let instance_id = offer.offer.instance_id;
+                crate::vpci_relay::relay_vpci_bus(
+                    &mut chipset_builder,
+                    &driver_source,
+                    offer,
+                    dma_manager
+                        .new_client(DmaClientParameters {
+                            device_name: format!("vpci-{instance_id}"),
+                            lower_vtl_policy: LowerVtlPermissionPolicy::Vtl0,
+                            allocation_visibility: AllocationVisibility::Private,
+                            persistent_allocations: false,
+                        })?
+                        .as_ref(),
+                    vmbus.control(),
+                )
+                .await?;
+            }
+
+            //crate::vpci_relay::foo(vpci_filter.take());
 
             let mut intercept_list = Vec::new();
             if intercept_shutdown_ic {
@@ -3020,6 +3055,7 @@ async fn new_underhill_vm(
         },
         device_interfaces: Some(controllers.device_interfaces),
         vmbus_client,
+        vmbus_filter,
         vtl0_memory_map,
 
         vmbus_server,

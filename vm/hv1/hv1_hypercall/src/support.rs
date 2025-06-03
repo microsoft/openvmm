@@ -111,6 +111,15 @@ pub trait AsHandler<H> {
     fn as_handler(&mut self) -> &mut H;
 }
 
+impl<T, H> AsHandler<H> for &mut T
+where
+    T: AsHandler<H>,
+{
+    fn as_handler(&mut self) -> &mut H {
+        (**self).as_handler()
+    }
+}
+
 impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
     /// Creates a new dispatcher.
     fn new(guest_memory: &'a GuestMemory, mut handler: T) -> Self {
@@ -356,14 +365,17 @@ impl<'a, T: HypercallIo> InnerDispatcher<'a, T> {
 pub trait HypercallIo {
     /// Advances the instruction pointer for a completed hypercall.
     ///
-    /// Either `advance_ip` or `retry` will be called.
+    /// Either `advance_ip` or `retry` will be called. `advance_ip` may be called
+    /// after `retry`, but `retry` will not be called after `advance_ip`.
     fn advance_ip(&mut self);
 
     /// Retains the instruction pointer at the hypercall point so that the
     /// hypercall will be retried.
     ///
-    /// Either `advance_ip` or `retry` will be called.
     /// `control` is the updated hypercall input value to use in the retry.
+    ///
+    /// Either `advance_ip` or `retry` will be called. `advance_ip` may be called
+    /// after `retry`, but `retry` will not be called after `advance_ip`.
     fn retry(&mut self, control: u64);
 
     /// The hypercall input value.
@@ -773,4 +785,39 @@ impl<H> Dispatcher<H> {
         };
         dispatcher.complete(result);
     }
+}
+
+/// Completes a hypercall with the given result and data, separately
+/// from the dispatcher.
+///
+/// Only simple, non-fast hypercalls are supported.
+pub fn complete_hypercall_with_data(
+    io: &mut impl HypercallIo,
+    mut result: HvResult<()>,
+    guest_memory: &GuestMemory,
+    data: &[u8],
+) {
+    let control = Control::from(io.control());
+    if result.is_ok() && !data.is_empty() {
+        if control.fast() || control.rep_count() != 0 {
+            // Not supported.
+            tracelimit::error_ratelimited!(
+                "completing pending fast hypercall with data, not supported"
+            );
+            result = Err(HvError::InvalidHypercallInput);
+        } else if let Err(err) = guest_memory.write_at(io.output_gpa(), data) {
+            tracelimit::error_ratelimited!(
+                error = &err as &dyn std::error::Error,
+                "failed to write hypercall output data"
+            );
+            result = Err(HvError::InvalidHypercallInput);
+        }
+    }
+    complete_hypercall(io, result.into())
+}
+
+/// Completes a hypercall separately from the dispatcher.
+pub fn complete_hypercall(io: &mut impl HypercallIo, result: HypercallOutput) {
+    io.set_result(result.into());
+    io.advance_ip();
 }
