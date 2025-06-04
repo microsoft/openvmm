@@ -330,6 +330,7 @@ type ParsedDt =
 #[derive(Debug, PartialEq, Eq)]
 struct PartitionTopology {
     vtl2_ram: &'static [MemoryEntry],
+    vtl2_persisted_state_header: MemoryRange,
     vtl2_persisted_state: MemoryRange,
     vtl0_mmio: Option<&'static [MemoryRange]>,
     vtl2_mmio: Option<&'static [MemoryRange]>,
@@ -371,6 +372,14 @@ fn topology_from_host_dt(
             };
         }
     }
+
+    let vtl2_persisted_state_header =
+        MemoryRange::new(params.memory_start_address..(params.memory_start_address + HV_PAGE_SIZE));
+
+    debug_log!(
+        "vtl2 persisted state range {:#x?}",
+        vtl2_persisted_state_header
+    );
 
     // HACK: Reserve 512 pages for the persisted state region. This should
     // really parse the persisted header first, and decide but do this for
@@ -470,6 +479,7 @@ fn topology_from_host_dt(
 
     Ok(PartitionTopology {
         vtl2_ram: OffStackRef::<'_, ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>>::leak(vtl2_ram),
+        vtl2_persisted_state_header,
         vtl2_persisted_state,
         vtl0_mmio,
         vtl2_mmio,
@@ -485,7 +495,12 @@ fn topology_from_persisted_state(
     todo!()
 }
 
-fn read_persisted_region_header(params: &ShimParams) -> Result<Option<MemoryRange>, DtError> {
+fn read_persisted_region_header(
+    params: &ShimParams,
+    persisted_header: MemoryRange,
+) -> Result<Option<MemoryRange>, DtError> {
+    debug_log!("read persisted region header {:#x?}", persisted_header);
+
     // TODO CVM: On an isolated guest, these pages may not be accepted. We need
     // to rethink how this will work in order to handle this correctly, as on a
     // first boot we'd need to accept them early, but subsequent boots should
@@ -497,19 +512,16 @@ fn read_persisted_region_header(params: &ShimParams) -> Result<Option<MemoryRang
     // See if a persisted region exists. Start by mapping just 4K at the top
     // of the end of file memory, where the header should be.
     let mut local_map = params.local_map.borrow_mut();
-    let mapping = local_map.map_pages(
-        MemoryRange::new(
-            params.memory_start_address + params.memory_size - HV_PAGE_SIZE
-                ..params.memory_start_address + params.memory_size,
-        ),
-        false,
-    );
+    let mapping = local_map.map_pages(persisted_header, false);
 
     // Parse the fixed header.
     let (header, remaining) =
         PersistedStateHeader::read_from_prefix(mapping.data).expect("BUGBUG must be big enough");
 
+    debug_log!("persisted header {:#x?}", header);
+
     if header.magic != PersistedStateHeader::MAGIC {
+        debug_log!("persisted header is not magic, is {:#x?}", header);
         return Ok(None);
     }
 
@@ -570,6 +582,11 @@ impl PartitionInfo {
             ALLOCATOR.init(params.heap);
         }
 
+        // The persisted state header is always the first page of VTL2 memory.
+        let vtl2_persisted_state_header = MemoryRange::new(
+            params.memory_start_address..(params.memory_start_address + HV_PAGE_SIZE),
+        );
+
         // REMOVE ME
         // HACK: Reserve 512 pages for the persisted state region. This should
         // really parse the persisted header first, and decide but do this for
@@ -584,13 +601,12 @@ impl PartitionInfo {
         // because allocator range comes later.
         //
         // test protobuf
-        protobuf_test(params, vtl2_persisted_state);
+        // protobuf_test(params, vtl2_persisted_state);
 
-        let has_persisted_state = read_persisted_region_header(params)?;
-
+        let has_persisted_state =
+            read_persisted_region_header(params, vtl2_persisted_state_header)?;
         let topology = if let Some(persisted_region) = has_persisted_state {
-            // topology_from_persisted_state()?
-            topology_from_host_dt(params, parsed, storage.cmdline.as_str())?
+            todo!("implement topology_from_persisted_state")
         } else {
             topology_from_host_dt(params, parsed, storage.cmdline.as_str())?
         };
@@ -599,6 +615,7 @@ impl PartitionInfo {
         {
             let PartitionTopology {
                 vtl2_ram,
+                vtl2_persisted_state_header,
                 vtl2_persisted_state,
                 vtl0_mmio,
                 vtl2_mmio,
@@ -609,6 +626,7 @@ impl PartitionInfo {
             storage.vtl2_ram.clear();
             storage.vtl2_ram.extend(vtl2_ram.iter().copied());
 
+            storage.vtl2_persisted_state_header = vtl2_persisted_state_header;
             storage.vtl2_persisted_state = vtl2_persisted_state;
 
             if let Some(vtl0_mmio) = vtl0_mmio {
@@ -711,6 +729,7 @@ impl PartitionInfo {
             vtl2_config_region_reclaim: vtl2_config_region_reclaim_struct,
             vtl2_reserved_region,
             vtl2_persisted_state: _,
+            vtl2_persisted_state_header: _,
             vtl2_pool_memory: _,
             vtl2_used_ranges,
             partition_ram: _,

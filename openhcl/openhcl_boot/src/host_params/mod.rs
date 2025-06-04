@@ -64,6 +64,8 @@ pub struct PartitionInfo {
     /// The vtl2 persisted state region. The first page is the persisted state
     /// header.
     pub vtl2_persisted_state: MemoryRange,
+    /// The vtl2 persisted state header.
+    pub vtl2_persisted_state_header: MemoryRange,
     /// Memory used for the VTL2 private pool.
     pub vtl2_pool_memory: MemoryRange,
     /// Memory ranges that are in use by the bootshim, and any other persisted
@@ -112,6 +114,7 @@ impl PartitionInfo {
             vtl2_config_region_reclaim: MemoryRange::EMPTY,
             vtl2_reserved_region: MemoryRange::EMPTY,
             vtl2_persisted_state: MemoryRange::EMPTY,
+            vtl2_persisted_state_header: MemoryRange::EMPTY,
             vtl2_pool_memory: MemoryRange::EMPTY,
             vtl2_used_ranges: ArrayVec::new_const(),
             partition_ram: ArrayVec::new_const(),

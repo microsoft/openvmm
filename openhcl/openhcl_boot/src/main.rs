@@ -26,6 +26,7 @@ use crate::arch::setup_vtl2_vp;
 use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_init;
+use crate::boot_logger::debug_log;
 use crate::boot_logger::log;
 use crate::hypercall::hvcall;
 use crate::single_threaded::off_stack;
@@ -346,6 +347,8 @@ enum ReservedMemoryType {
     /// Persisted state for VTL2, which is state shared between both usermode
     /// and the bootshim.
     Vtl2PersistedState,
+    /// The persisted state header for VTL2
+    Vtl2PersistedStateHeader,
 }
 
 /// Construct a slice representing the reserved memory ranges to be reported to
@@ -390,6 +393,16 @@ fn reserved_memory_regions(
     reserved.push((
         partition_info.vtl2_persisted_state,
         ReservedMemoryType::Vtl2PersistedState,
+    ));
+
+    debug_log!(
+        "vtl2 persisted state header: {:?}",
+        partition_info.vtl2_persisted_state_header
+    );
+
+    reserved.push((
+        partition_info.vtl2_persisted_state_header,
+        ReservedMemoryType::Vtl2PersistedStateHeader,
     ));
 
     reserved
@@ -950,6 +963,7 @@ mod test {
             vtl2_reserved_region: MemoryRange::EMPTY,
             vtl2_pool_memory: MemoryRange::EMPTY,
             vtl2_persisted_state: MemoryRange::EMPTY,
+            vtl2_persisted_state_header: MemoryRange::EMPTY,
             vtl2_used_ranges: ArrayVec::new(),
             partition_ram: ArrayVec::new(),
             isolation: IsolationType::None,

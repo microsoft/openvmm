@@ -116,6 +116,8 @@ open_enum! {
         /// used by usermode to store the information for the next OpenHCL
         /// instance.
         VTL2_PERSISTED_STATE = 9,
+        /// This memory is used as a header for the VTL2 persisted state
+        VTL2_PERSISTED_STATE_HEADER = 10,
     }
 }
 
@@ -132,6 +134,7 @@ impl MemoryVtlType {
                 | MemoryVtlType::VTL2_RESERVED
                 | MemoryVtlType::VTL2_GPA_POOL
                 | MemoryVtlType::VTL2_PERSISTED_STATE
+                | MemoryVtlType::VTL2_PERSISTED_STATE_HEADER
         )
     }
 }
