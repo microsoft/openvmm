@@ -79,6 +79,5 @@ pub(crate) fn initialize(guest_os_id: u64) {
 /// Call before jumping to kernel.
 pub(crate) fn uninitialize() {
     write_hypercall_msr(false);
-
     report_os_id(0);
 }
