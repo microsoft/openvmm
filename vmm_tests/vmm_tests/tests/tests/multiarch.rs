@@ -274,9 +274,28 @@ async fn boot_no_agent(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
 
 // Test for vmbus relay
 #[vmm_test(
+    openvmm_linux_direct_x64,
+    openvmm_openhcl_linux_direct_x64,
+    openvmm_pcat_x64(vhd(freebsd_13_2_x64)),
+    openvmm_pcat_x64(iso(freebsd_13_2_x64)),
+    openvmm_pcat_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_pcat_x64(vhd(ubuntu_2204_server_x64)),
+    // openvmm_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2022_x64)),
+    openvmm_openhcl_uefi_x64[vbs](vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    // hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    // hyperv_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    hyperv_openhcl_uefi_x64[vbs](vhd(windows_datacenter_core_2025_x64)),
     hyperv_openhcl_uefi_x64[tdx](vhd(windows_datacenter_core_2025_x64))
 )]
-async fn no_agent_with_vmb_relay(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
+async fn vmbus_relay(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
     let mut vm = config.with_vmbus_relay(true).run_without_agent().await?;
     vm.wait_for_successful_boot_event().await?;
     vm.send_enlightened_shutdown(ShutdownKind::Shutdown).await?;
