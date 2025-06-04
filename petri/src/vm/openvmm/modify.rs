@@ -129,7 +129,17 @@ impl PetriVmConfigOpenVmm {
     }
 
     /// Set the VM to enable secure boot and inject the templates per OS flavor.
-    pub fn with_secure_boot(self) -> Self {
+    pub fn with_secure_boot(mut self) -> Self {
+        if !self.firmware.is_uefi() {
+            panic!("Secure boot is only supported for UEFI firmware.");
+        }
+
+        if self.firmware.is_openhcl() {
+            self.ged.as_mut().unwrap().secure_boot_enabled = true;
+        } else {
+            self.config.secure_boot_enabled = true;
+        }
+
         match self.os_flavor() {
             OsFlavor::Windows => self.with_windows_secure_boot_template(),
             OsFlavor::Linux => self.with_uefi_ca_secure_boot_template(),
@@ -140,36 +150,32 @@ impl PetriVmConfigOpenVmm {
         }
     }
 
-    /// Inject Windows secure boot templates into the VM's UEFI and enable secure boot.
+    /// Inject Windows secure boot templates into the VM's UEFI.
     pub fn with_windows_secure_boot_template(mut self) -> Self {
         if !self.firmware.is_uefi() {
             panic!("Secure boot is only supported for UEFI firmware.");
         }
 
         if self.firmware.is_openhcl() {
-            self.ged.as_mut().unwrap().secure_boot_enabled = true;
             self.ged.as_mut().unwrap().secure_boot_template =
                 get_resources::ged::GuestSecureBootTemplateType::MicrosoftWindows;
         } else {
-            self.config.secure_boot_enabled = true;
             self.config.custom_uefi_vars = hyperv_secure_boot_templates::x64::microsoft_windows();
         }
 
         self
     }
 
-    /// Inject UEFI CA secure boot templates into the VM's UEFI and enable secure boot.
+    /// Inject UEFI CA secure boot templates into the VM's UEFI.
     pub fn with_uefi_ca_secure_boot_template(mut self) -> Self {
         if !self.firmware.is_uefi() {
             panic!("Secure boot is only supported for UEFI firmware.");
         }
 
         if self.firmware.is_openhcl() {
-            self.ged.as_mut().unwrap().secure_boot_enabled = true;
             self.ged.as_mut().unwrap().secure_boot_template =
                 get_resources::ged::GuestSecureBootTemplateType::MicrosoftUefiCertificateAuthoritiy;
         } else {
-            self.config.secure_boot_enabled = true;
             self.config.custom_uefi_vars = hyperv_secure_boot_templates::x64::microsoft_uefi_ca();
         }
 

@@ -92,16 +92,17 @@ async fn secure_boot(config: Box<dyn PetriVmConfig>) -> anyhow::Result<()> {
 }
 
 /// Verify that secure boot fails with a mismatched template.
+/// TODO: Allow Hyper-V VMs to load a UEFI firmware per VM, not system wide.
 #[vmm_test(
     openvmm_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     openvmm_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_uefi_x64(vhd(ubuntu_2204_server_x64)),
     openvmm_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
     openvmm_openhcl_uefi_x64(vhd(ubuntu_2204_server_x64)),
-    hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
-    hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
-    hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
-    hyperv_uefi_x64(vhd(ubuntu_2204_server_x64)),
+    // hyperv_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
+    // hyperv_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
+    // hyperv_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
+    // hyperv_uefi_x64(vhd(ubuntu_2204_server_x64)),
     hyperv_openhcl_uefi_aarch64(vhd(windows_11_enterprise_aarch64)),
     hyperv_openhcl_uefi_aarch64(vhd(ubuntu_2404_server_aarch64)),
     hyperv_openhcl_uefi_x64(vhd(windows_datacenter_core_2022_x64)),
@@ -111,6 +112,7 @@ async fn secure_boot_mismatched_template(config: Box<dyn PetriVmConfig>) -> anyh
     let mut vm = match config.os_flavor() {
         OsFlavor::Windows => {
             config
+                .with_secure_boot()
                 .with_uefi_ca_secure_boot_template()
                 .with_uefi_frontpage(false)
                 .run_without_agent()
@@ -118,6 +120,7 @@ async fn secure_boot_mismatched_template(config: Box<dyn PetriVmConfig>) -> anyh
         }
         OsFlavor::Linux => {
             config
+                .with_secure_boot()
                 .with_windows_secure_boot_template()
                 .with_uefi_frontpage(false)
                 .run_without_agent()
