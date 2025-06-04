@@ -18,6 +18,7 @@ cfg_if::cfg_if! {
         use crate::VtlCrash;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
+        use hvdef::HvRegisterCrInterceptControl;
         use hvdef::HvX64RegisterName;
         use virt::vp::MpState;
         use virt::x86::MsrError;
@@ -25,7 +26,6 @@ cfg_if::cfg_if! {
         use virt_support_x86emu::translate::TranslationRegisters;
         use virt::vp::AccessVpState;
         use zerocopy::IntoBytes;
-        use hvdef::HvRegisterCrInterceptControl;
     } else if #[cfg(guest_arch = "aarch64")] {
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
@@ -40,6 +40,8 @@ use super::UhVpInner;
 use crate::ExitActivity;
 use crate::GuestVtl;
 use crate::WakeReason;
+use cvm_tracing::CVM_ALLOWED;
+use cvm_tracing::CVM_CONFIDENTIAL;
 use guestmem::GuestMemory;
 use hcl::ioctl::Hcl;
 use hcl::ioctl::ProcessorRunner;
@@ -103,6 +105,7 @@ pub struct UhProcessor<'a, T: Backing> {
     timer: PollImpl<dyn PollTimer>,
     #[inspect(mut)]
     force_exit_sidecar: bool,
+    signaled_sidecar_exit: bool,
     /// The VTLs on this VP that are currently locked, per requesting VTL.
     vtls_tlb_locked: VtlsTlbLocked,
     #[inspect(skip)]
@@ -562,7 +565,8 @@ impl UhVpInner {
 
     pub fn set_sidecar_exit_reason(&self, reason: SidecarExitReason) {
         self.sidecar_exit_reason.lock().get_or_insert_with(|| {
-            tracing::info!(?reason, "sidecar exit");
+            tracing::info!(CVM_ALLOWED, "sidecar exit");
+            tracing::info!(CVM_CONFIDENTIAL, ?reason, "sidecar exit");
             reason
         });
     }
@@ -770,9 +774,10 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
         dev: &impl CpuIo,
     ) -> Result<Infallible, VpHaltReason<UhRunVpError>> {
         if self.runner.is_sidecar() {
-            if self.force_exit_sidecar {
+            if self.force_exit_sidecar && !self.signaled_sidecar_exit {
                 self.inner
                     .set_sidecar_exit_reason(SidecarExitReason::ManualRequest);
+                self.signaled_sidecar_exit = true;
                 return Err(VpHaltReason::Cancel);
             }
         } else {
@@ -860,6 +865,10 @@ impl<'p, T: Backing> Processor for UhProcessor<'p, T> {
                     .into();
             }
 
+            // Quiesce RCU before running the VP to avoid having to synchronize with
+            // this CPU during memory protection updates.
+            minircu::global().quiesce();
+
             T::run_vp(self, dev, &mut stop).await?;
             self.kernel_returns += 1;
         }
@@ -933,6 +942,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                 .access(format!("vp-{}", vp_info.base.vp_index.index())),
             timer: driver.new_dyn_timer(),
             force_exit_sidecar: false,
+            signaled_sidecar_exit: false,
             vtls_tlb_locked: VtlsTlbLocked {
                 vtl1: VtlArray::new(false),
                 vtl2: VtlArray::new(false),
@@ -1044,6 +1054,34 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
                     parameters: self.crash_reg,
                 };
                 tracelimit::info_ratelimited!(?crash, "Guest has reported system crash");
+                tracelimit::warn_ratelimited!(
+                    CVM_ALLOWED,
+                    ?crash,
+                    "Guest has reported system crash"
+                );
+
+                if crash.control.crash_message() {
+                    let message_gpa = crash.parameters[3];
+                    let message_size = crash.parameters[4];
+                    let mut message = vec![0; message_size as usize];
+                    match self.partition.gm[vtl].read_at(message_gpa, &mut message) {
+                        Ok(()) => {
+                            let message = String::from_utf8_lossy(&message).into_owned();
+                            tracelimit::warn_ratelimited!(
+                                CVM_CONFIDENTIAL,
+                                message,
+                                "Guest has reported a system crash message"
+                            );
+                        }
+                        Err(e) => {
+                            tracelimit::warn_ratelimited!(
+                                CVM_ALLOWED,
+                                ?e,
+                                "Failed to read crash message"
+                            );
+                        }
+                    }
+                }
 
                 self.partition.crash_notification_send.send(crash);
             }
@@ -1199,6 +1237,7 @@ impl<'a, T: Backing> UhProcessor<'a, T> {
 fn signal_mnf(dev: &impl CpuIo, connection_id: u32) {
     if let Err(err) = dev.signal_synic_event(Vtl::Vtl0, connection_id, 0) {
         tracelimit::warn_ratelimited!(
+            CVM_ALLOWED,
             error = &err as &dyn std::error::Error,
             connection_id,
             "failed to signal mnf"

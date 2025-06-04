@@ -298,7 +298,10 @@ impl BackingPrivate for HypervisorBackedX86 {
             };
             stat.increment();
 
-            if this.runner.is_sidecar() && !this.partition.no_sidecar_hotplug.load(Relaxed) {
+            if this.runner.is_sidecar()
+                && !this.signaled_sidecar_exit
+                && !this.partition.no_sidecar_hotplug.load(Relaxed)
+            {
                 // We got and handled an exit and this is a sidecar VP. Cancel
                 // the run so that we can move the sidecar VP over to the main
                 // kernel and handle future exits there.
@@ -310,6 +313,7 @@ impl BackingPrivate for HypervisorBackedX86 {
                 let message = this.runner.exit_message();
                 this.inner
                     .set_sidecar_exit_reason(SidecarExitReason::Exit(parse_sidecar_exit(message)));
+                this.signaled_sidecar_exit = true;
                 return Err(VpHaltReason::Cancel);
             }
         }
@@ -2018,6 +2022,7 @@ mod save_restore {
                 timer: _,
                 // This field is only used in dev/test scenarios
                 force_exit_sidecar: _,
+                signaled_sidecar_exit: _,
                 // Just caching the hypervisor value, let it handle saving
                 vtls_tlb_locked: _,
                 // Statistic that should reset to 0 on restore

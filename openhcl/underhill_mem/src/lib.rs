@@ -14,6 +14,7 @@ pub use init::Init;
 pub use init::MemoryMappings;
 pub use init::init;
 
+use cvm_tracing::CVM_ALLOWED;
 use guestmem::PAGE_SIZE;
 use guestmem::ranges::PagedRange;
 use hcl::GuestVtl;
@@ -71,6 +72,7 @@ impl RegisterMemory for MshvVtlWithPolicy {
             // TODO: remove this once the kernel driver tracks registration
             Err(err) if self.ignore_registration_failure => {
                 tracing::warn!(
+                    CVM_ALLOWED,
                     error = &err as &dyn std::error::Error,
                     "registration failure, could be expected"
                 );
@@ -532,7 +534,14 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             clear_bitmap.update_bitmap(range, false);
         }
 
-        // TODO SNP: flush concurrent accessors.
+        // There may be other threads concurrently accessing these pages. We
+        // cannot change the page visibility state until these threads have
+        // stopped those accesses. Flush the RCU domain that `guestmem` uses in
+        // order to flush any threads accessing the pages. After this, we are
+        // guaranteed no threads are accessing these pages (unless the pages are
+        // also locked), since no bitmap currently allows access.
+        guestmem::rcu().synchronize_blocking();
+
         if let IsolationType::Snp = self.acceptor.isolation {
             // We need to ensure that the guest TLB has been fully flushed since
             // the unaccept operation is not guaranteed to do so in hardware,

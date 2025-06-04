@@ -17,6 +17,7 @@ use chipset_device_resources::GPE0_LINE_SET;
 use chipset_device_resources::IRQ_LINE_SET;
 use chipset_device_resources::ResolveChipsetDeviceHandleParams;
 use closeable_mutex::CloseableMutex;
+use cvm_tracing::CVM_ALLOWED;
 use firmware_uefi::UefiCommandSet;
 use framebuffer::Framebuffer;
 use framebuffer::FramebufferDevice;
@@ -320,8 +321,9 @@ impl<'a> BaseChipsetBuilder<'a> {
                 Box::new(move || power.on_power_event(PowerEvent::Reset))
             };
 
-            let set_a20_signal =
-                Box::new(move |active| tracing::info!(?active, "setting stubbed A20 signal"));
+            let set_a20_signal = Box::new(move |active| {
+                tracing::info!(CVM_ALLOWED, active, "setting stubbed A20 signal")
+            });
 
             builder
                 .arc_mutex_device("piix4-pci-isa-bridge")
@@ -516,7 +518,7 @@ impl<'a> BaseChipsetBuilder<'a> {
         let pm_action = || {
             let power = foundation.power_event_handler.clone();
             move |action: pm::PowerAction| {
-                tracing::info!(?action, "guest initiated");
+                tracing::info!(CVM_ALLOWED, ?action, "guest initiated");
                 let req = match action {
                     pm::PowerAction::PowerOff => PowerEvent::PowerOff,
                     pm::PowerAction::Hibernate => PowerEvent::Hibernate,

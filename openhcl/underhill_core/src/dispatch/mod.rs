@@ -21,6 +21,7 @@ use crate::worker::FirmwareType;
 use crate::worker::NetworkSettingsError;
 use anyhow::Context;
 use async_trait::async_trait;
+use cvm_tracing::CVM_ALLOWED;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures_concurrency::future::Join;
@@ -279,7 +280,7 @@ impl LoadedVm {
                                 }
                             }
                         }
-                        .instrument(tracing::info_span!("restart"))
+                        .instrument(tracing::info_span!("restart", CVM_ALLOWED))
                         .await;
 
                         if let Some((rpc, servicing_state)) = state {
@@ -373,6 +374,7 @@ impl LoadedVm {
                         }
                         Err(err) => {
                             tracing::error!(
+                                CVM_ALLOWED,
                                 error = err.as_ref() as &dyn std::error::Error,
                                 "failed to notify host of servicing result"
                             );
@@ -388,11 +390,12 @@ impl LoadedVm {
                         }
                         let (_, send_guest) =
                             self.shutdown_relay.as_mut().expect("active shutdown_relay");
-                        tracing::info!(params = ?msg, "Relaying shutdown message");
+                        tracing::info!(CVM_ALLOWED, params = ?msg, "Relaying shutdown message");
                         let result = match send_guest.call(ShutdownRpc::Shutdown, msg).await {
                             Ok(result) => result,
                             Err(err) => {
                                 tracing::error!(
+                                    CVM_ALLOWED,
                                     error = &err as &dyn std::error::Error,
                                     "Failed to relay shutdown notification to guest"
                                 );
@@ -400,7 +403,7 @@ impl LoadedVm {
                             }
                         };
                         if !matches!(result, ShutdownResult::Ok) {
-                            tracing::warn!(?result, "Shutdown request failed");
+                            tracing::warn!(CVM_ALLOWED, ?result, "Shutdown request failed");
                             self.handle_hibernate_request(true).await;
                         }
                         result
@@ -464,6 +467,7 @@ impl LoadedVm {
             }
             Err(err) => {
                 tracing::error!(
+                    CVM_ALLOWED,
                     error = err.as_ref() as &dyn std::error::Error,
                     "error while handling servicing"
                 );
@@ -517,7 +521,7 @@ impl LoadedVm {
                 if let Some(network_settings) = self.network_settings.as_mut() {
                     network_settings
                         .unload_for_servicing()
-                        .instrument(tracing::info_span!("shutdown_mana"))
+                        .instrument(tracing::info_span!("shutdown_mana", CVM_ALLOWED))
                         .await;
                 }
             };
@@ -527,7 +531,7 @@ impl LoadedVm {
                 if let Some(nvme_manager) = self.nvme_manager.take() {
                     nvme_manager
                         .shutdown(nvme_keepalive)
-                        .instrument(tracing::info_span!("shutdown_nvme_vfio", %correlation_id, %nvme_keepalive))
+                        .instrument(tracing::info_span!("shutdown_nvme_vfio", CVM_ALLOWED, %correlation_id, %nvme_keepalive))
                         .await;
                 }
             };
@@ -536,7 +540,7 @@ impl LoadedVm {
             // restart.
             let shutdown_pci = async {
                 pci_shutdown::shutdown_pci_devices()
-                    .instrument(tracing::info_span!("shutdown_pci_devices"))
+                    .instrument(tracing::info_span!("shutdown_pci_devices", CVM_ALLOWED))
                     .await
             };
 
@@ -545,7 +549,7 @@ impl LoadedVm {
 
             Ok(state)
         }
-        .instrument(tracing::info_span!("servicing_save_vtl2", %correlation_id))
+        .instrument(tracing::info_span!("servicing_save_vtl2", CVM_ALLOWED, %correlation_id))
         .await;
 
         let mut state = match r {
@@ -593,12 +597,18 @@ impl LoadedVm {
             if !rollback {
                 network_settings
                     .prepare_for_hibernate(rollback)
-                    .instrument(tracing::info_span!("prepare_for_guest_hibernate"))
+                    .instrument(tracing::info_span!(
+                        "prepare_for_guest_hibernate",
+                        CVM_ALLOWED
+                    ))
                     .await;
             } else {
                 network_settings
                     .prepare_for_hibernate(rollback)
-                    .instrument(tracing::info_span!("rollback_prepare_for_guest_hibernate"))
+                    .instrument(tracing::info_span!(
+                        "rollback_prepare_for_guest_hibernate",
+                        CVM_ALLOWED
+                    ))
                     .await;
             };
         }
@@ -611,7 +621,7 @@ impl LoadedVm {
         let reference_time = ReferenceTime::new(self.partition.reference_time());
         if let Some(stopped) = self.last_state_unit_stop {
             let blackout_time = reference_time.since(stopped);
-            tracing::info!(
+            tracing::info!(CVM_ALLOWED,
                 correlation_id = %correlation_id.unwrap_or(Guid::ZERO),
                 blackout_time_ms = blackout_time.map(|t| t.as_millis() as u64),
                 blackout_time = blackout_time
@@ -623,6 +633,7 @@ impl LoadedVm {
             // Assume we started at reference time 0.
             let boot_time = reference_time.since(ReferenceTime::new(0));
             tracing::info!(
+                CVM_ALLOWED,
                 boot_time_ms = boot_time.map(|t| t.as_millis() as u64),
                 boot_time = boot_time
                     .map_or_else(|| "unknown".to_string(), |t| format!("{:?}", t))
@@ -636,7 +647,7 @@ impl LoadedVm {
     async fn stop(&mut self) -> bool {
         if self.state_units.is_running() {
             self.last_state_unit_stop = Some(ReferenceTime::new(self.partition.reference_time()));
-            tracing::info!("stopping VM");
+            tracing::info!(CVM_ALLOWED, "stopping VM");
             self.state_units.stop().await;
             true
         } else {
@@ -672,7 +683,7 @@ impl LoadedVm {
         // was enabled.
         let nvme_state = if let Some(n) = &self.nvme_manager {
             n.save(vf_keepalive_flag)
-                .instrument(tracing::info_span!("nvme_manager_save"))
+                .instrument(tracing::info_span!("nvme_manager_save", CVM_ALLOWED))
                 .await
                 .map(|s| NvmeSavedState { nvme_state: s })
         } else {
@@ -725,19 +736,22 @@ impl LoadedVm {
         Ok(state)
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), fields(CVM_ALLOWED))]
     async fn save_units(&mut self) -> anyhow::Result<Vec<SavedStateUnit>> {
         Ok(self.state_units.save().await?)
     }
 
-    #[instrument(skip(self, saved_state))]
+    #[instrument(skip(self, saved_state), fields(CVM_ALLOWED))]
     pub async fn restore_units(&mut self, saved_state: Vec<SavedStateUnit>) -> anyhow::Result<()> {
         self.state_units.restore(saved_state).await?;
         Ok(())
     }
 
     fn notify_of_vtl_crash(&self, vtl_crash: VtlCrash) {
-        tracing::info!("Notifying the host of the guest system crash {vtl_crash:x?}");
+        tracing::info!(
+            CVM_ALLOWED,
+            "Notifying the host of the guest system crash {vtl_crash:x?}"
+        );
 
         let VtlCrash {
             vp_index,

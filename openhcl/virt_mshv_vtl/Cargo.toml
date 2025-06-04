@@ -12,6 +12,7 @@ gdb = []
 [target.'cfg(target_os = "linux")'.dependencies]
 aarch64emu.workspace = true
 aarch64defs.workspace = true
+cvm_tracing.workspace = true
 hcl.workspace = true
 virt.workspace = true
 virt_support_aarch64emu.workspace = true
@@ -30,9 +31,11 @@ vmcore.workspace = true
 x86defs.workspace = true
 x86emu.workspace = true
 
+atomic_ringbuf.workspace = true
 inspect_counters.workspace = true
 inspect = { workspace = true, features = ["std"] }
 mesh.workspace = true
+minircu.workspace = true
 pal_async.workspace = true
 pal_uring.workspace = true
 pal.workspace = true

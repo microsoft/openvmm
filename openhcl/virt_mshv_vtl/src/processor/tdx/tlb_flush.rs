@@ -5,18 +5,15 @@
 
 use crate::TdxBacked;
 use crate::UhProcessor;
+use atomic_ringbuf::AtomicRingBuffer;
 use hcl::GuestVtl;
 use hcl::ioctl::ProcessorRunner;
 use hcl::ioctl::tdx::Tdx;
 use hvdef::hypercall::HvGvaRange;
 use inspect::Inspect;
-use parking_lot::Mutex;
-use parking_lot::MutexGuard;
 use safeatomic::AtomicSliceOps;
 use std::num::Wrapping;
 use std::sync::atomic::AtomicU32;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use x86defs::tdx::TdGlaVmAndFlags;
 use x86defs::tdx::TdxGlaListInfo;
@@ -29,7 +26,7 @@ pub(super) const FLUSH_GVA_LIST_SIZE: usize = 32;
 #[derive(Debug, Inspect)]
 pub(super) struct TdxPartitionFlushState {
     /// A fixed-size ring buffer of GVAs that need to be flushed.
-    pub(super) gva_list: AtomicTlbRingBuffer,
+    pub(super) gva_list: AtomicRingBuffer<FLUSH_GVA_LIST_SIZE, HvGvaRange>,
     /// The number of times an entire TLB flush has been requested.
     pub(super) flush_entire_counter: AtomicU32,
     /// The number of times a non-global TLB flush has been requested.
@@ -40,7 +37,7 @@ pub(super) struct TdxPartitionFlushState {
 impl TdxPartitionFlushState {
     pub(super) fn new() -> Self {
         Self {
-            gva_list: AtomicTlbRingBuffer::new(),
+            gva_list: AtomicRingBuffer::new(),
             flush_entire_counter: AtomicU32::new(0),
             flush_entire_non_global_counter: AtomicU32::new(0),
         }
@@ -112,7 +109,7 @@ impl UhProcessor<'_, TdxBacked> {
         if flush_entire_required {
             self_flush_state.flush_entire_counter = Wrapping(partition_flush_entire);
             self_flush_state.flush_entire_non_global_counter = Wrapping(partition_flush_non_global);
-            self_flush_state.gva_list_count = Wrapping(partition_flush_state.gva_list.count());
+            self_flush_state.gva_list_count = partition_flush_state.gva_list.count();
             Self::set_flush_entire(
                 true,
                 &mut self.backing.vtls[target_vtl].private_regs.vp_entry_flags,
@@ -139,7 +136,7 @@ impl UhProcessor<'_, TdxBacked> {
         flush_page: &user_driver::memory::MemoryBlock,
     ) -> bool {
         // Check quickly to see whether any new addresses are in the list.
-        let partition_list_count = Wrapping(partition_flush_state.gva_list.count());
+        let partition_list_count = partition_flush_state.gva_list.count();
         if partition_list_count == *gva_list_count {
             return true;
         }
@@ -151,10 +148,10 @@ impl UhProcessor<'_, TdxBacked> {
         }
 
         // The last `count_diff` addresses are the new ones, copy them locally.
-        let flush_addrs = &mut [0; FLUSH_GVA_LIST_SIZE][..count_diff];
+        let flush_addrs = &mut [HvGvaRange(0); FLUSH_GVA_LIST_SIZE][..count_diff];
         if !partition_flush_state
             .gva_list
-            .try_copy(*gva_list_count, flush_addrs)
+            .try_copy(gva_list_count.0, flush_addrs)
         {
             return false;
         }
@@ -165,7 +162,7 @@ impl UhProcessor<'_, TdxBacked> {
 
         if count_diff == 1 {
             runner
-                .invgla(gla_flags, TdxGlaListInfo::from(flush_addrs[0]))
+                .invgla(gla_flags, TdxGlaListInfo::from(flush_addrs[0].0))
                 .unwrap();
         } else {
             gla_flags.set_list(true);
@@ -196,93 +193,5 @@ impl UhProcessor<'_, TdxBacked> {
         } else if !global && vp_flags.invd_translations() == 0 {
             vp_flags.set_invd_translations(x86defs::tdx::TDX_VP_ENTER_INVD_INVVPID_NON_GLOBAL);
         }
-    }
-}
-
-#[derive(Debug, Inspect)]
-pub(super) struct AtomicTlbRingBuffer {
-    /// The contents of the buffer.
-    #[inspect(hex, with = "|x| inspect::iter_by_index(x.iter())")]
-    buffer: Box<[AtomicU64; FLUSH_GVA_LIST_SIZE]>,
-    /// The number of GVAs that have been added over the lifetime of the VM.
-    gva_list_count: AtomicUsize,
-    /// The number of GVAs that have started being added to the list over the
-    /// lifetime of the VM.
-    in_progress_count: AtomicUsize,
-    /// A guard to ensure that only one thread is writing to the list at a time.
-    write_lock: Mutex<()>,
-}
-
-pub(super) struct AtomicTlbRingBufferWriteGuard<'a> {
-    buf: &'a AtomicTlbRingBuffer,
-    _write_lock: MutexGuard<'a, ()>,
-}
-
-impl AtomicTlbRingBuffer {
-    fn new() -> Self {
-        Self {
-            buffer: Box::new(std::array::from_fn(|_| AtomicU64::new(0))),
-            gva_list_count: AtomicUsize::new(0),
-            in_progress_count: AtomicUsize::new(0),
-            write_lock: Mutex::new(()),
-        }
-    }
-
-    fn count(&self) -> usize {
-        self.gva_list_count.load(Ordering::Acquire)
-    }
-
-    pub fn write(&self) -> AtomicTlbRingBufferWriteGuard<'_> {
-        let write_lock = self.write_lock.lock();
-        AtomicTlbRingBufferWriteGuard {
-            buf: self,
-            _write_lock: write_lock,
-        }
-    }
-
-    fn try_copy(&self, start_count: Wrapping<usize>, flush_addrs: &mut [u64]) -> bool {
-        let mut index = start_count;
-        for flush_addr in flush_addrs.iter_mut() {
-            *flush_addr = self.buffer[index.0 % FLUSH_GVA_LIST_SIZE].load(Ordering::Relaxed);
-            index += 1;
-        }
-        std::sync::atomic::fence(Ordering::Acquire);
-
-        // Check to see whether any additional entries have been added
-        // that would have caused a wraparound. If so, the local list is
-        // incomplete and the copy has failed.
-        if (Wrapping(self.in_progress_count.load(Ordering::Acquire)) - start_count).0
-            > FLUSH_GVA_LIST_SIZE
-        {
-            return false;
-        }
-        true
-    }
-}
-
-impl AtomicTlbRingBufferWriteGuard<'_> {
-    pub fn extend(&self, items: impl ExactSizeIterator<Item = HvGvaRange>) {
-        debug_assert_eq!(
-            self.buf.in_progress_count.load(Ordering::Relaxed),
-            self.buf.gva_list_count.load(Ordering::Relaxed)
-        );
-        // Adding a new item to the buffer must be done in three steps:
-        // 1. Indicate that an entry is about to be added so that any flush
-        //    code executing simultaneously will know that it might lose an
-        //    entry that it is expecting to see.
-        // 2. Add the entry.
-        // 3. Increment the valid entry count so that any flush code executing
-        //    simultaneously will know it is valid.
-        let len = items.len();
-        let start_count = self.buf.in_progress_count.load(Ordering::Relaxed);
-        let end_count = start_count.wrapping_add(len);
-        self.buf
-            .in_progress_count
-            .store(end_count, Ordering::Relaxed);
-        for (i, v) in items.enumerate() {
-            self.buf.buffer[(start_count.wrapping_add(i)) % FLUSH_GVA_LIST_SIZE]
-                .store(v.0, Ordering::Release);
-        }
-        self.buf.gva_list_count.store(end_count, Ordering::Release);
     }
 }

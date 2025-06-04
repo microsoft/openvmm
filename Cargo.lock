@@ -198,6 +198,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "atomic_ringbuf"
+version = "0.0.0"
+dependencies = [
+ "cfg-if",
+ "inspect",
+ "loom",
+ "parking_lot",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1061,6 +1071,7 @@ dependencies = [
  "anyhow",
  "azure_profiler_proto",
  "build_rs_guest_arch",
+ "cvm_tracing",
  "diag_proto",
  "fs-err",
  "futures",
@@ -2672,6 +2683,7 @@ name = "guestmem"
 version = "0.0.0"
 dependencies = [
  "inspect",
+ "minircu",
  "pal_event",
  "sparse_mmap",
  "thiserror 2.0.12",
@@ -2747,6 +2759,7 @@ dependencies = [
  "bitfield-struct 0.10.1",
  "bitvec",
  "build_rs_guest_arch",
+ "cvm_tracing",
  "fs-err",
  "getrandom 0.3.2",
  "hv1_structs",
@@ -2776,6 +2789,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "cvm_tracing",
  "guid",
  "inspect",
  "open_enum",
@@ -4208,6 +4222,19 @@ name = "minimal_rt_build"
 version = "0.0.0"
 
 [[package]]
+name = "minircu"
+version = "0.0.0"
+dependencies = [
+ "event-listener",
+ "libc",
+ "pal_async",
+ "parking_lot",
+ "test_with_tracing",
+ "tracelimit",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4253,7 +4280,7 @@ dependencies = [
 [[package]]
 name = "ms-tpm-20-ref"
 version = "0.1.0"
-source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?branch=main#92fdd699015cb7b168c3f58aa78ca87979a14ff5"
+source = "git+https://github.com/microsoft/ms-tpm-20-ref-rs.git?branch=main#c7433fb1a74e47cea5daf13d3aac24cd0ccac1f4"
 dependencies = [
  "cc",
  "once_cell",
@@ -7031,6 +7058,7 @@ dependencies = [
  "bitfield-struct 0.10.1",
  "chipset_device",
  "chipset_device_resources",
+ "cvm_tracing",
  "getrandom 0.3.2",
  "guestmem",
  "inspect",
@@ -7581,6 +7609,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "build_rs_guest_arch",
+ "cvm_tracing",
  "futures",
  "guestmem",
  "hcl",
@@ -7604,6 +7633,7 @@ dependencies = [
 name = "underhill_threadpool"
 version = "0.0.0"
 dependencies = [
+ "cvm_tracing",
  "fs-err",
  "inspect",
  "loan_cell",
@@ -7949,10 +7979,12 @@ dependencies = [
  "aarch64defs",
  "aarch64emu",
  "anyhow",
+ "atomic_ringbuf",
  "bitfield-struct 0.10.1",
  "bitvec",
  "build_rs_guest_arch",
  "cfg-if",
+ "cvm_tracing",
  "fs-err",
  "guestmem",
  "hcl",
@@ -7965,6 +7997,7 @@ dependencies = [
  "libc",
  "memory_range",
  "mesh",
+ "minircu",
  "pal",
  "pal_async",
  "pal_uring",
@@ -8770,6 +8803,7 @@ dependencies = [
  "build_rs_guest_arch",
  "cache_topology",
  "chipset",
+ "cvm_tracing",
  "futures",
  "futures-concurrency",
  "guestmem",
@@ -8882,6 +8916,7 @@ dependencies = [
  "chipset_legacy",
  "chipset_resources",
  "closeable_mutex",
+ "cvm_tracing",
  "firmware_pcat",
  "firmware_uefi",
  "floppy",
