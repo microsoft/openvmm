@@ -462,6 +462,7 @@ impl ProxyTask {
             }
         };
 
+        // Do not call restore if the device is requesting that the channel be reoffered.
         let restore_result = if !offer.ChannelFlags.force_new_channel() {
             self.restore_channel_on_offer(
                 proxy_id,
@@ -768,6 +769,7 @@ impl ProxyTask {
                 rpc.handle_failable(async |saved_state| -> anyhow::Result<()> {
                     let Some((channels, gpadls)) = saved_state.channels_and_gpadls() else {
                         // Nothing to restore.
+                        tracing::info!("empty saved state");
                         return Ok(());
                     };
 
@@ -778,7 +780,7 @@ impl ProxyTask {
                             (g.channel_id == channel.channel_id()).then_some(Gpadl {
                                 gpadl_id: g.id,
                                 range_count: g.count.into(),
-                                range_buffer: g.buf.as_slice(),
+                                range_buffer: &g.buf,
                             })
                         });
 
@@ -810,8 +812,13 @@ impl ProxyTask {
                                 )
                             })?;
 
-                        let gpadls = gpadls.map(|g| GpadlId(g.gpadl_id)).collect();
-                        assert!(self.gpadls.lock().insert(proxy_id, gpadls).is_none())
+                        // Register the restored GPADLs.
+                        assert!(
+                            self.gpadls
+                                .lock()
+                                .insert(proxy_id, gpadls.map(|g| GpadlId(g.gpadl_id)).collect())
+                                .is_none()
+                        )
                     }
 
                     *saved_state_option = Some(*saved_state);

@@ -334,7 +334,7 @@ impl VmbusProxy {
 
         // Copy the header now that the GPADL count is known.
         buffer[..header_len].copy_from_slice(header.as_bytes());
-        let output = unsafe {
+        Ok(unsafe {
             self.ioctl(
                 proxyioctl::IOCTL_VMBUS_PROXY_RESTORE_CHANNEL,
                 buffer,
@@ -342,9 +342,8 @@ impl VmbusProxy {
             )
             .await?
             .0
-        };
-
-        Ok(output.ProxyId)
+            .ProxyId
+        })
     }
 
     pub async fn revoke_unclaimed_channels(&self) -> Result<()> {
@@ -448,6 +447,7 @@ impl VmbusProxy {
         Ok(())
     }
 
+    /// Adds GPADL ioctl data to a buffer.
     fn add_gpadl(
         buffer: &mut Vec<u8>,
         id: u64,
@@ -467,6 +467,7 @@ impl VmbusProxy {
     }
 }
 
+/// Represents data to be restored for a GPADL.
 pub struct Gpadl<'a> {
     pub gpadl_id: u32,
     pub range_count: u32,

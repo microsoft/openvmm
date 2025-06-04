@@ -328,10 +328,17 @@ impl SavedState {
             .map(|s| s.channels.iter().find(|c| c.key == offer))?
     }
 
+    /// Retrieves all the channels and GPADLs from the saved state.
+    /// If disconnected, returns any reserved channels and their GPADLs.
     pub fn channels_and_gpadls(&self) -> Option<(&[Channel], &[Gpadl])> {
         self.state
             .as_ref()
             .map(|s| (s.channels.as_slice(), s.gpadls.as_slice()))
+            .or_else(|| {
+                self.disconnected_state
+                    .as_ref()
+                    .map(|s| (s.reserved_channels.as_slice(), s.reserved_gpadls.as_slice()))
+            })
     }
 }
 
@@ -636,7 +643,7 @@ impl Channel {
     }
 
     pub fn saved_open(&self) -> bool {
-        matches!(self.state, ChannelState::Open { .. })
+        self.open_request().is_some()
     }
 
     pub fn key(&self) -> OfferKey {
