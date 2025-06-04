@@ -6128,6 +6128,7 @@ dependencies = [
  "scsi_defs",
  "scsidisk_resources",
  "stackfuture",
+ "test_with_tracing",
  "thiserror 2.0.12",
  "tracelimit",
  "tracing",
@@ -6603,6 +6604,32 @@ dependencies = [
  "mesh_protobuf",
  "thiserror 2.0.12",
  "zerocopy 0.8.24",
+]
+
+[[package]]
+name = "storage_tests"
+version = "0.0.0"
+dependencies = [
+ "chipset_device",
+ "disk_backend",
+ "disk_nvme",
+ "disklayer_ram",
+ "guestmem",
+ "guid",
+ "nvme",
+ "nvme_driver",
+ "page_pool_alloc",
+ "pal_async",
+ "pci_core",
+ "scsi_buffers",
+ "scsi_core",
+ "scsi_defs",
+ "scsidisk",
+ "test_with_tracing",
+ "tracing",
+ "user_driver_emulated_mock",
+ "vmcore",
+ "zerocopy 0.8.23",
 ]
 
 [[package]]
