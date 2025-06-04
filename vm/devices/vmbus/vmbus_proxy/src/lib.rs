@@ -317,8 +317,8 @@ impl VmbusProxy {
         };
 
         // Leave space for the header.
-        let header_len = size_of_val(&header);
-        buffer.resize(header_len, 0);
+        const HEADER_LEN: usize = size_of::<proxyioctl::VMBUS_PROXY_RESTORE_CHANNEL_INPUT>();
+        buffer.resize(HEADER_LEN, 0);
 
         // Add GPADLs to the buffer and count them.
         for gpadl in gpadls {
@@ -333,7 +333,7 @@ impl VmbusProxy {
         }
 
         // Copy the header now that the GPADL count is known.
-        buffer[..header_len].copy_from_slice(header.as_bytes());
+        buffer[..HEADER_LEN].copy_from_slice(header.as_bytes());
         Ok(unsafe {
             self.ioctl(
                 proxyioctl::IOCTL_VMBUS_PROXY_RESTORE_CHANNEL,

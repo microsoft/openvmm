@@ -318,9 +318,10 @@ pub enum RestoreError {
 mod inner {
     use super::*;
 
-    /// The top-level saved state for VMBus. It is placed in its own module to keep the internals
-    /// private, and the only thing you can do with it is convert to/from `SavedStateData`. This
-    /// enforces that users always consider both the connected and disconnected states.
+    /// The top-level saved state for the VMBus channels library. It is placed in its own module to
+    /// keep the internals private, and the only thing you can do with it is convert to/from
+    /// `SavedStateData`. This enforces that users always consider both the connected and
+    /// disconnected states.
     #[derive(Debug, Protobuf, Clone)]
     #[mesh(package = "vmbus.server.channels")]
     pub struct SavedState {
@@ -359,8 +360,8 @@ mod inner {
                 state: if let Some(connected) = value.state {
                     SavedConnectionState::Connected(connected)
                 } else {
-                    // Older saved state version may not have a disconnected state, in which case we
-                    // use a default value which has no channels or gpadls.
+                    // Older saved state versions may not have a disconnected state, in which case
+                    // we use an empty value which has no channels or gpadls.
                     SavedConnectionState::Disconnected(value.disconnected_state.unwrap_or_default())
                 },
                 pending_messages: value.pending_messages,
@@ -375,7 +376,7 @@ enum SavedConnectionState {
     Disconnected(DisconnectedState),
 }
 
-/// Alternative representation of the save data that ensures that all code paths deal with either
+/// Alternative representation of the saved state that ensures that all code paths deal with either
 /// the connected or disconnected state, and cannot neglect one.
 pub struct SavedStateData {
     state: SavedConnectionState,
@@ -392,11 +393,9 @@ impl SavedStateData {
     /// Retrieves all the channels and GPADLs from the saved state.
     /// If disconnected, returns any reserved channels and their GPADLs.
     pub fn channels_and_gpadls(&self) -> (&[Channel], &[Gpadl]) {
-        match self.state {
-            SavedConnectionState::Connected(ref connected) => {
-                (&connected.channels, &connected.gpadls)
-            }
-            SavedConnectionState::Disconnected(ref disconnected) => (
+        match &self.state {
+            SavedConnectionState::Connected(connected) => (&connected.channels, &connected.gpadls),
+            SavedConnectionState::Disconnected(disconnected) => (
                 &disconnected.reserved_channels,
                 &disconnected.reserved_gpadls,
             ),
