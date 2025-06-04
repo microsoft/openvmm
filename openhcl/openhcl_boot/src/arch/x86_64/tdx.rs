@@ -163,7 +163,7 @@ impl minimal_rt::arch::IoAccess for TdxIoAccess {
     }
 }
 
-pub fn invoke_tdcall_hypercall(
+pub unsafe fn invoke_tdcall_hypercall(
     control: hvdef::hypercall::Control,
     input_page: u64,
     output_page: u64,
