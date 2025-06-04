@@ -7,9 +7,9 @@
 #![expect(unsafe_code)]
 #![expect(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
-use bitfield_struct::bitfield;
 use futures::poll;
 use guestmem::GuestMemory;
+use guid::Guid;
 use mesh::CancelContext;
 use mesh::MeshPayload;
 use pal::windows::ObjectAttributes;
@@ -34,7 +34,6 @@ use windows::Win32::Foundation::NTSTATUS;
 use windows::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 use windows::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows::Win32::System::IO::DeviceIoControl;
-use windows::core::GUID;
 use zerocopy::IntoBytes;
 
 mod proxyioctl;
@@ -299,36 +298,53 @@ impl VmbusProxy {
 
     pub async fn restore(
         &self,
-        interface_type: GUID,
-        interface_instance: GUID,
+        interface_type: Guid,
+        interface_instance: Guid,
         subchannel_index: u16,
         target_vtl: u8,
-        open_params: VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS,
-        open: bool,
-    ) -> Result<RestoreResult> {
+        open_params: Option<VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS>,
+        gpadls: impl Iterator<Item = Gpadl<'_>>,
+    ) -> Result<u64> {
+        let mut buffer = Vec::new();
+        let mut header = proxyioctl::VMBUS_PROXY_RESTORE_CHANNEL_INPUT {
+            InterfaceType: interface_type,
+            InterfaceInstance: interface_instance,
+            SubchannelIndex: subchannel_index,
+            TargetVtl: target_vtl,
+            GpadlCount: 0,
+            OpenParameters: open_params.unwrap_or_default(),
+            Open: open_params.is_some().into(),
+        };
+
+        // Leave space for the header.
+        let header_len = size_of_val(&header);
+        buffer.resize(header_len, 0);
+
+        // Add GPADLs to the buffer and count them.
+        for gpadl in gpadls {
+            header.GpadlCount += 1;
+            Self::add_gpadl(
+                &mut buffer,
+                0, // Not used for restoring.
+                gpadl.gpadl_id,
+                gpadl.range_count,
+                gpadl.range_buffer.as_bytes(),
+            );
+        }
+
+        // Copy the header now that the GPADL count is known.
+        buffer[..header_len].copy_from_slice(header.as_bytes());
         let output = unsafe {
             self.ioctl(
                 proxyioctl::IOCTL_VMBUS_PROXY_RESTORE_CHANNEL,
-                StaticIoctlBuffer(proxyioctl::VMBUS_PROXY_RESTORE_CHANNEL_INPUT {
-                    InterfaceType: interface_type,
-                    InterfaceInstance: interface_instance,
-                    SubchannelIndex: subchannel_index,
-                    TargetVtl: target_vtl,
-                    Padding: 0,
-                    OpenParameters: open_params,
-                    Open: open.into(),
-                    Padding2: [0; 3],
-                }),
+                buffer,
                 StaticIoctlBuffer(zeroed::<proxyioctl::VMBUS_PROXY_RESTORE_CHANNEL_OUTPUT>()),
             )
             .await?
             .0
         };
 
-        Ok(RestoreResult {
-            proxy_id: output.ProxyId,
-            flags: RestoreFlags::from_bits(output.Flags),
-        })
+        Ok(output.ProxyId)
     }
 
     pub async fn revoke_unclaimed_channels(&self) -> Result<()> {
@@ -372,15 +388,7 @@ impl VmbusProxy {
         range_buf: &[u8],
     ) -> Result<()> {
         let mut buf = Vec::new();
-        let header = proxyioctl::VMBUS_PROXY_CREATE_GPADL_INPUT {
-            ProxyId: id,
-            GpadlId: gpadl_id,
-            RangeCount: range_count,
-            RangeBufferOffset: size_of::<proxyioctl::VMBUS_PROXY_CREATE_GPADL_INPUT>() as u32,
-            RangeBufferSize: range_buf.len() as u32,
-        };
-        buf.extend_from_slice(header.as_bytes());
-        buf.extend_from_slice(range_buf);
+        Self::add_gpadl(&mut buf, id, gpadl_id, range_count, range_buf);
         unsafe {
             self.ioctl(proxyioctl::IOCTL_VMBUS_PROXY_CREATE_GPADL, buf, ())
                 .await
@@ -439,17 +447,28 @@ impl VmbusProxy {
         };
         Ok(())
     }
+
+    fn add_gpadl(
+        buffer: &mut Vec<u8>,
+        id: u64,
+        gpadl_id: u32,
+        range_count: u32,
+        range_buffer: &[u8],
+    ) {
+        let header = proxyioctl::VMBUS_PROXY_CREATE_GPADL_INPUT {
+            ProxyId: id,
+            GpadlId: gpadl_id,
+            RangeCount: range_count,
+            RangeBufferOffset: size_of::<proxyioctl::VMBUS_PROXY_CREATE_GPADL_INPUT>() as u32,
+            RangeBufferSize: range_buffer.len() as u32,
+        };
+        buffer.extend_from_slice(header.as_bytes());
+        buffer.extend_from_slice(range_buffer);
+    }
 }
 
-#[bitfield(u32)]
-pub struct RestoreFlags {
-    pub restore_gpadls: bool,
-    #[bits(31)]
-    pub reserved: u32,
-}
-
-#[derive(Debug, Copy, Clone)]
-pub struct RestoreResult {
-    pub proxy_id: u64,
-    pub flags: RestoreFlags,
+pub struct Gpadl<'a> {
+    pub gpadl_id: u32,
+    pub range_count: u32,
+    pub range_buffer: &'a [u64],
 }

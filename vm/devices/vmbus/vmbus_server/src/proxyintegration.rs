@@ -19,7 +19,6 @@ use crate::channels::SavedState;
 use crate::event::MaybeWrappedEvent;
 use crate::event::WrappedEvent;
 use anyhow::Context;
-use anyhow::anyhow;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::OptionFuture;
@@ -28,7 +27,6 @@ use futures::stream::SelectAll;
 use guestmem::GuestMemory;
 use mesh::Cancel;
 use mesh::CancelContext;
-use mesh::RecvError;
 use mesh::rpc::Rpc;
 use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
@@ -59,6 +57,7 @@ use vmbus_channel::gpadl::GpadlId;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
 use vmbus_core::protocol;
+use vmbus_proxy::Gpadl;
 use vmbus_proxy::ProxyAction;
 use vmbus_proxy::VmbusProxy;
 use vmbus_proxy::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
@@ -295,7 +294,7 @@ impl ProxyTask {
             .expect("delete gpadl failed");
     }
 
-    async fn restore_open_channel_on_offer(
+    async fn restore_channel_on_offer(
         &self,
         proxy_id: u64,
         offer_key: OfferKey,
@@ -463,8 +462,8 @@ impl ProxyTask {
             }
         };
 
-        let restore_result = self
-            .restore_open_channel_on_offer(
+        let restore_result = if !offer.ChannelFlags.force_new_channel() {
+            self.restore_channel_on_offer(
                 proxy_id,
                 OfferKey {
                     interface_id,
@@ -475,7 +474,10 @@ impl ProxyTask {
                 server_request_send.clone(),
                 incoming_event.clone(),
             )
-            .await;
+            .await
+        } else {
+            None
+        };
 
         let (wrapped_event, worker_result) = match restore_result {
             Some((wrapped_event, restore_result)) => (wrapped_event, Some(restore_result)),
@@ -518,7 +520,7 @@ impl ProxyTask {
             {
                 // If the mesh channel is closed, the revoke happened after the server is shutting
                 // down, which is benign as long as we still release the channel below.
-                if !matches!(err, RpcError::Channel(RecvError::Closed)) {
+                if !matches!(err, RpcError::Channel(mesh::RecvError::Closed)) {
                     tracing::error!(
                         error = &err as &dyn std::error::Error,
                         id = %proxy_id,
@@ -761,90 +763,55 @@ impl ProxyTask {
         match request {
             SavedStateRequest::Set(rpc) => {
                 // Map the vmbus server channel ID to the newly created proxy channel ID
-                let mut proxy_ids = HashMap::new();
                 tracing::trace!("restoring channels...");
 
-                rpc.handle_failable(async |saved_state| {
-                    // Restore channel state in the proxy for each channel in the SavedState.
-                    if let Some(channels) = saved_state.channels() {
-                        for channel in channels {
-                            tracing::trace!(?channel, "restoring channel");
-                            let key = channel.key();
-                            let open_params = channel.open_request();
-                            let Some(open_params) = open_params else {
-                                continue;
-                            };
-                            let proxy_id = self
-                                .proxy
-                                .restore(
-                                    key.interface_id.into(),
-                                    key.instance_id.into(),
-                                    key.subchannel_index,
-                                    vtl,
-                                    VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS {
-                                        RingBufferGpadlHandle: open_params.ring_buffer_gpadl_id.0,
-                                        DownstreamRingBufferPageOffset: open_params
-                                            .downstream_ring_buffer_page_offset,
-                                        NodeNumber: 0, // BUGBUG: NUMA
-                                        Padding: 0,
-                                    },
-                                    channel.saved_open(),
-                                )
-                                .await
-                                .with_context(|| {
-                                    format!(
-                                        "Failed to restore channel {} in proxy",
-                                        channel.channel_id()
-                                    )
-                                })?;
+                rpc.handle_failable(async |saved_state| -> anyhow::Result<()> {
+                    let Some((channels, gpadls)) = saved_state.channels_and_gpadls() else {
+                        // Nothing to restore.
+                        return Ok(());
+                    };
 
-                            proxy_ids.insert(channel.channel_id(), proxy_id);
-                        }
-                        if let Some(gpadls) = saved_state.gpadls() {
-                            for gpadl in gpadls {
-                                if gpadl.is_tearing_down() {
-                                    continue;
-                                }
-                                let Some(restore_result) = proxy_ids.get(&gpadl.channel_id) else {
-                                    continue;
-                                };
-                                if !restore_result.flags.restore_gpadls() {
-                                    tracing::trace!(
-                                        channel_id = gpadl.channel_id,
-                                        gpadl_id = gpadl.id,
-                                        "skipping gpadl restore"
-                                    );
-                                    self.gpadls
-                                        .lock()
-                                        .entry(restore_result.proxy_id)
-                                        .or_default()
-                                        .insert(GpadlId(gpadl.id));
+                    for channel in channels {
+                        tracing::trace!(?channel, "restoring channel");
+                        let key = channel.key();
+                        let gpadls = gpadls.iter().filter_map(|g| {
+                            (g.channel_id == channel.channel_id()).then_some(Gpadl {
+                                gpadl_id: g.id,
+                                range_count: g.count.into(),
+                                range_buffer: g.buf.as_slice(),
+                            })
+                        });
 
-                                    continue;
-                                }
-                                tracing::trace!(
-                                    id = gpadl.id,
-                                    channel_id = gpadl.channel_id,
-                                    proxy_id = restore_result.proxy_id,
-                                    "restoring gpadl in proxy"
-                                );
-                                self.handle_gpadl_create(
-                                    restore_result.proxy_id,
-                                    GpadlId(gpadl.id),
-                                    gpadl.count,
-                                    gpadl.buf.as_slice(),
-                                )
-                                .await
-                                .with_context(|| {
-                                    format!(
-                                        "failed to restore GPADLs ID {} for channel {} in proxy",
-                                        gpadl.channel_id, gpadl.id
-                                    )
-                                })?;
+                        let open_params = channel.open_request().map(|request| {
+                            VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS {
+                                RingBufferGpadlHandle: request.ring_buffer_gpadl_id.0,
+                                DownstreamRingBufferPageOffset: request
+                                    .downstream_ring_buffer_page_offset,
+                                NodeNumber: 0, // BUGBUG: NUMA
+                                Padding: 0,
                             }
-                        }
-                    } else {
-                        return Err(anyhow!("No channels exist in the saved state"));
+                        });
+
+                        let proxy_id = self
+                            .proxy
+                            .restore(
+                                key.interface_id,
+                                key.instance_id,
+                                key.subchannel_index,
+                                vtl,
+                                open_params,
+                                gpadls.clone(),
+                            )
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "Failed to restore channel {} in proxy",
+                                    channel.channel_id()
+                                )
+                            })?;
+
+                        let gpadls = gpadls.map(|g| GpadlId(g.gpadl_id)).collect();
+                        assert!(self.gpadls.lock().insert(proxy_id, gpadls).is_none())
                     }
 
                     *saved_state_option = Some(*saved_state);

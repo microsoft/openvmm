@@ -328,12 +328,10 @@ impl SavedState {
             .map(|s| s.channels.iter().find(|c| c.key == offer))?
     }
 
-    pub fn channels(&self) -> Option<std::slice::Iter<'_, Channel>> {
-        self.state.as_ref().map(|s| s.channels.iter())
-    }
-
-    pub fn gpadls(&self) -> Option<std::slice::Iter<'_, Gpadl>> {
-        self.state.as_ref().map(|s| s.gpadls.iter())
+    pub fn channels_and_gpadls(&self) -> Option<(&[Channel], &[Gpadl])> {
+        self.state
+            .as_ref()
+            .map(|s| (s.channels.as_slice(), s.gpadls.as_slice()))
     }
 }
 
