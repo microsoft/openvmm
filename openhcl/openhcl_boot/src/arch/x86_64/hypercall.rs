@@ -10,7 +10,7 @@ use minimal_rt::arch::msr::write_msr;
 /// 2MB-aligned, large page sized buffer for use with hypercalls
 ///
 /// The hypercall page is 4KB in the standard setting, but we allocate a large page for
-/// TDX compatibility. This is because The underlying static page is mapped in the
+/// TDX compatibility. This is because the underlying static page is mapped in the
 /// shim's virtual memory hieararchy as a large page, making 2-MB the minimum shareable
 /// memory size between the TDX-enabled shim and hypervisor
 #[repr(C, align(0x200000))]
