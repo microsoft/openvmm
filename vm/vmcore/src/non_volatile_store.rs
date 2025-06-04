@@ -3,7 +3,6 @@
 
 //! Defines the [`NonVolatileStore`] trait.
 
-#![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
 use thiserror::Error;

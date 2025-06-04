@@ -6,8 +6,6 @@
 //! To be clear: PCI devices are not required to use these helpers, and may
 //! choose to implement configuration space accesses manually.
 
-#![warn(missing_docs)]
-
 use crate::PciInterruptPin;
 use crate::bar_mapping::BarMappings;
 use crate::capabilities::PciCapability;

@@ -6,6 +6,7 @@
 
 use crate::build_openhcl_igvm_from_recipe::OpenhclIgvmRecipe;
 use crate::download_openvmm_deps::OpenvmmDepsArch;
+use crate::download_uefi_mu_msvm::MuMsvmArch;
 use flowey::node::prelude::*;
 use std::collections::BTreeMap;
 
@@ -62,6 +63,7 @@ impl SimpleFlowNode for Node {
     fn imports(ctx: &mut ImportCtx<'_>) {
         ctx.import::<crate::download_openvmm_deps::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
+        ctx.import::<crate::download_uefi_mu_msvm::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -94,7 +96,15 @@ impl SimpleFlowNode for Node {
             crate::download_openvmm_deps::Request::GetLinuxTestKernel(openvmm_deps_arch, v)
         });
 
-        let openvmm_repo_root = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
+        let mu_msvm_arch = match vmm_tests_target.architecture {
+            target_lexicon::Architecture::X86_64 => MuMsvmArch::X86_64,
+            target_lexicon::Architecture::Aarch64(_) => MuMsvmArch::Aarch64,
+            arch => anyhow::bail!("unsupported arch {arch}"),
+        };
+        let uefi = ctx.reqv(|v| crate::download_uefi_mu_msvm::Request::GetMsvmFd {
+            arch: mu_msvm_arch,
+            msvm_fd: v,
+        });
 
         ctx.emit_rust_step("setting up vmm_tests env", |ctx| {
             let test_content_dir = test_content_dir.claim(ctx);
@@ -111,13 +121,13 @@ impl SimpleFlowNode for Node {
             let openhcl_igvm_files = register_openhcl_igvm_files.claim(ctx);
             let test_linux_initrd = test_linux_initrd.claim(ctx);
             let test_linux_kernel = test_linux_kernel.claim(ctx);
-            let openvmm_repo_root = openvmm_repo_root.claim(ctx);
+            let uefi = uefi.claim(ctx);
             move |rt| {
                 let test_linux_initrd = rt.read(test_linux_initrd);
                 let test_linux_kernel = rt.read(test_linux_kernel);
+                let uefi = rt.read(uefi);
 
                 let test_content_dir = rt.read(test_content_dir);
-                let openvmm_repo_root = rt.read(openvmm_repo_root);
 
                 let mut env = BTreeMap::new();
 
@@ -143,11 +153,6 @@ impl SimpleFlowNode for Node {
                 env.insert(
                     "VMM_TESTS_CONTENT_DIR".into(),
                     path_as_string(&test_content_dir)?,
-                );
-
-                env.insert(
-                    "VMM_TESTS_REPO_ROOT".into(),
-                    path_as_string(&openvmm_repo_root)?,
                 );
 
                 // use a subdir for test logs
@@ -291,6 +296,26 @@ impl SimpleFlowNode for Node {
                     test_linux_kernel,
                     test_content_dir.join(arch_dir).join(kernel_file_name),
                 )?;
+
+                let uefi_dir = test_content_dir
+                    .join(format!(
+                        "hyperv.uefi.mscoreuefi.{}.RELEASE",
+                        match mu_msvm_arch {
+                            MuMsvmArch::Aarch64 => "AARCH64",
+                            MuMsvmArch::X86_64 => "x64",
+                        }
+                    ))
+                    .join(format!(
+                        "Msvm{}",
+                        match mu_msvm_arch {
+                            MuMsvmArch::Aarch64 => "AARCH64",
+                            MuMsvmArch::X86_64 => "X64",
+                        }
+                    ))
+                    .join("RELEASE_VS2022")
+                    .join("FV");
+                fs_err::create_dir_all(&uefi_dir)?;
+                fs_err::copy(uefi, uefi_dir.join("MSVM.fd"))?;
 
                 // debug log the current contents of the dir
                 log::debug!("final folder content: {}", test_content_dir.display());

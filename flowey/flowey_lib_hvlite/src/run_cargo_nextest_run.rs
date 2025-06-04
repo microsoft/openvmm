@@ -28,6 +28,10 @@ flowey_request! {
         pub nextest_profile: NextestProfile,
         /// Nextest test filter expression
         pub nextest_filter_expr: Option<String>,
+        /// Nextest working directory (defaults to repo root)
+        pub nextest_working_dir: Option<ReadVar<PathBuf>>,
+        /// Nextest configuration file (defaults to config in repo)
+        pub nextest_config_file: Option<ReadVar<PathBuf>>,
         /// Whether to run ignored test
         pub run_ignored: bool,
         /// Additional env vars set when executing the tests.
@@ -54,7 +58,7 @@ impl FlowNode for Node {
     fn emit(requests: Vec<Self::Request>, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
 
-        let nextest_config_file =
+        let default_nextest_config_file =
             openvmm_repo_path.map(ctx, |p| p.join(".config").join("nextest.toml"));
 
         let base_env = [
@@ -72,8 +76,10 @@ impl FlowNode for Node {
             run_kind,
             nextest_profile,
             nextest_filter_expr,
+            nextest_working_dir,
+            nextest_config_file,
             run_ignored,
-            pre_run_deps,
+            mut pre_run_deps,
             results,
             extra_env,
         } in requests
@@ -88,12 +94,26 @@ impl FlowNode for Node {
                 ReadVar::from_static(base_env.clone())
             };
 
+            let working_dir = if let Some(nextest_working_dir) = nextest_working_dir {
+                pre_run_deps.push(openvmm_repo_path.clone().into_side_effect());
+                nextest_working_dir
+            } else {
+                openvmm_repo_path.clone()
+            };
+
+            let config_file = if let Some(nextest_config_file) = nextest_config_file {
+                pre_run_deps.push(default_nextest_config_file.clone().into_side_effect());
+                nextest_config_file
+            } else {
+                default_nextest_config_file.clone()
+            };
+
             ctx.req(flowey_lib_common::run_cargo_nextest_run::Request::Run(
                 flowey_lib_common::run_cargo_nextest_run::Run {
                     friendly_name,
                     run_kind,
-                    working_dir: openvmm_repo_path.clone(),
-                    config_file: nextest_config_file.clone(),
+                    working_dir,
+                    config_file,
                     tool_config_files: Vec::new(),
                     nextest_profile: match nextest_profile {
                         NextestProfile::Default => "default".into(),
