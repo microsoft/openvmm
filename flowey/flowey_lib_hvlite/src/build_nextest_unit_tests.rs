@@ -223,7 +223,7 @@ impl FlowNode for Node {
                     features,
                     no_default_features: false,
                     unstable_panic_abort_tests,
-                    target,
+                    target: target.clone(),
                     profile: match profile {
                         CommonProfile::Release => CargoBuildProfile::Release,
                         CommonProfile::Debug => CargoBuildProfile::Debug,
@@ -242,6 +242,8 @@ impl FlowNode for Node {
                     ),
                     nextest_profile,
                     nextest_filter_expr: None,
+                    nextest_working_dir: None,
+                    nextest_config_file: None,
                     run_ignored: false,
                     extra_env: None,
                     pre_run_deps,

@@ -21,7 +21,7 @@
 //! in the same OS (but not across machines, virtual or physical). See the
 //! comments on [`VmTimeSourceBuilder`] for more information.
 
-#![warn(missing_docs)]
+pub use saved_state::SavedState;
 
 use futures::StreamExt;
 use futures::future::join_all;
@@ -345,18 +345,24 @@ pub struct VmTimeKeeper {
     time: TimeState,
 }
 
-/// Saved state for [`VmTimeKeeper`].
-#[derive(Protobuf, SavedStateRoot)]
-#[mesh(package = "vmtime")]
-pub struct SavedState {
-    #[mesh(1)]
-    vmtime: VmTime,
-}
+// UNSAFETY: Needed to derive SavedStateRoot in the same crate it is declared
+#[expect(unsafe_code)]
+mod saved_state {
+    use super::*;
 
-impl SavedState {
-    /// Create a new instance of `SavedState` from an existing `VmTime`.
-    pub fn from_vmtime(vmtime: VmTime) -> Self {
-        SavedState { vmtime }
+    /// Saved state for [`VmTimeKeeper`].
+    #[derive(Protobuf, SavedStateRoot)]
+    #[mesh(package = "vmtime")]
+    pub struct SavedState {
+        #[mesh(1)]
+        pub(super) vmtime: VmTime,
+    }
+
+    impl SavedState {
+        /// Create a new instance of `SavedState` from an existing `VmTime`.
+        pub fn from_vmtime(vmtime: VmTime) -> Self {
+            SavedState { vmtime }
+        }
     }
 }
 

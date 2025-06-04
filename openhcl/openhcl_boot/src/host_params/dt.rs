@@ -325,7 +325,6 @@ impl PartitionInfo {
         params: &'a ShimParams,
         storage: &'a mut Self,
         mut options: BootCommandLineOptions,
-        can_trust_host: bool,
     ) -> Result<Option<&'a mut Self>, DtError> {
         let dt = params.device_tree();
 
@@ -351,12 +350,16 @@ impl PartitionInfo {
         .map_err(|_| DtError::CommandLineSize)?;
 
         // Depending on policy, write what the host specified in the chosen node.
-        if can_trust_host && command_line.policy == CommandLinePolicy::APPEND_CHOSEN {
+        if command_line.policy == CommandLinePolicy::APPEND_CHOSEN {
             // Parse in extra options from the host provided command line.
             options.parse(&parsed.command_line);
             write!(storage.cmdline, " {}", &parsed.command_line)
                 .map_err(|_| DtError::CommandLineSize)?;
         }
+
+        // Write the host provided command line.
+        write!(storage.host_provided_cmdline, "{}", parsed.command_line)
+            .map_err(|_| DtError::CommandLineSize)?;
 
         // TODO: Decide if isolated guests always use VTL2 allocation mode.
 
@@ -503,8 +506,8 @@ impl PartitionInfo {
             storage.vtl2_pool_memory = pool;
         }
 
-        // If we can trust the host, use the provided alias map
-        if can_trust_host {
+        // If we are not isolated, use the provided alias map
+        if params.isolation_type == IsolationType::None {
             storage.vtl0_alias_map = parsed.vtl0_alias_map;
         }
 
@@ -523,6 +526,7 @@ impl PartitionInfo {
             vmbus_vtl0: _,
             vmbus_vtl2: _,
             cmdline: _,
+            host_provided_cmdline: _,
             com3_serial_available: com3_serial,
             gic,
             memory_allocation_mode: _,

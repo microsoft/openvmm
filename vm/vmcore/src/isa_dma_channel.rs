@@ -3,6 +3,8 @@
 
 //! Infrastructure to support legacy ISA DMA channels.
 
+#![forbid(unsafe_code)]
+
 /// ISA DMA transfer direction
 #[derive(PartialEq, Debug)]
 pub enum IsaDmaDirection {

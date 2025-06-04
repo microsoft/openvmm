@@ -4,9 +4,6 @@
 //! Internal nodes for publishing (well, preparing to publish) and resolving
 //! artifacts.
 
-// UNSAFETY: using internal macros which use linkme.
-#![expect(unsafe_code)]
-
 use anyhow::Context as _;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -156,6 +153,8 @@ fn tag_path(mut path: PathBuf) -> PathBuf {
     path
 }
 
+// UNSAFETY: Needed to invoke new_simple_flow_node! in the same crate as it is defined.
+#[expect(unsafe_code)]
 pub mod publish {
     use super::Artifact;
     use crate::flowey_request;
@@ -239,6 +238,8 @@ pub mod publish {
     }
 }
 
+// UNSAFETY: Needed to invoke new_simple_flow_node! in the same crate as it is defined.
+#[expect(unsafe_code)]
 pub mod resolve {
     use super::Artifact;
     use crate::flowey_request;

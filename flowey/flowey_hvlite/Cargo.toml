@@ -12,7 +12,7 @@ flowey_lib_common.workspace = true
 flowey_lib_hvlite.workspace = true
 flowey.workspace = true
 
-vmm_test_images = { workspace = true, features = ["serde"] }
+vmm_test_images = { workspace = true, features = ["serde", "clap"] }
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }

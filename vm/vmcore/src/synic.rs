@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-#![expect(missing_docs)]
-
 //! Synic interface definitions used by VmBus.
+
+#![forbid(unsafe_code)]
+#![expect(missing_docs)]
 
 use crate::interrupt::Interrupt;
 use crate::monitor::MonitorId;

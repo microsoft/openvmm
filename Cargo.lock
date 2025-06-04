@@ -9242,9 +9242,9 @@ dependencies = [
 
 [[package]]
 name = "win_etw_tracing"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c09b28bd20c0c93f3695b62bb14fa06cfc75599aa0ed7dc71e47ec9ddb0eca9"
+checksum = "2a60a107937401ac1aa48839f0c7f2e5bdf774d862fd39ef3ba8224980e1b1c9"
 dependencies = [
  "bytes",
  "tracing",
