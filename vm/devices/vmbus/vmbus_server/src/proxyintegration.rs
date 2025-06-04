@@ -763,20 +763,15 @@ impl ProxyTask {
 
         match request {
             SavedStateRequest::Set(rpc) => {
-                // Map the vmbus server channel ID to the newly created proxy channel ID
                 tracing::trace!("restoring channels...");
 
                 rpc.handle_failable(async |saved_state| -> anyhow::Result<()> {
-                    let Some((channels, gpadls)) = saved_state.channels_and_gpadls() else {
-                        // Nothing to restore.
-                        tracing::info!("empty saved state");
-                        return Ok(());
-                    };
+                    let (channels, gpadls) = saved_state.channels_and_gpadls();
 
                     for channel in channels {
                         tracing::trace!(?channel, "restoring channel");
                         let key = channel.key();
-                        let gpadls = gpadls.iter().filter_map(|g| {
+                        let channel_gpadls = gpadls.iter().filter_map(|g| {
                             (g.channel_id == channel.channel_id()).then_some(Gpadl {
                                 gpadl_id: g.id,
                                 range_count: g.count.into(),
@@ -802,7 +797,7 @@ impl ProxyTask {
                                 key.subchannel_index,
                                 vtl,
                                 open_params,
-                                gpadls.clone(),
+                                channel_gpadls.clone(),
                             )
                             .await
                             .with_context(|| {
@@ -816,7 +811,10 @@ impl ProxyTask {
                         assert!(
                             self.gpadls
                                 .lock()
-                                .insert(proxy_id, gpadls.map(|g| GpadlId(g.gpadl_id)).collect())
+                                .insert(
+                                    proxy_id,
+                                    channel_gpadls.map(|g| GpadlId(g.gpadl_id)).collect()
+                                )
                                 .is_none()
                         )
                     }

@@ -9,6 +9,7 @@ use super::OfferedInfo;
 use super::RestoreState;
 use super::SUPPORTED_FEATURE_FLAGS;
 use guid::Guid;
+pub use inner::SavedState;
 use mesh::payload::Protobuf;
 use std::fmt::Display;
 use thiserror::Error;
@@ -100,13 +101,13 @@ impl super::Server {
 
     /// Saves state.
     pub fn save(&self) -> SavedState {
-        let state = self.save_connected_state();
-        let disconnected_state = state.is_none().then(|| self.save_disconnected_state());
-        SavedState {
-            state,
-            disconnected_state,
-            pending_messages: self.save_pending_messages(),
-        }
+        let state = if let Some(state) = self.save_connected_state() {
+            SavedConnectionState::Connected(state)
+        } else {
+            SavedConnectionState::Disconnected(self.save_disconnected_state())
+        };
+
+        SavedState::new(state, self.save_pending_messages())
     }
 
     fn save_connected_state(&self) -> Option<ConnectedState> {
@@ -184,66 +185,72 @@ impl<'a, N: 'a + Notifier> super::ServerWithNotifier<'a, N> {
     pub fn restore(&mut self, saved: SavedState) -> Result<(), RestoreError> {
         tracing::trace!(?saved, "restoring channel state");
 
-        if let Some(saved) = saved.state {
-            self.inner.state = saved.connection.restore()?;
+        let (state, pending_messages) = saved.state();
+        match state {
+            SavedConnectionState::Connected(saved) => {
+                self.inner.state = saved.connection.restore()?;
 
-            // Restore server state, and resend server notifications if needed. If these notifications
-            // were processed before the save, it's harmless as the values will be the same.
-            let request = match self.inner.state {
-                super::ConnectionState::Connecting {
-                    info,
-                    next_action: _,
-                } => Some(super::ModifyConnectionRequest {
-                    version: Some(info.version.version as u32),
-                    interrupt_page: info.interrupt_page.into(),
-                    monitor_page: info.monitor_page.into(),
-                    target_message_vp: Some(info.target_message_vp),
-                    notify_relay: true,
-                }),
-                super::ConnectionState::Connected(info) => Some(super::ModifyConnectionRequest {
-                    version: None,
-                    monitor_page: info.monitor_page.into(),
-                    interrupt_page: info.interrupt_page.into(),
-                    target_message_vp: Some(info.target_message_vp),
-                    // If the save didn't happen while modifying, the relay doesn't need to be notified
-                    // of this info as it doesn't constitute a change, we're just restoring existing
-                    // connection state.
-                    notify_relay: info.modifying,
-                }),
-                // No action needed for these states; if disconnecting, check_disconnected will resend
-                // the reset request if needed.
-                super::ConnectionState::Disconnected
-                | super::ConnectionState::Disconnecting { .. } => None,
-            };
+                // Restore server state, and resend server notifications if needed. If these notifications
+                // were processed before the save, it's harmless as the values will be the same.
+                let request = match self.inner.state {
+                    super::ConnectionState::Connecting {
+                        info,
+                        next_action: _,
+                    } => Some(super::ModifyConnectionRequest {
+                        version: Some(info.version.version as u32),
+                        interrupt_page: info.interrupt_page.into(),
+                        monitor_page: info.monitor_page.into(),
+                        target_message_vp: Some(info.target_message_vp),
+                        notify_relay: true,
+                    }),
+                    super::ConnectionState::Connected(info) => {
+                        Some(super::ModifyConnectionRequest {
+                            version: None,
+                            monitor_page: info.monitor_page.into(),
+                            interrupt_page: info.interrupt_page.into(),
+                            target_message_vp: Some(info.target_message_vp),
+                            // If the save didn't happen while modifying, the relay doesn't need to be notified
+                            // of this info as it doesn't constitute a change, we're just restoring existing
+                            // connection state.
+                            notify_relay: info.modifying,
+                        })
+                    }
+                    // No action needed for these states; if disconnecting, check_disconnected will resend
+                    // the reset request if needed.
+                    super::ConnectionState::Disconnected
+                    | super::ConnectionState::Disconnecting { .. } => None,
+                };
 
-            if let Some(request) = request {
-                self.notifier.modify_connection(request)?;
+                if let Some(request) = request {
+                    self.notifier.modify_connection(request)?;
+                }
+
+                for saved_channel in saved.channels {
+                    self.inner.restore_one_channel(saved_channel)?;
+                }
+
+                for saved_gpadl in saved.gpadls {
+                    self.inner.restore_one_gpadl(saved_gpadl)?;
+                }
             }
+            SavedConnectionState::Disconnected(saved) => {
+                self.inner.state = super::ConnectionState::Disconnected;
+                for saved_channel in saved.reserved_channels {
+                    self.inner.restore_one_channel(saved_channel)?;
+                }
 
-            for saved_channel in saved.channels {
-                self.inner.restore_one_channel(saved_channel)?;
-            }
-
-            for saved_gpadl in saved.gpadls {
-                self.inner.restore_one_gpadl(saved_gpadl)?;
-            }
-        } else if let Some(saved) = saved.disconnected_state {
-            self.inner.state = super::ConnectionState::Disconnected;
-            for saved_channel in saved.reserved_channels {
-                self.inner.restore_one_channel(saved_channel)?;
-            }
-
-            for saved_gpadl in saved.reserved_gpadls {
-                self.inner.restore_one_gpadl(saved_gpadl)?;
+                for saved_gpadl in saved.reserved_gpadls {
+                    self.inner.restore_one_gpadl(saved_gpadl)?;
+                }
             }
         }
 
         self.inner
             .pending_messages
             .0
-            .reserve(saved.pending_messages.len());
+            .reserve(pending_messages.len());
 
-        for message in saved.pending_messages {
+        for message in pending_messages {
             self.inner.pending_messages.0.push_back(message.restore()?);
         }
 
@@ -306,40 +313,83 @@ pub enum RestoreError {
     MessageTooLarge,
 }
 
-#[derive(Debug, Protobuf, Clone)]
-#[mesh(package = "vmbus.server.channels")]
-pub struct SavedState {
-    #[mesh(1)]
-    state: Option<ConnectedState>,
-    // Disconnected state is used to save any open reserved channels while the guest is
-    // disconnected. It is mutually exclusive with `state`, but is separate to maintain saved state
-    // compatibility.
-    #[mesh(2)]
-    disconnected_state: Option<DisconnectedState>,
-    #[mesh(3)]
-    pending_messages: Vec<OutgoingMessage>,
+mod inner {
+    use super::*;
+
+    /// The top-level saved state for VMBus. It is placed in its own module to enforce that the
+    /// connection state is accessed only through the `state()` method.
+    #[derive(Debug, Protobuf, Clone)]
+    #[mesh(package = "vmbus.server.channels")]
+    pub struct SavedState {
+        #[mesh(1)]
+        state: Option<ConnectedState>,
+        // Disconnected state is used to save any open reserved channels while the guest is
+        // disconnected. It is mutually exclusive with `state`, but is separate to maintain saved
+        // state compatibility.
+        // N.B. In a saved state created by the current version, either state or disconnected_state
+        //      is always `Some`, but for older versions, it is possible that both are `None`. They
+        //      can never both be `Some`.
+        #[mesh(2)]
+        disconnected_state: Option<DisconnectedState>,
+        #[mesh(3)]
+        pending_messages: Vec<OutgoingMessage>,
+    }
+
+    impl SavedState {
+        pub(super) fn new(
+            state: SavedConnectionState,
+            pending_messages: Vec<OutgoingMessage>,
+        ) -> Self {
+            match state {
+                SavedConnectionState::Connected(state) => Self {
+                    state: Some(state),
+                    disconnected_state: None,
+                    pending_messages,
+                },
+                SavedConnectionState::Disconnected(disconnected_state) => Self {
+                    state: None,
+                    disconnected_state: Some(disconnected_state),
+                    pending_messages,
+                },
+            }
+        }
+
+        /// Returns the current connection state, either connected or disconnected.
+        pub(super) fn state(self) -> (SavedConnectionState, Vec<OutgoingMessage>) {
+            let state = if let Some(state) = self.state {
+                SavedConnectionState::Connected(state)
+            } else {
+                SavedConnectionState::Disconnected(self.disconnected_state.unwrap_or_default())
+            };
+
+            (state, self.pending_messages)
+        }
+
+        /// Finds a channel in the saved state.
+        pub fn find_channel(&self, offer: OfferKey) -> Option<&Channel> {
+            let (channels, _) = self.channels_and_gpadls();
+            channels.iter().find(|c| c.key == offer)
+        }
+
+        /// Retrieves all the channels and GPADLs from the saved state.
+        /// If disconnected, returns any reserved channels and their GPADLs.
+        pub fn channels_and_gpadls(&self) -> (&[Channel], &[Gpadl]) {
+            if let Some(state) = &self.state {
+                (&state.channels, &state.gpadls)
+            } else {
+                self.disconnected_state.as_ref().map_or((&[], &[]), |s| {
+                    (s.reserved_channels.as_slice(), s.reserved_gpadls.as_slice())
+                })
+            }
+        }
+    }
 }
 
-impl SavedState {
-    /// Finds a channel in the saved state.
-    pub fn find_channel(&self, offer: OfferKey) -> Option<&Channel> {
-        self.state
-            .as_ref()
-            .map(|s| s.channels.iter().find(|c| c.key == offer))?
-    }
-
-    /// Retrieves all the channels and GPADLs from the saved state.
-    /// If disconnected, returns any reserved channels and their GPADLs.
-    pub fn channels_and_gpadls(&self) -> Option<(&[Channel], &[Gpadl])> {
-        self.state
-            .as_ref()
-            .map(|s| (s.channels.as_slice(), s.gpadls.as_slice()))
-            .or_else(|| {
-                self.disconnected_state
-                    .as_ref()
-                    .map(|s| (s.reserved_channels.as_slice(), s.reserved_gpadls.as_slice()))
-            })
-    }
+/// Helper type that ensures that all code paths deal with either the connected or disconnected
+/// state, and cannot neglect either.
+enum SavedConnectionState {
+    Connected(ConnectedState),
+    Disconnected(DisconnectedState),
 }
 
 #[derive(Debug, Clone, Protobuf)]
@@ -353,7 +403,7 @@ struct ConnectedState {
     gpadls: Vec<Gpadl>,
 }
 
-#[derive(Debug, Clone, Protobuf)]
+#[derive(Default, Debug, Clone, Protobuf)]
 #[mesh(package = "vmbus.server.channels")]
 struct DisconnectedState {
     #[mesh(1)]
