@@ -6606,6 +6606,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "storage_tests"
+version = "0.0.0"
+dependencies = [
+ "disklayer_ram",
+ "guestmem",
+ "pal_async",
+ "scsi_defs",
+ "scsidisk",
+ "storvsc_driver",
+ "storvsp",
+ "storvsp_protocol",
+ "storvsp_resources",
+ "test_with_tracing",
+ "vmbus_channel",
+ "zerocopy 0.8.24",
+]
+
+[[package]]
+name = "storvsc_driver"
+version = "0.0.0"
+dependencies = [
+ "futures",
+ "futures-concurrency",
+ "guestmem",
+ "inspect",
+ "mesh_channel",
+ "pal_async",
+ "scsi_buffers",
+ "scsi_defs",
+ "slab",
+ "storvsp_protocol",
+ "task_control",
+ "test_with_tracing",
+ "thiserror 2.0.12",
+ "tracing",
+ "tracing_helpers",
+ "vmbus_async",
+ "vmbus_channel",
+ "vmbus_ring",
+ "vmcore",
+ "zerocopy 0.8.24",
+]
+
+[[package]]
 name = "storvsp"
 version = "0.0.0"
 dependencies = [
