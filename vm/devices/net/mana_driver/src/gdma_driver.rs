@@ -200,7 +200,7 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
 
         // Wait for VF ownership of the shared memory
         const BEFORE_DESTROY_HWC: &str = "Before GdmaDriver destroy HWC";
-        let _header = match self.wait_for_vf_to_own_shmem().context(BEFORE_DESTROY_HWC) {
+        let _ = match self.wait_for_vf_to_own_shmem().context(BEFORE_DESTROY_HWC) {
             Ok(hdr) => hdr,
             Err(e) => {
                 tracing::error!(context = BEFORE_DESTROY_HWC, error = %e);
