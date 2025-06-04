@@ -18,6 +18,10 @@ flowey_request! {
         pub nextest_archive_file: ReadVar<NextestUnitTestArchive>,
         /// Nextest profile to use when running the source code
         pub nextest_profile: NextestProfile,
+        /// Optionally provide the nextest bin to use
+        pub nextest_bin: Option<ReadVar<PathBuf>>,
+        /// Target for the tests to run on
+        pub target: Option<ReadVar<target_lexicon::Triple>>,
         /// Results of running the tests
         pub results: WriteVar<TestResults>,
     }
@@ -36,6 +40,8 @@ impl FlowNode for Node {
         for Request {
             nextest_archive_file,
             nextest_profile,
+            nextest_bin,
+            target,
             results,
         } in requests
         {
@@ -43,11 +49,16 @@ impl FlowNode for Node {
 
             ctx.req(crate::run_cargo_nextest_run::Request {
                 friendly_name: "unit-tests".into(),
-                run_kind: flowey_lib_common::run_cargo_nextest_run::NextestRunKind::RunFromArchive(
-                    nextest_archive,
-                ),
+                run_kind:
+                    flowey_lib_common::run_cargo_nextest_run::NextestRunKind::RunFromArchive {
+                        archive_file: nextest_archive,
+                        target,
+                        nextest_bin,
+                    },
                 nextest_profile,
                 nextest_filter_expr: None,
+                nextest_working_dir: None,
+                nextest_config_file: None,
                 run_ignored: false,
                 extra_env: None,
                 pre_run_deps: Vec::new(), // FIXME: ensure all deps are installed
