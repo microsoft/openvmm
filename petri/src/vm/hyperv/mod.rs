@@ -139,7 +139,7 @@ impl PetriVmConfig for PetriVmConfigHyperV {
     }
 
     fn os_flavor(&self) -> OsFlavor {
-        Self::os_flavor(self)
+        self.os_flavor
     }
 }
 
@@ -607,11 +607,6 @@ impl PetriVmConfigHyperV {
     pub fn with_uefi_frontpage(mut self, enable: bool) -> Self {
         self.disable_frontpage = !enable;
         self
-    }
-
-    /// Get the OS that the VM will boot into.
-    pub fn os_flavor(&self) -> OsFlavor {
-        self.os_flavor
     }
 }
 
