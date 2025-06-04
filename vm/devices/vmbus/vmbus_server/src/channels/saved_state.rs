@@ -101,13 +101,15 @@ impl super::Server {
 
     /// Saves state.
     pub fn save(&self) -> SavedState {
-        let state = if let Some(state) = self.save_connected_state() {
-            SavedConnectionState::Connected(state)
-        } else {
-            SavedConnectionState::Disconnected(self.save_disconnected_state())
-        };
-
-        SavedState::new(state, self.save_pending_messages())
+        SavedStateData {
+            state: if let Some(state) = self.save_connected_state() {
+                SavedConnectionState::Connected(state)
+            } else {
+                SavedConnectionState::Disconnected(self.save_disconnected_state())
+            },
+            pending_messages: self.save_pending_messages(),
+        }
+        .into()
     }
 
     fn save_connected_state(&self) -> Option<ConnectedState> {
@@ -185,8 +187,8 @@ impl<'a, N: 'a + Notifier> super::ServerWithNotifier<'a, N> {
     pub fn restore(&mut self, saved: SavedState) -> Result<(), RestoreError> {
         tracing::trace!(?saved, "restoring channel state");
 
-        let (state, pending_messages) = saved.state();
-        match state {
+        let saved = SavedStateData::from(saved);
+        match saved.state {
             SavedConnectionState::Connected(saved) => {
                 self.inner.state = saved.connection.restore()?;
 
@@ -248,9 +250,9 @@ impl<'a, N: 'a + Notifier> super::ServerWithNotifier<'a, N> {
         self.inner
             .pending_messages
             .0
-            .reserve(pending_messages.len());
+            .reserve(saved.pending_messages.len());
 
-        for message in pending_messages {
+        for message in saved.pending_messages {
             self.inner.pending_messages.0.push_back(message.restore()?);
         }
 
@@ -316,8 +318,9 @@ pub enum RestoreError {
 mod inner {
     use super::*;
 
-    /// The top-level saved state for VMBus. It is placed in its own module to enforce that the
-    /// connection state is accessed only through the `state()` method.
+    /// The top-level saved state for VMBus. It is placed in its own module to keep the internals
+    /// private, and the only thing you can do with it is convert to/from `SavedStateData`. This
+    /// enforces that users always consider both the connected and disconnected states.
     #[derive(Debug, Protobuf, Clone)]
     #[mesh(package = "vmbus.server.channels")]
     pub struct SavedState {
@@ -335,61 +338,70 @@ mod inner {
         pending_messages: Vec<OutgoingMessage>,
     }
 
-    impl SavedState {
-        pub(super) fn new(
-            state: SavedConnectionState,
-            pending_messages: Vec<OutgoingMessage>,
-        ) -> Self {
-            match state {
-                SavedConnectionState::Connected(state) => Self {
-                    state: Some(state),
-                    disconnected_state: None,
-                    pending_messages,
-                },
-                SavedConnectionState::Disconnected(disconnected_state) => Self {
-                    state: None,
-                    disconnected_state: Some(disconnected_state),
-                    pending_messages,
-                },
-            }
-        }
-
-        /// Returns the current connection state, either connected or disconnected.
-        pub(super) fn state(self) -> (SavedConnectionState, Vec<OutgoingMessage>) {
-            let state = if let Some(state) = self.state {
-                SavedConnectionState::Connected(state)
-            } else {
-                SavedConnectionState::Disconnected(self.disconnected_state.unwrap_or_default())
+    impl From<SavedStateData> for SavedState {
+        fn from(value: SavedStateData) -> Self {
+            let (state, disconnected_state) = match value.state {
+                SavedConnectionState::Connected(connected) => (Some(connected), None),
+                SavedConnectionState::Disconnected(disconnected) => (None, Some(disconnected)),
             };
 
-            (state, self.pending_messages)
+            Self {
+                state,
+                disconnected_state,
+                pending_messages: value.pending_messages,
+            }
         }
+    }
 
-        /// Finds a channel in the saved state.
-        pub fn find_channel(&self, offer: OfferKey) -> Option<&Channel> {
-            let (channels, _) = self.channels_and_gpadls();
-            channels.iter().find(|c| c.key == offer)
-        }
-
-        /// Retrieves all the channels and GPADLs from the saved state.
-        /// If disconnected, returns any reserved channels and their GPADLs.
-        pub fn channels_and_gpadls(&self) -> (&[Channel], &[Gpadl]) {
-            if let Some(state) = &self.state {
-                (&state.channels, &state.gpadls)
-            } else {
-                self.disconnected_state.as_ref().map_or((&[], &[]), |s| {
-                    (s.reserved_channels.as_slice(), s.reserved_gpadls.as_slice())
-                })
+    impl From<SavedState> for SavedStateData {
+        fn from(value: SavedState) -> Self {
+            Self {
+                state: if let Some(connected) = value.state {
+                    SavedConnectionState::Connected(connected)
+                } else {
+                    // Older saved state version may not have a disconnected state, in which case we
+                    // use a default value which has no channels or gpadls.
+                    SavedConnectionState::Disconnected(value.disconnected_state.unwrap_or_default())
+                },
+                pending_messages: value.pending_messages,
             }
         }
     }
 }
 
-/// Helper type that ensures that all code paths deal with either the connected or disconnected
-/// state, and cannot neglect either.
+/// Represents either connected or disconnected saved state.
 enum SavedConnectionState {
     Connected(ConnectedState),
     Disconnected(DisconnectedState),
+}
+
+/// Alternative representation of the save data that ensures that all code paths deal with either
+/// the connected or disconnected state, and cannot neglect one.
+pub struct SavedStateData {
+    state: SavedConnectionState,
+    pending_messages: Vec<OutgoingMessage>,
+}
+
+impl SavedStateData {
+    /// Finds a channel in the saved state.
+    pub fn find_channel(&self, offer: OfferKey) -> Option<&Channel> {
+        let (channels, _) = self.channels_and_gpadls();
+        channels.iter().find(|c| c.key == offer)
+    }
+
+    /// Retrieves all the channels and GPADLs from the saved state.
+    /// If disconnected, returns any reserved channels and their GPADLs.
+    pub fn channels_and_gpadls(&self) -> (&[Channel], &[Gpadl]) {
+        match self.state {
+            SavedConnectionState::Connected(ref connected) => {
+                (&connected.channels, &connected.gpadls)
+            }
+            SavedConnectionState::Disconnected(ref disconnected) => (
+                &disconnected.reserved_channels,
+                &disconnected.reserved_gpadls,
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Protobuf)]
@@ -690,10 +702,6 @@ impl Channel {
 
     pub fn channel_id(&self) -> u32 {
         self.channel_id
-    }
-
-    pub fn saved_open(&self) -> bool {
-        self.open_request().is_some()
     }
 
     pub fn key(&self) -> OfferKey {
