@@ -3,6 +3,8 @@
 
 //! Types for supporting hypervisor monitor pages.
 
+#![forbid(unsafe_code)]
+
 use hvdef::HV_PAGE_SIZE;
 use hvdef::HvMonitorPage;
 use hvdef::HvMonitorPageSmall;

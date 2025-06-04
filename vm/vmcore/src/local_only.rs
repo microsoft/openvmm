@@ -3,6 +3,8 @@
 
 //! Type definitions for types that cannot cross a mesh process boundary.
 
+#![forbid(unsafe_code)]
+
 use mesh::payload::Error;
 use mesh::payload::FieldDecode;
 use mesh::payload::FieldEncode;

@@ -39,7 +39,7 @@ Please reach out to the maintainers before staging that PR if you have any doubt
 | Release | Phase | Notes |
 |--------|-------|-------|
 | release/2411 | Servicing | |
-| release/2505 | Stabilization | |
+| release/2505 | Ask Mode | |
 
 ## Depending on Releases
 
