@@ -513,7 +513,8 @@ impl ProxyTask {
                         wrapped_event,
                     },
                 )
-                .is_none()
+                .is_none(),
+            "proxy driver used duplicate proxy id {proxy_id}"
         );
 
         request_recv
@@ -546,12 +547,13 @@ impl ProxyTask {
                 }
             }
 
+            // Close the channel if it was opened in the proxy; if not this is a no-op.
             let _ = self.proxy.close(proxy_id).await;
             let gpadls = self.gpadls.lock().remove(&proxy_id);
 
             // Delete all GPADLs for this channel that weren't removed by the guest.
             // N.B. Due to a bug in some versions of vmbusproxy, not doing this causes bugchecks if
-            // there are any GPADLs still registered during teardown.
+            //      there are any GPADLs still registered during teardown.
             if let Some(gpadls) = gpadls {
                 if !gpadls.is_empty() {
                     tracing::info!(proxy_id, "closed while some gpadls are still registered");
@@ -833,8 +835,7 @@ impl ProxyTask {
                     )
                 })?;
 
-            // Register the restored GPADLs. Panic on duplicate proxy IDs because that would be a
-            // driver bug.
+            // Register the restored GPADLs.
             assert!(
                 self.gpadls
                     .lock()
@@ -842,7 +843,8 @@ impl ProxyTask {
                         proxy_id,
                         channel_gpadls.map(|g| GpadlId(g.gpadl_id)).collect()
                     )
-                    .is_none()
+                    .is_none(),
+                "proxy driver used duplicate proxy id {proxy_id} during restore",
             )
         }
 
