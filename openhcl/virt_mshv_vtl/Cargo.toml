@@ -12,6 +12,7 @@ gdb = []
 [target.'cfg(target_os = "linux")'.dependencies]
 aarch64emu.workspace = true
 aarch64defs.workspace = true
+cvm_tracing.workspace = true
 hcl.workspace = true
 virt.workspace = true
 virt_support_aarch64emu.workspace = true

@@ -18,7 +18,6 @@ cfg_if::cfg_if! {
         use crate::VtlCrash;
         use bitvec::prelude::BitArray;
         use bitvec::prelude::Lsb0;
-        use hv1_emulator::synic::ProcessorSynic;
         use hvdef::HvRegisterCrInterceptControl;
         use hvdef::HvX64RegisterName;
         use virt::vp::MpState;
@@ -27,7 +26,6 @@ cfg_if::cfg_if! {
         use virt_support_x86emu::translate::TranslationRegisters;
         use virt::vp::AccessVpState;
         use zerocopy::IntoBytes;
-        use hvdef::HvRegisterCrInterceptControl;
     } else if #[cfg(guest_arch = "aarch64")] {
         use hv1_hypercall::Arm64RegisterState;
         use hvdef::HvArm64RegisterName;
