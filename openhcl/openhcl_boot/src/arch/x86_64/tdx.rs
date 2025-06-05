@@ -34,7 +34,7 @@ pub fn report_os_id(guest_os_id: u64) {
 }
 
 /// Initialize hypercalls for a TDX L1, sharing the hypercall I/O pages with the HV
-pub fn initialize_hypercalls(guest_os_id: u64, input_page: u64, output_page: u64) {
+pub unsafe fn initialize_hypercalls(guest_os_id: u64, input_page: u64, output_page: u64) {
     // TODO We are assuming we are running under a Microsoft hypervisor, so there is
     // no need to check any cpuid leaves.
     report_os_id(guest_os_id);
@@ -52,7 +52,7 @@ pub fn initialize_hypercalls(guest_os_id: u64, input_page: u64, output_page: u64
     change_page_visibility(output_page_range, true);
 }
 
-pub fn uninitialize_hypercalls(input_page: u64, output_page: u64) {
+pub unsafe fn uninitialize_hypercalls(input_page: u64, output_page: u64) {
     report_os_id(0);
 
     // SAFETY: The hypercall i/o pages are valid virtual addresses owned by the caller

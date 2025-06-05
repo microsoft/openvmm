@@ -8,7 +8,7 @@ use crate::MAX_RESERVED_MEM_RANGES;
 use crate::ReservedMemoryType;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::PartitionInfo;
-use crate::isolation::IsolationType;
+use crate::host_params::shim_params::IsolationType;
 use crate::sidecar::SidecarConfig;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;
@@ -160,7 +160,9 @@ pub fn write_dt(
     cmdline: &ArrayString<COMMAND_LINE_SIZE>,
     sidecar: Option<&SidecarConfig<'_>>,
     boot_times: Option<BootTimes>,
-    #[allow(unused_variables)] isolation_type: IsolationType, // isolation_type is unused on aarch64
+    #[cfg_attr(target_arch = "aarch64", expect(unused_variables))]
+    // isolation_type is unused on aarch64
+    isolation_type: IsolationType,
 ) -> Result<(), DtError> {
     // First, the reservation map is built. That keyes off of the x86 E820 memory map.
     // The `/memreserve/` is used to tell the kernel that the reserved memory is RAM

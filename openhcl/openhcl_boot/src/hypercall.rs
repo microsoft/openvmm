@@ -6,7 +6,7 @@
 use crate::arch::hypercall::HvcallPage;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::tdx::invoke_tdcall_hypercall;
-use crate::isolation::IsolationType;
+use crate::host_params::shim_params::IsolationType;
 use crate::single_threaded::SingleThreaded;
 use arrayvec::ArrayVec;
 use core::cell::RefCell;
@@ -73,23 +73,22 @@ impl HvCall {
 
     /// Hypercall initialization.
     pub fn initialize(&mut self, isolation_type: IsolationType) {
-        match isolation_type {
-            #[cfg(target_arch = "x86_64")]
-            IsolationType::Tdx => {
-                self.initialize_tdx();
-            }
-            #[cfg(target_arch = "x86_64")]
-            IsolationType::Snp => (),
-            _ => {
-                if !self.initialized {
+        if !self.initialized {
+            match isolation_type {
+                #[cfg(target_arch = "x86_64")]
+                IsolationType::Tdx => {
+                    self.initialize_tdx();
+                }
+                #[cfg(target_arch = "x86_64")]
+                IsolationType::Snp => (),
+                _ => {
                     // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
                     let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
 
                     crate::arch::hypercall::initialize(guest_os_id.into());
-
                 }
-            }
-        };
+            };
+        }
         self.initialized = true;
     }
 
@@ -138,11 +137,15 @@ impl HvCall {
 
         match self.isolation_type {
             #[cfg(target_arch = "x86_64")]
-            Some(IsolationType::Tdx) => invoke_tdcall_hypercall(
-                control,
-                Self::input_page().address(),
-                Self::output_page().address(),
-            ),
+            Some(IsolationType::Tdx) =>
+            // SAFETY: I/O pages are static owned by HVCALL, which can only be borrowed once
+            unsafe {
+                invoke_tdcall_hypercall(
+                    control,
+                    Self::input_page().address(),
+                    Self::output_page().address(),
+                )
+            },
             // SAFETY: Invoking hypercall per TLFS spec
             _ => unsafe {
                 invoke_hypercall(
@@ -393,12 +396,14 @@ impl HvCall {
 #[cfg(target_arch = "x86_64")]
 impl HvCall {
     pub fn initialize_tdx(&mut self) {
-        if !self.initialized {
-            self.isolation_type = Some(IsolationType::Tdx);
+        assert!(!self.initialized);
+        self.isolation_type = Some(IsolationType::Tdx);
 
-            // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
-            let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
+        // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
+        let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
 
+        // SAFETY: I/O pages are static owned by HVCALL, which can only be borrowed once
+        unsafe {
             crate::arch::tdx::initialize_hypercalls(
                 guest_os_id.into(),
                 Self::input_page().address(),
@@ -408,8 +413,10 @@ impl HvCall {
     }
 
     pub fn uninitialize_tdx(&mut self) {
-        if self.initialized {
-            assert!(self.isolation_type == Some(IsolationType::Tdx));
+        assert!(self.initialized);
+        assert!(self.isolation_type == Some(IsolationType::Tdx));
+        // SAFETY: I/O pages are static owned by HVCALL, which can only be borrowed once
+        unsafe {
             crate::arch::tdx::uninitialize_hypercalls(
                 Self::input_page().address(),
                 Self::output_page().address(),
@@ -458,7 +465,6 @@ impl HvCall {
 
         assert!(self.initialized);
 
-        // SAFETY: the input page is not concurrently accessed.
         header
             .write_to_prefix(Self::input_page().buffer.as_mut_slice())
             .expect("unable to write to hypercall page");

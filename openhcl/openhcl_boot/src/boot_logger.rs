@@ -10,7 +10,7 @@
 
 #[cfg(target_arch = "x86_64")]
 use crate::arch::tdx::TdxIoAccess;
-use crate::isolation::IsolationType;
+use crate::host_params::shim_params::IsolationType;
 use crate::single_threaded::SingleThreaded;
 use core::cell::RefCell;
 use core::fmt;

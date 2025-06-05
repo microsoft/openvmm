@@ -15,7 +15,6 @@ mod cmdline;
 mod dt;
 mod host_params;
 mod hypercall;
-mod isolation;
 mod rt;
 mod sidecar;
 mod single_threaded;
@@ -28,7 +27,6 @@ use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_init;
 use crate::boot_logger::log;
 use crate::hypercall::hvcall;
-use crate::isolation::IsolationType;
 use crate::single_threaded::off_stack;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
@@ -39,6 +37,7 @@ use dt::BootTimes;
 use dt::write_dt;
 use host_params::COMMAND_LINE_SIZE;
 use host_params::PartitionInfo;
+use host_params::shim_params::IsolationType;
 use host_params::shim_params::ShimParams;
 use hvdef::Vtl;
 use loader_defs::linux::SETUP_DTB;
@@ -404,7 +403,7 @@ mod x86_boot {
     use crate::PageAlign;
     use crate::ReservedMemoryType;
     use crate::host_params::PartitionInfo;
-    use crate::isolation::IsolationType;
+    use crate::host_params::shim_params::IsolationType;
     use crate::single_threaded::OffStackRef;
     use crate::single_threaded::off_stack;
     use crate::zeroed;
@@ -459,8 +458,10 @@ mod x86_boot {
         partition_info: &PartitionInfo,
         reserved: &[(MemoryRange, ReservedMemoryType)],
         // The following params are only used when TDX Isolated
-        #[allow(unused_variables)] isolation_type: IsolationType,
-        #[allow(unused_variables)] page_tables: Option<MemoryRange>,
+        #[cfg_attr(target_arch = "aarch64", expect(unused_variables))]
+        isolation_type: IsolationType,
+        #[cfg_attr(target_arch = "aarch64", expect(unused_variables))] //
+        page_tables: Option<MemoryRange>,
     ) -> Result<bool, BuildE820MapError> {
         boot_params.e820_entries = 0;
         let mut entries = boot_params
@@ -489,7 +490,7 @@ mod x86_boot {
             }
         }
 
-        // If TDX-isolated the page tables region of OpenHcl as E820-reserved
+        // If TDX-isolated the page tables region of openhcl_boot as E820-reserved
         // as otherwise the L1-VMM can use the pages while APs are spinning
         // in the reset vector
         #[cfg(target_arch = "x86_64")]
@@ -564,10 +565,6 @@ mod x86_boot {
 
         boot_params.hdr.setup_data = (setup_data_head as u64).into();
 
-        if !isolation_type.is_hardware_isolated() || page_tables.is_none() {
-            return boot_params_storage;
-        }
-
         boot_params_storage
     }
 }
@@ -600,6 +597,16 @@ const fn zeroed<T: FromZeros>() -> T {
     unsafe { core::mem::MaybeUninit::<T>::zeroed().assume_init() }
 }
 
+fn get_ref_time(isolation: IsolationType) -> Option<u64> {
+    match isolation {
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Tdx => get_tdx_tsc_reftime(),
+        #[cfg(target_arch = "x86_64")]
+        IsolationType::Snp => None,
+        _ => Some(minimal_rt::reftime::reference_time()),
+    }
+}
+
 fn shim_main(shim_params_raw_offset: isize) -> ! {
     let p = shim_parameters(shim_params_raw_offset);
     if p.isolation_type == IsolationType::None {
@@ -612,7 +619,6 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Thus the fast hypercalls will fail as the the Guest ID has
     // to be set first hence initialize hypercall support
     // explicitly.
-
     hvcall().initialize(p.isolation_type);
 
     // Enable early log output if requested in the static command line.
@@ -629,7 +635,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     let can_trust_host =
         p.isolation_type == IsolationType::None || static_options.confidential_debug;
 
-    let boot_reftime = p.isolation_type.get_ref_time();
+    let boot_reftime = get_ref_time(p.isolation_type);
 
     let mut dt_storage = off_stack!(PartitionInfo, PartitionInfo::new());
     let partition_info =
@@ -764,7 +770,7 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     let boot_times = boot_reftime.map(|start| BootTimes {
         start,
-        end: p.isolation_type.get_ref_time().unwrap_or(0),
+        end: get_ref_time(p.isolation_type).unwrap_or(0),
     });
 
     // Validate that no imported regions that are pending are not part of vtl2
@@ -910,13 +916,13 @@ mod test {
     use super::x86_boot::build_e820_map;
     use crate::ReservedMemoryType;
     use crate::cmdline::BootCommandLineOptions;
-    use crate::isolation::IsolationType;
     use arrayvec::ArrayString;
     use arrayvec::ArrayVec;
     use core::ops::Range;
     use host_fdt_parser::CpuEntry;
     use host_fdt_parser::MemoryEntry;
     use host_fdt_parser::VmbusInfo;
+    use host_params::shim_params::IsolationType;
     use igvm_defs::MemoryMapEntryType;
     use loader_defs::linux::E820_RAM;
     use loader_defs::linux::E820_RESERVED;
