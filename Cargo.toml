@@ -8,7 +8,6 @@ members = [
   # openvmm
   "openvmm/openvmm",
   # repo tooling
-  "flowey/flowey_trampoline",
   "flowey/flowey_hvlite",
   "xtask",
   # openhcl
@@ -561,11 +560,6 @@ panic = 'abort'
 inherits = 'dev'
 # xtask is CPU bound in places, so enable light optimizations
 opt-level = 1
-
-[profile.flowey]
-# This exists to support the use of flowey_trampoline, which overrides part of
-# the profile definition via environment variables.
-inherits = 'dev'
 
 [profile.flowey-ci]
 inherits = 'dev'
