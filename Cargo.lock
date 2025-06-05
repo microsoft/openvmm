@@ -8690,6 +8690,7 @@ dependencies = [
  "async-trait",
  "cfg-if",
  "crc32fast",
+ "cvm_tracing",
  "disk_backend",
  "disklayer_ram",
  "getrandom 0.3.2",
