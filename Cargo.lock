@@ -8041,7 +8041,6 @@ dependencies = [
 name = "virt_support_apic"
 version = "0.0.0"
 dependencies = [
- "address_filter",
  "bitfield-struct 0.10.1",
  "hvdef",
  "inspect",
@@ -8690,6 +8689,7 @@ dependencies = [
  "async-trait",
  "cfg-if",
  "crc32fast",
+ "cvm_tracing",
  "disk_backend",
  "disklayer_ram",
  "getrandom 0.3.2",
