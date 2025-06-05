@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Compares the size of the OpenHCL binary in the current PR with the size of the binary from the last successful merge to main.
+//! Compares the size of the OpenHCL binary in the current PR with the size of the binary from the last successful merge to release/2505.
 
 use crate::artifact_openhcl_igvm_from_recipe_extras;
 use crate::build_openhcl_igvm_from_recipe;
@@ -75,7 +75,7 @@ impl SimpleFlowNode for Node {
         let merge_commit = ctx.reqv(|v| git_merge_commit::Request {
             repo_path: openvmm_repo_path.clone(),
             merge_commit: v,
-            base_branch: "main".into(),
+            base_branch: "release/2505".into(),
         });
 
         let merge_run = ctx.reqv(|v| gh_workflow_id::Request {
