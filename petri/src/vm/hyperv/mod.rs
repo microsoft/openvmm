@@ -539,7 +539,7 @@ impl PetriVmConfigHyperV {
     }
 
     /// Set the VM to enable secure boot and inject the templates per OS flavor.
-    pub fn with_secure_boot(mut self) -> Self {
+    pub fn with_secure_boot(self) -> Self {
         if !matches!(self.generation, powershell::HyperVGeneration::Two) {
             panic!("Secure boot is only supported for UEFI firmware.");
         }
