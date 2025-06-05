@@ -290,7 +290,6 @@ impl PetriVmConfigHyperV {
             memory: 0x1_0000_0000,
             proc_topology: ProcessorTopology::default(),
             vhd_paths,
-            secure_boot_enabled: false,
             secure_boot_template: None,
             openhcl_igvm,
             agent_image,
@@ -544,8 +543,6 @@ impl PetriVmConfigHyperV {
         if !matches!(self.generation, powershell::HyperVGeneration::Two) {
             panic!("Secure boot is only supported for UEFI firmware.");
         }
-
-        self.secure_boot_enabled = true;
 
         match self.os_flavor {
             OsFlavor::Windows => self.with_windows_secure_boot_template(),
