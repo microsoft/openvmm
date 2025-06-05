@@ -1379,6 +1379,7 @@ pub trait ProtectIsolatedMemory: Send + Sync {
     /// Changes host visibility on guest memory.
     fn change_host_visibility(
         &self,
+        vtl: GuestVtl,
         shared: bool,
         gpns: &[u64],
         tlb_access: &mut dyn TlbFlushLockAccess,
@@ -1512,7 +1513,7 @@ impl<'a> UhProtoPartition<'a> {
 
         set_vtl2_vsm_partition_config(&hcl)?;
 
-        let guest_vsm_available = Self::check_guest_vsm_support(&hcl, &params)?;
+        let guest_vsm_available = Self::check_guest_vsm_support(&hcl)?;
 
         #[cfg(guest_arch = "x86_64")]
         let cpuid = match params.isolation {
@@ -1860,34 +1861,7 @@ impl UhPartition {
 impl UhProtoPartition<'_> {
     /// Whether Guest VSM is available to the guest. If so, for hardware CVMs,
     /// it is safe to expose Guest VSM support via cpuid.
-    fn check_guest_vsm_support(
-        hcl: &Hcl,
-        params: &UhPartitionNewParams<'_>,
-    ) -> Result<bool, Error> {
-        match params.isolation {
-            IsolationType::None | IsolationType::Vbs => {}
-            #[cfg(guest_arch = "x86_64")]
-            IsolationType::Tdx => {
-                // No additional checks needed
-            }
-            #[cfg(guest_arch = "x86_64")]
-            IsolationType::Snp => {
-                // Require RMP Query
-                let rmp_query = x86defs::cpuid::ExtendedSevFeaturesEax::from(
-                    safe_intrinsics::cpuid(x86defs::cpuid::CpuidFunction::ExtendedSevFeatures.0, 0)
-                        .eax,
-                )
-                .rmp_query();
-
-                if !rmp_query {
-                    tracing::info!(CVM_ALLOWED, "rmp query not supported, cannot enable vsm");
-                    return Ok(false);
-                }
-            }
-            #[allow(unreachable_patterns)]
-            isolation => panic!("unsupported isolation type {:?}", isolation),
-        }
-
+    fn check_guest_vsm_support(hcl: &Hcl) -> Result<bool, Error> {
         #[cfg(guest_arch = "x86_64")]
         let privs = {
             let result = safe_intrinsics::cpuid(hvdef::HV_CPUID_FUNCTION_MS_HV_FEATURES, 0);

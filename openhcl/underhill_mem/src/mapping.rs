@@ -12,6 +12,7 @@ use guestmem::GuestMemoryBackingError;
 use guestmem::PAGE_SIZE;
 use hcl::ioctl::Mshv;
 use hcl::ioctl::MshvVtlLow;
+use hvdef::HvMapGpaFlags;
 use inspect::Inspect;
 use memory_range::MemoryRange;
 use parking_lot::Mutex;
@@ -116,7 +117,6 @@ impl GuestValidMemory {
         guestmem::BitmapInfo {
             read_bitmap: ptr,
             write_bitmap: ptr,
-            execute_bitmap: ptr,
             bit_offset: 0,
         }
     }
@@ -130,11 +130,29 @@ pub struct GuestMemoryMapping {
     iova_offset: Option<u64>,
     #[inspect(with = "Option::is_some")]
     valid_memory: Option<Arc<GuestValidMemory>>,
+    // TODO GUEST VSM: synchronize bitmap access
+    #[inspect(with = "Option::is_some")]
+    permission_bitmaps: Option<PermissionBitmaps>,
     registrar: Option<MemoryRegistrar<MshvVtlWithPolicy>>,
 }
 
 /// Bitmap implementation using sparse mapping that can be used to track page
 /// states.
+#[derive(Debug)]
+struct PermissionBitmaps {
+    permission_update_lock: Mutex<()>,
+    read_bitmap: GuestMemoryBitmap,
+    write_bitmap: GuestMemoryBitmap,
+    kernel_execute_bitmap: GuestMemoryBitmap,
+    user_execute_bitmap: GuestMemoryBitmap,
+}
+
+#[derive(Error, Debug)]
+pub enum VtlPermissionsError {
+    #[error("no vtl 1 permissions enforcement, bitmap is not present")]
+    NoPermissionsTracked,
+}
+
 #[derive(Debug)]
 struct GuestMemoryBitmap {
     bitmap: SparseMapping,
@@ -240,6 +258,7 @@ pub enum MappingError {
 pub struct GuestMemoryMappingBuilder {
     physical_address_base: u64,
     valid_memory: Option<Arc<GuestValidMemory>>,
+    permissions_bitmap_state: Option<bool>,
     shared: bool,
     for_kernel_access: bool,
     dma_base_address: Option<u64>,
@@ -254,6 +273,16 @@ impl GuestMemoryMappingBuilder {
         valid_memory: Option<Arc<GuestValidMemory>>,
     ) -> &mut Self {
         self.valid_memory = valid_memory;
+        self
+    }
+
+    /// Set whether to allocate tracking bitmaps for memory access permissions,
+    /// and specify the initial state of the bitmaps.
+    ///
+    /// This is used to support tracking the read/write/kernel execute/user
+    /// execute permissions of each page.
+    pub fn use_permissions_bitmaps(&mut self, initial_state: Option<bool>) -> &mut Self {
+        self.permissions_bitmap_state = initial_state;
         self
     }
 
@@ -358,6 +387,18 @@ impl GuestMemoryMappingBuilder {
 
         tracing::trace!(?mapping, "map_lower_vtl_memory mapping");
 
+        let mut permission_bitmaps = if self.permissions_bitmap_state.is_some() {
+            Some(PermissionBitmaps {
+                permission_update_lock: Default::default(),
+                read_bitmap: GuestMemoryBitmap::new(address_space_size as usize)?,
+                write_bitmap: GuestMemoryBitmap::new(address_space_size as usize)?,
+                kernel_execute_bitmap: GuestMemoryBitmap::new(address_space_size as usize)?,
+                user_execute_bitmap: GuestMemoryBitmap::new(address_space_size as usize)?,
+            })
+        } else {
+            None
+        };
+
         // Loop through each of the memory map entries and create a mapping for it.
         for entry in memory_layout.ram() {
             if entry.range.is_empty() {
@@ -377,6 +418,16 @@ impl GuestMemoryMappingBuilder {
                     true,
                 )
                 .map_err(MappingError::Map)?;
+
+            if let Some((bitmaps, state)) = permission_bitmaps
+                .as_mut()
+                .zip(self.permissions_bitmap_state)
+            {
+                bitmaps.read_bitmap.init(entry.range, state)?;
+                bitmaps.write_bitmap.init(entry.range, state)?;
+                bitmaps.kernel_execute_bitmap.init(entry.range, state)?;
+                bitmaps.user_execute_bitmap.init(entry.range, state)?;
+            }
 
             tracing::trace!(?entry, "mapped memory map entry");
         }
@@ -401,6 +452,7 @@ impl GuestMemoryMappingBuilder {
             mapping,
             iova_offset: self.dma_base_address,
             valid_memory: self.valid_memory.clone(),
+            permission_bitmaps,
             registrar,
         })
     }
@@ -416,10 +468,42 @@ impl GuestMemoryMapping {
         GuestMemoryMappingBuilder {
             physical_address_base,
             valid_memory: None,
+            permissions_bitmap_state: None,
             shared: false,
             for_kernel_access: false,
             dma_base_address: None,
             ignore_registration_failure: false,
+        }
+    }
+
+    /// Update the permission bitmaps to reflect the given flags.
+    /// Panics if the range is outside of guest RAM.
+    pub fn update_permission_bitmaps(&self, range: MemoryRange, flags: HvMapGpaFlags) {
+        if let Some(bitmaps) = self.permission_bitmaps.as_ref() {
+            // TODO GUEST VSM: synchronize with reading the bitmaps
+            let _lock = bitmaps.permission_update_lock.lock();
+            bitmaps.read_bitmap.update(range, flags.readable());
+            bitmaps.write_bitmap.update(range, flags.writable());
+            bitmaps
+                .kernel_execute_bitmap
+                .update(range, flags.kernel_executable());
+            bitmaps
+                .user_execute_bitmap
+                .update(range, flags.user_executable());
+        }
+    }
+
+    /// Query the permissions for the given gpn.
+    /// Panics if the range is outside of guest RAM.
+    pub fn query_access_permission(&self, gpn: u64) -> Result<HvMapGpaFlags, VtlPermissionsError> {
+        if let Some(bitmaps) = self.permission_bitmaps.as_ref() {
+            Ok(HvMapGpaFlags::new()
+                .with_readable(bitmaps.read_bitmap.page_state(gpn))
+                .with_writable(bitmaps.write_bitmap.page_state(gpn))
+                .with_kernel_executable(bitmaps.kernel_execute_bitmap.page_state(gpn))
+                .with_user_executable(bitmaps.user_execute_bitmap.page_state(gpn)))
+        } else {
+            Err(VtlPermissionsError::NoPermissionsTracked)
         }
     }
 
@@ -466,8 +550,33 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
     }
 
     fn access_bitmap(&self) -> Option<guestmem::BitmapInfo> {
-        self.valid_memory
-            .as_ref()
-            .map(|bitmap| bitmap.access_bitmap())
+        // When the permissions bitmaps are available, they take precedence and
+        // therefore should be no more permissive than the access bitmap.
+        //
+        // TODO GUEST VSM: consider being able to dynamically update these
+        // bitmaps. There are two scenarios where this would be useful:
+        // 1. To reduce memory consumption in cases where the bitmaps aren't
+        //    needed, i.e. the guest chooses not to enable guest vsm and VTL 1
+        //    gets revoked.
+        // 2. Because the related guest memory objects are initialized before
+        // VTL 1 is, the code as it currently stands will always enforce vtl 1
+        // protections even if VTL 1 hasn't explicitly enabled it. e.g. if VTL 1
+        // never enables vtl protections via the vsm partition config, but it
+        // still makes hypercalls to modify the vtl protection mask (this is a
+        // valid scenario to help set up default protections), these protections
+        // will still be enforced. In practice, a well-designed VTL 1 probably
+        // would enable vtl protections before allowing VTL 0 to run again, but
+        // technically the implementation here is not to spec.
+        if let Some(bitmaps) = self.permission_bitmaps.as_ref() {
+            Some(guestmem::BitmapInfo {
+                read_bitmap: NonNull::new(bitmaps.read_bitmap.as_ptr().cast()).unwrap(),
+                write_bitmap: NonNull::new(bitmaps.write_bitmap.as_ptr().cast()).unwrap(),
+                bit_offset: 0,
+            })
+        } else {
+            self.valid_memory
+                .as_ref()
+                .map(|bitmap| bitmap.access_bitmap())
+        }
     }
 }

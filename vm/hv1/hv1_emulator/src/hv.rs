@@ -259,6 +259,9 @@ impl ProcessorVtlHv {
                 if hc.enable()
                     && (!mutable.hypercall_reg.enable() || hc.gpn() != mutable.hypercall_reg.gpn())
                 {
+                    // TODO GUEST VSM: make sure the guest has writable vtl
+                    // permissions to this page and that it's not in shared
+                    // memory.
                     let new_page = LockedPage::new(&self.guest_memory, hc.gpn())
                         .map_err(|_| MsrError::InvalidAccess)?;
                     self.write_hypercall_page(&new_page);

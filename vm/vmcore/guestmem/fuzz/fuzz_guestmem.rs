@@ -41,7 +41,6 @@ unsafe impl GuestMemoryAccess for GuestMemoryMapping {
         self.bitmap.as_ref().map(|bm| BitmapInfo {
             read_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
             write_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
-            execute_bitmap: NonNull::new(bm.as_ptr().cast_mut()).unwrap(),
             bit_offset: 0,
         })
     }
