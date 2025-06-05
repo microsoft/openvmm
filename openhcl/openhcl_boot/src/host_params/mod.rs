@@ -5,7 +5,7 @@
 //! provided via a device tree IGVM parameter.
 
 use crate::cmdline::BootCommandLineOptions;
-use crate::isolation::IsolationType;
+use crate::host_params::shim_params::IsolationType;
 use arrayvec::ArrayString;
 use arrayvec::ArrayVec;
 use host_fdt_parser::CpuEntry;
