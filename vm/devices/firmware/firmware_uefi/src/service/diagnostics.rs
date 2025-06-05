@@ -235,16 +235,16 @@ impl DiagnosticsServices {
         }
 
         // Calculate the used portion of the log buffer
-        let log_current_offset = header.log_current_offset;
-        let log_buffer_offset = header.log_buffer_offset;
-
-        let used_log_buffer_size = log_current_offset
-            .checked_sub(log_buffer_offset)
+        let used_log_buffer_size = header
+            .log_current_offset
+            .checked_sub(header.log_buffer_offset)
             .ok_or_else(|| DiagnosticsError::Overflow("used_log_buffer_size"))?;
 
         // Early exit if there is no buffer to process
         if used_log_buffer_size == 0 {
-            tracelimit::info_ratelimited!("Used log buffer size is zero, ending processing");
+            tracelimit::info_ratelimited!(
+                "EFI diagnostics' used log buffer size is 0, ending processing"
+            );
             return Ok(());
         }
 
@@ -259,7 +259,7 @@ impl DiagnosticsServices {
 
         // Calculate start address of the log buffer
         let buffer_start_addr = gpa
-            .checked_add(log_buffer_offset)
+            .checked_add(header.log_buffer_offset)
             .ok_or_else(|| DiagnosticsError::Overflow("buffer_start_addr"))?;
 
         // Now read the used log buffer into a vector

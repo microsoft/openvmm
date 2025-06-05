@@ -20,7 +20,7 @@ pub const SIG_ENTRY: [u8; 4] = *b"ALM2";
 /// UEFI Advanced Logger Info Header, which is shared
 /// with the Advanced Logger Package in UEFI. The entries
 /// live right after.
-#[repr(C, packed)]
+#[repr(C)]
 #[derive(Debug, Copy, Clone, FromBytes, Immutable, KnownLayout)]
 pub struct AdvancedLoggerInfo {
     /// Signature 'ALOG'
