@@ -247,10 +247,6 @@ fn widen(d: &[u8]) -> u64 {
 }
 
 impl CpuIo for IoHandler<'_> {
-    fn is_mmio(&self, _address: u64) -> bool {
-        false
-    }
-
     fn acknowledge_pic_interrupt(&self) -> Option<u8> {
         None
     }
