@@ -802,7 +802,12 @@ impl<T: CpuIo, B: HardwareIsolatedBacking> hv1_hypercall::ModifySparseGpaPageHos
         self.vp
             .cvm_partition()
             .isolated_memory_protector
-            .change_host_visibility(shared, gpa_pages, &mut self.vp.tlb_flush_lock_access())
+            .change_host_visibility(
+                self.intercepted_vtl,
+                shared,
+                gpa_pages,
+                &mut self.vp.tlb_flush_lock_access(),
+            )
     }
 }
 
@@ -1166,11 +1171,11 @@ impl<T, B: HardwareIsolatedBacking> hv1_hypercall::ModifyVtlProtectionMask
             return Err((HvError::InvalidRegisterValue, 0));
         }
 
-        // The contract for VSM is that the VTL protections describe what
-        // the lower VTLs are allowed to access. Hardware CVMs set the
-        // protections on the VTL itself. Therefore, for a hardware CVM,
-        // given that only VTL 1 can set the protections, the default
-        // permissions should be changed for VTL 0.
+        // The contract for VSM is that the VTL protections describe what the
+        // lower VTLs are allowed to access. Hardware CVMs set the protections
+        // on the VTL itself. Therefore, for a hardware CVM, given that only VTL
+        // 1 can set the protections, the permissions should be changed for VTL
+        // 0.
         protector.change_vtl_protections(
             GuestVtl::Vtl0,
             gpa_pages,
@@ -1723,8 +1728,6 @@ impl<B: HardwareIsolatedBacking> UhProcessor<'_, B> {
             &mut self.tlb_flush_lock_access(),
         )?;
 
-        // TODO GUEST VSM: actually use the enable_vtl_protection value when
-        // deciding whether to check vtl access()
         // TODO GUEST VSM: should only be set if enable_vtl_protection is true?
         protector.set_vtl1_protections_enabled();
 
