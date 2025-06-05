@@ -220,10 +220,10 @@ fn write_persisted_info(parsed: &ParsedBootDtInfo) -> anyhow::Result<()> {
         parsed.vtl2_persisted_range_header
     );
 
-    let ranges = [parsed.vtl2_persisted_range_header];
-    let mapping = Vtl2ParamsMap::new_writeable(&ranges).context("unable to map persisted range")?;
+    let ranges = [parsed.vtl2_persisted_range];
+    let mapping =
+        Vtl2ParamsMap::new_writeable(&ranges).context("failed to map persisted state region")?;
 
-    /*
     // Create the serialized data to write.
     let state = SavedState {
         partition_memory: parsed
@@ -256,18 +256,24 @@ fn write_persisted_info(parsed: &ParsedBootDtInfo) -> anyhow::Result<()> {
     };
 
     let protobuf = mesh_protobuf::encode(state);
-    let protobuf_offset = size_of::<PersistedStateHeader>();
-    */
+    tracing::info!("protobuf len: {}", protobuf.len());
+
+    mapping
+        .write_at(0, protobuf.as_bytes())
+        .context("failed to write persisted state protobuf")?;
+
+    let ranges = [parsed.vtl2_persisted_range_header];
+    let mapping =
+        Vtl2ParamsMap::new_writeable(&ranges).context("unable to map persisted range header")?;
 
     let header = PersistedStateHeader {
         magic: PersistedStateHeader::MAGIC,
         region_len: parsed.vtl2_persisted_range_header.len(),
-        protobuf_offset: 80,
-        protobuf_len: 80,
+        protobuf_offset: parsed.vtl2_persisted_range.start() as u64,
+        protobuf_len: protobuf.len() as u64,
     };
 
     mapping.write_at(0, header.as_bytes())?;
-    // mapping.write_at(protobuf_offset, &protobuf)?;
 
     Ok(())
 }

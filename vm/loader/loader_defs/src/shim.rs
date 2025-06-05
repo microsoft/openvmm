@@ -153,10 +153,9 @@ pub struct PersistedStateHeader {
     /// Overall region size in bytes, including the header. This should be a
     /// multiple of 4K.
     pub region_len: u64,
-    /// The start offset for the protobuf blob, from the start of the persisted
-    /// state region.
+    /// The start offset for the first protobuf blob.
     pub protobuf_offset: u64,
-    /// The size of the protobuf blob in bytes.
+    /// The size of the first protobuf blob in bytes.
     pub protobuf_len: u64,
 }
 
@@ -168,7 +167,7 @@ impl PersistedStateHeader {
 /// A local newtype wrapper that represents a [`igvm_defs::MemoryMapEntryType`].
 ///
 /// This is required to make it protobuf deriveable.
-#[derive(mesh_protobuf::Protobuf, Debug)]
+#[derive(mesh_protobuf::Protobuf, Clone, Debug, PartialEq)]
 #[mesh(package = "openhcl.openhcl_boot")]
 pub struct IgvmMemoryType(#[mesh(1)] u16);
 

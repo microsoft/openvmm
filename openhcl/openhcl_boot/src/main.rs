@@ -396,7 +396,7 @@ fn reserved_memory_regions(
     ));
 
     debug_log!(
-        "vtl2 persisted state header: {:?}",
+        "vtl2 persisted state header: {:#x?}",
         partition_info.vtl2_persisted_state_header
     );
 
@@ -424,6 +424,7 @@ fn reserved_memory_regions(
 mod x86_boot {
     use crate::PageAlign;
     use crate::ReservedMemoryType;
+    use crate::debug_log;
     use crate::host_params::PartitionInfo;
     use crate::single_threaded::OffStackRef;
     use crate::single_threaded::off_stack;

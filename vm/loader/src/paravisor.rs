@@ -30,6 +30,7 @@ use hvdef::HV_PAGE_SIZE;
 use hvdef::Vtl;
 use igvm::registers::AArch64Register;
 use loader_defs::paravisor::*;
+use loader_defs::shim::PersistedStateHeader;
 use loader_defs::shim::ShimParamsRaw;
 use memory_range::MemoryRange;
 use page_table::aarch64::Arm64PageSize;
@@ -144,6 +145,7 @@ where
     // - pad to next 2MB -
     // kernel
     // optional 2mb bounce buf for CVM
+    // persisted state header
     // --- Low memory, 2MB aligned ---
 
     // Paravisor memory ranges must be 2MB (large page) aligned.
@@ -173,6 +175,8 @@ where
     };
 
     let mut offset = memory_start_address;
+    offset += size_of::<PersistedStateHeader>() as u64;
+    offset = align_up_to_large_page_size(offset);
 
     // If hardware isolated, reserve a 2MB range for bounce buffering shared
     // pages. This is done first because we know the start address is 2MB

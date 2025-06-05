@@ -30,6 +30,8 @@ use host_fdt_parser::ParsedDeviceTree;
 use hvdef::HV_PAGE_SIZE;
 use igvm_defs::MemoryMapEntryType;
 use loader_defs::paravisor::CommandLinePolicy;
+use loader_defs::shim::IgvmMemoryType;
+use loader_defs::shim::MemoryVtlType;
 use loader_defs::shim::PersistedStateHeader;
 use memory_range::MemoryRange;
 use memory_range::flatten_ranges;
@@ -381,9 +383,7 @@ fn topology_from_host_dt(
         vtl2_persisted_state_header
     );
 
-    // HACK: Reserve 512 pages for the persisted state region. This should
-    // really parse the persisted header first, and decide but do this for
-    // prototyping mesh.
+    // If there's no existing persisted state, reserve 512 pages to store it for the first time.
     const PERSISTED_STATE_REGION_SIZE: u64 = 512 * HV_PAGE_SIZE;
     let vtl2_persisted_state = MemoryRange::new(
         params.memory_start_address + params.memory_size - PERSISTED_STATE_REGION_SIZE
@@ -489,16 +489,97 @@ fn topology_from_host_dt(
 }
 
 fn topology_from_persisted_state(
+    header: PersistedStateHeader,
     params: &ShimParams,
     parsed: &ParsedDt,
 ) -> Result<PartitionTopology, DtError> {
-    todo!()
+    ALLOCATOR.enable_alloc();
+
+    let memory = MemoryRange::new(
+        header.protobuf_offset
+            ..((header.protobuf_offset + header.protobuf_len + HV_PAGE_SIZE - 1)
+                & !(HV_PAGE_SIZE - 1)),
+    );
+
+    let mut local_map = params.local_map.borrow_mut();
+    let mapping = local_map.map_pages(memory, false);
+    let protobuf = &mapping.data;
+
+    let parsed_protobuf: loader_defs::shim::SavedState =
+        mesh_protobuf::decode(protobuf).expect("BUGBUG protobuf payload must be valid");
+
+    ALLOCATOR.disable_alloc();
+
+    debug_log!("parsed protobuf: {:#?}", parsed_protobuf);
+
+    let mut vtl2_ram =
+        off_stack!(ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>, ArrayVec::new_const());
+    let memory_allocation_mode = parsed.memory_allocation_mode;
+
+    for entry in parsed_protobuf
+        .partition_memory
+        .iter()
+        .filter(|e| e.igvm_type == IgvmMemoryType::from(MemoryMapEntryType::VTL2_PROTECTABLE))
+    {
+        vtl2_ram.push(MemoryEntry {
+            range: entry.range,
+            mem_type: entry.igvm_type.clone().into(),
+            vnode: entry.vnode,
+        });
+    }
+
+    let persisted_state_header =
+        MemoryRange::new(params.memory_start_address..(params.memory_start_address + HV_PAGE_SIZE));
+
+    let persisted_state = parsed_protobuf
+        .partition_memory
+        .iter()
+        .find(|m| m.vtl_type == MemoryVtlType::VTL2_PERSISTED_STATE)
+        .expect("must have persisted state");
+    let vtl2_pool_memory = parsed_protobuf
+        .partition_memory
+        .iter()
+        .find(|m| m.vtl_type == MemoryVtlType::VTL2_GPA_POOL);
+    let vtl0_mmio = parsed_protobuf
+        .partition_mmio
+        .iter()
+        .find(|m| m.vtl_type == MemoryVtlType::VTL0_MMIO);
+    let vtl2_mmio = parsed_protobuf
+        .partition_mmio
+        .iter()
+        .find(|m| m.vtl_type == MemoryVtlType::VTL2_MMIO);
+
+    let vtl0_mmio = if let Some(vtl0) = vtl0_mmio {
+        let mut mmio = off_stack!(ArrayVec<MemoryRange, 2>, ArrayVec::new_const());
+        mmio.push(vtl0.range);
+        Some(OffStackRef::<'_, ArrayVec<MemoryRange, 2>>::leak(mmio).as_slice())
+    } else {
+        None
+    };
+
+    let vtl2_mmio = if let Some(vtl2) = vtl2_mmio {
+        let mut mmio = off_stack!(ArrayVec<MemoryRange, 1>, ArrayVec::new_const());
+        mmio.push(vtl2.range);
+        Some(OffStackRef::<'_, ArrayVec<MemoryRange, 1>>::leak(mmio).as_slice())
+    } else {
+        None
+    };
+
+    Ok(PartitionTopology {
+        vtl2_ram: OffStackRef::<'_, ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>>::leak(vtl2_ram),
+        vtl2_persisted_state_header: persisted_state_header,
+        vtl2_persisted_state: persisted_state.range,
+        vtl0_mmio,
+        vtl2_mmio,
+        memory_allocation_mode,
+        vtl2_pool_memory: vtl2_pool_memory.map(|e| e.range),
+    })
 }
 
 fn read_persisted_region_header(
     params: &ShimParams,
     persisted_header: MemoryRange,
-) -> Result<Option<MemoryRange>, DtError> {
+) -> Result<Option<PersistedStateHeader>, DtError> {
     debug_log!("read persisted region header {:#x?}", persisted_header);
 
     // TODO CVM: On an isolated guest, these pages may not be accepted. We need
@@ -515,17 +596,17 @@ fn read_persisted_region_header(
     let mapping = local_map.map_pages(persisted_header, false);
 
     // Parse the fixed header.
-    let (header, remaining) =
+    let (header, _) =
         PersistedStateHeader::read_from_prefix(mapping.data).expect("BUGBUG must be big enough");
-
-    debug_log!("persisted header {:#x?}", header);
 
     if header.magic != PersistedStateHeader::MAGIC {
         debug_log!("persisted header is not magic, is {:#x?}", header);
         return Ok(None);
     }
 
-    todo!("figure out how big region is")
+    debug_log!("persisted header: {:#x?}", header);
+
+    Ok(Some(header))
 }
 
 impl PartitionInfo {
@@ -587,26 +668,10 @@ impl PartitionInfo {
             params.memory_start_address..(params.memory_start_address + HV_PAGE_SIZE),
         );
 
-        // REMOVE ME
-        // HACK: Reserve 512 pages for the persisted state region. This should
-        // really parse the persisted header first, and decide but do this for
-        // prototyping mesh.
-        const PERSISTED_STATE_REGION_SIZE: u64 = 512 * HV_PAGE_SIZE;
-        let vtl2_persisted_state = MemoryRange::new(
-            params.memory_start_address + params.memory_size - PERSISTED_STATE_REGION_SIZE
-                ..params.memory_start_address + params.memory_size,
-        );
-
-        // BUGBUG: probably need to have the C header describe the whole range,
-        // because allocator range comes later.
-        //
-        // test protobuf
-        // protobuf_test(params, vtl2_persisted_state);
-
         let has_persisted_state =
             read_persisted_region_header(params, vtl2_persisted_state_header)?;
-        let topology = if let Some(persisted_region) = has_persisted_state {
-            todo!("implement topology_from_persisted_state")
+        let topology = if let Some(persisted_region_header) = has_persisted_state {
+            topology_from_persisted_state(persisted_region_header, params, parsed)?
         } else {
             topology_from_host_dt(params, parsed, storage.cmdline.as_str())?
         };
@@ -772,35 +837,4 @@ impl PartitionInfo {
 
         Ok(Some(storage))
     }
-}
-
-fn protobuf_test(params: &ShimParams, persisted_region: MemoryRange) {
-    debug_log!("persisted region is {:#x?}", persisted_region);
-
-    // map the persisted region with the local map, as the PTEs are not marked
-    // for relocation.
-    let mut local_map = params.local_map.borrow_mut();
-    let mapping = local_map.map_pages(persisted_region, false);
-
-    // Parse the fixed header.
-    let (header, remaining) =
-        PersistedStateHeader::read_from_prefix(mapping.data).expect("BUGBUG must be big enough");
-
-    if header.magic != PersistedStateHeader::MAGIC {
-        debug_log!("persisted header is not magic, is {}", header.magic);
-        return;
-    }
-
-    debug_log!("persisted header magic is valid");
-
-    let protobuf = &remaining[..header.protobuf_len as usize];
-
-    ALLOCATOR.enable_alloc();
-
-    let parsed_protobuf: loader_defs::shim::SavedState =
-        mesh_protobuf::decode(protobuf).expect("BUGBUG protobuf payload must be valid");
-
-    debug_log!("parsed protobuf {:#x?}", parsed_protobuf);
-
-    ALLOCATOR.disable_alloc();
 }
