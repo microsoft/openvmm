@@ -13,7 +13,6 @@ vmcore.workspace = true
 virt.workspace = true
 x86defs.workspace = true
 
-address_filter.workspace = true
 inspect.workspace = true
 inspect_counters.workspace = true
 tracelimit.workspace = true
