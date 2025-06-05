@@ -225,16 +225,14 @@ impl HyperVVM {
         )
     }
 
-    /// Set the secure boot state
-    pub fn set_secure_boot_state(
+    /// Set the secure boot template
+    pub fn set_secure_boot_template(
         &mut self,
-        enabled: bool,
-        secure_boot_template: Option<powershell::HyperVSecureBootTemplate>,
+        secure_boot_template: powershell::HyperVSecureBootTemplate,
     ) -> anyhow::Result<()> {
         powershell::run_set_vm_firmware(powershell::HyperVSetVMFirmwareArgs {
             vmid: &self.vmid,
-            secure_boot_enabled: enabled,
-            secure_boot_template,
+            secure_boot_template: Some(secure_boot_template),
         })
     }
 

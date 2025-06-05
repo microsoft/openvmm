@@ -57,7 +57,6 @@ pub struct PetriVmConfigHyperV {
     // Specifies the path to a virtual hard disk file(s) to attach to the
     // virtual machine as SCSI (Gen2) or IDE (Gen1) drives.
     vhd_paths: Vec<Vec<PathBuf>>,
-    secure_boot_enabled: bool,
     secure_boot_template: Option<powershell::HyperVSecureBootTemplate>,
     openhcl_igvm: Option<ResolvedArtifact>,
     openhcl_command_line: String,
@@ -367,8 +366,8 @@ impl PetriVmConfigHyperV {
             })?;
         }
 
-        if self.generation == powershell::HyperVGeneration::Two {
-            vm.set_secure_boot_state(self.secure_boot_enabled, self.secure_boot_template)?;
+        if let Some(secure_boot_template) = self.secure_boot_template {
+            vm.set_secure_boot_template(secure_boot_template)
         }
 
         for (i, vhds) in self.vhd_paths.iter().enumerate() {
