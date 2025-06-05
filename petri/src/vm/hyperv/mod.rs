@@ -366,7 +366,7 @@ impl PetriVmConfigHyperV {
         }
 
         if let Some(secure_boot_template) = self.secure_boot_template {
-            vm.set_secure_boot_template(secure_boot_template)
+            vm.set_secure_boot_template(secure_boot_template)?;
         }
 
         for (i, vhds) in self.vhd_paths.iter().enumerate() {
