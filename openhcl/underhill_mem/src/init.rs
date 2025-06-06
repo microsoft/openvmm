@@ -134,7 +134,7 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             // FUTURE: do this lazily.
             let vp_count = std::cmp::max(1, params.processor_topology.vp_count() - 1);
             let accept_subrange = move |subrange| {
-                acceptor.accept_vtl0_pages(subrange).unwrap();
+                acceptor.accept_lower_vtl_pages(subrange).unwrap();
                 if hardware_isolated {
                     // For VBS-isolated VMs, the VTL protections are set as
                     // part of the accept call.
@@ -216,11 +216,26 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
             GuestPartitionMemoryView::new(params.mem_layout, true)?
         };
 
+        tracing::debug!("Building encrypted memory map");
+        let encrypted_mapping = Arc::new({
+            let _span = tracing::info_span!("map_vtl1_memory", CVM_ALLOWED).entered();
+            GuestMemoryMapping::builder(0)
+                .dma_base_address(None)
+                .build_with_bitmap(&gpa_fd, &encrypted_memory_view)
+                .context("failed to map lower vtl encrypted memory")?
+        });
+
+        let use_vtl1 = params.maximum_vtl >= Vtl::Vtl1;
+
+        // Start by giving VTL 0 full access to all lower-vtl memory. TODO GUEST
+        // VSM: with lazy acceptance, it should instead be initialized to no
+        // access.
         tracing::debug!("Building VTL0 memory map");
         let vtl0_mapping = Arc::new({
             let _span = tracing::info_span!("map_vtl0_memory", CVM_ALLOWED).entered();
             GuestMemoryMapping::builder(0)
                 .dma_base_address(None)
+                .use_permissions_bitmaps(if use_vtl1 { Some(true) } else { None })
                 .build_with_bitmap(&gpa_fd, &encrypted_memory_view)
                 .context("failed to map vtl0 memory")?
         });
@@ -288,7 +303,6 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         // confused about shared memory, and our current use of kernel-mode
         // guest memory access is limited to low-perf paths where we can use
         // bounce buffering.
-
         tracing::debug!("Building shared memory map");
 
         let shared_memory_view = {
@@ -324,15 +338,27 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         )
         .context("failed to make vtl0 guest memory")?;
 
-        tracing::debug!("Creating VTL1 guest memory");
-        let vtl1_gm = if params.maximum_vtl >= Vtl::Vtl1 {
-            // TODO CVM GUEST VSM: This should not just use the vtl0_gm. This
-            // could also be further tightened -- whether or not VTL 1 is
-            // exposed to the guest is actually determined later, using
-            // additional information.
-            Some(vtl0_gm.clone())
+        let (vtl1_mapping, vtl1_gm) = if use_vtl1 {
+            tracing::debug!("Creating VTL1 guest memory");
+            // For VTL 1, vtl protections are dictated by what VTL 2 thinks is
+            // valid lower-vtl memory, and therefore additional vtl protection
+            // bitmaps aren't needed for the mapping.
+            (
+                Some(encrypted_mapping.clone()),
+                Some(
+                    GuestMemory::new_multi_region(
+                        "vtl1",
+                        vtom,
+                        vec![
+                            Some(encrypted_mapping.clone()),
+                            Some(shared_mapping.clone()),
+                        ],
+                    )
+                    .context("failed to make vtl1 guest memory")?,
+                ),
+            )
         } else {
-            None
+            (None, None)
         };
 
         if params.isolation == IsolationType::Snp {
@@ -369,14 +395,17 @@ pub async fn init(params: &Init<'_>) -> anyhow::Result<MemoryMappings> {
         let protector = Arc::new(HardwareIsolatedMemoryProtector::new(
             encrypted_memory_view.partition_valid_memory().clone(),
             valid_shared_memory.clone(),
+            encrypted_mapping.clone(),
             vtl0_mapping.clone(),
             params.mem_layout.clone(),
             acceptor.as_ref().unwrap().clone(),
         )) as Arc<dyn ProtectIsolatedMemory>;
 
+        // TODO GUEST VSM: create guest memory objects using execute permissions
+        // for the instruction emulator to use when reading instructions.
         MemoryMappings {
             vtl0: vtl0_mapping,
-            vtl1: None,
+            vtl1: vtl1_mapping,
             vtl0_gm,
             vtl1_gm,
             cvm_memory: Some(CvmMemory {
