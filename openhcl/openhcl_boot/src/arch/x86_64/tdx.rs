@@ -34,6 +34,10 @@ pub fn report_os_id(guest_os_id: u64) {
 }
 
 /// Initialize hypercalls for a TDX L1, sharing the hypercall I/O pages with the HV
+///
+/// # Safety
+///
+/// The caller ensures that the I/O pages are valid and not concurrently accessed
 pub unsafe fn initialize_hypercalls(guest_os_id: u64, input_page: u64, output_page: u64) {
     // TODO We are assuming we are running under a Microsoft hypervisor, so there is
     // no need to check any cpuid leaves.
@@ -52,6 +56,11 @@ pub unsafe fn initialize_hypercalls(guest_os_id: u64, input_page: u64, output_pa
     change_page_visibility(output_page_range, true);
 }
 
+/// Unitialize hypercalls for a TDX L1, stop sharing the hypercall I/O pages with the HV
+///
+/// # Safety
+///
+/// The caller ensures that the I/O pages are valid and not concurrently accessed
 pub unsafe fn uninitialize_hypercalls(input_page: u64, output_page: u64) {
     report_os_id(0);
 
@@ -163,6 +172,11 @@ impl minimal_rt::arch::IoAccess for TdxIoAccess {
     }
 }
 
+/// Invokes a hypercall via a TDCALL
+///
+/// # Safety
+///
+/// The caller ensures that the I/O pages are valid and not concurrently accessed
 pub unsafe fn invoke_tdcall_hypercall(
     control: hvdef::hypercall::Control,
     input_page: u64,
