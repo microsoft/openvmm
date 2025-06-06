@@ -35,8 +35,12 @@ pub trait PetriVmConfig: Send {
     /// Run the VM, launching pipette and returning a client to it.
     async fn run(self: Box<Self>) -> anyhow::Result<(Box<dyn PetriVm>, PipetteClient)>;
 
+    /// Set the VM to enable secure boot and inject the templates per OS flavor.
+    fn with_secure_boot(self: Box<Self>) -> Box<dyn PetriVmConfig>;
     /// Inject Windows secure boot templates into the VM's UEFI.
     fn with_windows_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig>;
+    /// Inject UEFI CA secure boot templates into the VM's UEFI.
+    fn with_uefi_ca_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig>;
     /// Set the VM to use the specified processor topology.
     fn with_processor_topology(
         self: Box<Self>,
@@ -63,7 +67,6 @@ pub trait PetriVmConfig: Send {
     fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig>;
     /// Run the VM with Enable VMBus relay enabled
     fn with_vmbus_redirect(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig>;
-
     /// Get the OS that the VM will boot into.
     fn os_flavor(&self) -> OsFlavor;
 }

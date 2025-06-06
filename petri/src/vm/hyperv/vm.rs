@@ -122,6 +122,14 @@ impl HyperVVM {
             },
         )?;
 
+        // Disable secure boot for generation 2 VMs
+        if generation == powershell::HyperVGeneration::Two {
+            powershell::run_set_vm_firmware(powershell::HyperVSetVMFirmwareArgs {
+                vmid: &vmid,
+                secure_boot_template: None,
+            })?;
+        }
+
         Ok(this)
     }
 
@@ -189,6 +197,9 @@ impl HyperVVM {
                 powershell::EVENT_ID_BOOT_FAILURE => Ok(FirmwareEvent::BootFailed),
                 powershell::EVENT_ID_NO_BOOT_DEVICE => Ok(FirmwareEvent::NoBootDevice),
                 powershell::EVENT_ID_BOOT_ATTEMPT => Ok(FirmwareEvent::BootAttempt),
+                powershell::EVENT_ID_BOOT_FAILURE_SECURE_BOOT_FAILED => {
+                    Ok(FirmwareEvent::BootFailed)
+                }
                 id => anyhow::bail!("Unexpected event id: {id}"),
             })
             .transpose()
