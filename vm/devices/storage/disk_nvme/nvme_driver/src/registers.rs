@@ -104,17 +104,20 @@ impl<T: DeviceRegisterIo + Inspect> Bar0<T> {
     reg32!(aqa, set_aqa, AQA, spec::Aqa);
 
     #[instrument(skip_all)]
-    pub async fn reset(&self, driver: &dyn Driver) -> bool {
+    pub async fn reset(&self, driver: &dyn Driver) -> Result<(), u32> {
         let cc = self.cc().with_en(false);
         self.set_cc(cc);
         let mut backoff = Backoff::new(driver);
+        // Loop until either RDY bit is cleared
+        // or CSTS read returns -1 which means
+        // failure in emulation layer.
         loop {
             let csts = self.csts();
             if !csts.rdy() {
-                break true;
+                break Ok(());
             }
             if u32::from(csts) == !0 {
-                break false;
+                break Err(!0);
             }
             backoff.back_off().await;
         }
