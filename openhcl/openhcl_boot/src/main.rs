@@ -493,6 +493,9 @@ mod x86_boot {
         // If TDX-isolated the page tables region of openhcl_boot as E820-reserved
         // as otherwise the L1-VMM can use the pages while APs are spinning
         // in the reset vector
+        //
+        // TODO address space management in the shim is getting centralized in
+        // a refactor: this should be moved somewhere more appropriate when possible
         #[cfg(target_arch = "x86_64")]
         if IsolationType::Tdx == isolation_type {
             add_e820_entry(entries.next(), page_tables.unwrap(), E820_RESERVED)?;
@@ -916,13 +919,17 @@ mod test {
     use super::x86_boot::build_e820_map;
     use crate::ReservedMemoryType;
     use crate::cmdline::BootCommandLineOptions;
+    use crate::dt::write_dt;
+    use crate::host_params::MAX_CPU_COUNT;
+    use crate::host_params::PartitionInfo;
+    use crate::host_params::shim_params::IsolationType;
+    use crate::reserved_memory_regions;
     use arrayvec::ArrayString;
     use arrayvec::ArrayVec;
     use core::ops::Range;
     use host_fdt_parser::CpuEntry;
     use host_fdt_parser::MemoryEntry;
     use host_fdt_parser::VmbusInfo;
-    use host_params::shim_params::IsolationType;
     use igvm_defs::MemoryMapEntryType;
     use loader_defs::linux::E820_RAM;
     use loader_defs::linux::E820_RESERVED;
@@ -1181,6 +1188,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_ok()
         );
@@ -1211,6 +1220,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_ok()
         );
@@ -1243,6 +1254,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_ok()
         );
@@ -1283,6 +1296,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_ok()
         );
@@ -1317,6 +1332,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_err()
         );
@@ -1334,6 +1351,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_err()
         );
@@ -1351,6 +1370,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_err()
         );
@@ -1368,6 +1389,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_err()
         );
@@ -1388,6 +1411,8 @@ mod test {
                 &mut ext,
                 &partition_info,
                 reserved_memory_regions(&partition_info, None).as_ref(),
+                partition_info.isolation,
+                None
             )
             .is_err()
         );
@@ -1409,7 +1434,15 @@ mod test {
             })
             .collect::<Vec<_>>();
 
-        build_e820_map(&mut boot_params, &mut ext, &partition_info, &reserved).unwrap();
+        build_e820_map(
+            &mut boot_params,
+            &mut ext,
+            &partition_info,
+            &reserved,
+            partition_info.isolation,
+            None,
+        )
+        .unwrap();
 
         assert!(ext.header.len > 0);
 
