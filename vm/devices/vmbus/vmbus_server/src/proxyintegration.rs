@@ -16,10 +16,10 @@ use super::VmbusServerControl;
 use crate::HvsockRelayChannelHalf;
 use crate::SavedStateRequest;
 use crate::channels::SavedState;
+use crate::channels::SavedStateData;
 use crate::event::MaybeWrappedEvent;
 use crate::event::WrappedEvent;
 use anyhow::Context;
-use anyhow::anyhow;
 use futures::FutureExt;
 use futures::StreamExt;
 use futures::future::OptionFuture;
@@ -29,9 +29,11 @@ use guestmem::GuestMemory;
 use mesh::Cancel;
 use mesh::CancelContext;
 use mesh::rpc::Rpc;
+use mesh::rpc::RpcError;
 use mesh::rpc::RpcSend;
 use pal_async::driver::SpawnDriver;
 use pal_async::task::Spawn;
+use pal_async::task::Task;
 use pal_async::windows::TpPool;
 use pal_event::Event;
 use parking_lot::Mutex;
@@ -56,12 +58,12 @@ use vmbus_channel::gpadl::GpadlId;
 use vmbus_core::HvsockConnectRequest;
 use vmbus_core::HvsockConnectResult;
 use vmbus_core::protocol;
+use vmbus_proxy::Gpadl;
 use vmbus_proxy::ProxyAction;
 use vmbus_proxy::VmbusProxy;
 use vmbus_proxy::vmbusioctl::VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS;
 use vmcore::interrupt::Interrupt;
 use windows::Win32::Foundation::ERROR_OPERATION_ABORTED;
-use windows::core::HRESULT;
 use zerocopy::IntoBytes;
 
 /// Provides access to a vmbus server, its optional hvsocket relay, and
@@ -91,12 +93,16 @@ pub struct ProxyIntegration {
     cancel: Cancel,
     handle: OwnedHandle,
     flush_send: mesh::Sender<Rpc<(), ()>>,
+    task: Option<Task<()>>,
 }
 
 impl ProxyIntegration {
-    /// Cancels the vmbus proxy.
-    pub fn cancel(&mut self) {
+    /// Cancels the vmbus proxy, and waits for it to finish.
+    pub async fn cancel(&mut self) {
         self.cancel.cancel();
+        if let Some(task) = self.task.take() {
+            task.await
+        }
     }
 
     /// Wait for all currently ready pending actions to complete. E.g., wait for
@@ -127,17 +133,16 @@ impl ProxyIntegration {
         }
 
         let (flush_send, flush_recv) = mesh::channel();
-        driver
-            .spawn(
-                "vmbus_proxy",
-                proxy_thread(driver.clone(), proxy, server, vtl2_server, flush_recv),
-            )
-            .detach();
+        let task = driver.spawn(
+            "vmbus_proxy",
+            proxy_thread(driver.clone(), proxy, server, vtl2_server, flush_recv),
+        );
 
         Ok(Self {
             cancel,
             handle,
             flush_send,
+            task: Some(task),
         })
     }
 }
@@ -150,8 +155,26 @@ struct Channel {
 }
 
 struct SavedStatePair {
-    saved_state: Option<SavedState>,
-    vtl2_saved_state: Option<SavedState>,
+    saved_state: Option<SavedStateData>,
+    vtl2_saved_state: Option<SavedStateData>,
+}
+
+impl SavedStatePair {
+    fn for_vtl(&self, vtl: u8) -> Option<&SavedStateData> {
+        match vtl {
+            0 => self.saved_state.as_ref(),
+            2 => self.vtl2_saved_state.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn for_vtl_mut(&mut self, vtl: u8) -> &mut Option<SavedStateData> {
+        match vtl {
+            0 => &mut self.saved_state,
+            2 => &mut self.vtl2_saved_state,
+            _ => unreachable!("unsupported VTL {vtl}"),
+        }
+    }
 }
 
 struct ProxyTask {
@@ -290,7 +313,7 @@ impl ProxyTask {
             .expect("delete gpadl failed");
     }
 
-    async fn restore_open_channel_on_offer(
+    async fn restore_channel_on_offer(
         &self,
         proxy_id: u64,
         offer_key: OfferKey,
@@ -298,23 +321,27 @@ impl ProxyTask {
         server_request_send: Option<mesh::Sender<ChannelServerRequest>>,
         incoming_event: Event,
     ) -> Option<(Option<WrappedEvent>, mesh::OneshotReceiver<()>)> {
-        let channel_saved_open = {
-            let saved_states = self.saved_states.lock().await;
-            match vtl {
-                0 => saved_states.saved_state.as_ref(),
-                2 => saved_states.vtl2_saved_state.as_ref(),
-                _ => unreachable!(),
-            }?
+        // A channel is considered saved in the "open" state if it is in any state that has an open
+        // request. This is because the server will not notify the channel for the open in any of
+        // those states after restore. In the Closing and ClosingReopen state it will notify the
+        // close, so there too we need to restore as open.
+        // N.B. If there is no saved state, or the channel is not in the saved state, there is
+        //      nothing to be done here.
+        let channel_saved_open = self
+            .saved_states
+            .lock()
+            .await
+            .for_vtl(vtl)?
             .find_channel(offer_key)?
-            .saved_open()
-        };
+            .open_request()
+            .is_some();
 
         let send = server_request_send.as_ref()?;
         tracing::trace!(interface_id = %offer_key.interface_id,
             instance_id = %offer_key.instance_id,
             "restoring channel after offer");
 
-        let restore_result = match send
+        let restore_result = send
             .call_failable(
                 ChannelServerRequest::Restore,
                 channel_saved_open.then(|| OpenResult {
@@ -322,26 +349,22 @@ impl ProxyTask {
                 }),
             )
             .await
-        {
-            Ok(result) => result,
-            Err(err) => {
+            .inspect_err(|err| {
                 tracing::warn!(
-                    err = &err as &dyn std::error::Error,
-                    interface_id = %offer_key.interface_id,
-                    instance_id = %offer_key.instance_id,
+                    error = err as &dyn std::error::Error,
+                    %offer_key,
                     "failed to restore channel"
                 );
-                return None;
-            }
-        };
+            })
+            .ok()?;
 
         let Some(open_request) = restore_result.open_request else {
-            if channel_saved_open {
-                panic!("failed to restore channel {}: no OpenRequest", offer_key);
-            } else {
-                // The channel was not saved open. There is no more work to do.
-                return None;
-            }
+            assert!(
+                !channel_saved_open,
+                "failed to restore channel {offer_key}: no OpenRequest"
+            );
+            // The channel was not saved open. There is no more work to do.
+            return None;
         };
 
         let maybe_wrapped =
@@ -351,10 +374,7 @@ impl ProxyTask {
             .set_interrupt(proxy_id, maybe_wrapped.event())
             .await
             .unwrap_or_else(|e| {
-                panic!(
-                    "failed to set interrupt in proxy for channel {}: {:?}",
-                    offer_key, e
-                )
+                panic!("failed to set interrupt in proxy for channel {offer_key}: {e:?}")
             });
 
         let recv = self.create_worker_thread(proxy_id);
@@ -368,6 +388,7 @@ impl ProxyTask {
         offer: vmbus_proxy::vmbusioctl::VMBUS_CHANNEL_OFFER,
         incoming_event: Event,
     ) -> Option<mesh::Receiver<ChannelRequest>> {
+        tracing::trace!(?offer, "received vmbusproxy offer");
         let server = match offer.TargetVtl {
             0 => self.server.as_ref(),
             2 => {
@@ -457,8 +478,9 @@ impl ProxyTask {
             }
         };
 
-        let restore_result = self
-            .restore_open_channel_on_offer(
+        // Do not call restore if the device is requesting that the channel be reoffered.
+        let restore_result = if !offer.ChannelFlags.force_new_channel() {
+            self.restore_channel_on_offer(
                 proxy_id,
                 OfferKey {
                     interface_id,
@@ -469,28 +491,37 @@ impl ProxyTask {
                 server_request_send.clone(),
                 incoming_event.clone(),
             )
-            .await;
+            .await
+        } else {
+            None
+        };
 
         let (wrapped_event, worker_result) = match restore_result {
             Some((wrapped_event, restore_result)) => (wrapped_event, Some(restore_result)),
             None => (None, None),
         };
 
-        self.channels.lock().insert(
-            proxy_id,
-            Channel {
-                server_request_send,
-                incoming_event,
-                worker_result,
-                wrapped_event,
-            },
+        assert!(
+            self.channels
+                .lock()
+                .insert(
+                    proxy_id,
+                    Channel {
+                        server_request_send,
+                        incoming_event,
+                        worker_result,
+                        wrapped_event,
+                    },
+                )
+                .is_none(),
+            "proxy driver used duplicate proxy id {proxy_id}"
         );
 
         request_recv
     }
 
     async fn handle_revoke(&self, proxy_id: u64) {
-        let response_send = self
+        let server_request_send = self
             .channels
             .lock()
             .get_mut(&proxy_id)
@@ -498,23 +529,50 @@ impl ProxyTask {
             .server_request_send
             .take();
 
-        if let Some(response_send) = response_send {
-            drop(response_send);
-        } else {
-            if let Err(err) = self.proxy.release(proxy_id).await {
-                if err.code() == HRESULT::from(ERROR_OPERATION_ABORTED) {
-                    tracing::trace!(%proxy_id, "proxy release aborted during ioctl");
-                } else {
+        // This can be None if offering the channel to the server failed.
+        if let Some(server_request_send) = server_request_send {
+            // Perform an explicit revoke so we can release the channel immediately after.
+            if let Err(err) = server_request_send
+                .call(ChannelServerRequest::Revoke, ())
+                .await
+            {
+                // If the mesh channel is closed, the revoke happened after the server is shutting
+                // down, which is benign as long as we still release the channel below.
+                if !matches!(err, RpcError::Channel(mesh::RecvError::Closed)) {
                     tracing::error!(
                         error = &err as &dyn std::error::Error,
-                        "proxy channel release failed"
+                        id = %proxy_id,
+                        "failed to revoke channel"
                     );
-                    panic!("vmbus proxy state failure");
                 }
             }
 
-            self.channels.lock().remove(&proxy_id);
-        }
+            // Close the channel if it was opened in the proxy; if not this is a no-op.
+            let _ = self.proxy.close(proxy_id).await;
+            let gpadls = self.gpadls.lock().remove(&proxy_id);
+
+            // Delete all GPADLs for this channel that weren't removed by the guest.
+            // N.B. Due to a bug in some versions of vmbusproxy, not doing this causes bugchecks if
+            //      there are any GPADLs still registered during teardown.
+            if let Some(gpadls) = gpadls {
+                if !gpadls.is_empty() {
+                    tracing::info!(proxy_id, "closed while some gpadls are still registered");
+                    for gpadl_id in gpadls {
+                        if let Err(e) = self.proxy.delete_gpadl(proxy_id, gpadl_id.0).await {
+                            tracing::error!(error = ?e, "failed to delete gpadl");
+                        }
+                    }
+                }
+            }
+        };
+
+        self.proxy
+            .release(proxy_id)
+            .await
+            .expect("vmbus proxy state failure");
+
+        // At this point, no more driver or server requests can come in for this channel.
+        self.channels.lock().remove(&proxy_id);
     }
 
     fn handle_tl_connect_result(&self, result: HvsockConnectResult, vtl: u8) {
@@ -608,101 +666,50 @@ impl ProxyTask {
         tracing::debug!("proxy offers finished");
     }
 
-    async fn handle_request(&self, proxy_id: u64, request: Option<ChannelRequest>) {
+    async fn handle_request(&self, proxy_id: u64, request: ChannelRequest) {
         match request {
-            Some(request) => {
-                match request {
-                    ChannelRequest::Open(rpc) => {
-                        rpc.handle(async |open_request| {
-                            let result = self.handle_open(proxy_id, &open_request).await;
-                            match result {
-                                Ok(event) => Some(OpenResult {
-                                    guest_to_host_interrupt: Interrupt::from_event(event),
-                                }),
-                                Err(err) => {
-                                    tracing::error!(
-                                        error = err.as_ref() as &dyn std::error::Error,
-                                        "failed to open proxy channel"
-                                    );
-                                    None
-                                }
-                            }
-                        })
-                        .await
-                    }
-                    ChannelRequest::Close(rpc) => {
-                        rpc.handle(async |()| {
-                            self.handle_close(proxy_id).await;
-                        })
-                        .await
-                    }
-                    ChannelRequest::Gpadl(rpc) => {
-                        rpc.handle(async |gpadl| {
-                            let result = self
-                                .handle_gpadl_create(proxy_id, gpadl.id, gpadl.count, &gpadl.buf)
-                                .await;
-                            result.is_ok()
-                        })
-                        .await
-                    }
-                    ChannelRequest::TeardownGpadl(rpc) => {
-                        rpc.handle(async |id| {
-                            self.handle_gpadl_teardown(proxy_id, id).await;
-                        })
-                        .await
-                    }
-                    // Modifying the target VP is handle by the server, there is nothing the proxy
-                    // driver needs to do.
-                    ChannelRequest::Modify(rpc) => rpc.complete(0),
-                }
-            }
-            None => {
-                // Due to a bug in some versions of vmbusproxy, this causes bugchecks if there are
-                // any GPADLs still registered. This seems to happen during teardown.
-                let _ = self.proxy.close(proxy_id).await;
-                let gpadls = self.gpadls.lock().remove(&proxy_id);
-                if let Some(gpadls) = gpadls {
-                    if !gpadls.is_empty() {
-                        tracing::info!(proxy_id, "closed while some gpadls are still registered");
-                        for gpadl_id in gpadls {
-                            if let Err(e) = self.proxy.delete_gpadl(proxy_id, gpadl_id.0).await {
-                                if e.code() == HRESULT::from(ERROR_OPERATION_ABORTED) {
-                                    // No further IOs will succeed if one was cancelled. This can
-                                    // happen here if we're in the process of shutting down.
-                                    tracing::debug!("gpadl delete cancelled");
-                                    break;
-                                }
-
-                                tracing::error!(error = ?e, "failed to delete gpadl");
-                            }
-                        }
-                    }
-                }
-
-                // Only release the channel with the driver if the driver has already revoked it.
-                if self
-                    .channels
-                    .lock()
-                    .get(&proxy_id)
-                    .unwrap()
-                    .server_request_send
-                    .is_none()
-                {
-                    if let Err(err) = self.proxy.release(proxy_id).await {
-                        if err.code() == HRESULT::from(ERROR_OPERATION_ABORTED) {
-                            tracing::trace!(%proxy_id, "proxy release aborted during ioctl");
-                        } else {
+            ChannelRequest::Open(rpc) => {
+                rpc.handle(async |open_request| {
+                    let result = self.handle_open(proxy_id, &open_request).await;
+                    match result {
+                        Ok(event) => Some(OpenResult {
+                            guest_to_host_interrupt: Interrupt::from_event(event),
+                        }),
+                        Err(err) => {
                             tracing::error!(
-                                error = &err as &dyn std::error::Error,
-                                "proxy channel release failed"
+                                error = err.as_ref() as &dyn std::error::Error,
+                                "failed to open proxy channel"
                             );
-                            panic!("vmbus proxy state failure");
+                            None
                         }
                     }
-
-                    self.channels.lock().remove(&proxy_id);
-                }
+                })
+                .await
             }
+            ChannelRequest::Close(rpc) => {
+                rpc.handle(async |()| {
+                    self.handle_close(proxy_id).await;
+                })
+                .await
+            }
+            ChannelRequest::Gpadl(rpc) => {
+                rpc.handle(async |gpadl| {
+                    let result = self
+                        .handle_gpadl_create(proxy_id, gpadl.id, gpadl.count, &gpadl.buf)
+                        .await;
+                    result.is_ok()
+                })
+                .await
+            }
+            ChannelRequest::TeardownGpadl(rpc) => {
+                rpc.handle(async |id| {
+                    self.handle_gpadl_teardown(proxy_id, id).await;
+                })
+                .await
+            }
+            // Modifying the target VP is handle by the server, there is nothing the proxy
+            // driver needs to do.
+            ChannelRequest::Modify(rpc) => rpc.complete(0),
         }
     }
 
@@ -758,119 +765,108 @@ impl ProxyTask {
             }
         };
 
-        let mut saved_states = self.saved_states.lock().await;
-        let saved_state_option = match vtl {
-            0 => &mut saved_states.saved_state,
-            2 => &mut saved_states.vtl2_saved_state,
-            _ => {
-                tracelimit::error_ratelimited!(
-                    vtl = ?vtl,
-                    "saved state request receive failed: Unsupported VTL"
-                );
-
-                return true;
-            }
-        };
-
         match request {
             SavedStateRequest::Set(rpc) => {
-                // Map the vmbus server channel ID to the newly created proxy channel ID
-                let mut proxy_ids: HashMap<u32, u64> = HashMap::new();
-                tracing::trace!("restoring channels...");
-
                 rpc.handle_failable(async |saved_state| {
-                    // Restore channel state in the proxy for each channel in the SavedState.
-                    if let Some(channels) = saved_state.channels() {
-                        for channel in channels {
-                            tracing::trace!(?channel, "restoring channel");
-                            let key = channel.key();
-                            let open_params = channel.open_request();
-                            let Some(open_params) = open_params else {
-                                continue;
-                            };
-                            let proxy_id = self
-                                .proxy
-                                .restore(
-                                    key.interface_id.into(),
-                                    key.instance_id.into(),
-                                    key.subchannel_index,
-                                    vtl,
-                                    VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS {
-                                        RingBufferGpadlHandle: open_params.ring_buffer_gpadl_id.0,
-                                        DownstreamRingBufferPageOffset: open_params
-                                            .downstream_ring_buffer_page_offset,
-                                        NodeNumber: 0, // BUGBUG: NUMA
-                                        Padding: 0,
-                                    },
-                                    channel.saved_open(),
-                                )
-                                .await
-                                .with_context(|| {
-                                    format!(
-                                        "Failed to restore channel {} in proxy",
-                                        channel.channel_id()
-                                    )
-                                })?;
-
-                            proxy_ids.insert(channel.channel_id(), proxy_id);
-                        }
-                        if let Some(gpadls) = saved_state.gpadls() {
-                            for gpadl in gpadls {
-                                if gpadl.is_tearing_down() {
-                                    continue;
-                                }
-                                let Some(proxy_id) = proxy_ids.get(&gpadl.channel_id) else {
-                                    continue;
-                                };
-                                tracing::trace!(
-                                    id = %gpadl.id,
-                                    channel_id = %gpadl.channel_id,
-                                    proxy_id = %proxy_id,
-                                    "restoring gpadl in proxy"
-                                );
-                                self.handle_gpadl_create(
-                                    *proxy_id,
-                                    GpadlId(gpadl.id),
-                                    gpadl.count,
-                                    gpadl.buf.as_slice(),
-                                )
-                                .await
-                                .with_context(|| {
-                                    format!(
-                                        "failed to restore GPADLs ID {} for channel {} in proxy",
-                                        gpadl.channel_id, gpadl.id
-                                    )
-                                })?;
-                            }
-                        }
-                    } else {
-                        return Err(anyhow!("No channels exist in the saved state"));
-                    }
-
-                    *saved_state_option = Some(*saved_state);
-                    Ok(())
+                    self.handle_saved_state_set(saved_state, vtl).await
                 })
                 .await;
             }
             SavedStateRequest::Clear(rpc) => {
-                rpc.handle(async |()| {
-                    if saved_state_option.is_some() {
-                        // The VM has started. Tell the proxy to revoke all unclaimed channels.
-                        if let Err(err) = self.proxy.revoke_unclaimed_channels().await {
-                            tracing::error!(
-                                error = &err as &dyn std::error::Error,
-                                "revoke unclaimed channels ioctl failed"
-                            );
-                        }
-                    }
-                })
-                .await;
-
-                *saved_state_option = None;
+                rpc.handle(async |()| self.handle_saved_state_clear(vtl).await)
+                    .await;
             }
         }
 
         true
+    }
+
+    /// Restores proxy state from a VMBus saved state, and stores the state for use during offers.
+    async fn handle_saved_state_set(
+        &self,
+        saved_state: Box<SavedState>,
+        vtl: u8,
+    ) -> anyhow::Result<()> {
+        tracing::trace!("restoring channels...");
+        let mut saved_states = self.saved_states.lock().await;
+        let saved_state_option = saved_states.for_vtl_mut(vtl);
+        let saved_state = SavedStateData::from(*saved_state);
+        let (channels, gpadls) = saved_state.channels_and_gpadls();
+        assert!(
+            saved_state_option.is_none(),
+            "saved state for VTL {vtl} already set"
+        );
+
+        for channel in channels {
+            tracing::trace!(?channel, "restoring channel");
+            let key = channel.key();
+            let channel_gpadls = gpadls.iter().filter_map(|g| {
+                (g.channel_id == channel.channel_id()).then_some(Gpadl {
+                    gpadl_id: g.id,
+                    range_count: g.count.into(),
+                    range_buffer: &g.buf,
+                })
+            });
+
+            let open_params = channel.open_request().map(|request| {
+                VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS {
+                    RingBufferGpadlHandle: request.ring_buffer_gpadl_id.0,
+                    DownstreamRingBufferPageOffset: request.downstream_ring_buffer_page_offset,
+                    NodeNumber: 0, // BUGBUG: NUMA
+                    Padding: 0,
+                }
+            });
+
+            let proxy_id = self
+                .proxy
+                .restore(
+                    key.interface_id,
+                    key.instance_id,
+                    key.subchannel_index,
+                    vtl,
+                    open_params,
+                    channel_gpadls.clone(),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to restore channel {} in proxy",
+                        channel.channel_id()
+                    )
+                })?;
+
+            // Register the restored GPADLs.
+            assert!(
+                self.gpadls
+                    .lock()
+                    .insert(
+                        proxy_id,
+                        channel_gpadls.map(|g| GpadlId(g.gpadl_id)).collect()
+                    )
+                    .is_none(),
+                "proxy driver used duplicate proxy id {proxy_id} during restore",
+            )
+        }
+
+        *saved_state_option = Some(saved_state);
+        Ok(())
+    }
+
+    /// Clears the saved state for the given VTL, and notifies the proxy the restore operation is
+    /// complete.
+    async fn handle_saved_state_clear(&self, vtl: u8) {
+        let mut saved_states = self.saved_states.lock().await;
+        let saved_state_option = saved_states.for_vtl_mut(vtl);
+        if saved_state_option.take().is_some() {
+            // The VM has started. Tell the proxy to revoke all unclaimed channels.
+            // N.B. For a VM with VTL2 we will end up doing this twice, but that is benign.
+            if let Err(err) = self.proxy.revoke_unclaimed_channels().await {
+                tracing::error!(
+                    error = &err as &dyn std::error::Error,
+                    "revoke unclaimed channels ioctl failed"
+                );
+            }
+        }
     }
 
     async fn run_server_requests(
@@ -939,12 +935,14 @@ impl ProxyTask {
                 }
             };
 
-            let this = self.clone();
-            spawner
-                .spawn("vmbus-proxy-req", async move {
-                    this.handle_request(proxy_id, request).await
-                })
-                .detach();
+            if let Some(request) = request {
+                let this = self.clone();
+                spawner
+                    .spawn("vmbus-proxy-req", async move {
+                        this.handle_request(proxy_id, request).await
+                    })
+                    .detach();
+            }
         }
 
         tracing::debug!("proxy channel requests finished");

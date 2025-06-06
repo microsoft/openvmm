@@ -12,6 +12,7 @@ use hvdef::Vtl;
 use inspect::Inspect;
 pub use saved_state::RestoreError;
 pub use saved_state::SavedState;
+pub use saved_state::SavedStateData;
 use slab::Slab;
 use std::cmp::min;
 use std::collections::VecDeque;

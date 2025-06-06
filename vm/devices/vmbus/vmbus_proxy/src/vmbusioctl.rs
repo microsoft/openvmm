@@ -45,7 +45,7 @@ pub struct VmbusChannelOfferFlags {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, zerocopy::IntoBytes)]
+#[derive(Copy, Clone, Default, zerocopy::IntoBytes, zerocopy::Immutable)]
 pub struct VMBUS_SERVER_OPEN_CHANNEL_OUTPUT_PARAMETERS {
     pub RingBufferGpadlHandle: u32,
     pub DownstreamRingBufferPageOffset: u32,
