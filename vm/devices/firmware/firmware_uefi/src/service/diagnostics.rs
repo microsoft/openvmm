@@ -17,13 +17,18 @@ use crate::UefiDevice;
 use guestmem::GuestMemory;
 use guestmem::GuestMemoryError;
 use inspect::Inspect;
+use std::borrow::Cow;
 use std::fmt::Debug;
 use std::mem::size_of;
 use thiserror::Error;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerInfo;
 use uefi_specs::hyperv::advanced_logger::AdvancedLoggerMessageEntryV2;
+use uefi_specs::hyperv::advanced_logger::PHASE_NAMES;
 use uefi_specs::hyperv::advanced_logger::SIG_ENTRY;
 use uefi_specs::hyperv::advanced_logger::SIG_HEADER;
+use uefi_specs::hyperv::debug_level::DEBUG_ERROR;
+use uefi_specs::hyperv::debug_level::DEBUG_FLAG_NAMES;
+use uefi_specs::hyperv::debug_level::DEBUG_WARN;
 use zerocopy::FromBytes;
 
 /// 8-byte alignment for every entry
@@ -49,6 +54,41 @@ pub struct EfiDiagnosticsLog<'a> {
     pub phase: u16,
     /// The log message itself
     pub message: &'a str,
+}
+
+/// Converts a debug level to a human-readable string
+fn debug_level_to_string(debug_level: u32) -> Cow<'static, str> {
+    // Borrow directly from the table if only one flag is set
+    if debug_level.count_ones() == 1 {
+        if let Some(&(_, name)) = DEBUG_FLAG_NAMES
+            .iter()
+            .find(|&&(flag, _)| flag == debug_level)
+        {
+            return Cow::Borrowed(name);
+        }
+    }
+
+    // Handle combined flags or unknown debug levels
+    let flags: Vec<&str> = DEBUG_FLAG_NAMES
+        .iter()
+        .filter(|&&(flag, _)| debug_level & flag != 0)
+        .map(|&(_, name)| name)
+        .collect();
+
+    if flags.is_empty() {
+        Cow::Borrowed("UNKNOWN")
+    } else {
+        Cow::Owned(flags.join("+"))
+    }
+}
+
+/// Converts a phase value to a human-readable string
+fn phase_to_string(phase: u16) -> &'static str {
+    PHASE_NAMES
+        .iter()
+        .find(|&&(phase_raw, _)| phase_raw == phase)
+        .map(|&(_, name)| name)
+        .unwrap_or("UNKNOWN")
 }
 
 /// Errors that occur when parsing entries
@@ -362,13 +402,32 @@ impl UefiDevice {
             .service
             .diagnostics
             .process_diagnostics(&self.gm, |log| {
-                tracing::info!(
-                    debug_level = log.debug_level,
-                    ticks = log.ticks,
-                    phase = log.phase,
-                    log_message = %log.message,
-                    "EFI log entry"
-                );
+                let debug_level_str = debug_level_to_string(log.debug_level);
+                let phase_str = phase_to_string(log.phase);
+
+                match log.debug_level {
+                    DEBUG_WARN => tracing::warn!(
+                        debug_level = %debug_level_str,
+                        ticks = log.ticks,
+                        phase = %phase_str,
+                        log_message = log.message,
+                        "EFI log entry"
+                    ),
+                    DEBUG_ERROR => tracing::error!(
+                        debug_level = %debug_level_str,
+                        ticks = log.ticks,
+                        phase = %phase_str,
+                        log_message = log.message,
+                        "EFI log entry"
+                    ),
+                    _ => tracing::info!(
+                        debug_level = %debug_level_str,
+                        ticks = log.ticks,
+                        phase = %phase_str,
+                        log_message = log.message,
+                        "EFI log entry"
+                    ),
+                }
             }) {
             Ok(_) => {}
             Err(error) => {

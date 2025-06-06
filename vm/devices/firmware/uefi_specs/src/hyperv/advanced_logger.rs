@@ -11,6 +11,42 @@ use zerocopy::FromBytes;
 use zerocopy::Immutable;
 use zerocopy::KnownLayout;
 
+/// Phase value for SEC
+pub const SEC_PHASE: u16 = 0x0001;
+
+/// Phase value for PEI CORE
+pub const PEI_CORE_PHASE: u16 = 0x0002;
+
+/// Phase value for PEI64
+pub const PEI64_PHASE: u16 = 0x0003;
+
+/// Phase value for DXE
+pub const DXE_PHASE: u16 = 0x0004;
+
+/// Phase value for RUNTIME
+pub const RUNTIME_PHASE: u16 = 0x0005;
+
+/// Phase value for MM CORE
+pub const MM_CORE_PHASE: u16 = 0x0006;
+
+/// Phase value for MM
+pub const MM_PHASE: u16 = 0x0007;
+
+/// Phase value for SMM CORE
+pub const SMM_CORE_PHASE: u16 = 0x0008;
+
+/// Maps phase values to their descriptive names
+pub const PHASE_NAMES: &[(u16, &str)] = &[
+    (SEC_PHASE, "SEC"),
+    (PEI_CORE_PHASE, "PEI_CORE"),
+    (PEI64_PHASE, "PEI64"),
+    (DXE_PHASE, "DXE"),
+    (RUNTIME_PHASE, "RUNTIME"),
+    (MM_CORE_PHASE, "MM_CORE"),
+    (MM_PHASE, "MM"),
+    (SMM_CORE_PHASE, "SMM_CORE"),
+];
+
 /// Advanced Logger Info signature
 pub const SIG_HEADER: [u8; 4] = *b"ALOG";
 
