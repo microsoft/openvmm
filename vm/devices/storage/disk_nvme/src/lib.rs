@@ -188,6 +188,43 @@ impl DiskIo for NvmeDisk {
     fn optimal_unmap_sectors(&self) -> u32 {
         self.namespace.preferred_deallocate_granularity().into()
     }
+
+    fn maximum_atomic_transfer_length(&self) -> Option<u32> {
+        if self.namespace.nawun() == 0 {
+            None
+        } else {
+            Some(self.namespace.nawun().into())
+        }
+    }
+
+    fn atomic_alignment(&self) -> Option<u32> {
+        if self.namespace.nabo() == 0 {
+            None
+        } else {
+            Some(self.namespace.nabo().into())
+        }
+    }
+
+    fn atomic_transfer_length_granularity(&self) -> Option<u32> {
+        // There appears to be no granularity requirement in the NVMe spec.
+        None
+    }
+
+    fn maximum_atomic_transfer_length_with_atomic_boundary(&self) -> Option<u32> {
+        if self.namespace.nabsn() == 0 {
+            None
+        } else {
+            Some(self.namespace.nabsn().into())
+        }
+    }
+
+    fn maximum_atomic_boundary_size(&self) -> Option<u32> {
+        if self.namespace.nabsn() == 0 {
+            None
+        } else {
+            Some(self.namespace.nabsn().into())
+        }
+    }
 }
 
 #[async_trait]
