@@ -90,8 +90,16 @@ impl PetriVmConfig for PetriVmConfigHyperV {
         Ok((Box::new(vm), client))
     }
 
+    fn with_secure_boot(self: Box<Self>) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_secure_boot(*self))
+    }
+
     fn with_windows_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig> {
         Box::new(Self::with_windows_secure_boot_template(*self))
+    }
+
+    fn with_uefi_ca_secure_boot_template(self: Box<Self>) -> Box<dyn PetriVmConfig> {
+        Box::new(Self::with_uefi_ca_secure_boot_template(*self))
     }
 
     fn with_processor_topology(
@@ -127,6 +135,10 @@ impl PetriVmConfig for PetriVmConfigHyperV {
 
     fn with_uefi_frontpage(self: Box<Self>, enable: bool) -> Box<dyn PetriVmConfig> {
         Box::new(Self::with_uefi_frontpage(*self, enable))
+    }
+
+    fn os_flavor(&self) -> OsFlavor {
+        self.os_flavor
     }
 }
 
@@ -278,16 +290,7 @@ impl PetriVmConfigHyperV {
             memory: 0x1_0000_0000,
             proc_topology: ProcessorTopology::default(),
             vhd_paths,
-            secure_boot_template: matches!(generation, powershell::HyperVGeneration::Two)
-                .then_some(match firmware.os_flavor() {
-                    OsFlavor::Windows => powershell::HyperVSecureBootTemplate::MicrosoftWindows,
-                    OsFlavor::Linux => {
-                        powershell::HyperVSecureBootTemplate::MicrosoftUEFICertificateAuthority
-                    }
-                    OsFlavor::FreeBsd | OsFlavor::Uefi => {
-                        powershell::HyperVSecureBootTemplate::SecureBootDisabled
-                    }
-                }),
+            secure_boot_template: None,
             openhcl_igvm,
             agent_image,
             openhcl_agent_image,
@@ -535,12 +538,35 @@ impl PetriVmConfigHyperV {
         self
     }
 
+    /// Set the VM to enable secure boot and inject the templates per OS flavor.
+    pub fn with_secure_boot(self) -> Self {
+        if !matches!(self.generation, powershell::HyperVGeneration::Two) {
+            panic!("Secure boot is only supported for UEFI firmware.");
+        }
+
+        match self.os_flavor {
+            OsFlavor::Windows => self.with_windows_secure_boot_template(),
+            OsFlavor::Linux => self.with_uefi_ca_secure_boot_template(),
+            _ => panic!("Secure boot unsupported for OS flavor {:?}", self.os_flavor),
+        }
+    }
+
     /// Inject Windows secure boot templates into the VM's UEFI.
     pub fn with_windows_secure_boot_template(mut self) -> Self {
         if !matches!(self.generation, powershell::HyperVGeneration::Two) {
-            panic!("Secure boot templates are only supported for UEFI firmware.");
+            panic!("Secure boot is only supported for UEFI firmware.");
         }
         self.secure_boot_template = Some(powershell::HyperVSecureBootTemplate::MicrosoftWindows);
+        self
+    }
+
+    /// Inject UEFI CA secure boot templates into the VM's UEFI.
+    pub fn with_uefi_ca_secure_boot_template(mut self) -> Self {
+        if !matches!(self.generation, powershell::HyperVGeneration::Two) {
+            panic!("Secure boot is only supported for UEFI firmware.");
+        }
+        self.secure_boot_template =
+            Some(powershell::HyperVSecureBootTemplate::MicrosoftUEFICertificateAuthority);
         self
     }
 
