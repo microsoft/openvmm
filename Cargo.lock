@@ -8872,10 +8872,12 @@ name = "vmm_tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "cfg-if",
  "disk_backend_resources",
  "futures",
  "get_resources",
  "guid",
+ "hvdef",
  "hvlite_defs",
  "hvlite_ttrpc_vmservice",
  "hyperv_ic_resources",
@@ -8890,6 +8892,7 @@ dependencies = [
  "petri_artifact_resolver_openvmm_known_paths",
  "petri_artifacts_common",
  "petri_artifacts_vmm_test",
+ "safe_intrinsics",
  "scsidisk_resources",
  "storvsp_resources",
  "tempfile",
@@ -8900,6 +8903,7 @@ dependencies = [
  "vmm_core_defs",
  "vmm_test_macros",
  "vtl2_settings_proto",
+ "x86defs",
 ]
 
 [[package]]
