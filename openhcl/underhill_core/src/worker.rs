@@ -3231,7 +3231,7 @@ async fn halt_task(
             // For guest requested halts, log the error and do not forward to the host.
             tracing::info!(CVM_ALLOWED, ?halt_request, "guest halted");
         } else {
-            // Flush logs. Wait up to 5 seconds.
+            // All real halts require flushing logs to the host. Wait up to 5 seconds.
             let ctx = CancelContext::new().with_timeout(Duration::from_secs(5));
             let call = control_send
                 .lock()
