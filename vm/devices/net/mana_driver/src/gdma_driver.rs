@@ -161,19 +161,52 @@ const NUM_PAGES: usize = 6;
 // RWQEs have no OOB and one SGL entry so they are always exactly 32 bytes.
 const RWQE_SIZE: u32 = 32;
 
+impl<T: DeviceBacking> GdmaDriver<T> {
+    /// Polls the shared‐memory ownership bit until PF gives it back (or we timeout / device not present).
+    /// Returns `Ok(header)` if we successfully see VF ownership (i.e. PF bit cleared),
+    /// or `Err` if the device not present or we hit our timeout.
+    fn wait_for_vf_to_own_shmem(&self) -> Result<SmcProtoHdr, anyhow::Error> {
+        let timeout = std::time::Instant::now() + Duration::from_millis(HWC_POLL_TIMEOUT_IN_MS);
+
+        loop {
+            let offset = self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28;
+            let data = self.bar0.mem.read_u32(offset);
+
+            if data == u32::MAX {
+                return Err(anyhow::anyhow!("Device no longer present"));
+            }
+
+            let header = SmcProtoHdr::from(data);
+            if !header.owner_is_pf() {
+                return Ok(header);
+            }
+
+            if std::time::Instant::now() > timeout {
+                return Err(anyhow::anyhow!(
+                    "MANA request timed out waiting for PF ownership to clear"
+                ));
+            }
+
+            std::hint::spin_loop();
+        }
+    }
+}
+
 impl<T: DeviceBacking> Drop for GdmaDriver<T> {
     fn drop(&mut self) {
         if self.hwc_failure {
             return;
         }
-        let data = self
-            .bar0
-            .mem
-            .read_u32(self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28);
-        if data == u32::MAX {
-            tracing::error!("Device no longer present");
-            return;
-        }
+
+        // Wait for VF ownership of the shared memory
+        const BEFORE_DESTROY_HWC: &str = "Before GdmaDriver destroy HWC";
+        let _ = match self.wait_for_vf_to_own_shmem().context(BEFORE_DESTROY_HWC) {
+            Ok(hdr) => hdr,
+            Err(e) => {
+                tracing::error!(context = BEFORE_DESTROY_HWC, error = %e);
+                return;
+            }
+        };
 
         let hdr = SmcProtoHdr::new()
             .with_msg_type(SmcMessageType::SMC_MSG_TYPE_DESTROY_HWC.0)
@@ -184,34 +217,24 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
             self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28,
             hdr,
         );
-        // Wait for the device to respond.
-        let max_wait_time =
-            std::time::Instant::now() + Duration::from_millis(HWC_POLL_TIMEOUT_IN_MS);
-        let header = loop {
-            let data = self
-                .bar0
-                .mem
-                .read_u32(self.bar0.map.vf_gdma_sriov_shared_reg_start as usize + 28);
-            if data == u32::MAX {
-                tracing::error!("Device no longer present");
+
+        const AFTER_DESTROY_HWC: &str = "After GdmaDriver destroy HWC";
+        let header = match self.wait_for_vf_to_own_shmem().context(AFTER_DESTROY_HWC) {
+            Ok(hdr) => hdr,
+            Err(e) => {
+                tracing::error!(context = AFTER_DESTROY_HWC, error = %e);
                 return;
             }
-            let header = SmcProtoHdr::from(data);
-            if !header.owner_is_pf() {
-                break header;
-            }
-            if std::time::Instant::now() > max_wait_time {
-                tracing::error!("MANA request timed out. SMC_MSG_TYPE_DESTROY_HWC");
-                return;
-            }
-            std::hint::spin_loop();
         };
 
         if !header.is_response() {
-            tracing::error!("expected response");
+            tracing::error!(context = AFTER_DESTROY_HWC, error = "expected response");
         }
         if header.status() != 0 {
-            tracing::error!(header_status = header.status(), "DESTROY_HWC failed");
+            tracing::error!(
+                context = AFTER_DESTROY_HWC,
+                error = format!("DESTROY_HWC failed: {}", header.status())
+            );
         }
     }
 }
