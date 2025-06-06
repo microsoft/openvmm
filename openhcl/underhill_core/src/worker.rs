@@ -3176,19 +3176,6 @@ async fn halt_task(
     get_client: GuestEmulationTransportClient,
     halt_on_guest_halt: bool,
 ) {
-    let prepare_for_shutdown = async || {
-        // Flush logs. Wait up to 5 seconds.
-        let ctx = CancelContext::new().with_timeout(Duration::from_secs(5));
-        let call = control_send
-            .lock()
-            .as_ref()
-            .map(|send| send.call(ControlRequest::FlushLogs, ctx));
-
-        if let Some(call) = call {
-            call.await.ok();
-        }
-    };
-
     #[derive(Debug)]
     enum HaltRequest {
         PowerOff,
@@ -3196,7 +3183,6 @@ async fn halt_task(
         Hibernate,
         TripleFault { vp: u32, regs: Vec<RegisterState> },
         Panic { string: String },
-        None,
     }
 
     while let Ok(reason) = halt_notify_recv.recv().await {
@@ -3226,35 +3212,36 @@ async fn halt_task(
                     string: format!("vp error on vp {}", vp),
                 }
             }
+            // Debug halts require no further processing, loop back around.
             HaltReason::DebugBreak { vp } => {
                 tracing::info!(CVM_ALLOWED, vp, "debug break");
-                HaltRequest::None
+                continue;
             }
             HaltReason::SingleStep { vp } => {
                 tracing::info!(CVM_ALLOWED, vp, "single step");
-                HaltRequest::None
+                continue;
             }
             HaltReason::HwBreakpoint { vp, .. } => {
                 tracing::info!(CVM_ALLOWED, vp, "hardware breakpoint");
-                HaltRequest::None
+                continue;
             }
         };
 
         if halt_on_guest_halt {
-            match halt_request {
-                // Ignore debug halts, as they're not true halts requested by the guest.
-                HaltRequest::None => {}
-                // For guest requested halts, log the error and do not forward to the host.
-                _ => {
-                    tracing::info!(CVM_ALLOWED, ?halt_request, "guest halted");
-                }
-            }
+            // For guest requested halts, log the error and do not forward to the host.
+            tracing::info!(CVM_ALLOWED, ?halt_request, "guest halted");
         } else {
-            // All real halts require flushing logs to the host.
-            if !matches!(halt_request, HaltRequest::None) {
-                prepare_for_shutdown().await;
+            // Flush logs. Wait up to 5 seconds.
+            let ctx = CancelContext::new().with_timeout(Duration::from_secs(5));
+            let call = control_send
+                .lock()
+                .as_ref()
+                .map(|send| send.call(ControlRequest::FlushLogs, ctx));
+            if let Some(call) = call {
+                call.await.ok();
             }
 
+            // Now we can notify the host about the halt.
             match halt_request {
                 HaltRequest::PowerOff => get_client.send_power_off(),
                 HaltRequest::Reset => get_client.send_reset(),
@@ -3263,7 +3250,6 @@ async fn halt_task(
                     get_client.triple_fault(vp, TripleFaultType::UNRECOVERABLE_EXCEPTION, regs)
                 }
                 HaltRequest::Panic { string } => panic!("{}", string),
-                HaltRequest::None => {}
             }
         }
     }
