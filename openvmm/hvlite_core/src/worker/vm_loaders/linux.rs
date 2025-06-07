@@ -60,7 +60,7 @@ pub fn load_linux_x86(
     const CMDLINE_BASE: u64 = 0x3000;
     const ACPI_BASE: u64 = 0xe0000;
 
-    let kaddr: u64 = 2 * 1024 * 1024;
+    let kaddr: u64 = 0x100000;
     let mut kernel_file = cfg.kernel;
 
     let mut initrd = Vec::new();
