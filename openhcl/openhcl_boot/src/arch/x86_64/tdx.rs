@@ -3,6 +3,7 @@
 
 //! TDX support.
 
+use crate::arch::x86_64::address_space::LargePageVa;
 use crate::arch::x86_64::address_space::tdx_share_large_page;
 use crate::arch::x86_64::address_space::tdx_unshare_large_page;
 use crate::host_params::PartitionInfo;
@@ -20,6 +21,7 @@ use tdcall::TdcallOutput;
 use tdcall::tdcall_hypercall;
 use tdcall::tdcall_map_gpa;
 use tdcall::tdcall_wrmsr;
+use x86defs::X64_LARGE_PAGE_SIZE;
 use x86defs::tdx::RESET_VECTOR_PAGE;
 use x86defs::tdx::TdVmCallR10Result;
 
@@ -38,20 +40,27 @@ pub fn report_os_id(guest_os_id: u64) {
 /// # Safety
 ///
 /// The caller ensures that the I/O pages are valid and not concurrently accessed
-pub unsafe fn initialize_hypercalls(guest_os_id: u64, input_page: u64, output_page: u64) {
-    // TODO We are assuming we are running under a Microsoft hypervisor, so there is
+pub unsafe fn initialize_hypercalls(
+    guest_os_id: u64,
+    input_page: LargePageVa,
+    output_page: LargePageVa,
+) {
+    // TODO: We are assuming we are running under a Microsoft hypervisor, so there is
     // no need to check any cpuid leaves.
     report_os_id(guest_os_id);
 
-    // SAFETY: The hypercall i/o pages are valid virtual addresses owned by the caller
+    // SAFETY: The hypercall i/o pages are large present pages owned by the caller, for
+    // sharing with the hypervisor
     unsafe {
-        tdx_share_large_page(input_page);
-        tdx_share_large_page(output_page);
+        tdx_share_large_page(&input_page);
+        tdx_share_large_page(&output_page);
     }
 
-    //// Enable host visibility for hypercall page
-    let input_page_range = MemoryRange::new(input_page..input_page + 4096);
-    let output_page_range = MemoryRange::new(output_page..output_page + 4096);
+    // Enable host visibility for hypercall page
+    let input_page_range =
+        MemoryRange::new(input_page.addr()..input_page.addr() + X64_LARGE_PAGE_SIZE);
+    let output_page_range =
+        MemoryRange::new(output_page.addr()..output_page.addr() + X64_LARGE_PAGE_SIZE);
     change_page_visibility(input_page_range, true);
     change_page_visibility(output_page_range, true);
 }
@@ -61,19 +70,20 @@ pub unsafe fn initialize_hypercalls(guest_os_id: u64, input_page: u64, output_pa
 /// # Safety
 ///
 /// The caller ensures that the I/O pages are valid and not concurrently accessed
-pub unsafe fn uninitialize_hypercalls(input_page: u64, output_page: u64) {
+pub unsafe fn uninitialize_hypercalls(input_page: LargePageVa, output_page: LargePageVa) {
     report_os_id(0);
 
-    // SAFETY: The hypercall i/o pages are valid virtual addresses owned by the caller
-    unsafe {
-        tdx_unshare_large_page(input_page);
-        tdx_unshare_large_page(output_page);
-    }
+    // SAFETY: The hypercall i/o pages are large present pages owned by the caller, for
+    // sharing with the hypervisor
+    tdx_unshare_large_page(&input_page);
+    tdx_unshare_large_page(&output_page);
 
     // Disable host visibility for hypercall page
-    let input_page_range = MemoryRange::new(input_page..input_page + 4096);
+    let input_page_range =
+        MemoryRange::new(input_page.addr()..input_page.addr() + X64_LARGE_PAGE_SIZE);
     change_page_visibility(input_page_range, false);
-    let output_page_range = MemoryRange::new(output_page..output_page + 4096);
+    let output_page_range =
+        MemoryRange::new(output_page.addr()..output_page.addr() + X64_LARGE_PAGE_SIZE);
     change_page_visibility(output_page_range, false);
     accept_pages(input_page_range).expect("accepting vtl 2 memory must not fail");
     accept_pages(output_page_range).expect("accepting vtl 2 memory must not fail");
@@ -176,13 +186,19 @@ impl minimal_rt::arch::IoAccess for TdxIoAccess {
 ///
 /// # Safety
 ///
-/// The caller ensures that the I/O pages are valid and not concurrently accessed
+/// The caller ensures that it owns the hypercall IO pages, and that they are
+/// shared with the hypervisor
 pub unsafe fn invoke_tdcall_hypercall(
     control: hvdef::hypercall::Control,
-    input_page: u64,
-    output_page: u64,
+    input_page: LargePageVa,
+    output_page: LargePageVa,
 ) -> hvdef::hypercall::HypercallOutput {
-    let result = tdcall_hypercall(&mut TdcallInstruction, control, input_page, output_page);
+    let result = tdcall_hypercall(
+        &mut TdcallInstruction,
+        control,
+        input_page.addr(),
+        output_page.addr(),
+    );
     match result {
         Ok(()) => 0.into(),
         Err(val) => {
