@@ -3,6 +3,8 @@
 
 //! Hypercall infrastructure.
 
+#[cfg(target_arch = "x86_64")]
+use crate::arch::LargePageVa;
 use crate::arch::hypercall::HvcallPage;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::tdx::invoke_tdcall_hypercall;
@@ -32,6 +34,7 @@ static HVCALL_OUTPUT: SingleThreaded<UnsafeCell<HvcallPage>> =
 
 static HVCALL: SingleThreaded<RefCell<HvCall>> = SingleThreaded(RefCell::new(HvCall {
     initialized: false,
+    vtl: Vtl::Vtl0,
     isolation_type: None,
 }));
 
@@ -41,6 +44,7 @@ static HVCALL: SingleThreaded<RefCell<HvCall>> = SingleThreaded(RefCell::new(HvC
 /// multi-threaded capacity (which the boot shim currently is not).
 pub struct HvCall {
     initialized: bool,
+    vtl: Vtl,
     isolation_type: Option<IsolationType>,
 }
 
@@ -78,18 +82,31 @@ impl HvCall {
                 #[cfg(target_arch = "x86_64")]
                 IsolationType::Tdx => {
                     self.initialize_tdx();
+                    self.initialized = true;
+                    self.vtl = Vtl::Vtl2;
                 }
                 #[cfg(target_arch = "x86_64")]
-                IsolationType::Snp => (),
+                IsolationType::Snp => {
+                    self.initialized = false;
+                }
                 _ => {
                     // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
                     let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
 
                     crate::arch::hypercall::initialize(guest_os_id.into());
+                    self.initialized = true;
+
+                    self.vtl = self
+                        .get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into())
+                        .map_or(Vtl::Vtl0, |status| {
+                            hvdef::HvRegisterVsmVpStatus::from(status.as_u64())
+                                .active_vtl()
+                                .try_into()
+                                .unwrap()
+                        });
                 }
             };
         }
-        self.initialized = true;
     }
 
     /// Call before jumping to kernel.
@@ -140,11 +157,9 @@ impl HvCall {
             Some(IsolationType::Tdx) =>
             // SAFETY: I/O pages are static owned by HVCALL, which can only be borrowed once
             unsafe {
-                invoke_tdcall_hypercall(
-                    control,
-                    Self::input_page().address(),
-                    Self::output_page().address(),
-                )
+                let input_page = LargePageVa::new(Self::input_page().address());
+                let output_page = LargePageVa::new(Self::output_page().address());
+                invoke_tdcall_hypercall(control, input_page, output_page)
             },
             // SAFETY: Invoking hypercall per TLFS spec
             _ => unsafe {
@@ -404,11 +419,9 @@ impl HvCall {
 
         // SAFETY: I/O pages are static owned by HVCALL, which can only be borrowed once
         unsafe {
-            crate::arch::tdx::initialize_hypercalls(
-                guest_os_id.into(),
-                Self::input_page().address(),
-                Self::output_page().address(),
-            );
+            let input_page = LargePageVa::new(Self::input_page().address());
+            let output_page = LargePageVa::new(Self::output_page().address());
+            crate::arch::tdx::initialize_hypercalls(guest_os_id.into(), input_page, output_page);
         }
     }
 
@@ -417,10 +430,9 @@ impl HvCall {
         assert!(self.isolation_type == Some(IsolationType::Tdx));
         // SAFETY: I/O pages are static owned by HVCALL, which can only be borrowed once
         unsafe {
-            crate::arch::tdx::uninitialize_hypercalls(
-                Self::input_page().address(),
-                Self::output_page().address(),
-            );
+            let input_page = LargePageVa::new(Self::input_page().address());
+            let output_page = LargePageVa::new(Self::output_page().address());
+            crate::arch::tdx::uninitialize_hypercalls(input_page, output_page);
         }
     }
 

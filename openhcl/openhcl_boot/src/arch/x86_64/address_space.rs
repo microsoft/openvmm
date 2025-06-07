@@ -268,30 +268,46 @@ pub fn init_local_map(va: u64) -> LocalMap<'static> {
     local_map
 }
 
+/// Addresses of large pages that are assured to be present in the paging hierarchy
+pub struct LargePageVa(u64);
+
+impl LargePageVa {
+    /// Validate that a virtual address is present in the paging hierarchy, and that it is a large page
+    ///
+    /// # Safety
+    /// The caller ensures that the argument is a virtual address
+    pub unsafe fn new(va: u64) -> Self {
+        // SAFETY: See above
+        unsafe {
+            let entry = get_pde_for_va(va);
+            assert!(entry.is_present() & entry.is_large_page());
+            LargePageVa(va)
+        }
+    }
+
+    pub fn addr(&self) -> u64 {
+        self.0
+    }
+}
+
 /// Set the shared bit in the PDE of a large page in the local map for a given VA.
 ///
 /// # Safety
-/// This routine requires the caller to pass VA that is a valid large page,
-/// and ensure that the page is one that should be shared with the host vmm
-pub unsafe fn tdx_share_large_page(va: u64) {
+/// The va passed in is guaranteed by the type to be a present large page,
+/// the caller must ensure it is safe to share with the hypervisor
+pub unsafe fn tdx_share_large_page(va: &LargePageVa) {
     // SAFETY: See above
     unsafe {
-        let entry = get_pde_for_va(va);
-        assert!(entry.is_present() & entry.is_large_page());
+        let entry = get_pde_for_va(va.addr());
         entry.tdx_set_shared();
     }
 }
 
 /// Clear the shared bit in the PDE of the local map for a given VA.
-///
-/// # Safety
-/// This routine requires the caller to pass VA that is a valid large page,
-/// and ensure that the page is one that should be shared with the host vmm
-pub unsafe fn tdx_unshare_large_page(va: u64) {
-    // SAFETY: See above
+pub fn tdx_unshare_large_page(va: &LargePageVa) {
+    // SAFETY: The va passed in is guaranteed by the type to be a present large page,
     unsafe {
-        let entry = get_pde_for_va(va);
-        assert!(entry.is_present() & entry.is_large_page());
+        let entry = get_pde_for_va(va.addr());
         entry.tdx_set_private();
     }
 }
