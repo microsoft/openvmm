@@ -153,6 +153,7 @@ pub fn start_sidecar<'a>(
         *hypercall_page = 0;
         #[cfg(target_arch = "x86_64")]
         {
+            crate::hypercall::hvcall().initialize(IsolationType::None);
             *hypercall_page = crate::hypercall::hvcall().hypercall_page();
         }
         *enable_logging = partition_info.boot_options.sidecar_logging;
