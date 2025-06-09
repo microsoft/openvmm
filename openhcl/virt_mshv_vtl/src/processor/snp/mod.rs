@@ -1181,7 +1181,9 @@ impl UhProcessor<'_, SnpBacked> {
         let mut vmsa = self.runner.vmsa_mut(next_vtl);
         let last_interrupt_ctrl = vmsa.v_intr_cntrl();
 
-        vmsa.v_intr_cntrl_mut().set_guest_busy(false);
+        if vmsa.sev_features().alternate_injection() {
+            vmsa.v_intr_cntrl_mut().set_guest_busy(false);
+        }
 
         self.unlock_tlb_lock(Vtl::Vtl2);
         let tlb_halt = self.should_halt_for_tlb_unlock(next_vtl);
@@ -1208,36 +1210,49 @@ impl UhProcessor<'_, SnpBacked> {
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
 
         // TODO SNP: The guest busy bit needs to be tested and set atomically.
-        if vmsa.v_intr_cntrl().guest_busy() {
-            self.backing.general_stats[entered_from_vtl]
-                .guest_busy
-                .increment();
-            // Software interrupts/exceptions cannot be automatically re-injected, but RIP still
-            // points to the instruction and the event should be re-generated when the
-            // instruction is re-executed. Note that hardware does not provide instruction
-            // length in this case so it's impossible to directly re-inject a software event if
-            // delivery generates an intercept.
-            //
-            // TODO SNP: Handle ICEBP.
-            let exit_int_info = SevEventInjectInfo::from(vmsa.exit_int_info());
-            debug_assert!(
-                exit_int_info.valid(),
-                "event inject info should be valid {exit_int_info:x?}"
-            );
+        let inject = if vmsa.sev_features().alternate_injection() {
+            if vmsa.v_intr_cntrl().guest_busy() {
+                self.backing.general_stats[entered_from_vtl]
+                    .guest_busy
+                    .increment();
+                // Software interrupts/exceptions cannot be automatically re-injected, but RIP still
+                // points to the instruction and the event should be re-generated when the
+                // instruction is re-executed. Note that hardware does not provide instruction
+                // length in this case so it's impossible to directly re-inject a software event if
+                // delivery generates an intercept.
+                //
+                // TODO SNP: Handle ICEBP.
+                let exit_int_info = SevEventInjectInfo::from(vmsa.exit_int_info());
+                assert!(
+                    exit_int_info.valid(),
+                    "event inject info should be valid {exit_int_info:x?}"
+                );
 
-            let inject = match exit_int_info.interruption_type() {
-                x86defs::snp::SEV_INTR_TYPE_EXCEPT => {
-                    exit_int_info.vector() != 3 && exit_int_info.vector() != 4
+                match exit_int_info.interruption_type() {
+                    x86defs::snp::SEV_INTR_TYPE_EXCEPT => {
+                        if exit_int_info.vector() != 3 && exit_int_info.vector() != 4 {
+                            // If the event is an exception, we can inject it.
+                            Some(exit_int_info)
+                        } else {
+                            None
+                        }
+                    }
+                    x86defs::snp::SEV_INTR_TYPE_SW => None,
+                    _ => Some(exit_int_info),
                 }
-                x86defs::snp::SEV_INTR_TYPE_SW => false,
-                _ => true,
-            };
-
-            if inject {
-                vmsa.set_event_inject(exit_int_info);
+            } else {
+                None
             }
+        } else {
+            unimplemented!("Only alternate injection is supported for SNP")
+        };
+
+        if let Some(inject) = inject {
+            vmsa.set_event_inject(inject);
         }
-        vmsa.v_intr_cntrl_mut().set_guest_busy(true);
+        if vmsa.sev_features().alternate_injection() {
+            vmsa.v_intr_cntrl_mut().set_guest_busy(true);
+        }
 
         if last_interrupt_ctrl.irq() && !vmsa.v_intr_cntrl().irq() {
             self.backing.general_stats[entered_from_vtl]
