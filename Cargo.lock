@@ -6625,7 +6625,7 @@ dependencies = [
  "tracing",
  "user_driver_emulated_mock",
  "vmcore",
- "zerocopy 0.8.23",
+ "zerocopy 0.8.24",
 ]
 
 [[package]]
