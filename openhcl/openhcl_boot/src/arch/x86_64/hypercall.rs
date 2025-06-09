@@ -13,7 +13,9 @@ use minimal_rt::arch::msr::write_msr;
 /// TDX compatibility. This is because the underlying static page is mapped in the
 /// shim's virtual memory hieararchy as a large page, making 2-MB the minimum shareable
 /// memory size between the TDX-enabled shim and hypervisor
-#[repr(C, align(0x200000))]
+///
+/// TODO(babayet2) temporary hack to check CI, do not merge
+#[repr(C, align(4096))]
 pub struct HvcallPage {
     pub buffer: [u8; x86defs::X64_LARGE_PAGE_SIZE as usize],
 }
