@@ -118,7 +118,7 @@ pub trait LoadedVmNetworkSettings: Inspect {
     async fn remove_network(&mut self, instance_id: Guid) -> anyhow::Result<()>;
 
     /// Callback after stopping the VM and all workers, in preparation for a VTL2 reboot.
-    async fn unload_for_servicing(&mut self);
+    async fn unload_for_servicing(&mut self) -> anyhow::Result<()>;
 
     /// Handles packet capture related operations.
     async fn packet_capture(
@@ -521,8 +521,10 @@ impl LoadedVm {
                 if let Some(network_settings) = self.network_settings.as_mut() {
                     network_settings
                         .unload_for_servicing()
-                        .instrument(tracing::info_span!("shutdown_mana", CVM_ALLOWED))
-                        .await;
+                        .instrument(tracing::info_span!("shutdown_mana", CVM_ALLOWED, %correlation_id))
+                        .await
+                } else {
+                    Ok(())
                 }
             };
 
@@ -532,7 +534,9 @@ impl LoadedVm {
                     nvme_manager
                         .shutdown(nvme_keepalive)
                         .instrument(tracing::info_span!("shutdown_nvme_vfio", CVM_ALLOWED, %correlation_id, %nvme_keepalive))
-                        .await;
+                        .await
+                } else {
+                    Ok(())
                 }
             };
 
@@ -540,12 +544,14 @@ impl LoadedVm {
             // restart.
             let shutdown_pci = async {
                 pci_shutdown::shutdown_pci_devices()
-                    .instrument(tracing::info_span!("shutdown_pci_devices", CVM_ALLOWED))
+                    .instrument(tracing::info_span!("shutdown_pci_devices", CVM_ALLOWED, %correlation_id))
                     .await
             };
 
-            let (r, (), ()) = (shutdown_pci, shutdown_mana, shutdown_nvme).join().await;
-            r?;
+            let (r_pci, r_mana, r_nvme) = (shutdown_pci, shutdown_mana, shutdown_nvme).join().await;
+            r_pci?;
+            r_mana?;
+            r_nvme?;
 
             Ok(state)
         }
