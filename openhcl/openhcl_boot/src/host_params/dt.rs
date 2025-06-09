@@ -7,7 +7,6 @@ use super::PartitionInfo;
 use super::shim_params::IsolationType;
 use super::shim_params::ShimParams;
 use crate::alloc::ALLOCATOR;
-use crate::boot_logger::debug_log;
 use crate::boot_logger::log;
 use crate::cmdline::BootCommandLineOptions;
 use crate::host_params::COMMAND_LINE_SIZE;
@@ -378,25 +377,12 @@ fn topology_from_host_dt(
     let vtl2_persisted_state_header =
         MemoryRange::new(params.memory_start_address..(params.memory_start_address + HV_PAGE_SIZE));
 
-    debug_log!(
-        "vtl2 persisted state range {:#x?}",
-        vtl2_persisted_state_header
-    );
-
     // If there's no existing persisted state, reserve 512 pages to store it for the first time.
     const PERSISTED_STATE_REGION_SIZE: u64 = 512 * HV_PAGE_SIZE;
     let vtl2_persisted_state = MemoryRange::new(
         params.memory_start_address + params.memory_size - PERSISTED_STATE_REGION_SIZE
             ..params.memory_start_address + params.memory_size,
     );
-
-    debug_log!(
-        "mem start {:x}, mem size {:x}",
-        params.memory_start_address,
-        params.memory_size
-    );
-
-    debug_log!("used {:#x?}", params.used);
 
     // Decide if we will reserve memory for a VTL2 private pool. Parse this
     // from the final command line.
@@ -437,7 +423,7 @@ fn topology_from_host_dt(
         // Decide the amount of mmio VTL2 should allocate. Enforce a minimum
         // of 128 MB mmio for VTL2.
         const MINIMUM_MMIO_SIZE: u64 = 128 * (1 << 20);
-        let mmio_size = core::cmp::max(
+        let mmio_size = max(
             match parsed.memory_allocation_mode {
                 MemoryAllocationMode::Vtl2 { mmio_size, .. } => mmio_size.unwrap_or(0),
                 _ => 0,
@@ -510,8 +496,6 @@ fn topology_from_persisted_state(
 
     ALLOCATOR.disable_alloc();
 
-    debug_log!("parsed protobuf: {:#?}", parsed_protobuf);
-
     let mut vtl2_ram =
         off_stack!(ArrayVec<MemoryEntry, MAX_VTL2_RAM_RANGES>, ArrayVec::new_const());
     let memory_allocation_mode = parsed.memory_allocation_mode;
@@ -580,8 +564,6 @@ fn read_persisted_region_header(
     params: &ShimParams,
     persisted_header: MemoryRange,
 ) -> Result<Option<PersistedStateHeader>, DtError> {
-    debug_log!("read persisted region header {:#x?}", persisted_header);
-
     // TODO CVM: On an isolated guest, these pages may not be accepted. We need
     // to rethink how this will work in order to handle this correctly, as on a
     // first boot we'd need to accept them early, but subsequent boots should
@@ -600,11 +582,8 @@ fn read_persisted_region_header(
         PersistedStateHeader::read_from_prefix(mapping.data).expect("BUGBUG must be big enough");
 
     if header.magic != PersistedStateHeader::MAGIC {
-        debug_log!("persisted header is not magic, is {:#x?}", header);
         return Ok(None);
     }
-
-    debug_log!("persisted header: {:#x?}", header);
 
     Ok(Some(header))
 }

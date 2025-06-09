@@ -7,7 +7,6 @@
 //! Note that we only allow allocations in a small window for supporting
 //! mesh_protobuf. Any other attempts to allocate will result in a panic.
 
-use crate::boot_logger::debug_log;
 use crate::single_threaded::SingleThreaded;
 use core::alloc::GlobalAlloc;
 use core::alloc::Layout;

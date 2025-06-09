@@ -26,7 +26,6 @@ use crate::arch::setup_vtl2_vp;
 use crate::arch::tdx::get_tdx_tsc_reftime;
 use crate::arch::verify_imported_regions_hash;
 use crate::boot_logger::boot_logger_init;
-use crate::boot_logger::debug_log;
 use crate::boot_logger::log;
 use crate::hypercall::hvcall;
 use crate::single_threaded::off_stack;
@@ -395,11 +394,6 @@ fn reserved_memory_regions(
         ReservedMemoryType::Vtl2PersistedState,
     ));
 
-    debug_log!(
-        "vtl2 persisted state header: {:#x?}",
-        partition_info.vtl2_persisted_state_header
-    );
-
     reserved.push((
         partition_info.vtl2_persisted_state_header,
         ReservedMemoryType::Vtl2PersistedStateHeader,
@@ -424,7 +418,6 @@ fn reserved_memory_regions(
 mod x86_boot {
     use crate::PageAlign;
     use crate::ReservedMemoryType;
-    use crate::debug_log;
     use crate::host_params::PartitionInfo;
     use crate::single_threaded::OffStackRef;
     use crate::single_threaded::off_stack;

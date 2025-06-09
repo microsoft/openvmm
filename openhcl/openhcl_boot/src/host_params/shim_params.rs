@@ -3,14 +3,14 @@
 
 //! Parameters that are fixed at IGVM build time by the underhill loader.
 
-use crate::arch::address_space::init_local_map;
 use crate::arch::address_space::LocalMap;
+use crate::arch::address_space::init_local_map;
 use crate::arch::get_isolation_type;
 use core::cell::RefCell;
 use core::slice;
 use loader_defs::paravisor::ImportedRegionDescriptor;
-use loader_defs::paravisor::ParavisorCommandLine;
 use loader_defs::paravisor::PARAVISOR_LOCAL_MAP_VA;
+use loader_defs::paravisor::ParavisorCommandLine;
 use loader_defs::shim::ShimParamsRaw;
 use memory_range::MemoryRange;
 

@@ -6,7 +6,6 @@
 
 use crate::MAX_RESERVED_MEM_RANGES;
 use crate::ReservedMemoryType;
-use crate::boot_logger::debug_log;
 use crate::host_params::COMMAND_LINE_SIZE;
 use crate::host_params::PartitionInfo;
 use crate::host_params::shim_params::IsolationType;
