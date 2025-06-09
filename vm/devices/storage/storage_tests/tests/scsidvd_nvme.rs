@@ -79,7 +79,7 @@ impl ScsiDvdNvmeTest {
             .unwrap();
 
         let device = EmulatedDevice::new(nvme, msi_set, dma_client.clone());
-        let nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device)
+        let nvme_driver = NvmeDriver::new(&driver_source, CPU_COUNT, device, false)
             .await
             .unwrap();
         let namespace = nvme_driver.namespace(1).await.unwrap();
