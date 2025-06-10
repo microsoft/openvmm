@@ -530,7 +530,7 @@ impl SparseMapping {
 
         self.check(offset, size_of::<T>())?;
         // SAFETY: the bounds have been checked above.
-        unsafe { try_read_volatile(self.as_ptr().cast::<u8>().add(offset).cast()) }
+        unsafe { try_read_volatile(self.as_ptr().byte_add(offset).cast()) }
             .map_err(SparseMappingError::Memory)
     }
 
@@ -546,7 +546,7 @@ impl SparseMapping {
 
         self.check(offset, size_of::<T>())?;
         // SAFETY: the bounds have been checked above.
-        unsafe { try_write_volatile(self.as_ptr().cast::<u8>().add(offset).cast(), value) }
+        unsafe { try_write_volatile(self.as_ptr().byte_add(offset).cast(), value) }
             .map_err(SparseMappingError::Memory)
     }
 
