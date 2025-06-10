@@ -1403,7 +1403,7 @@ mod tests {
             }
         }
 
-        async fn power_on(&mut self, base_address: u64) {
+        async fn initiate_power_on(&mut self, base_address: u64) -> u64 {
             let power_on = protocol::FdoD0Entry {
                 message_type: protocol::MessageType::FDO_D0_ENTRY,
                 padding: 0,
@@ -1413,15 +1413,7 @@ mod tests {
             self.write_packet(Some(transaction_id), &power_on)
                 .await
                 .unwrap();
-
-            let mut pkt_info = ReadPacketInfo::None;
-            let status: protocol::Status = self.read_packet(&mut pkt_info).await.unwrap();
-            if let ReadPacketInfo::Completion(id) = pkt_info {
-                assert_eq!(id, transaction_id);
-                assert_eq!(status, protocol::Status::SUCCESS);
-            } else {
-                panic!("Unexpected D0 (power on) reply");
-            }
+            transaction_id
         }
 
         fn verify_device_relations2(&self, message: &Relations2) {
@@ -1444,7 +1436,7 @@ mod tests {
 
         async fn start_device(&mut self, base_address: u64) {
             self.negotiate_version().await;
-            self.power_on(base_address).await;
+            let transaction_id = self.initiate_power_on(base_address).await;
             let mut pkt_info = ReadPacketInfo::None;
             let relations: Relations2 = self.read_packet(&mut pkt_info).await.unwrap();
             if let ReadPacketInfo::NewTransaction = pkt_info {
@@ -1455,6 +1447,15 @@ mod tests {
                 self.verify_device_relations2(&relations);
             } else {
                 panic!("Expecting QueryBusRelations2 message in response to version.");
+            }
+
+            let mut pkt_info = ReadPacketInfo::None;
+            let status: protocol::Status = self.read_packet(&mut pkt_info).await.unwrap();
+            if let ReadPacketInfo::Completion(id) = pkt_info {
+                assert_eq!(id, transaction_id);
+                assert_eq!(status, protocol::Status::SUCCESS);
+            } else {
+                panic!("Unexpected D0 (power on) reply");
             }
         }
 
