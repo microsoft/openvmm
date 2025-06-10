@@ -503,7 +503,7 @@ struct UhCvmVpInner {
 
 #[cfg_attr(guest_arch = "aarch64", expect(dead_code))]
 #[derive(Inspect)]
-#[inspect(tag = "guest vsm state")]
+#[inspect(tag = "guest_vsm_state")]
 /// Partition-wide state for guest vsm.
 enum GuestVsmState<T: Inspect> {
     NotPlatformSupported,
