@@ -27,6 +27,7 @@ use vmcore::vpci_msi::RegisterInterruptError;
 use vpci_protocol as protocol;
 use vpci_protocol::SlotNumber;
 use zerocopy::FromBytes;
+use zerocopy::FromZeros;
 use zerocopy::Immutable;
 use zerocopy::IntoBytes;
 use zerocopy::KnownLayout;
@@ -47,6 +48,7 @@ enum WorkerRequest {
     Inspect(inspect::Deferred),
     MapInterrupt(FailableRpc<protocol::CreateInterrupt2, protocol::MsiResourceRemapped>),
     UnmapInterrupt(FailableRpc<protocol::DeleteInterrupt, ()>),
+    AssignedResources(FailableRpc<protocol::DeviceTranslate, ()>),
 }
 
 #[derive(Inspect)]
@@ -151,12 +153,16 @@ impl ConfigSpaceAccessor {
 
     fn read(&mut self, slot: SlotNumber, offset: u16) -> u32 {
         self.set_slot(slot);
-        self.mem
-            .read(self.base_gpa + protocol::MMIO_PAGE_CONFIG_SPACE + offset as u64)
+        let value = self
+            .mem
+            .read(self.base_gpa + protocol::MMIO_PAGE_CONFIG_SPACE + offset as u64);
+        tracing::trace!(?slot, offset, value, "config space read");
+        value
     }
 
     fn write(&mut self, slot: SlotNumber, offset: u16, value: u32) {
         self.set_slot(slot);
+        tracing::trace!(?slot, offset, value, "config space write");
         self.mem.write(
             self.base_gpa + protocol::MMIO_PAGE_CONFIG_SPACE + offset as u64,
             value,
@@ -177,6 +183,18 @@ impl VpciDevice {
 
     pub fn write_cfg(&self, offset: u16, value: u32) {
         self.config_space.lock().write(self.slot, offset, value);
+    }
+
+    pub async fn init(&self) -> anyhow::Result<()> {
+        let msg = protocol::DeviceTranslate {
+            message_type: protocol::MessageType::ASSIGNED_RESOURCES,
+            slot: self.slot,
+            ..FromZeros::new_zeroed()
+        };
+        self.req
+            .call_failable(WorkerRequest::AssignedResources, msg)
+            .await?;
+        Ok(())
     }
 }
 
@@ -274,6 +292,7 @@ enum Tx {
     FdoD0Entry(#[inspect(skip)] mesh::OneshotSender<protocol::Status>),
     CreateInterrupt(#[inspect(skip)] FailableRpc<(), protocol::MsiResourceRemapped>),
     DeleteInterrupt(#[inspect(skip)] FailableRpc<(), ()>),
+    AssignedResources(#[inspect(skip)] FailableRpc<(), ()>),
 }
 
 impl VpciClient {
@@ -450,45 +469,63 @@ impl<M: RingMem> VpciClientWorker<M> {
                                     .tx
                                     .try_remove(tx_id_to_index(tx_id))
                                     .context("failed to find tx entry")?;
+
+                                let status = p
+                                    .reader()
+                                    .read_plain::<protocol::Status>()
+                                    .context("failed to read tx reply")?;
+
                                 match entry {
                                     Tx::FdoD0Entry(send) => {
-                                        tracing::trace!(tx_id, "fdo d0 entry reply received");
-
-                                        let status = p
-                                            .reader()
-                                            .read_plain::<protocol::Status>()
-                                            .context("failed to read fdo d0 entry reply")?;
+                                        tracing::trace!(
+                                            tx_id,
+                                            ?status,
+                                            "fdo d0 entry reply received"
+                                        );
                                         send.send(status);
                                     }
                                     Tx::CreateInterrupt(rpc) => {
-                                        tracing::trace!(tx_id, "create interrupt reply received");
+                                        tracing::trace!(
+                                            tx_id,
+                                            ?status,
+                                            "create interrupt reply received"
+                                        );
 
-                                        let reply = p
-                                            .reader()
-                                            .read_plain::<protocol::CreateInterruptReply>()
-                                            .context("failed to read create interrupt reply")?;
-                                        if reply.status == protocol::Status::SUCCESS {
+                                        if status == protocol::Status::SUCCESS {
+                                            let reply = p
+                                                .reader()
+                                                .read_plain::<protocol::CreateInterruptReply>()
+                                                .context("failed to read create interrupt reply")?;
                                             rpc.complete(Ok(reply.interrupt));
                                         } else {
                                             rpc.fail(anyhow::anyhow!(
-                                                "failed to create interrupt: {:#x?}",
-                                                reply.status
+                                                "failed to create interrupt: {status:#x?}",
                                             ));
                                         }
                                     }
                                     Tx::DeleteInterrupt(rpc) => {
                                         tracing::trace!(tx_id, "delete interrupt reply received");
 
-                                        let status = p
-                                            .reader()
-                                            .read_plain::<protocol::Status>()
-                                            .context("failed to read delete interrupt reply")?;
                                         if status == protocol::Status::SUCCESS {
                                             rpc.complete(Ok(()));
                                         } else {
                                             rpc.fail(anyhow::anyhow!(
-                                                "failed to delete interrupt: {:#x?}",
-                                                status
+                                                "failed to delete interrupt: {status:#x?}",
+                                            ));
+                                        }
+                                    }
+                                    Tx::AssignedResources(rpc) => {
+                                        tracing::trace!(
+                                            tx_id,
+                                            ?status,
+                                            "assigned resources reply received"
+                                        );
+
+                                        if status == protocol::Status::SUCCESS {
+                                            rpc.complete(Ok(()));
+                                        } else {
+                                            rpc.fail(anyhow::anyhow!(
+                                                "failed to initialize device: {status:#x?}",
                                             ));
                                         }
                                     }
@@ -513,43 +550,58 @@ impl<M: RingMem> VpciClientWorker<M> {
             WorkerRequest::Inspect(deferred) => deferred.inspect(&mut *self),
             WorkerRequest::MapInterrupt(rpc) => {
                 let (req, reply) = rpc.split();
-                let entry = self.tx.vacant_entry();
-                let tx_id = index_to_tx_id(entry.key());
-                tracing::trace!(tx_id, "create interrupt request");
-                self.conn
-                    .queue
-                    .split()
-                    .1
-                    .write(OutgoingPacket {
-                        transaction_id: tx_id,
-                        packet_type: vmbus_ring::OutgoingPacketType::InBandWithCompletion,
-                        payload: &[req.as_bytes()],
-                    })
+                self.send_tx(Tx::CreateInterrupt(reply), req, &[])
                     .await
                     .context("failed to send create interrupt message")?;
-
-                entry.insert(Tx::CreateInterrupt(reply));
             }
             WorkerRequest::UnmapInterrupt(rpc) => {
                 let (req, reply) = rpc.split();
-                let entry = self.tx.vacant_entry();
-                let tx_id = index_to_tx_id(entry.key());
-                tracing::trace!(tx_id, "delete interrupt request");
-                self.conn
-                    .queue
-                    .split()
-                    .1
-                    .write(OutgoingPacket {
-                        transaction_id: tx_id,
-                        packet_type: vmbus_ring::OutgoingPacketType::InBandWithCompletion,
-                        payload: &[req.as_bytes()],
-                    })
+                self.send_tx(Tx::DeleteInterrupt(reply), req, &[])
                     .await
                     .context("failed to send delete interrupt message")?;
-
-                entry.insert(Tx::DeleteInterrupt(reply));
+            }
+            WorkerRequest::AssignedResources(rpc) => {
+                let (req, reply) = rpc.split();
+                // Send space for one resource to satisfy the Hyper-V implementation.
+                self.send_tx(
+                    Tx::AssignedResources(reply),
+                    req,
+                    &[0; size_of::<vpci_protocol::MsiResource3>()],
+                )
+                .await
+                .context("failed to send assigned resources request")?;
             }
         }
+        Ok(())
+    }
+
+    async fn send_tx<S: IntoBytes + Immutable>(
+        &mut self,
+        tx: Tx,
+        msg: S,
+        extra: &[u8],
+    ) -> anyhow::Result<()> {
+        let entry = self.tx.vacant_entry();
+        let tx_id = index_to_tx_id(entry.key());
+        tracing::trace!(
+            tx_id,
+            message = std::any::type_name_of_val(&msg),
+            "sending transaction"
+        );
+
+        self.conn
+            .queue
+            .split()
+            .1
+            .write(OutgoingPacket {
+                transaction_id: tx_id,
+                packet_type: vmbus_ring::OutgoingPacketType::InBandWithCompletion,
+                payload: &[msg.as_bytes(), extra],
+            })
+            .await
+            .context("failed to send transaction")?;
+
+        entry.insert(tx);
         Ok(())
     }
 }

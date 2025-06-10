@@ -144,6 +144,10 @@ pub async fn relay_vpci_bus(
     // TODO: hang onto this guy, wire him up to the inspect graph at least.
     vpci_client.detach();
     let vpci_device = Arc::new(devices_recv.next().await.context("no device")?);
+    vpci_device
+        .init()
+        .await
+        .context("failed to initialize vpci device")?;
 
     let device_name = format!("assigned_device:vpci-{instance_id}");
     let device = chipset_builder
