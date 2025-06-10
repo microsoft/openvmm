@@ -486,38 +486,34 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
         // vtl permissions to the page.
         let orig_gpns = gpns;
         let mut failed_vtl_permission_index = None;
-        let gpns = {
-            gpns.iter()
-                .copied()
-                .enumerate()
-                .take_while(|&(index, gpn)| {
-                    if vtl == GuestVtl::Vtl0 && shared && self.vtl1_protections_enabled() {
-                        let op = || {
-                            let permissions = self.vtl0.query_access_permission(gpn).expect(
-                                "vtl 1 protections enabled, vtl permissions should be tracked",
-                            );
-                            if !permissions.readable() || !permissions.writable() {
-                                failed_vtl_permission_index = Some(index);
-                                false
-                            } else {
-                                true
-                            }
-                        };
-
-                        guestmem::rcu().run(op)
+        let gpns = gpns
+            .iter()
+            .copied()
+            .enumerate()
+            .take_while(|&(index, gpn)| {
+                if vtl == GuestVtl::Vtl0 && shared && self.vtl1_protections_enabled() {
+                    let permissions = self
+                        .vtl0
+                        .query_access_permission(gpn)
+                        .expect("vtl 1 protections enabled, vtl permissions should be tracked");
+                    if !permissions.readable() || !permissions.writable() {
+                        failed_vtl_permission_index = Some(index);
+                        false
                     } else {
                         true
                     }
-                })
-                .filter_map(|(_, gpn)| {
-                    if inner.valid_shared.check_valid(gpn) != shared {
-                        Some(gpn)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-        };
+                } else {
+                    true
+                }
+            })
+            .filter_map(|(_, gpn)| {
+                if inner.valid_shared.check_valid(gpn) != shared {
+                    Some(gpn)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
 
         tracing::debug!(
             orig = orig_gpns.len(),
@@ -871,12 +867,9 @@ impl ProtectIsolatedMemory for HardwareIsolatedMemoryProtector {
             IsolationType::None | IsolationType::Vbs => unreachable!(),
             IsolationType::Snp | IsolationType::Tdx => {
                 if vtl == GuestVtl::Vtl0 {
-                    let op = || {
-                        self.vtl0
-                            .query_access_permission(gpn)
-                            .unwrap_or(HV_MAP_GPA_PERMISSIONS_ALL)
-                    };
-                    guestmem::rcu().run(op)
+                    self.vtl0
+                        .query_access_permission(gpn)
+                        .unwrap_or(HV_MAP_GPA_PERMISSIONS_ALL)
                 } else {
                     // The permissions should be the same as when VTL 2
                     // initialized guest memory.
