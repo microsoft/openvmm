@@ -199,14 +199,11 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
         }
 
         // Wait for VF ownership of the shared memory
-        const BEFORE_DESTROY_HWC: &str = "Before GdmaDriver destroy HWC";
-        let _ = match self.wait_for_vf_to_own_shmem().context(BEFORE_DESTROY_HWC) {
-            Ok(hdr) => hdr,
-            Err(e) => {
-                tracing::error!(context = BEFORE_DESTROY_HWC, error = %e);
-                return;
-            }
-        };
+        let header = self.wait_for_vf_to_own_shmem().context("Before GdmaDriver destroy HWC");
+        if let Err(e) = header {
+            tracing::error!(context = %e.to_string(), error = ?e.root_cause());
+            return;
+        }
 
         let hdr = SmcProtoHdr::new()
             .with_msg_type(SmcMessageType::SMC_MSG_TYPE_DESTROY_HWC.0)
@@ -219,21 +216,20 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
         );
 
         const AFTER_DESTROY_HWC: &str = "After GdmaDriver destroy HWC";
-        let header = match self.wait_for_vf_to_own_shmem().context(AFTER_DESTROY_HWC) {
-            Ok(hdr) => hdr,
-            Err(e) => {
-                tracing::error!(context = AFTER_DESTROY_HWC, error = %e);
-                return;
-            }
-        };
+        let header = self.wait_for_vf_to_own_shmem().context(AFTER_DESTROY_HWC);
+        if let Err(e) = header {
+            tracing::error!(context = %e.to_string(), error = ?e.root_cause());
+            return;
+        }
 
+        let header = header.unwrap();
         if !header.is_response() {
             tracing::error!(context = AFTER_DESTROY_HWC, error = "expected response");
         }
         if header.status() != 0 {
             tracing::error!(
                 context = AFTER_DESTROY_HWC,
-                error = format!("DESTROY_HWC failed: {}", header.status())
+                error = format!("DESTROY_HWC failed with status = {}", header.status())
             );
         }
     }
