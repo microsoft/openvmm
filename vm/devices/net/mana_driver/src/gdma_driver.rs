@@ -218,9 +218,7 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
         );
 
         const AFTER_DESTROY_HWC: &str = "After GdmaDriver destroy HWC";
-        let header = self
-            .wait_for_vf_to_own_shmem()
-            .context(AFTER_DESTROY_HWC);
+        let header = self.wait_for_vf_to_own_shmem().context(AFTER_DESTROY_HWC);
         if let Err(e) = header {
             tracing::error!(context = %e.to_string(), error = ?e.root_cause());
             return;
