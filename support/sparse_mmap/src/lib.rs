@@ -512,13 +512,49 @@ impl SparseMapping {
         sys::page_size()
     }
 
+    fn check(&self, offset: usize, len: usize) -> Result<(), SparseMappingError> {
+        if self.len() < offset || self.len() - offset < len {
+            return Err(SparseMappingError::OutOfBounds);
+        }
+        Ok(())
+    }
+
+    /// Reads a type `T` from `offset` in the sparse mapping using a single read instruction.
+    ///
+    /// Panics if `T` is not 1, 2, 4, or 8 bytes in size.
+    pub fn read_volatile<T: FromBytes + Immutable + KnownLayout>(
+        &self,
+        offset: usize,
+    ) -> Result<T, SparseMappingError> {
+        assert!(self.is_local(), "cannot read from remote mappings");
+
+        self.check(offset, size_of::<T>())?;
+        // SAFETY: the bounds have been checked above.
+        unsafe { try_read_volatile(self.as_ptr().cast::<u8>().add(offset).cast()) }
+            .map_err(SparseMappingError::Memory)
+    }
+
+    /// Writes a type `T` at `offset` in the sparse mapping using a single write instruciton.
+    ///
+    /// Panics if `T` is not 1, 2, 4, or 8 bytes in size.
+    pub fn write_volatile<T: IntoBytes + Immutable + KnownLayout>(
+        &self,
+        offset: usize,
+        value: &T,
+    ) -> Result<(), SparseMappingError> {
+        assert!(self.is_local(), "cannot write to remote mappings");
+
+        self.check(offset, size_of::<T>())?;
+        // SAFETY: the bounds have been checked above.
+        unsafe { try_write_volatile(self.as_ptr().cast::<u8>().add(offset).cast(), value) }
+            .map_err(SparseMappingError::Memory)
+    }
+
     /// Tries to write into the sparse mapping.
     pub fn write_at(&self, offset: usize, data: &[u8]) -> Result<(), SparseMappingError> {
         assert!(self.is_local(), "cannot write to remote mappings");
 
-        if self.len() < offset || self.len() - offset < data.len() {
-            return Err(SparseMappingError::OutOfBounds);
-        }
+        self.check(offset, data.len())?;
         // SAFETY: the bounds have been checked above.
         unsafe {
             let dest = self.as_ptr().cast::<u8>().add(offset);
@@ -530,9 +566,7 @@ impl SparseMapping {
     pub fn read_at(&self, offset: usize, data: &mut [u8]) -> Result<(), SparseMappingError> {
         assert!(self.is_local(), "cannot read from remote mappings");
 
-        if self.len() < offset || self.len() - offset < data.len() {
-            return Err(SparseMappingError::OutOfBounds);
-        }
+        self.check(offset, data.len())?;
         // SAFETY: the bounds have been checked above.
         unsafe {
             let src = (self.as_ptr() as *const u8).add(offset);
@@ -545,25 +579,27 @@ impl SparseMapping {
         &self,
         offset: usize,
     ) -> Result<T, SparseMappingError> {
-        let mut obj = MaybeUninit::<T>::uninit();
-        // SAFETY: `obj` is a valid target for writes.
-        unsafe {
-            self.read_at(
-                offset,
-                std::slice::from_raw_parts_mut(obj.as_mut_ptr().cast::<u8>(), size_of::<T>()),
-            )?;
+        if matches!(size_of::<T>(), 1 | 2 | 4 | 8) {
+            self.read_volatile(offset)
+        } else {
+            let mut obj = MaybeUninit::<T>::uninit();
+            // SAFETY: `obj` is a valid target for writes.
+            unsafe {
+                self.read_at(
+                    offset,
+                    std::slice::from_raw_parts_mut(obj.as_mut_ptr().cast::<u8>(), size_of::<T>()),
+                )?;
+            }
+            // SAFETY: `obj` was fully initialized by `read_at`.
+            Ok(unsafe { obj.assume_init() })
         }
-        // SAFETY: `obj` was fully initialized by `read_at`.
-        Ok(unsafe { obj.assume_init() })
     }
 
     /// Tries to fill a region of the sparse mapping with `val`.
     pub fn fill_at(&self, offset: usize, val: u8, len: usize) -> Result<(), SparseMappingError> {
         assert!(self.is_local(), "cannot fill remote mappings");
 
-        if self.len() < offset || self.len() - offset < len {
-            return Err(SparseMappingError::OutOfBounds);
-        }
+        self.check(offset, len)?;
         // SAFETY: the bounds have been checked above.
         unsafe {
             let dest = self.as_ptr().cast::<u8>().add(offset);
