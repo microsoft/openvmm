@@ -96,7 +96,7 @@ async fn test_negotiate_version(driver: DefaultDriver) {
             .await
             .unwrap();
 
-    let device = devices_recv.next().await.unwrap();
+    let device = devices_recv.next().await.unwrap().init().await.unwrap();
     let MsiAddressData { address, data } = device
         .register_interrupt(
             1,

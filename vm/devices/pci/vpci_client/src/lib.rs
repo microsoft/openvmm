@@ -14,6 +14,8 @@ use mesh::rpc::RpcSend;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
 use parking_lot::Mutex;
+use pci_core::spec::cfg_space::Command;
+use pci_core::spec::cfg_space::HeaderType00;
 use pci_core::spec::hwid::HardwareIds;
 use std::sync::Arc;
 use vmbus_async::queue::IncomingPacket;
@@ -48,7 +50,8 @@ enum WorkerRequest {
     Inspect(inspect::Deferred),
     MapInterrupt(FailableRpc<protocol::CreateInterrupt2, protocol::MsiResourceRemapped>),
     UnmapInterrupt(FailableRpc<protocol::DeleteInterrupt, ()>),
-    AssignedResources(FailableRpc<protocol::DeviceTranslate, ()>),
+    QueryResourceRequirements(FailableRpc<SlotNumber, protocol::QueryResourceRequirementsReply>),
+    Init(FailableRpc<SlotNumber, ()>),
 }
 
 #[derive(Inspect)]
@@ -123,7 +126,7 @@ pub trait MemoryAccess: Send {
 }
 
 #[derive(Inspect)]
-pub struct VpciDevice {
+pub struct VpciDeviceDescription {
     hw_ids: HardwareIds,
     #[inspect(skip)]
     config_space: Arc<Mutex<ConfigSpaceAccessor>>,
@@ -134,12 +137,30 @@ pub struct VpciDevice {
 }
 
 #[derive(Inspect)]
+pub struct VpciDevice {
+    #[inspect(flatten)]
+    desc: VpciDeviceDescription,
+    shadows: Mutex<ConfigSpaceShadows>,
+    #[inspect(hex, iter_by_index)]
+    bar_masks: [u32; 6],
+    #[inspect(hex, iter_by_index)]
+    bar_rao: [u32; 6],
+}
+
+#[derive(Inspect)]
 struct ConfigSpaceAccessor {
     #[inspect(skip)]
     mem: Box<dyn MemoryAccess>,
     base_gpa: u64,
     #[inspect(hex, with = "|&x| u32::from(x)")]
     current_slot: SlotNumber,
+}
+
+#[derive(Inspect)]
+struct ConfigSpaceShadows {
+    command: Command,
+    #[inspect(hex, iter_by_index)]
+    bars: [u32; 6],
 }
 
 impl ConfigSpaceAccessor {
@@ -156,13 +177,13 @@ impl ConfigSpaceAccessor {
         let value = self
             .mem
             .read(self.base_gpa + protocol::MMIO_PAGE_CONFIG_SPACE + offset as u64);
-        tracing::trace!(?slot, offset, value, "config space read");
+        tracing::trace!(?slot, offset, value, "host config space read");
         value
     }
 
     fn write(&mut self, slot: SlotNumber, offset: u16, value: u32) {
         self.set_slot(slot);
-        tracing::trace!(?slot, offset, value, "config space write");
+        tracing::trace!(?slot, offset, value, "host config space write");
         self.mem.write(
             self.base_gpa + protocol::MMIO_PAGE_CONFIG_SPACE + offset as u64,
             value,
@@ -170,31 +191,132 @@ impl ConfigSpaceAccessor {
     }
 }
 
-impl VpciDevice {
+impl VpciDeviceDescription {
     pub fn hw_ids(&self) -> &HardwareIds {
         &self.hw_ids
     }
 
+    pub async fn init(self) -> anyhow::Result<VpciDevice> {
+        let requirements = self
+            .req
+            .call_failable(WorkerRequest::QueryResourceRequirements, self.slot)
+            .await?;
+
+        tracing::info!(
+            bars = format_args!("{:#x?}", requirements.bars),
+            "queried requirements"
+        );
+
+        self.req
+            .call_failable(WorkerRequest::Init, self.slot)
+            .await?;
+
+        let mut high64 = false;
+        let mut bar_rao = [0; 6];
+        for ((i, &bar), rao) in requirements.bars.iter().enumerate().zip(&mut bar_rao) {
+            if high64 {
+                high64 = false;
+                *rao = 0;
+            } else {
+                let bits = pci_core::spec::cfg_space::BarEncodingBits::from(bar);
+                if bits.use_pio() {
+                    anyhow::bail!("BAR {} is PIO, which is not supported by VPCI", i);
+                }
+                *rao = bar & 0xf;
+                high64 = bits.type_64_bit();
+            }
+        }
+
+        let device = VpciDevice {
+            desc: self,
+            shadows: Mutex::new(ConfigSpaceShadows {
+                command: Command::new(),
+                bars: [0; 6],
+            }),
+            bar_masks: requirements.bars,
+            bar_rao,
+        };
+
+        Ok(device)
+    }
+}
+
+impl VpciDevice {
     pub fn read_cfg(&self, offset: u16) -> u32 {
-        // TODO: for hardware IDs, use the cached values, both for efficiency
-        // and so that the host cannot change them.
-        self.config_space.lock().read(self.slot, offset)
+        // For static values, return values from the device's description.
+        let value = match HeaderType00(offset) {
+            HeaderType00::STATUS_COMMAND => {
+                let shadows = self.shadows.lock();
+                let status_command = self.desc.config_space.lock().read(self.desc.slot, offset);
+                // Preserve the MMIO enabled bit in the command register, since
+                // Hyper-V does not always emulate it correctly for reads.
+                let mask = u32::from(u16::from(Command::new().with_mmio_enabled(true)));
+                (status_command & !mask) | (u32::from(u16::from(shadows.command)) & mask)
+            }
+            HeaderType00::DEVICE_VENDOR => {
+                (self.desc.hw_ids.vendor_id as u32) | ((self.desc.hw_ids.device_id as u32) << 16)
+            }
+            HeaderType00::CLASS_REVISION => {
+                (self.desc.hw_ids.revision_id as u32)
+                    | ((self.desc.hw_ids.prog_if.0 as u32) << 8)
+                    | ((self.desc.hw_ids.sub_class.0 as u32) << 16)
+                    | ((self.desc.hw_ids.base_class.0 as u32) << 24)
+            }
+            HeaderType00::SUBSYSTEM_ID => {
+                (self.desc.hw_ids.type0_sub_vendor_id as u32)
+                    | ((self.desc.hw_ids.type0_sub_system_id as u32) << 16)
+            }
+            HeaderType00::BAR0
+            | HeaderType00::BAR1
+            | HeaderType00::BAR2
+            | HeaderType00::BAR3
+            | HeaderType00::BAR4
+            | HeaderType00::BAR5 => {
+                // The Hyper-V VPCI implementation does not consistently handle
+                // BAR reads. Return the shadowed value.
+                let shadows = self.shadows.lock();
+                let i = (offset - HeaderType00::BAR0.0) as usize / 4;
+                shadows.bars[i] | self.bar_rao[i]
+            }
+            _ => self.desc.config_space.lock().read(self.desc.slot, offset),
+        };
+        tracing::trace!(?offset, value, "config space read");
+        value
     }
 
     pub fn write_cfg(&self, offset: u16, value: u32) {
-        self.config_space.lock().write(self.slot, offset, value);
-    }
-
-    pub async fn init(&self) -> anyhow::Result<()> {
-        let msg = protocol::DeviceTranslate {
-            message_type: protocol::MessageType::ASSIGNED_RESOURCES,
-            slot: self.slot,
-            ..FromZeros::new_zeroed()
-        };
-        self.req
-            .call_failable(WorkerRequest::AssignedResources, msg)
-            .await?;
-        Ok(())
+        tracing::trace!(?offset, value, "config space write");
+        let mut shadows = self.shadows.lock();
+        let shadows = &mut *shadows;
+        let mut accessor = self.desc.config_space.lock();
+        match HeaderType00(offset) {
+            HeaderType00::STATUS_COMMAND => {
+                let new_command = Command::from(value as u16);
+                if new_command.mmio_enabled() && !shadows.command.mmio_enabled() {
+                    // Flush the BAR shadow to the device.
+                    for (i, &bar) in shadows.bars.iter().enumerate() {
+                        let bar_offset = HeaderType00::BAR0.0 + (i as u16 * 4);
+                        accessor.write(self.desc.slot, bar_offset, bar);
+                    }
+                }
+                shadows.command = new_command;
+            }
+            HeaderType00::BAR0
+            | HeaderType00::BAR1
+            | HeaderType00::BAR2
+            | HeaderType00::BAR3
+            | HeaderType00::BAR4
+            | HeaderType00::BAR5 => {
+                // Write the BAR shadow. Defer writing to the device until MMIO
+                // is enabled to avoid wasting time writing probe values to the
+                // host.
+                let i = (offset - HeaderType00::BAR0.0) as usize / 4;
+                shadows.bars[i] = value & self.bar_masks[i] | self.bar_rao[i];
+                return;
+            }
+            _ => {}
+        }
+        accessor.write(self.desc.slot, offset, value);
     }
 }
 
@@ -224,12 +346,13 @@ impl MapVpciInterrupt for VpciDevice {
             interrupt.processor_count += 1;
         }
         let resource = self
+            .desc
             .req
             .call_failable(
                 WorkerRequest::MapInterrupt,
                 protocol::CreateInterrupt2 {
                     message_type: protocol::MessageType::CREATE_INTERRUPT2,
-                    slot: self.slot,
+                    slot: self.desc.slot,
                     interrupt,
                 },
             )
@@ -252,7 +375,7 @@ impl MapVpciInterrupt for VpciDevice {
         tracing::debug!(address, data, "unregistering interrupt");
         let resource = protocol::DeleteInterrupt {
             message_type: protocol::MessageType::DELETE_INTERRUPT,
-            slot: self.slot,
+            slot: self.desc.slot,
             interrupt: protocol::MsiResourceRemapped {
                 reserved: 0,
                 message_count: 0, // The host does not look at this value, so don't bother to remember it.
@@ -260,7 +383,8 @@ impl MapVpciInterrupt for VpciDevice {
                 address,
             },
         };
-        self.req
+        self.desc
+            .req
             .call_failable(WorkerRequest::UnmapInterrupt, resource)
             .await
             .unwrap_or_else(|err| {
@@ -283,7 +407,7 @@ struct VpciClientWorker<M: RingMem> {
     #[inspect(debug)]
     protocol_version: protocol::ProtocolVersion,
     #[inspect(skip)]
-    send_devices: mesh::Sender<VpciDevice>,
+    send_devices: mesh::Sender<VpciDeviceDescription>,
 }
 
 #[derive(Inspect)]
@@ -292,6 +416,9 @@ enum Tx {
     FdoD0Entry(#[inspect(skip)] mesh::OneshotSender<protocol::Status>),
     CreateInterrupt(#[inspect(skip)] FailableRpc<(), protocol::MsiResourceRemapped>),
     DeleteInterrupt(#[inspect(skip)] FailableRpc<(), ()>),
+    QueryResourceRequirements(
+        #[inspect(skip)] FailableRpc<(), protocol::QueryResourceRequirementsReply>,
+    ),
     AssignedResources(#[inspect(skip)] FailableRpc<(), ()>),
 }
 
@@ -300,7 +427,7 @@ impl VpciClient {
         driver: impl Spawn,
         channel: RawAsyncChannel<M>,
         mut mmio: Box<dyn MemoryAccess>,
-        devices: mesh::Sender<VpciDevice>,
+        devices: mesh::Sender<VpciDeviceDescription>,
     ) -> anyhow::Result<Self> {
         let mut conn = VpciConnection {
             queue: Queue::new(channel)?,
@@ -449,7 +576,7 @@ impl<M: RingMem> VpciClientWorker<M> {
                                                     .sub_system_id
                                                     .into(),
                                             };
-                                            let vpci_device = VpciDevice {
+                                            let vpci_device = VpciDeviceDescription {
                                                 hw_ids,
                                                 config_space: self.config_space.clone(),
                                                 slot: device.slot,
@@ -529,6 +656,25 @@ impl<M: RingMem> VpciClientWorker<M> {
                                             ));
                                         }
                                     }
+                                    Tx::QueryResourceRequirements(rpc) => {
+                                        tracing::trace!(
+                                            tx_id,
+                                            ?status,
+                                            "query resource requirements reply received"
+                                        );
+
+                                        if status == protocol::Status::SUCCESS {
+                                            let reply = p
+                                                .reader()
+                                                .read_plain::<protocol::QueryResourceRequirementsReply>()
+                                                .context("failed to read query resource requirements reply")?;
+                                            rpc.complete(Ok(reply));
+                                        } else {
+                                            rpc.fail(anyhow::anyhow!(
+                                                "failed to query resource requirements: {status:#x?}",
+                                            ));
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -560,16 +706,33 @@ impl<M: RingMem> VpciClientWorker<M> {
                     .await
                     .context("failed to send delete interrupt message")?;
             }
-            WorkerRequest::AssignedResources(rpc) => {
-                let (req, reply) = rpc.split();
+            WorkerRequest::Init(rpc) => {
+                let (slot, reply) = rpc.split();
                 // Send space for one resource to satisfy the Hyper-V implementation.
                 self.send_tx(
                     Tx::AssignedResources(reply),
-                    req,
+                    protocol::DeviceTranslate {
+                        message_type: protocol::MessageType::ASSIGNED_RESOURCES,
+                        slot: slot.into(),
+                        ..FromZeros::new_zeroed()
+                    },
                     &[0; size_of::<vpci_protocol::MsiResource3>()],
                 )
                 .await
                 .context("failed to send assigned resources request")?;
+            }
+            WorkerRequest::QueryResourceRequirements(rpc) => {
+                let (slot, reply) = rpc.split();
+                self.send_tx(
+                    Tx::QueryResourceRequirements(reply),
+                    protocol::QueryResourceRequirements {
+                        message_type: protocol::MessageType::CURRENT_RESOURCE_REQUIREMENTS,
+                        slot: slot.into(),
+                    },
+                    &[],
+                )
+                .await
+                .context("failed to send query resource requirements request")?;
             }
         }
         Ok(())

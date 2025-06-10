@@ -35,7 +35,7 @@ impl MemoryAccess for DirectMmio {
             .checked_sub(self.gpa())
             .and_then(|o| o.try_into().ok())
             .unwrap_or(!0);
-        match self.0.read_plain(offset) {
+        match self.0.read_volatile(offset) {
             Ok(v) => v,
             Err(err) => {
                 tracelimit::error_ratelimited!(
@@ -53,7 +53,7 @@ impl MemoryAccess for DirectMmio {
             .checked_sub(self.gpa())
             .and_then(|o| o.try_into().ok())
             .unwrap_or(!0);
-        if let Err(err) = self.0.write_at(offset, &value.to_ne_bytes()) {
+        if let Err(err) = self.0.write_volatile(offset, &value) {
             tracelimit::error_ratelimited!(
                 addr,
                 value,
@@ -143,11 +143,13 @@ pub async fn relay_vpci_bus(
         vpci_client::VpciClient::connect(driver_source.simple(), channel, mmio, devices).await?;
     // TODO: hang onto this guy, wire him up to the inspect graph at least.
     vpci_client.detach();
-    let vpci_device = Arc::new(devices_recv.next().await.context("no device")?);
-    vpci_device
-        .init()
-        .await
-        .context("failed to initialize vpci device")?;
+    let vpci_device = devices_recv.next().await.context("no device")?;
+    let vpci_device = Arc::new(
+        vpci_device
+            .init()
+            .await
+            .context("failed to initialize vpci device")?,
+    );
 
     let device_name = format!("assigned_device:vpci-{instance_id}");
     let device = chipset_builder
