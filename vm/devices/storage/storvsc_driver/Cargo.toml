@@ -6,6 +6,9 @@ name = "storvsc_driver"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+test = []
+
 [dependencies]
 scsi_buffers.workspace = true
 scsi_defs.workspace = true

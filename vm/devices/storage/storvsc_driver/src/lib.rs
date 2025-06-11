@@ -3,7 +3,11 @@
 
 //! Storvsc driver for use as a disk backend.
 
+#[cfg(feature = "test")]
 pub mod test_helpers;
+
+#[cfg(not(feature = "test"))]
+mod test_helpers;
 
 use futures::FutureExt;
 use futures_concurrency::future::Race;
@@ -115,6 +119,9 @@ pub(crate) enum StorvscErrorInner {
     /// Unexpected protocol data or operation.
     #[error("unexpected protocol data or operation")]
     UnexpectedOperation,
+    /// Error while decoding received packet.
+    #[error("error decoding received packet")]
+    DecodeError,
     /// Error sending request to storvsc driver.
     #[error("error sending request to storvsc")]
     RequestError,
@@ -478,7 +485,7 @@ impl StorvscInner {
                 // Parse ScsiRequest (contains response) from bytes
                 let result =
                     storvsp_protocol::ScsiRequest::ref_from_bytes(completion.data.as_slice())
-                        .map_err(|_err| StorvscError(StorvscErrorInner::UnexpectedOperation))?
+                        .map_err(|_err| StorvscError(StorvscErrorInner::DecodeError))?
                         .to_owned();
 
                 // Match completion against pending transactions

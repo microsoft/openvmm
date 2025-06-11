@@ -49,6 +49,7 @@ impl TestWorker {
     /// Like `teardown`, but ignore the result. Nice for the fuzzer,
     /// so that the `storvsp` crate doesn't need to expose `WorkerError`
     /// as pub.
+    #[cfg(feature = "test")]
     pub async fn teardown_ignore(self) {
         let _ = self.task.await;
     }
