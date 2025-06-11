@@ -198,12 +198,9 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
             return;
         }
 
-        // Wait for VF ownership of the shared memory
-        let header = self
-            .wait_for_vf_to_own_shmem()
-            .context("Before GdmaDriver destroy HWC");
-        if let Err(e) = header {
-            tracing::error!(context = %e.to_string(), error = ?e.root_cause());
+        // Wait for VF ownership of the shared memory before post destroy HWC
+        if let Err(e) = self.wait_for_vf_to_own_shmem() {
+            tracing::error!(error = %e, "Wait for VF posession to post DESTROY_HWC");
             return;
         }
 
@@ -217,22 +214,19 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
             hdr,
         );
 
-        const AFTER_DESTROY_HWC: &str = "After GdmaDriver destroy HWC";
-        let header = self.wait_for_vf_to_own_shmem().context(AFTER_DESTROY_HWC);
-        if let Err(e) = header {
-            tracing::error!(context = %e.to_string(), error = ?e.root_cause());
-            return;
-        }
-
-        let header = header.unwrap();
-        if !header.is_response() {
-            tracing::error!(context = AFTER_DESTROY_HWC, error = "expected response");
-        }
-        if header.status() != 0 {
-            tracing::error!(
-                context = AFTER_DESTROY_HWC,
-                error = format!("DESTROY_HWC failed with status = {}", header.status())
-            );
+        // Wait for VF ownership of the shared memory after post destroy HWC
+        match self.wait_for_vf_to_own_shmem() {
+            Ok(header) => {
+                if !header.is_response() {
+                    tracing::error!("Unexpected response for DESTROY_HWC");
+                }
+                if header.status() != 0 {
+                    tracing::error!("DESTROY_HWC failed with status = {}", header.status());
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "Wait for VF possession to retrieve status after DESTROY_HWC");
+            }
         }
     }
 }
