@@ -1380,3 +1380,199 @@ impl From<&std::ffi::OsStr> for OptionalPathBuf {
         OptionalPathBuf(if s.is_empty() { None } else { Some(s.into()) })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Helper functions for tests
+    fn with_env_var<F, R>(name: &str, value: &str, f: F) -> R
+    where
+        F: FnOnce() -> R
+    {
+        #[allow(deprecated_safe_2024)]
+        std::env::set_var(name, value);
+        let result = f();
+        #[allow(deprecated_safe_2024)]
+        std::env::remove_var(name);
+        result
+    }
+
+    #[test]
+    fn test_parse_file_disk_with_create() {
+        let s = "file:test.vhd;create=1G";
+        let disk = DiskCliKind::from_str(s).unwrap();
+
+        match disk {
+            DiskCliKind::File { path, create_with_len } => {
+                assert_eq!(path, PathBuf::from("test.vhd"));
+                assert_eq!(create_with_len, Some(1024 * 1024 * 1024)); // 1G
+            },
+            _ => panic!("Expected File variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_direct_file_with_create() {
+        let s = "test.vhd;create=1G";
+        let disk = DiskCliKind::from_str(s).unwrap();
+
+        match disk {
+            DiskCliKind::File { path, create_with_len } => {
+                assert_eq!(path, PathBuf::from("test.vhd"));
+                assert_eq!(create_with_len, Some(1024 * 1024 * 1024)); // 1G
+            },
+            _ => panic!("Expected File variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_memory_disk() {
+        let s = "mem:1G";
+        let disk = DiskCliKind::from_str(s).unwrap();
+        match disk {
+            DiskCliKind::Memory(size) => {
+                assert_eq!(size, 1024 * 1024 * 1024); // 1G
+            },
+            _ => panic!("Expected Memory variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_memory_diff_disk() {
+        let s = "memdiff:file:base.img";
+        let disk = DiskCliKind::from_str(s).unwrap();
+        match disk {
+            DiskCliKind::MemoryDiff(inner) => {
+                match *inner {
+                    DiskCliKind::File { path, create_with_len } => {
+                        assert_eq!(path, PathBuf::from("base.img"));
+                        assert_eq!(create_with_len, None);
+                    },
+                    _ => panic!("Expected File variant inside MemoryDiff"),
+                }
+            },
+            _ => panic!("Expected MemoryDiff variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_sqlite_disk() {
+        let s = "sql:db.sqlite;create=2G";
+        let disk = DiskCliKind::from_str(s).unwrap();
+        match disk {
+            DiskCliKind::Sqlite { path, create_with_len } => {
+                assert_eq!(path, PathBuf::from("db.sqlite"));
+                assert_eq!(create_with_len, Some(2 * 1024 * 1024 * 1024));
+            },
+            _ => panic!("Expected Sqlite variant"),
+        }
+
+        // Test without create option
+        let s = "sql:db.sqlite";
+        let disk = DiskCliKind::from_str(s).unwrap();
+        match disk {
+            DiskCliKind::Sqlite { path, create_with_len } => {
+                assert_eq!(path, PathBuf::from("db.sqlite"));
+                assert_eq!(create_with_len, None);
+            },
+            _ => panic!("Expected Sqlite variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_sqlite_diff_disk() {
+        // Test with create option
+        let s = "sqldiff:diff.sqlite;create:file:base.img";
+        let disk = DiskCliKind::from_str(s).unwrap();
+        match disk {
+            DiskCliKind::SqliteDiff { path, create, disk } => {
+                assert_eq!(path, PathBuf::from("diff.sqlite"));
+                assert!(create);
+                match *disk {
+                    DiskCliKind::File { path, create_with_len } => {
+                        assert_eq!(path, PathBuf::from("base.img"));
+                        assert_eq!(create_with_len, None);
+                    },
+                    _ => panic!("Expected File variant inside SqliteDiff"),
+                }
+            },
+            _ => panic!("Expected SqliteDiff variant"),
+        }
+
+        // Test without create option
+        let s = "sqldiff:diff.sqlite:file:base.img";
+        let disk = DiskCliKind::from_str(s).unwrap();
+        match disk {
+            DiskCliKind::SqliteDiff { path, create, disk } => {
+                assert_eq!(path, PathBuf::from("diff.sqlite"));
+                assert!(!create);
+                match *disk {
+                    DiskCliKind::File { path, create_with_len } => {
+                        assert_eq!(path, PathBuf::from("base.img"));
+                        assert_eq!(create_with_len, None);
+                    },
+                    _ => panic!("Expected File variant inside SqliteDiff"),
+                }
+            },
+            _ => panic!("Expected SqliteDiff variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_autocache_sqlite_disk() {
+        // Test with environment variable set
+        let disk = with_env_var("OPENVMM_AUTO_CACHE_PATH", "/tmp/cache", || {
+            DiskCliKind::from_str("autocache::file:disk.vhd").unwrap()
+        });
+        assert!(matches!(
+            disk,
+            DiskCliKind::AutoCacheSqlite {
+                cache_path,
+                key,
+                disk: _disk,
+            } if cache_path == "/tmp/cache" && key.is_none()
+        ));
+
+        // Test without environment variable
+        assert!(DiskCliKind::from_str("autocache::file:disk.vhd").is_err());
+    }
+
+    #[test]
+    fn test_parse_disk_errors() {
+        assert!(DiskCliKind::from_str("invalid:").is_err());
+        assert!(DiskCliKind::from_str("memory:extra").is_err());
+
+        // Test sqlite: without environment variable
+        assert!(DiskCliKind::from_str("sqlite:").is_err());
+    }
+
+    #[test]
+    fn test_parse_errors() {
+        // Invalid memory size
+        assert!(DiskCliKind::from_str("mem:invalid").is_err());
+
+        // Invalid syntax for SQLiteDiff
+        assert!(DiskCliKind::from_str("sqldiff:path").is_err());
+
+        // Missing OPENVMM_AUTO_CACHE_PATH for AutoCacheSqlite
+        #[allow(deprecated_safe_2024)]
+        std::env::remove_var("OPENVMM_AUTO_CACHE_PATH");
+        assert!(DiskCliKind::from_str("autocache:key:file:disk.vhd").is_err());
+
+        // Invalid blob kind
+        assert!(DiskCliKind::from_str("blob:invalid:url").is_err());
+
+        // Invalid cipher
+        assert!(DiskCliKind::from_str("crypt:invalid:key.bin:file:disk.vhd").is_err());
+
+        // Invalid format for crypt (missing parts)
+        assert!(DiskCliKind::from_str("crypt:xts-aes-256:key.bin").is_err());
+
+        // Invalid disk kind
+        assert!(DiskCliKind::from_str("invalid:path").is_err());
+
+        // Missing create size
+        assert!(DiskCliKind::from_str("file:disk.vhd;create=").is_err());
+    }
+}
