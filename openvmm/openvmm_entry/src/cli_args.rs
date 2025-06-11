@@ -1390,7 +1390,7 @@ mod tests {
 
     fn with_env_var<F, R>(name: &str, value: &str, f: F) -> R
     where
-        F: FnOnce() -> R
+        F: FnOnce() -> R,
     {
         #[allow(deprecated_safe_2024)]
         std::env::set_var(name, value);
@@ -1406,10 +1406,13 @@ mod tests {
         let disk = DiskCliKind::from_str(s).unwrap();
 
         match disk {
-            DiskCliKind::File { path, create_with_len } => {
+            DiskCliKind::File {
+                path,
+                create_with_len,
+            } => {
                 assert_eq!(path, PathBuf::from("test.vhd"));
                 assert_eq!(create_with_len, Some(1024 * 1024 * 1024)); // 1G
-            },
+            }
             _ => panic!("Expected File variant"),
         }
     }
@@ -1420,10 +1423,13 @@ mod tests {
         let disk = DiskCliKind::from_str(s).unwrap();
 
         match disk {
-            DiskCliKind::File { path, create_with_len } => {
+            DiskCliKind::File {
+                path,
+                create_with_len,
+            } => {
                 assert_eq!(path, PathBuf::from("test.vhd"));
                 assert_eq!(create_with_len, Some(1024 * 1024 * 1024)); // 1G
-            },
+            }
             _ => panic!("Expected File variant"),
         }
     }
@@ -1435,7 +1441,7 @@ mod tests {
         match disk {
             DiskCliKind::Memory(size) => {
                 assert_eq!(size, 1024 * 1024 * 1024); // 1G
-            },
+            }
             _ => panic!("Expected Memory variant"),
         }
     }
@@ -1445,14 +1451,15 @@ mod tests {
         let s = "memdiff:file:base.img";
         let disk = DiskCliKind::from_str(s).unwrap();
         match disk {
-            DiskCliKind::MemoryDiff(inner) => {
-                match *inner {
-                    DiskCliKind::File { path, create_with_len } => {
-                        assert_eq!(path, PathBuf::from("base.img"));
-                        assert_eq!(create_with_len, None);
-                    },
-                    _ => panic!("Expected File variant inside MemoryDiff"),
+            DiskCliKind::MemoryDiff(inner) => match *inner {
+                DiskCliKind::File {
+                    path,
+                    create_with_len,
+                } => {
+                    assert_eq!(path, PathBuf::from("base.img"));
+                    assert_eq!(create_with_len, None);
                 }
+                _ => panic!("Expected File variant inside MemoryDiff"),
             },
             _ => panic!("Expected MemoryDiff variant"),
         }
@@ -1463,10 +1470,13 @@ mod tests {
         let s = "sql:db.sqlite;create=2G";
         let disk = DiskCliKind::from_str(s).unwrap();
         match disk {
-            DiskCliKind::Sqlite { path, create_with_len } => {
+            DiskCliKind::Sqlite {
+                path,
+                create_with_len,
+            } => {
                 assert_eq!(path, PathBuf::from("db.sqlite"));
                 assert_eq!(create_with_len, Some(2 * 1024 * 1024 * 1024));
-            },
+            }
             _ => panic!("Expected Sqlite variant"),
         }
 
@@ -1474,10 +1484,13 @@ mod tests {
         let s = "sql:db.sqlite";
         let disk = DiskCliKind::from_str(s).unwrap();
         match disk {
-            DiskCliKind::Sqlite { path, create_with_len } => {
+            DiskCliKind::Sqlite {
+                path,
+                create_with_len,
+            } => {
                 assert_eq!(path, PathBuf::from("db.sqlite"));
                 assert_eq!(create_with_len, None);
-            },
+            }
             _ => panic!("Expected Sqlite variant"),
         }
     }
@@ -1492,13 +1505,16 @@ mod tests {
                 assert_eq!(path, PathBuf::from("diff.sqlite"));
                 assert!(create);
                 match *disk {
-                    DiskCliKind::File { path, create_with_len } => {
+                    DiskCliKind::File {
+                        path,
+                        create_with_len,
+                    } => {
                         assert_eq!(path, PathBuf::from("base.img"));
                         assert_eq!(create_with_len, None);
-                    },
+                    }
                     _ => panic!("Expected File variant inside SqliteDiff"),
                 }
-            },
+            }
             _ => panic!("Expected SqliteDiff variant"),
         }
 
@@ -1510,13 +1526,16 @@ mod tests {
                 assert_eq!(path, PathBuf::from("diff.sqlite"));
                 assert!(!create);
                 match *disk {
-                    DiskCliKind::File { path, create_with_len } => {
+                    DiskCliKind::File {
+                        path,
+                        create_with_len,
+                    } => {
                         assert_eq!(path, PathBuf::from("base.img"));
                         assert_eq!(create_with_len, None);
-                    },
+                    }
                     _ => panic!("Expected File variant inside SqliteDiff"),
                 }
-            },
+            }
             _ => panic!("Expected SqliteDiff variant"),
         }
     }
@@ -1608,9 +1627,18 @@ mod tests {
 
     #[test]
     fn test_serial_config_from_str() {
-        assert_eq!(SerialConfigCli::from_str("none").unwrap(), SerialConfigCli::None);
-        assert_eq!(SerialConfigCli::from_str("console").unwrap(), SerialConfigCli::Console);
-        assert_eq!(SerialConfigCli::from_str("stderr").unwrap(), SerialConfigCli::Stderr);
+        assert_eq!(
+            SerialConfigCli::from_str("none").unwrap(),
+            SerialConfigCli::None
+        );
+        assert_eq!(
+            SerialConfigCli::from_str("console").unwrap(),
+            SerialConfigCli::Console
+        );
+        assert_eq!(
+            SerialConfigCli::from_str("stderr").unwrap(),
+            SerialConfigCli::Stderr
+        );
 
         // Test file config
         let file_config = SerialConfigCli::from_str("file=/path/to/file").unwrap();
@@ -1663,7 +1691,10 @@ mod tests {
     #[test]
     fn test_endpoint_config_from_str() {
         // Test none
-        assert!(matches!(EndpointConfigCli::from_str("none").unwrap(), EndpointConfigCli::None));
+        assert!(matches!(
+            EndpointConfigCli::from_str("none").unwrap(),
+            EndpointConfigCli::None
+        ));
 
         // Test consomme without cidr
         match EndpointConfigCli::from_str("consomme").unwrap() {
@@ -1739,7 +1770,10 @@ mod tests {
     #[test]
     fn test_smt_config_from_str() {
         assert_eq!(SmtConfigCli::from_str("auto").unwrap(), SmtConfigCli::Auto);
-        assert_eq!(SmtConfigCli::from_str("force").unwrap(), SmtConfigCli::Force);
+        assert_eq!(
+            SmtConfigCli::from_str("force").unwrap(),
+            SmtConfigCli::Force
+        );
         assert_eq!(SmtConfigCli::from_str("off").unwrap(), SmtConfigCli::Off);
 
         // Test error cases
@@ -1769,7 +1803,10 @@ mod tests {
         let disk = FloppyDiskCli::from_str("file:/path/to/floppy.img").unwrap();
         assert!(!disk.read_only);
         match disk.kind {
-            DiskCliKind::File { path, create_with_len } => {
+            DiskCliKind::File {
+                path,
+                create_with_len,
+            } => {
                 assert_eq!(path.to_str().unwrap(), "/path/to/floppy.img");
                 assert_eq!(create_with_len, None);
             }
