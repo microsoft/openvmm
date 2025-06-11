@@ -64,11 +64,11 @@ impl Regen {
                                 .unwrap_or("target"),
                         )
                         .join(std::env::var("CARGO_BUILD_TARGET").as_deref().unwrap_or(""))
-                        .join("flowey")
+                        .join("debug")
                         .join(&exe_name);
 
                     if !bin.exists() {
-                        panic!("should have found built {bin_name}");
+                        panic!("should have found built {bin_name} at {}", bin.display());
                     }
 
                     // stash result for future consumers
