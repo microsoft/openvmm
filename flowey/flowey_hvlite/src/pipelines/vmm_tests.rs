@@ -149,7 +149,7 @@ impl IntoPipeline for VmmTestsCli {
                             build: BuildSelections::default(),
                         }
                     } else {
-                        VmmTestSelections::Flags(flags.unwrap())
+                        VmmTestSelections::Flags(flags.unwrap_or_default())
                     },
                     unstable_whp,
                     release,
