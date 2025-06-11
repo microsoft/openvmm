@@ -14,11 +14,15 @@ use jiff::Timestamp;
 use jiff::ToSpan;
 use pal_async::DefaultDriver;
 use pal_async::timer::PolledTimer;
+use std::ffi::OsStr;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::process::Stdio;
 use std::time::Duration;
 use tempfile::TempDir;
+use thiserror::Error;
 use tracing::Level;
 
 /// A Hyper-V VM
@@ -429,4 +433,60 @@ impl Drop for HyperVVM {
             let _ = self.remove_inner();
         }
     }
+}
+
+/// Error running command
+#[derive(Error, Debug)]
+pub(crate) enum CommandError {
+    /// failed to launch command
+    #[error("failed to launch command")]
+    Launch(#[from] std::io::Error),
+    /// command exited with non-zero status
+    #[error("command exited with non-zero status ({0}): {1}")]
+    Command(std::process::ExitStatus, String),
+    /// command output is not utf-8
+    #[error("command output is not utf-8")]
+    Utf8(#[from] std::string::FromUtf8Error),
+}
+
+/// Run the PowerShell script and return the output
+pub(crate) fn run_cmd(mut cmd: Command, log_stdout: bool) -> Result<String, CommandError> {
+    cmd.stderr(Stdio::piped()).stdin(Stdio::null());
+
+    let cmd_str = cmd_to_string(&cmd);
+    tracing::debug!(cmd_str, "executing command");
+
+    let start = Timestamp::now();
+    let output = cmd.output()?;
+    let time_elapsed = Timestamp::now() - start;
+
+    let stdout_str = (log_stdout || !output.status.success())
+        .then(|| String::from_utf8_lossy(&output.stdout).to_string());
+    let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
+    tracing::debug!(
+        cmd_str,
+        stdout_str,
+        stderr_str,
+        "command exited in {:.3}s with status {}",
+        time_elapsed.total(jiff::Unit::Second).unwrap_or(-1.0),
+        output.status
+    );
+
+    if !output.status.success() {
+        return Err(CommandError::Command(output.status, stderr_str));
+    }
+
+    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+}
+
+/// Get the command to be run
+pub(crate) fn cmd_to_string(cmd: &Command) -> String {
+    format!(
+        "{} {}",
+        cmd.get_program().to_string_lossy(),
+        cmd.get_args()
+            .collect::<Vec<_>>()
+            .join(OsStr::new(" "))
+            .to_string_lossy()
+    )
 }
