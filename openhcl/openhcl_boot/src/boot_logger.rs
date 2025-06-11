@@ -9,6 +9,8 @@
 //! sensitive.
 
 #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
+use crate::arch::snp::SnpIoAccess;
+#[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
 use crate::arch::tdx::TdxIoAccess;
 use crate::host_params::shim_params::IsolationType;
 use crate::single_threaded::SingleThreaded;
@@ -28,6 +30,8 @@ enum Logger {
     Serial(Serial),
     #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
     TdxSerial(Serial<TdxIoAccess>),
+    #[cfg(target_arch = "x86_64")]
+    SnpSerial(Serial<SnpIoAccess>),
     None,
 }
 
@@ -37,6 +41,8 @@ impl Logger {
             Logger::Serial(serial) => serial.write_str(s),
             #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
             Logger::TdxSerial(serial) => serial.write_str(s),
+            #[cfg(target_arch = "x86_64")]
+            Logger::SnpSerial(serial) => serial.write_str(s),
             Logger::None => Ok(()),
         }
     }
@@ -88,6 +94,8 @@ pub fn boot_logger_runtime_init(isolation_type: IsolationType, com3_serial_avail
         (IsolationType::None, true) => Logger::Serial(Serial::init()),
         #[cfg(all(target_arch = "x86_64", feature = "cvm_boot_log"))]
         (IsolationType::Tdx, true) => Logger::TdxSerial(Serial::init(TdxIoAccess)),
+        #[cfg(target_arch = "x86_64")]
+        (IsolationType::Snp, true) => Logger::SnpSerial(Serial::init(SnpIoAccess)),
         _ => Logger::None,
     };
 
