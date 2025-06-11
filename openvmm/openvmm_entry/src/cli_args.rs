@@ -548,7 +548,7 @@ flags:
     pub default_boot_always_attempt: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FsArgs {
     pub tag: String,
     pub path: String,
@@ -569,7 +569,7 @@ impl FromStr for FsArgs {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FsArgsWithOptions {
     /// The file system tag.
     pub tag: String,
@@ -643,7 +643,7 @@ fn parse_number(s: &str) -> Result<u64, std::num::ParseIntError> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DiskCliKind {
     // mem:<len>
     Memory(u64),
@@ -686,13 +686,13 @@ pub enum DiskCliKind {
     },
 }
 
-#[derive(ValueEnum, Clone, Copy)]
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq)]
 pub enum DiskCipher {
     #[clap(name = "xts-aes-256")]
     XtsAes256,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum BlobKind {
     Flat,
     Vhd1,
@@ -967,7 +967,7 @@ impl FromStr for IdeDiskCli {
 }
 
 // <kind>[,ro]
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FloppyDiskCli {
     pub kind: DiskCliKind,
     pub read_only: bool,
@@ -977,6 +977,9 @@ impl FromStr for FloppyDiskCli {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> anyhow::Result<Self> {
+        if s.is_empty() {
+            anyhow::bail!("empty disk spec");
+        }
         let mut opts = s.split(',');
         let kind = opts.next().unwrap().parse()?;
 
@@ -1019,7 +1022,7 @@ impl FromStr for DebugconSerialConfigCli {
 }
 
 /// (console | stderr | listen=\<path\> | listen=tcp:\<ip\>:\<port\> | file=\<path\> | none)
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SerialConfigCli {
     None,
     Console,
@@ -1071,7 +1074,7 @@ impl FromStr for SerialConfigCli {
                             .map_err(|err| format!("invalid tcp address: {err}"))?;
                         SerialConfigCli::Tcp(addr)
                     } else {
-                        SerialConfigCli::Pipe(s.into())
+                        SerialConfigCli::Pipe(path.into())
                     }
                 }
                 None => Err(
@@ -1115,7 +1118,7 @@ impl SerialConfigCli {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum EndpointConfigCli {
     None,
     Consomme { cidr: Option<String> },
@@ -1145,7 +1148,7 @@ impl FromStr for EndpointConfigCli {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NicConfigCli {
     pub vtl: DeviceVtl,
     pub endpoint: EndpointConfigCli,
@@ -1258,7 +1261,7 @@ fn parse_vtl2_relocation(s: &str) -> Result<Vtl2BaseAddressType, UnknownVtl2Relo
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum SmtConfigCli {
     Auto,
     Force,
@@ -1308,7 +1311,7 @@ pub enum IsolationCli {
     Vbs,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct PcatBootOrderCli(pub [PcatBootDevice; 4]);
 
 impl FromStr for PcatBootOrderCli {
@@ -1385,7 +1388,6 @@ impl From<&std::ffi::OsStr> for OptionalPathBuf {
 mod tests {
     use super::*;
 
-    // Helper functions for tests
     fn with_env_var<F, R>(name: &str, value: &str, f: F) -> R
     where
         F: FnOnce() -> R
@@ -1574,5 +1576,212 @@ mod tests {
 
         // Missing create size
         assert!(DiskCliKind::from_str("file:disk.vhd;create=").is_err());
+    }
+
+    #[test]
+    fn test_fs_args_from_str() {
+        let args = FsArgs::from_str("tag1,/path/to/fs").unwrap();
+        assert_eq!(args.tag, "tag1");
+        assert_eq!(args.path, "/path/to/fs");
+
+        // Test error cases
+        assert!(FsArgs::from_str("tag1").is_err());
+        assert!(FsArgs::from_str("tag1,/path,extra").is_err());
+    }
+
+    #[test]
+    fn test_fs_args_with_options_from_str() {
+        let args = FsArgsWithOptions::from_str("tag1,/path/to/fs,opt1,opt2").unwrap();
+        assert_eq!(args.tag, "tag1");
+        assert_eq!(args.path, "/path/to/fs");
+        assert_eq!(args.options, "opt1;opt2");
+
+        // Test without options
+        let args = FsArgsWithOptions::from_str("tag1,/path/to/fs").unwrap();
+        assert_eq!(args.tag, "tag1");
+        assert_eq!(args.path, "/path/to/fs");
+        assert_eq!(args.options, "");
+
+        // Test error case
+        assert!(FsArgsWithOptions::from_str("tag1").is_err());
+    }
+
+    #[test]
+    fn test_serial_config_from_str() {
+        assert_eq!(SerialConfigCli::from_str("none").unwrap(), SerialConfigCli::None);
+        assert_eq!(SerialConfigCli::from_str("console").unwrap(), SerialConfigCli::Console);
+        assert_eq!(SerialConfigCli::from_str("stderr").unwrap(), SerialConfigCli::Stderr);
+
+        // Test file config
+        let file_config = SerialConfigCli::from_str("file=/path/to/file").unwrap();
+        if let SerialConfigCli::File(path) = file_config {
+            assert_eq!(path.to_str().unwrap(), "/path/to/file");
+        } else {
+            panic!("Expected File variant");
+        }
+
+        // Test term config with name
+        match SerialConfigCli::from_str("term=/dev/pts/0,name=MyTerm").unwrap() {
+            SerialConfigCli::NewConsole(Some(path), Some(name)) => {
+                assert_eq!(path.to_str().unwrap(), "/dev/pts/0");
+                assert_eq!(name, "MyTerm");
+            }
+            _ => panic!("Expected NewConsole variant with name"),
+        }
+
+        // Test term config without name
+        match SerialConfigCli::from_str("term=/dev/pts/0").unwrap() {
+            SerialConfigCli::NewConsole(Some(path), None) => {
+                assert_eq!(path.to_str().unwrap(), "/dev/pts/0");
+            }
+            _ => panic!("Expected NewConsole variant without name"),
+        }
+
+        // Test TCP config
+        match SerialConfigCli::from_str("listen=tcp:127.0.0.1:1234").unwrap() {
+            SerialConfigCli::Tcp(addr) => {
+                assert_eq!(addr.to_string(), "127.0.0.1:1234");
+            }
+            _ => panic!("Expected Tcp variant"),
+        }
+
+        // Test pipe config
+        match SerialConfigCli::from_str("listen=/path/to/pipe").unwrap() {
+            SerialConfigCli::Pipe(path) => {
+                assert_eq!(path.to_str().unwrap(), "/path/to/pipe");
+            }
+            _ => panic!("Expected Pipe variant"),
+        }
+
+        // Test error cases
+        assert!(SerialConfigCli::from_str("").is_err());
+        assert!(SerialConfigCli::from_str("unknown").is_err());
+        assert!(SerialConfigCli::from_str("file").is_err());
+        assert!(SerialConfigCli::from_str("listen").is_err());
+    }
+
+    #[test]
+    fn test_endpoint_config_from_str() {
+        // Test none
+        assert!(matches!(EndpointConfigCli::from_str("none").unwrap(), EndpointConfigCli::None));
+
+        // Test consomme without cidr
+        match EndpointConfigCli::from_str("consomme").unwrap() {
+            EndpointConfigCli::Consomme { cidr: None } => (),
+            _ => panic!("Expected Consomme variant without cidr"),
+        }
+
+        // Test consomme with cidr
+        match EndpointConfigCli::from_str("consomme:192.168.0.0/24").unwrap() {
+            EndpointConfigCli::Consomme { cidr: Some(cidr) } => {
+                assert_eq!(cidr, "192.168.0.0/24");
+            }
+            _ => panic!("Expected Consomme variant with cidr"),
+        }
+
+        // Test dio without id
+        match EndpointConfigCli::from_str("dio").unwrap() {
+            EndpointConfigCli::Dio { id: None } => (),
+            _ => panic!("Expected Dio variant without id"),
+        }
+
+        // Test dio with id
+        match EndpointConfigCli::from_str("dio:test_id").unwrap() {
+            EndpointConfigCli::Dio { id: Some(id) } => {
+                assert_eq!(id, "test_id");
+            }
+            _ => panic!("Expected Dio variant with id"),
+        }
+
+        // Test tap
+        match EndpointConfigCli::from_str("tap:tap0").unwrap() {
+            EndpointConfigCli::Tap { name } => {
+                assert_eq!(name, "tap0");
+            }
+            _ => panic!("Expected Tap variant"),
+        }
+
+        // Test error case
+        assert!(EndpointConfigCli::from_str("invalid").is_err());
+    }
+
+    #[test]
+    fn test_nic_config_from_str() {
+        use hvlite_defs::config::DeviceVtl;
+
+        // Test basic endpoint
+        let config = NicConfigCli::from_str("none").unwrap();
+        assert_eq!(config.vtl, DeviceVtl::Vtl0);
+        assert!(config.max_queues.is_none());
+        assert!(!config.underhill);
+        assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        // Test with vtl2
+        let config = NicConfigCli::from_str("vtl2:none").unwrap();
+        assert_eq!(config.vtl, DeviceVtl::Vtl2);
+        assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        // Test with queues
+        let config = NicConfigCli::from_str("queues=4:none").unwrap();
+        assert_eq!(config.max_queues, Some(4));
+        assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        // Test with underhill
+        let config = NicConfigCli::from_str("uh:none").unwrap();
+        assert!(config.underhill);
+        assert!(matches!(config.endpoint, EndpointConfigCli::None));
+
+        // Test error cases
+        assert!(NicConfigCli::from_str("queues=invalid:none").is_err());
+        assert!(NicConfigCli::from_str("uh:vtl2:none").is_err()); // uh incompatible with vtl2
+    }
+
+    #[test]
+    fn test_smt_config_from_str() {
+        assert_eq!(SmtConfigCli::from_str("auto").unwrap(), SmtConfigCli::Auto);
+        assert_eq!(SmtConfigCli::from_str("force").unwrap(), SmtConfigCli::Force);
+        assert_eq!(SmtConfigCli::from_str("off").unwrap(), SmtConfigCli::Off);
+
+        // Test error cases
+        assert!(SmtConfigCli::from_str("invalid").is_err());
+        assert!(SmtConfigCli::from_str("").is_err());
+    }
+
+    #[test]
+    fn test_pcat_boot_order_from_str() {
+        // Test single device
+        let order = PcatBootOrderCli::from_str("optical").unwrap();
+        assert_eq!(order.0[0], PcatBootDevice::Optical);
+
+        // Test multiple devices
+        let order = PcatBootOrderCli::from_str("hdd,net").unwrap();
+        assert_eq!(order.0[0], PcatBootDevice::HardDrive);
+        assert_eq!(order.0[1], PcatBootDevice::Network);
+
+        // Test error cases
+        assert!(PcatBootOrderCli::from_str("invalid").is_err());
+        assert!(PcatBootOrderCli::from_str("optical,optical").is_err()); // duplicate device
+    }
+
+    #[test]
+    fn test_floppy_disk_from_str() {
+        // Test basic disk
+        let disk = FloppyDiskCli::from_str("file:/path/to/floppy.img").unwrap();
+        assert!(!disk.read_only);
+        match disk.kind {
+            DiskCliKind::File { path, create_with_len } => {
+                assert_eq!(path.to_str().unwrap(), "/path/to/floppy.img");
+                assert_eq!(create_with_len, None);
+            }
+            _ => panic!("Expected File variant"),
+        }
+
+        // Test with read-only flag
+        let disk = FloppyDiskCli::from_str("file:/path/to/floppy.img,ro").unwrap();
+        assert!(disk.read_only);
+
+        // Test error cases
+        assert!(FloppyDiskCli::from_str("").is_err());
+        assert!(FloppyDiskCli::from_str("file:/path/to/floppy.img,invalid").is_err());
     }
 }
