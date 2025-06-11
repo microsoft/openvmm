@@ -90,6 +90,7 @@ impl<T: Arm64RegisterState> HypercallIo for Arm64RegisterIo<T> {
         if self.pre_advanced {
             let pc = self.inner.pc().wrapping_sub(4);
             self.inner.set_pc(pc);
+            self.pre_advanced = false;
         }
     }
 
