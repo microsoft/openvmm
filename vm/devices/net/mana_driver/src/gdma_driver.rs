@@ -221,7 +221,7 @@ impl<T: DeviceBacking> Drop for GdmaDriver<T> {
                     tracing::error!("Unexpected response for DESTROY_HWC");
                 }
                 if header.status() != 0 {
-                    tracing::error!("DESTROY_HWC failed with status = {}", header.status());
+                    tracing::error!(status = header.status(), "DESTROY_HWC failed");
                 }
             }
             Err(e) => {
