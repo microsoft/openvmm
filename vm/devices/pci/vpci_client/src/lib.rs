@@ -242,6 +242,10 @@ impl VpciDeviceDescription {
 }
 
 impl VpciDevice {
+    pub fn hw_ids(&self) -> &HardwareIds {
+        self.desc.hw_ids()
+    }
+
     pub fn read_cfg(&self, offset: u16) -> u32 {
         // For static values, return values from the device's description.
         let value = match HeaderType00(offset) {

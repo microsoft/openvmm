@@ -97,6 +97,9 @@ impl MemoryAccess for HypercallMmio {
     }
 }
 
+const AZIHSM_VENDOR_ID: u16 = 0x1414;
+const AZIHSM_DEVICE_ID: u16 = 0xC003;
+
 pub async fn relay_vpci_bus(
     chipset_builder: &mut ChipsetBuilder<'_>,
     driver_source: &VmTaskDriverSource,
@@ -150,6 +153,65 @@ pub async fn relay_vpci_bus(
             .await
             .context("failed to initialize vpci device")?,
     );
+
+    tracing::info!(
+        "relaying vpci bus for instance {} with device {:#?}",
+        instance_id,
+        vpci_device.hw_ids()
+    );
+
+    if vpci_device.hw_ids().vendor_id == AZIHSM_VENDOR_ID
+        && vpci_device.hw_ids().device_id == AZIHSM_DEVICE_ID
+    {
+        // read config space to get extended capabilities
+        // extended capabilities start at offset 0x100
+        let ext_cap_hdr = vpci_device.read_cfg(0x100);
+        let cap_id = ext_cap_hdr & 0xFFFF;           // bits 0-15
+        let cap_ver = (ext_cap_hdr >> 16) & 0xF;      // bits 16-19
+        let mut next_cap_offset = (ext_cap_hdr >> 20) & 0xFFF;    // bits 20-31
+        tracing::info!("cap_id: 0x{:04X}, cap_ver: 0x{:X}, next_cap_offset: 0x{:03X}", cap_id, cap_ver, next_cap_offset);
+
+        while next_cap_offset != 0 {
+            let cap_hdr = vpci_device.read_cfg(next_cap_offset as u16);
+            let cap_id = cap_hdr & 0xFFFF;           // bits 0-15
+            let cap_ver = (cap_hdr >> 16) & 0xF;      // bits 16-19
+            let curr_offset = next_cap_offset;
+            next_cap_offset = (cap_hdr >> 20) & 0xFFF;    // bits 20-31
+            tracing::info!("cap_id: 0x{:04X}, cap_ver: 0x{:X}, next_cap_offset: 0x{:03X}", cap_id, cap_ver, next_cap_offset);
+            if cap_id == 0x000b {
+                // 000Bh Vendor-Specific Extended Capability (VSEC)
+                // The structure of this capability is as follows:
+                /*
+                    struct
+                    {
+                        UINT32 VsecID : 16;  // Vendor-Specific ID
+                        UINT32 VsecRev : 4;  // Version of the VSEC capability- Vendor defined
+                        UINT32 VsecLen : 12; // The Number of bytes in the entire VSEC structure
+                    } fields;
+                */
+                // header followed by 16 bytes of unique ID
+                // we are interested in vsec_id as 0xc301
+                let vsec_header = vpci_device.read_cfg(curr_offset as u16 + 0x4);
+                let vsec_id = vsec_header & 0xFFFF; // bits 0-15
+                let vsec_rev = (vsec_header >> 16) & 0xF; // bits 16-19
+                let vsec_len = (vsec_header >> 20) & 0xFFF; // bits 20-31
+                tracing::info!("VSEC ID: 0x{:04X}", vsec_id);
+                tracing::info!("VSEC Rev: 0x{:X}, VSEC Len: 0x{:03X}", vsec_rev, vsec_len);
+                if vsec_id == 0xc301 {
+                    // read the unique ID
+                    let unique_id = [
+                        vpci_device.read_cfg(curr_offset as u16 + 0x8),
+                        vpci_device.read_cfg(curr_offset as u16 + 0xC),
+                        vpci_device.read_cfg(curr_offset as u16 + 0x10),
+                        vpci_device.read_cfg(curr_offset as u16 + 0x14),
+                    ];
+                    tracing::info!("Unique ID: {:08X}-{:08X}-{:08X}-{:08X}", 
+                        unique_id[0], unique_id[1], unique_id[2], unique_id[3]);
+                }
+            }
+        }
+        
+    }
 
     let device_name = format!("assigned_device:vpci-{instance_id}");
     let device = chipset_builder
