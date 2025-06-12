@@ -17,6 +17,7 @@ use core::marker::PhantomData;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 use core::sync::atomic::compiler_fence;
+use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
 use x86defs::X64_LARGE_PAGE_SIZE;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
@@ -268,10 +269,11 @@ pub fn init_local_map(va: u64) -> LocalMap<'static> {
     local_map
 }
 
-/// Addresses of large pages that are assured to be present in the paging hierarchy
-pub struct LargePageVa(u64);
+/// A page used for TDX hypercalls
+/// This wrapper assures that the page is a large page, and present in the paging hierarchy
+pub struct TdxHypercallPage(u64);
 
-impl LargePageVa {
+impl TdxHypercallPage {
     /// Validate that a virtual address is present in the paging hierarchy, and that it is a large page
     ///
     /// # Safety
@@ -281,12 +283,23 @@ impl LargePageVa {
         unsafe {
             let entry = get_pde_for_va(va);
             assert!(entry.is_present() & entry.is_large_page());
-            LargePageVa(va)
+            TdxHypercallPage(va)
         }
     }
 
-    pub fn addr(&self) -> u64 {
+    /// Returns the VA of the large page containing the I/O buffers
+    pub fn large_page(&self) -> u64 {
         self.0
+    }
+
+    /// Returns the VA of the hypercall input buffer
+    pub fn input(&self) -> u64 {
+        self.0
+    }
+
+    /// Returns the VA of the hypercall output buffer
+    pub fn output(&self) -> u64 {
+        self.0 + HV_PAGE_SIZE
     }
 }
 
@@ -295,19 +308,19 @@ impl LargePageVa {
 /// # Safety
 /// The va passed in is guaranteed by the type to be a present large page,
 /// the caller must ensure it is safe to share with the hypervisor
-pub unsafe fn tdx_share_large_page(va: &LargePageVa) {
+pub unsafe fn tdx_share_large_page(va: &TdxHypercallPage) {
     // SAFETY: See above
     unsafe {
-        let entry = get_pde_for_va(va.addr());
+        let entry = get_pde_for_va(va.large_page());
         entry.tdx_set_shared();
     }
 }
 
 /// Clear the shared bit in the PDE of the local map for a given VA.
-pub fn tdx_unshare_large_page(va: &LargePageVa) {
+pub fn tdx_unshare_large_page(va: &TdxHypercallPage) {
     // SAFETY: The va passed in is guaranteed by the type to be a present large page,
     unsafe {
-        let entry = get_pde_for_va(va.addr());
+        let entry = get_pde_for_va(va.large_page());
         entry.tdx_set_private();
     }
 }

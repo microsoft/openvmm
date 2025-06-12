@@ -630,7 +630,9 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
     // Thus the fast hypercalls will fail as the the Guest ID has
     // to be set first hence initialize hypercall support
     // explicitly.
-    hvcall().initialize(p.isolation_type);
+    if !p.isolation_type.is_hardware_isolated() {
+        hvcall().initialize();
+    }
 
     // Enable early log output if requested in the static command line.
     // Also check for confidential debug mode if we're isolated.
@@ -706,8 +708,13 @@ fn shim_main(shim_params_raw_offset: isize) -> ! {
 
     validate_vp_hw_ids(partition_info);
 
-    setup_vtl2_vp(partition_info);
     setup_vtl2_memory(&p, partition_info);
+
+    #[cfg(target_arch = "x86_64")]
+    if p.isolation_type == IsolationType::Tdx {
+        hvcall().initialize_tdx();
+    }
+    setup_vtl2_vp(partition_info);
 
     verify_imported_regions_hash(&p);
 

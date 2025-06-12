@@ -4,8 +4,7 @@
 //! Hypercall infrastructure.
 
 #[cfg(target_arch = "x86_64")]
-use crate::arch::LargePageVa;
-use crate::arch::hypercall::HvcallPage;
+use crate::arch::TdxHypercallPage;
 #[cfg(target_arch = "x86_64")]
 use crate::arch::tdx::invoke_tdcall_hypercall;
 use crate::host_params::shim_params::IsolationType;
@@ -24,6 +23,30 @@ use minimal_rt::arch::hypercall::invoke_hypercall;
 use zerocopy::FromBytes;
 use zerocopy::IntoBytes;
 
+/// Page-aligned, page-sized buffer for use with hypercalls
+#[repr(C, align(4096))]
+pub struct HvcallPage {
+    pub buffer: [u8; HV_PAGE_SIZE as usize],
+}
+
+impl HvcallPage {
+    pub const fn new() -> Self {
+        HvcallPage {
+            buffer: [0; HV_PAGE_SIZE as usize],
+        }
+    }
+
+    /// Address of the hypercall page.
+    pub fn address(&self) -> u64 {
+        let addr = self.buffer.as_ptr() as u64;
+
+        // These should be page-aligned
+        assert!(addr % HV_PAGE_SIZE == 0);
+
+        addr
+    }
+}
+
 /// Static, reusable page for hypercall input
 static HVCALL_INPUT: SingleThreaded<UnsafeCell<HvcallPage>> =
     SingleThreaded(UnsafeCell::new(HvcallPage::new()));
@@ -36,6 +59,12 @@ static HVCALL: SingleThreaded<RefCell<HvCall>> = SingleThreaded(RefCell::new(HvC
     initialized: false,
     vtl: Vtl::Vtl0,
     isolation_type: None,
+    // The hypercall page is 4KB in the standard setting, but we allocate a large page for
+    // TDX compatibility. This is because the underlying static page is mapped in the
+    // shim's virtual memory hieararchy as a large page, making 2-MB the minimum shareable
+    // memory size between the TDX-enabled shim and hypervisor
+    #[cfg(target_arch = "x86_64")]
+    tdx_io_page: None,
 }));
 
 /// Provides mechanisms to invoke hypercalls within the boot shim.
@@ -46,6 +75,8 @@ pub struct HvCall {
     initialized: bool,
     vtl: Vtl,
     isolation_type: Option<IsolationType>,
+    #[cfg(target_arch = "x86_64")]
+    tdx_io_page: Option<TdxHypercallPage>,
 }
 
 /// Returns an [`HvCall`] instance.
@@ -76,36 +107,22 @@ impl HvCall {
     }
 
     /// Hypercall initialization.
-    pub fn initialize(&mut self, isolation_type: IsolationType) {
+    pub fn initialize(&mut self) {
         if !self.initialized {
-            match isolation_type {
-                #[cfg(target_arch = "x86_64")]
-                IsolationType::Tdx => {
-                    self.initialize_tdx();
-                    self.initialized = true;
-                    self.vtl = Vtl::Vtl2;
-                }
-                #[cfg(target_arch = "x86_64")]
-                IsolationType::Snp => {
-                    self.initialized = false;
-                }
-                _ => {
-                    // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
-                    let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
+            // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
+            let guest_os_id = hvdef::hypercall::HvGuestOsMicrosoft::new().with_os_id(1);
 
-                    crate::arch::hypercall::initialize(guest_os_id.into());
-                    self.initialized = true;
+            crate::arch::hypercall::initialize(guest_os_id.into());
+            self.initialized = true;
 
-                    self.vtl = self
-                        .get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into())
-                        .map_or(Vtl::Vtl0, |status| {
-                            hvdef::HvRegisterVsmVpStatus::from(status.as_u64())
-                                .active_vtl()
-                                .try_into()
-                                .unwrap()
-                        });
-                }
-            };
+            self.vtl = self
+                .get_register(hvdef::HvAllArchRegisterName::VsmVpStatus.into())
+                .map_or(Vtl::Vtl0, |status| {
+                    hvdef::HvRegisterVsmVpStatus::from(status.as_u64())
+                        .active_vtl()
+                        .try_into()
+                        .unwrap()
+                });
         }
     }
 
@@ -155,12 +172,10 @@ impl HvCall {
         match self.isolation_type {
             #[cfg(target_arch = "x86_64")]
             Some(IsolationType::Tdx) =>
-            // SAFETY: I/O pages are static owned by HVCALL, which can only be borrowed once
-            unsafe {
-                let input_page = LargePageVa::new(Self::input_page().address());
-                let output_page = LargePageVa::new(Self::output_page().address());
-                invoke_tdcall_hypercall(control, input_page, output_page)
-            },
+            // SAFETY: HvCall has been initialized, the IO pages have been shared
+            // with the hypervisor. The IO pages have been borrowed from the bottom of the
+            // ram_buffer, which is unused by the shim elsewhere
+            unsafe { invoke_tdcall_hypercall(control, self.tdx_io_page.as_ref().unwrap()) },
             // SAFETY: Invoking hypercall per TLFS spec
             _ => unsafe {
                 invoke_hypercall(
@@ -410,8 +425,16 @@ impl HvCall {
 // TDX specific hypercall methods
 #[cfg(target_arch = "x86_64")]
 impl HvCall {
+    /// # Safety
+    /// The caller ensures that the va passed in will only be used for hypercalls.
+    pub unsafe fn set_tdx_io_page(&mut self, va: TdxHypercallPage) {
+        self.tdx_io_page = Some(va);
+    }
+
     pub fn initialize_tdx(&mut self) {
         assert!(!self.initialized);
+        self.initialized = true;
+        self.vtl = Vtl::Vtl2;
         self.isolation_type = Some(IsolationType::Tdx);
 
         // TODO: revisit os id value. For now, use 1 (which is what UEFI does)
@@ -419,21 +442,17 @@ impl HvCall {
 
         // SAFETY: I/O pages are static owned by HVCALL, which can only be borrowed once
         unsafe {
-            let input_page = LargePageVa::new(Self::input_page().address());
-            let output_page = LargePageVa::new(Self::output_page().address());
-            crate::arch::tdx::initialize_hypercalls(guest_os_id.into(), input_page, output_page);
+            crate::arch::tdx::initialize_hypercalls(
+                guest_os_id.into(),
+                self.tdx_io_page.as_ref().unwrap(),
+            );
         }
     }
 
     pub fn uninitialize_tdx(&mut self) {
         assert!(self.initialized);
         assert!(self.isolation_type == Some(IsolationType::Tdx));
-        // SAFETY: I/O pages are static owned by HVCALL, which can only be borrowed once
-        unsafe {
-            let input_page = LargePageVa::new(Self::input_page().address());
-            let output_page = LargePageVa::new(Self::output_page().address());
-            crate::arch::tdx::uninitialize_hypercalls(input_page, output_page);
-        }
+        crate::arch::tdx::uninitialize_hypercalls(self.tdx_io_page.as_ref().unwrap());
     }
 
     /// Hypercall to enable VTL2 on a TDX VP
@@ -448,11 +467,15 @@ impl HvCall {
             // Context must be zeroed for the VP VTL startup hypercall on TDX
             vp_vtl_context: zerocopy::FromZeros::new_zeroed(),
         };
-
         assert!(self.initialized);
+        assert!(self.isolation_type == Some(IsolationType::Tdx));
 
+        let input_page_addr = self.tdx_io_page.as_ref().unwrap().input();
+        // SAFETY: the input page passed into the initialization of HvCall is a
+        // free buffer that is not concurrently accessed
+        let input_page = unsafe { &mut *(input_page_addr as *mut [u8; 4096]) };
         header
-            .write_to_prefix(Self::input_page().buffer.as_mut_slice())
+            .write_to_prefix(input_page)
             .expect("unable to write to hypercall page");
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallEnableVpVtl, None);
@@ -474,11 +497,14 @@ impl HvCall {
             // Context must be zeroed for the AP startup hypercall on TDX
             vp_context: zerocopy::FromZeros::new_zeroed(),
         };
-
         assert!(self.initialized);
 
+        let input_page_addr = self.tdx_io_page.as_ref().unwrap().input();
+        // SAFETY: the input page passed into the initialization of HvCall is a
+        // free buffer that is not concurrently accessed
+        let input_page = unsafe { &mut *(input_page_addr as *mut [u8; 4096]) };
         header
-            .write_to_prefix(Self::input_page().buffer.as_mut_slice())
+            .write_to_prefix(input_page)
             .expect("unable to write to hypercall page");
 
         let output = self.dispatch_hvcall(hvdef::HypercallCode::HvCallStartVirtualProcessor, None);

@@ -1,32 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use hvdef::HV_PAGE_SIZE;
-
-/// Page-aligned, page-sized buffer for use with hypercalls
-#[repr(C, align(4096))]
-pub struct HvcallPage {
-    pub buffer: [u8; HV_PAGE_SIZE as usize],
-}
-
-impl HvcallPage {
-    pub const fn new() -> Self {
-        HvcallPage {
-            buffer: [0; HV_PAGE_SIZE as usize],
-        }
-    }
-
-    /// Address of the hypercall page.
-    pub fn address(&self) -> u64 {
-        let addr = self.buffer.as_ptr() as u64;
-
-        // These should be page-aligned
-        assert!(addr % HV_PAGE_SIZE == 0);
-
-        addr
-    }
-}
-
 /// Writes a synthehtic register to tell the hypervisor the OS ID for the boot shim.
 fn report_os_id(guest_os_id: u64) {
     // On ARM64, to be able to make hypercalls, one needs first to set the Guest OS ID
