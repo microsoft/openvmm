@@ -130,7 +130,6 @@ pub struct GuestMemoryMapping {
     iova_offset: Option<u64>,
     #[inspect(with = "Option::is_some")]
     valid_memory: Option<Arc<GuestValidMemory>>,
-    // TODO GUEST VSM: synchronize bitmap access
     #[inspect(with = "Option::is_some")]
     permission_bitmaps: Option<PermissionBitmaps>,
     registrar: Option<MemoryRegistrar<MshvVtlWithPolicy>>,
@@ -266,8 +265,6 @@ pub struct GuestMemoryMappingBuilder {
 }
 
 impl GuestMemoryMappingBuilder {
-    /// FUTURE: use bitmaps to track VTL permissions as well, to support guest
-    /// VSM for hardware-isolated VMs.
     fn use_partition_valid_memory(
         &mut self,
         valid_memory: Option<Arc<GuestValidMemory>>,
@@ -480,7 +477,6 @@ impl GuestMemoryMapping {
     /// Panics if the range is outside of guest RAM.
     pub fn update_permission_bitmaps(&self, range: MemoryRange, flags: HvMapGpaFlags) {
         if let Some(bitmaps) = self.permission_bitmaps.as_ref() {
-            // TODO GUEST VSM: synchronize with reading the bitmaps
             let _lock = bitmaps.permission_update_lock.lock();
             bitmaps.read_bitmap.update(range, flags.readable());
             bitmaps.write_bitmap.update(range, flags.writable());
