@@ -7,37 +7,6 @@ use minimal_rt::arch::hypercall::HYPERCALL_PAGE;
 use minimal_rt::arch::msr::read_msr;
 use minimal_rt::arch::msr::write_msr;
 
-/// 2MB-aligned, large page sized buffer for use with hypercalls
-///
-/// The hypercall page is 4KB in the standard setting, but we allocate a large page for
-/// TDX compatibility. This is because the underlying static page is mapped in the
-/// shim's virtual memory hieararchy as a large page, making 2-MB the minimum shareable
-/// memory size between the TDX-enabled shim and hypervisor
-///
-/// TODO(babayet2) temporary hack to check CI, do not merge
-#[repr(C, align(4096))]
-pub struct HvcallPage {
-    pub buffer: [u8; x86defs::X64_LARGE_PAGE_SIZE as usize],
-}
-
-impl HvcallPage {
-    pub const fn new() -> Self {
-        HvcallPage {
-            buffer: [0; x86defs::X64_LARGE_PAGE_SIZE as usize],
-        }
-    }
-
-    /// Address of the hypercall page.
-    pub fn address(&self) -> u64 {
-        let addr = self.buffer.as_ptr() as u64;
-
-        // These should be page-aligned
-        assert!(addr % x86defs::X64_LARGE_PAGE_SIZE == 0);
-
-        addr
-    }
-}
-
 fn report_os_id(guest_os_id: u64) {
     // SAFETY: Using the contract established in the Hyper-V TLFS.
     unsafe {
