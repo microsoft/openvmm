@@ -1385,6 +1385,8 @@ impl From<&std::ffi::OsStr> for OptionalPathBuf {
 }
 
 #[cfg(test)]
+// UNSAFETY: Needed to set and remove environment variables in tests
+#[expect(unsafe_code)]
 mod tests {
     use super::*;
 
@@ -1392,11 +1394,17 @@ mod tests {
     where
         F: FnOnce() -> R,
     {
-        #[allow(deprecated_safe_2024)]
-        std::env::set_var(name, value);
+        // SAFETY:
+        // Safe in a testing context because it won't be changed concurrently
+        unsafe {
+            std::env::set_var(name, value);
+        }
         let result = f();
-        #[allow(deprecated_safe_2024)]
-        std::env::remove_var(name);
+        // SAFETY:
+        // Safe in a testing context because it won't be changed concurrently
+        unsafe {
+            std::env::remove_var(name);
+        }
         result
     }
 
