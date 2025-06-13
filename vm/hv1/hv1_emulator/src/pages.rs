@@ -1,41 +1,54 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-use guestmem::GuestMemory;
-use guestmem::LockedPages;
-use guestmem::Page;
+// UNSAFETY: Implementing a helper type for accessing locked overlay pages via
+// raw pointers.
+#![expect(unsafe_code)]
+
+use crate::VtlProtectAccess;
+use hvdef::HvMapGpaFlags;
 use inspect::Inspect;
 use safeatomic::AtomicSliceOps;
 use std::ops::Deref;
+use std::ptr::NonNull;
 use std::sync::atomic::AtomicU8;
 
-pub(crate) struct LockedPage {
-    page: LockedPages,
+const PAGE_LEN: usize = 4096;
+type Page = [AtomicU8; PAGE_LEN];
+
+/// A locked overlay page wrapper that is used to access the page's contents safely.
+pub struct LockedOverlayPage {
+    page: NonNull<Page>,
+    pub(crate) gpn: u64,
 }
 
-impl LockedPage {
-    pub fn new(guest_memory: &GuestMemory, gpn: u64) -> Result<Self, guestmem::GuestMemoryError> {
-        let page = match guest_memory.lock_gpns(false, &[gpn]) {
-            Ok(it) => it,
-            Err(err) => {
-                tracelimit::error_ratelimited!(
-                    gpn,
-                    err = &err as &dyn std::error::Error,
-                    "Failed to lock page"
-                );
-                return Err(err);
-            }
-        };
-        assert!(page.pages().len() == 1);
-        Ok(Self { page })
+// SAFETY: The raw pointer is just a pointer with no methods and has no inherent safety
+// constraints.
+unsafe impl Send for LockedOverlayPage {}
+
+// SAFETY: The raw pointer is just a pointer with no methods and has no inherent safety
+// constraints.
+unsafe impl Sync for LockedOverlayPage {}
+
+impl LockedOverlayPage {
+    /// Creates a new `LockedOverlayPage` from a raw pointer to a page and its guest page number (GPN).
+    ///
+    /// # Safety
+    /// The caller must ensure that the `page` pointer is valid and points to a page
+    /// that is locked and accessible as long as this struct exists. The `gpn` must
+    /// also be valid and correspond to the page being pointed to.
+    pub unsafe fn new(page: NonNull<Page>, gpn: u64) -> Self {
+        Self { page, gpn }
     }
 }
 
-impl Deref for LockedPage {
+impl Deref for LockedOverlayPage {
     type Target = Page;
 
     fn deref(&self) -> &Self::Target {
-        self.page.pages()[0]
+        // SAFETY: The pointer is guaranteed to be valid as long as this type
+        // exists by the caller of `new`.
+        unsafe { self.page.as_ref() }
     }
 }
 
@@ -43,7 +56,7 @@ impl Deref for LockedPage {
 #[inspect(external_tag)]
 pub(crate) enum OverlayPage {
     Local(#[inspect(skip)] Box<Page>),
-    Mapped(#[inspect(skip)] LockedPage),
+    Mapped(#[inspect(skip)] LockedOverlayPage),
 }
 
 // FUTURE: Technically we should restore the prior contents of a mapped location when we
@@ -51,19 +64,35 @@ pub(crate) enum OverlayPage {
 impl OverlayPage {
     pub fn remap(
         &mut self,
-        guest_memory: &GuestMemory,
-        gpn: u64,
-    ) -> Result<(), guestmem::GuestMemoryError> {
-        let new_page = LockedPage::new(guest_memory, gpn)?;
-        new_page.atomic_write_obj(&self.atomic_read_obj::<[u8; 4096]>());
+        new_gpn: u64,
+        prot_access: &mut dyn VtlProtectAccess,
+    ) -> Result<(), hvdef::HvError> {
+        let new_page = prot_access.check_modify_and_lock_overlay_page(
+            new_gpn,
+            HvMapGpaFlags::new().with_readable(true).with_writable(true),
+            None,
+        )?;
+        new_page.atomic_write_obj(&self.atomic_read_obj::<[u8; PAGE_LEN]>());
+
+        self.unlock_prev_gpn(prot_access);
+
         *self = OverlayPage::Mapped(new_page);
         Ok(())
     }
 
-    pub fn unmap(&mut self) {
+    pub fn unmap(&mut self, prot_access: &mut dyn VtlProtectAccess) {
         let new_page = Box::new(std::array::from_fn(|_| AtomicU8::new(0)));
-        new_page.atomic_write_obj(&self.atomic_read_obj::<[u8; 4096]>());
+        new_page.atomic_write_obj(&self.atomic_read_obj::<[u8; PAGE_LEN]>());
+
+        self.unlock_prev_gpn(prot_access);
+
         *self = OverlayPage::Local(new_page);
+    }
+
+    fn unlock_prev_gpn(&mut self, prot_access: &mut dyn VtlProtectAccess) {
+        if let Self::Mapped(page) = self {
+            prot_access.unlock_overlay_page(page.gpn).unwrap();
+        }
     }
 }
 

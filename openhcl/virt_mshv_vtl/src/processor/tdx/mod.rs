@@ -23,6 +23,7 @@ use crate::UhPartitionInner;
 use crate::UhPartitionNewParams;
 use crate::UhProcessor;
 use crate::WakeReason;
+use crate::processor::hardware_cvm::CvmVtlProtectAccess;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
 use hcl::ioctl::ProcessorRunner;
@@ -759,12 +760,7 @@ impl TdxBackedShared {
         // performance would be poor for cases where the L1 implements
         // high-performance devices.
         let untrusted_synic = (partition_params.handle_synic && !partition_params.hide_isolation)
-            .then(|| {
-                GlobalSynic::new(
-                    params.guest_memory[GuestVtl::Vtl0].clone(),
-                    partition_params.topology.vp_count(),
-                )
-            });
+            .then(|| GlobalSynic::new(partition_params.topology.vp_count()));
 
         // TODO TDX: Consider just using MSR kernel module instead of explicit ioctl.
         let cr4_fixed1 = params.hcl.read_vmx_cr4_fixed1();
@@ -1021,12 +1017,23 @@ impl BackingPrivate for TdxBacked {
             ),
         ];
 
+        let this_index = this.vp_index();
         let reg_count = if let Some(synic) = &mut this.backing.untrusted_synic {
+            let prot_access = &mut CvmVtlProtectAccess {
+                vtl: GuestVtl::Vtl0,
+                protector: this.shared.cvm.isolated_memory_protector.as_ref(),
+                tlb_access: &mut TdxBacked::tlb_flush_lock_access(
+                    this_index,
+                    this.partition,
+                    this.shared,
+                ),
+            };
+
             synic
-                .set_simp(reg(pfns[UhDirectOverlay::Sipp as usize]))
+                .set_simp(reg(pfns[UhDirectOverlay::Sipp as usize]), prot_access)
                 .unwrap();
             synic
-                .set_siefp(reg(pfns[UhDirectOverlay::Sifp as usize]))
+                .set_siefp(reg(pfns[UhDirectOverlay::Sifp as usize]), prot_access)
                 .unwrap();
             // Set the SIEFP in the hypervisor so that the hypervisor can
             // directly signal synic events. Don't set the SIMP, since the
@@ -2649,11 +2656,24 @@ impl UhProcessor<'_, TdxBacked> {
                 // If we get here we must have an untrusted synic, as otherwise
                 // we wouldn't be handling the TDVMCALL that ends up here. Therefore
                 // this is fine to unwrap.
+                let self_index = self.vp_index();
                 self.backing
                     .untrusted_synic
                     .as_mut()
                     .unwrap()
-                    .write_nontimer_msr(msr, value)?;
+                    .write_nontimer_msr(
+                        msr,
+                        value,
+                        &mut CvmVtlProtectAccess {
+                            vtl: intercepted_vtl,
+                            protector: self.shared.cvm.isolated_memory_protector.as_ref(),
+                            tlb_access: &mut TdxBacked::tlb_flush_lock_access(
+                                self_index,
+                                self.partition,
+                                self.shared,
+                            ),
+                        },
+                    )?;
                 // Propagate sint MSR writes to the hypervisor as well
                 // so that the hypervisor can directly inject events.
                 if matches!(msr, hvdef::HV_X64_MSR_SINT0..=hvdef::HV_X64_MSR_SINT15) {
