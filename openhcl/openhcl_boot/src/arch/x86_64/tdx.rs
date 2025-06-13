@@ -222,14 +222,12 @@ pub fn tdx_prepare_ap_trampoline() {
 }
 
 pub fn setup_vtl2_vp(partition_info: &PartitionInfo) {
-    log!("enable vtl2_vp");
     for cpu in 1..partition_info.cpus.len() {
         hvcall()
             .tdx_enable_vp_vtl2(cpu as u32)
             .expect("enabling vp should not fail");
     }
 
-    log!("start vtl2_vp");
     // Start VPs on Tdx-isolated VMs by sending TDVMCALL-based hypercall HvCallStartVirtualProcessor
     for cpu in 1..partition_info.cpus.len() {
         hvcall()
