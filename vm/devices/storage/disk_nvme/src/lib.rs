@@ -190,10 +190,18 @@ impl DiskIo for NvmeDisk {
     }
 
     fn maximum_atomic_transfer_length(&self) -> Option<u32> {
-        if self.namespace.nawun() == 0 {
-            None
+        if self.namespace.nsabp() {
+            if self.namespace.nawun() == 0 {
+                None
+            } else {
+                Some(self.namespace.nawun().into())
+            }
         } else {
-            Some(self.namespace.nawun().into())
+            if self.namespace.awun() == 0 {
+                None
+            } else {
+                Some(self.namespace.awun().into())
+            }
         }
     }
 
