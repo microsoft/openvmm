@@ -14,7 +14,6 @@ loader_defs.workspace = true
 hvdef.workspace = true
 
 memory_range.workspace = true
-underhill_confidentiality.workspace = true
 vbs_defs.workspace = true
 x86defs.workspace = true
 

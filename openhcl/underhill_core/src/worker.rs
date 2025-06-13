@@ -127,6 +127,7 @@ use tracing::Instrument;
 use tracing::instrument;
 use uevent::UeventListener;
 use underhill_attestation::AttestationType;
+use underhill_confidentiality::confidential_debug_enabled;
 use underhill_threadpool::AffinitizedThreadpool;
 use underhill_threadpool::ThreadpoolBuilder;
 use virt::Partition;
@@ -1586,6 +1587,10 @@ async fn new_underhill_vm(
                 })
                 .context("get dma client")?,
         );
+    }
+
+    if confidential_debug_enabled() {
+        tracing::warn!(CVM_ALLOWED, "confidential debug enabled");
     }
 
     // Create the `AttestationVmConfig` from `dps`, which will be used in

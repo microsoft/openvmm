@@ -6,7 +6,11 @@ name = "tdx_guest_device"
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+std = []
+
 [dependencies]
+bitfield-struct.workspace = true
 static_assertions.workspace = true
 zerocopy.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]

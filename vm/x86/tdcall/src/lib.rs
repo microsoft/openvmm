@@ -8,6 +8,7 @@
 
 use hvdef::HV_PAGE_SIZE;
 use memory_range::MemoryRange;
+use tdx_guest_device::protocol::TdReport;
 use thiserror::Error;
 use x86defs::tdx::TDX_SHARED_GPA_BOUNDARY_ADDRESS_BIT;
 use x86defs::tdx::TdCallLeaf;
@@ -704,6 +705,40 @@ pub fn tdcall_vp_invgla(
         r10: 0,
         r11: 0,
         r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
+
+    let output = call.tdcall(input);
+
+    match output.rax.code() {
+        TdCallResultCode::SUCCESS => Ok(()),
+        _ => Err(output.rax),
+    }
+}
+
+#[repr(C, align(64))]
+struct AddlData {
+    /// Report data buffer for TDG.MR.REPORT call.
+    pub report_data: [u8; 64],
+}
+
+/// Issue a TDG.MR.REPORT call with empty additional data.
+pub fn tdcall_mr_report(call: &mut impl Tdcall, report: &mut TdReport) -> Result<(), TdCallResult> {
+    let addl_data = AddlData {
+        report_data: [0; 64],
+    };
+
+    let input = TdcallInput {
+        leaf: TdCallLeaf::MR_REPORT,
+        rcx: core::ptr::from_mut::<TdReport>(report) as u64,
+        rdx: 0,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: addl_data.report_data.as_ptr() as u64,
         r13: 0,
         r14: 0,
         r15: 0,
