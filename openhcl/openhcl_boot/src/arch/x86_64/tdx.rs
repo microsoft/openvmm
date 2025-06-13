@@ -8,7 +8,6 @@ use crate::arch::x86_64::address_space::tdx_share_large_page;
 use crate::arch::x86_64::address_space::tdx_unshare_large_page;
 use crate::host_params::PartitionInfo;
 use crate::hvcall;
-use crate::log;
 use crate::single_threaded::SingleThreaded;
 use core::arch::asm;
 use core::cell::Cell;
