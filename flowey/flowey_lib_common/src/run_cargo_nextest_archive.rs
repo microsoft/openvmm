@@ -84,7 +84,7 @@ impl FlowNode for Node {
 
                         let rust_toolchain = rust_toolchain.map(|s| format!("+{s}"));
                         let (build_args, build_env) =
-                            crate::run_cargo_nextest_run::cargo_nextest_build_args_and_env(
+                            crate::gen_cargo_nextest_run_cmd::cargo_nextest_build_args_and_env(
                                 cargo_flags,
                                 profile,
                                 target,

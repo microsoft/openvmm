@@ -9,7 +9,6 @@ pub mod build_and_publish_openhcl_igvm_from_recipe;
 pub mod build_and_publish_openvmm_hcl_baseline;
 pub mod build_and_run_doc_tests;
 pub mod build_and_run_nextest_unit_tests;
-pub mod build_and_run_nextest_vmm_tests;
 pub mod cfg_common;
 pub mod cfg_gh_azure_login;
 pub mod cfg_hvlite_reposource;

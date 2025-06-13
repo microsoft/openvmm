@@ -65,7 +65,7 @@ pub struct VmmTestsCli {
     release: bool,
 
     /// Build only, do not run
-    #[clap(long)]
+    #[clap(long, requires("dir"))]
     build_only: bool,
     /// Copy extras to output dir (symbols, etc)
     #[clap(long)]
@@ -149,7 +149,7 @@ impl IntoPipeline for VmmTestsCli {
                             build: BuildSelections::default(),
                         }
                     } else {
-                        VmmTestSelections::Flags(flags.unwrap())
+                        VmmTestSelections::Flags(flags.unwrap_or_default())
                     },
                     unstable_whp,
                     release,

@@ -12,6 +12,8 @@ use crate::run_cargo_build::common::CommonPlatform;
 use crate::run_cargo_build::common::CommonProfile;
 use crate::run_cargo_build::common::CommonTriple;
 use flowey::node::prelude::*;
+use flowey_lib_common::gen_cargo_nextest_run_cmd::CommandShell;
+use flowey_lib_common::gen_cargo_nextest_run_cmd::RunKindDeps;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 use vmm_test_images::KnownTestArtifacts;
@@ -162,6 +164,7 @@ impl SimpleFlowNode for Node {
         ctx.import::<flowey_lib_common::publish_test_results::Node>();
         ctx.import::<crate::git_checkout_openvmm_repo::Node>();
         ctx.import::<flowey_lib_common::download_cargo_nextest::Node>();
+        ctx.import::<flowey_lib_common::gen_cargo_nextest_run_cmd::Node>();
     }
 
     fn process_request(request: Self::Request, ctx: &mut NodeCtx<'_>) -> anyhow::Result<()> {
@@ -175,6 +178,10 @@ impl SimpleFlowNode for Node {
             copy_extras,
             done,
         } = request;
+
+        if build_only && test_content_dir.is_none() {
+            anyhow::bail!("Cannot build portable command without exporting to dir");
+        }
 
         let arch = target.common_arch().unwrap();
         let arch_tag = match arch {
@@ -402,6 +409,10 @@ impl SimpleFlowNode for Node {
                             read_built_sidecar.map(ctx, |x| x.map(|y| y.dbg)),
                         ),
                     ]);
+                } else {
+                    read_built_openvmm_hcl.claim_unused(ctx);
+                    read_built_openhcl_boot.claim_unused(ctx);
+                    read_built_sidecar.claim_unused(ctx);
                 }
             }
             let register_openhcl_igvm_files: ReadVar<
@@ -558,15 +569,15 @@ impl SimpleFlowNode for Node {
             output
         });
 
-        let nextest_archive_file = ctx.reqv(|v| crate::build_nextest_vmm_tests::Request {
+        let nextest_archive = ctx.reqv(|v| crate::build_nextest_vmm_tests::Request {
             target: target.as_triple(),
             profile: CommonProfile::from_release(release),
             build_mode: crate::build_nextest_vmm_tests::BuildNextestVmmTestsMode::Archive(v),
         });
-        let nextest_archive_path = Path::new("vmm-tests-archive.tar.zst");
+        let nextest_archive_file = Path::new("vmm-tests-archive.tar.zst");
         copy_to_dir.push((
-            nextest_archive_path.to_owned(),
-            nextest_archive_file.map(ctx, |x| Some(x.archive_file)),
+            nextest_archive_file.to_owned(),
+            nextest_archive.map(ctx, |x| Some(x.archive_file)),
         ));
 
         if let Some(dir) = &test_content_dir {
@@ -591,9 +602,8 @@ impl SimpleFlowNode for Node {
             });
 
         // use the copied archive file
-        let nextest_archive_path = nextest_archive_path.to_owned();
-        let nextest_archive_file = test_content_dir.map(ctx, |dir| NextestVmmTestsArchive {
-            archive_file: dir.join(nextest_archive_path),
+        let nextest_archive_file = test_content_dir.map(ctx, move |dir| NextestVmmTestsArchive {
+            archive_file: dir.join(nextest_archive_file),
         });
 
         let openvmm_repo_path = ctx.reqv(crate::git_checkout_openvmm_repo::req::GetRepoDir);
@@ -649,6 +659,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: None,
             get_env: v,
+            use_relative_paths: build_only,
         });
 
         let copied_files = ctx.emit_rust_step("copy additional files to test content dir", |ctx| {
@@ -683,21 +694,56 @@ impl SimpleFlowNode for Node {
             }
         });
 
+        let nextest_profile = crate::run_cargo_nextest_run::NextestProfile::Default;
+
         if build_only {
-            ctx.emit_side_effect_step(
-                [
-                    nextest_archive_file.into_side_effect(),
-                    nextest_config_file.into_side_effect(),
-                    nextest_bin.into_side_effect(),
-                    extra_env.into_side_effect(),
-                    copied_files.into_side_effect(),
-                ],
-                [done],
-            );
+            let archive_file = nextest_archive_file.map(ctx, |x| x.archive_file);
+
+            let nextest_run_cmd =
+                ctx.reqv(|v| flowey_lib_common::gen_cargo_nextest_run_cmd::Request {
+                    run_kind_deps: RunKindDeps::RunFromArchive {
+                        archive_file,
+                        nextest_bin,
+                        target: ReadVar::from_static(target),
+                    },
+                    working_dir: test_content_dir.clone(),
+                    config_file: nextest_config_file,
+                    tool_config_files: Vec::new(),
+                    nextest_profile: nextest_profile.to_string(),
+                    nextest_filter_expr: Some(nextest_filter_expr),
+                    run_ignored: false,
+                    fail_fast: None,
+                    extra_env: Some(extra_env),
+                    portable: true,
+                    command: v,
+                });
+
+            ctx.emit_rust_step("write test command script", |ctx| {
+                let nextest_run_cmd = nextest_run_cmd.claim(ctx);
+                let test_content_dir = test_content_dir.clone().claim(ctx);
+                copied_files.claim(ctx);
+                done.claim(ctx);
+
+                move |rt| {
+                    let cmd = rt.read(nextest_run_cmd);
+                    let test_content_dir = rt.read(test_content_dir);
+
+                    log::info!("$ {cmd}");
+
+                    let (script_name, script_contents) = match cmd.shell {
+                        CommandShell::Powershell => ("run.ps1", cmd.to_string()),
+                        CommandShell::Bash => ("run.sh", format!("#!/bin/sh\n{cmd}")),
+                    };
+
+                    fs_err::write(test_content_dir.join(script_name), script_contents)?;
+
+                    Ok(())
+                }
+            });
         } else {
             let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
                 nextest_archive_file,
-                nextest_profile: crate::run_cargo_nextest_run::NextestProfile::Default,
+                nextest_profile,
                 nextest_filter_expr: Some(nextest_filter_expr),
                 nextest_working_dir: Some(test_content_dir.clone()),
                 nextest_config_file: Some(nextest_config_file),

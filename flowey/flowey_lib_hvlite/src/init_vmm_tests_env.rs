@@ -52,6 +52,9 @@ flowey_request! {
         pub get_test_log_path: Option<WriteVar<PathBuf>>,
         /// Get a map of env vars required to be set when running VMM tests
         pub get_env: WriteVar<BTreeMap<String, String>>,
+
+        /// Use paths relative to `test_content_dir` for environment variables
+        pub use_relative_paths: bool,
     }
 }
 
@@ -81,6 +84,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path,
             get_env,
+            use_relative_paths,
         } = request;
 
         let openvmm_deps_arch = match vmm_tests_target.architecture {
@@ -131,28 +135,60 @@ impl SimpleFlowNode for Node {
 
                 let mut env = BTreeMap::new();
 
-                let windows_openvmm_via_wsl2 = flowey_lib_common::_util::running_in_wsl(rt)
+                let windows_via_wsl2 = flowey_lib_common::_util::running_in_wsl(rt)
                     && matches!(
                         vmm_tests_target.operating_system,
                         target_lexicon::OperatingSystem::Windows
                     );
 
-                let path_as_string = |path: &Path| -> anyhow::Result<String> {
-                    Ok(if windows_openvmm_via_wsl2 {
+                let working_dir_ref = test_content_dir.as_path();
+                let working_dir_win = windows_via_wsl2.then(|| {
+                    flowey_lib_common::_util::wslpath::linux_to_win(working_dir_ref)
+                        .display()
+                        .to_string()
+                });
+                let maybe_convert_path = |path: &Path| -> anyhow::Result<String> {
+                    let path = if windows_via_wsl2 {
                         flowey_lib_common::_util::wslpath::linux_to_win(path)
-                            .display()
-                            .to_string()
                     } else {
                         path.absolute()
-                            .context(format!("invalid path {}", path.display()))?
-                            .display()
-                            .to_string()
-                    })
+                            .with_context(|| format!("invalid path {}", path.display()))?
+                    };
+                    let path = if use_relative_paths {
+                        if windows_via_wsl2 {
+                            let working_dir_trimmed =
+                                working_dir_win.as_ref().unwrap().trim_end_matches('\\');
+                            let path_win = path.display().to_string();
+                            let path_trimmed = path_win.trim_end_matches('\\');
+                            PathBuf::from(format!(
+                                "$PSScriptRoot{}",
+                                path_trimmed
+                                    .strip_prefix(working_dir_trimmed)
+                                    .with_context(|| format!(
+                                        "{} not in {}",
+                                        path_win, working_dir_trimmed
+                                    ),)?
+                            ))
+                        } else {
+                            path.strip_prefix(working_dir_ref)
+                                .with_context(|| {
+                                    format!(
+                                        "{} not in {}",
+                                        path.display(),
+                                        working_dir_ref.display()
+                                    )
+                                })?
+                                .to_path_buf()
+                        }
+                    } else {
+                        path
+                    };
+                    Ok(path.display().to_string())
                 };
 
                 env.insert(
                     "VMM_TESTS_CONTENT_DIR".into(),
-                    path_as_string(&test_content_dir)?,
+                    maybe_convert_path(&test_content_dir)?,
                 );
 
                 // use a subdir for test logs
@@ -160,12 +196,15 @@ impl SimpleFlowNode for Node {
                 if !test_log_dir.exists() {
                     fs_err::create_dir(&test_log_dir)?
                 };
-                env.insert("TEST_OUTPUT_PATH".into(), path_as_string(&test_log_dir)?);
+                env.insert(
+                    "TEST_OUTPUT_PATH".into(),
+                    maybe_convert_path(&test_log_dir)?,
+                );
 
                 if let Some(disk_image_dir) = disk_image_dir {
                     env.insert(
                         "VMM_TEST_IMAGES".into(),
-                        path_as_string(&rt.read(disk_image_dir))?,
+                        maybe_convert_path(&rt.read(disk_image_dir))?,
                     );
                 }
 

@@ -129,6 +129,7 @@ impl SimpleFlowNode for Node {
             register_openhcl_igvm_files,
             get_test_log_path: Some(get_test_log_path),
             get_env: v,
+            use_relative_paths: false,
         });
 
         let results = ctx.reqv(|v| crate::test_nextest_vmm_tests_archive::Request {
