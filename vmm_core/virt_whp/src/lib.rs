@@ -1156,6 +1156,8 @@ impl VtlPartition {
     fn new(config: &ProtoPartitionConfig<'_>, vtl: Vtl) -> Result<Self, Error> {
         let mut hypervisor_enlightened = false;
 
+        let mut extended_exits = whp::abi::WHV_EXTENDED_VM_EXITS(0);
+
         let user_mode_apic = config.user_mode_apic
             || config
                 .hv_config
@@ -1168,6 +1170,10 @@ impl VtlPartition {
                 config.processor_topology.apic_mode(),
                 vm_topology::processor::x86::ApicMode::XApic
             );
+            if x2apic_capable {
+                // Needed to set the x2apic bit.
+                extended_exits |= whp::abi::WHV_EXTENDED_VM_EXITS::X64CpuidExit;
+            }
             let lapic = virt_support_apic::LocalApicSet::builder()
                 .x2apic_capable(x2apic_capable)
                 .hyperv_enlightenments(config.hv_config.is_some())
@@ -1187,7 +1193,6 @@ impl VtlPartition {
             ))
             .for_op("set processor count")?;
 
-        let mut extended_exits = whp::abi::WHV_EXTENDED_VM_EXITS(0);
         #[cfg(guest_arch = "x86_64")]
         {
             use vm_topology::processor::x86::ApicMode;

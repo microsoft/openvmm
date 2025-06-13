@@ -23,7 +23,6 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 use std::task::ready;
-use tracing::Level;
 
 /// A stream of trace logging notifications from `/dev/kmsg`.
 pub struct KmsgStream {
@@ -70,22 +69,6 @@ impl Write for SaturatingWriter<'_> {
     }
 }
 
-macro_rules! kmsg_parmas {
-    ($target:expr, $level:expr, $message:expr $(,)?) => {{
-        let level = $level;
-        let enabled = match level {
-            kmsg_defs::LOGLEVEL_EMERG..=kmsg_defs::LOGLEVEL_ERR => {
-                tracing::enabled!(target: $target, Level::ERROR)
-            }
-            kmsg_defs::LOGLEVEL_WARNING => tracing::enabled!(target: $target, Level::WARN),
-            kmsg_defs::LOGLEVEL_NOTICE => tracing::enabled!(target: $target, Level::INFO),
-            kmsg_defs::LOGLEVEL_INFO => tracing::enabled!(target: $target, Level::DEBUG),
-            kmsg_defs::LOGLEVEL_DEBUG.. => tracing::enabled!(target: $target, Level::TRACE),
-        };
-        enabled.then(|| (const { $target }, level, $message))
-    }};
-}
-
 impl Stream for KmsgStream {
     type Item = Vec<u8>;
 
@@ -98,14 +81,20 @@ impl Stream for KmsgStream {
                     let entry = KmsgParsedEntry::new(&buf[..n]).unwrap();
                     self.missed_entries += entry.seq - self.next_seq;
                     self.next_seq = entry.seq + 1;
-                    let params = match entry.facility {
+
+                    let (target, klevel, message) = match entry.facility {
                         kmsg_defs::UNDERHILL_KMSG_FACILITY => {
                             // Don't re-log messages from Underhill itself.
                             continue;
                         }
                         kmsg_defs::UNDERHILL_INIT_KMSG_FACILITY => {
+                            // Don't log debug init messages.
+                            // TODO: Support configuring this dynamically.
+                            if entry.level > kmsg_defs::LOGLEVEL_NOTICE {
+                                continue;
+                            }
                             // Use a separate target for the init process messages.
-                            kmsg_parmas!("underhill_init", entry.level, entry.message)
+                            ("underhill_init", entry.level, entry.message)
                         }
                         kmsg_defs::KERNEL_FACILITY
                             if entry
@@ -118,7 +107,7 @@ impl Stream for KmsgStream {
                             // processes. Log them with an appropriate level
                             // (the kernel defaults to INFO for these) and a
                             // separate target.
-                            kmsg_parmas!(
+                            (
                                 "panic",
                                 kmsg_defs::LOGLEVEL_CRIT,
                                 // Skip the ttyprintk message prefix.
@@ -129,13 +118,14 @@ impl Stream for KmsgStream {
                         }
                         _ => {
                             // Non-ttyprintk kernel messages and any other
-                            // user-mode facilities are logged as is.
-                            kmsg_parmas!("kmsg", entry.level, entry.message)
+                            // user-mode facilities are logged as is,
+                            // but don't log too many.
+                            // TODO: Support configuring this dynamically.
+                            if entry.level > kmsg_defs::LOGLEVEL_NOTICE {
+                                continue;
+                            }
+                            ("kmsg", entry.level, entry.message)
                         }
-                    };
-                    let Some((target, klevel, message)) = params else {
-                        // The message was not enabled.
-                        continue;
                     };
 
                     let level = match klevel {

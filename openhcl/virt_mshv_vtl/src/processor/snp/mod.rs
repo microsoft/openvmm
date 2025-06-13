@@ -23,9 +23,9 @@ use crate::UhCvmVpState;
 use crate::UhPartitionInner;
 use crate::UhPartitionNewParams;
 use crate::WakeReason;
-use crate::devmsr;
 use crate::processor::UhHypercallHandler;
 use crate::processor::UhProcessor;
+use crate::processor::hardware_cvm::apic::ApicBacking;
 use cvm_tracing::CVM_ALLOWED;
 use cvm_tracing::CVM_CONFIDENTIAL;
 use hcl::vmsa::VmsaWrapper;
@@ -374,6 +374,8 @@ pub struct SnpBackedShared {
     pub(crate) cvm: UhCvmPartitionState,
     invlpgb_count_max: u16,
     tsc_aux_virtualized: bool,
+    #[inspect(debug)]
+    sev_status: SevStatusMsr,
 }
 
 impl SnpBackedShared {
@@ -395,7 +397,15 @@ impl SnpBackedShared {
         )
         .tsc_aux_virtualization();
 
+        // Query the SEV_FEATURES MSR to determine the features enabled on VTL2's VMSA
+        // and use that to set btb_isolation, prevent_host_ibs, and VMSA register protection.
+        let msr = crate::MsrDevice::new(0).expect("open msr");
+        let sev_status =
+            SevStatusMsr::from(msr.read_msr(x86defs::X86X_AMD_MSR_SEV).expect("read msr"));
+        tracing::info!(CVM_ALLOWED, ?sev_status, "SEV status");
+
         Ok(Self {
+            sev_status,
             invlpgb_count_max,
             tsc_aux_virtualized,
             cvm,
@@ -431,11 +441,13 @@ impl BackingPrivate for SnpBacked {
     }
 
     fn init(this: &mut UhProcessor<'_, Self>) {
+        let sev_status = this.vp().shared.sev_status;
         for vtl in [GuestVtl::Vtl0, GuestVtl::Vtl1] {
             init_vmsa(
                 &mut this.runner.vmsa_mut(vtl),
                 vtl,
                 this.partition.caps.vtom,
+                sev_status,
             );
 
             // Reset VMSA-backed state.
@@ -637,12 +649,12 @@ fn virt_table_from_snp(selector: SevSelector) -> TableRegister {
     }
 }
 
-fn init_vmsa(vmsa: &mut VmsaWrapper<'_, &mut SevVmsa>, vtl: GuestVtl, vtom: Option<u64>) {
-    // Query the SEV_FEATURES MSR to determine the features enabled on VTL2's VMSA
-    // and use that to set btb_isolation, prevent_host_ibs, and VMSA register protection.
-    let msr = devmsr::MsrDevice::new(0).expect("open msr");
-    let sev_status = SevStatusMsr::from(msr.read_msr(x86defs::X86X_AMD_MSR_SEV).expect("read msr"));
-
+fn init_vmsa(
+    vmsa: &mut VmsaWrapper<'_, &mut SevVmsa>,
+    vtl: GuestVtl,
+    vtom: Option<u64>,
+    sev_status: SevStatusMsr,
+) {
     // BUGBUG: this isn't fully accurate--the hypervisor can try running
     // from this at any time, so we need to be careful to set the field
     // that makes this valid last.
@@ -677,15 +689,6 @@ fn init_vmsa(vmsa: &mut VmsaWrapper<'_, &mut SevVmsa>, vtl: GuestVtl, vtom: Opti
     // Efer has a value that is different than the architectural default (for SNP, efer
     // must always have the SVME bit set).
     vmsa.set_efer(x86defs::X64_EFER_SVME);
-
-    let sev_features = vmsa.sev_features();
-    tracing::info!(
-        CVM_ALLOWED,
-        ?vtl,
-        ?sev_status,
-        ?sev_features,
-        "VMSA features"
-    );
 }
 
 struct SnpApicClient<'a, T> {
@@ -846,7 +849,7 @@ impl<T> HypercallIo for GhcbEnlightenedHypercall<'_, '_, T> {
     }
 }
 
-impl<'b> hardware_cvm::apic::ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpBacked> {
+impl<'b> ApicBacking<'b, SnpBacked> for UhProcessor<'b, SnpBacked> {
     fn vp(&mut self) -> &mut UhProcessor<'b, SnpBacked> {
         self
     }
@@ -1181,7 +1184,9 @@ impl UhProcessor<'_, SnpBacked> {
         let mut vmsa = self.runner.vmsa_mut(next_vtl);
         let last_interrupt_ctrl = vmsa.v_intr_cntrl();
 
-        vmsa.v_intr_cntrl_mut().set_guest_busy(false);
+        if vmsa.sev_features().alternate_injection() {
+            vmsa.v_intr_cntrl_mut().set_guest_busy(false);
+        }
 
         self.unlock_tlb_lock(Vtl::Vtl2);
         let tlb_halt = self.should_halt_for_tlb_unlock(next_vtl);
@@ -1208,36 +1213,49 @@ impl UhProcessor<'_, SnpBacked> {
         let mut vmsa = self.runner.vmsa_mut(entered_from_vtl);
 
         // TODO SNP: The guest busy bit needs to be tested and set atomically.
-        if vmsa.v_intr_cntrl().guest_busy() {
-            self.backing.general_stats[entered_from_vtl]
-                .guest_busy
-                .increment();
-            // Software interrupts/exceptions cannot be automatically re-injected, but RIP still
-            // points to the instruction and the event should be re-generated when the
-            // instruction is re-executed. Note that hardware does not provide instruction
-            // length in this case so it's impossible to directly re-inject a software event if
-            // delivery generates an intercept.
-            //
-            // TODO SNP: Handle ICEBP.
-            let exit_int_info = SevEventInjectInfo::from(vmsa.exit_int_info());
-            debug_assert!(
-                exit_int_info.valid(),
-                "event inject info should be valid {exit_int_info:x?}"
-            );
+        let inject = if vmsa.sev_features().alternate_injection() {
+            if vmsa.v_intr_cntrl().guest_busy() {
+                self.backing.general_stats[entered_from_vtl]
+                    .guest_busy
+                    .increment();
+                // Software interrupts/exceptions cannot be automatically re-injected, but RIP still
+                // points to the instruction and the event should be re-generated when the
+                // instruction is re-executed. Note that hardware does not provide instruction
+                // length in this case so it's impossible to directly re-inject a software event if
+                // delivery generates an intercept.
+                //
+                // TODO SNP: Handle ICEBP.
+                let exit_int_info = SevEventInjectInfo::from(vmsa.exit_int_info());
+                assert!(
+                    exit_int_info.valid(),
+                    "event inject info should be valid {exit_int_info:x?}"
+                );
 
-            let inject = match exit_int_info.interruption_type() {
-                x86defs::snp::SEV_INTR_TYPE_EXCEPT => {
-                    exit_int_info.vector() != 3 && exit_int_info.vector() != 4
+                match exit_int_info.interruption_type() {
+                    x86defs::snp::SEV_INTR_TYPE_EXCEPT => {
+                        if exit_int_info.vector() != 3 && exit_int_info.vector() != 4 {
+                            // If the event is an exception, we can inject it.
+                            Some(exit_int_info)
+                        } else {
+                            None
+                        }
+                    }
+                    x86defs::snp::SEV_INTR_TYPE_SW => None,
+                    _ => Some(exit_int_info),
                 }
-                x86defs::snp::SEV_INTR_TYPE_SW => false,
-                _ => true,
-            };
-
-            if inject {
-                vmsa.set_event_inject(exit_int_info);
+            } else {
+                None
             }
+        } else {
+            unimplemented!("Only alternate injection is supported for SNP")
+        };
+
+        if let Some(inject) = inject {
+            vmsa.set_event_inject(inject);
         }
-        vmsa.v_intr_cntrl_mut().set_guest_busy(true);
+        if vmsa.sev_features().alternate_injection() {
+            vmsa.v_intr_cntrl_mut().set_guest_busy(true);
+        }
 
         if last_interrupt_ctrl.irq() && !vmsa.v_intr_cntrl().irq() {
             self.backing.general_stats[entered_from_vtl]

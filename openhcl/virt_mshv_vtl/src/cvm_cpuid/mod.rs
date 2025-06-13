@@ -3,8 +3,6 @@
 
 //! CPUID definitions and implementation specific to Underhill in hardware CVMs.
 
-#![warn(missing_docs)]
-
 use self::tdx::TdxCpuidInitializer;
 use core::arch::x86_64::CpuidResult;
 use cvm_tracing::CVM_ALLOWED;

@@ -169,8 +169,6 @@ pub struct ParsedBootDtInfo {
     /// VTL2 range for private pool memory.
     #[inspect(iter_by_index)]
     pub private_pool_ranges: Vec<MemoryRangeWithNode>,
-    /// The host provided portion of the command line.
-    pub host_provided_cmdline: String,
 }
 
 fn err_to_owned(e: fdt::parser::Error<'_>) -> anyhow::Error {
@@ -209,7 +207,6 @@ struct OpenhclInfo {
     memory_allocation_mode: MemoryAllocationMode,
     isolation: IsolationType,
     private_pool_ranges: Vec<MemoryRangeWithNode>,
-    host_provided_cmdline: String,
 }
 
 fn parse_memory_openhcl(node: &Node<'_>) -> anyhow::Result<AddressRange> {
@@ -409,13 +406,6 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         })
         .collect();
 
-    let host_provided_cmdline = try_find_property(node, "host-provided-cmdline")
-        .map(|prop| prop.read_str().map_err(err_to_owned))
-        .transpose()
-        .context("unable to read host-provided-cmdline")?
-        .unwrap_or_default()
-        .to_string();
-
     Ok(OpenhclInfo {
         vtl0_mmio,
         config_ranges,
@@ -426,7 +416,6 @@ fn parse_openhcl(node: &Node<'_>) -> anyhow::Result<OpenhclInfo> {
         memory_allocation_mode,
         isolation,
         private_pool_ranges,
-        host_provided_cmdline,
     })
 }
 
@@ -520,7 +509,6 @@ impl ParsedBootDtInfo {
         let mut isolation = IsolationType::None;
         let mut vtl2_reserved_range = MemoryRange::EMPTY;
         let mut private_pool_ranges = Vec::new();
-        let mut host_provided_cmdline = String::new();
 
         let parser = Parser::new(raw)
             .map_err(err_to_owned)
@@ -550,7 +538,6 @@ impl ParsedBootDtInfo {
                         memory_allocation_mode: n_memory_allocation_mode,
                         isolation: n_isolation,
                         private_pool_ranges: n_private_pool_ranges,
-                        host_provided_cmdline: n_host_provided_cmdline,
                     } = parse_openhcl(&child)?;
                     vtl0_mmio = n_vtl0_mmio;
                     config_ranges = n_config_ranges;
@@ -561,7 +548,6 @@ impl ParsedBootDtInfo {
                     isolation = n_isolation;
                     vtl2_reserved_range = n_vtl2_reserved_range;
                     private_pool_ranges = n_private_pool_ranges;
-                    host_provided_cmdline = n_host_provided_cmdline;
                 }
 
                 _ if child.name.starts_with("memory@") => {
@@ -594,7 +580,6 @@ impl ParsedBootDtInfo {
             isolation,
             vtl2_reserved_range,
             private_pool_ranges,
-            host_provided_cmdline,
         })
     }
 }
@@ -794,10 +779,6 @@ mod tests {
             openhcl_builder = openhcl_builder.add_u64(p_vtl0_alias_map, data)?;
         }
 
-        let p_host_provided_cmdline = openhcl_builder.add_string("host-provided-cmdline")?;
-        openhcl_builder =
-            openhcl_builder.add_str(p_host_provided_cmdline, &info.host_provided_cmdline)?;
-
         openhcl_builder = openhcl_builder
             .start_node("vmbus-vtl0")?
             .add_u32(p_address_cells, 2)?
@@ -964,7 +945,6 @@ mod tests {
                 range: MemoryRange::new(0x60000..0x70000),
                 vnode: 0,
             }],
-            host_provided_cmdline: "TEST_HOST=1".to_string(),
         };
 
         let dt = build_dt(&orig_info).unwrap();

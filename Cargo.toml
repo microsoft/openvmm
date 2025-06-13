@@ -8,7 +8,6 @@ members = [
   # openvmm
   "openvmm/openvmm",
   # repo tooling
-  "flowey/flowey_trampoline",
   "flowey/flowey_hvlite",
   "xtask",
   # openhcl
@@ -34,6 +33,7 @@ members = [
   "vm/devices/storage/disk_nvme/nvme_driver/fuzz",
   "vm/devices/storage/ide/fuzz",
   "vm/devices/storage/scsi_buffers/fuzz",
+  "vm/devices/storage/storage_tests",
   "vm/devices/storage/storvsp/fuzz",
   "vm/vmcore/guestmem/fuzz",
   "vm/x86/x86emu/fuzz",
@@ -561,11 +561,6 @@ panic = 'abort'
 inherits = 'dev'
 # xtask is CPU bound in places, so enable light optimizations
 opt-level = 1
-
-[profile.flowey]
-# This exists to support the use of flowey_trampoline, which overrides part of
-# the profile definition via environment variables.
-inherits = 'dev'
 
 [profile.flowey-ci]
 inherits = 'dev'

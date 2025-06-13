@@ -774,7 +774,7 @@ impl FromStr for DiskCliKind {
                 }
                 "prwrap" => DiskCliKind::PersistentReservationsWrapper(Box::new(arg.parse()?)),
                 "file" => {
-                    let (path, create_with_len) = parse_path_and_len(s)?;
+                    let (path, create_with_len) = parse_path_and_len(arg)?;
                     DiskCliKind::File {
                         path,
                         create_with_len,

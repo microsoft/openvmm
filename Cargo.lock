@@ -1909,10 +1909,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "flowey_trampoline"
-version = "0.0.0"
-
-[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6128,6 +6124,7 @@ dependencies = [
  "scsi_defs",
  "scsidisk_resources",
  "stackfuture",
+ "test_with_tracing",
  "thiserror 2.0.12",
  "tracelimit",
  "tracing",
@@ -6602,6 +6599,32 @@ dependencies = [
  "inspect",
  "mesh_protobuf",
  "thiserror 2.0.12",
+ "zerocopy 0.8.24",
+]
+
+[[package]]
+name = "storage_tests"
+version = "0.0.0"
+dependencies = [
+ "chipset_device",
+ "disk_backend",
+ "disk_nvme",
+ "disklayer_ram",
+ "guestmem",
+ "guid",
+ "nvme",
+ "nvme_driver",
+ "page_pool_alloc",
+ "pal_async",
+ "pci_core",
+ "scsi_buffers",
+ "scsi_core",
+ "scsi_defs",
+ "scsidisk",
+ "test_with_tracing",
+ "tracing",
+ "user_driver_emulated_mock",
+ "vmcore",
  "zerocopy 0.8.24",
 ]
 
@@ -8041,7 +8064,6 @@ dependencies = [
 name = "virt_support_apic"
 version = "0.0.0"
 dependencies = [
- "address_filter",
  "bitfield-struct 0.10.1",
  "hvdef",
  "inspect",
@@ -8456,6 +8478,7 @@ dependencies = [
  "bitfield-struct 0.10.1",
  "futures",
  "guestmem",
+ "guid",
  "mesh",
  "pal",
  "pal_async",
@@ -8690,6 +8713,7 @@ dependencies = [
  "async-trait",
  "cfg-if",
  "crc32fast",
+ "cvm_tracing",
  "disk_backend",
  "disklayer_ram",
  "getrandom 0.3.2",
@@ -8873,10 +8897,12 @@ name = "vmm_tests"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "cfg-if",
  "disk_backend_resources",
  "futures",
  "get_resources",
  "guid",
+ "hvdef",
  "hvlite_defs",
  "hvlite_ttrpc_vmservice",
  "hyperv_ic_resources",
@@ -8891,6 +8917,7 @@ dependencies = [
  "petri_artifact_resolver_openvmm_known_paths",
  "petri_artifacts_common",
  "petri_artifacts_vmm_test",
+ "safe_intrinsics",
  "scsidisk_resources",
  "storvsp_resources",
  "tempfile",
@@ -8901,6 +8928,7 @@ dependencies = [
  "vmm_core_defs",
  "vmm_test_macros",
  "vtl2_settings_proto",
+ "x86defs",
 ]
 
 [[package]]

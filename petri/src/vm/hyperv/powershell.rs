@@ -66,8 +66,6 @@ impl ps::AsVal for HyperVGuestStateIsolationType {
 /// Hyper-V Secure Boot Template
 #[derive(Clone, Copy)]
 pub enum HyperVSecureBootTemplate {
-    /// Secure Boot Disabled
-    SecureBootDisabled,
     /// Windows Secure Boot Template
     MicrosoftWindows,
     /// Microsoft UEFI Certificate Authority Template
@@ -79,7 +77,6 @@ pub enum HyperVSecureBootTemplate {
 impl ps::AsVal for HyperVSecureBootTemplate {
     fn as_val(&self) -> impl '_ + AsRef<OsStr> {
         match self {
-            HyperVSecureBootTemplate::SecureBootDisabled => "SecureBootDisabled",
             HyperVSecureBootTemplate::MicrosoftWindows => "MicrosoftWindows",
             HyperVSecureBootTemplate::MicrosoftUEFICertificateAuthority => {
                 "MicrosoftUEFICertificateAuthority"
@@ -409,7 +406,7 @@ pub fn run_set_vm_firmware(args: HyperVSetVMFirmwareArgs<'_>) -> anyhow::Result<
         .pipeline();
 
     builder = match args.secure_boot_template {
-        Some(HyperVSecureBootTemplate::SecureBootDisabled) | None => builder
+        None => builder
             .cmdlet("Set-VMFirmware")
             .arg("EnableSecureBoot", ps::RawVal::new("Off"))
             .finish(),
