@@ -17,6 +17,7 @@ hvdef.workspace = true
 fdt.workspace = true
 memory_range.workspace = true
 sidecar_defs.workspace = true
+mesh_protobuf.workspace = true
 
 arrayvec.workspace = true
 cfg-if.workspace = true

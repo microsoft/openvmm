@@ -1216,6 +1216,7 @@ fn load_igvm_x86(
             relocation_region.base_gpa..=relocation_region.base_gpa + relocation_region.size - 1,
             offset as i64,
         );
+        tracing::error!(offset, ?reloc_regions, "pt reloc");
         let page_table = page_table_fixup
             .build(offset as i64, reloc_regions, page_table_cpu_state)
             .map_err(Error::PageTableBuilder)?;

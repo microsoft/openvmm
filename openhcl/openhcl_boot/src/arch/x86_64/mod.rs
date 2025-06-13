@@ -5,7 +5,7 @@
 
 //! x86_64 architecture-specific implementations.
 
-mod address_space;
+pub mod address_space;
 pub mod hypercall;
 mod memory;
 pub mod snp;
