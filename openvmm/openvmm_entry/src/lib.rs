@@ -5,7 +5,6 @@
 //! for the worker process.
 
 #![expect(missing_docs)]
-#![forbid(unsafe_code)]
 
 mod cli_args;
 mod crash_dump;
