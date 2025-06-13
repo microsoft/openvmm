@@ -51,6 +51,16 @@ use zerocopy::FromZeros;
 use zerocopy::IntoBytes;
 
 #[derive(Debug)]
+pub struct Vtl0StaticElf {
+    /// The base gpa the image was loaded at.
+    pub gpa: u64,
+    /// The size in bytes of the region the image was loaded at.
+    pub size: u64,
+    /// The gpa of the entrypoint of the image.
+    pub vp_context: Vec<u8>,
+}
+
+#[derive(Debug)]
 pub struct Vtl0Linux<'a> {
     pub command_line: &'a std::ffi::CString,
     pub load_info: crate::linux::LoadInfo,
@@ -62,6 +72,7 @@ pub struct Vtl0Config<'a> {
     /// The load info and the VP context page.
     pub supports_uefi: Option<(crate::uefi::LoadInfo, Vec<u8>)>,
     pub supports_linux: Option<Vtl0Linux<'a>>,
+    pub supports_static_elf: Option<Vtl0StaticElf>,
 }
 
 // See HclDefs.h
@@ -695,6 +706,7 @@ where
         supports_pcat,
         supports_uefi,
         supports_linux,
+        supports_static_elf,
     } = vtl0_config;
 
     if supports_pcat {
@@ -754,7 +766,7 @@ where
         };
 
         let command_line_page = free_page;
-        // free_page += 1;
+        free_page += 1;
 
         // Import the command line as a C string.
         importer
@@ -775,6 +787,38 @@ where
             initrd_size,
             command_line,
         };
+    }
+
+    if let Some(Vtl0StaticElf {
+        gpa,
+        size,
+        vp_context,
+    }) = &supports_static_elf
+    {
+        measured_config
+            .supported_vtl0
+            .set_static_elf_supported(true);
+        let vp_context_page = free_page;
+        // free_page += 1;
+        measured_config.static_elf = ElfInfo {
+            region: PageRegionDescriptor {
+                base_page_number: gpa / HV_PAGE_SIZE,
+                page_count: size / HV_PAGE_SIZE,
+            },
+            vp_context: PageRegionDescriptor {
+                base_page_number: vp_context_page,
+                page_count: 1,
+            },
+        };
+
+        // Deposit the vp context.
+        importer.import_pages(
+            vp_context_page,
+            1,
+            "openhcl-static-elf-vp-context",
+            BootPageAcceptance::Exclusive,
+            vp_context,
+        )?;
     }
 
     importer
@@ -858,6 +902,7 @@ where
         supports_pcat,
         supports_uefi,
         supports_linux,
+        supports_static_elf: _,
     } = vtl0_config;
 
     assert!(!supports_pcat);

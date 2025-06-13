@@ -95,6 +95,7 @@ pub enum Image {
         /// Include the Linux kernel for loading into the guest.
         #[serde(skip_serializing_if = "Option::is_none")]
         linux: Option<LinuxImage>,
+        static_elf: Option<StaticElfImage>,
     },
     /// Load the Linux kernel.
     /// TODO: Currently, this only works with underhill.
@@ -108,6 +109,17 @@ pub struct LinuxImage {
     pub use_initrd: bool,
     /// The command line to boot the kernel with.
     pub command_line: CString,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+pub struct StaticElfImage {
+    /// Load address.
+    pub start_address: usize,
+    /// Load offset.
+    pub load_offset: usize,
+    /// Whether the code is position independent or not.
+    pub assume_pic: bool,
 }
 
 impl Image {
@@ -194,6 +206,7 @@ impl Config {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceType {
+    StaticElf,
     Uefi,
     UnderhillKernel,
     OpenhclBoot,
