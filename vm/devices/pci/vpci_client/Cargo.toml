@@ -26,6 +26,7 @@ slab.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zerocopy.workspace = true
+guid.workspace = true
 
 [dev-dependencies]
 chipset_device.workspace = true

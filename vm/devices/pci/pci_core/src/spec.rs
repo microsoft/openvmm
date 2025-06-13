@@ -375,3 +375,34 @@ pub mod caps {
         }
     }
 }
+
+pub mod ext_caps {
+    use bitfield_struct::bitfield;
+
+    pub const EXT_CAPABILITY_START_OFFSET: u16 = 0x100;
+    /// Extended capability IDs
+    /// PCI CODE AND ID ASSIGNMENT SPECIFICATION, REV. 1.12 Section 3
+    pub const EXT_CAPABILITY_VENDOR_SPECIFIC_ID: u16 = 0x000B;
+    
+
+    #[bitfield(u32)]
+    pub struct ExtendedCapabilityHeader {
+        #[bits(16)]
+        pub id: u16,
+        #[bits(4)]
+        pub version: u8,
+        #[bits(12)]
+        /// Offset to the next capability header, or 0 if there are no more
+        pub next_offset: u16
+    }
+
+    #[bitfield(u32)]
+    pub struct VendorSpecificHeader {
+        #[bits(16)]
+        pub id: u16,
+        #[bits(4)]
+        pub version: u8,
+        #[bits(12)]
+        pub length: u16
+    }
+}

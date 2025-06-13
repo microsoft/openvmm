@@ -7,6 +7,7 @@ use futures::FutureExt;
 use futures::StreamExt;
 use futures_concurrency::future::Race;
 use guestmem::MemoryRead;
+use guid::Guid;
 use inspect::Inspect;
 use inspect::InspectMut;
 use mesh::rpc::FailableRpc;
@@ -16,7 +17,12 @@ use pal_async::task::Task;
 use parking_lot::Mutex;
 use pci_core::spec::cfg_space::Command;
 use pci_core::spec::cfg_space::HeaderType00;
+use pci_core::spec::ext_caps::EXT_CAPABILITY_START_OFFSET;
+use pci_core::spec::ext_caps::ExtendedCapabilityHeader;
+use pci_core::spec::ext_caps::VendorSpecificHeader;
+use pci_core::spec::ext_caps::EXT_CAPABILITY_VENDOR_SPECIFIC_ID;
 use pci_core::spec::hwid::HardwareIds;
+use std::num::NonZero;
 use std::sync::Arc;
 use vmbus_async::queue::IncomingPacket;
 use vmbus_async::queue::OutgoingPacket;
@@ -321,6 +327,34 @@ impl VpciDevice {
             _ => {}
         }
         accessor.write(self.desc.slot, offset, value);
+    }
+
+    fn find_vendor_specific_cap(&self, vsec_id: u16) -> Option<(u16, VendorSpecificHeader)> {
+        let mut header = Some((EXT_CAPABILITY_START_OFFSET, ExtendedCapabilityHeader::from_bits(self.read_cfg(
+            EXT_CAPABILITY_START_OFFSET as u16,
+        ))));
+        while let Some((o,h)) = header {
+            if h.id() == EXT_CAPABILITY_VENDOR_SPECIFIC_ID {
+                // parse the next four bytes after the header
+                let vsec = VendorSpecificHeader::from_bits(self.read_cfg(o + size_of::<ExtendedCapabilityHeader>() as u16));
+                tracing::trace!("vsec id: {:#x}, length: {:#x}", vsec.id(), vsec.length());
+                if vsec.id() == vsec_id {
+                    return Some((o, vsec));
+                }
+            }
+            header = self.next_ext_cap(&h);
+        }
+        None
+    }
+
+    fn next_ext_cap(&self, header: &ExtendedCapabilityHeader) -> Option<(u16, ExtendedCapabilityHeader)> {
+        let next_offset = header.next_offset();
+        if next_offset == 0 {
+            return None;
+        }
+        Some((next_offset, ExtendedCapabilityHeader::from_bits(self.read_cfg(
+            next_offset as u16,
+        ))))
     }
 }
 
@@ -780,4 +814,62 @@ fn index_to_tx_id(index: usize) -> u64 {
 
 fn tx_id_to_index(tx_id: u64) -> usize {
     tx_id.saturating_sub(1) as usize
+}
+
+#[derive(Inspect)]
+pub struct AziHsmVpciDevice {
+    #[inspect(flatten)]
+    unique_guid: Guid,
+}
+
+const AZIHSM_UNIQUE_GUID_CAP_VSEC_ID: u16 = 0xc301;
+impl AziHsmVpciDevice {
+    pub fn new(inner: &VpciDevice) -> Self {
+        let unique_guid = Self::read_unique_guid(&inner);
+        Self { unique_guid }
+    }
+
+    pub fn unique_guid(&self) -> Guid {
+        self.unique_guid.clone()
+    }
+
+    fn read_unique_guid(device: &VpciDevice) -> Guid {
+        let vsec = device.find_vendor_specific_cap(AZIHSM_UNIQUE_GUID_CAP_VSEC_ID);
+
+        if vsec.is_none() {
+            tracing::warn!("AZIHSM unique GUID VSEC not found, returning zero guid");
+            return Guid::default();
+        }
+        let vsec = vsec.unwrap();
+        let hdr = vsec.1;
+        // 4h bytes for ext cap header
+        // 4h bytes for vspec header
+        // 10h bytes of unique guid
+        if hdr.length() != 0x18 {
+            tracing::warn!(
+                "unexpected length for AZI HSM unique GUID VSEC: expected 0x18, got 0x{:x}",
+                hdr.length()
+            );
+            return Guid::default();
+        }
+
+        let offset = vsec.0 + size_of::<ExtendedCapabilityHeader>() as u16 +
+            size_of::<VendorSpecificHeader>() as u16;
+        
+        let mut guid_bytes = [0u8; 16];
+        guid_bytes[0..4].copy_from_slice(&device.read_cfg(offset).to_le_bytes());
+        guid_bytes[4..8].copy_from_slice(&device.read_cfg(offset + 4).to_le_bytes());
+        guid_bytes[8..12].copy_from_slice(&device.read_cfg(offset + 8).to_le_bytes());
+        guid_bytes[12..16].copy_from_slice(&device.read_cfg(offset + 12).to_le_bytes());
+
+        let mut data4 = [0u8; 8];
+        data4.copy_from_slice(&guid_bytes[8..16]);
+        Guid{
+            data1: u32::from_le_bytes([guid_bytes[0], guid_bytes[1], guid_bytes[2], guid_bytes[3]]),
+            data2: u16::from_le_bytes([guid_bytes[4], guid_bytes[5]]),
+            data3: u16::from_le_bytes([guid_bytes[6], guid_bytes[7]]),
+            data4: data4
+        }
+    }
+
 }
