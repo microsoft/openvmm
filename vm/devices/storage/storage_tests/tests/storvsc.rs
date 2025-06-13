@@ -8,8 +8,8 @@ use pal_async::DefaultDriver;
 use pal_async::async_test;
 use pal_async::timer::PolledTimer;
 use scsi_defs::ScsiOp;
+use scsi_defs::ScsiStatus;
 use std::sync::Arc;
-use std::time;
 use storvsc_driver::test_helpers::TestStorvscWorker;
 use storvsp::ScsiController;
 use storvsp::ScsiControllerDisk;
@@ -71,6 +71,7 @@ fn generate_read_packet(
         length: storvsp_protocol::SCSI_REQUEST_LEN_V2 as u16,
         cdb_length: size_of::<scsi_defs::Cdb10>() as u8,
         data_transfer_length: byte_len as u32,
+        data_in: 1,
         ..FromZeros::new_zeroed()
     };
 
@@ -85,7 +86,7 @@ async fn test_request_response(driver: DefaultDriver) {
     let test_guest_mem = GuestMemory::allocate(16384);
     let controller = ScsiController::new();
     let disk = scsidisk::SimpleScsiDisk::new(
-        disklayer_ram::ram_disk(10 * 1024 * 1024, false).unwrap(),
+        disklayer_ram::ram_disk(16 * 1024 * 1024, false).unwrap(),
         Default::default(),
     );
     controller
@@ -110,25 +111,29 @@ async fn test_request_response(driver: DefaultDriver) {
     let mut storvsc = TestStorvscWorker::new();
     storvsc.start(driver.clone(), guest);
 
+    // Wait for negotiation or panic.
     let mut timer = PolledTimer::new(&driver);
-    timer.sleep(time::Duration::from_secs(1)).await;
+    let negotiation_timeout_millis = 1000;
+    storvsc
+        .wait_for_negotiation(&mut timer, negotiation_timeout_millis)
+        .await;
 
     // Send SCSI write request
     let write_buf = [7u8; 4096];
     test_guest_mem.write_at(4096, &write_buf).unwrap();
-    storvsc
-        .send_request(&generate_write_packet(0, 1, 2, 4096, 4096), 4096, 4096)
+    let write_response = storvsc
+        .send_request(&generate_write_packet(0, 0, 0, 1, 4096), 4096, 4096)
         .await
         .unwrap();
+    assert_eq!(write_response.scsi_status, ScsiStatus::GOOD);
 
     // Send SCSI read request
-    let write_buf = [7u8; 4096];
-    test_guest_mem.write_at(4096, &write_buf).unwrap();
-    storvsc
-        .send_request(&generate_read_packet(0, 1, 2, 4096, 4096), 4096, 4096)
+    let read_response = storvsc
+        .send_request(&generate_read_packet(0, 0, 0, 1, 4096), 4096, 4096)
         .await
         .unwrap();
+    assert_eq!(read_response.scsi_status, ScsiStatus::GOOD);
 
     storvsc.teardown().await;
-    storvsp.teardown_ignore().await;
+    storvsp.teardown_or_panic().await;
 }

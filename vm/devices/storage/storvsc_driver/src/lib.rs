@@ -475,7 +475,8 @@ impl StorvscInner {
             Packet::Data(data) => {
                 match data.operation {
                     storvsp_protocol::Operation::ENUMERATE_BUS => {
-                        // Nothing to do here, and no completion is required
+                        // Nothing to do here, and no completion is required.
+                        // This may be needed in the future for hot add.
                         Ok(())
                     }
                     _ => Err(StorvscError(StorvscErrorInner::UnexpectedOperation)),
@@ -584,29 +585,21 @@ impl StorvscInner {
 
         // storvsp limits the size of the completion packet to the size of the request packet,
         // so we need to pad the payload to the maximum size to ensure we get a complete response.
-        // The maximum size includes header + payload.
-        let len = size_of_val(&header) + size_of_val(payload);
         let padding = [0; storvsp_protocol::SCSI_REQUEST_LEN_MAX];
-        let (payload_bytes, padding_bytes) = if len > storvsp_protocol::SCSI_REQUEST_LEN_MAX {
-            (
-                &payload[..storvsp_protocol::SCSI_REQUEST_LEN_MAX - size_of_val(&header)],
-                &[][..],
-            )
+        let padding_bytes = if size_of_val(payload) < storvsp_protocol::SCSI_REQUEST_LEN_MAX {
+            &padding[..storvsp_protocol::SCSI_REQUEST_LEN_MAX - size_of_val(payload)]
         } else {
-            (
-                payload,
-                &padding[..storvsp_protocol::SCSI_REQUEST_LEN_MAX - len],
-            )
+            &[][..]
         };
         assert_eq!(
-            size_of_val(&header) + payload_bytes.len() + padding_bytes.len(),
+            size_of_val(payload) + padding_bytes.len(),
             storvsp_protocol::SCSI_REQUEST_LEN_MAX
         );
         writer
             .try_write(&OutgoingPacket {
                 transaction_id,
                 packet_type,
-                payload: &[header.as_bytes(), payload_bytes, padding_bytes],
+                payload: &[header.as_bytes(), payload, padding_bytes],
             })
             .map_err(|err| match err {
                 queue::TryWriteError::Full(_) => StorvscError(StorvscErrorInner::NotEnoughSpace),
@@ -639,11 +632,22 @@ impl StorvscInner {
                 PacketError::InvalidPacketType,
             ))),
         }?;
-        expect_success(
-            expect_transaction_id(completion, transaction_id)
-                .map_err(|err| StorvscError(StorvscErrorInner::PacketError(err)))?,
-        )
-        .map_err(|err| StorvscError(StorvscErrorInner::PacketError(err)))
+
+        // Expect matching transaction ID
+        if completion.transaction_id != transaction_id {
+            return Err(StorvscError(StorvscErrorInner::PacketError(
+                PacketError::UnexpectedTransaction(completion.transaction_id),
+            )));
+        }
+
+        // Expect success
+        if completion.status != storvsp_protocol::NtStatus::SUCCESS {
+            return Err(StorvscError(StorvscErrorInner::PacketError(
+                PacketError::UnexpectedStatus(completion.status),
+            )));
+        }
+
+        Ok(completion)
     }
 }
 
@@ -725,23 +729,6 @@ fn parse_data<T: RingMem>(packet: &DataPacket<'_, T>) -> Result<Packet, PacketEr
     }))
 }
 
-fn expect_success(packet: StorvscCompletionPacket) -> Result<StorvscCompletionPacket, PacketError> {
-    if packet.status != storvsp_protocol::NtStatus::SUCCESS {
-        return Err(PacketError::UnexpectedStatus(packet.status));
-    }
-    Ok(packet)
-}
-
-fn expect_transaction_id(
-    packet: StorvscCompletionPacket,
-    transaction_id: u64,
-) -> Result<StorvscCompletionPacket, PacketError> {
-    if packet.transaction_id != transaction_id {
-        return Err(PacketError::UnexpectedTransaction(packet.transaction_id));
-    }
-    Ok(packet)
-}
-
 #[cfg(test)]
 mod tests {
     use crate::test_helpers::TestStorvscWorker;
@@ -751,7 +738,6 @@ mod tests {
     use pal_async::async_test;
     use pal_async::timer::PolledTimer;
     use scsi_defs::ScsiOp;
-    use std::time;
     use test_with_tracing::test;
     use vmbus_async::queue::Queue;
     use vmbus_channel::connected_async_channels;
@@ -831,8 +817,12 @@ mod tests {
         let mut storvsc = TestStorvscWorker::new();
         storvsc.start(driver.clone(), guest);
 
+        // Wait for negotiation or panic.
         let mut timer = PolledTimer::new(&driver);
-        timer.sleep(time::Duration::from_secs(1)).await;
+        let negotiation_timeout_millis = 1000;
+        storvsc
+            .wait_for_negotiation(&mut timer, negotiation_timeout_millis)
+            .await;
 
         storvsc.stop().await;
         assert!(storvsc.get_mut().has_negotiated);
@@ -856,8 +846,12 @@ mod tests {
         let mut storvsc = TestStorvscWorker::new();
         storvsc.start(driver.clone(), guest);
 
+        // Wait for negotiation or panic.
         let mut timer = PolledTimer::new(&driver);
-        timer.sleep(time::Duration::from_secs(1)).await;
+        let negotiation_timeout_millis = 1000;
+        storvsc
+            .wait_for_negotiation(&mut timer, negotiation_timeout_millis)
+            .await;
 
         storvsc.stop().await;
         assert!(storvsc.get_mut().has_negotiated);
@@ -898,8 +892,12 @@ mod tests {
         let mut storvsc = TestStorvscWorker::new();
         storvsc.start(driver.clone(), guest);
 
+        // Wait for negotiation or panic.
         let mut timer = PolledTimer::new(&driver);
-        timer.sleep(time::Duration::from_secs(1)).await;
+        let negotiation_timeout_millis = 1000;
+        storvsc
+            .wait_for_negotiation(&mut timer, negotiation_timeout_millis)
+            .await;
 
         storvsc.stop().await;
         assert!(storvsc.get_mut().has_negotiated);
@@ -912,7 +910,7 @@ mod tests {
             status: storvsp_protocol::NtStatus::SUCCESS,
         };
         storvsp.send_vmbus_data_packet_no_completion(enumerate_bus_packet, 10, &());
-        // Nothing to evaluate here since this is a no-op without a completion
+        // Nothing to evaluate here since this is a no-op without a completion for the time being.
 
         storvsc.teardown().await;
         storvsp.teardown().await;

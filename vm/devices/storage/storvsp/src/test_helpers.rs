@@ -54,6 +54,19 @@ impl TestWorker {
         let _ = self.task.await;
     }
 
+    /// Like `teardown`, but panic if there's a failure. Nice for integration tests, so that the
+    /// `storvsp` crate doesn't need to expose `WorkerError` as pub.
+    #[cfg(feature = "test")]
+    pub async fn teardown_or_panic(self) {
+        match self.task.await {
+            Ok(()) => {}
+            Err(WorkerError::Queue(err)) if err.is_closed_error() => {}
+            Err(err) => {
+                panic!("Worker did not teardown gracefully: {:?}", err);
+            }
+        }
+    }
+
     pub fn start<T: ring::RingMem + 'static + Sync>(
         controller: ScsiController,
         spawner: impl Spawn,

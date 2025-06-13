@@ -24,11 +24,13 @@ use mesh_channel::RecvError;
 use mesh_channel::Sender;
 use pal_async::task::Spawn;
 use pal_async::task::Task;
+use pal_async::timer::PolledTimer;
 use scsi_buffers::RequestBuffers;
 use std::future::poll_fn;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
+use std::time;
 use task_control::TaskControl;
 use thiserror::Error;
 use vmbus_async::queue;
@@ -260,6 +262,31 @@ impl<T: 'static + Send + Sync + RingMem> TestStorvscWorker<T> {
     pub async fn teardown(&mut self) {
         self.task.stop().await;
         self.task.remove();
+    }
+
+    /// Waits for negotiation to complete or panics.
+    pub async fn wait_for_negotiation(
+        &mut self,
+        timer: &mut PolledTimer,
+        negotiation_timeout_millis: u64,
+    ) {
+        // Wait until storvsc is ready and negotiated, max of 1 second.
+        let mut has_negotiated = false;
+        let interval_millis = 100;
+        for _ in 0..(negotiation_timeout_millis / interval_millis) {
+            timer
+                .sleep(time::Duration::from_millis(interval_millis))
+                .await;
+            self.task.stop().await;
+            has_negotiated = self.task.state().unwrap().has_negotiated;
+            self.task.start();
+            if has_negotiated {
+                break;
+            }
+        }
+        if !has_negotiated {
+            panic!("storvsc negotiation did not complete within timeout");
+        }
     }
 
     /// Send a SCSI request to storvsp over VMBus.
